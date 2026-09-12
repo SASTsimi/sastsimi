@@ -12,7 +12,12 @@ from .base import ContractModel, NonEmptyStr, NonNegativeInt, PositiveInt, Sha25
 from .closure import validate_committed_output
 from .ids import AnalysisId, AttemptId, CommitId, ErrorId, GapId, WorkId, WorkspaceId
 from .records import RunMeta
-from .refs import HostConfigurationRef, StoredDataRef, require_record_ref
+from .refs import (
+    HostConfigurationRef,
+    RunStoredDataRef,
+    StoredDataRef,
+    require_record_ref,
+)
 from .work import (
     TransitionCommit,
     WorkAttempt,
@@ -118,6 +123,94 @@ class CodeWorkspace(ContractModel):
             self.status == "PREPARING" and self.commit_id is not None
         ):
             raise ValueError("WORKSPACE_NOT_READY")
+        return self
+
+
+class RepositoryTrackedFile(ContractModel):
+    """One regular file from the exact safe Git manifest used for detection."""
+
+    git_path: GitPath
+    git_mode: Literal["100644", "100755"]
+    blob_id: NonEmptyStr
+    size_bytes: NonNegativeInt
+
+    @model_validator(mode="after")
+    def blob_shape(self) -> Self:
+        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", self.blob_id):
+            raise ValueError("INVALID_GIT_BLOB_ID")
+        return self
+
+
+class RepositoryLanguage(ContractModel):
+    name: Literal["PYTHON", "JAVASCRIPT", "TYPESCRIPT", "JAVA"]
+    evidence_paths: tuple[GitPath, ...]
+
+    @model_validator(mode="after")
+    def evidence_required(self) -> Self:
+        unique(self.evidence_paths)
+        if not self.evidence_paths:
+            raise ValueError("LANGUAGE_EVIDENCE_REQUIRED")
+        return self
+
+
+class RepositoryFramework(ContractModel):
+    name: Literal["DJANGO", "FASTAPI", "FLASK", "EXPRESS", "NEXTJS", "NESTJS"]
+    evidence_paths: tuple[GitPath, ...]
+
+    @model_validator(mode="after")
+    def evidence_required(self) -> Self:
+        unique(self.evidence_paths)
+        if not self.evidence_paths:
+            raise ValueError("FRAMEWORK_EVIDENCE_REQUIRED")
+        return self
+
+
+class RepositoryConfigFile(ContractModel):
+    path: GitPath
+    kind: Literal[
+        "REQUIREMENTS",
+        "PYPROJECT",
+        "PACKAGE_JSON",
+        "DOCKERFILE",
+        "DOCKER_COMPOSE",
+        "MAVEN_POM",
+        "GRADLE",
+    ]
+
+
+class RepositoryProfile(DomainRecord):
+    """Immutable detection result closed over one exact tracked-file manifest."""
+
+    KIND = "repository_profile"
+    HYPOTHESIS = False
+    ATTEMPT = True
+    workspace_id: WorkspaceId
+    commit_id: CommitId
+    workspace_ref: RunStoredDataRef
+    manifest_hash: Sha256
+    tracked_files: tuple[RepositoryTrackedFile, ...]
+    languages: tuple[RepositoryLanguage, ...]
+    frameworks: tuple[RepositoryFramework, ...]
+    config_files: tuple[RepositoryConfigFile, ...]
+    status: Literal["READY", "NEEDS_CONFIRMATION"]
+    confirmation_reasons: tuple[NonEmptyStr, ...]
+
+    @model_validator(mode="after")
+    def profile_shape(self) -> Self:
+        if (
+            self.workspace_ref.data_kind != "code_workspace"
+            or self.workspace_ref.record_id is None
+        ):
+            raise ValueError("REPOSITORY_PROFILE_WORKSPACE_INVALID")
+        unique(self.tracked_files)
+        unique(self.languages)
+        unique(self.frameworks)
+        unique(self.config_files)
+        unique(self.confirmation_reasons)
+        if self.status == "READY" and self.confirmation_reasons:
+            raise ValueError("REPOSITORY_PROFILE_STATUS_MISMATCH")
+        if self.status == "NEEDS_CONFIRMATION" and not self.confirmation_reasons:
+            raise ValueError("REPOSITORY_PROFILE_STATUS_MISMATCH")
         return self
 
 

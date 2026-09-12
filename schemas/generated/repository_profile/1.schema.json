@@ -1,0 +1,393 @@
+{
+  "$defs": {
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "AttemptId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AttemptId",
+      "type": "string"
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "HypothesisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "HypothesisId",
+      "type": "string"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RecordMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hypothesis_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HypothesisId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "attempt_id"
+      ],
+      "title": "RecordMeta",
+      "type": "object"
+    },
+    "RepositoryConfigFile": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "REQUIREMENTS",
+            "PYPROJECT",
+            "PACKAGE_JSON",
+            "DOCKERFILE",
+            "DOCKER_COMPOSE",
+            "MAVEN_POM",
+            "GRADLE"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "kind"
+      ],
+      "title": "RepositoryConfigFile",
+      "type": "object"
+    },
+    "RepositoryFramework": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_paths": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Evidence Paths",
+          "type": "array"
+        },
+        "name": {
+          "enum": [
+            "DJANGO",
+            "FASTAPI",
+            "FLASK",
+            "EXPRESS",
+            "NEXTJS",
+            "NESTJS"
+          ],
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "evidence_paths"
+      ],
+      "title": "RepositoryFramework",
+      "type": "object"
+    },
+    "RepositoryLanguage": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_paths": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Evidence Paths",
+          "type": "array"
+        },
+        "name": {
+          "enum": [
+            "PYTHON",
+            "JAVASCRIPT",
+            "TYPESCRIPT",
+            "JAVA"
+          ],
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "evidence_paths"
+      ],
+      "title": "RepositoryLanguage",
+      "type": "object"
+    },
+    "RepositoryTrackedFile": {
+      "additionalProperties": false,
+      "description": "One regular file from the exact safe Git manifest used for detection.",
+      "properties": {
+        "blob_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Blob Id",
+          "type": "string"
+        },
+        "git_mode": {
+          "enum": [
+            "100644",
+            "100755"
+          ],
+          "title": "Git Mode",
+          "type": "string"
+        },
+        "git_path": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Git Path",
+          "type": "string"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "git_path",
+        "git_mode",
+        "blob_id",
+        "size_bytes"
+      ],
+      "title": "RepositoryTrackedFile",
+      "type": "object"
+    },
+    "RunStoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "analysis_id",
+        "record_id"
+      ],
+      "title": "RunStoredDataRef",
+      "type": "object"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Immutable detection result closed over one exact tracked-file manifest.",
+  "properties": {
+    "commit_id": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "config_files": {
+      "items": {
+        "$ref": "#/$defs/RepositoryConfigFile"
+      },
+      "title": "Config Files",
+      "type": "array"
+    },
+    "confirmation_reasons": {
+      "items": {
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "title": "Confirmation Reasons",
+      "type": "array"
+    },
+    "frameworks": {
+      "items": {
+        "$ref": "#/$defs/RepositoryFramework"
+      },
+      "title": "Frameworks",
+      "type": "array"
+    },
+    "languages": {
+      "items": {
+        "$ref": "#/$defs/RepositoryLanguage"
+      },
+      "title": "Languages",
+      "type": "array"
+    },
+    "manifest_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Manifest Hash",
+      "type": "string"
+    },
+    "meta": {
+      "$ref": "#/$defs/RecordMeta"
+    },
+    "status": {
+      "enum": [
+        "READY",
+        "NEEDS_CONFIRMATION"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "tracked_files": {
+      "items": {
+        "$ref": "#/$defs/RepositoryTrackedFile"
+      },
+      "title": "Tracked Files",
+      "type": "array"
+    },
+    "workspace_id": {
+      "$ref": "#/$defs/WorkspaceId"
+    },
+    "workspace_ref": {
+      "$ref": "#/$defs/RunStoredDataRef"
+    }
+  },
+  "required": [
+    "meta",
+    "workspace_id",
+    "commit_id",
+    "workspace_ref",
+    "manifest_hash",
+    "tracked_files",
+    "languages",
+    "frameworks",
+    "config_files",
+    "status",
+    "confirmation_reasons"
+  ],
+  "title": "RepositoryProfile",
+  "type": "object"
+}

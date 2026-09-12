@@ -47,6 +47,7 @@ from .reporting import Finding, ReportDraft
 from .static import (
     CodeContextResponse,
     CodeWorkspace,
+    RepositoryProfile,
     RuleExecutionRecord,
     StaticFactBundle,
     ToolRunResult,
@@ -96,6 +97,7 @@ RESULT_REGISTRY = build_registry(
             RequesterRole.ORCHESTRATION,
         ),
         ("code_workspace", CodeWorkspace, RequesterRole.REPOSITORY_LOADER),
+        ("repository_profile", RepositoryProfile, RequesterRole.STATIC_ANALYSIS),
         (
             "code_context_response",
             CodeContextResponse,

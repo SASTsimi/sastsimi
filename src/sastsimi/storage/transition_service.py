@@ -16,7 +16,11 @@ from sastsimi.contracts.records import validate_revision
 from sastsimi.contracts.refs import RecordRef, StoredDataRef
 from sastsimi.contracts.reporting import ReportDraft
 from sastsimi.contracts.result_registry import validate_result_owner
-from sastsimi.contracts.static import CodeContextResponse, CodeWorkspace
+from sastsimi.contracts.static import (
+    CodeContextResponse,
+    CodeWorkspace,
+    RepositoryProfile,
+)
 from sastsimi.contracts.work import (
     AttemptStatus,
     CommitState,
@@ -108,6 +112,41 @@ def _validate_terminal_workspace(
         previous
     ):
         raise ValueError("WORKSPACE_LIFECYCLE_INVALID")
+
+
+def _validate_repository_profile(
+    connection: Connection,
+    work: WorkExecutionState,
+    candidate: RepositoryProfile,
+) -> None:
+    if (
+        work.work_type.value != "REPOSITORY_PROFILE"
+        or work.input_refs != (candidate.workspace_ref,)
+        or candidate.meta.attempt_id != work.active_attempt_id
+    ):
+        raise ValueError("REPOSITORY_PROFILE_CLOSURE_MISMATCH")
+    row = (
+        connection.execute(
+            select(models.records.c.kind, models.records.c.payload).where(
+                models.records.c.record_id == str(candidate.workspace_ref.record_id)
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None:
+        raise ValueError("REPOSITORY_PROFILE_CLOSURE_MISMATCH")
+    workspace = decode(row["kind"], row["payload"])
+    if (
+        not isinstance(workspace, CodeWorkspace)
+        or workspace.status != "READY"
+        or workspace.commit_id is None
+        or reference(workspace) != candidate.workspace_ref
+        or workspace.analysis_id != candidate.meta.analysis_id
+        or workspace.workspace_id != candidate.workspace_id
+        or workspace.commit_id != candidate.commit_id
+    ):
+        raise ValueError("REPOSITORY_PROFILE_CLOSURE_MISMATCH")
 
 
 class TransitionService:
@@ -227,6 +266,8 @@ class TransitionService:
                 _validate_terminal_workspace(
                     connection, work, record, len(request.records)
                 )
+            if isinstance(record, RepositoryProfile):
+                _validate_repository_profile(connection, work, record)
             if isinstance(record, CodeContextResponse):
                 check_context_response(self.works.records, connection, work, record)
             if not prepublished_output(

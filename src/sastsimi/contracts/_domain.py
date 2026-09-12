@@ -20,6 +20,7 @@ from .refs import (
 )
 
 REFERENCE_KINDS = {
+    "workspace_ref": "code_workspace",
     "action_decision_ref": "action_decision",
     "verification_result_ref": "verification_result",
     "source_verification_ref": "verification_result",
