@@ -29,6 +29,11 @@
 | [`docs/README.md`](./README.md) | 설계 문서를 어디서부터 읽어야 하는지 알려 주는 입구입니다. | 모든 팀원 | 쉬운 요약 |
 | [`docs/DOCUMENT_GUIDE.md`](./DOCUMENT_GUIDE.md) | 저장소의 모든 문서와 보조 파일이 무엇을 위한 것인지 설명합니다. | 처음 참여한 팀원 | 쉬운 요약 |
 | [`docs/GLOSSARY.md`](./GLOSSARY.md) | 프로젝트 전문용어를 쉬운 말로 설명합니다. | 모든 팀원 | 쉬운 요약 |
+| [`docs/installation.md`](./installation.md) | Python·Git·CodeQL·OpenGrep·Docker 설치와 운영 capability 확인 방법을 설명합니다. | 설치·운영 담당자 | 운영 안내 |
+| [`docs/provider-setup.md`](./provider-setup.md) | API key와 공식 회원 로그인 경로를 secret 노출 없이 연결하고 승인 여부를 확인하는 방법을 설명합니다. | Provider·운영 담당자 | 운영 안내 |
+| [`docs/usage.md`](./usage.md) | 실제 저장소 분석 시작, 상태·결과 조회와 Markdown 보고서 내보내기 순서를 설명합니다. | 도구 사용자·운영 담당자 | 운영 안내 |
+| [`docs/troubleshooting.md`](./troubleshooting.md) | capability·인증·정적 도구·Docker·보고서 오류를 verdict와 섞지 않고 처리하는 방법을 설명합니다. | 도구 사용자·운영 담당자 | 운영 안내 |
+| [`docs/release-follow-ups.md`](./release-follow-ups.md) | 첫 실행 버전에서 의도적으로 미룬 Medium/Low 확장 항목을 기록합니다. | PM·후속 구현 담당자 | 후속 목록 |
 
 ## 협업·승인 규칙
 

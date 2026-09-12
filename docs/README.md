@@ -9,6 +9,8 @@
 3. [역할과 담당자](./governance/OWNERSHIP.md) — 누가 어떤 영역과 Issue를 맡는지 보여 줍니다.
 4. [실제 Issue 현황](./review/ISSUE_TRACKER.md) — GitHub Issue, 담당자와 진행 상태를 보여 줍니다.
 5. [Architecture v5 설계 입구](./architecture-v5/README.md) — 전체 기술 흐름과 번호 문서를 안내합니다.
+6. [설치와 실행 환경 준비](./installation.md) — 실제 실행에 필요한 프로그램과 capability 확인 방법을 안내합니다.
+7. [저장소 분석 실행 안내](./usage.md) — 저장소 입력부터 Markdown 보고서 확인까지의 CLI 순서를 설명합니다.
 
 ## 역할별 빠른 탐색 경로
 
