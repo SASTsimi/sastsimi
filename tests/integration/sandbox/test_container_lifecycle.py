@@ -327,6 +327,7 @@ class FakeDockerAdapter:
         self.inspected_images: list[tuple[str, int]] = []
         self.created: dict[str, tuple[SandboxRunSpec, Mapping[str, str]]] = {}
         self.removed: list[str] = []
+        self.removed_images: list[str] = []
         self.unhealthy: set[str] = set()
         self.inspect_label_overrides: dict[str, Mapping[str, str]] = {}
         self.started: list[str] = []
@@ -413,6 +414,9 @@ class FakeDockerAdapter:
             assert resource_id in self.created
             self.removed.append(resource_id)
 
+    async def remove_image(self, image: str) -> None:
+        self.removed_images.append(image)
+
     def mark_unhealthy(self, container_id: str) -> None:
         self.unhealthy.add(container_id)
 
@@ -458,6 +462,41 @@ async def test_prepare_creates_clean_non_root_default_deny_container(
         ),
     )
     assert docker.built == [(b"FROM scratch\n", 10_000)]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_open_reclaims_new_image_and_invalidates_recipe_cache() -> None:
+    workspace = Path(__file__).parents[2] / "fixtures/sandbox/sql_injection"
+    request, requirements, _ = _dynamic_records()
+    docker = FakeDockerAdapter()
+    setup = _setup(docker)
+    source = await setup.preflight(
+        workspace_root=workspace,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "recipe-source"),
+    )
+    approval = _build_approval(workspace, request, source)
+    recipe = await setup.build(
+        approval=approval,
+        source=source,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "recipe-seed"),
+    )
+
+    await setup.cleanup_built_recipe(recipe)
+    rebuilt = await setup.build(
+        approval=approval,
+        source=source,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "recipe-rebuild"),
+    )
+
+    assert docker.removed_images == [IMAGE_DIGEST]
+    assert rebuilt.build_disposition == "BUILT"
+    assert len(docker.built) == 2
 
 
 @pytest.mark.asyncio
@@ -1031,6 +1070,129 @@ async def test_bound_docker_build_cancellation_waits_for_backend_tree_cleanup() 
     assert backend.cleaned is True
     assert build_context is not None
     assert not build_context.exists()
+
+
+@pytest.mark.asyncio
+async def test_docker_build_cancellation_compensates_attempt_owned_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = asyncio.Event()
+    calls: list[tuple[str, ...]] = []
+    labels = {
+        "sastsimi.owner": "reproduction-setup-automation",
+        "sastsimi.analysis-id": "analysis-1",
+        "sastsimi.workspace-id": "workspace-1",
+        "sastsimi.commit-id": "commit-1",
+        "sastsimi.hypothesis-id": "hypothesis-1",
+        "sastsimi.attempt-id": "dynamic-attempt-1",
+    }
+
+    async def run(
+        argv: tuple[str, ...],
+        *,
+        timeout_ms: int | None = None,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        del timeout_ms, input_bytes
+        calls.append(argv)
+        if argv[0] == "build":
+            started.set()
+            await asyncio.Event().wait()
+        return DockerCommandOutcome(0, b"", b"", False)
+
+    adapter = DockerAdapter()
+    monkeypatch.setattr(adapter, "_run", run)
+    build = asyncio.create_task(
+        adapter.build(b"FROM scratch\n", labels, timeout_ms=30_000)
+    )
+    await started.wait()
+
+    build.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await build
+
+    image_tag = DockerAdapter.runtime_image_tag(labels)
+    assert calls[-1] == ("image", "rm", "--force", image_tag)
+
+
+@pytest.mark.asyncio
+async def test_docker_create_cancellation_compensates_attempt_owned_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = asyncio.Event()
+    calls: list[tuple[str, ...]] = []
+    request, _, _ = _dynamic_records()
+    spec = _approval(Path.cwd(), request).approved_spec
+    assert spec is not None
+    labels = {
+        "sastsimi.owner": "reproduction-setup-automation",
+        "sastsimi.analysis-id": "analysis-1",
+        "sastsimi.workspace-id": "workspace-1",
+        "sastsimi.commit-id": "commit-1",
+        "sastsimi.hypothesis-id": "hypothesis-1",
+        "sastsimi.attempt-id": "dynamic-attempt-1",
+        "sastsimi.resource-kind": "container",
+        "sastsimi.resource-id": "container-runtime-1",
+    }
+
+    async def run(
+        argv: tuple[str, ...],
+        *,
+        timeout_ms: int | None = None,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        del timeout_ms, input_bytes
+        calls.append(argv)
+        if argv[0] == "create":
+            started.set()
+            await asyncio.Event().wait()
+        return DockerCommandOutcome(0, b"", b"", False)
+
+    adapter = DockerAdapter()
+    monkeypatch.setattr(adapter, "_run", run)
+    create = asyncio.create_task(adapter.create(spec, labels))
+    await started.wait()
+
+    create.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await create
+
+    name = DockerAdapter.runtime_container_name(labels)
+    assert calls[-1] == ("rm", "--force", "--volumes", name)
+
+
+@pytest.mark.asyncio
+async def test_setup_cancellation_after_create_cleans_registered_container() -> None:
+    entered = asyncio.Event()
+
+    class CancellingDocker(FakeDockerAdapter):
+        async def verify_created_mounts(
+            self, container_id: str, spec: SandboxRunSpec
+        ) -> None:
+            del container_id, spec
+            entered.set()
+            await asyncio.Event().wait()
+
+    workspace = Path(__file__).parents[2] / "fixtures/sandbox/sql_injection"
+    request, requirements, plan = _dynamic_records()
+    docker = CancellingDocker()
+    prepare = asyncio.create_task(
+        _prepare(
+            _setup(docker),
+            workspace,
+            request=request,
+            requirements=requirements,
+            plan=plan,
+            meta=_meta("sandbox_environment", "environment-seed"),
+        )
+    )
+    await entered.wait()
+
+    prepare.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await prepare
+
+    assert docker.removed == ["owned-container-1"]
 
 
 @pytest.mark.asyncio

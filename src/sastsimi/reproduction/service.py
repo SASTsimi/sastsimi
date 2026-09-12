@@ -1321,7 +1321,14 @@ class DynamicReproductionWorkflowService:
                 session=session,
             )
         except asyncio.CancelledError as cancellation:
-            failure_reason = "Dynamic reproduction cancelled after Sandbox cleanup"
+            cleanup_failed = bool(
+                getattr(cancellation, "sastsimi_cleanup_failed", False)
+            )
+            failure_reason = (
+                "Dynamic reproduction cancelled; Sandbox cleanup failed"
+                if cleanup_failed
+                else "Dynamic reproduction cancelled after Sandbox cleanup"
+            )
             if session is not None and session.allowed:
                 try:
                     session = await _complete_cancel_cleanup(

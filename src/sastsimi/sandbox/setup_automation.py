@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import asyncio
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
@@ -71,6 +72,17 @@ class DockerLifecyclePort(Protocol):
     ) -> DockerCommandOutcome: ...
     async def inspect(self, container_id: str) -> DockerContainerState: ...
     async def remove(self, resource_ids: tuple[str, ...]) -> None: ...
+    async def remove_image(self, image: str) -> None: ...
+
+
+async def _complete_cancellation_cleanup(awaitable: Awaitable[object]) -> None:
+    cleanup = asyncio.ensure_future(awaitable)
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            continue
+    cleanup.result()
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,6 +277,9 @@ class ReproductionSetupAutomation:
             meta=meta,
         )
 
+    async def cleanup_built_recipe(self, recipe: EnvironmentRecipe) -> None:
+        await self._recipes.reclaim_built_recipe(docker=self._docker, recipe=recipe)
+
     async def _create_environment(
         self,
         *,
@@ -292,6 +307,16 @@ class ReproductionSetupAutomation:
             await self._docker.verify_created_mounts(container_id, spec)
             await self._docker.start(container_id)
             state = await self._health.inspect_ready(self._docker.inspect, container_id)
+        except asyncio.CancelledError as cancellation:
+            try:
+                await _complete_cancellation_cleanup(
+                    self._docker.remove((container_id,))
+                )
+            except BaseException as cleanup_error:
+                cancellation.__dict__["sastsimi_cleanup_failed"] = True
+                cancellation.add_note("DOCKER_CANCELLATION_CLEANUP_FAILED")
+                raise cancellation from cleanup_error
+            raise
         except BaseException:
             try:
                 await self._docker.remove((container_id,))

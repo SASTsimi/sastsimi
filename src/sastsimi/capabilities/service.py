@@ -939,14 +939,12 @@ class _CapabilityProbeEngine:
             if isinstance(tmpfs, dict) and set(tmpfs) == {"/tmp"}
             else frozenset()
         )
-        safe_mounts = mounts == [] or (
+        safe_mounts = (
             isinstance(mounts, list)
-            and all(
-                isinstance(mount, dict)
-                and mount.get("Type") == "tmpfs"
-                and mount.get("Destination") == "/tmp"
-                for mount in mounts
-            )
+            and len(mounts) == 1
+            and isinstance(mounts[0], dict)
+            and mounts[0].get("Type") == "tmpfs"
+            and mounts[0].get("Destination") == "/tmp"
         )
         return bool(
             configuration.get("User") == "65532:65532"

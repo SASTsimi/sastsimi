@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -398,6 +399,20 @@ class ProductionDynamicWorkflow:
                 plan=plan,
                 meta=self._meta("sandbox_environment"),
             )
+        except asyncio.CancelledError as cancellation:
+            cleanup = asyncio.create_task(self._setup.cleanup_built_recipe(recipe))
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    continue
+            try:
+                cleanup.result()
+            except BaseException as cleanup_error:
+                cancellation.__dict__["sastsimi_cleanup_failed"] = True
+                cancellation.add_note("OPEN_SESSION_IMAGE_CLEANUP_FAILED")
+                raise cancellation from cleanup_error
+            raise
         except SandboxSetupCleanupError as error:
             reason = await self._record_failed_setup(error)
             raise DynamicOperationalError(

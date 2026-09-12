@@ -136,26 +136,9 @@ class DockerAdapter:
         if not dockerfile or timeout_ms <= 0:
             raise ValueError("DOCKER_BUILD_INPUT_INVALID")
         label_args = self._label_args(labels)
-        if self._process_backend is None:
-            outcome = await self._run(
-                (
-                    "build",
-                    "--quiet",
-                    "--pull=false",
-                    "--network",
-                    "none",
-                    *label_args,
-                    "-",
-                ),
-                timeout_ms=timeout_ms,
-                input_bytes=dockerfile,
-            )
-        else:
-            with tempfile.TemporaryDirectory(prefix="sastsimi-docker-build-") as root:
-                context = Path(root)
-                dockerfile_path = context / "Dockerfile"
-                dockerfile_path.write_bytes(dockerfile)
-                dockerfile_path.chmod(0o600)
+        image_tag = self.runtime_image_tag(labels)
+        try:
+            if self._process_backend is None:
                 outcome = await self._run(
                     (
                         "build",
@@ -164,12 +147,42 @@ class DockerAdapter:
                         "--network",
                         "none",
                         *label_args,
-                        "--file",
-                        str(dockerfile_path),
-                        str(context),
+                        "--tag",
+                        image_tag,
+                        "-",
                     ),
                     timeout_ms=timeout_ms,
+                    input_bytes=dockerfile,
                 )
+            else:
+                with tempfile.TemporaryDirectory(
+                    prefix="sastsimi-docker-build-"
+                ) as root:
+                    context = Path(root)
+                    dockerfile_path = context / "Dockerfile"
+                    dockerfile_path.write_bytes(dockerfile)
+                    dockerfile_path.chmod(0o600)
+                    outcome = await self._run(
+                        (
+                            "build",
+                            "--quiet",
+                            "--pull=false",
+                            "--network",
+                            "none",
+                            *label_args,
+                            "--tag",
+                            image_tag,
+                            "--file",
+                            str(dockerfile_path),
+                            str(context),
+                        ),
+                        timeout_ms=timeout_ms,
+                    )
+        except asyncio.CancelledError as cancellation:
+            await self._compensate_cancellation(
+                ("image", "rm", "--force", image_tag), cancellation
+            )
+            raise
         self._require_success("DOCKER_BUILD_FAILED", outcome)
         digest = (
             outcome.stdout.decode("ascii", errors="strict").strip().splitlines()[-1]
@@ -246,35 +259,44 @@ class DockerAdapter:
 
         name = self.runtime_container_name(labels)
         cpu = str(Decimal(spec.cpu_limit_millicores) / Decimal(1000))
-        outcome = await self._run(
-            (
-                "create",
-                "--name",
-                name,
-                "--network",
-                "none",
-                "--read-only",
-                "--user",
-                spec.user,
-                "--security-opt",
-                "no-new-privileges",
-                "--cap-drop",
-                "ALL",
-                "--pids-limit",
-                str(spec.pid_limit),
-                "--cpus",
-                cpu,
-                "--memory",
-                str(spec.memory_limit_bytes),
-                "--tmpfs",
-                (f"/tmp:rw,noexec,nosuid,nodev,size={spec.disk_limit_bytes},mode=1777"),
-                *self._label_args(labels),
-                *mount_args,
-                image_digest,
-                "sleep",
-                "infinity",
+        try:
+            outcome = await self._run(
+                (
+                    "create",
+                    "--name",
+                    name,
+                    "--network",
+                    "none",
+                    "--read-only",
+                    "--user",
+                    spec.user,
+                    "--security-opt",
+                    "no-new-privileges",
+                    "--cap-drop",
+                    "ALL",
+                    "--pids-limit",
+                    str(spec.pid_limit),
+                    "--cpus",
+                    cpu,
+                    "--memory",
+                    str(spec.memory_limit_bytes),
+                    "--tmpfs",
+                    (
+                        "/tmp:rw,noexec,nosuid,nodev,"
+                        f"size={spec.disk_limit_bytes},mode=1777"
+                    ),
+                    *self._label_args(labels),
+                    *mount_args,
+                    image_digest,
+                    "sleep",
+                    "infinity",
+                )
             )
-        )
+        except asyncio.CancelledError as cancellation:
+            await self._compensate_cancellation(
+                ("rm", "--force", "--volumes", name), cancellation
+            )
+            raise
         self._require_success("DOCKER_CREATE_FAILED", outcome)
         container_id = outcome.stdout.decode("ascii", errors="strict").strip()
         if not _RESOURCE_ID.fullmatch(container_id):
@@ -473,6 +495,21 @@ class DockerAdapter:
         outcome = await self._run(("rm", "--force", "--volumes", *resource_ids))
         self._require_success("DOCKER_REMOVE_FAILED", outcome)
 
+    async def remove_image(self, image: str) -> None:
+        if not _IMAGE_DIGEST.fullmatch(image):
+            raise ValueError("DOCKER_IMAGE_DIGEST_INVALID")
+        outcome = await self._run(("image", "rm", "--force", image))
+        self._require_success("DOCKER_IMAGE_REMOVE_FAILED", outcome)
+
+    @staticmethod
+    def runtime_image_tag(labels: Mapping[str, str]) -> str:
+        normalized = DockerAdapter._validated_labels(labels)
+        if set(normalized) != _REQUIRED_LABELS:
+            raise ValueError("DOCKER_IMAGE_OWNERSHIP_LABELS_REQUIRED")
+        identity = "\0".join(f"{key}={normalized[key]}" for key in sorted(normalized))
+        suffix = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+        return f"sastsimi-attempt:{suffix}"
+
     @staticmethod
     def runtime_container_name(labels: Mapping[str, str]) -> str:
         normalized = DockerAdapter._validated_labels(labels)
@@ -504,6 +541,25 @@ class DockerAdapter:
         for key in sorted(normalized):
             values.extend(("--label", f"{key}={normalized[key]}"))
         return tuple(values)
+
+    async def _compensate_cancellation(
+        self,
+        argv: tuple[str, ...],
+        cancellation: asyncio.CancelledError,
+    ) -> None:
+        cleanup = asyncio.create_task(self._run(argv))
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                continue
+        try:
+            outcome = cleanup.result()
+            self._require_success("DOCKER_CANCELLATION_CLEANUP_FAILED", outcome)
+        except BaseException as cleanup_error:
+            cancellation.__dict__["sastsimi_cleanup_failed"] = True
+            cancellation.add_note("DOCKER_CANCELLATION_CLEANUP_FAILED")
+            raise cancellation from cleanup_error
 
     @staticmethod
     def _require_resource_id(resource_id: str) -> None:

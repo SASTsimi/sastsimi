@@ -137,12 +137,10 @@ class FakeCommands:
                                     "Binds": None,
                                     "PidMode": "",
                                     "IpcMode": "private",
-                                    "Tmpfs": {
-                                        "/tmp": self.docker_tmpfs
-                                    },
+                                    "Tmpfs": {"/tmp": self.docker_tmpfs},
                                 },
                                 "State": {"Health": {"Status": "healthy"}},
-                                "Mounts": [],
+                                "Mounts": [{"Type": "tmpfs", "Destination": "/tmp"}],
                             }
                         ]
                     ),
@@ -559,6 +557,47 @@ def test_docker_probe_rejects_incomplete_tmpfs_boundary(tmp_path: Path) -> None:
 
     assert receipt.status == "BLOCKED"
     assert receipt.activation_supported is False
+
+
+@pytest.mark.parametrize(
+    ("mounts", "expected"),
+    (
+        ([], False),
+        ([{"Type": "tmpfs", "Destination": "/tmp"}], True),
+        (
+            [
+                {"Type": "tmpfs", "Destination": "/tmp"},
+                {"Type": "tmpfs", "Destination": "/tmp"},
+            ],
+            False,
+        ),
+    ),
+)
+def test_docker_boundary_requires_exactly_one_tmpfs_mount(
+    mounts: list[dict[str, str]],
+    expected: bool,
+) -> None:
+    state: dict[str, object] = {
+        "Config": {"User": "65532:65532"},
+        "HostConfig": {
+            "NetworkMode": "none",
+            "ReadonlyRootfs": True,
+            "Privileged": False,
+            "CapDrop": ["ALL"],
+            "SecurityOpt": ["no-new-privileges"],
+            "PidsLimit": 64,
+            "Memory": 67_108_864,
+            "NanoCpus": 500_000_000,
+            "Binds": None,
+            "PidMode": "",
+            "IpcMode": "private",
+            "Tmpfs": {"/tmp": "rw,noexec,nosuid,nodev,size=16m"},
+        },
+        "State": {"Health": {"Status": "healthy"}},
+        "Mounts": mounts,
+    }
+
+    assert _CapabilityProbeEngine._docker_boundary_passed(state) is expected
 
 
 @pytest.mark.parametrize(
