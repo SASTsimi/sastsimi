@@ -11,8 +11,14 @@ import pytest
 
 from sastsimi.bootstrap import build_fake_pipeline
 from sastsimi.contracts.actions import ActionDecision, ActionRequest, RequesterRole
-from sastsimi.contracts.refs import RunStoredDataRef, reference
-from sastsimi.contracts.static import CodeWorkspace, RepositoryProfile
+from sastsimi.contracts.canonical_json import content_hash
+from sastsimi.contracts.capabilities import CapabilityControlEvidence
+from sastsimi.contracts.refs import HostConfigurationRef, RunStoredDataRef, reference
+from sastsimi.contracts.static import (
+    CodeWorkspace,
+    RepositoryExecutionSelection,
+    RepositoryProfile,
+)
 from sastsimi.orchestration.fake_setup import FakeSetupDependencies, FakeSetupStages
 from sastsimi.orchestration.repository_profile_handler import RepositoryProfileHandler
 from sastsimi.ports.dto import (
@@ -22,7 +28,11 @@ from sastsimi.ports.dto import (
     TrackedFile,
 )
 from sastsimi.runtime.fake_support import ANALYSIS_ID
-from sastsimi.static_analysis.repository_profile import RepositoryProfiler
+from sastsimi.static_analysis.repository_profile import (
+    RepositoryExecutionSelector,
+    RepositoryProfiler,
+)
+from tests.unit.static_analysis.test_repository_profile import _Resolver
 
 
 def _tracked(root: Path, path: str, raw: bytes) -> TrackedFile:
@@ -53,6 +63,106 @@ class _Guard:
         }
         self.calls += 1
         return ()
+
+
+def _registered_resolver(setup: FakeSetupStages) -> _Resolver:
+    assert setup.runtime is not None
+    cast(Any, setup.runtime.configuration.registry).capability_host_id = "host-a"
+    raw_ref = setup.runtime.unit_of_work.artifacts.commit(
+        setup.runtime.unit_of_work.artifacts.stage_bytes(
+            b"trusted capability probe\n", "text/plain"
+        )
+    )
+    resolver = _Resolver()
+    registered = {}
+    for route, selected in resolver.selections.items():
+        capability_meta = selected.evidence.meta.model_copy(
+            update={
+                "workspace_id": raw_ref.workspace_id,
+                "commit_id": raw_ref.commit_id,
+            }
+        )
+        controls = tuple(
+            CapabilityControlEvidence(
+                control=item.control,
+                evidence_ref=raw_ref,
+            )
+            for item in selected.evidence.security_control_evidence
+        )
+        evidence = selected.evidence.model_copy(
+            update={
+                "meta": capability_meta,
+                "probe_evidence_refs": (raw_ref,),
+                "security_control_evidence": controls,
+            }
+        )
+        setup.evidence.capability_approvals.add(content_hash(evidence))
+        evidence_ref = setup.runtime.configuration.register_capability_approval(
+            evidence
+        )
+        profile = selected.profile.model_copy(
+            update={
+                "meta": selected.profile.meta.model_copy(
+                    update={
+                        "workspace_id": raw_ref.workspace_id,
+                        "commit_id": raw_ref.commit_id,
+                    }
+                ),
+                "capability_evidence_ref": evidence_ref,
+            }
+        )
+        profile_ref = (
+            setup.runtime.configuration.register_production_static_tool_profile(profile)
+        )
+        registered[route] = selected.model_copy(
+            update={
+                "profile": profile,
+                "profile_ref": profile_ref,
+                "evidence": evidence,
+            }
+        )
+    resolver.selections = registered
+
+    git_controls = tuple(
+        CapabilityControlEvidence(control=item.control, evidence_ref=raw_ref)
+        for item in resolver.git_evidence.security_control_evidence
+    )
+    git_evidence = resolver.git_evidence.model_copy(
+        update={
+            "meta": resolver.git_evidence.meta.model_copy(
+                update={
+                    "workspace_id": raw_ref.workspace_id,
+                    "commit_id": raw_ref.commit_id,
+                }
+            ),
+            "probe_evidence_refs": (raw_ref,),
+            "security_control_evidence": git_controls,
+        }
+    )
+    setup.evidence.capability_approvals.add(content_hash(git_evidence))
+    git_evidence_ref = setup.runtime.configuration.register_capability_approval(
+        git_evidence
+    )
+    resolver.git_profile = resolver.git_profile.model_copy(
+        update={
+            "meta": resolver.git_profile.meta.model_copy(
+                update={
+                    "workspace_id": raw_ref.workspace_id,
+                    "commit_id": raw_ref.commit_id,
+                }
+            ),
+            "capability_evidence_ref": git_evidence_ref,
+        }
+    )
+    git_ref = setup.runtime.configuration.register_runtime_capability(
+        resolver.git_profile
+    )
+    assert isinstance(git_ref, HostConfigurationRef)
+    resolver.git_ref = git_ref
+    resolver.pinned = {
+        selected.profile_ref: selected.profile for selected in registered.values()
+    } | {git_ref: resolver.git_profile}
+    return resolver
 
 
 @pytest.mark.asyncio
@@ -107,6 +217,8 @@ async def test_handler_publishes_profile_closed_over_ready_workspace(
         errors=(),
         lease_id=root.name,
     )
+    resolver = _registered_resolver(setup)
+    git_refs = tuple(dict.fromkeys((resolver.git_ref, resolver.git_ref)))
     work = setup.runner.start(
         scope,
         setup._record_meta("repository_profile"),
@@ -114,12 +226,17 @@ async def test_handler_publishes_profile_closed_over_ready_workspace(
         "ANALYSIS",
         str(workspace.analysis_id),
         orchestrator,
-        inputs=(workspace_ref,),
+        inputs=(workspace_ref, *git_refs),
     )
     guard = _Guard()
     published = await RepositoryProfileHandler(
         setup.runner,
         RepositoryProfiler(),
+        RepositoryExecutionSelector(
+            setup.runtime.configuration,
+            operating_system="windows",
+            architecture="x86_64",
+        ),
         guard,
     ).execute(
         work=work,
@@ -129,6 +246,8 @@ async def test_handler_publishes_profile_closed_over_ready_workspace(
         workspace=workspace,
         workspace_ref=workspace_ref,
         preparation=preparation,
+        git_clone_profile_ref=resolver.git_ref,
+        git_checkout_profile_ref=resolver.git_ref,
         deadline=MonotonicActionDeadline(
             "profile",
             time.monotonic_ns(),
@@ -143,6 +262,9 @@ async def test_handler_publishes_profile_closed_over_ready_workspace(
     stored = setup.runtime.unit_of_work.records.get_exact(published.profile_ref)
     assert isinstance(stored, RepositoryProfile)
     assert stored == published.profile
+    selected = setup.runtime.unit_of_work.records.get_exact(published.selection_ref)
+    assert isinstance(selected, RepositoryExecutionSelection)
+    assert selected == published.selection
     decision = setup.runtime.unit_of_work.records.get_exact(
         published.profile.action_decision_ref
     )
@@ -162,13 +284,18 @@ async def test_handler_publishes_profile_closed_over_ready_workspace(
         str(workspace.analysis_id),
         orchestrator,
         generation=2,
-        inputs=(workspace_ref,),
+        inputs=(workspace_ref, *git_refs),
     )
     (root / "src" / "app.py").write_text("print('changed')\n")
     with pytest.raises(ValueError, match="REPOSITORY_PROFILE_BLOCKED"):
         await RepositoryProfileHandler(
             setup.runner,
             RepositoryProfiler(),
+            RepositoryExecutionSelector(
+                setup.runtime.configuration,
+                operating_system="windows",
+                architecture="x86_64",
+            ),
             guard,
         ).execute(
             work=drifted_work,
@@ -178,6 +305,8 @@ async def test_handler_publishes_profile_closed_over_ready_workspace(
             workspace=workspace,
             workspace_ref=workspace_ref,
             preparation=preparation,
+            git_clone_profile_ref=resolver.git_ref,
+            git_checkout_profile_ref=resolver.git_ref,
             deadline=MonotonicActionDeadline(
                 "profile-drift",
                 time.monotonic_ns(),

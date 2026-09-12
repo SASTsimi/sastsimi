@@ -21,7 +21,12 @@ from sastsimi.contracts.ids import (
 )
 from sastsimi.contracts.policy import RunPolicyState
 from sastsimi.contracts.records import RecordMeta, RecordMetadata
-from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef
+from sastsimi.contracts.refs import (
+    BudgetScopeRef,
+    HostConfigurationRef,
+    RecordRef,
+    StoredDataRef,
+)
 from sastsimi.contracts.work import (
     CommitState,
     CommitTargetStatus,
@@ -502,6 +507,10 @@ class WorkflowRunner:
         )
         records = self.runtime.unit_of_work.records
         for input_ref in inputs:
+            if isinstance(input_ref, HostConfigurationRef):
+                # Host configuration is deliberately reusable across analyses.
+                # Authorization revalidates its exact current revision before use.
+                continue
             try:
                 input_record = records.get_exact(input_ref)
             except (LookupError, ValueError):

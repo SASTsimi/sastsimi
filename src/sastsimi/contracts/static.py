@@ -378,6 +378,88 @@ class AnalysisError(ContractModel):
     created_at: AwareDatetime
 
 
+class RepositorySelectedTool(ContractModel):
+    """One exact production static-tool revision selected for child work."""
+
+    adapter_key: Literal["PYTHON_AST", "CODEQL", "OPENGREP"]
+    operation: Literal["PARSE", "ANALYZE"]
+    tool_profile_ref: HostConfigurationRef
+    languages: tuple[Literal["PYTHON", "JAVASCRIPT"], ...]
+
+    @model_validator(mode="after")
+    def route_shape(self) -> Self:
+        if (
+            self.tool_profile_ref.data_kind != "static_tool_profile"
+            or not self.languages
+            or len(set(self.languages)) != len(self.languages)
+            or self.operation
+            != ("PARSE" if self.adapter_key == "PYTHON_AST" else "ANALYZE")
+            or (self.adapter_key == "PYTHON_AST" and self.languages != ("PYTHON",))
+        ):
+            raise ValueError("REPOSITORY_TOOL_SELECTION_INVALID")
+        return self
+
+
+class RepositoryExecutionSelection(DomainRecord):
+    """Durable exact capability closure for one repository profile attempt."""
+
+    KIND = "repository_execution_selection"
+    HYPOTHESIS = False
+    ATTEMPT = True
+    repository_profile_ref: StoredDataRef
+    git_clone_profile_ref: HostConfigurationRef
+    git_checkout_profile_ref: HostConfigurationRef
+    languages: tuple[Literal["PYTHON", "JAVASCRIPT"], ...]
+    selected_tools: tuple[RepositorySelectedTool, ...]
+    gaps: tuple[DataGap, ...]
+    errors: tuple[AnalysisError, ...]
+    status: Literal["READY", "BLOCKED", "FAILED"]
+
+    @model_validator(mode="after")
+    def closed_selection(self) -> Self:
+        require_record_ref(self.repository_profile_ref, "repository_profile")
+        if any(
+            ref.data_kind != "runtime_capability_profile"
+            for ref in (self.git_clone_profile_ref, self.git_checkout_profile_ref)
+        ):
+            raise ValueError("REPOSITORY_GIT_SELECTION_INVALID")
+        unique(self.languages)
+        unique(
+            (item.adapter_key, item.tool_profile_ref, item.languages)
+            for item in self.selected_tools
+        )
+        unique(item.gap_id for item in self.gaps)
+        unique(item.error_id for item in self.errors)
+        expected_routes = {
+            (adapter, language)
+            for language in self.languages
+            for adapter in (
+                ("PYTHON_AST", "CODEQL", "OPENGREP")
+                if language == "PYTHON"
+                else ("CODEQL", "OPENGREP")
+            )
+        }
+        actual_routes = {
+            (item.adapter_key, language)
+            for item in self.selected_tools
+            for language in item.languages
+        }
+        if self.status == "READY":
+            if (
+                not self.languages
+                or self.gaps
+                or self.errors
+                or actual_routes != expected_routes
+            ):
+                raise ValueError("REPOSITORY_EXECUTION_SELECTION_INCOMPLETE")
+        elif self.status == "BLOCKED":
+            if self.selected_tools or not self.gaps or self.errors:
+                raise ValueError("REPOSITORY_EXECUTION_SELECTION_STATUS_MISMATCH")
+        elif self.selected_tools or self.gaps or not self.errors:
+            raise ValueError("REPOSITORY_EXECUTION_SELECTION_STATUS_MISMATCH")
+        return self
+
+
 class ToolSource(ContractModel):
     attempt_id: AttemptId
     tool_name: NonEmptyStr

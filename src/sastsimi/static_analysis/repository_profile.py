@@ -7,24 +7,42 @@ import json
 import os
 import stat
 import tomllib
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Literal, cast
 
 from sastsimi.contracts.canonical_json import content_hash
+from sastsimi.contracts.capabilities import (
+    CapabilityArchitecture,
+    CapabilityLanguage,
+    CapabilityOperatingSystem,
+    RuntimeCapabilityProfile,
+    RuntimeCapabilitySelection,
+    StaticToolCapabilitySelection,
+)
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
+from sastsimi.contracts.refs import (
+    HostConfigurationRef,
+    RunStoredDataRef,
+    StoredDataRef,
+    reference,
+)
 from sastsimi.contracts.static import (
+    AnalysisError,
+    DataGap,
     RepositoryConfigFile,
     RepositoryExecutionHint,
+    RepositoryExecutionSelection,
     RepositoryFramework,
     RepositoryLanguage,
     RepositoryProfile,
     RepositoryProfileError,
     RepositoryProfileGap,
+    RepositorySelectedTool,
     RepositoryTrackedFile,
     StaticToolProfile,
 )
+from sastsimi.ports.capability_registry import ProductionCapabilityResolverPort
 from sastsimi.ports.dto import RepositoryPreparation, TrackedFile
 
 _MAX_DETECTION_FILE_BYTES = 2 * 1024 * 1024
@@ -63,46 +81,6 @@ _FRAMEWORK_DEPENDENCIES: dict[str, frozenset[str]] = {
     "NEXTJS": frozenset({"next"}),
     "NESTJS": frozenset({"@nestjs/core"}),
 }
-
-
-@dataclass(frozen=True)
-class ActiveStaticCapability:
-    """One capability already verified and activated outside this detector."""
-
-    profile: StaticToolProfile
-    supported_languages: tuple[
-        Literal["PYTHON", "JAVASCRIPT", "TYPESCRIPT", "JAVA"], ...
-    ]
-
-    def __post_init__(self) -> None:
-        known = {"PYTHON", "JAVASCRIPT", "TYPESCRIPT", "JAVA"}
-        if (
-            self.profile.status != "ACTIVE"
-            or self.profile.purpose != "PRODUCTION"
-            or self.profile.capability_evidence_ref is None
-            or not self.supported_languages
-            or len(set(self.supported_languages)) != len(self.supported_languages)
-            or not set(self.supported_languages) <= known
-            or (
-                self.profile.adapter_key == "PYTHON_AST"
-                and set(self.supported_languages) != {"PYTHON"}
-            )
-        ):
-            raise ValueError("STATIC_CAPABILITY_NOT_ACTIVE")
-
-
-@dataclass(frozen=True)
-class SelectedStaticTool:
-    adapter_key: Literal["PYTHON_AST", "CODEQL", "OPENGREP"]
-    tool_profile_ref: StoredDataRef
-    languages: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class StaticToolSelection:
-    status: Literal["READY", "NEEDS_CONFIRMATION", "BLOCKED"]
-    selected_tools: tuple[SelectedStaticTool, ...]
-    block_reasons: tuple[str, ...]
 
 
 def _identity(details: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
@@ -452,64 +430,375 @@ class RepositoryProfiler:
         )
 
 
-def select_static_tools(
-    repository: RepositoryProfile,
-    capabilities: tuple[ActiveStaticCapability, ...],
-) -> StaticToolSelection:
-    """Choose only ACTIVE capabilities that explicitly support detected languages."""
-    if repository.status != "READY":
-        return StaticToolSelection(
-            status="NEEDS_CONFIRMATION",
-            selected_tools=(),
-            block_reasons=repository.confirmation_reasons,
+_STATIC_ROUTES: dict[str, tuple[str, ...]] = {
+    "PYTHON": ("PYTHON_AST", "CODEQL", "OPENGREP"),
+    "JAVASCRIPT": ("CODEQL", "OPENGREP"),
+}
+
+
+def resolve_git_capability_refs(
+    resolver: ProductionCapabilityResolverPort,
+    *,
+    operating_system: CapabilityOperatingSystem,
+    architecture: CapabilityArchitecture,
+) -> tuple[HostConfigurationRef, HostConfigurationRef]:
+    """Select and immediately revalidate exact Git revisions before clone work."""
+
+    refs: list[HostConfigurationRef] = []
+    for operation in ("CLONE", "CHECKOUT"):
+        selected = RuntimeCapabilitySelection.model_validate(
+            resolver.resolve_active_capability(
+                capability_kind="GIT",
+                language="ANY",
+                operation=operation,
+                operating_system=operating_system,
+                architecture=architecture,
+            )
         )
-    detected = {item.name for item in repository.languages}
-    selected: list[SelectedStaticTool] = []
-    seen_profiles: set[StoredDataRef] = set()
-    claimed_routes: set[tuple[str, str]] = set()
-    for capability in capabilities:
-        supported = tuple(sorted(detected & set(capability.supported_languages)))
-        if not supported:
-            continue
-        profile_ref = reference(capability.profile)
-        if not isinstance(profile_ref, StoredDataRef):
-            raise ValueError("STATIC_CAPABILITY_SCOPE_INVALID")
-        if profile_ref in seen_profiles:
-            raise ValueError("DUPLICATE_STATIC_CAPABILITY")
-        routes = {(capability.profile.adapter_key, language) for language in supported}
-        if claimed_routes & routes:
-            return StaticToolSelection(
-                status="BLOCKED",
+        pinned = resolver.resolve_pinned_active_profile(selected.profile_ref)
+        if (
+            not isinstance(pinned, RuntimeCapabilityProfile)
+            or pinned != selected.profile
+            or reference(pinned) != selected.profile_ref
+            or pinned.status != "ACTIVE"
+            or pinned.capability_kind != "GIT"
+            or operation not in pinned.operations
+            or pinned.operating_system != operating_system
+            or pinned.architecture != architecture
+        ):
+            raise ValueError("GIT_CAPABILITY_ROUTE_MISMATCH")
+        refs.append(selected.profile_ref)
+    return refs[0], refs[1]
+
+
+class RepositoryExecutionSelector:
+    """Resolve production routes only through the trusted host registry."""
+
+    def __init__(
+        self,
+        resolver: ProductionCapabilityResolverPort,
+        *,
+        operating_system: CapabilityOperatingSystem,
+        architecture: CapabilityArchitecture,
+    ) -> None:
+        self._resolver = resolver
+        self._operating_system = operating_system
+        self._architecture = architecture
+
+    @staticmethod
+    def _stable_id(prefix: str, values: object) -> str:
+        return f"{prefix}-{content_hash(values)[:24]}"
+
+    @staticmethod
+    def _related(repository: RepositoryProfile) -> tuple[str, ...]:
+        return (str(repository.meta.record_id),)
+
+    def _gap(
+        self,
+        repository: RepositoryProfile,
+        *,
+        code: str,
+        description: str,
+        languages: tuple[str, ...] = (),
+    ) -> DataGap:
+        return DataGap.model_validate(
+            {
+                "gap_id": self._stable_id(
+                    "gap", (repository.meta.record_id, code, languages)
+                ),
+                "stage": "STATIC_ANALYSIS",
+                "code": code,
+                "reason": "BLOCKED",
+                "description": description,
+                "affected_paths": (),
+                "affected_languages": languages,
+                "affected_locations": (),
+                "retryable": True,
+                "related_record_ids": self._related(repository),
+                "created_at": repository.meta.created_at,
+            }
+        )
+
+    def _error(
+        self,
+        repository: RepositoryProfile,
+        *,
+        meta: RecordMeta,
+        code: str,
+        message: str,
+    ) -> AnalysisError:
+        return AnalysisError.model_validate(
+            {
+                "error_id": self._stable_id("error", (repository.meta.record_id, code)),
+                "stage": "STATIC_ANALYSIS",
+                "code": code,
+                "safe_message": message,
+                "retryable": False,
+                "work_id": None,
+                "attempt_id": meta.attempt_id,
+                "related_record_ids": self._related(repository),
+                "created_at": meta.created_at,
+            }
+        )
+
+    def _validate_git_ref(
+        self, profile_ref: HostConfigurationRef, operation: str
+    ) -> None:
+        profile = self._resolver.resolve_pinned_active_profile(profile_ref)
+        if not isinstance(profile, RuntimeCapabilityProfile):
+            raise ValueError("GIT_CAPABILITY_TYPE_MISMATCH")
+        profile = RuntimeCapabilityProfile.model_validate_json(
+            profile.model_dump_json()
+        )
+        if (
+            reference(profile) != profile_ref
+            or profile.status != "ACTIVE"
+            or profile.capability_kind != "GIT"
+            or operation not in profile.operations
+            or profile.operating_system != self._operating_system
+            or profile.architecture != self._architecture
+        ):
+            raise ValueError("GIT_CAPABILITY_ROUTE_MISMATCH")
+
+    def _resolve_static(
+        self, adapter_key: str, language: CapabilityLanguage
+    ) -> StaticToolCapabilitySelection:
+        selected = self._resolver.resolve_active_static_tool(
+            adapter_key=adapter_key,
+            language=language,
+            operating_system=self._operating_system,
+            architecture=self._architecture,
+        )
+        selected = StaticToolCapabilitySelection.model_validate_json(
+            selected.model_dump_json()
+        )
+        try:
+            pinned = self._resolver.resolve_pinned_active_profile(selected.profile_ref)
+        except LookupError as error:
+            raise ValueError("STATIC_CAPABILITY_PIN_MISSING") from error
+        operation = "PARSE" if adapter_key == "PYTHON_AST" else "ANALYZE"
+        if (
+            not isinstance(pinned, StaticToolProfile)
+            or pinned != selected.profile
+            or reference(pinned) != selected.profile_ref
+            or pinned.status != "ACTIVE"
+            or pinned.purpose != "PRODUCTION"
+            or pinned.adapter_key != adapter_key
+            or selected.evidence.host_id != selected.profile_ref.host_id
+            or selected.evidence.operating_system != self._operating_system
+            or selected.evidence.architecture != self._architecture
+            or language not in selected.evidence.languages
+            or operation not in selected.evidence.operations
+        ):
+            raise ValueError("STATIC_CAPABILITY_ROUTE_MISMATCH")
+        return selected
+
+    def select(
+        self,
+        repository: RepositoryProfile,
+        *,
+        meta: RecordMeta,
+        repository_profile_ref: StoredDataRef,
+        git_clone_profile_ref: HostConfigurationRef,
+        git_checkout_profile_ref: HostConfigurationRef,
+    ) -> RepositoryExecutionSelection:
+        if (
+            meta.record_type != "repository_execution_selection"
+            or meta.attempt_id is None
+            or repository_profile_ref != reference(repository)
+            or repository_profile_ref.data_kind != "repository_profile"
+            or repository.meta.analysis_id != meta.analysis_id
+            or repository.meta.workspace_id != meta.workspace_id
+            or repository.meta.commit_id != meta.commit_id
+            or repository.meta.attempt_id != meta.attempt_id
+        ):
+            raise ValueError("REPOSITORY_EXECUTION_SELECTION_INPUT_INVALID")
+        try:
+            self._validate_git_ref(git_clone_profile_ref, "CLONE")
+            self._validate_git_ref(git_checkout_profile_ref, "CHECKOUT")
+        except (LookupError, ValueError):
+            failed = self._error(
+                repository,
+                meta=meta,
+                code="CAPABILITY_REGISTRY_MISMATCH",
+                message=(
+                    "The pinned Git capability no longer matches the trusted registry."
+                ),
+            )
+            return RepositoryExecutionSelection(
+                meta=meta,
+                repository_profile_ref=repository_profile_ref,
+                git_clone_profile_ref=git_clone_profile_ref,
+                git_checkout_profile_ref=git_checkout_profile_ref,
+                languages=(),
                 selected_tools=(),
-                block_reasons=("AMBIGUOUS_STATIC_CAPABILITY",),
+                gaps=(),
+                errors=(failed,),
+                status="FAILED",
             )
-        seen_profiles.add(profile_ref)
-        claimed_routes.update(routes)
-        selected.append(
-            SelectedStaticTool(
-                adapter_key=capability.profile.adapter_key,
-                tool_profile_ref=profile_ref,
-                languages=supported,
+
+        if repository.status != "READY":
+            confirmation_gaps = tuple(
+                self._gap(
+                    repository,
+                    code=reason,
+                    description=(
+                        "Repository input requires confirmation before tool selection."
+                    ),
+                )
+                for reason in repository.confirmation_reasons
+            )
+            return RepositoryExecutionSelection(
+                meta=meta,
+                repository_profile_ref=repository_profile_ref,
+                git_clone_profile_ref=git_clone_profile_ref,
+                git_checkout_profile_ref=git_checkout_profile_ref,
+                languages=(),
+                selected_tools=(),
+                gaps=confirmation_gaps,
+                errors=(),
+                status="BLOCKED",
+            )
+
+        detected = tuple(sorted(item.name for item in repository.languages))
+        unsupported = tuple(item for item in detected if item not in _STATIC_ROUTES)
+        if unsupported:
+            unsupported_gaps = tuple(
+                self._gap(
+                    repository,
+                    code="UNSUPPORTED_LANGUAGE",
+                    description=(
+                        "No production static-tool route is defined for this language."
+                    ),
+                    languages=(language,),
+                )
+                for language in unsupported
+            )
+            return RepositoryExecutionSelection(
+                meta=meta,
+                repository_profile_ref=repository_profile_ref,
+                git_clone_profile_ref=git_clone_profile_ref,
+                git_checkout_profile_ref=git_checkout_profile_ref,
+                languages=(),
+                selected_tools=(),
+                gaps=unsupported_gaps,
+                errors=(),
+                status="BLOCKED",
+            )
+
+        supported_languages = cast(
+            tuple[Literal["PYTHON", "JAVASCRIPT"], ...], detected
+        )
+        resolved: list[
+            tuple[
+                str,
+                Literal["PYTHON", "JAVASCRIPT"],
+                StaticToolCapabilitySelection,
+            ]
+        ] = []
+        selection_gaps: list[DataGap] = []
+        errors: list[AnalysisError] = []
+        for language in supported_languages:
+            for adapter_key in _STATIC_ROUTES[language]:
+                try:
+                    selected = self._resolve_static(
+                        adapter_key, cast(CapabilityLanguage, language)
+                    )
+                except LookupError:
+                    selection_gaps.append(
+                        self._gap(
+                            repository,
+                            code=f"NO_ACTIVE_STATIC_CAPABILITY:{adapter_key}:{language}",
+                            description=(
+                                "A required production static-tool route is not active."
+                            ),
+                            languages=(language,),
+                        )
+                    )
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    errors.append(
+                        self._error(
+                            repository,
+                            meta=meta,
+                            code="CAPABILITY_REGISTRY_MISMATCH",
+                            message=(
+                                "The trusted registry returned an inconsistent "
+                                "static-tool route."
+                            ),
+                        )
+                    )
+                else:
+                    resolved.append((adapter_key, language, selected))
+
+        if errors:
+            return RepositoryExecutionSelection(
+                meta=meta,
+                repository_profile_ref=repository_profile_ref,
+                git_clone_profile_ref=git_clone_profile_ref,
+                git_checkout_profile_ref=git_checkout_profile_ref,
+                languages=supported_languages,
+                selected_tools=(),
+                gaps=(),
+                errors=tuple(errors[:1]),
+                status="FAILED",
+            )
+        if selection_gaps:
+            return RepositoryExecutionSelection(
+                meta=meta,
+                repository_profile_ref=repository_profile_ref,
+                git_clone_profile_ref=git_clone_profile_ref,
+                git_checkout_profile_ref=git_checkout_profile_ref,
+                languages=supported_languages,
+                selected_tools=(),
+                gaps=tuple(selection_gaps),
+                errors=(),
+                status="BLOCKED",
+            )
+
+        grouped: dict[tuple[str, HostConfigurationRef], set[str]] = {}
+        for adapter_key, language, selected in resolved:
+            grouped.setdefault((adapter_key, selected.profile_ref), set()).add(language)
+        tools = tuple(
+            RepositorySelectedTool.model_validate(
+                {
+                    "adapter_key": adapter_key,
+                    "operation": "PARSE" if adapter_key == "PYTHON_AST" else "ANALYZE",
+                    "tool_profile_ref": profile_ref,
+                    "languages": tuple(sorted(languages)),
+                }
+            )
+            for (adapter_key, profile_ref), languages in sorted(
+                grouped.items(), key=lambda item: (item[0][0], item[0][1].record_id)
             )
         )
-    if not selected:
-        return StaticToolSelection(
-            status="BLOCKED",
-            selected_tools=(),
-            block_reasons=("NO_ACTIVE_STATIC_CAPABILITY",),
+        return RepositoryExecutionSelection(
+            meta=meta,
+            repository_profile_ref=repository_profile_ref,
+            git_clone_profile_ref=git_clone_profile_ref,
+            git_checkout_profile_ref=git_checkout_profile_ref,
+            languages=supported_languages,
+            selected_tools=tools,
+            gaps=(),
+            errors=(),
+            status="READY",
         )
-    covered = {language for item in selected for language in item.languages}
-    missing = tuple(sorted(detected - covered))
-    if missing:
-        return StaticToolSelection(
-            status="BLOCKED",
-            selected_tools=(),
-            block_reasons=tuple("UNSUPPORTED_LANGUAGE:" + item for item in missing),
-        )
-    return StaticToolSelection(
-        status="READY",
-        selected_tools=tuple(
-            sorted(selected, key=lambda item: (item.adapter_key, item.languages))
-        ),
-        block_reasons=(),
+
+
+def static_tool_work_inputs(
+    selection: RepositoryExecutionSelection,
+    selection_ref: StoredDataRef,
+    tool: RepositorySelectedTool,
+) -> tuple[StoredDataRef, StoredDataRef, HostConfigurationRef]:
+    """Return the exact immutable inputs T14 must pin into one child work."""
+
+    if (
+        selection.status != "READY"
+        or reference(selection) != selection_ref
+        or tool not in selection.selected_tools
+    ):
+        raise ValueError("STATIC_TOOL_CHILD_INPUT_INVALID")
+    return (
+        selection.repository_profile_ref,
+        selection_ref,
+        tool.tool_profile_ref,
     )

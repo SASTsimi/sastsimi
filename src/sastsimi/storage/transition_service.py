@@ -26,6 +26,7 @@ from sastsimi.contracts.result_registry import validate_result_owner
 from sastsimi.contracts.static import (
     CodeContextResponse,
     CodeWorkspace,
+    RepositoryExecutionSelection,
     RepositoryProfile,
 )
 from sastsimi.contracts.work import (
@@ -125,14 +126,37 @@ def _validate_repository_profile(
     connection: Connection,
     work: WorkExecutionState,
     candidate: RepositoryProfile,
+    selection: RepositoryExecutionSelection,
+    output_count: int,
     target_status: str,
 ) -> None:
+    git_refs = tuple(
+        dict.fromkeys(
+            (selection.git_clone_profile_ref, selection.git_checkout_profile_ref)
+        )
+    )
+    expected_status = {
+        "READY": "SUCCEEDED",
+        "BLOCKED": "BLOCKED",
+        "FAILED": "FAILED",
+    }[selection.status]
     if (
         work.work_type.value != "REPOSITORY_PROFILE"
-        or work.input_refs != (candidate.workspace_ref,)
+        or output_count != 2
+        or work.input_refs != (candidate.workspace_ref, *git_refs)
         or candidate.meta.attempt_id != work.active_attempt_id
-        or (candidate.status == "READY") != (target_status == "SUCCEEDED")
-        or (candidate.status == "NEEDS_CONFIRMATION") != (target_status == "BLOCKED")
+        or selection.meta.attempt_id != work.active_attempt_id
+        or selection.meta.analysis_id != candidate.meta.analysis_id
+        or selection.meta.workspace_id != candidate.meta.workspace_id
+        or selection.meta.commit_id != candidate.meta.commit_id
+        or selection.repository_profile_ref != reference(candidate)
+        or target_status != expected_status
+        or (candidate.status == "NEEDS_CONFIRMATION" and selection.status != "BLOCKED")
+        or (
+            candidate.status == "READY"
+            and selection.status == "BLOCKED"
+            and not selection.gaps
+        )
     ):
         raise ValueError("REPOSITORY_PROFILE_CLOSURE_MISMATCH")
     decision_row = (
@@ -336,16 +360,31 @@ class TransitionService:
             read_outputs(connection, action, request.transition.action_decision_ref)
         ):
             raise ValueError("OUTPUT_BINDING_MISMATCH")
+        repository_profiles = tuple(
+            item for item in request.records if isinstance(item, RepositoryProfile)
+        )
+        repository_selections = tuple(
+            item
+            for item in request.records
+            if isinstance(item, RepositoryExecutionSelection)
+        )
+        if repository_profiles or repository_selections:
+            if len(repository_profiles) != 1 or len(repository_selections) != 1:
+                raise ValueError("REPOSITORY_PROFILE_CLOSURE_MISMATCH")
+            _validate_repository_profile(
+                connection,
+                work,
+                repository_profiles[0],
+                repository_selections[0],
+                len(request.records),
+                request.commit.target_status.value,
+            )
         for record in request.records:
             if not isinstance(record, ContractModel):
                 raise ValueError("OUTPUT_SCHEMA_MISMATCH")
             if isinstance(record, CodeWorkspace):
                 _validate_terminal_workspace(
                     connection, work, record, len(request.records)
-                )
-            if isinstance(record, RepositoryProfile):
-                _validate_repository_profile(
-                    connection, work, record, request.commit.target_status.value
                 )
             if isinstance(record, CodeContextResponse):
                 check_context_response(self.works.records, connection, work, record)

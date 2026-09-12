@@ -29,16 +29,25 @@ from sastsimi.contracts.budget import (
     select_work_limit,
 )
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.capabilities import RuntimeCapabilityProfile
 from sastsimi.contracts.ids import WorkspaceId
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import (
     BudgetScopeRef,
+    HostConfigurationRef,
     RecordRef,
     RunStoredDataRef,
     reference,
 )
-from sastsimi.contracts.static import CodeWorkspace, StaticToolProfile, ToolRunResult
+from sastsimi.contracts.static import (
+    CodeWorkspace,
+    RepositoryExecutionSelection,
+    RepositoryProfile,
+    StaticToolProfile,
+    ToolRunResult,
+)
 from sastsimi.contracts.work import WorkExecutionState, WorkType
+from sastsimi.ports.capability_registry import ProductionCapabilityResolverPort
 from sastsimi.ports.dto import (
     CandidateError,
     CandidateGap,
@@ -198,6 +207,7 @@ class StaticExternalRunner:
         static_cancellation_observation: StaticCancellationObservationReader
         | None = None,
         static_dispatch_state: StaticDispatchStateReader | None = None,
+        capability_resolver: ProductionCapabilityResolverPort | None = None,
     ) -> None:
         self.runner = runner
         self.receipt_root = receipt_root
@@ -211,6 +221,87 @@ class StaticExternalRunner:
         self.static_process_receipts = static_process_receipts
         self.static_cancellation_observation = static_cancellation_observation
         self.static_dispatch_state = static_dispatch_state
+        self.capability_resolver = capability_resolver
+
+    def _verified_git_refs(
+        self,
+        work: WorkExecutionState,
+        clone_ref: HostConfigurationRef | None,
+        checkout_ref: HostConfigurationRef | None,
+    ) -> tuple[HostConfigurationRef, ...]:
+        """Revalidate the exact host Git revisions before any repository sink."""
+
+        if self.capability_resolver is None:
+            if clone_ref is not None or checkout_ref is not None:
+                raise ValueError("GIT_CAPABILITY_RESOLVER_REQUIRED")
+            return ()
+        if clone_ref is None or checkout_ref is None:
+            raise ValueError("GIT_CAPABILITY_REFERENCE_REQUIRED")
+        refs = tuple(dict.fromkeys((clone_ref, checkout_ref)))
+        if (
+            tuple(
+                ref for ref in work.input_refs if isinstance(ref, HostConfigurationRef)
+            )
+            != refs
+        ):
+            raise ValueError("GIT_CAPABILITY_WORK_INPUT_MISMATCH")
+        for ref, operation in ((clone_ref, "CLONE"), (checkout_ref, "CHECKOUT")):
+            profile = self.capability_resolver.resolve_pinned_active_profile(ref)
+            if (
+                not isinstance(profile, RuntimeCapabilityProfile)
+                or reference(profile) != ref
+                or profile.status != "ACTIVE"
+                or profile.capability_kind != "GIT"
+                or operation not in profile.operations
+            ):
+                raise ValueError("GIT_CAPABILITY_ROUTE_MISMATCH")
+        return refs
+
+    def _validate_production_static_selection(
+        self,
+        request: StaticToolRequest,
+        work: WorkExecutionState,
+    ) -> None:
+        """Bind a production child to the exact durable T08 selection."""
+
+        if not isinstance(request.tool_profile_ref, HostConfigurationRef):
+            if (
+                request.repository_profile_ref is not None
+                or request.execution_selection_ref is not None
+            ):
+                raise ValueError("STATIC_TOOL_SELECTION_BINDING_UNEXPECTED")
+            return
+        if (
+            request.repository_profile_ref is None
+            or request.execution_selection_ref is None
+        ):
+            raise ValueError("STATIC_TOOL_SELECTION_BINDING_MISSING")
+        records = self.runner.runtime.unit_of_work.records
+        repository = records.get_exact(request.repository_profile_ref)
+        selection = records.get_exact(request.execution_selection_ref)
+        workspace_ref = reference(request.workspace)
+        if (
+            not isinstance(work.meta, RecordMeta)
+            or not isinstance(repository, RepositoryProfile)
+            or not isinstance(selection, RepositoryExecutionSelection)
+            or reference(repository) != request.repository_profile_ref
+            or reference(selection) != request.execution_selection_ref
+            or selection.status != "READY"
+            or selection.repository_profile_ref != request.repository_profile_ref
+            or repository.workspace_ref != workspace_ref
+            or repository.meta.analysis_id != work.meta.analysis_id
+            or repository.meta.workspace_id != work.meta.workspace_id
+            or repository.meta.commit_id != work.meta.commit_id
+            or not any(
+                item.tool_profile_ref == request.tool_profile_ref
+                for item in selection.selected_tools
+            )
+            or work.input_refs.count(request.repository_profile_ref) != 1
+            or work.input_refs.count(request.execution_selection_ref) != 1
+            or request.action.input_refs.count(request.repository_profile_ref) != 1
+            or request.action.input_refs.count(request.execution_selection_ref) != 1
+        ):
+            raise ValueError("STATIC_TOOL_SELECTION_BINDING_MISMATCH")
 
     async def invoke(
         self,
@@ -233,7 +324,7 @@ class StaticExternalRunner:
             raise ValueError("STATIC_TOOL_REQUEST_INVALID")
         work = self.runner.runtime.work.get(str(referenced_work.work_id))
         resolved_profile = (
-            self.runner.runtime.configuration.resolve_static_tool_profile(
+            self.runner.runtime.configuration.resolve_static_tool_profile_ref(
                 request.tool_profile_ref
             )
         )
@@ -244,6 +335,7 @@ class StaticExternalRunner:
         if binding_ref is None or state.workspace_ref != reference(request.workspace):
             raise ValueError("STATIC_TOOL_REQUEST_INVALID")
         records = self.runner.runtime.unit_of_work.records
+        self._validate_production_static_selection(request, work)
         binding = records.get_exact(binding_ref)
         if not isinstance(binding, BudgetProfileBinding):
             raise ValueError("STATIC_TOOL_REQUEST_INVALID")
@@ -421,7 +513,7 @@ class StaticExternalRunner:
             )
             decision_ref = reference(decision)
             if recovered_action != action or profile != (
-                self.runner.runtime.configuration.resolve_static_tool_profile(
+                self.runner.runtime.configuration.resolve_static_tool_profile_ref(
                     request.tool_profile_ref
                 )
             ):
@@ -606,7 +698,12 @@ class StaticExternalRunner:
         policy_ref: RunStoredDataRef,
         timeout_ms: int,
         loader: RepositoryLoaderPort,
+        git_clone_profile_ref: HostConfigurationRef | None = None,
+        git_checkout_profile_ref: HostConfigurationRef | None = None,
     ) -> PublishedWorkspaceMaterial:
+        git_refs = self._verified_git_refs(
+            work, git_clone_profile_ref, git_checkout_profile_ref
+        )
         source = self.canonicalize_source(submitted_source)
         policy = self._verified_policy(work, policy_ref)
         if timeout_ms <= 0:
@@ -619,7 +716,7 @@ class StaticExternalRunner:
             identity,
             "REPOSITORY_LOADER",
             "RUN_TOOL",
-            input_refs=(preparing.workspace_ref, policy_ref),
+            input_refs=(preparing.workspace_ref, policy_ref, *git_refs),
             tool_name="git",
             file_paths=(f"workspace/{workspace_id}",),
             reason="Prepare the exact authorized repository revision",
@@ -656,7 +753,7 @@ class StaticExternalRunner:
             self._write_receipt(
                 str(action.action_id),
                 str(current.active_attempt_id),
-                (preparing.workspace_ref, policy_ref),
+                (preparing.workspace_ref, policy_ref, *git_refs),
                 outcome,
                 loader.process_receipts,
                 receipt_elapsed_ms,
@@ -694,6 +791,19 @@ class StaticExternalRunner:
         )
         if current.status != "RUNNING" or current.active_attempt_id is None:
             raise ValueError("REPOSITORY_RECOVERY_INVALID")
+        configured_refs = tuple(
+            ref for ref in current.input_refs if isinstance(ref, HostConfigurationRef)
+        )
+        if self.capability_resolver is None:
+            if configured_refs:
+                raise ValueError("REPOSITORY_RECOVERY_INVALID")
+            git_refs: tuple[HostConfigurationRef, ...] = ()
+        else:
+            if len(configured_refs) not in {1, 2}:
+                raise ValueError("REPOSITORY_RECOVERY_INVALID")
+            clone_ref = configured_refs[0]
+            checkout_ref = configured_refs[-1]
+            git_refs = self._verified_git_refs(current, clone_ref, checkout_ref)
         if not isinstance(state.workspace_ref, RunStoredDataRef):
             raise ValueError("REPOSITORY_RECOVERY_INVALID")
         workspace = self.runner.runtime.unit_of_work.records.get_exact(
@@ -707,7 +817,11 @@ class StaticExternalRunner:
             work=current,
             analysis_state=state,
         )
-        input_refs = (preparing.workspace_ref, policy_ref)
+        input_refs: tuple[RecordRef, ...] = (
+            preparing.workspace_ref,
+            policy_ref,
+            *git_refs,
+        )
         receipt, outcome, process_receipts = self._read_receipt(
             str(current.active_attempt_id), input_refs
         )

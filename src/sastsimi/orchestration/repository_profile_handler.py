@@ -10,11 +10,17 @@ from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import (
     BudgetScopeRef,
+    HostConfigurationRef,
     RecordRef,
     RunStoredDataRef,
     StoredDataRef,
+    reference,
 )
-from sastsimi.contracts.static import CodeWorkspace, RepositoryProfile
+from sastsimi.contracts.static import (
+    CodeWorkspace,
+    RepositoryExecutionSelection,
+    RepositoryProfile,
+)
 from sastsimi.contracts.work import (
     AttemptStatus,
     WorkExecutionState,
@@ -29,7 +35,10 @@ from sastsimi.ports.dto import (
     WorkHandlerResult,
 )
 from sastsimi.runtime.workflow_runner import WorkflowRunner
-from sastsimi.static_analysis.repository_profile import RepositoryProfiler
+from sastsimi.static_analysis.repository_profile import (
+    RepositoryExecutionSelector,
+    RepositoryProfiler,
+)
 
 
 class RepositoryProfileGuard(Protocol):
@@ -47,6 +56,8 @@ class RepositoryProfileGuard(Protocol):
 class PublishedRepositoryProfile:
     profile: RepositoryProfile
     profile_ref: StoredDataRef
+    selection: RepositoryExecutionSelection
+    selection_ref: StoredDataRef
     work: WorkExecutionState
     integrity_receipts: tuple[ProcessReceipt, ...]
 
@@ -57,6 +68,8 @@ class RepositoryProfileCall:
     workspace_ref: RunStoredDataRef
     preparation: RepositoryPreparation
     deadline: MonotonicActionDeadline
+    git_clone_profile_ref: HostConfigurationRef
+    git_checkout_profile_ref: HostConfigurationRef
 
 
 class RepositoryProfileCallResolver(Protocol):
@@ -70,10 +83,12 @@ class RepositoryProfileHandler:
         self,
         runner: WorkflowRunner,
         profiler: RepositoryProfiler,
+        selector: RepositoryExecutionSelector,
         guard: RepositoryProfileGuard,
     ) -> None:
         self.runner = runner
         self.profiler = profiler
+        self.selector = selector
         self.guard = guard
 
     async def execute(
@@ -87,8 +102,14 @@ class RepositoryProfileHandler:
         workspace_ref: RunStoredDataRef,
         preparation: RepositoryPreparation,
         deadline: MonotonicActionDeadline,
+        git_clone_profile_ref: HostConfigurationRef,
+        git_checkout_profile_ref: HostConfigurationRef,
     ) -> PublishedRepositoryProfile:
         current = self.runner.runtime.work.get(str(work.work_id))
+        expected_inputs: tuple[RecordRef, ...] = (
+            workspace_ref,
+            *tuple(dict.fromkeys((git_clone_profile_ref, git_checkout_profile_ref))),
+        )
         if (
             current != work
             or current.work_type != WorkType.REPOSITORY_PROFILE
@@ -96,7 +117,7 @@ class RepositoryProfileHandler:
             or current.active_attempt_id is None
             or not isinstance(current.meta, RecordMeta)
             or current.meta.hypothesis_id is not None
-            or current.input_refs != (workspace_ref,)
+            or current.input_refs != expected_inputs
             or workspace.status != "READY"
             or workspace.commit_id is None
             or workspace_ref.data_kind != "code_workspace"
@@ -126,7 +147,7 @@ class RepositoryProfileHandler:
             identity,
             "STATIC_ANALYSIS",
             "RUN_TOOL",
-            input_refs=(workspace_ref,),
+            input_refs=expected_inputs,
             tool_name="repository-profiler",
             file_paths=paths,
             reason="Read the exact tracked repository manifest for profiling",
@@ -203,19 +224,46 @@ class RepositoryProfileHandler:
             reservation,
             self.runner.units(elapsed_ms=elapsed_ms, cost_minor_units=1),
         )
+        candidate_profile_ref = reference(profile)
+        if not isinstance(candidate_profile_ref, StoredDataRef):
+            raise ValueError("REPOSITORY_PROFILE_REFERENCE_INVALID")
+        selection = self.selector.select(
+            profile,
+            meta=RecordMeta.model_validate(
+                self.runner.metadata(
+                    current.meta,
+                    "repository_execution_selection",
+                    attempt_id=current.active_attempt_id,
+                )
+            ),
+            repository_profile_ref=candidate_profile_ref,
+            git_clone_profile_ref=git_clone_profile_ref,
+            git_checkout_profile_ref=git_checkout_profile_ref,
+        )
+        target_status = {
+            "READY": "SUCCEEDED",
+            "BLOCKED": "BLOCKED",
+            "FAILED": "FAILED",
+        }[selection.status]
         try:
             completed = self.runner.complete(
                 current,
                 identity,
                 "STATIC_ANALYSIS",
-                (profile,),
-                status=("SUCCEEDED" if profile.status == "READY" else "BLOCKED"),
+                (profile, selection),
+                status=target_status,
                 cause=(
                     "COMPLETED"
-                    if profile.status == "READY"
-                    else "REPOSITORY_CONFIRMATION_REQUIRED"
+                    if target_status == "SUCCEEDED"
+                    else (
+                        "REPOSITORY_CAPABILITY_SELECTION_FAILED"
+                        if target_status == "FAILED"
+                        else "REPOSITORY_CONFIRMATION_REQUIRED"
+                    )
                 ),
-                action_input_refs=(workspace_ref,),
+                gap_ids=tuple(str(item.gap_id) for item in selection.gaps),
+                error_ids=tuple(str(item.error_id) for item in selection.errors),
+                action_input_refs=expected_inputs,
             )
         except Exception as error:
             self.runner.block(
@@ -225,9 +273,19 @@ class RepositoryProfileHandler:
             )
             raise ValueError("REPOSITORY_PROFILE_BLOCKED") from error
         profile_ref = completed.output_refs[0]
-        if not isinstance(profile_ref, StoredDataRef):
+        selection_ref = completed.output_refs[1]
+        if not isinstance(profile_ref, StoredDataRef) or not isinstance(
+            selection_ref, StoredDataRef
+        ):
             raise ValueError("REPOSITORY_PROFILE_REFERENCE_INVALID")
-        return PublishedRepositoryProfile(profile, profile_ref, completed, receipts)
+        return PublishedRepositoryProfile(
+            profile,
+            profile_ref,
+            selection,
+            selection_ref,
+            completed,
+            receipts,
+        )
 
 
 @dataclass(frozen=True)
@@ -259,7 +317,15 @@ class RepositoryProfileWorkHandler:
         ):
             raise ValueError("WORK_CONTEXT_NOT_CURRENT")
         call = self.resolve_call(context)
-        if work.input_refs != (call.workspace_ref,):
+        expected_inputs: tuple[RecordRef, ...] = (
+            call.workspace_ref,
+            *tuple(
+                dict.fromkeys(
+                    (call.git_clone_profile_ref, call.git_checkout_profile_ref)
+                )
+            ),
+        )
+        if work.input_refs != expected_inputs:
             raise ValueError("REPOSITORY_PROFILE_WORK_INVALID")
         completed = await self.service.execute(
             work=work,
@@ -270,10 +336,12 @@ class RepositoryProfileWorkHandler:
             workspace_ref=call.workspace_ref,
             preparation=call.preparation,
             deadline=call.deadline,
+            git_clone_profile_ref=call.git_clone_profile_ref,
+            git_checkout_profile_ref=call.git_checkout_profile_ref,
         )
         return WorkHandlerResult(
             completed.work.output_refs,
-            action_input_refs=(call.workspace_ref,),
+            action_input_refs=expected_inputs,
         )
 
 

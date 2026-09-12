@@ -5,6 +5,7 @@ from typing import Protocol, runtime_checkable
 from sastsimi.contracts.actions import ActionDecision, Decision
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.refs import (
+    HostConfigurationRef,
     StoredDataRef,
     reference,
     require_record_ref,
@@ -28,7 +29,9 @@ from .dto import (
 
 @runtime_checkable
 class StaticToolAdapter(Protocol):
-    async def probe(self, profile_ref: StoredDataRef) -> ToolCapabilityResult: ...
+    async def probe(
+        self, profile_ref: StoredDataRef | HostConfigurationRef
+    ) -> ToolCapabilityResult: ...
     async def run(self, request: StaticToolRequest) -> ToolRunResult: ...
     async def cancel(self, attempt_id: str) -> CancellationResult: ...
 
@@ -69,7 +72,7 @@ class StaticOutputQuotaPort(Protocol):
         lease_id: str,
         action_id: str,
         attempt_id: str,
-        profile_ref: StoredDataRef,
+        profile_ref: StoredDataRef | HostConfigurationRef,
         root: Path,
         limit_bytes: int,
     ) -> StaticOutputQuotaBinding: ...
@@ -87,7 +90,9 @@ class StaticExternalExecutionPort(Protocol):
 
 
 class StaticToolProfileResolverPort(Protocol):
-    def resolve(self, profile_ref: StoredDataRef) -> StaticToolProfile: ...
+    def resolve(
+        self, profile_ref: StoredDataRef | HostConfigurationRef
+    ) -> StaticToolProfile: ...
 
 
 class StaticAttemptPublisherPort(Protocol):
@@ -111,14 +116,31 @@ def validate_static_tool_profile_binding(
             profile_ref,
             resolved_profile.meta,
             content_hash(resolved_profile),
-            analysis_id=work.meta.analysis_id,
+            analysis_id=(
+                None
+                if isinstance(profile_ref, HostConfigurationRef)
+                else work.meta.analysis_id
+            ),
         )
     except ValueError as error:
         raise ValueError("STATIC_TOOL_PROFILE_BINDING_MISMATCH") from error
     action = request.action
     if (
-        resolved_profile.status != "APPROVED"
-        or resolved_profile.purpose not in {"FIXTURE", "EVALUATION"}
+        (
+            isinstance(profile_ref, HostConfigurationRef)
+            and (
+                resolved_profile.status != "ACTIVE"
+                or resolved_profile.purpose != "PRODUCTION"
+                or resolved_profile.host_id != profile_ref.host_id
+            )
+        )
+        or (
+            isinstance(profile_ref, StoredDataRef)
+            and (
+                resolved_profile.status != "APPROVED"
+                or resolved_profile.purpose not in {"FIXTURE", "EVALUATION"}
+            )
+        )
         or work.work_type != "STATIC_TOOL"
         or action.action_type != "RUN_TOOL"
         or action.tool_name != resolved_profile.tool_name

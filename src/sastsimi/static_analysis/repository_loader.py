@@ -40,6 +40,21 @@ from .process import process_command_fingerprint
 _HEX = frozenset(string.hexdigits)
 
 
+def _canonical_local_path(path: Path) -> CanonicalRepositorySource:
+    try:
+        details = path.lstat()
+        resolved = path.resolve(strict=True)
+        if (
+            path.is_symlink()
+            or not resolved.is_dir()
+            or getattr(details, "st_file_attributes", 0) & 0x400
+        ):
+            raise ValueError
+    except (OSError, ValueError) as error:
+        raise ValueError("REPOSITORY_SOURCE_INVALID") from error
+    return CanonicalRepositorySource(resolved.as_uri(), "localhost", str(resolved))
+
+
 def _strict_percent_decode(value: str) -> bytes:
     for index, char in enumerate(value):
         if char == "%" and (
@@ -72,6 +87,16 @@ def canonicalize_repository_source(
 ) -> CanonicalRepositorySource:
     """Return one secret-free repository identity or reject before any sink."""
     if (
+        allow_local_file
+        and submitted
+        and submitted == submitted.strip()
+        and not submitted.startswith("-")
+        and not submitted.lower().startswith("ext::")
+        and "://" not in submitted
+        and not re.match(r"^[^/]+@[^/]+:[^/]+$", submitted)
+    ):
+        return _canonical_local_path(Path(submitted))
+    if (
         not submitted
         or submitted != submitted.strip()
         or submitted.startswith("-")
@@ -99,8 +124,7 @@ def canonicalize_repository_source(
             raise ValueError("REPOSITORY_SOURCE_INVALID") from error
         if any(part in {"", ".", ".."} for part in Path(path).parts[1:]):
             raise ValueError("REPOSITORY_SOURCE_INVALID")
-        canonical = Path(url2pathname(path)).resolve(strict=True).as_uri()
-        return CanonicalRepositorySource(canonical, "localhost", path)
+        return _canonical_local_path(Path(url2pathname(path)))
     if split.scheme.lower() != "https" or not split.hostname or not split.path:
         raise ValueError("REPOSITORY_SOURCE_INVALID")
     try:

@@ -20,7 +20,12 @@ from urllib.parse import unquote, urlsplit
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef, reference, require_record_ref
+from sastsimi.contracts.refs import (
+    HostConfigurationRef,
+    StoredDataRef,
+    reference,
+    require_record_ref,
+)
 from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.ports.dto import (
     CancellationResult,
@@ -186,7 +191,7 @@ class CodeQLExecutionInputs:
         *,
         action_id: str,
         attempt_id: str,
-        profile_ref: StoredDataRef,
+        profile_ref: StoredDataRef | HostConfigurationRef,
         root: Path,
         lease_id: str,
         limit_bytes: int,

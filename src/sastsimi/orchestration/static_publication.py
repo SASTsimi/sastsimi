@@ -17,6 +17,7 @@ from sastsimi.contracts.ids import (
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import (
     BudgetScopeRef,
+    HostConfigurationRef,
     RunStoredDataRef,
     StoredDataRef,
     reference,
@@ -200,7 +201,7 @@ class StaticAttemptPublisher:
             observation.finished_monotonic_ms - observation.started_monotonic_ms,
         )
         started_at = now - timedelta(milliseconds=elapsed_ms)
-        profile = self.runner.runtime.configuration.resolve_static_tool_profile(
+        profile = self.runner.runtime.configuration.resolve_static_tool_profile_ref(
             request.tool_profile_ref
         )
         catalog_rule_ids: tuple[str, ...] = ()
@@ -501,10 +502,12 @@ class StaticNormalizationSource:
     """Trusted identity needed to resolve one expected terminal tool work."""
 
     tool_work_ref: StoredDataRef
-    profile_ref: StoredDataRef
+    profile_ref: StoredDataRef | HostConfigurationRef
     analysis_config_ref: StoredDataRef
     rule_catalog_ref: StoredDataRef | None = None
     catalog_rule_ids: tuple[str, ...] = ()
+    repository_profile_ref: StoredDataRef | None = None
+    execution_selection_ref: StoredDataRef | None = None
 
 
 class StaticNormalizationPublisher:
@@ -977,6 +980,23 @@ class StaticNormalizationPublisher:
             source.profile_ref,
             source.analysis_config_ref,
         }
+        if isinstance(source.profile_ref, HostConfigurationRef):
+            if (
+                source.repository_profile_ref is None
+                or source.execution_selection_ref is None
+            ):
+                raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
+            expected_inputs.update(
+                {
+                    source.repository_profile_ref,
+                    source.execution_selection_ref,
+                }
+            )
+        elif (
+            source.repository_profile_ref is not None
+            or source.execution_selection_ref is not None
+        ):
+            raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
         if source.rule_catalog_ref is not None:
             expected_inputs.add(source.rule_catalog_ref)
         if (
@@ -993,7 +1013,7 @@ class StaticNormalizationPublisher:
         if len(result_refs) != 1 or not isinstance(result_refs[0], StoredDataRef):
             raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
         result = records.get_exact(result_refs[0])
-        profile = self.runner.runtime.configuration.resolve_static_tool_profile(
+        profile = self.runner.runtime.configuration.resolve_static_tool_profile_ref(
             source.profile_ref
         )
         if not isinstance(result, ToolRunResult):
