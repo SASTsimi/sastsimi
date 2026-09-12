@@ -32,6 +32,19 @@ analysis_runs = Table(
     Column("analysis_id", Text, primary_key=True),
     Column("payload", Text, nullable=False),
 )
+run_controls = Table(
+    "run_controls",
+    metadata,
+    Column(
+        "analysis_id",
+        Text,
+        ForeignKey("analysis_runs.analysis_id"),
+        primary_key=True,
+    ),
+    Column("cancel_requested_at", Text, nullable=False),
+    Column("cancel_reason", Text, nullable=False),
+    Column("quiescent_at", Text),
+)
 action_requests = Table(
     "action_requests",
     metadata,
