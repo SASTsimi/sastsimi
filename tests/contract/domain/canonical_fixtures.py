@@ -21,6 +21,8 @@ from .test_inventory import canonical_fields
 BLOCKS = canonical_fields()
 NOW = "2026-09-08T00:00:00Z"
 REF_KINDS = {
+    "analysis_input_ref": "analysis_run_input",
+    "analysis_result_ref": "analysis_run_result",
     "action_decision_ref": "action_decision",
     "verification_result_ref": "verification_result",
     "source_verification_ref": "verification_result",
