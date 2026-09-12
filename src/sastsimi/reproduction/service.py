@@ -397,6 +397,7 @@ class DynamicReproductionService:
                     built_image_digest="sha256:" + "2" * 64,
                     baseline_recipe_ref=None,
                     build_disposition="BUILT",
+                    source_manifest=None,
                     created_at=self.clock.now(),
                 )
             )
