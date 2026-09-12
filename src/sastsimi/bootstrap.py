@@ -1014,6 +1014,7 @@ def build_t10_services(
         records=records,
         artifacts=artifacts,
         metadata_factory=metadata,
+        draft_id_factory=lambda: str(ids.new(RecordId)),
         work_resolver=resolve_work,
         evidence_session_resolver=evidence_session,
     )
