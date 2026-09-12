@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from sastsimi import bootstrap
 from sastsimi.interfaces.cli import analyze as analyze_command
+from sastsimi.interfaces.cli import capability as capability_command
 from sastsimi.interfaces.cli import commands
 from sastsimi.interfaces.cli import report as report_command
 from sastsimi.interfaces.cli import reports as reports_command
@@ -81,6 +82,31 @@ def main(argv: list[str] | None = None) -> int:
     report_export.add_argument(
         "--format", dest="export_format", choices=["markdown"], required=True
     )
+    capability_parser = subparsers.add_parser(
+        "capability",
+        help="probe and approve production capabilities",
+        allow_abbrev=False,
+    )
+    capability_parser.add_argument("--host-id")
+    capability_commands = capability_parser.add_subparsers(
+        dest="capability_command", required=True
+    )
+    capability_probe = capability_commands.add_parser("probe", allow_abbrev=False)
+    capability_probe.add_argument(
+        "kind",
+        choices=["GIT", "PYTHON_AST", "OPENGREP", "DOCKER", "OPENAI_API", "CODEQL"],
+    )
+    capability_probe.add_argument("--model")
+    capability_probe.add_argument("--credential-ref")
+    capability_probe.add_argument("--docker-host")
+    capability_probe.add_argument("--format", choices=["text", "json"])
+    capability_list = capability_commands.add_parser("list", allow_abbrev=False)
+    capability_list.add_argument("--format", choices=["text", "json"])
+    capability_approve = capability_commands.add_parser("approve", allow_abbrev=False)
+    capability_approve.add_argument("probe_id")
+    capability_approve.add_argument("--target-hash", required=True)
+    capability_approve.add_argument("--docker-host")
+    capability_approve.add_argument("--format", choices=["text", "json"])
     try:
         args = parser.parse_args(argv)
         requested_output = getattr(args, "format", None)
@@ -138,6 +164,38 @@ def main(argv: list[str] | None = None) -> int:
                     data={"finding_id": args.finding_id, "path": str(path)},
                 )
             return int(ExitCode.OK)
+        if args.command == "capability":
+            command_name = "capability " + args.capability_command
+            if args.capability_command == "probe":
+                outcome = capability_command.run_probe(
+                    config.data_dir,
+                    kind=args.kind,
+                    model=args.model,
+                    credential_ref=args.credential_ref,
+                    host_id=args.host_id,
+                    docker_host=args.docker_host,
+                )
+            elif args.capability_command == "list":
+                outcome = capability_command.run_list(
+                    config.data_dir,
+                    host_id=args.host_id,
+                )
+            else:
+                outcome = capability_command.run_approve(
+                    config.data_dir,
+                    probe_id=args.probe_id,
+                    target_hash=args.target_hash,
+                    host_id=args.host_id,
+                    docker_host=args.docker_host,
+                )
+            emit_data(
+                output_format,
+                sys.stdout if outcome.code == ExitCode.OK else sys.stderr,
+                command=command_name,
+                data=outcome.data,
+                code=outcome.code,
+            )
+            return int(outcome.code)
         else:
             code = ExitCode.OK if commands.doctor() else ExitCode.CAPABILITY_UNSUPPORTED
         emit_result(
