@@ -15,6 +15,47 @@ from sastsimi.storage import models
 from tests.integration.runtime_support import Harness
 
 
+def test_ensure_workspace_work_replay_is_idempotent(tmp_path: Path) -> None:
+    from sastsimi.runtime.workflow_runner import WorkflowRunner
+
+    h = Harness(tmp_path)
+    execution = h.execution(max_work=10)
+    assert execution.approval_ref is not None
+    h.evidence.identities[execution.approval_ref] = RequesterRole.ORCHESTRATION
+    runtime = build_runtime(tmp_path, None, None, h.clock, h.ids, evidence=h.evidence)
+    scope = h.pin_execution(runtime.budget_registry, execution)
+    state = runtime.budget_registry.current_state("a1")
+    runner = WorkflowRunner(runtime, h.clock, h.ids)
+
+    first = runner.ensure_enqueue(
+        scope,
+        execution.meta,
+        "WORKSPACE_PREP",
+        "ANALYSIS",
+        "a1",
+        execution.approval_ref,
+        stable_key="workspace-prep:a1",
+        inputs=(state.analysis_input_ref,),
+    )
+    second = runner.ensure_enqueue(
+        scope,
+        execution.meta,
+        "WORKSPACE_PREP",
+        "ANALYSIS",
+        "a1",
+        execution.approval_ref,
+        stable_key="workspace-prep:a1",
+        inputs=(state.analysis_input_ref,),
+    )
+
+    assert first == second
+    assert first.status == "READY"
+    assert first.input_refs == (state.analysis_input_ref,)
+    remaining = runtime.budget.remaining(scope, "a1")
+    assert remaining.available_units.work_count == 9
+    assert remaining.active_reservation_count == 0
+
+
 def test_workspace_work_accepts_only_well_formed_run_artifact_input(
     tmp_path: Path,
 ) -> None:

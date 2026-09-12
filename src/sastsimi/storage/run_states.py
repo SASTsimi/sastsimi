@@ -32,6 +32,7 @@ def save_run(
         for name in (
             "purpose",
             "eval_config_refs",
+            "analysis_input_ref",
             "program_id",
             "execution_budget_profile_ref",
         ):

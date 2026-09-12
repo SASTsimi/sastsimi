@@ -6,7 +6,7 @@ from collections import Counter
 from collections.abc import Iterable
 from typing import Protocol, cast
 
-from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
+from sastsimi.contracts.analysis import AnalysisRunState
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.budget import BudgetLedgerEntry, ExecutionBudgetProfile
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -56,7 +56,6 @@ class ResultAggregationPort(Protocol):
 
     def build(
         self,
-        request: AnalysisStartRequest,
         analysis_id: str,
         disposition: RunDisposition,
     ) -> AnalysisRunResult: ...
@@ -98,15 +97,21 @@ class ResultAggregationService:
 
     def build(
         self,
-        request: AnalysisStartRequest,
         analysis_id: str,
         disposition: RunDisposition,
     ) -> AnalysisRunResult:
         if disposition == "BLOCKED":
             raise ValueError("BLOCKED_ANALYSIS_RESULT_FORBIDDEN")
         state = self._states.current_state(analysis_id)
+        run_input = self._states.current_input(analysis_id)
         if str(state.meta.analysis_id) != analysis_id or state.status != "RUNNING":
             raise ValueError("ANALYSIS_RESULT_STATE_MISMATCH")
+        if (
+            reference(run_input) != state.analysis_input_ref
+            or run_input.program_id != state.program_id
+            or run_input.purpose != state.purpose
+        ):
+            raise ValueError("ANALYSIS_INPUT_REFERENCE_MISMATCH")
         current = {
             kind: self._queries.current_records(analysis_id, kind)
             for kinds in RUN_INVENTORY_KINDS.values()
@@ -206,7 +211,7 @@ class ResultAggregationService:
             "meta": meta,
             "purpose": str(state.purpose),
             "repository_url": (
-                workspace.repository_url if workspace else request.repository_ref
+                workspace.repository_url if workspace else run_input.repository_ref
             ),
             "program_id": state.program_id,
             "workspace_id": state.workspace_id,

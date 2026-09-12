@@ -2,7 +2,7 @@
 
 from sqlalchemy import Connection, insert, select
 
-from sastsimi.contracts.analysis import AnalysisRunState
+from sastsimi.contracts.analysis import AnalysisRunInput, AnalysisRunState
 from sastsimi.contracts.budget import (
     BudgetProfileBinding,
     DynamicReproductionLifecycleProfile,
@@ -34,8 +34,24 @@ class BudgetProfileRegistry:
         with self.records.database.engine.connect() as connection:
             return get_run(connection, analysis_id)
 
+    def current_input(self, analysis_id: str) -> AnalysisRunInput:
+        state = self.current_state(analysis_id)
+        value = self.records.get_exact(state.analysis_input_ref)
+        if (
+            not isinstance(value, AnalysisRunInput)
+            or reference(value) != state.analysis_input_ref
+            or str(value.meta.analysis_id) != analysis_id
+            or value.program_id != state.program_id
+            or value.purpose != state.purpose
+        ):
+            raise ValueError("ANALYSIS_INPUT_REFERENCE_MISMATCH")
+        return value
+
     def pin_execution(
-        self, profile: ExecutionBudgetProfile, state: AnalysisRunState | None = None
+        self,
+        profile: ExecutionBudgetProfile,
+        state: AnalysisRunState | None = None,
+        run_input: AnalysisRunInput | None = None,
     ) -> RunStoredDataRef:
         profile = ExecutionBudgetProfile.model_validate(profile)
         if profile.status != ProfileStatus.ACTIVE:
@@ -51,6 +67,13 @@ class BudgetProfileRegistry:
             or state.purpose != profile.purpose
         ):
             raise ValueError("BUDGET requires exact analysis state and purpose")
+        if run_input is not None and (
+            reference(run_input) != state.analysis_input_ref
+            or run_input.meta.analysis_id != state.meta.analysis_id
+            or run_input.program_id != state.program_id
+            or run_input.purpose != state.purpose
+        ):
+            raise ValueError("ANALYSIS_INPUT_REFERENCE_MISMATCH")
         with self.records.database.write() as connection:
             assert profile.approval_ref is not None
             # Governance provenance is opaque and may live outside this store.
@@ -58,6 +81,22 @@ class BudgetProfileRegistry:
             ref = self.records.stage(connection, profile)
             assert isinstance(ref, RunStoredDataRef)
             self.records.publish(connection, ref)
+            if run_input is not None:
+                input_ref = self.records.stage(connection, run_input)
+                if input_ref != state.analysis_input_ref:
+                    raise ValueError("ANALYSIS_INPUT_REFERENCE_MISMATCH")
+                self.records.publish(connection, input_ref)
+            else:
+                persisted_input = self.records.resolve(
+                    connection, state.analysis_input_ref
+                )
+                if (
+                    not isinstance(persisted_input, AnalysisRunInput)
+                    or persisted_input.meta.analysis_id != state.meta.analysis_id
+                    or persisted_input.program_id != state.program_id
+                    or persisted_input.purpose != state.purpose
+                ):
+                    raise ValueError("ANALYSIS_INPUT_REFERENCE_MISMATCH")
             self.pin(connection, ref, str(profile.meta.analysis_id))
             old = connection.execute(
                 select(models.analysis_runs.c.payload).where(
@@ -80,6 +119,8 @@ class BudgetProfileRegistry:
             elif (
                 AnalysisRunState.model_validate_json(old).execution_budget_profile_ref
                 != ref
+                or AnalysisRunState.model_validate_json(old).analysis_input_ref
+                != state.analysis_input_ref
             ):
                 raise ValueError("BUDGET run state mismatch")
             return ref

@@ -635,6 +635,7 @@ def test_parallel_limit_uses_only_current_exact_active_budget_binding() -> None:
             ),
             "purpose": Purpose.PRODUCTION,
             "eval_config_refs": (),
+            "analysis_input_ref": _run_ref("analysis_run_input", "run-input"),
             "program_id": "program-1",
             "execution_budget_profile_ref": execution_ref,
             "budget_binding_ref": binding_ref,

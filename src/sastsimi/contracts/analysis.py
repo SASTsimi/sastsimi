@@ -21,10 +21,27 @@ class AnalysisStartRequest(ContractModel):
     purpose: Purpose
 
 
+class AnalysisRunInput(ScopedRecord):
+    """Immutable, credential-free input pinned to one allocated analysis run."""
+
+    meta: RunMeta
+    repository_ref: NonEmptyStr
+    requested_git_ref: NonEmptyStr
+    program_id: ProgramId
+    purpose: Purpose
+
+    @model_validator(mode="after")
+    def input_shape(self) -> Self:
+        if isinstance(self.meta, RecordMeta):
+            raise ValueError("AnalysisRunInput requires RunMeta")
+        return self
+
+
 class AnalysisRunState(ScopedRecord):
     meta: RunMeta
     purpose: Purpose
     eval_config_refs: tuple[BudgetScopeRef, ...]
+    analysis_input_ref: RunStoredDataRef
     program_id: ProgramId
     execution_budget_profile_ref: RunStoredDataRef
     budget_binding_ref: StoredDataRef | None
@@ -42,6 +59,7 @@ class AnalysisRunState(ScopedRecord):
     def state_shape(self) -> Self:
         if isinstance(self.meta, RecordMeta):
             raise ValueError("AnalysisRunState requires RunMeta")
+        require_record_ref(self.analysis_input_ref, "analysis_run_input")
         if bool(self.eval_config_refs) != (self.purpose == Purpose.EVALUATION):
             raise ValueError("Only EVALUATION requires exact evaluation configuration")
         if (self.status == "RUNNING") != (self.analysis_result_ref is None):

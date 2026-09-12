@@ -6,7 +6,11 @@ from typing import cast
 
 import pytest
 
-from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
+from sastsimi.contracts.analysis import (
+    AnalysisRunInput,
+    AnalysisRunState,
+    AnalysisStartRequest,
+)
 from sastsimi.contracts.budget import (
     BudgetProfileBinding,
     ExecutionBudgetProfile,
@@ -18,6 +22,8 @@ from sastsimi.contracts.evaluation import AnalysisRunResult
 from sastsimi.contracts.records import RecordMeta, RunMeta
 from sastsimi.contracts.refs import (
     BudgetScopeRef,
+    HostConfigurationRef,
+    RecordRef,
     RunStoredDataRef,
     StoredDataRef,
     reference,
@@ -37,7 +43,10 @@ from sastsimi.orchestration.result_aggregation import (
     ResultAggregationPort,
     ResultAggregationService,
 )
-from sastsimi.orchestration.run_initialization import RunInitializationService
+from sastsimi.orchestration.run_initialization import (
+    RunBootstrap,
+    RunInitializationService,
+)
 from sastsimi.ports.dto import StagedArtifact, WorkContext, WorkHandlerResult
 from sastsimi.ports.scheduler import RunOutcome
 
@@ -121,6 +130,16 @@ def _execution() -> ExecutionBudgetProfile:
     )
 
 
+def _run_input(request: AnalysisStartRequest) -> AnalysisRunInput:
+    return AnalysisRunInput(
+        meta=_run_meta("analysis_run_input", "analysis-input"),
+        repository_ref=request.repository_ref,
+        requested_git_ref=request.requested_git_ref,
+        program_id=request.program_id,
+        purpose=request.purpose,
+    )
+
+
 def _binding(execution_ref: RunStoredDataRef) -> BudgetProfileBinding:
     return BudgetProfileBinding(
         meta=_record_meta("budget_profile_binding", "budget-binding"),
@@ -141,7 +160,11 @@ def _binding(execution_ref: RunStoredDataRef) -> BudgetProfileBinding:
     )
 
 
-def _workspace_work(*, status: WorkStatus = WorkStatus.READY) -> WorkExecutionState:
+def _workspace_work(
+    *,
+    status: WorkStatus = WorkStatus.READY,
+    input_refs: tuple[RecordRef, ...] = (),
+) -> WorkExecutionState:
     terminal = status in {
         WorkStatus.SUCCEEDED,
         WorkStatus.PARTIAL,
@@ -161,10 +184,10 @@ def _workspace_work(*, status: WorkStatus = WorkStatus.READY) -> WorkExecutionSt
         last_transition_ref=_run_ref("state_transition", "workspace-ready"),
         last_transition_commit_ref=None,
         active_attempt_id=None,
-        input_hash=content_hash(()),
+        input_hash=content_hash(input_refs),
         dedupe_key="c" * 64,
         trigger_primitive_ref=None,
-        input_refs=(),
+        input_refs=input_refs,
         output_refs=(),
         gap_ids=(),
         error_ids=(),
@@ -173,6 +196,28 @@ def _workspace_work(*, status: WorkStatus = WorkStatus.READY) -> WorkExecutionSt
         started_at=NOW if terminal else None,
         finished_at=NOW if terminal else None,
         elapsed_ms=0,
+    )
+
+
+def _workspace_dependencies() -> tuple[RecordRef, ...]:
+    return (
+        RunStoredDataRef(
+            stored_data_id="workspace-policy",
+            data_kind="artifact",
+            content_hash="d" * 64,
+            analysis_id=ANALYSIS_ID,
+            record_id=None,
+        ),
+        HostConfigurationRef(
+            stored_data_id="git-capability",
+            data_kind="runtime_capability_profile",
+            content_hash="e" * 64,
+            host_id="local-host",
+            publication_analysis_id=ANALYSIS_ID,
+            publication_workspace_id="capability-workspace",
+            publication_commit_id="capability-commit",
+            record_id="git-capability-record",
+        ),
     )
 
 
@@ -215,12 +260,14 @@ class _StateFactory:
         self,
         request: AnalysisStartRequest,
         execution_ref: RunStoredDataRef,
-    ) -> AnalysisRunState:
+    ) -> RunBootstrap:
         self.calls += 1
-        return AnalysisRunState(
+        run_input = _run_input(request)
+        state = AnalysisRunState(
             meta=_run_meta("analysis_run_state", "analysis-state"),
             purpose=request.purpose,
             eval_config_refs=(),
+            analysis_input_ref=cast(RunStoredDataRef, reference(run_input)),
             program_id=request.program_id,
             execution_budget_profile_ref=execution_ref,
             budget_binding_ref=None,
@@ -234,19 +281,27 @@ class _StateFactory:
             finished_at=None,
             elapsed_ms=0,
         )
+        return RunBootstrap(run_input, state)
 
 
 class _BudgetRegistry:
     def __init__(self, events: list[str]) -> None:
         self.events = events
         self.state: AnalysisRunState | None = None
+        self.run_input: AnalysisRunInput | None = None
 
     def pin_execution(
-        self, profile: ExecutionBudgetProfile, state: AnalysisRunState | None = None
+        self,
+        profile: ExecutionBudgetProfile,
+        state: AnalysisRunState | None = None,
+        run_input: AnalysisRunInput | None = None,
     ) -> RunStoredDataRef:
         assert state is not None
+        assert run_input is not None
+        assert reference(run_input) == state.analysis_input_ref
         self.events.append("pin-execution")
         self.state = state
+        self.run_input = run_input
         ref = reference(profile)
         assert isinstance(ref, RunStoredDataRef)
         return ref
@@ -254,6 +309,10 @@ class _BudgetRegistry:
     def current_state(self, analysis_id: str) -> AnalysisRunState:
         assert analysis_id == ANALYSIS_ID and self.state is not None
         return self.state
+
+    def current_input(self, analysis_id: str) -> AnalysisRunInput:
+        assert analysis_id == ANALYSIS_ID and self.run_input is not None
+        return self.run_input
 
     def pin_binding(
         self,
@@ -288,8 +347,9 @@ class _BudgetRegistry:
 
 
 class _ReadyWork:
-    def __init__(self, events: list[str]) -> None:
+    def __init__(self, events: list[str], work_query: _WorkQuery) -> None:
         self.events = events
+        self.work_query = work_query
 
     def enqueue(
         self,
@@ -299,7 +359,7 @@ class _ReadyWork:
         subject_type: str,
         subject_id: str,
         identity: BudgetScopeRef,
-        **_: object,
+        **values: object,
     ) -> WorkExecutionState:
         del identity
         assert scope.data_kind == "execution_budget_profile"
@@ -307,15 +367,33 @@ class _ReadyWork:
         assert work_type == WorkType.WORKSPACE_PREP
         assert subject_type == "ANALYSIS" and subject_id == ANALYSIS_ID
         self.events.append("enqueue-workspace")
-        return _workspace_work()
+        inputs = cast(tuple[RecordRef, ...], values["inputs"])
+        work = _workspace_work(input_refs=inputs)
+        self.work_query.works = (work,)
+        return work
 
     def enqueue_registered(self, *_: object, **__: object) -> WorkExecutionState:
         raise AssertionError("initializer must not use a pre-registered work")
 
+    def ensure_enqueue(self, *args: object, **values: object) -> WorkExecutionState:
+        assert values["stable_key"] == "workspace-prep:" + ANALYSIS_ID
+        return self.enqueue(*args, **values)
+
 
 class _WorkQuery:
     def __init__(self) -> None:
-        self.works = (_workspace_work(status=WorkStatus.SUCCEEDED),)
+        self.works: tuple[WorkExecutionState, ...] = ()
+
+    def mark_workspace_succeeded(self) -> None:
+        self.works = (
+            _workspace_work(
+                status=WorkStatus.SUCCEEDED,
+                input_refs=(
+                    _run_ref("analysis_run_input", "analysis-input"),
+                    *_workspace_dependencies(),
+                ),
+            ),
+        )
 
     def work_for_run(self, analysis_id: str) -> tuple[WorkExecutionState, ...]:
         assert analysis_id == ANALYSIS_ID
@@ -326,7 +404,7 @@ class _Seeder:
     def __init__(self, events: list[str]) -> None:
         self.events = events
 
-    def enqueue_initial(
+    def ensure_initial(
         self,
         request: AnalysisStartRequest,
         state: AnalysisRunState,
@@ -361,13 +439,15 @@ def test_run_initialization_pins_current_budgets_before_each_enqueue_phase() -> 
     profiles = _Profiles(events)
     states = _StateFactory()
     budgets = _BudgetRegistry(events)
+    work_query = _WorkQuery()
     initializer = RunInitializationService(
         profiles=profiles,
         state_factory=states,
         budgets=budgets,
-        ready_work=_ReadyWork(events),
-        work_query=_WorkQuery(),
+        ready_work=_ReadyWork(events, work_query),
+        work_query=work_query,
         workspace_identity_ref=_run_ref("identity", "workspace-identity"),
+        workspace_dependency_refs=_workspace_dependencies(),
         seeder=_Seeder(events),
     )
     request = AnalysisStartRequest(
@@ -390,6 +470,7 @@ def test_run_initialization_pins_current_budgets_before_each_enqueue_phase() -> 
     ]
 
     budgets.make_workspace_ready()
+    work_query.mark_workspace_succeeded()
     bound = initializer.bind_workspace_and_seed(initialized)
 
     assert bound.binding_ref == reference(profiles.binding)
@@ -417,11 +498,13 @@ class _ScriptedScheduler:
         registry: ProductionHandlerRegistry,
         initializer: RunInitializationService,
         budgets: _BudgetRegistry,
+        work_query: _WorkQuery,
         outcomes: list[RunOutcome],
     ) -> None:
         self.registry = registry
         self.initializer = initializer
         self.budgets = budgets
+        self.work_query = work_query
         self.outcomes = outcomes
         self.calls = 0
         self.handler_failures: list[WorkType] = []
@@ -445,6 +528,7 @@ class _ScriptedScheduler:
                 self.handler_failures.append(work_type)
         if self.calls == 1:
             self.budgets.make_workspace_ready()
+            self.work_query.mark_workspace_succeeded()
         return self.outcomes.pop(0)
 
 
@@ -469,11 +553,10 @@ class _CandidateAggregator(ResultAggregationPort):
 
     def build(
         self,
-        request: AnalysisStartRequest,
         analysis_id: str,
         disposition: str,
     ) -> AnalysisRunResult:
-        del request, disposition
+        del disposition
         assert analysis_id == ANALYSIS_ID
         self.calls += 1
         return self.candidate
@@ -546,20 +629,24 @@ def _production_fixture(
     profiles = _Profiles(events)
     states = _StateFactory()
     budgets = _BudgetRegistry(events)
+    work_query = _WorkQuery()
     initializer = RunInitializationService(
         profiles=profiles,
         state_factory=states,
         budgets=budgets,
-        ready_work=_ReadyWork(events),
-        work_query=_WorkQuery(),
+        ready_work=_ReadyWork(events, work_query),
+        work_query=work_query,
         workspace_identity_ref=_run_ref("identity", "workspace-identity"),
+        workspace_dependency_refs=_workspace_dependencies(),
         seeder=_Seeder(events),
     )
     outcomes = [
         RunOutcome(ANALYSIS_ID, "TERMINAL", None),
         RunOutcome(ANALYSIS_ID, final_outcome, None),
     ]
-    scheduler = _ScriptedScheduler(registry, initializer, budgets, outcomes)
+    scheduler = _ScriptedScheduler(
+        registry, initializer, budgets, work_query, outcomes
+    )
     aggregator = _CandidateAggregator(_candidate(candidate_status))
     finalizer = _Finalizer()
     pipeline = ProductionPipeline(
@@ -741,10 +828,21 @@ def test_result_aggregation_uses_exact_current_report_inventory() -> None:
     )
     workspace_ref = reference(workspace)
     assert isinstance(workspace_ref, RunStoredDataRef)
+    run_input = _run_input(
+        AnalysisStartRequest(
+            repository_ref="ignored-after-workspace-ready",
+            requested_git_ref=COMMIT_ID,
+            program_id="program-lane-d",
+            purpose=Purpose.PRODUCTION,
+        )
+    )
+    run_input_ref = reference(run_input)
+    assert isinstance(run_input_ref, RunStoredDataRef)
     state = AnalysisRunState(
         meta=_run_meta("analysis_run_state", "aggregate-state"),
         purpose=Purpose.PRODUCTION,
         eval_config_refs=(),
+        analysis_input_ref=run_input_ref,
         program_id="program-lane-d",
         execution_budget_profile_ref=execution_ref,
         budget_binding_ref=_stored_ref("budget_profile_binding", "binding-current"),
@@ -782,16 +880,8 @@ def test_result_aggregation_uses_exact_current_report_inventory() -> None:
         metadata=_ResultMetadata(),
     )
 
-    result = service.build(
-        AnalysisStartRequest(
-            repository_ref="ignored-after-workspace-ready",
-            requested_git_ref=COMMIT_ID,
-            program_id="program-lane-d",
-            purpose=Purpose.PRODUCTION,
-        ),
-        ANALYSIS_ID,
-        "TERMINAL",
-    )
+    budgets.run_input = run_input
+    result = service.build(ANALYSIS_ID, "TERMINAL")
 
     assert result.status == "COMPLETE"
     assert result.repository_url == workspace.repository_url

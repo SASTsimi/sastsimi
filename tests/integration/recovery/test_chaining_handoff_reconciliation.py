@@ -200,6 +200,13 @@ def _running_analysis() -> AnalysisRunState:
             "meta": meta,
             "purpose": Purpose.PRODUCTION,
             "eval_config_refs": (),
+            "analysis_input_ref": {
+                "stored_data_id": "analysis-input",
+                "data_kind": "analysis_run_input",
+                "content_hash": "a" * 64,
+                "analysis_id": "a1",
+                "record_id": "analysis-input-record",
+            },
             "program_id": "program-1",
             "execution_budget_profile_ref": {
                 "stored_data_id": "budget-profile",
