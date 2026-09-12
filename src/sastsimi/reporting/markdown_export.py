@@ -592,7 +592,11 @@ def _locked_windows_directory(
         )
     descriptor: int | None = None
     try:
-        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+        open_osfhandle = cast(
+            Callable[[int, int], int],
+            _platform_attribute(msvcrt, "open_osfhandle"),
+        )
+        descriptor = open_osfhandle(handle, os.O_RDONLY)
         information = os.fstat(descriptor)
         if (
             not stat.S_ISDIR(information.st_mode)

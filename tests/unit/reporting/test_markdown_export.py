@@ -2,10 +2,12 @@
 
 import os
 import subprocess
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -443,7 +445,13 @@ def test_windows_directory_lock_rejects_competing_write_handle(
 
     directory = tmp_path / "locked"
     directory.mkdir()
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    load_library = cast(
+        Callable[..., object], markdown_export._platform_attribute(ctypes, "WinDLL")
+    )
+    kernel32 = cast(
+        markdown_export._Kernel32,
+        load_library("kernel32", use_last_error=True),
+    )
     create_file = kernel32.CreateFileW
     create_file.argtypes = [
         ctypes.c_wchar_p,
@@ -459,9 +467,17 @@ def test_windows_directory_lock_rejects_competing_write_handle(
     close_handle.argtypes = [ctypes.c_void_p]
     close_handle.restype = ctypes.c_int
     invalid_handle = ctypes.c_void_p(-1).value
+    set_last_error = cast(
+        Callable[[int], None],
+        markdown_export._platform_attribute(ctypes, "set_last_error"),
+    )
+    get_last_error = cast(
+        Callable[[], int],
+        markdown_export._platform_attribute(ctypes, "get_last_error"),
+    )
 
     with markdown_export._locked_windows_directory(directory):
-        ctypes.set_last_error(0)
+        set_last_error(0)
         competing_handle = create_file(
             str(directory),
             0x40000000,  # GENERIC_WRITE
@@ -471,7 +487,7 @@ def test_windows_directory_lock_rejects_competing_write_handle(
             0x02000000 | 0x00200000,
             None,
         )
-        error = ctypes.get_last_error()
+        error = get_last_error()
         if competing_handle not in (None, invalid_handle):
             close_handle(competing_handle)
 
@@ -494,7 +510,12 @@ def test_markdown_export_rejects_data_dir_swap_before_directory_lock(
     victim.write_text("victim", encoding="utf-8")
     real_write = markdown_export._atomic_write_report
 
-    def racing_write(*args: object, **kwargs: object) -> None:
+    def racing_write(
+        path: Path,
+        analysis_id: str,
+        data: bytes,
+        data_dir_identity: tuple[int, int, int] | None,
+    ) -> None:
         data_dir.rename(backup)
         if os.name == "nt":
             subprocess.run(
@@ -504,7 +525,7 @@ def test_markdown_export_rejects_data_dir_swap_before_directory_lock(
             )
         else:
             data_dir.symlink_to(outside, target_is_directory=True)
-        real_write(*args, **kwargs)
+        real_write(path, analysis_id, data, data_dir_identity)
 
     monkeypatch.setattr(markdown_export, "_atomic_write_report", racing_write)
     try:
@@ -533,11 +554,16 @@ def test_markdown_export_rejects_replaced_data_dir_identity(
     victim = data_dir / "reports" / report.analysis_id / f"{report.finding_id}.md"
     real_write = markdown_export._atomic_write_report
 
-    def racing_write(*args: object, **kwargs: object) -> None:
+    def racing_write(
+        path: Path,
+        analysis_id: str,
+        data: bytes,
+        data_dir_identity: tuple[int, int, int] | None,
+    ) -> None:
         data_dir.rename(backup)
         victim.parent.mkdir(parents=True)
         victim.write_text("victim", encoding="utf-8")
-        real_write(*args, **kwargs)
+        real_write(path, analysis_id, data, data_dir_identity)
 
     monkeypatch.setattr(markdown_export, "_atomic_write_report", racing_write)
 
