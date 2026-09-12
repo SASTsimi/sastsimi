@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import hashlib
 import io
+import json
 import os
 import re
 import stat
@@ -16,7 +18,11 @@ from typing import Literal, Protocol, runtime_checkable
 from uuid import uuid4
 
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
-from sastsimi.contracts.dynamic import EnvironmentRecipe, EnvironmentRequirements
+from sastsimi.contracts.dynamic import (
+    EnvironmentRecipe,
+    EnvironmentRecipeSourceManifest,
+    EnvironmentRequirements,
+)
 from sastsimi.contracts.ids import LogicalRecordId, RecordId, StoredDataId
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
@@ -49,11 +55,16 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_RUNTIME_VERSION = re.compile(r"^[0-9]+(?:\.[0-9]+){0,2}$")
 _SECRET_FILE_NAMES = frozenset(
     {
+        ".npmrc",
+        ".pypirc",
+        ".netrc",
         "credentials.json",
+        "gradle.properties",
         "id_dsa",
         "id_ed25519",
         "id_rsa",
         "service-account.json",
+        "settings.xml",
     }
 )
 
@@ -100,6 +111,7 @@ class PreparedRecipeSource:
     dockerfile_path: str = "Dockerfile"
     context_archive: bytes | None = None
     context_digest: str | None = None
+    source_manifest: EnvironmentRecipeSourceManifest | None = None
 
     def __post_init__(self) -> None:
         content = EnvironmentRecipeStore._validated_dockerfile(
@@ -121,6 +133,7 @@ class PreparedRecipeSource:
                 or self.repository_profile_ref is not None
                 or self.dockerfile_origin != "REPOSITORY"
                 or self.dockerfile_path != "Dockerfile"
+                or self.source_manifest is not None
             ):
                 raise ValueError("RECIPE_CONTEXT_BINDING_INVALID")
         elif (
@@ -137,8 +150,25 @@ class PreparedRecipeSource:
             != {ref.content_hash for ref in self.source_refs[1:]}
             or self.dockerfile_path.startswith("/")
             or ".." in PurePosixPath(self.dockerfile_path).parts
+            or self.source_manifest is None
         ):
             raise ValueError("RECIPE_CONTEXT_BINDING_INVALID")
+        if self.source_manifest is not None and (
+            self.source_manifest.repository_profile_ref != self.repository_profile_ref
+            or self.source_manifest.dockerfile_digest != self.dockerfile_digest
+            or self.source_manifest.context_digest != self.context_digest
+            or self.source_manifest.dockerfile_path != self.dockerfile_path
+            or self.source_manifest.dockerfile_origin != self.dockerfile_origin
+            or set(
+                (
+                    self.source_manifest.repository_profile_ref,
+                    self.source_manifest.dockerfile_ref,
+                    self.source_manifest.build_context_ref,
+                )
+            )
+            != set(self.source_refs)
+        ):
+            raise ValueError("RECIPE_SOURCE_MANIFEST_MISMATCH")
         if (
             self.recipe_source_ref.workspace_id != self.meta.workspace_id
             or self.recipe_source_ref.commit_id != self.meta.commit_id
@@ -248,6 +278,7 @@ class EnvironmentRecipeStore:
                     built_image_digest=baseline.built_image_digest,
                     baseline_recipe_ref=self._exact_ref(baseline),
                     build_disposition="REUSED",
+                    source_manifest=baseline.source_manifest,
                     created_at=source.meta.created_at,
                 )
                 return recipe
@@ -297,6 +328,7 @@ class EnvironmentRecipeStore:
                 built_image_digest=built_digest,
                 baseline_recipe_ref=None,
                 build_disposition="BUILT",
+                source_manifest=source.source_manifest,
                 created_at=source.meta.created_at,
             )
             self._baselines[key] = recipe
@@ -324,7 +356,52 @@ class EnvironmentRecipeStore:
             built_image_digest=baseline.built_image_digest,
             baseline_recipe_ref=self._exact_ref(baseline),
             build_disposition="REUSED",
+            source_manifest=baseline.source_manifest,
             created_at=meta.created_at,
+        )
+
+    def restore_source(
+        self,
+        recipe: EnvironmentRecipe,
+        *,
+        workspace_root: Path,
+    ) -> PreparedRecipeSource:
+        """Restore exact build inputs from a persisted recipe after restart."""
+
+        manifest = recipe.source_manifest
+        if manifest is None or self._artifacts is None:
+            raise ValueError("RECIPE_SOURCE_MANIFEST_REQUIRED")
+        with self._artifacts.open_verified(manifest.dockerfile_ref) as stream:
+            dockerfile = stream.read()
+        with self._artifacts.open_verified(manifest.build_context_ref) as stream:
+            context_archive = stream.read()
+        if (
+            hashlib.sha256(dockerfile).hexdigest() != manifest.dockerfile_digest
+            or hashlib.sha256(context_archive).hexdigest() != manifest.context_digest
+        ):
+            raise ValueError("RECIPE_SOURCE_MANIFEST_MISMATCH")
+        self._replace_archive_file(
+            context_archive,
+            manifest.dockerfile_path,
+            dockerfile,
+        )
+        return PreparedRecipeSource(
+            workspace_root=workspace_root.resolve(strict=False),
+            request_ref=recipe.request_ref,
+            requirements_ref=recipe.environment_requirements_ref,
+            meta=recipe.meta,
+            recipe_source_ref=recipe.recipe_source_ref,
+            source_refs=recipe.source_refs,
+            source_digest=recipe.recipe_source_ref.content_hash,
+            dockerfile=dockerfile,
+            dockerfile_digest=manifest.dockerfile_digest,
+            base_image=self._base_image(dockerfile.decode("utf-8")),
+            repository_profile_ref=manifest.repository_profile_ref,
+            dockerfile_origin=manifest.dockerfile_origin,
+            dockerfile_path=manifest.dockerfile_path,
+            context_archive=context_archive,
+            context_digest=manifest.context_digest,
+            source_manifest=manifest,
         )
 
     @staticmethod
@@ -562,20 +639,35 @@ class EnvironmentRecipeStore:
         ):
             raise ValueError("REPOSITORY_PROFILE_SCOPE_MISMATCH")
 
-        entries: dict[str, tuple[bytes, int]] = {}
+        all_entries: dict[str, tuple[bytes, int]] = {}
         source_refs: list[StoredDataRef] = [profile_ref]
         total = 0
         for item in repository_profile.tracked_files:
-            if self._looks_secret(item.git_path):
-                raise ValueError("REPOSITORY_SECRET_FILE_DENIED")
             raw = self._read_profile_file(root, item)
             total += len(raw)
             if total > _MAX_BUILD_CONTEXT_BYTES:
                 raise ValueError("RECIPE_BUILD_CONTEXT_LIMIT_EXCEEDED")
-            entries[item.git_path] = (
+            all_entries[item.git_path] = (
                 raw,
                 0o755 if item.git_mode == "100755" else 0o644,
             )
+
+        ignore_patterns = self._dockerignore_patterns(all_entries)
+        dockerfiles = {
+            item.path
+            for item in repository_profile.config_files
+            if item.kind == "DOCKERFILE"
+        }
+        entries: dict[str, tuple[bytes, int]] = {}
+        for path, value in all_entries.items():
+            ignored = path not in dockerfiles and self._dockerignored(
+                path, ignore_patterns
+            )
+            if ignored:
+                continue
+            if self._looks_secret(path):
+                raise ValueError("REPOSITORY_SECRET_FILE_DENIED")
+            entries[path] = value
 
         dockerfile_path, dockerfile, origin = self._select_dockerfile(
             entries,
@@ -620,6 +712,15 @@ class EnvironmentRecipeStore:
             commit_id=meta.commit_id,
             record_id=None,
         )
+        source_manifest = EnvironmentRecipeSourceManifest(
+            repository_profile_ref=profile_ref,
+            dockerfile_ref=dockerfile_ref,
+            build_context_ref=context_ref,
+            dockerfile_path=dockerfile_path,
+            dockerfile_origin=origin,
+            dockerfile_digest=hashlib.sha256(dockerfile).hexdigest(),
+            context_digest=hashlib.sha256(archive).hexdigest(),
+        )
         return PreparedRecipeSource(
             workspace_root=root,
             request_ref=request_ref,
@@ -636,17 +737,67 @@ class EnvironmentRecipeStore:
             dockerfile_path=dockerfile_path,
             context_archive=archive,
             context_digest=hashlib.sha256(archive).hexdigest(),
+            source_manifest=source_manifest,
         )
 
     @staticmethod
     def _looks_secret(path: str) -> bool:
         name = PurePosixPath(path).name.casefold()
+        normalized = path.casefold()
         return (
             name == ".env"
             or name.startswith(".env.")
             or name in _SECRET_FILE_NAMES
             or PurePosixPath(name).suffix in {".key", ".p12", ".pem", ".pfx"}
+            or normalized == ".aws/credentials"
+            or normalized == ".docker/config.json"
         )
+
+    @staticmethod
+    def _dockerignore_patterns(
+        entries: Mapping[str, tuple[bytes, int]],
+    ) -> tuple[str, ...]:
+        value = entries.get(".dockerignore")
+        if value is None:
+            return ()
+        try:
+            content = value[0].decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("DOCKERIGNORE_UNSUPPORTED") from error
+        patterns: list[str] = []
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if (
+                line.startswith("!")
+                or "\\" in line
+                or "\0" in line
+                or ".." in PurePosixPath(line.lstrip("/")).parts
+                or "**" in line
+                or any(character in line for character in "?[]")
+            ):
+                raise ValueError("DOCKERIGNORE_UNSUPPORTED")
+            normalized = line.removeprefix("/").removeprefix("./")
+            if not normalized:
+                raise ValueError("DOCKERIGNORE_UNSUPPORTED")
+            patterns.append(normalized)
+        return tuple(patterns)
+
+    @staticmethod
+    def _dockerignored(path: str, patterns: tuple[str, ...]) -> bool:
+        parts = PurePosixPath(path).parts
+        for pattern in patterns:
+            if pattern.endswith("/"):
+                prefix = pattern.rstrip("/")
+                if path == prefix or path.startswith(prefix + "/"):
+                    return True
+            elif "/" in pattern:
+                if fnmatch.fnmatchcase(path, pattern):
+                    return True
+            elif any(fnmatch.fnmatchcase(part, pattern) for part in parts):
+                return True
+        return False
 
     @staticmethod
     def _read_profile_file(root: Path, item: RepositoryTrackedFile) -> bytes:
@@ -757,13 +908,78 @@ class EnvironmentRecipeStore:
             if family == "PYTHON"
             else f"node:{version or '22'}-slim"
         )
+        install = cls._dependency_install(entries, profile, family)
         dockerfile = (
             f"FROM {image}\n"
             "WORKDIR /workspace\n"
             "COPY . /workspace\n"
+            f"{install}"
             'CMD ["sleep", "infinity"]\n'
         ).encode()
         return "Dockerfile", dockerfile, "GENERATED"
+
+    @staticmethod
+    def _dependency_install(
+        entries: Mapping[str, tuple[bytes, int]],
+        profile: RepositoryProfile,
+        family: Literal["PYTHON", "NODE"],
+    ) -> str:
+        def run(arguments: tuple[str, ...]) -> str:
+            return "RUN " + json.dumps(arguments) + "\n"
+
+        if family == "PYTHON":
+            requirement_paths = tuple(
+                item.path
+                for item in profile.config_files
+                if item.kind == "REQUIREMENTS" and item.path in entries
+            )
+            pyproject_paths = tuple(
+                item.path
+                for item in profile.config_files
+                if item.kind == "PYPROJECT" and item.path in entries
+            )
+            if len(requirement_paths) > 1 or (
+                not requirement_paths and len(pyproject_paths) > 1
+            ):
+                raise ValueError("DEPENDENCY_FILE_SELECTION_CONFIRMATION_REQUIRED")
+            if requirement_paths:
+                return run(
+                    (
+                        "python",
+                        "-m",
+                        "pip",
+                        "install",
+                        "--no-cache-dir",
+                        "-r",
+                        requirement_paths[0],
+                    )
+                )
+            if pyproject_paths:
+                project_root = str(PurePosixPath(pyproject_paths[0]).parent)
+                return run(
+                    (
+                        "python",
+                        "-m",
+                        "pip",
+                        "install",
+                        "--no-cache-dir",
+                        "." if project_root == "." else project_root,
+                    )
+                )
+            raise ValueError("DEPENDENCY_FILE_CONFIRMATION_REQUIRED")
+
+        package_paths = tuple(
+            item.path
+            for item in profile.config_files
+            if item.kind == "PACKAGE_JSON" and item.path in entries
+        )
+        if len(package_paths) != 1:
+            raise ValueError("DEPENDENCY_FILE_SELECTION_CONFIRMATION_REQUIRED")
+        package_root = str(PurePosixPath(package_paths[0]).parent)
+        prefix = () if package_root == "." else ("--prefix", package_root)
+        lock_path = str(PurePosixPath(package_root) / "package-lock.json")
+        command = "ci" if lock_path in entries else "install"
+        return run(("npm", command, *prefix, "--ignore-scripts"))
 
     @staticmethod
     def _runtime_version(

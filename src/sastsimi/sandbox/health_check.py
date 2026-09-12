@@ -45,11 +45,20 @@ class SandboxHealthChecker:
         for item in requirements.items:
             expected = {value for value in (item.expected, *item.alternatives) if value}
             if item.kind == "HEALTH_CHECK":
-                actual = (
-                    "healthy"
-                    if state.health_status in {None, "healthy"}
-                    else str(state.health_status)
-                )
+                if state.health_status is None:
+                    checks.append(
+                        EnvironmentCheck(
+                            requirement_id=item.requirement_id,
+                            status="NOT_CHECKED",
+                            actual=None,
+                            actual_ref=None,
+                            difference="The image declares no Docker health check",
+                            evidence_refs=(evidence_ref,),
+                            check_result_ref=None,
+                        )
+                    )
+                    continue
+                actual = str(state.health_status)
                 status: Literal["MATCH", "MISMATCH"] = (
                     "MATCH" if not expected or actual in expected else "MISMATCH"
                 )

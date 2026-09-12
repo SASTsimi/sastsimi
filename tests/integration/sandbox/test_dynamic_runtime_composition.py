@@ -179,6 +179,63 @@ async def test_t11_composition_runs_only_exact_current_dynamic_request() -> None
     assert executor.calls == 1
 
 
+@pytest.mark.asyncio
+async def test_t11_reconciles_crash_resources_before_production_execution() -> None:
+    request = _request()
+    request_ref = cast(StoredDataRef, reference(request))
+    work = _work(request_ref)
+    executor = _Executor(_output("dynamic_reproduction_result"))
+    events: list[str] = []
+
+    async def recover() -> tuple[str, ...]:
+        events.append("recover")
+        return ()
+
+    services = T11Services(
+        execute_dynamic=executor,
+        current_process=lambda _: _process(request),
+        completion=cast(VerificationCompletionCoordinator, object()),
+        recover_owned_resources=recover,
+    )
+
+    await services.execute(
+        work=work,
+        request=request,
+        request_ref=request_ref,
+        authorizations=cast(DynamicStageAuthorizations, object()),
+    )
+
+    assert events == ["recover"]
+    assert executor.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_t11_blocks_execution_when_crash_cleanup_is_unresolved() -> None:
+    request = _request()
+    request_ref = cast(StoredDataRef, reference(request))
+    executor = _Executor(_output("dynamic_reproduction_result"))
+
+    async def recover() -> tuple[str, ...]:
+        return ("owned-container-leftover",)
+
+    services = T11Services(
+        execute_dynamic=executor,
+        current_process=lambda _: _process(request),
+        completion=cast(VerificationCompletionCoordinator, object()),
+        recover_owned_resources=recover,
+    )
+
+    with pytest.raises(ValueError, match="OWNED_RESOURCE_RECONCILIATION_REQUIRED"):
+        await services.execute(
+            work=_work(request_ref),
+            request=request,
+            request_ref=request_ref,
+            authorizations=cast(DynamicStageAuthorizations, object()),
+        )
+
+    assert executor.calls == 0
+
+
 def test_dynamic_prompt_seeds_are_exact_and_only_execute_can_use_tools() -> None:
     root = Path(__file__).resolve().parents[3]
     assert {item.task_kind for item in DYNAMIC_REPRODUCTION_PROMPTS} == {
@@ -214,6 +271,7 @@ def test_production_bootstrap_uses_real_sandbox_components() -> None:
     assert "completion=VerificationCompletionCoordinator(" in source
     assert "verification=verification" in source
     assert "repository_profile=repository_profile" in source
+    assert "require_baked_source=True" in source
     assert "repository_profile=self._repository_profile" in inspect.getsource(
         ProductionDynamicWorkflow.open_session
     )

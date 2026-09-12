@@ -12,6 +12,7 @@ from sastsimi.contracts.dynamic import (
     CleanupResult,
     DynamicReproductionRequest,
     EnvironmentRecipe,
+    EnvironmentRecipeSourceManifest,
     EnvironmentRequirements,
     ReproductionPlan,
     SandboxEnvironment,
@@ -102,6 +103,9 @@ class PreparedRecipeSourceView(Protocol):
 
     @property
     def context_digest(self) -> str | None: ...
+
+    @property
+    def source_manifest(self) -> EnvironmentRecipeSourceManifest | None: ...
 
 
 @dataclass(frozen=True)
