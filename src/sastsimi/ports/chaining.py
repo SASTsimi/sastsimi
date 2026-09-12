@@ -16,6 +16,7 @@ from sastsimi.contracts.refs import (
     BudgetScopeRef,
     RecordRef,
     StoredDataRef,
+    reference,
     require_record_ref,
 )
 from sastsimi.contracts.work import WorkExecutionState
@@ -255,6 +256,21 @@ class ChainingCohortRegistration:
         for member in self.members:
             if member.work.status != self.status:
                 raise ValueError("CHAINING_COHORT_PARTIAL_VISIBILITY")
+            work_ref = reference(member.work)
+            if (
+                not isinstance(work_ref, StoredDataRef)
+                or member.pool.trigger_work_ref != work_ref
+                or member.work.trigger_primitive_ref
+                != member.pool.universe.trigger_primitive_ref
+                or any(
+                    value not in member.work.input_refs
+                    for value in (
+                        *member.pool.universe.index_refs,
+                        *member.pool.universe.considered_primitive_refs,
+                    )
+                )
+            ):
+                raise ValueError("CHAINING_COHORT_POOL_MISMATCH")
 
 
 class ChainingCohortPort(Protocol):

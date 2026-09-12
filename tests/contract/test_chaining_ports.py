@@ -8,7 +8,8 @@ import pytest
 
 import sastsimi.ports as public_ports
 from sastsimi.contracts.llm import LLMInvocationRequest, LLMInvocationResult
-from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.chaining import (
     ChainedHypothesisContent,
     ChainingAgentInput,
@@ -16,7 +17,9 @@ from sastsimi.ports.chaining import (
     ChainingAgentOutput,
     ChainingAgentPort,
     ChainingChildHandoffPort,
+    ChainingCohortMember,
     ChainingCohortPort,
+    ChainingCohortRegistration,
     ChainingComparison,
     ChainingDecision,
     ChainingEvidence,
@@ -36,7 +39,8 @@ from sastsimi.ports.chaining import (
     TruePrimitiveAdmissionClosure,
 )
 from sastsimi.ports.llm_invocation import PersistedLLMInvocation
-from tests.contract.domain.fixtures import ref
+from tests.contract.domain.canonical_fixtures import make
+from tests.contract.domain.fixtures import ref, wire
 
 
 def _ref(kind: str, *, suffix: str = "1") -> StoredDataRef:
@@ -111,6 +115,85 @@ def test_pool_history_preserves_the_exact_work_time_universe() -> None:
         "current"
         not in inspect.signature(ChainingPoolHistoryPort.get_for_trigger).parameters
     )
+
+
+def _pending_chaining_work(trigger: StoredDataRef) -> WorkExecutionState:
+    index_ref = _ref("primitive_index_state")
+    work_data = make("WorkExecutionState")
+    work_data["meta"] |= {"attempt_id": None, "hypothesis_id": None}
+    work_data |= {
+        "work_type": "CHAINING",
+        "subject_type": "ANALYSIS",
+        "subject_id": "a1",
+        "trigger_primitive_ref": trigger.model_dump(mode="json"),
+        "input_refs": [
+            trigger.model_dump(mode="json"),
+            index_ref.model_dump(mode="json"),
+        ],
+        "dedupe_key": "b" * 64,
+    }
+    return wire(WorkExecutionState, work_data)
+
+
+def test_cohort_rejects_a_pool_not_bound_to_its_exact_pending_work() -> None:
+    trigger = _ref("primitive", suffix="trigger")
+    work = _pending_chaining_work(trigger)
+    work_ref = reference(work)
+    assert isinstance(work_ref, StoredDataRef)
+    universe = PinnedChainingUniverse(
+        trigger_primitive_ref=trigger,
+        index_refs=(_ref("primitive_index_state"),),
+        considered_primitive_refs=(trigger,),
+    )
+    wrong_pool = ChainingPoolHistory(
+        trigger_work_ref=_ref("work_execution_state", suffix="wrong"),
+        universe=universe,
+    )
+
+    registration = ChainingCohortRegistration(
+        source_update_ref=_ref("transition_commit"),
+        members=(
+            ChainingCohortMember(
+                work=work,
+                pool=ChainingPoolHistory(
+                    trigger_work_ref=work_ref,
+                    universe=universe,
+                ),
+            ),
+        ),
+        status="PENDING",
+    )
+    assert registration.members[0].pool.trigger_work_ref == work_ref
+
+    with pytest.raises(ValueError, match="CHAINING_COHORT_POOL_MISMATCH"):
+        ChainingCohortRegistration(
+            source_update_ref=_ref("transition_commit"),
+            members=(ChainingCohortMember(work=work, pool=wrong_pool),),
+            status="PENDING",
+        )
+
+
+def test_cohort_rejects_a_pool_item_that_was_not_pinned_by_the_work() -> None:
+    trigger = _ref("primitive", suffix="trigger")
+    work = _pending_chaining_work(trigger)
+    work_ref = reference(work)
+    assert isinstance(work_ref, StoredDataRef)
+    injected = _ref("primitive", suffix="injected")
+    pool = ChainingPoolHistory(
+        trigger_work_ref=work_ref,
+        universe=PinnedChainingUniverse(
+            trigger_primitive_ref=trigger,
+            index_refs=(_ref("primitive_index_state"),),
+            considered_primitive_refs=(trigger, injected),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="CHAINING_COHORT_POOL_MISMATCH"):
+        ChainingCohortRegistration(
+            source_update_ref=_ref("transition_commit"),
+            members=(ChainingCohortMember(work=work, pool=pool),),
+            status="PENDING",
+        )
 
 
 def test_agent_boundary_is_content_only_and_uses_prompt_local_keys() -> None:
