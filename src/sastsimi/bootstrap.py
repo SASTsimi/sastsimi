@@ -746,6 +746,16 @@ def build_report_markdown_service(data_dir: Path) -> object:
     return ReportMarkdownService(data_dir, SQLiteCurrentReportSource(data_dir))
 
 
+def build_production_query(data_dir: Path) -> object:
+    """Build the read-only production status/result projection."""
+
+    from sastsimi.config.runtime_paths import RuntimePaths
+    from sastsimi.storage.database import Database
+    from sastsimi.storage.production_query import SQLiteProductionQuery
+
+    return SQLiteProductionQuery(Database(RuntimePaths(data_dir).database))
+
+
 def load_fake_progress(data_dir: Path) -> dict[str, object]:
     """Read only durable fake-run progress; never synthesize a terminal result."""
     import json

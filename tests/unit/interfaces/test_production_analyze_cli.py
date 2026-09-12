@@ -167,9 +167,15 @@ def test_production_status_is_separate_from_demo_results(
     assert output["data"]["waiting_for"] == ["INPUT"]
 
 
-def test_production_results_without_query_composition_fails_closed(
+def test_production_results_without_available_query_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    def unavailable(_data_dir: Path) -> object:
+        raise analyze_command.ProductionAnalyzeUnavailable
+
+    monkeypatch.setattr(bootstrap, "build_production_query", unavailable)
+
     assert main(["results", "analysis-1", "--format", "json"]) == 4
 
     output = capsys.readouterr()

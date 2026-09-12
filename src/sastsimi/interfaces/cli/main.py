@@ -5,7 +5,7 @@ import asyncio
 import re
 import sys
 from pathlib import Path
-from typing import NoReturn
+from typing import NoReturn, cast
 from uuid import uuid4
 
 from sastsimi import bootstrap
@@ -164,14 +164,20 @@ def main(
         if args.command == "status":
             command_name = "status"
             if production_query is None:
-                raise analyze_command.ProductionAnalyzeUnavailable
+                production_query = cast(
+                    analyze_command.ProductionQueryEntrypoint,
+                    bootstrap.build_production_query(config.data_dir),
+                )
             data = status_command.run(production_query, args.analysis_id)
             emit_data(output_format, sys.stdout, command=command_name, data=data)
             return int(ExitCode.OK)
         if args.command == "results":
             command_name = "results"
             if production_query is None:
-                raise analyze_command.ProductionAnalyzeUnavailable
+                production_query = cast(
+                    analyze_command.ProductionQueryEntrypoint,
+                    bootstrap.build_production_query(config.data_dir),
+                )
             data = result_command.run(
                 production_query,
                 args.analysis_id,
