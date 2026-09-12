@@ -33,6 +33,7 @@ from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
 from sastsimi.ports.llm_provider import LLMProviderAdapter
 from sastsimi.ports.scheduler import ExternalCancellationPort, SchedulerStorePort
+from sastsimi.ports.trusted_evidence import TrustedEvidencePort
 from sastsimi.ports.work_handler import WorkHandler
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.work_service import HandlerFailureRecorder, WorkService
@@ -113,6 +114,7 @@ class ResolvedProductionCapabilities:
     workspace_dependency_refs: tuple[RecordRef, ...]
     handler_failure_recorder: HandlerFailureRecorder
     install: ProductionFeatureInstaller
+    configuration_evidence: TrustedEvidencePort
 
 
 class ProductionCapabilityResolver(Protocol):
@@ -231,7 +233,13 @@ class ConcreteProductionApplicationFactory:
             clock=clock,
             ids=ids,
         )
-        evidence = ProductionTrustedEvidence(profiles)
+        from sastsimi.orchestration.production_capabilities import (
+            CompositeProductionTrustedEvidence,
+        )
+
+        evidence = CompositeProductionTrustedEvidence(
+            ProductionTrustedEvidence(profiles), resolved.configuration_evidence
+        )
         identities = MappingProxyType(
             {role: profiles.identity_ref(role) for role in RequesterRole}
         )
@@ -362,6 +370,20 @@ def _require_resolved_capabilities(
         )
     if not callable(resolved.install):
         raise ProductionCapabilityUnavailable("PRODUCTION_FEATURE_INSTALLER_REQUIRED")
+    required_evidence_methods = (
+        "capability_approval_authorized",
+        "static_tool_configuration_approved",
+        "playbook_configuration_approved",
+        "llm_configuration_approved",
+        "sandbox_configuration_approved",
+    )
+    if any(
+        not callable(getattr(resolved.configuration_evidence, method, None))
+        for method in required_evidence_methods
+    ):
+        raise ProductionCapabilityUnavailable(
+            "PRODUCTION_CONFIGURATION_EVIDENCE_REQUIRED"
+        )
     for (provider_ref, model), adapter in resolved.llm_adapters.items():
         if (
             not isinstance(provider_ref, StoredDataRef)
