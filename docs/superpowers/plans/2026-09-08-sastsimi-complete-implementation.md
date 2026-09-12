@@ -504,7 +504,7 @@ Implementation record: [T04 core contracts](implementation/04-core-contracts.md)
 - [ ] T13 병합 후 실제 public API를 기준으로 모든 `WorkType`의 production handler가 하나씩 있고, 이미 claim된 `WorkContext`만 소비하며 자식 work를 READY로만 등록하는지 연속으로 확정한다.
 - [ ] barrier를 사용해 duplicate claim과 늦은 결과 race를 재현한다.
 - [ ] `ExecutionBudgetProfile.max_parallel_work`를 `DYNAMIC_REPRO`를 포함한 모든 work type의 **분석 전체 단일 동시 실행 한도**로 원자적 claim transaction에서 검사한다. Provider의 `max_parallel_calls`와 Pro·Con의 `max_parallel_evidence_calls`는 그 안의 추가 한도로 계속 적용하며, 별도 Sandbox 동시성 한도는 만들지 않는다.
-- [ ] 취소 latch를 work 등록·READY enqueue·claim·결과 commit·run finalization의 같은 신뢰 transaction 경계에서 다시 읽고, 사용하지 않은 unclaimed reservation만 release하며 실제 사용·불확실 usage는 ledger에 보존한다.
+- [ ] 취소 latch를 work 등록·READY enqueue·claim·결과 commit·run finalization의 같은 신뢰 transaction 경계에서 다시 읽는다. 확인된 실제 사용만 ledger에 commit하고, claimed 상태이거나 사용 여부가 불확실한 reservation은 release·commit하지 않고 `RESERVED`로 보존해 recovery가 해소하도록 하며 unavailable usage 사유를 기록한다.
 - [ ] 프로세스 중단 뒤 PREPARED·lease·current pointer와 exact 외부 실행 target을 복구하고, 결과가 불확실한 Provider·Sandbox 작업을 자동으로 다시 보내지 않는다.
 - [ ] 한 가설 실패가 다른 가설을 verdict 없이 취소하지 않는지 검사한다.
 - [ ] production CLI가 fake pipeline이 아닌 완전한 handler registry·worker pool·result aggregator·finalizer를 통해 하나의 정상 분석을 완주하는지 검사한다.
