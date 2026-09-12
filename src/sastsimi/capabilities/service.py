@@ -934,6 +934,11 @@ class _CapabilityProbeEngine:
         cap_drop = host.get("CapDrop")
         security_options = host.get("SecurityOpt")
         tmpfs = host.get("Tmpfs")
+        tmp_options = (
+            frozenset(str(tmpfs["/tmp"]).split(","))
+            if isinstance(tmpfs, dict) and set(tmpfs) == {"/tmp"}
+            else frozenset()
+        )
         safe_mounts = mounts == [] or (
             isinstance(mounts, list)
             and all(
@@ -961,8 +966,8 @@ class _CapabilityProbeEngine:
             and host.get("Binds") in (None, [])
             and host.get("PidMode") in (None, "")
             and host.get("IpcMode") in (None, "", "private")
-            and isinstance(tmpfs, dict)
-            and "/tmp" in tmpfs
+            and tmp_options
+            == frozenset({"rw", "noexec", "nosuid", "nodev", "size=16m"})
             and safe_mounts
             and isinstance(health, dict)
             and health.get("Status") == "healthy"

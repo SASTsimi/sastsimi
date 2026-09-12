@@ -41,12 +41,14 @@ class FakeCommands:
             "sastsimi.probe.javascript",
         ),
         docker_boundary_safe: bool = True,
+        docker_tmpfs: str = "rw,noexec,nosuid,nodev,size=16m",
     ) -> None:
         self.docker_daemon = docker_daemon
         self.fail_operation = fail_operation
         self.mutate_after_version = mutate_after_version
         self.opengrep_check_ids = opengrep_check_ids
         self.docker_boundary_safe = docker_boundary_safe
+        self.docker_tmpfs = docker_tmpfs
         self.calls: list[tuple[str, tuple[str, ...]]] = []
         self.docker_target = "daemon-a|linux|x86_64"
 
@@ -136,7 +138,7 @@ class FakeCommands:
                                     "PidMode": "",
                                     "IpcMode": "private",
                                     "Tmpfs": {
-                                        "/tmp": "rw,noexec,nosuid,nodev,size=16m"
+                                        "/tmp": self.docker_tmpfs
                                     },
                                 },
                                 "State": {"Health": {"Status": "healthy"}},
@@ -542,6 +544,16 @@ def test_docker_probe_cannot_claim_boundary_from_unsafe_container(
 ) -> None:
     service, _runtime, _store = _service(tmp_path, available={"docker"})
     service._commands = FakeCommands(docker_boundary_safe=False)
+
+    receipt = service.probe("DOCKER")
+
+    assert receipt.status == "BLOCKED"
+    assert receipt.activation_supported is False
+
+
+def test_docker_probe_rejects_incomplete_tmpfs_boundary(tmp_path: Path) -> None:
+    service, _runtime, _store = _service(tmp_path, available={"docker"})
+    service._commands = FakeCommands(docker_tmpfs="rw")
 
     receipt = service.probe("DOCKER")
 
