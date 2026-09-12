@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -50,12 +51,18 @@ from sastsimi.contracts.ids import (
     CommitId,
     DecisionId,
     ProgramId,
+    RecordId,
     StoredDataId,
     WorkspaceId,
 )
 from sastsimi.contracts.llm import LLMInvocationRequest, LLMInvocationResult
 from sastsimi.contracts.policy import RunPolicyState
-from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
+from sastsimi.contracts.refs import (
+    HostConfigurationRef,
+    RunStoredDataRef,
+    StoredDataRef,
+    reference,
+)
 from sastsimi.contracts.work import (
     SubjectType,
     WorkExecutionState,
@@ -63,6 +70,7 @@ from sastsimi.contracts.work import (
     WorkType,
 )
 from sastsimi.ports.dto import Record, StagedArtifact, WorkHandlerResult
+from sastsimi.ports.dynamic_sandbox import TrustedDockerTarget
 from sastsimi.reproduction.production import (
     DynamicRecordSink,
     DynamicSandboxAuthorization,
@@ -91,11 +99,56 @@ from tests.integration.sandbox.test_container_lifecycle import (
 _DOCKER_E2E_ENV = "SASTSIMI_REQUIRE_DOCKER_E2E"
 
 
+@dataclass(frozen=True)
+class _E2EDockerResolver:
+    target: TrustedDockerTarget
+
+    def resolve_current(self, profile_ref: HostConfigurationRef) -> TrustedDockerTarget:
+        if self.target.profile_ref != profile_ref:
+            raise ValueError("DOCKER_CAPABILITY_PROFILE_MISMATCH")
+        return self.target
+
+    def require_current(self, target: TrustedDockerTarget) -> None:
+        if target != self.target:
+            raise ValueError("DOCKER_CAPABILITY_NOT_CURRENT")
+
+
+def _trusted_docker_target() -> tuple[TrustedDockerTarget, _E2EDockerResolver]:
+    discovered = shutil.which("docker")
+    if discovered is None:
+        raise RuntimeError("Docker is not installed")
+    executable = Path(discovered).resolve(strict=True)
+    profile_ref = HostConfigurationRef(
+        stored_data_id=StoredDataId("docker-e2e-profile-data"),
+        data_kind="runtime_capability_profile",
+        content_hash="d" * 64,
+        host_id="docker-e2e-host",
+        publication_analysis_id=AnalysisId("docker-e2e-analysis"),
+        publication_workspace_id=WorkspaceId("docker-e2e-workspace"),
+        publication_commit_id=CommitId("docker-e2e-commit"),
+        record_id=RecordId("docker-e2e-profile-v1"),
+    )
+    target = TrustedDockerTarget(
+        profile_ref=profile_ref,
+        executable=executable,
+        subject_key="docker",
+        subject_sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
+        daemon_target=(
+            "npipe:////./pipe/docker_engine"
+            if os.name == "nt"
+            else "unix:///var/run/docker.sock"
+        ),
+        enforced_build_limits=frozenset({"CPU", "MEMORY", "PID", "DISK"}),
+    )
+    return target, _E2EDockerResolver(target)
+
+
 class RecordingDockerAdapter(DockerAdapter):
     """Real argv-only adapter with an attempt-local call audit for E2E assertions."""
 
     def __init__(self) -> None:
-        super().__init__()
+        target, resolver = _trusted_docker_target()
+        super().__init__(target, resolver)
         self.calls: list[tuple[str, str | None]] = []
 
     async def inspect_image(self, image: str, *, timeout_ms: int) -> str:
@@ -107,10 +160,16 @@ class RecordingDockerAdapter(DockerAdapter):
         dockerfile: bytes,
         labels: Mapping[str, str],
         *,
+        spec: SandboxRunSpec,
         timeout_ms: int,
     ) -> str:
         self.calls.append(("build", None))
-        return await super().build(dockerfile, labels, timeout_ms=timeout_ms)
+        return await super().build(
+            dockerfile,
+            labels,
+            spec=spec,
+            timeout_ms=timeout_ms,
+        )
 
     async def create(self, spec: SandboxRunSpec, labels: Mapping[str, str]) -> str:
         self.calls.append(("create", spec.image_digest))
@@ -981,7 +1040,8 @@ async def test_image_declared_volume_is_rejected_and_reclaimed(tmp_path: Path) -
     image_id: str | None = None
     container_id: str | None = None
     volume_name: str | None = None
-    adapter = DockerAdapter()
+    target, resolver = _trusted_docker_target()
+    adapter = DockerAdapter(target, resolver)
     try:
         code, output, error = await _docker(
             "build",

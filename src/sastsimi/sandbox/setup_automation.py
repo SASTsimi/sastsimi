@@ -36,7 +36,12 @@ from sastsimi.ports.dynamic_sandbox import (
 )
 
 from .cleanup import OwnedResourceRegistry
-from .docker_adapter import DockerAdapter, DockerCommandOutcome, DockerContainerState
+from .docker_adapter import (
+    DockerAdapter,
+    DockerCommandOutcome,
+    DockerContainerState,
+    DockerImageState,
+)
 from .health_check import SandboxHealthChecker
 from .recipe_store import (
     EnvironmentRecipeStore,
@@ -51,6 +56,7 @@ class DockerLifecyclePort(Protocol):
         dockerfile: bytes,
         labels: Mapping[str, str],
         *,
+        spec: SandboxRunSpec,
         timeout_ms: int,
     ) -> str: ...
     async def inspect_image(self, image: str, *, timeout_ms: int) -> str: ...
@@ -60,6 +66,7 @@ class DockerLifecyclePort(Protocol):
         dockerfile_path: str,
         labels: Mapping[str, str],
         *,
+        spec: SandboxRunSpec,
         timeout_ms: int,
     ) -> str: ...
     async def create(self, spec: SandboxRunSpec, labels: Mapping[str, str]) -> str: ...
@@ -80,6 +87,8 @@ class DockerLifecyclePort(Protocol):
     ) -> DockerCommandOutcome: ...
     async def inspect(self, container_id: str) -> DockerContainerState: ...
     async def remove(self, resource_ids: tuple[str, ...]) -> None: ...
+    async def inspect_owned_image(self, image_digest: str) -> DockerImageState: ...
+    async def remove_images(self, image_digests: tuple[str, ...]) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +116,7 @@ class ReproductionSetupAutomation:
         self._health = health
         self._resources = resources
         self._contexts: dict[bytes, _PreparationContext] = {}
+        self._recipe_resources: dict[bytes, tuple[StoredDataRef, ...]] = {}
 
     async def preflight(
         self,
@@ -139,13 +149,38 @@ class ReproductionSetupAutomation:
         """Inspect and build only after the exact source boundary is approved."""
 
         spec = self._validate_build(approval, source, request, requirements, meta)
-        labels = self._labels(meta)
-        return await self._recipes.build(
+        labels = self._image_labels(meta)
+        recipe = await self._recipes.build(
             docker=self._docker,
             source=source,
             labels=labels,
+            build_spec=spec,
             build_timeout_ms=spec.requested_execution_ms,
         )
+        if recipe.build_disposition == "BUILT":
+            image_ref = self._resources.register_image(
+                image_digest=recipe.built_image_digest,
+                labels=labels,
+                meta=meta,
+                preservation_reason="REUSABLE_BASELINE",
+            )
+        else:
+            preserved_ref = self._resources.preserved_image_ref(
+                recipe.built_image_digest
+            )
+            if preserved_ref is None:
+                raise ValueError("REUSABLE_BASELINE_OWNERSHIP_REQUIRED")
+            image_ref = preserved_ref
+        self._recipe_resources[canonical_bytes(self._exact_ref(recipe))] = (image_ref,)
+        return recipe
+
+    def recipe_resource_refs(
+        self, recipe: EnvironmentRecipe
+    ) -> tuple[StoredDataRef, ...]:
+        try:
+            return self._recipe_resources[canonical_bytes(self._exact_ref(recipe))]
+        except KeyError as error:
+            raise ValueError("RECIPE_RESOURCE_OWNERSHIP_REQUIRED") from error
 
     async def create(
         self,
@@ -635,6 +670,17 @@ class ReproductionSetupAutomation:
         labels.update(
             {
                 "sastsimi.resource-kind": "container",
+                "sastsimi.resource-id": uuid4().hex,
+            }
+        )
+        return labels
+
+    @staticmethod
+    def _image_labels(meta: RecordMeta) -> Mapping[str, str]:
+        labels = dict(ReproductionSetupAutomation._labels(meta))
+        labels.update(
+            {
+                "sastsimi.resource-kind": "image",
                 "sastsimi.resource-id": uuid4().hex,
             }
         )

@@ -643,7 +643,7 @@ class ReproductionSessionManager:
                 reference for issue in plan_issues for reference in issue.related_refs
             ),
             limitations=limitations,
-            cleanup_required=environment_ref is not None,
+            cleanup_required=cleanup_ref is not None,
             cleanup_status=data.cleanup.status if data.cleanup else "NOT_REQUIRED",
             cleanup_ref=cleanup_ref,
             started_at=data.started_at,
