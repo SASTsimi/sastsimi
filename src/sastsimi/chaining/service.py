@@ -22,10 +22,12 @@ from sastsimi.contracts.dynamic import DynamicReproductionResult
 from sastsimi.contracts.gates import TechnicalEvidenceReview
 from sastsimi.contracts.hypothesis import (
     FalsificationQuestion,
+    HypothesisProcessState,
     HypothesisProposal,
     ValidationCheck,
 )
 from sastsimi.contracts.ids import AttemptId, ProposalId, RecordId
+from sastsimi.contracts.policy import RunPolicyState
 from sastsimi.contracts.prompt_redaction import redact_untrusted_text
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
@@ -138,6 +140,61 @@ class ChainingService:
         stop_after_chaining: bool,
     ) -> ChainingOutcome:
         hypothesis_id = str(verification.meta.hypothesis_id)
+        processes = tuple(
+            item
+            for item in self.runtime.queries.current_records(
+                str(ANALYSIS_ID), "hypothesis_process_state"
+            )
+            if isinstance(item, HypothesisProcessState)
+            and str(item.meta.hypothesis_id) == hypothesis_id
+        )
+        indexes = tuple(
+            item
+            for item in self.runtime.queries.current_records(
+                str(ANALYSIS_ID), "primitive_index_state"
+            )
+            if isinstance(item, PrimitiveIndexState)
+            and item.meta.hypothesis_id == verification.meta.hypothesis_id
+        )
+        run = self.runtime.budget_registry.current_state(str(ANALYSIS_ID))
+        if (
+            len(processes) != 1
+            or len(indexes) != 1
+            or run.run_policy_state_ref is None
+            or verification.dynamic_request_ref is None
+            or verification.dynamic_result_ref is None
+            or verification.poc_ref is None
+        ):
+            raise LookupError("EXACT_PRIMITIVE_INPUT_NOT_FOUND")
+        process_ref = reference(processes[0])
+        primitive_index_ref = reference(indexes[0])
+        policy_state = self.runtime.unit_of_work.records.get_exact(
+            run.run_policy_state_ref
+        )
+        if (
+            not isinstance(process_ref, StoredDataRef)
+            or not isinstance(primitive_index_ref, StoredDataRef)
+            or not isinstance(policy_state, RunPolicyState)
+        ):
+            raise LookupError("EXACT_PRIMITIVE_INPUT_NOT_FOUND")
+        primitive_inputs = (
+            process_ref,
+            verification_ref,
+            primitive_index_ref,
+            technical_ref,
+            collection_ref,
+            run.run_policy_state_ref,
+            label_ref,
+            verification.dynamic_request_ref,
+            verification.dynamic_result_ref,
+            verification.poc_ref,
+            *(
+                (policy_state.policy_record_ref,)
+                if policy_state.policy_record_ref
+                else ()
+            ),
+            review_ref,
+        )
         primitive_work = self.runner.start(
             scope,
             verification.meta,
@@ -145,7 +202,7 @@ class ChainingService:
             "HYPOTHESIS",
             hypothesis_id,
             orchestrator_ref,
-            inputs=(verification_ref, technical_ref, collection_ref, review_ref),
+            inputs=primitive_inputs,
             generation=generation,
         )
         primitive_identity = self.evidence.identity(
@@ -746,8 +803,7 @@ class ChainingWorkflowService:
     ) -> tuple[PrimitiveMatchCandidate, HypothesisProposal]:
         pair_refs = {comparison.upstream_ref, comparison.downstream_ref}
         if any(
-            not evidence_owners.get(key)
-            or not evidence_owners[key] <= pair_refs
+            not evidence_owners.get(key) or not evidence_owners[key] <= pair_refs
             for key in decision.evidence_keys
         ):
             raise ValueError("CHAINING_MATCH_EVIDENCE_SCOPE_MISMATCH")
@@ -880,8 +936,7 @@ class ChainingWorkflowService:
             )
             if (
                 not isinstance(resolved, TechnicalEvidenceReview)
-                or resolved.verification_result_ref
-                != primitive.source_verification_ref
+                or resolved.verification_result_ref != primitive.source_verification_ref
                 or resolved.status != "ACCEPT"
             ):
                 raise ValueError("CHAINING_SOURCE_TECHNICAL_INVALID")
@@ -1025,8 +1080,7 @@ def _claim_projection(value: object) -> dict[str, object]:
             for location in tuple(getattr(value, "code_locations", ()))[:8]
         ),
         "limitations": tuple(
-            _safe_text(item)
-            for item in tuple(getattr(value, "limitations", ()))[:8]
+            _safe_text(item) for item in tuple(getattr(value, "limitations", ()))[:8]
         ),
     }
 
@@ -1066,9 +1120,7 @@ def _semantic_projection(value: BaseModel) -> dict[str, object] | None:
     if isinstance(value, TechnicalEvidenceReview):
         return {
             "status": value.status,
-            "evidence_verdict_alignment": _safe_text(
-                value.evidence_verdict_alignment
-            ),
+            "evidence_verdict_alignment": _safe_text(value.evidence_verdict_alignment),
             "code_flow_linkage": _safe_text(value.code_flow_linkage),
             "dynamic_linkage": _safe_text(value.dynamic_linkage),
             "restriction_assessment": _safe_text(value.restriction_assessment),
@@ -1085,9 +1137,7 @@ def _semantic_projection(value: BaseModel) -> dict[str, object] | None:
             "role": value.role,
             "summary": _safe_text(value.summary),
             "claims": tuple(_claim_projection(item) for item in value.evidence[:8]),
-            "limitations": tuple(
-                _safe_text(item) for item in value.limitations[:8]
-            ),
+            "limitations": tuple(_safe_text(item) for item in value.limitations[:8]),
         }
     if isinstance(value, DynamicReproductionResult):
         return {
@@ -1101,9 +1151,7 @@ def _semantic_projection(value: BaseModel) -> dict[str, object] | None:
                 if value.failure_reason is not None
                 else None
             ),
-            "limitations": tuple(
-                _safe_text(item) for item in value.limitations[:8]
-            ),
+            "limitations": tuple(_safe_text(item) for item in value.limitations[:8]),
         }
     if isinstance(value, StaticFactBundle):
         facts = value.facts()[:16]
@@ -1160,9 +1208,7 @@ def _nested_stored_refs(value: object) -> set[StoredDataRef]:
         if isinstance(item, StoredDataRef):
             refs.add(item)
         elif isinstance(item, BaseModel):
-            pending.extend(
-                getattr(item, name) for name in type(item).model_fields
-            )
+            pending.extend(getattr(item, name) for name in type(item).model_fields)
         elif isinstance(item, (tuple, list)):
             pending.extend(item)
     return refs

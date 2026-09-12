@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import operator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from inspect import signature
@@ -36,6 +35,7 @@ from sastsimi.ports.dto import WorkContext
 from sastsimi.reporting.primitive_admission import PrimitiveAdmissionRuntime
 from sastsimi.runtime.chaining_reconciliation import ChainingReconciliationService
 from sastsimi.runtime.services import RuntimeServices
+from sastsimi.runtime.work_handler_registry import WorkHandlerRegistry
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.storage.chaining_child_registration import (
     SQLiteChainingChildRegistration,
@@ -239,25 +239,41 @@ def test_compose_t13_services_builds_one_concrete_child_registration() -> None:
     assert startup.chaining_result_refs == ()
 
 
-def test_install_t13_services_exposes_one_immutable_production_seam() -> None:
+def test_install_t13_services_registers_handlers_and_runs_startup_recovery() -> None:
     services = _build(_composition(_run_dir("installation")))
+    registry = WorkHandlerRegistry()
 
-    installation = install_t13_services(services)
+    installation = install_t13_services(
+        services,
+        registry=registry,
+        active_analysis_ids=(AnalysisId("a2"), AnalysisId("a1")),
+    )
 
     assert isinstance(installation, T13ProductionInstallation)
-    assert tuple(installation.work_handlers) == (
+    assert installation.registered_work_types == (
         WorkType.PRIMITIVE_UPDATE,
         WorkType.CHAINING,
         WorkType.HYPOTHESIS_PROPOSAL,
     )
-    assert installation.work_handlers[WorkType.CHAINING] is services.chaining
-    assert installation.reconcile_startup is services.reconcile_startup
-    with pytest.raises(TypeError):
-        operator.setitem(
-            installation.work_handlers,
-            WorkType.CHAINING,
-            services.chaining,
+    assert registry.require(WorkType.CHAINING) is services.chaining
+    assert tuple(item.analysis_id for item in installation.reconciliations) == (
+        AnalysisId("a1"),
+        AnalysisId("a2"),
+    )
+    with pytest.raises(ValueError, match="WORK_HANDLER_ALREADY_REGISTERED"):
+        install_t13_services(
+            services,
+            registry=registry,
+            active_analysis_ids=(),
         )
+
+
+def test_production_runtime_binds_sqlite_chaining_lineage_by_default() -> None:
+    from sastsimi.storage.chaining_lineage import SQLiteChainingLineage
+
+    composition = _composition(_run_dir("default-lineage"), bind_lineage=False)
+
+    assert isinstance(composition.runtime.chaining_lineage, SQLiteChainingLineage)
 
 
 @pytest.mark.parametrize(

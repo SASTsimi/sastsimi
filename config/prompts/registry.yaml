@@ -224,7 +224,7 @@ entries:
         commit_id: prompt-evaluation-commit
         record_id: redaction-fixture-record
       result_kind: chaining_result
-      status: DRAFT
+      status: ACTIVE
       quality_evaluation_ref: null
       owner_role: R1
       reviewer_roles:

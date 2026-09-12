@@ -187,7 +187,11 @@ def register_fake_llm_call(
     )
     tools = LLMToolPolicy(
         meta=metadata("llm_tool_policy"),
-        policy_key=f"fake-{role.lower()}",
+        policy_key=(
+            "tools.none.v1"
+            if role in {"CHAINING", "RULE_SCOPE_GATE"}
+            else f"fake-{role.lower()}"
+        ),
         allowed_tools=(),
         forbidden_actions=("external-network",),
         sandbox_only=True,

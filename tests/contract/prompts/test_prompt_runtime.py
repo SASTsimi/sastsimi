@@ -271,7 +271,7 @@ def _fixture(
     )
 
 
-def test_canonical_registry_is_draft_evaluation_only() -> None:
+def test_canonical_registry_exposes_only_reviewed_active_fixtures() -> None:
     root = Path(__file__).resolve().parents[3]
     registry = PromptLoader(root).load_registry(Path("config/prompts/registry.yaml"))
     entries = {
@@ -282,15 +282,16 @@ def test_canonical_registry_is_draft_evaluation_only() -> None:
         ("HYPOTHESIS", "GENERATE_INITIAL"),
         ("CHAINING", "MATCH_PRIMITIVES"),
     }
-    assert all(
-        (entry.purpose, entry.status) == ("EVALUATION", "DRAFT")
-        for entry in entries.values()
+    hypothesis = entries[("HYPOTHESIS", "GENERATE_INITIAL")]
+    assert (hypothesis.purpose, hypothesis.status) == (
+        "EVALUATION",
+        "DRAFT",
     )
     chaining = entries[("CHAINING", "MATCH_PRIMITIVES")]
+    assert (chaining.purpose, chaining.status) == ("EVALUATION", "ACTIVE")
     assert chaining.result_kind == "chaining_result"
     chaining_slots = tuple(
-        (slot.slot, slot.data_kind, slot.cardinality)
-        for slot in chaining.input_slots
+        (slot.slot, slot.data_kind, slot.cardinality) for slot in chaining.input_slots
     )
     assert chaining_slots == (
         ("indexes", "primitive_index_state", "REQUIRED_MANY"),
@@ -298,9 +299,10 @@ def test_canonical_registry_is_draft_evaluation_only() -> None:
         ("lineage_hypotheses", "vulnerability_hypothesis", "REQUIRED_MANY"),
         ("lineage_results", "chaining_result", "OPTIONAL_MANY"),
     )
-    for role, task in entries:
-        with pytest.raises(LookupError, match="PROMPT_REGISTRY_NOT_ACTIVE"):
-            registry.select(role, task, "EVALUATION")
+    selected = registry.select("CHAINING", "MATCH_PRIMITIVES", "EVALUATION")
+    assert selected.entry is chaining
+    with pytest.raises(LookupError, match="PROMPT_REGISTRY_NOT_ACTIVE"):
+        registry.select("HYPOTHESIS", "GENERATE_INITIAL", "EVALUATION")
 
 
 def test_builder_creates_redacted_exact_payload_and_call_spec(work_path: Path) -> None:

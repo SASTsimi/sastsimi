@@ -16,6 +16,7 @@ from sastsimi.config.models import AppConfig
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.ids import (
+    AnalysisId,
     AttemptId,
     CommitId,
     LogicalRecordId,
@@ -92,7 +93,9 @@ if TYPE_CHECKING:
     from sastsimi.runtime.chaining_reconciliation import (
         ChainingReconciliationService,
         ChainingStartupReconciler,
+        ChainingStartupReconciliationResult,
     )
+    from sastsimi.runtime.work_handler_registry import WorkHandlerRegistry
     from sastsimi.runtime.workflow_runner import WorkflowRunner
     from sastsimi.static_analysis.coordinator import StaticToolCoordinator
     from sastsimi.static_analysis.normalizer import DecoderKey, RawDecoder
@@ -198,23 +201,35 @@ class T13Services:
 
 @dataclass(frozen=True)
 class T13ProductionInstallation:
-    """One immutable T13 boundary installed by the T14 production worker."""
+    """Proof that T13 routes and active-analysis recovery were installed."""
 
-    work_handlers: Mapping[WorkType, WorkHandler]
-    reconcile_startup: ChainingStartupReconciler
+    registered_work_types: tuple[WorkType, ...]
+    reconciliations: tuple[ChainingStartupReconciliationResult, ...]
 
 
-def install_t13_services(services: T13Services) -> T13ProductionInstallation:
-    """Expose T13 routing and recovery without selecting a scheduler or model.
+def install_t13_services(
+    services: T13Services,
+    *,
+    registry: WorkHandlerRegistry,
+    active_analysis_ids: tuple[AnalysisId, ...],
+) -> T13ProductionInstallation:
+    """Register T13 routes and reconcile each exact active analysis once.
 
-    T14 owns handler registration and decides when startup reconciliation runs.
-    The exact handlers retain the T09 call resolver and the runtime-bound lineage
-    supplied to :func:`build_t13_services`.
+    General runtime recovery must already have run before this function. T14
+    still owns polling, claiming, concurrency, cancellation, and retry policy;
+    installation only makes the existing T13 handlers reachable and repairs
+    their deterministic post-commit handoffs.
     """
 
+    handlers = services.work_handlers
+    registry.register_many(handlers)
+    reconciliations = tuple(
+        services.reconcile_startup(analysis_id)
+        for analysis_id in sorted(set(active_analysis_ids), key=str)
+    )
     return T13ProductionInstallation(
-        work_handlers=MappingProxyType(dict(services.work_handlers)),
-        reconcile_startup=services.reconcile_startup,
+        registered_work_types=tuple(handlers),
+        reconciliations=reconciliations,
     )
 
 
@@ -773,6 +788,7 @@ def _build_runtime(
     chaining_lineage: ChainingLineagePort | None = None,
     *,
     validator_factory: Callable[..., SQLiteRuntimeValidator],
+    bind_sqlite_chaining_lineage: bool = False,
 ) -> RuntimeServices:
     from sastsimi.runtime.action_validator import RuntimeValidator
     from sastsimi.runtime.analysis_finalization import AnalysisFinalizationService
@@ -800,6 +816,7 @@ def _build_runtime(
     from sastsimi.storage.attempt_service import AttemptService as SQLiteAttempts
     from sastsimi.storage.budget_registry import BudgetProfileRegistry as SQLiteRegistry
     from sastsimi.storage.budget_service import BudgetService as SQLiteBudget
+    from sastsimi.storage.chaining_lineage import SQLiteChainingLineage
     from sastsimi.storage.configuration_registry import (
         ConfigurationRegistry as SQLiteConfigurationRegistry,
     )
@@ -829,6 +846,9 @@ def _build_runtime(
     database = Database(paths.database)
     database.check_ready()
     records = SQLiteRecordStore(database, evidence, finding_service_identity_ref)
+    effective_chaining_lineage = chaining_lineage
+    if effective_chaining_lineage is None and bind_sqlite_chaining_lineage:
+        effective_chaining_lineage = SQLiteChainingLineage(records)
     artifacts = LocalArtifactStore(paths.artifacts, workspace_id, commit_id)
     registry = SQLiteRegistry(records, clock, ids)
     budget = SQLiteBudget(records, registry, clock, ids)
@@ -843,7 +863,7 @@ def _build_runtime(
     transitions = SQLiteTransitions(
         works,
         artifacts,
-        chaining_lineage=chaining_lineage,
+        chaining_lineage=effective_chaining_lineage,
     )
     unit = SQLiteUnitOfWork(records, artifacts, transitions)
     recovery = RecoveryService(SQLiteRecovery(transitions, recovery_identity_ref))
@@ -912,7 +932,7 @@ def _build_runtime(
         ),
         llm_calls,
         PolicyRuntimeService(SQLitePolicyRuntime(works), clock, ids),
-        chaining_lineage,
+        effective_chaining_lineage,
     )
 
 
@@ -945,6 +965,7 @@ def build_runtime(
         llm_adapters,
         chaining_lineage,
         validator_factory=SQLiteRuntimeValidator,
+        bind_sqlite_chaining_lineage=True,
     )
 
 
@@ -1562,17 +1583,20 @@ def build_t13_services(
         verification_policy_ref=verification_policy_ref,
         verification_playbook_ref=verification_playbook_ref,
     )
-    if len(
-        {
-            (ref.workspace_id, ref.commit_id)
-            for ref in (
-                child_config.budget_binding_ref,
-                child_config.verification_owner_identity_ref,
-                child_config.verification_policy_ref,
-                child_config.verification_playbook_ref,
-            )
-        }
-    ) != 1:
+    if (
+        len(
+            {
+                (ref.workspace_id, ref.commit_id)
+                for ref in (
+                    child_config.budget_binding_ref,
+                    child_config.verification_owner_identity_ref,
+                    child_config.verification_policy_ref,
+                    child_config.verification_playbook_ref,
+                )
+            }
+        )
+        != 1
+    ):
         raise ValueError("T13_CHILD_CONFIG_SCOPE_MISMATCH")
     child_registration = SQLiteChainingChildRegistration(
         works=works,
@@ -1661,4 +1685,48 @@ def build_t13_services(
             reconciliation=reconciliation,
             published_records=runtime.queries.published_records,
         ),
+    )
+
+
+def build_and_install_t13_application(
+    *,
+    runtime: RuntimeServices,
+    runner: WorkflowRunner,
+    clock: Clock,
+    ids: IdGenerator,
+    budget_scope_ref: BudgetScopeRef,
+    role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
+    chaining_call_resolver: ChainingCallResolver,
+    verification_policy_ref: StoredDataRef | None,
+    verification_playbook_ref: StoredDataRef | None,
+    registry: WorkHandlerRegistry,
+    active_analysis_ids: tuple[AnalysisId, ...],
+) -> T13ProductionInstallation:
+    """Compose and install the production T13 slice in startup order.
+
+    Recovery is deliberately repeated before T13 handoff reconciliation because
+    it is idempotent and closes the ordering contract even when a caller passes
+    an already-built runtime. The worker loop itself remains a T14 concern.
+    """
+
+    lineage = runtime.chaining_lineage
+    if lineage is None:
+        raise ValueError("CHAINING_LINEAGE_REQUIRED")
+    runtime.recovery.recover()
+    services = build_t13_services(
+        runtime=runtime,
+        runner=runner,
+        clock=clock,
+        ids=ids,
+        budget_scope_ref=budget_scope_ref,
+        role_identity_refs=role_identity_refs,
+        chaining_call_resolver=chaining_call_resolver,
+        chaining_lineage=lineage,
+        verification_policy_ref=verification_policy_ref,
+        verification_playbook_ref=verification_playbook_ref,
+    )
+    return install_t13_services(
+        services,
+        registry=registry,
+        active_analysis_ids=active_analysis_ids,
     )
