@@ -1,13 +1,14 @@
 import pytest
 
+from sastsimi.contracts.ids import CommitId, WorkspaceId
 from sastsimi.contracts.reporting import validate_report_content
 from sastsimi.contracts.static import CodeLocation
 
 
 def location() -> CodeLocation:
     return CodeLocation(
-        workspace_id="ws1",
-        commit_id="c1",
+        workspace_id=WorkspaceId("ws1"),
+        commit_id=CommitId("c1"),
         file_path="src/app.py",
         start_line=10,
         start_column=None,

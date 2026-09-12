@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
@@ -140,7 +141,7 @@ def _attempt(h: Any, work: Any) -> WorkAttempt:
 
 def _runner_with_output_approval(h: Any, runtime: Any) -> WorkflowRunner:
     @contextmanager
-    def approve(action: Any, _work: Any, refs: tuple[Any, ...]):
+    def approve(action: Any, _work: Any, refs: tuple[Any, ...]) -> Iterator[None]:
         old = h.evidence.authorized_outputs
         h.evidence.authorized_outputs = lambda request: (
             refs if request.action_id == action.action_id else old(request)
@@ -153,7 +154,9 @@ def _runner_with_output_approval(h: Any, runtime: Any) -> WorkflowRunner:
     return WorkflowRunner(runtime, h.clock, h.ids, output_approval=approve)
 
 
-def _subject(tmp_path: Path, source_failure: Exception | None = None):
+def _subject(
+    tmp_path: Path, source_failure: Exception | None = None
+) -> tuple[Any, ...]:
     h, runtime, _, work, *_ = prepared_policy_parser(
         tmp_path,
         parallel=2,

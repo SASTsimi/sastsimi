@@ -9,7 +9,6 @@ import pytest
 
 from sastsimi.agents.cwe_labeling import CWELabelingAgent
 from sastsimi.agents.technical_gate import TechnicalGateAgent
-from sastsimi.contracts._domain import DomainRecord
 from sastsimi.contracts.actions import (
     REQUIRED_CHECKS,
     ActionCheck,
@@ -20,6 +19,7 @@ from sastsimi.contracts.actions import (
 )
 from sastsimi.contracts.budget import BudgetReservation
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
+from sastsimi.contracts.domain import DomainRecord
 from sastsimi.contracts.dynamic import DynamicReproductionResult, PoCBundle
 from sastsimi.contracts.gates import CWELabel, TechnicalEvidenceReview
 from sastsimi.contracts.hypothesis import (
@@ -43,8 +43,13 @@ from sastsimi.contracts.llm import (
     LLMInvocationRequest,
     LLMInvocationResult,
 )
-from sastsimi.contracts.records import RecordMeta, validate_revision
-from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
+from sastsimi.contracts.records import RecordMeta, RecordMetadata, validate_revision
+from sastsimi.contracts.refs import (
+    BudgetScopeRef,
+    RecordRef,
+    StoredDataRef,
+    reference,
+)
 from sastsimi.contracts.verification import PlaybookApplication, VerificationResult
 from sastsimi.contracts.work import (
     SubjectType,
@@ -52,6 +57,7 @@ from sastsimi.contracts.work import (
     WorkStatus,
     WorkType,
 )
+from sastsimi.ports.dto import Record
 from sastsimi.ports.verification_registration import VerificationRegistration
 from sastsimi.reporting.cwe_workflow import CWELabelingService, GateCallRefs
 from sastsimi.reporting.technical_gate_workflow import (
@@ -90,15 +96,15 @@ def _meta(kind: str, suffix: str, attempt: str | None = None) -> RecordMeta:
 
 class _Records:
     def __init__(self) -> None:
-        self.values: dict[RecordRef, object] = {}
+        self.values: dict[RecordRef, Record] = {}
 
-    def add(self, value: object) -> StoredDataRef:
-        ref = reference(value)  # type: ignore[arg-type]
+    def add(self, value: Record) -> StoredDataRef:
+        ref = reference(value)
         assert isinstance(ref, StoredDataRef)
         self.values[ref] = value
         return ref
 
-    def get_exact(self, ref: RecordRef) -> object:
+    def get_exact(self, ref: RecordRef) -> Record:
         return self.values[ref]
 
     def is_revision_descendant(
@@ -106,14 +112,12 @@ class _Records:
     ) -> bool:
         earlier = self.get_exact(earlier_ref)
         current = self.get_exact(later_ref)
-        assert hasattr(earlier, "meta") and hasattr(current, "meta")
         while current.meta.record_id != earlier.meta.record_id:
             previous = next(
                 (
                     value
                     for value in self.values.values()
-                    if hasattr(value, "meta")
-                    and value.meta.record_id == current.meta.previous_record_id
+                    if value.meta.record_id == current.meta.previous_record_id
                 ),
                 None,
             )
@@ -123,7 +127,7 @@ class _Records:
             current = previous
         return reference(current) == earlier_ref
 
-    def stage_record(self, record: object) -> StoredDataRef:
+    def stage_record(self, record: Record) -> StoredDataRef:
         return self.add(record)
 
 
@@ -166,9 +170,9 @@ class _Publisher:
     def complete(
         self,
         work: WorkExecutionState,
-        identity: StoredDataRef,
+        identity: BudgetScopeRef,
         role: str,
-        outputs: tuple[object, ...],
+        outputs: tuple[Record, ...],
         *,
         status: str = "SUCCEEDED",
         cause: str = "COMPLETED",
@@ -186,7 +190,7 @@ class _Publisher:
                 action_input_refs=action_input_refs,
             )
         )
-        refs = tuple(reference(value) for value in outputs)  # type: ignore[arg-type]
+        refs = tuple(reference(value) for value in outputs)
         completed = work.model_copy(
             update={
                 "status": status,
@@ -204,11 +208,41 @@ class _Ready:
         self.records = records
         self.calls: list[dict[str, object]] = []
 
+    def enqueue(
+        self,
+        scope: BudgetScopeRef,
+        metadata: RecordMetadata,
+        work_type: str,
+        subject_type: str,
+        subject_id: str,
+        identity: BudgetScopeRef,
+        *,
+        role: str = "ORCHESTRATION",
+        generation: int = 1,
+        inputs: tuple[RecordRef, ...] = (),
+        parent: RecordRef | None = None,
+        trigger_primitive_ref: RecordRef | None = None,
+    ) -> WorkExecutionState:
+        del (
+            scope,
+            metadata,
+            work_type,
+            subject_type,
+            subject_id,
+            identity,
+            role,
+            generation,
+            inputs,
+            parent,
+            trigger_primitive_ref,
+        )
+        raise AssertionError("unexpected direct enqueue")
+
     def enqueue_registered(
         self,
         registered: WorkExecutionState,
-        scope: StoredDataRef,
-        identity: StoredDataRef,
+        scope: BudgetScopeRef,
+        identity: BudgetScopeRef,
         *,
         role: str = "ORCHESTRATION",
     ) -> WorkExecutionState:
@@ -237,15 +271,15 @@ class _Current:
     def __init__(
         self,
         *,
-        works: tuple[object, ...],
-        processes: tuple[object, ...] = (),
-        assignments: tuple[object, ...] = (),
+        works: tuple[Record, ...],
+        processes: tuple[Record, ...] = (),
+        assignments: tuple[Record, ...] = (),
     ) -> None:
         self.works = works
         self.processes = processes
         self.assignments = assignments
 
-    def current_records(self, analysis_id: str, kind: str) -> tuple[object, ...]:
+    def current_records(self, analysis_id: str, kind: str) -> tuple[Record, ...]:
         assert analysis_id == str(ANALYSIS)
         return {
             "work_execution_state": self.works,
@@ -310,11 +344,14 @@ class _Revision:
             verification_work_id=work.work_id,
             verification_generation=2,
         )
+        expected_process_ref = kwargs["expected_process_ref"]
+        if not isinstance(expected_process_ref, StoredDataRef):
+            raise AssertionError("expected process ref")
         self.registration = VerificationRegistration(
             work=work,
             application=application,
             assignment_ref=self.assignment_ref,
-            process_ref=kwargs["expected_process_ref"],  # type: ignore[arg-type]
+            process_ref=expected_process_ref,
         )
         return self.registration
 
@@ -750,10 +787,12 @@ def _gate_call(
 
 
 def _metadata(
-    source: RecordMeta, kind: str, attempt_id: AttemptId | None
+    source: RecordMeta, record_type: str, attempt_id: AttemptId | None
 ) -> RecordMeta:
     return _meta(
-        kind, f"output-{source.record_id}", str(attempt_id) if attempt_id else None
+        record_type,
+        f"output-{source.record_id}",
+        str(attempt_id) if attempt_id else None,
     )
 
 

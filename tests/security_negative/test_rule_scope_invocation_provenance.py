@@ -31,6 +31,7 @@ from sastsimi.contracts.llm import (
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
 from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.ports.dto import Record
 from sastsimi.reporting.rule_scope_gate_handler import WorkflowRuleScopePublisher
 from sastsimi.reporting.rule_scope_gate_workflow import RuleScopeExecution
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
@@ -69,8 +70,8 @@ class _Records:
     def __init__(self) -> None:
         self.values: dict[RecordRef, object] = {}
 
-    def add(self, value: object) -> StoredDataRef:
-        value_ref = reference(value)  # type: ignore[arg-type]
+    def add(self, value: Record) -> StoredDataRef:
+        value_ref = reference(value)
         assert isinstance(value_ref, StoredDataRef)
         self.values[value_ref] = value
         return value_ref
@@ -398,7 +399,7 @@ async def test_rule_scope_publisher_keeps_complete_invocation_chain() -> None:
 
         def complete(self, *args: object, **kwargs: object) -> _Completed:
             self.kwargs = kwargs
-            return _Completed(reference(args[3][0]))  # type: ignore[index,arg-type]
+            return _Completed(reference(args[3][0]))  # type: ignore[index]
 
     review_record = wire(
         RuleScopeImpactReview,

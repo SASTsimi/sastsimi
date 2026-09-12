@@ -8,13 +8,19 @@ from typing import cast
 import pytest
 
 from sastsimi.agents.rule_scope_gate import (
+    PolicyArea,
     RuleScopeAgentOutcome,
     RuleScopeCallRefs,
     RuleScopeEvidenceSelection,
     RuleScopeProposal,
 )
 from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.gates import CWELabel, TechnicalEvidenceReview
+from sastsimi.contracts.gates import (
+    CWELabel,
+    RuleScopeImpactReview,
+    TechnicalEvidenceReview,
+)
+from sastsimi.contracts.ids import AttemptId
 from sastsimi.contracts.llm import (
     LLMCallSpec,
     LLMInvocationLog,
@@ -69,9 +75,15 @@ class _Fixture:
     service: RuleScopeGateService
     agent: _Agent
     starts: list[RuleScopeGateInputs]
-    published: list[object]
+    published: list[RuleScopeImpactReview]
     current_policy_states: list[StoredDataRef]
-    prompt_checks: list[object]
+    prompt_checks: list[
+        tuple[
+            RuleScopeExecution,
+            RuleScopeGateInputs,
+            tuple[StoredDataRef, ...],
+        ]
+    ]
     executions: list[RuleScopeExecution]
 
 
@@ -262,6 +274,8 @@ def _fixture() -> _Fixture:
     state = wire(RunPolicyState, state_data)
     state_ref = cast(StoredDataRef, reference(state))
     owner_ref = wire_ref("agent_identity")
+    assert verification.dynamic_result_ref is not None
+    assert verification.poc_ref is not None
     required = (
         verification_ref,
         label_ref,
@@ -322,10 +336,12 @@ def _fixture() -> _Fixture:
                     ),
                     *(
                         evidence_ref
-                        for result in (
-                            *verification.falsification_results,
-                            *verification.validation_results,
-                        )
+                        for result in verification.falsification_results
+                        for evidence_ref in result.evidence_refs
+                    ),
+                    *(
+                        evidence_ref
+                        for result in verification.validation_results
                         for evidence_ref in result.evidence_refs
                     ),
                     *label.evidence_refs,
@@ -344,6 +360,12 @@ def _fixture() -> _Fixture:
         verification_owner_ref=owner_ref,
         current_generation=1,
     )
+    policy_axes: tuple[tuple[PolicyArea, str], ...] = (
+        ("RULE", "rule-1"),
+        ("SCOPE", "scope-1"),
+        ("TESTING_RESTRICTION", "testing-1"),
+        ("IMPACT", "impact-1"),
+    )
     proposal = RuleScopeProposal(
         rule_compliance="PASS",
         scope_compliance="PASS",
@@ -356,35 +378,30 @@ def _fixture() -> _Fixture:
                 policy_item_ids=(item_id,),
                 evidence_indexes=(0,),
             )
-            for area, item_id in (
-                ("RULE", "rule-1"),
-                ("SCOPE", "scope-1"),
-                ("TESTING_RESTRICTION", "testing-1"),
-                ("IMPACT", "impact-1"),
-            )
+            for area, item_id in policy_axes
         ),
         reasons=("Official rules and actual testing evidence are aligned.",),
         missing_information=(),
     )
     agent = _Agent(proposal)
     starts: list[RuleScopeGateInputs] = []
-    published: list[object] = []
+    published: list[RuleScopeImpactReview] = []
     executions: list[RuleScopeExecution] = []
     gate_identity_ref = wire_ref("agent_identity")
 
-    def start(value: RuleScopeGateInputs) -> RuleScopeExecution:
-        starts.append(value)
+    def start(inputs: RuleScopeGateInputs) -> RuleScopeExecution:
+        starts.append(inputs)
         context = tuple(
             dict.fromkeys(
                 (
-                    value.verification_ref,
-                    value.cwe_label_ref,
-                    value.technical_review_ref,
-                    value.run_policy_state_ref,
-                    value.collection_ref,
-                    *((value.policy_ref,) if value.policy_ref is not None else ()),
-                    *(source.source_ref for source in value.official_sources),
-                    *value.available_evidence_refs,
+                    inputs.verification_ref,
+                    inputs.cwe_label_ref,
+                    inputs.technical_review_ref,
+                    inputs.run_policy_state_ref,
+                    inputs.collection_ref,
+                    *((inputs.policy_ref,) if inputs.policy_ref is not None else ()),
+                    *(source.source_ref for source in inputs.official_sources),
+                    *inputs.available_evidence_refs,
                 )
             )
         )
@@ -393,7 +410,11 @@ def _fixture() -> _Fixture:
         )
         execution = RuleScopeExecution(
             work=current_work,
-            call=object(),
+            call=RuleScopeCallRefs(
+                decision_ref=agent.invocation.request.action_decision_ref,
+                reservation_ref=wire_ref("budget_reservation"),
+                call_spec_ref=agent.invocation.request.call_spec_ref,
+            ),
             owner_ref=owner_ref,
             gate_identity_ref=gate_identity_ref,
         )
@@ -401,36 +422,49 @@ def _fixture() -> _Fixture:
         return execution
 
     def publish(
-        _execution: RuleScopeExecution,
-        review: object,
-        _invocation: PersistedLLMInvocation,
+        execution: RuleScopeExecution,
+        review: RuleScopeImpactReview,
+        invocation: PersistedLLMInvocation,
     ) -> StoredDataRef:
+        del execution, invocation
         published.append(review)
-        return cast(StoredDataRef, reference(cast(object, review)))
+        review_ref = reference(review)
+        assert isinstance(review_ref, StoredDataRef)
+        return review_ref
 
     counter = iter(range(1, 100))
 
     def metadata_factory(
-        source: RecordMeta, kind: str, attempt_id: object
+        source: RecordMeta, record_type: str, attempt_id: AttemptId | None
     ) -> RecordMeta:
         number = next(counter)
         return RecordMeta.model_validate(
             source.model_dump()
             | {
-                "record_id": f"{kind}-r{number}",
-                "logical_record_id": f"{kind}-l{number}",
-                "record_type": kind,
+                "record_id": f"{record_type}-r{number}",
+                "logical_record_id": f"{record_type}-l{number}",
+                "record_type": record_type,
                 "revision_number": 1,
                 "previous_record_id": None,
-                "attempt_id": str(attempt_id),
+                "attempt_id": attempt_id,
             }
         )
 
     current_policy_states = [state_ref]
-    prompt_checks: list[object] = []
+    prompt_checks: list[
+        tuple[
+            RuleScopeExecution,
+            RuleScopeGateInputs,
+            tuple[StoredDataRef, ...],
+        ]
+    ] = []
 
-    def prompt_guard(*args: object) -> None:
-        prompt_checks.append(args)
+    def prompt_guard(
+        execution: RuleScopeExecution,
+        inputs: RuleScopeGateInputs,
+        required_context: tuple[StoredDataRef, ...],
+    ) -> None:
+        prompt_checks.append((execution, inputs, required_context))
 
     service = RuleScopeGateService(
         agent=agent,

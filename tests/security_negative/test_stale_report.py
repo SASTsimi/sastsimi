@@ -11,6 +11,7 @@ from sastsimi.contracts.ids import (
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.reporting import ReportDraft, ReportProcessState
+from sastsimi.ports.dto import Record
 from sastsimi.ports.report_query import current_report_drafts
 
 
@@ -38,7 +39,7 @@ class Query:
         self.drafts = drafts
         self.state = state
 
-    def current_records(self, analysis_id: str, kind: str) -> tuple[object, ...]:
+    def current_records(self, analysis_id: str, kind: str) -> tuple[Record, ...]:
         assert analysis_id == "analysis"
         return self.drafts if kind == "report_draft" else (self.state,)
 

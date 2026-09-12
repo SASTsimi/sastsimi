@@ -121,7 +121,7 @@ async def test_unsafe_policy_source_is_rejected_before_body_persistence(
 ) -> None:
     """Catches SSRF, redirect escape, or oversized content reaching artifacts."""
     public = {"policy.example.test": ("93.184.216.34",)}
-    responses = [
+    responses: list[HttpPolicyResponse | Exception] = [
         HttpPolicyResponse(
             status=200,
             headers={"content-type": "application/json"},

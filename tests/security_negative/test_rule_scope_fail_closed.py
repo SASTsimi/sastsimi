@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 
 from sastsimi.agents.rule_scope_gate import (
+    PolicyArea,
     RuleScopeEvidenceSelection,
     RuleScopeMissingInfoProposal,
     RuleScopeProposal,
@@ -58,6 +59,7 @@ async def test_collection_failed_does_not_create_work_call_or_review() -> None:
         },
     )
     collection_ref = reference(collection)
+    assert isinstance(collection_ref, StoredDataRef)
     state_data = make("RunPolicyState")
     state_data.update(
         status="FAILED",
@@ -105,6 +107,7 @@ async def test_unrelated_collection_failure_cannot_stop_current_run_gate() -> No
         },
     )
     collection_ref = reference(collection)
+    assert isinstance(collection_ref, StoredDataRef)
     state_data = make("RunPolicyState")
     state_data.update(
         status="FAILED",
@@ -112,12 +115,14 @@ async def test_unrelated_collection_failure_cannot_stop_current_run_gate() -> No
         collection_result_ref=collection_ref.model_dump(mode="json"),
     )
     stale_state = wire(RunPolicyState, state_data)
+    stale_state_ref = reference(stale_state)
+    assert isinstance(stale_state_ref, StoredDataRef)
     inputs = replace(
         fixture.inputs,
         collection=collection,
         collection_ref=collection_ref,
         run_policy_state=stale_state,
-        run_policy_state_ref=reference(stale_state),
+        run_policy_state_ref=stale_state_ref,
         policy=None,
         policy_ref=None,
         official_sources=(),
@@ -219,6 +224,9 @@ async def test_absent_or_unverified_policy_is_canonical_uncertain_deny(
 ) -> None:
     fixture = _fixture()
     inputs = fixture.inputs
+    policy: ProgramPolicyRecord | None
+    policy_ref: StoredDataRef | None
+    collection_ref: StoredDataRef
     if state_status == "ABSENT":
         collection = PolicyCollectionResult.model_validate(
             inputs.collection.model_dump()
@@ -234,7 +242,9 @@ async def test_absent_or_unverified_policy_is_canonical_uncertain_deny(
                 "gap_ids": ("official-policy-absent",),
             }
         )
-        collection_ref = reference(collection)
+        candidate_collection_ref = reference(collection)
+        assert isinstance(candidate_collection_ref, StoredDataRef)
+        collection_ref = candidate_collection_ref
         policy = None
         policy_ref = None
     else:
@@ -251,7 +261,9 @@ async def test_absent_or_unverified_policy_is_canonical_uncertain_deny(
                 "freshness_status": "UNVERIFIED",
             }
         )
-        policy_ref = reference(policy)
+        candidate_policy_ref = reference(policy)
+        assert isinstance(candidate_policy_ref, StoredDataRef)
+        policy_ref = candidate_policy_ref
         collection = PolicyCollectionResult.model_validate(
             inputs.collection.model_dump()
             | {
@@ -264,7 +276,9 @@ async def test_absent_or_unverified_policy_is_canonical_uncertain_deny(
                 "policy_record_ref": policy_ref,
             }
         )
-        collection_ref = reference(collection)
+        candidate_collection_ref = reference(collection)
+        assert isinstance(candidate_collection_ref, StoredDataRef)
+        collection_ref = candidate_collection_ref
     state = RunPolicyState.model_validate(
         inputs.run_policy_state.model_dump()
         | {
@@ -287,6 +301,12 @@ async def test_absent_or_unverified_policy_is_canonical_uncertain_deny(
     state_ref = reference(state)
     assert isinstance(state_ref, StoredDataRef)
     fixture.current_policy_states[0] = state_ref
+    missing_areas: tuple[PolicyArea, ...] = (
+        "RULE",
+        "SCOPE",
+        "TESTING_RESTRICTION",
+        "IMPACT",
+    )
     fixture.agent.proposal = RuleScopeProposal(
         rule_compliance="UNCERTAIN",
         scope_compliance="UNCERTAIN",
@@ -302,7 +322,7 @@ async def test_absent_or_unverified_policy_is_canonical_uncertain_deny(
                 policy_item_ids=(),
                 evidence_indexes=(),
             )
-            for area in ("RULE", "SCOPE", "TESTING_RESTRICTION", "IMPACT")
+            for area in missing_areas
         ),
     )
     changed = replace(

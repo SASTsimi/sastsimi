@@ -14,44 +14,49 @@ from sastsimi.contracts.dynamic import (
 from sastsimi.contracts.gates import CWELabel, TechnicalEvidenceReview
 from sastsimi.contracts.hypothesis import HypothesisProcessState
 from sastsimi.contracts.policy import PolicyCollectionResult, RunPolicyState
-from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
+from sastsimi.contracts.records import RecordMetadata
+from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
 from sastsimi.contracts.verification import VerificationResult
+from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.orchestration.primitive_handoff import (
     PrimitiveHandoffRefs,
     PrimitiveUpdateHandoff,
 )
+from sastsimi.ports.dto import Record
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import ref, wire
 from tests.contract.domain.success_fixture import dynamic_success
 
 
-def _exact(value: object) -> StoredDataRef:
-    result = reference(value)  # type: ignore[arg-type]
+def _exact(value: Record) -> StoredDataRef:
+    result = reference(value)
     assert isinstance(result, StoredDataRef)
     return result
 
 
 class _Records:
-    def __init__(self, values: tuple[object, ...]) -> None:
-        self.values = {_exact(value): value for value in values}
+    def __init__(self, values: tuple[Record, ...]) -> None:
+        self.values: dict[RecordRef, Record] = {
+            _exact(value): value for value in values
+        }
 
     def get_exact(self, value_ref: RecordRef) -> object:
         return self.values[value_ref]
 
 
 class _Current:
-    def __init__(self, values: tuple[object, ...]) -> None:
+    def __init__(self, values: tuple[Record, ...]) -> None:
         self.values = values
 
-    def current_records(self, analysis_id: str, kind: str) -> tuple[object, ...]:
+    def current_records(self, analysis_id: str, kind: str) -> tuple[Record, ...]:
         return tuple(
             value
             for value in self.values
-            if value.meta.record_type == kind  # type: ignore[attr-defined]
-            and str(value.meta.analysis_id) == analysis_id  # type: ignore[attr-defined]
+            if value.meta.record_type == kind
+            and str(getattr(value.meta, "analysis_id", "")) == analysis_id
         )
 
-    def published_records(self, _analysis_id: str) -> tuple[object, ...]:
+    def published_records(self, _analysis_id: str) -> tuple[Record, ...]:
         return ()
 
 
@@ -59,12 +64,53 @@ class _Current:
 class _Ready:
     calls: list[dict[str, object]]
 
-    def enqueue(self, *args: object, **kwargs: object) -> object:
-        self.calls.append({"args": args, **kwargs})
-        return object()
+    def enqueue(
+        self,
+        scope: BudgetScopeRef,
+        metadata: RecordMetadata,
+        work_type: str,
+        subject_type: str,
+        subject_id: str,
+        identity: BudgetScopeRef,
+        *,
+        role: str = "ORCHESTRATION",
+        generation: int = 1,
+        inputs: tuple[RecordRef, ...] = (),
+        parent: RecordRef | None = None,
+        trigger_primitive_ref: RecordRef | None = None,
+    ) -> WorkExecutionState:
+        self.calls.append(
+            {
+                "scope": scope,
+                "metadata": metadata,
+                "work_type": work_type,
+                "subject_type": subject_type,
+                "subject_id": subject_id,
+                "identity": identity,
+                "role": role,
+                "generation": generation,
+                "inputs": inputs,
+                "parent": parent,
+                "trigger_primitive_ref": trigger_primitive_ref,
+            }
+        )
+        return WorkExecutionState.model_construct(meta=metadata, work_type=work_type)
+
+    def enqueue_registered(
+        self,
+        registered: WorkExecutionState,
+        scope: BudgetScopeRef,
+        identity: BudgetScopeRef,
+        *,
+        role: str = "ORCHESTRATION",
+    ) -> WorkExecutionState:
+        del scope, identity, role
+        return registered
 
 
-def _fixture() -> tuple[PrimitiveUpdateHandoff, PrimitiveHandoffRefs, _Ready, object]:
+def _fixture(
+    *, current_empty: bool = False
+) -> tuple[PrimitiveUpdateHandoff, PrimitiveHandoffRefs, _Ready, RecordMetadata]:
     dynamic = dynamic_success()
     request = cast(DynamicReproductionRequest, dynamic["request"])
     request_ref = _exact(request)
@@ -188,10 +234,13 @@ def _fixture() -> tuple[PrimitiveUpdateHandoff, PrimitiveHandoffRefs, _Ready, ob
         index,
     )
     ready = _Ready([])
+    current_values: tuple[Record, ...] = (
+        () if current_empty else (process, policy_state, index)
+    )
     service = PrimitiveUpdateHandoff(
         records=_Records(values),
-        current=_Current((process, policy_state, index)),  # type: ignore[arg-type]
-        ready_work=ready,  # type: ignore[arg-type]
+        current=_Current(current_values),
+        ready_work=ready,
     )
     return service, refs, ready, process.meta
 
@@ -202,27 +251,26 @@ def test_accepted_true_enqueues_exact_primitive_update_as_ready_only() -> None:
     returned = service.enqueue_true(
         refs=refs,
         scope=identity,
-        metadata=metadata,  # type: ignore[arg-type]
+        metadata=metadata,
         identity=identity,
     )
 
     assert returned is not None
     assert len(ready.calls) == 1
-    assert ready.calls[0]["args"][2] == "PRIMITIVE_UPDATE"  # type: ignore[index]
+    assert ready.calls[0]["work_type"] == "PRIMITIVE_UPDATE"
     assert ready.calls[0]["inputs"] == refs.work_inputs()
     assert "start" not in ready.calls[0]
 
 
 def test_stale_primitive_index_stops_before_ready_handoff() -> None:
-    service, refs, ready, metadata = _fixture()
-    service._current = _Current(())  # type: ignore[assignment]
+    service, refs, ready, metadata = _fixture(current_empty=True)
     identity = StoredDataRef.model_validate(ref("agent_identity"))
 
     with pytest.raises(ValueError, match="STALE_RESULT"):
         service.enqueue_true(
             refs=refs,
             scope=identity,
-            metadata=metadata,  # type: ignore[arg-type]
+            metadata=metadata,
             identity=identity,
         )
 

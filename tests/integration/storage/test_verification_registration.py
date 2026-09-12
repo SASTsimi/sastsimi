@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import func, insert, select, update
 
 from sastsimi.bootstrap import build_fake_pipeline
+from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.hypothesis import (
@@ -24,6 +25,7 @@ from sastsimi.contracts.verification import (
 from sastsimi.ports.verification_registration import VerificationRegistration
 from sastsimi.storage import models
 from sastsimi.storage.codec import reference
+from sastsimi.storage.database import Database
 from tests.contract.domain.canonical_fixtures import make
 from tests.integration.storage.test_intermediate_publication import (
     prepared_policy_parser,
@@ -276,7 +278,8 @@ def test_revise_registration_replays_after_ready_response_is_lost(
     )
     registered_process = runtime.unit_of_work.records.get_exact(first.process_ref)
     assert isinstance(registered_process, HypothesisProcessState)
-    with runtime.unit_of_work.records.database.write() as connection:
+    database = Database(RuntimePaths(scenario.data_dir).database)
+    with database.write() as connection:
         connection.execute(
             update(models.current_records)
             .where(

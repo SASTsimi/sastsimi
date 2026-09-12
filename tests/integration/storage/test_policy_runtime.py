@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sqlalchemy import func, select
@@ -22,7 +23,7 @@ from tests.integration.storage.test_intermediate_publication import (
 )
 
 
-def _begin_policy(tmp_path: Path):
+def _begin_policy(tmp_path: Path) -> tuple[Any, ...]:
     h, runtime, runner, existing, *_ = prepared_policy_parser(tmp_path, parallel=2)
     scope = runtime.budget_registry.current_state("a1").budget_binding_ref
     assert scope is not None

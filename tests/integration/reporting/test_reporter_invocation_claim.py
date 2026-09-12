@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import cast
 
@@ -18,10 +18,20 @@ from sastsimi.contracts.actions import (
 )
 from sastsimi.contracts.budget import BudgetReservation
 from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.llm import LLMCallSpec, OutputSchemaSpec, PromptPayload
+from sastsimi.contracts.llm import (
+    LLMCallSpec,
+    LLMInvocationRequest,
+    LLMRole,
+    OutputSchemaSpec,
+    PromptPayload,
+)
+from sastsimi.contracts.llm_closure import llm_action_input_refs
+from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.reporting import validate_report_content
 from sastsimi.contracts.work import WorkExecutionState, WorkType
+from sastsimi.providers.base import StructuredOutputValue
+from sastsimi.providers.storage_io import RequestSemanticValidator
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
 from sastsimi.runtime.llm_invocation_provenance import (
     validate_llm_invocation_provenance,
@@ -30,7 +40,6 @@ from tests.integration.providers.test_llm_call_service import (
     Fixture,
     build_service,
     fixture,
-    llm_action_input_refs,
 )
 
 
@@ -46,7 +55,9 @@ class _ReporterCase:
     claimed: ActionDecision
 
 
-def _validate_test_report(value: object, _request: object) -> None:
+def _validate_test_report(
+    value: StructuredOutputValue, _request: LLMInvocationRequest
+) -> None:
     validate_report_content(value, allowed_locations=())
 
 
@@ -55,7 +66,8 @@ async def _reporter_case(
     action_type: ActionType = ActionType.CREATE_REPORT_DRAFT,
     requested_by: RequesterRole = RequesterRole.VERIFICATION,
     raw_output: bytes | None = None,
-    request_validators: dict[tuple[str, str], Callable[..., None]] | None = None,
+    request_validators: Mapping[tuple[LLMRole, str], RequestSemanticValidator]
+    | None = None,
 ) -> _ReporterCase:
     data = fixture()
     data.raw_output = raw_output or canonical_bytes(
@@ -70,7 +82,7 @@ async def _reporter_case(
     work = WorkExecutionState.model_validate(
         data.work.model_dump() | {"work_type": WorkType.REPORT_DRAFT}
     )
-    work_ref = cast(StoredDataRef, data.records.publish(work))
+    work_ref = data.records.publish(work)
     old_spec = data.records.get_exact(data.spec_ref)
     assert isinstance(old_spec, LLMCallSpec)
     old_schema = data.records.get_exact(old_spec.output_schema_ref)
@@ -150,9 +162,10 @@ async def _reporter_case(
         }
     )
     claimed_ref = data.records.publish(claimed)
+    assert isinstance(work.meta, RecordMeta)
     reservation = BudgetReservation.model_construct(
         meta=data.metadata_factory(
-            data.work.meta, "budget_reservation", data.work.active_attempt_id
+            work.meta, "budget_reservation", work.active_attempt_id
         ),
         reservation_id="reporter-reservation",
         budget_binding_ref=data.reservation_ref,

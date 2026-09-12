@@ -31,8 +31,12 @@ from sastsimi.contracts.work import (
     WorkType,
 )
 from sastsimi.ports.dto import WorkContext
-from sastsimi.reporting.rule_scope_gate_handler import RuleScopeGateHandler
+from sastsimi.reporting.rule_scope_gate_handler import (
+    RuleScopeGateHandler,
+    StoredRuleScopeInputResolver,
+)
 from sastsimi.reporting.rule_scope_gate_workflow import RuleScopeExecution
+from sastsimi.reporting.work_handlers import StoredReporterInputResolver
 
 NOW = datetime(2026, 9, 12, tzinfo=UTC)
 
@@ -164,7 +168,9 @@ def test_compose_t12_services_wires_post_claim_resolvers_without_model() -> None
     assert isinstance(services, T12Services)
     assert services.cwe.resolve_call is calls.cwe
     assert services.technical.resolve_call is calls.technical
+    assert isinstance(services.rule_scope.resolve_inputs, StoredRuleScopeInputResolver)
     assert services.rule_scope.resolve_inputs.resolve_call is calls.rule_scope
+    assert isinstance(services.reporter.resolve_inputs, StoredReporterInputResolver)
     assert services.reporter.resolve_inputs.resolve_call is calls.reporter
     assert not hasattr(services, "provider")
     assert not hasattr(services, "model")
