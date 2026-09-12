@@ -60,18 +60,33 @@ Primitive index 갱신을 소유한다. Chaining Agent는 runtime이 고정한 �
 - [x] 방향성 match와 양쪽 lineage 제외를 구현한다.
 - [x] Agent 출력에서 runtime-owned 식별자·reference를 받지 않는다.
 - [x] TRUE/HOLD admission의 public 경계와 원자적 projection을 구현한다.
-- [ ] HOLD·TRUE가 섞인 analysis-wide immutable candidate pool을 저장한다.
-- [ ] claimed RUNNING work가 같은 stable work의 historical pool을 읽는다.
-- [ ] source generation과 cohort generation의 exact 일치를 검사한다.
-- [ ] 이후 generation이 과거 pinned work를 무효화하지 않는지 검사한다.
-- [ ] result와 match reservation을 같은 transaction으로 확정한다.
-- [ ] COMMITTED result에서 자식 가설·READY Verification을 멱등 등록한다.
+- [x] HOLD·TRUE가 섞인 analysis-wide immutable candidate pool을 저장한다.
+- [x] claimed RUNNING work가 같은 stable work의 historical pool을 읽는다.
+- [x] source generation과 cohort generation의 exact 일치를 검사한다.
+- [x] 이후 generation이 과거 pinned work를 무효화하지 않는지 검사한다.
+- [x] result와 match reservation을 같은 transaction으로 확정한다.
+- [x] COMMITTED result에서 자식 가설·READY Verification을 멱등 등록한다.
 - [x] content-only Chaining prompt와 경계 시험을 추가한다.
-- [ ] bootstrap에 production handler와 adapter를 연결한다.
-- [ ] TRUE+HOLD, TRUE+TRUE, no-match, duplicate, stale/cross-scope와 recovery의
+- [x] bootstrap에 production handler와 adapter를 연결한다.
+- [x] TRUE+HOLD, TRUE+TRUE, no-match, duplicate, stale/cross-scope와 recovery의
   focused test를 통과한다.
-- [ ] Ruff, strict mypy, architecture/diff check를 통과한다.
+- [x] Ruff, strict mypy와 diff check를 통과한다.
+- [x] architecture 문서 검사를 통과한다.
 - [ ] 독립 Blocker/High 검토 후 PR CI를 한 번 실행해 병합한다.
+
+## 현재 구현 증거
+
+- T12 최종 기준: PR #164 merge commit `2fff51b`.
+- T13 코드 후보(문서 기록 전): `5a65401`.
+- 자식 등록·production composition·TRUE+HOLD/TRUE+TRUE focused 검사:
+  `26 passed`.
+- 서로 다른 Verification generation의 Primitive, current index 검증,
+  다른 가설 Primitive 바꿔 끼우기 focused 검사: `3 passed`.
+- 통합 후보의 T13 핵심 production 파일 Ruff 및 strict mypy: 통과.
+- Architecture 문서 검사: `Failures: 0`.
+- Windows 로컬의 pytest 임시 폴더 ACL 오류는 테스트 본문 실패가 아니다.
+  같은 3개 generation 검사는 독립 worktree에서 통과했으며 최종 전체 검사는
+  PR CI의 Ubuntu·Windows job에서 한 번만 실행한다.
 
 ## 후속 목록
 
