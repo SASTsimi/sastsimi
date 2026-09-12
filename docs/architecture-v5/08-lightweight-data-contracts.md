@@ -81,7 +81,7 @@ RepositoryExecutionSelection:
   status: READY | BLOCKED | FAILED
 ```
 
-`READY`는 선택 언어마다 계약에 정의된 모든 실행 경로가 정확한 `StaticToolProfile` revision에 연결되고 gap·error가 없다는 뜻이다. Python은 `PYTHON_AST`, `CODEQL`, `OPENGREP`, JavaScript는 `CODEQL`, `OPENGREP`을 선택한다. 필요한 `ACTIVE` capability가 없거나 profile 확인이 필요하면 도구를 임의 추정하지 않고 `BLOCKED`와 gap을 남긴다. 실행 자체의 복구 불가능한 오류는 `FAILED`와 error로 남기며 취약점 verdict로 바꾸지 않는다.
+`READY`는 선택한 모든 실행 경로가 정확한 `ACTIVE StaticToolProfile` revision에 연결되고, Python에는 `PYTHON_AST`, 각 언어에는 `CODEQL | OPENGREP` 중 하나 이상의 SAST 경로가 있다는 뜻이다. Python의 지원 후보는 `PYTHON_AST`, `CODEQL`, `OPENGREP`, JavaScript의 지원 후보는 `CODEQL`, `OPENGREP`이다. 이 가운데 실제 capability가 검증된 경로만 선택하며, 비활성 후보는 `DataGap(reason=MISSING)`으로 보존한다. 따라서 CodeQL처럼 안전 경계 검증이 끝나지 않은 선택 경로 하나 때문에 다른 검증 완료 도구까지 막지 않는다. 다만 Python 구조 분석 경로가 없거나 해당 언어에서 실행할 SAST가 하나도 없거나 profile 확인이 필요하면 도구를 임의 추정하지 않고 `BLOCKED`와 gap을 남긴다. 실행 자체의 복구 불가능한 registry 오류는 `FAILED`와 error로 남기며 어느 경우도 취약점 verdict로 바꾸지 않는다.
 
 분석을 시작했지만 아직 코드 작업공간이나 commit이 준비되지 않은 상태는 `RunMeta`를 사용한다.
 
