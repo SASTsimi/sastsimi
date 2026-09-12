@@ -20,14 +20,21 @@ from sastsimi.contracts.dynamic import (
 )
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
-from sastsimi.ports.dynamic_sandbox import SandboxSetupCleanupError
-
-from .cleanup import OwnedResourceRegistry
-from .controller import (
+from sastsimi.ports.dynamic_sandbox import (
+    PreparedRecipeSourceView,
+    RecreateReason,
     SandboxBoundaryOutcome,
     SandboxBuildBoundaryOutcome,
     SandboxRunSpec,
 )
+from sastsimi.ports.dynamic_sandbox import (
+    PreparedSandbox as PreparedSandbox,
+)
+from sastsimi.ports.dynamic_sandbox import (
+    SandboxSetupCleanupError as SandboxSetupCleanupError,
+)
+
+from .cleanup import OwnedResourceRegistry
 from .docker_adapter import DockerCommandOutcome, DockerContainerState
 from .health_check import SandboxHealthChecker
 from .recipe_store import (
@@ -35,8 +42,6 @@ from .recipe_store import (
     PreparedRecipeSource,
     fresh_record_meta,
 )
-
-RecreateReason = Literal["STATE_CHANGED", "CONFIG_CHANGED", "STATE_UNCERTAIN"]
 
 
 class DockerLifecyclePort(Protocol):
@@ -66,13 +71,6 @@ class DockerLifecyclePort(Protocol):
     ) -> DockerCommandOutcome: ...
     async def inspect(self, container_id: str) -> DockerContainerState: ...
     async def remove(self, resource_ids: tuple[str, ...]) -> None: ...
-
-
-@dataclass(frozen=True, slots=True)
-class PreparedSandbox:
-    recipe: EnvironmentRecipe
-    environment: SandboxEnvironment
-    resource_refs: tuple[StoredDataRef, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +120,7 @@ class ReproductionSetupAutomation:
         self,
         *,
         approval: SandboxBuildBoundaryOutcome,
-        source: PreparedRecipeSource,
+        source: PreparedRecipeSourceView,
         request: DynamicReproductionRequest,
         requirements: EnvironmentRequirements,
         meta: RecordMeta,
@@ -383,7 +381,7 @@ class ReproductionSetupAutomation:
     @staticmethod
     def _validate_build(
         approval: SandboxBuildBoundaryOutcome,
-        source: PreparedRecipeSource,
+        source: PreparedRecipeSourceView,
         request: DynamicReproductionRequest,
         requirements: EnvironmentRequirements,
         meta: RecordMeta,
@@ -452,7 +450,7 @@ class ReproductionSetupAutomation:
         meta: RecordMeta,
         *,
         request: DynamicReproductionRequest,
-        source: PreparedRecipeSource | None = None,
+        source: PreparedRecipeSourceView | None = None,
     ) -> None:
         for record in records:
             record_meta = record.meta

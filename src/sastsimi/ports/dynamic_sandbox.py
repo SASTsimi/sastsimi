@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Protocol
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import Literal, Protocol
 
 from sastsimi.contracts.actions import ActionRequest
 from sastsimi.contracts.budget import DynamicReproductionLifecycleProfile
@@ -20,38 +21,91 @@ from sastsimi.contracts.dynamic import (
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef
 
+type RecreateReason = Literal["STATE_CHANGED", "CONFIG_CHANGED", "STATE_UNCERTAIN"]
 
-class SandboxRunSpecView(Protocol):
-    """Opaque, already-normalized Sandbox run specification."""
 
-    @property
-    def requested_execution_ms(self) -> int: ...
+@dataclass(frozen=True)
+class SandboxMount:
+    """One normalized mount admitted at the Sandbox boundary."""
+
+    source: Path | None
+    target: PurePosixPath
+    read_only: bool
+
+
+@dataclass(frozen=True)
+class SandboxRunSpec:
+    """Exact, already-normalized Sandbox run specification."""
+
+    workspace_root: Path
+    image_digest: str | None
+    user: str
+    mounts: tuple[SandboxMount, ...]
+    network_mode: str
+    network_targets: tuple[str, ...]
+    secret_refs: tuple[StoredDataRef, ...]
+    privileged: bool
+    pid_mode: str | None
+    ipc_mode: str | None
+    capabilities: tuple[str, ...]
+    cpu_limit_millicores: int
+    memory_limit_bytes: int
+    disk_limit_bytes: int
+    pid_limit: int
+    requested_execution_ms: int
 
 
 class PreparedRecipeSourceView(Protocol):
     @property
+    def workspace_root(self) -> Path: ...
+
+    @property
+    def request_ref(self) -> StoredDataRef: ...
+
+    @property
+    def requirements_ref(self) -> StoredDataRef: ...
+
+    @property
+    def meta(self) -> RecordMeta: ...
+
+    @property
     def recipe_source_ref(self) -> StoredDataRef: ...
 
-
-class SandboxBuildBoundaryOutcomeView(Protocol):
     @property
-    def decision(self) -> SandboxPolicyDecision: ...
-
-
-class SandboxBoundaryOutcomeView(Protocol):
-    @property
-    def decision(self) -> SandboxPolicyDecision: ...
-
-
-class PreparedSandboxView(Protocol):
-    @property
-    def recipe(self) -> EnvironmentRecipe: ...
+    def source_refs(self) -> tuple[StoredDataRef, ...]: ...
 
     @property
-    def environment(self) -> SandboxEnvironment: ...
+    def source_digest(self) -> str: ...
 
     @property
-    def resource_refs(self) -> tuple[StoredDataRef, ...]: ...
+    def dockerfile(self) -> bytes: ...
+
+    @property
+    def dockerfile_digest(self) -> str: ...
+
+    @property
+    def base_image(self) -> str: ...
+
+
+@dataclass(frozen=True)
+class SandboxBuildBoundaryOutcome:
+    decision: SandboxPolicyDecision
+    approved_spec: SandboxRunSpec | None
+    approved_source: PreparedRecipeSourceView | None
+
+
+@dataclass(frozen=True)
+class SandboxBoundaryOutcome:
+    decision: SandboxPolicyDecision
+    approved_spec: SandboxRunSpec | None
+    approved_recipe_ref: StoredDataRef | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedSandbox:
+    recipe: EnvironmentRecipe
+    environment: SandboxEnvironment
+    resource_refs: tuple[StoredDataRef, ...]
 
 
 class DockerCommandOutcomeView(Protocol):
@@ -71,7 +125,7 @@ class DockerCommandOutcomeView(Protocol):
 class SandboxSetupCleanupError(RuntimeError):
     """Setup failed and its exact owned container still requires cleanup."""
 
-    def __init__(self, prepared: PreparedSandboxView) -> None:
+    def __init__(self, prepared: PreparedSandbox) -> None:
         super().__init__("OWNED_RESOURCE_CLEANUP_FAILED")
         self.prepared = prepared
 
@@ -83,7 +137,7 @@ class SandboxControllerPort(Protocol):
     def evaluate_build(
         self,
         *,
-        spec: SandboxRunSpecView,
+        spec: SandboxRunSpec,
         source: PreparedRecipeSourceView,
         action: ActionRequest,
         action_decision_ref: StoredDataRef,
@@ -94,12 +148,12 @@ class SandboxControllerPort(Protocol):
         run_policy_state_ref: StoredDataRef,
         required_context_refs: tuple[StoredDataRef, ...],
         meta: RecordMeta,
-    ) -> SandboxBuildBoundaryOutcomeView: ...
+    ) -> SandboxBuildBoundaryOutcome: ...
 
     def evaluate(
         self,
         *,
-        spec: SandboxRunSpecView,
+        spec: SandboxRunSpec,
         recipe: EnvironmentRecipe,
         action: ActionRequest,
         action_decision_ref: StoredDataRef,
@@ -110,7 +164,7 @@ class SandboxControllerPort(Protocol):
         run_policy_state_ref: StoredDataRef,
         required_context_refs: tuple[StoredDataRef, ...],
         meta: RecordMeta,
-    ) -> SandboxBoundaryOutcomeView: ...
+    ) -> SandboxBoundaryOutcome: ...
 
 
 class ReproductionSetupPort(Protocol):
@@ -126,7 +180,7 @@ class ReproductionSetupPort(Protocol):
     async def build(
         self,
         *,
-        approval: SandboxBuildBoundaryOutcomeView,
+        approval: SandboxBuildBoundaryOutcome,
         source: PreparedRecipeSourceView,
         request: DynamicReproductionRequest,
         requirements: EnvironmentRequirements,
@@ -136,26 +190,26 @@ class ReproductionSetupPort(Protocol):
     async def create(
         self,
         *,
-        approval: SandboxBoundaryOutcomeView,
+        approval: SandboxBoundaryOutcome,
         recipe: EnvironmentRecipe,
         request: DynamicReproductionRequest,
         requirements: EnvironmentRequirements,
         plan: ReproductionPlan,
         meta: RecordMeta,
-    ) -> PreparedSandboxView: ...
+    ) -> PreparedSandbox: ...
 
     async def reuse(
-        self, *, previous: PreparedSandboxView, meta: RecordMeta
-    ) -> PreparedSandboxView: ...
+        self, *, previous: PreparedSandbox, meta: RecordMeta
+    ) -> PreparedSandbox: ...
 
     async def recreate(
         self,
         *,
-        approval: SandboxBoundaryOutcomeView,
-        previous: PreparedSandboxView,
-        reason: str,
+        approval: SandboxBoundaryOutcome,
+        previous: PreparedSandbox,
+        reason: RecreateReason,
         meta: RecordMeta,
-    ) -> PreparedSandboxView: ...
+    ) -> PreparedSandbox: ...
 
     async def cleanup(
         self,
@@ -186,11 +240,13 @@ __all__ = [
     "DockerCommandOutcomeView",
     "DynamicDockerExecutionPort",
     "PreparedRecipeSourceView",
-    "PreparedSandboxView",
+    "PreparedSandbox",
+    "RecreateReason",
     "ReproductionSetupPort",
-    "SandboxBoundaryOutcomeView",
-    "SandboxBuildBoundaryOutcomeView",
+    "SandboxBoundaryOutcome",
+    "SandboxBuildBoundaryOutcome",
     "SandboxControllerPort",
-    "SandboxRunSpecView",
+    "SandboxMount",
+    "SandboxRunSpec",
     "SandboxSetupCleanupError",
 ]

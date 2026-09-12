@@ -16,6 +16,7 @@ from sastsimi.contracts.dynamic import EnvironmentRecipe, EnvironmentRequirement
 from sastsimi.contracts.ids import LogicalRecordId, RecordId, StoredDataId
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.ports.dynamic_sandbox import PreparedRecipeSourceView
 
 _MAX_RECIPE_INPUT_BYTES = 4 * 1024 * 1024
 _KNOWN_RECIPE_NAMES = frozenset(
@@ -144,7 +145,7 @@ class EnvironmentRecipeStore:
         self,
         *,
         docker: RecipeDockerPort,
-        source: PreparedRecipeSource,
+        source: PreparedRecipeSourceView,
         labels: Mapping[str, str],
         build_timeout_ms: int,
     ) -> EnvironmentRecipe:

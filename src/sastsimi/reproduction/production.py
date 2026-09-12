@@ -39,10 +39,10 @@ from sastsimi.ports.dto import Record, WorkHandlerResult
 from sastsimi.ports.dynamic_sandbox import (
     DockerCommandOutcomeView,
     DynamicDockerExecutionPort,
-    PreparedSandboxView,
+    PreparedSandbox,
     ReproductionSetupPort,
     SandboxControllerPort,
-    SandboxRunSpecView,
+    SandboxRunSpec,
     SandboxSetupCleanupError,
 )
 from sastsimi.ports.id_generator import IdGenerator
@@ -72,7 +72,7 @@ class DynamicSandboxAuthorization:
     sandbox_profile: SandboxProfile
     lifecycle_profile: DynamicReproductionLifecycleProfile
     run_policy_state_ref: StoredDataRef
-    run_spec: SandboxRunSpecView
+    run_spec: SandboxRunSpec
 
 
 type DynamicSandboxAuthorizationResolver = Callable[
@@ -207,7 +207,7 @@ class ProductionDynamicWorkflow:
         self._sink = sink
         self._authorization = authorization
         self._records: dict[str, Record] = {}
-        self._prepared: PreparedSandboxView | None = None
+        self._prepared: PreparedSandbox | None = None
         self._policy: SandboxPolicyDecision | None = None
         self._log: AgentLog | None = None
         self._cleanup: CleanupResult | None = None
@@ -1009,7 +1009,7 @@ class ProductionDynamicWorkflow:
             input_refs,
         )
 
-    async def _remember_prepared(self, prepared: PreparedSandboxView) -> None:
+    async def _remember_prepared(self, prepared: PreparedSandbox) -> None:
         self._prepared = prepared
         self._recipes.append(prepared.recipe)
         self._environments.append(prepared.environment)
@@ -1149,7 +1149,7 @@ class ProductionDynamicWorkflow:
             raise ValueError("SANDBOX_POLICY_REQUIRED")
         return cast(StoredDataRef, reference(self._policy))
 
-    def _require_prepared(self) -> PreparedSandboxView:
+    def _require_prepared(self) -> PreparedSandbox:
         if self._prepared is None:
             raise ValueError("SANDBOX_ENVIRONMENT_REQUIRED")
         return self._prepared
