@@ -1584,7 +1584,7 @@ def build_t13_services(
         children=child_registration,
         ids=ids,
         metadata_factory=metadata,
-        requester_identity_ref=chaining_identity,
+        requester_identity_ref=orchestration_identity,
     )
     return T13Services(
         primitive_update=PrimitiveUpdateHandler(

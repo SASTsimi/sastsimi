@@ -188,7 +188,9 @@ def test_compose_t13_services_builds_one_concrete_child_registration() -> None:
     assert services.chaining.service._publisher._identity == chaining_identity
     child_registration = services.chaining.service._children
     assert isinstance(child_registration, SQLiteChainingChildRegistration)
-    assert services.chaining.service._identity == chaining_identity
+    # The Chaining Agent publishes the result, but only Orchestration may
+    # register the resulting child hypothesis/work.
+    assert services.chaining.service._identity == orchestration_identity
     assert services.chaining.resolve_call is _resolve_call
     assert services.hypothesis_proposal.registration is child_registration
     assert services.hypothesis_proposal.requester_identity_ref == orchestration_identity
