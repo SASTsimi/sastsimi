@@ -145,6 +145,7 @@ def _runtime_profile(
                     build_backend="LEGACY_LIMITED",
                     enforced_build_limits=("CPU", "MEMORY", "PID", "DISK"),
                     external_build_disk_limit_bytes=64 * 1024 * 1024,
+                    external_build_storage_identity_hash="a" * 64,
                 )
                 if kind == "DOCKER"
                 else None

@@ -7,7 +7,7 @@ import re
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol, cast
@@ -41,6 +41,7 @@ from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.dynamic_sandbox import TrustedDockerTarget
 from sastsimi.runtime.configuration_registry import ConfigurationRegistry
 
+from .docker_build_boundary import DockerBuildBoundaryProbeResult
 from .models import CapabilityProbeReceipt, ProbeKind
 from .probes import (
     CommandObservation,
@@ -56,7 +57,9 @@ from .store import _SQLiteCapabilityProbeStore
 type ExecutableLocator = Callable[[str], Path | None]
 type Clock = Callable[[], datetime]
 type ApprovalIdentity = Callable[[], str]
-type DockerBuildCapabilityProbe = Callable[[], DockerBuildCapability | None]
+type DockerBuildCapabilityProbe = Callable[
+    [], DockerBuildBoundaryProbeResult | DockerBuildCapability | None
+]
 type CapabilityProfile = RuntimeCapabilityProfile | StaticToolProfile
 
 _PUBLICATION_ANALYSIS = AnalysisId("capability-publication")
@@ -64,8 +67,11 @@ _PUBLICATION_WORKSPACE = WorkspaceId("host-configuration")
 _PUBLICATION_COMMIT = CommitId("host-configuration-v1")
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+| -]{0,127}$")
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_WINDOWS_DOCKER_HOST = re.compile(r"^npipe:////\./pipe/[A-Za-z0-9._-]{1,128}$")
-_POSIX_DOCKER_HOST = re.compile(r"^unix:///[A-Za-z0-9_./-]{1,512}$")
+_WINDOWS_DOCKER_HOST = "npipe:////./pipe/docker_engine"
+_SYSTEM_DOCKER_HOSTS = frozenset(
+    {"unix:///var/run/docker.sock", "unix:///run/docker.sock"}
+)
+_ROOTLESS_DOCKER_HOST = re.compile(r"^unix:///run/user/[1-9][0-9]*/docker\.sock$")
 
 
 class SecretLookup(Protocol):
@@ -132,6 +138,9 @@ class _CapabilityProbeEngine:
         controls: tuple[str, ...] = ()
         execution_target_hash: str | None = None
         docker_build_capability: DockerBuildCapability | None = None
+        boundary_result: DockerBuildBoundaryProbeResult | None = None
+        docker_build_boundary_code: str | None = None
+        docker_build_storage_identity_hash: str | None = None
         summary = "Capability probe could not be completed"
 
         if kind == "PYTHON_AST":
@@ -215,14 +224,21 @@ class _CapabilityProbeEngine:
                         elif kind == "DOCKER":
                             self._scratch_root.mkdir(parents=True, exist_ok=True)
                             execution_target_hash = self._docker_target_hash(executable)
-                            docker_build_capability = (
-                                self._docker_build_capability_probe()
+                            boundary_result = self._docker_build_boundary_result()
+                            docker_build_boundary_code = boundary_result.code
+                            docker_build_storage_identity_hash = (
+                                boundary_result.storage_identity_hash
                             )
+                            docker_build_capability = boundary_result.capability
                             control_passed = (
                                 execution_target_hash is not None
                                 and docker_build_capability is not None
                                 and verify_outer_boundary_controls(self._scratch_root)
-                                and self._probe_docker_operations(executable, probe_id)
+                                and self._probe_docker_operations(
+                                    executable,
+                                    probe_id,
+                                    docker_build_capability,
+                                )
                                 and self._docker_target_hash(executable)
                                 == execution_target_hash
                             )
@@ -246,7 +262,11 @@ class _CapabilityProbeEngine:
                     elif kind == "CODEQL":
                         summary = "CodeQL quota control probe is unavailable"
                     elif kind == "DOCKER" and docker_build_capability is None:
-                        summary = "Docker build resource boundary probe is unavailable"
+                        summary = (
+                            boundary_result.safe_summary
+                            if boundary_result is not None
+                            else "Docker build resource boundary probe is unavailable"
+                        )
                     else:
                         summary = f"{kind} required control probe failed"
                 elif kind == "DOCKER":
@@ -293,6 +313,8 @@ class _CapabilityProbeEngine:
             "observed_sha256": digest,
             "execution_target_hash": execution_target_hash,
             "docker_build_capability": docker_build_capability,
+            "docker_build_boundary_code": docker_build_boundary_code,
+            "docker_build_storage_identity_hash": (docker_build_storage_identity_hash),
             "operating_system": self._operating_system,
             "architecture": self._architecture,
             "checks": tuple(controls),
@@ -328,6 +350,10 @@ class _CapabilityProbeEngine:
                 "observed_sha256": digest,
                 "execution_target_hash": execution_target_hash,
                 "docker_build_capability": docker_build_capability,
+                "docker_build_boundary_code": docker_build_boundary_code,
+                "docker_build_storage_identity_hash": (
+                    docker_build_storage_identity_hash
+                ),
                 "operating_system": self._operating_system,
                 "architecture": self._architecture,
                 "checked_at": checked_at,
@@ -408,6 +434,9 @@ class _CapabilityProbeEngine:
             raise ValueError("CAPABILITY_DOCKER_PROFILE_REQUIRED")
         executable, daemon_target = self.resolve_docker_command(profile_ref)
         boundary = profile.docker_build_capability
+        current_boundary = self._docker_build_boundary_result()
+        if current_boundary.capability != boundary:
+            raise ValueError("CAPABILITY_DOCKER_BOUNDARY_CHANGED")
         return TrustedDockerTarget(
             profile_ref=profile_ref,
             executable=executable,
@@ -417,6 +446,9 @@ class _CapabilityProbeEngine:
             build_backend=boundary.build_backend,
             enforced_build_limits=frozenset(boundary.enforced_build_limits),
             external_build_disk_limit_bytes=boundary.external_build_disk_limit_bytes,
+            external_build_storage_identity_hash=(
+                boundary.external_build_storage_identity_hash
+            ),
         )
 
     def require_current(self, target: TrustedDockerTarget) -> None:
@@ -805,12 +837,12 @@ class _CapabilityProbeEngine:
     def _validated_docker_host(docker_host: str | None) -> str | None:
         if docker_host is None:
             return None
-        if _WINDOWS_DOCKER_HOST.fullmatch(docker_host) is not None:
+        if docker_host == _WINDOWS_DOCKER_HOST:
             return docker_host
-        if _POSIX_DOCKER_HOST.fullmatch(docker_host) is not None:
-            path = docker_host.removeprefix("unix://")
-            if ".." not in Path(path).parts:
-                return docker_host
+        if docker_host in _SYSTEM_DOCKER_HOSTS:
+            return docker_host
+        if _ROOTLESS_DOCKER_HOST.fullmatch(docker_host) is not None:
+            return docker_host
         raise ValueError("DOCKER_HOST_UNTRUSTED")
 
     def _run_docker(
@@ -819,6 +851,7 @@ class _CapabilityProbeEngine:
         arguments: tuple[str, ...],
         *,
         timeout_ms: int,
+        environment_overrides: Mapping[str, str] | None = None,
     ) -> CommandObservation:
         if self._docker_host is None:
             raise ValueError("DOCKER_HOST_REQUIRED")
@@ -826,6 +859,21 @@ class _CapabilityProbeEngine:
             executable,
             ("--host", self._docker_host, *arguments),
             timeout_ms=timeout_ms,
+            environment_overrides=environment_overrides,
+        )
+
+    def _docker_build_boundary_result(self) -> DockerBuildBoundaryProbeResult:
+        result = self._docker_build_capability_probe()
+        if isinstance(result, DockerBuildBoundaryProbeResult):
+            return result
+        if isinstance(result, DockerBuildCapability):
+            return DockerBuildBoundaryProbeResult(
+                code="DOCKER_BUILD_BOUNDARY_PRECHECK_PASSED",
+                capability=result,
+                storage_identity_hash=(result.external_build_storage_identity_hash),
+            )
+        return DockerBuildBoundaryProbeResult(
+            code="DOCKER_BUILD_DISK_BOUNDARY_UNPROVEN"
         )
 
     def _docker_target_hash(self, executable: Path) -> str | None:
@@ -852,7 +900,17 @@ class _CapabilityProbeEngine:
             return None
         return content_hash({"docker_execution_target": target})
 
-    def _probe_docker_operations(self, executable: Path, probe_id: str) -> bool:
+    def _probe_docker_operations(
+        self,
+        executable: Path,
+        probe_id: str,
+        boundary: DockerBuildCapability,
+    ) -> bool:
+        if (
+            boundary.build_backend != "LEGACY_LIMITED"
+            or boundary.enforced_build_limits != ("CPU", "MEMORY", "PID", "DISK")
+        ):
+            return False
         self._scratch_root.mkdir(parents=True, exist_ok=True)
         tag = "sastsimi-capability-" + probe_id.removeprefix("probe-")
         container = tag + "-run"
@@ -862,9 +920,34 @@ class _CapabilityProbeEngine:
         cleanup_passed = True
         with tempfile.TemporaryDirectory(dir=self._scratch_root) as temporary:
             root = Path(temporary)
+            base = self._run_docker(
+                executable,
+                ("image", "inspect", "--format", "{{.Id}}", "busybox:latest"),
+                timeout_ms=15_000,
+            )
+            if (
+                not base.succeeded
+                or base.safe_stdout is None
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", base.safe_stdout) is None
+            ):
+                return False
+            base_image_id = base.safe_stdout
             (root / "Dockerfile").write_text(
-                "FROM busybox:latest\n"
+                f"FROM {base_image_id}\n"
                 "USER 65532:65532\n"
+                "RUN set -eu; "
+                "if [ -f /sys/fs/cgroup/memory.max ]; then "
+                '[ "$(cat /sys/fs/cgroup/memory.max)" = "67108864" ]; '
+                "else "
+                '[ "$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)" '
+                '= "67108864" ]; fi; '
+                "if [ -f /sys/fs/cgroup/cpu.max ]; then "
+                '[ "$(cat /sys/fs/cgroup/cpu.max)" = "50000 100000" ]; '
+                "else "
+                '[ "$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us)" = "50000" ]; '
+                '[ "$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us)" = "100000" ]; '
+                "fi; "
+                '[ "$(ulimit -u)" = "64" ]\n'
                 'HEALTHCHECK --interval=1s --timeout=1s --retries=3 CMD ["true"]\n'
                 'CMD ["sleep", "30"]\n',
                 encoding="utf-8",
@@ -873,16 +956,27 @@ class _CapabilityProbeEngine:
                 build = self._run_docker(
                     executable,
                     (
+                        "image",
                         "build",
                         "--quiet",
                         "--pull=false",
+                        "--no-cache",
                         "--network",
                         "none",
+                        "--cpu-period",
+                        "100000",
+                        "--cpu-quota",
+                        "50000",
+                        "--memory",
+                        "67108864",
+                        "--ulimit",
+                        "nproc=64:64",
                         "--tag",
                         tag,
                         str(root),
                     ),
                     timeout_ms=60_000,
+                    environment_overrides={"DOCKER_BUILDKIT": "0"},
                 )
                 built = build.succeeded
                 if built:

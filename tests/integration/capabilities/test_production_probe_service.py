@@ -4,6 +4,7 @@ import inspect
 import json
 import sqlite3
 import sys
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -51,17 +52,24 @@ class FakeCommands:
         self.docker_boundary_safe = docker_boundary_safe
         self.docker_tmpfs = docker_tmpfs
         self.calls: list[tuple[str, tuple[str, ...]]] = []
+        self.environment_overrides: list[Mapping[str, str] | None] = []
         self.docker_target = "daemon-a|linux|x86_64"
 
     def run(
-        self, executable: Path, arguments: tuple[str, ...], *, timeout_ms: int
+        self,
+        executable: Path,
+        arguments: tuple[str, ...],
+        *,
+        timeout_ms: int,
+        environment_overrides: Mapping[str, str] | None = None,
     ) -> CommandObservation:
         del timeout_ms
         command = executable.stem.lower()
         self.calls.append((command, arguments))
+        self.environment_overrides.append(environment_overrides)
         effective_arguments = (
             arguments[2:]
-            if arguments[:2] == ("--host", "npipe:////./pipe/docker-engine")
+            if arguments[:2] == ("--host", "npipe:////./pipe/docker_engine")
             else arguments
         )
         operation = next(
@@ -114,7 +122,9 @@ class FakeCommands:
                 return CommandObservation(False, None)
             if effective_arguments[0] == "info":
                 return CommandObservation(True, self.docker_target)
-            if effective_arguments[0] == "build":
+            if effective_arguments[:2] == ("image", "inspect"):
+                return CommandObservation(True, "sha256:" + "c" * 64)
+            if effective_arguments[:2] == ("image", "build"):
                 return CommandObservation(True, "sha256:" + "b" * 64)
             if effective_arguments[0] == "run":
                 return CommandObservation(True, "probe-container")
@@ -174,6 +184,7 @@ _VERIFIED_DOCKER_BUILD_CAPABILITY = DockerBuildCapability(
     build_backend="LEGACY_LIMITED",
     enforced_build_limits=("CPU", "MEMORY", "PID", "DISK"),
     external_build_disk_limit_bytes=64 * 1024 * 1024,
+    external_build_storage_identity_hash="a" * 64,
 )
 
 
@@ -222,7 +233,7 @@ def _service(
         clock=lambda: datetime(2026, 9, 13, tzinfo=UTC),
         executable_locator=lambda name: located.get(name),
         command_runner=commands,
-        docker_host="npipe:////./pipe/docker-engine",
+        docker_host="npipe:////./pipe/docker_engine",
         secret_resolver=FakeSecrets(),
         openai_probe=FakeOpenAI(passed=openai_passed),
         approval_identity=lambda: "taehyeon-git",
@@ -337,7 +348,7 @@ def test_real_probe_receipts_require_exact_human_approval_before_active(
     assert service.resolve_executable(docker_ref).name == "docker.exe"
     docker_path, docker_host = service.resolve_docker_command(docker_ref)
     assert docker_path.name == "docker.exe"
-    assert docker_host == "npipe:////./pipe/docker-engine"
+    assert docker_host == "npipe:////./pipe/docker_engine"
     target = service.resolve_current(docker_ref)
     assert target.profile_ref == docker_ref
     assert target.executable == docker_path
@@ -466,6 +477,19 @@ def test_activation_requires_actual_operations_not_only_version(
     assert any(
         command == "docker" and "build" in arguments for command, arguments in flattened
     )
+    docker_build_index = next(
+        index
+        for index, (_command, arguments) in enumerate(commands.calls)
+        if "build" in arguments
+    )
+    docker_build_arguments = commands.calls[docker_build_index][1]
+    assert "--cpu-period" in docker_build_arguments
+    assert "--cpu-quota" in docker_build_arguments
+    assert "--memory" in docker_build_arguments
+    assert "--ulimit" in docker_build_arguments
+    assert commands.environment_overrides[docker_build_index] == {
+        "DOCKER_BUILDKIT": "0"
+    }
     assert any(
         command == "docker" and "run" in arguments for command, arguments in flattened
     )
@@ -552,7 +576,7 @@ def test_docker_probe_pins_every_command_to_exact_host(tmp_path: Path) -> None:
     ]
     assert docker_calls
     assert all(
-        arguments[:2] == ("--host", "npipe:////./pipe/docker-engine")
+        arguments[:2] == ("--host", "npipe:////./pipe/docker_engine")
         for arguments in docker_calls
     )
 
@@ -587,7 +611,7 @@ def test_docker_probe_without_verified_build_boundary_stays_blocked(
     assert receipt.docker_build_capability is None
     assert receipt.approval_target_hash is None
     assert receipt.safe_summary == (
-        "Docker build resource boundary probe is unavailable"
+        "Docker build cache and image output have no proven hard disk boundary"
     )
 
 
@@ -606,6 +630,25 @@ def test_docker_target_revalidation_rejects_changed_daemon(
     commands.docker_target = "changed-daemon|linux|x86_64"
 
     with pytest.raises(ValueError, match="CAPABILITY_EXECUTION_TARGET_CHANGED"):
+        service.require_current(target)
+
+
+def test_docker_target_revalidation_rejects_changed_storage_boundary(
+    tmp_path: Path,
+) -> None:
+    service, _runtime, _store = _service(tmp_path, available={"docker"})
+    receipt = service.probe("DOCKER")
+    profile_ref = service.approve(
+        receipt.probe_id,
+        expected_target_hash=receipt.approval_target_hash or "",
+    )
+    target = service.resolve_current(profile_ref)
+    changed = _VERIFIED_DOCKER_BUILD_CAPABILITY.model_copy(
+        update={"external_build_storage_identity_hash": "b" * 64}
+    )
+    service._docker_build_capability_probe = lambda: changed
+
+    with pytest.raises(ValueError, match="CAPABILITY_DOCKER_BOUNDARY_CHANGED"):
         service.require_current(target)
 
 

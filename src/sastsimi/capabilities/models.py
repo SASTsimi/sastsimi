@@ -27,6 +27,8 @@ class CapabilityProbeReceipt(ContractModel):
     observed_sha256: Sha256 | None
     execution_target_hash: Sha256 | None = None
     docker_build_capability: DockerBuildCapability | None = None
+    docker_build_boundary_code: NonEmptyStr | None = None
+    docker_build_storage_identity_hash: Sha256 | None = None
     operating_system: Literal["windows", "linux", "macos"]
     architecture: Literal["x86_64", "aarch64"]
     checked_at: AwareDatetime
@@ -57,11 +59,20 @@ class CapabilityProbeReceipt(ContractModel):
             if (
                 self.execution_target_hash is None
                 or self.docker_build_capability is None
+                or self.docker_build_boundary_code
+                != "DOCKER_BUILD_BOUNDARY_PRECHECK_PASSED"
+                or self.docker_build_storage_identity_hash
+                != self.docker_build_capability.external_build_storage_identity_hash
             ):
                 raise ValueError("PROBE_DOCKER_BOUNDARY_REQUIRED")
-        elif (
-            self.execution_target_hash is not None
-            or self.docker_build_capability is not None
+        elif self.kind != "DOCKER" and any(
+            value is not None
+            for value in (
+                self.execution_target_hash,
+                self.docker_build_capability,
+                self.docker_build_boundary_code,
+                self.docker_build_storage_identity_hash,
+            )
         ):
             raise ValueError("PROBE_DOCKER_BOUNDARY_FORBIDDEN")
         return self

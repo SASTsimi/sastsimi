@@ -14,7 +14,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
@@ -50,7 +50,12 @@ class CommandObservation:
 
 class CommandProbeRunner(Protocol):
     def run(
-        self, executable: Path, arguments: tuple[str, ...], *, timeout_ms: int
+        self,
+        executable: Path,
+        arguments: tuple[str, ...],
+        *,
+        timeout_ms: int,
+        environment_overrides: Mapping[str, str] | None = None,
     ) -> CommandObservation: ...
 
 
@@ -62,7 +67,12 @@ class SubprocessCommandProbeRunner:
     """Run one exact executable with bounded stdout and discarded stderr."""
 
     def run(
-        self, executable: Path, arguments: tuple[str, ...], *, timeout_ms: int
+        self,
+        executable: Path,
+        arguments: tuple[str, ...],
+        *,
+        timeout_ms: int,
+        environment_overrides: Mapping[str, str] | None = None,
     ) -> CommandObservation:
         safe_environment = {
             key: value for key, value in os.environ.items() if key in _MINIMAL_ENV_KEYS
@@ -74,6 +84,10 @@ class SubprocessCommandProbeRunner:
                 "GIT_TERMINAL_PROMPT": "0",
             }
         )
+        if environment_overrides not in (None, {}, {"DOCKER_BUILDKIT": "0"}):
+            raise ValueError("PROBE_ENVIRONMENT_OVERRIDE_DENIED")
+        if environment_overrides:
+            safe_environment.update(environment_overrides)
         if os.name == "nt":
             return self._run_windows(
                 executable, arguments, timeout_ms, safe_environment

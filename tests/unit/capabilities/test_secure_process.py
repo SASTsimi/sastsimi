@@ -62,6 +62,26 @@ def test_probe_process_receives_only_minimal_environment(
     assert result.safe_stdout == "clean"
 
 
+def test_probe_process_allows_only_fixed_legacy_builder_override() -> None:
+    runner = SubprocessCommandProbeRunner()
+    result = runner.run(
+        Path(sys.executable),
+        ("-c", "import os; print(os.environ.get('DOCKER_BUILDKIT', 'missing'))"),
+        timeout_ms=5_000,
+        environment_overrides={"DOCKER_BUILDKIT": "0"},
+    )
+
+    assert result.succeeded is True
+    assert result.safe_stdout == "0"
+    with pytest.raises(ValueError, match="PROBE_ENVIRONMENT_OVERRIDE_DENIED"):
+        runner.run(
+            Path(sys.executable),
+            ("-c", "print('must-not-run')"),
+            timeout_ms=5_000,
+            environment_overrides={"DOCKER_CONFIG": "untrusted"},
+        )
+
+
 def test_terminate_tree_targets_saved_group_after_parent_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

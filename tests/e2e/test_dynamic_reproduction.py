@@ -141,6 +141,7 @@ def _trusted_docker_target() -> tuple[TrustedDockerTarget, _E2EDockerResolver]:
         build_backend="LEGACY_LIMITED",
         enforced_build_limits=frozenset({"CPU", "MEMORY", "PID", "DISK"}),
         external_build_disk_limit_bytes=64 * 1024 * 1024,
+        external_build_storage_identity_hash="a" * 64,
     )
     return target, _E2EDockerResolver(target)
 

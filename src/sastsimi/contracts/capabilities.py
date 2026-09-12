@@ -53,6 +53,7 @@ class DockerBuildCapability(ContractModel):
     build_backend: DockerBuildBackend
     enforced_build_limits: tuple[DockerBuildLimit, ...]
     external_build_disk_limit_bytes: PositiveInt
+    external_build_storage_identity_hash: Sha256
 
     @model_validator(mode="after")
     def complete_boundary(self) -> Self:

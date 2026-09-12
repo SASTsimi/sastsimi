@@ -108,6 +108,7 @@ def _trusted_docker_adapter(
         build_backend="LEGACY_LIMITED",
         enforced_build_limits=frozenset({"CPU", "MEMORY", "PID", "DISK"}),
         external_build_disk_limit_bytes=64 * 1024 * 1024,
+        external_build_storage_identity_hash="a" * 64,
     )
     resolver = _TrustedDockerResolver(target)
     return DockerAdapter.from_profile(profile_ref, resolver), resolver
@@ -2349,6 +2350,7 @@ async def test_cancelled_docker_build_reclaims_attempt_owned_image(
         build_backend="LEGACY_LIMITED",
         enforced_build_limits=frozenset({"CPU", "MEMORY", "PID", "DISK"}),
         external_build_disk_limit_bytes=64 * 1024 * 1024,
+        external_build_storage_identity_hash="a" * 64,
     )
     adapter = DockerAdapter(target, _TrustedDockerResolver(target))
     monkeypatch.setattr(adapter, "_run", run)
