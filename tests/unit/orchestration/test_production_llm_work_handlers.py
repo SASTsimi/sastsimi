@@ -41,7 +41,7 @@ from sastsimi.orchestration.production_llm_work_handlers import (
     ProductionDynamicStageCallResolver,
     VerificationWorkHandler,
 )
-from sastsimi.ports.dto import WorkContext
+from sastsimi.ports.dto import WorkContext, WorkHandlerResult
 from sastsimi.ports.llm_invocation import PersistedLLMInvocation
 from sastsimi.verification.debate_service import DebateIncompleteError
 from tests.contract.domain.canonical_fixtures import make
@@ -554,8 +554,24 @@ class _NonDynamic:
 
 
 class _NoDynamic:
+    async def resume_dynamic(self, **kwargs: object) -> None:
+        return None
+
     async def complete_dynamic(self, **kwargs: object) -> object:
         raise AssertionError("debate happy path must finalize without dynamic work")
+
+
+class _ResumedDynamic:
+    def __init__(self) -> None:
+        self.output_ref = _ref("verification_result", "resumed")
+        self.calls: list[dict[str, object]] = []
+
+    async def resume_dynamic(self, **kwargs: object) -> WorkHandlerResult:
+        self.calls.append(kwargs)
+        return WorkHandlerResult((self.output_ref,))
+
+    async def complete_dynamic(self, **kwargs: object) -> object:
+        raise AssertionError("a resumed generation cannot create another child")
 
 
 @pytest.mark.asyncio
@@ -738,6 +754,34 @@ async def test_verification_handler_runs_parent_owned_debate_before_synthesis() 
         verification.invocation,
         non_dynamic.invocation,
     ]
+
+
+@pytest.mark.asyncio
+async def test_resumed_verification_reuses_prior_evidence_without_new_debate() -> None:
+    context, records, _bundle, parent_inputs = _verification_fixture()
+    runner = _VerificationRunner(context.work, records)
+    debate = _Debate(records)
+    dynamic = _ResumedDynamic()
+    calls = _Calls()
+    handler = VerificationWorkHandler(
+        records=records,
+        runner=runner,  # type: ignore[arg-type]
+        verification=_Verification(records),  # type: ignore[arg-type]
+        debate=debate,  # type: ignore[arg-type]
+        non_dynamic=_NonDynamic(context.work, records),  # type: ignore[arg-type]
+        dynamic=dynamic,  # type: ignore[arg-type]
+        calls=calls,
+        verification_identity_ref=_ref("role_identity", "verification"),
+        budget_scope=lambda _analysis_id: _ref("budget_profile_binding", "scope"),
+    )
+
+    result = await handler.execute(context)
+
+    assert result.output_refs == (dynamic.output_ref,)
+    assert dynamic.calls == [{"context": context, "public_input_refs": parent_inputs}]
+    assert runner.events == []
+    assert debate.requests == []
+    assert calls.requests == []
 
 
 @pytest.mark.asyncio

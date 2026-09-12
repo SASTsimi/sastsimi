@@ -481,6 +481,13 @@ class DynamicVerificationPort(Protocol):
         assessment_ref: StoredDataRef,
     ) -> WorkHandlerResult: ...
 
+    async def resume_dynamic(
+        self,
+        *,
+        context: WorkContext,
+        public_input_refs: tuple[StoredDataRef, ...],
+    ) -> WorkHandlerResult | None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class VerificationWorkHandler:
@@ -500,6 +507,12 @@ class VerificationWorkHandler:
         require_claimed_context(context, WorkType.VERIFICATION)
         work = context.work
         parent_inputs = self._parent_inputs(work)
+        resumed = await self.dynamic.resume_dynamic(
+            context=context,
+            public_input_refs=parent_inputs.public_refs,
+        )
+        if resumed is not None:
+            return resumed
         scope = self.budget_scope(str(work.meta.analysis_id))
         if not isinstance(scope, (RunStoredDataRef, StoredDataRef)):
             raise ValueError("VERIFICATION_BUDGET_SCOPE_REQUIRED")

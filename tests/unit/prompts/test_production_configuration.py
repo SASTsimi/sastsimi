@@ -314,7 +314,7 @@ def _approved_hypothesis_route(
 
 
 def test_approved_route_creates_active_entry_and_attempt_call(tmp_path: Path) -> None:
-    assert len(REQUIRED_PRODUCTION_PROMPT_ROUTES) == 16
+    assert len(REQUIRED_PRODUCTION_PROMPT_ROUTES) == 17
     service, records, artifacts = _service(tmp_path)
     route, approved = _approved_hypothesis_route(service, records, artifacts)
     work_data = make("WorkExecutionState")
