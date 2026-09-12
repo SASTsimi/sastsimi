@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from typing import Literal
 
 from sastsimi.contracts.dynamic import POC_RUNTIME_PATH
 from sastsimi.contracts.prompt_redaction import redact_untrusted_text
@@ -24,6 +25,7 @@ from sastsimi.ports.dynamic_sandbox import (
 )
 
 _IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_OWNED_IMAGE_TAG = re.compile(r"^sastsimi-attempt:[0-9a-f]{32}$")
 _RESOURCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _LABEL_VALUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _REQUIRED_LABELS = frozenset(
@@ -46,6 +48,7 @@ _POC_STAGING_PATH = f"{POC_RUNTIME_PATH}.next"
 _MAX_BUILD_CONTEXT_BYTES = 64 * 1024 * 1024
 _REQUIRED_BUILD_LIMITS = frozenset({"CPU", "MEMORY", "PID", "DISK"})
 _SAFE_DOCKER_ENV = ("SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL")
+_CLEANUP_TIMEOUT_MS = 10_000
 
 
 class _DockerOutputLimitExceeded(Exception):
@@ -78,6 +81,18 @@ class DockerContainerState:
 class DockerImageState:
     image_digest: str
     labels: Mapping[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class DockerContainerPresence:
+    status: Literal["PRESENT", "ABSENT", "UNKNOWN"]
+    state: DockerContainerState | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DockerImageTagPresence:
+    status: Literal["PRESENT", "ABSENT", "UNKNOWN"]
+    state: DockerImageState | None = None
 
 
 class DockerOperationError(RuntimeError):
@@ -127,36 +142,35 @@ class DockerAdapter:
             raise ValueError("DOCKER_BUILD_INPUT_INVALID")
         label_args = self._label_args(labels)
         image_tag = self.runtime_image_tag(labels)
+        command = (
+            *self._build_command_prefix(),
+            "--quiet",
+            *self._build_output_args(),
+            "--pull=false",
+            "--network",
+            "none",
+            *self._build_limit_args(spec),
+            *label_args,
+            "--tag",
+            image_tag,
+            "-",
+        )
         try:
             outcome = await self._run(
-                (
-                    *self._build_command_prefix(),
-                    "--quiet",
-                    *self._build_output_args(),
-                    "--pull=false",
-                    "--network",
-                    "none",
-                    *self._build_limit_args(spec),
-                    *label_args,
-                    "--tag",
-                    image_tag,
-                    "-",
-                ),
+                command,
                 timeout_ms=timeout_ms,
                 input_bytes=dockerfile,
             )
-        except asyncio.CancelledError as cancellation:
-            await self._compensate_cancellation(
-                ("image", "rm", "--force", image_tag), cancellation
+            self._require_success("DOCKER_BUILD_FAILED", outcome)
+            digest = (
+                outcome.stdout.decode("ascii", errors="strict").strip().splitlines()[-1]
             )
+            if not _IMAGE_DIGEST.fullmatch(digest):
+                raise DockerOperationError("DOCKER_IMAGE_DIGEST_INVALID", outcome)
+            return digest
+        except BaseException as failure:
+            await self._compensate_failed_build(image_tag, labels, failure)
             raise
-        self._require_success("DOCKER_BUILD_FAILED", outcome)
-        digest = (
-            outcome.stdout.decode("ascii", errors="strict").strip().splitlines()[-1]
-        )
-        if not _IMAGE_DIGEST.fullmatch(digest):
-            raise DockerOperationError("DOCKER_IMAGE_DIGEST_INVALID", outcome)
-        return digest
 
     async def build_context(
         self,
@@ -180,38 +194,37 @@ class DockerAdapter:
             raise ValueError("DOCKER_BUILD_CONTEXT_INVALID")
         self._validate_build_context(context_archive, dockerfile_path)
         image_tag = self.runtime_image_tag(labels)
+        command = (
+            *self._build_command_prefix(),
+            "--quiet",
+            *self._build_output_args(),
+            "--pull=false",
+            "--network",
+            "none",
+            *self._build_limit_args(spec),
+            *self._label_args(labels),
+            "--tag",
+            image_tag,
+            "--file",
+            dockerfile_path,
+            "-",
+        )
         try:
             outcome = await self._run(
-                (
-                    *self._build_command_prefix(),
-                    "--quiet",
-                    *self._build_output_args(),
-                    "--pull=false",
-                    "--network",
-                    "none",
-                    *self._build_limit_args(spec),
-                    *self._label_args(labels),
-                    "--tag",
-                    image_tag,
-                    "--file",
-                    dockerfile_path,
-                    "-",
-                ),
+                command,
                 timeout_ms=timeout_ms,
                 input_bytes=context_archive,
             )
-        except asyncio.CancelledError as cancellation:
-            await self._compensate_cancellation(
-                ("image", "rm", "--force", image_tag), cancellation
+            self._require_success("DOCKER_BUILD_FAILED", outcome)
+            digest = (
+                outcome.stdout.decode("ascii", errors="strict").strip().splitlines()[-1]
             )
+            if not _IMAGE_DIGEST.fullmatch(digest):
+                raise DockerOperationError("DOCKER_IMAGE_DIGEST_INVALID", outcome)
+            return digest
+        except BaseException as failure:
+            await self._compensate_failed_build(image_tag, labels, failure)
             raise
-        self._require_success("DOCKER_BUILD_FAILED", outcome)
-        digest = (
-            outcome.stdout.decode("ascii", errors="strict").strip().splitlines()[-1]
-        )
-        if not _IMAGE_DIGEST.fullmatch(digest):
-            raise DockerOperationError("DOCKER_IMAGE_DIGEST_INVALID", outcome)
-        return digest
 
     def _build_limit_args(self, spec: SandboxRunSpec) -> tuple[str, ...]:
         limits = (
@@ -590,7 +603,10 @@ class DockerAdapter:
             raise ValueError("DUPLICATE_DOCKER_RESOURCE")
         for resource_id in resource_ids:
             self._require_resource_id(resource_id)
-        outcome = await self._run(("rm", "--force", "--volumes", *resource_ids))
+        outcome = await self._run(
+            ("rm", "--force", "--volumes", *resource_ids),
+            timeout_ms=_CLEANUP_TIMEOUT_MS,
+        )
         self._require_success("DOCKER_REMOVE_FAILED", outcome)
 
     async def inspect_owned_image(self, image_digest: str) -> DockerImageState:
@@ -633,8 +649,96 @@ class DockerAdapter:
             not _IMAGE_DIGEST.fullmatch(digest) for digest in image_digests
         ):
             raise ValueError("DOCKER_IMAGE_DIGEST_INVALID")
-        outcome = await self._run(("image", "rm", "--force", *image_digests))
+        outcome = await self._run(
+            ("image", "rm", *image_digests), timeout_ms=_CLEANUP_TIMEOUT_MS
+        )
         self._require_success("DOCKER_IMAGE_REMOVE_FAILED", outcome)
+
+    async def remove_image_tags(self, image_tags: tuple[str, ...]) -> None:
+        if not image_tags:
+            return
+        if len(set(image_tags)) != len(image_tags) or any(
+            not _OWNED_IMAGE_TAG.fullmatch(image_tag) for image_tag in image_tags
+        ):
+            raise ValueError("DOCKER_IMAGE_TAG_INVALID")
+        outcome = await self._run(
+            ("image", "rm", *image_tags), timeout_ms=_CLEANUP_TIMEOUT_MS
+        )
+        self._require_success("DOCKER_IMAGE_REMOVE_FAILED", outcome)
+
+    async def inspect_image_tag(self, image_tag: str) -> DockerImageTagPresence:
+        if not _OWNED_IMAGE_TAG.fullmatch(image_tag):
+            raise ValueError("DOCKER_IMAGE_TAG_INVALID")
+        listed = await self._run(
+            ("image", "ls", "--quiet", "--no-trunc", image_tag),
+            timeout_ms=_CLEANUP_TIMEOUT_MS,
+        )
+        if listed.timed_out or listed.exit_code != 0:
+            return DockerImageTagPresence("UNKNOWN")
+        try:
+            identifiers = tuple(
+                line
+                for line in listed.stdout.decode("ascii", errors="strict").splitlines()
+                if line
+            )
+        except UnicodeDecodeError:
+            return DockerImageTagPresence("UNKNOWN")
+        if not identifiers:
+            return DockerImageTagPresence("ABSENT")
+        if len(identifiers) != 1 or not _IMAGE_DIGEST.fullmatch(identifiers[0]):
+            return DockerImageTagPresence("UNKNOWN")
+        inspected = await self._run(
+            ("image", "inspect", image_tag), timeout_ms=_CLEANUP_TIMEOUT_MS
+        )
+        if inspected.timed_out or inspected.exit_code != 0:
+            return DockerImageTagPresence("UNKNOWN")
+        try:
+            state = self._parse_image_state(inspected, identifiers[0])
+        except DockerOperationError:
+            return DockerImageTagPresence("UNKNOWN")
+        return DockerImageTagPresence("PRESENT", state)
+
+    async def inspect_container_presence(
+        self,
+        container_id: str,
+        *,
+        by_name: bool = False,
+    ) -> DockerContainerPresence:
+        self._require_resource_id(container_id)
+        filter_value = f"name=^/{container_id}$" if by_name else f"id={container_id}"
+        listed = await self._run(
+            (
+                "container",
+                "ls",
+                "--all",
+                "--quiet",
+                "--no-trunc",
+                "--filter",
+                filter_value,
+            ),
+            timeout_ms=_CLEANUP_TIMEOUT_MS,
+        )
+        if listed.timed_out or listed.exit_code != 0:
+            return DockerContainerPresence("UNKNOWN")
+        try:
+            identifiers = tuple(
+                line
+                for line in listed.stdout.decode("ascii", errors="strict").splitlines()
+                if line
+            )
+        except UnicodeDecodeError:
+            return DockerContainerPresence("UNKNOWN")
+        if not identifiers:
+            return DockerContainerPresence("ABSENT")
+        if len(identifiers) != 1 or not _RESOURCE_ID.fullmatch(identifiers[0]):
+            return DockerContainerPresence("UNKNOWN")
+        try:
+            state = await asyncio.wait_for(
+                self.inspect(identifiers[0]), _CLEANUP_TIMEOUT_MS / 1000
+            )
+        except (TimeoutError, OSError, RuntimeError, ValueError):
+            return DockerContainerPresence("UNKNOWN")
+        return DockerContainerPresence("PRESENT", state)
 
     @staticmethod
     def runtime_image_tag(labels: Mapping[str, str]) -> str:
@@ -687,23 +791,76 @@ class DockerAdapter:
         if not _RESOURCE_ID.fullmatch(resource_id):
             raise ValueError("DOCKER_RESOURCE_ID_INVALID")
 
-    async def _compensate_cancellation(
+    @staticmethod
+    def _parse_image_state(
+        outcome: DockerCommandOutcome,
+        expected_digest: str,
+    ) -> DockerImageState:
+        try:
+            values = json.loads(outcome.stdout)
+            if not isinstance(values, list) or len(values) != 1:
+                raise TypeError
+            value = values[0]
+            if not isinstance(value, dict) or value.get("Id") != expected_digest:
+                raise TypeError
+            config = value["Config"]
+            if not isinstance(config, dict):
+                raise TypeError
+            labels = config["Labels"]
+            if not isinstance(labels, dict) or any(
+                not isinstance(key, str) or not isinstance(label, str)
+                for key, label in labels.items()
+            ):
+                raise TypeError
+            owned_labels = {
+                key: labels[key] for key in _CONTAINER_LABELS if key in labels
+            }
+            normalized = DockerAdapter._validated_labels(owned_labels)
+            if normalized.get("sastsimi.resource-kind") != "image":
+                raise TypeError
+        except (KeyError, TypeError, json.JSONDecodeError) as error:
+            raise DockerOperationError(
+                "DOCKER_IMAGE_INSPECT_OUTPUT_INVALID", outcome
+            ) from error
+        return DockerImageState(image_digest=expected_digest, labels=normalized)
+
+    async def _reconcile_image_tag(
         self,
-        argv: tuple[str, ...],
-        cancellation: asyncio.CancelledError,
+        image_tag: str,
+        labels: Mapping[str, str],
+    ) -> Literal["ABSENT", "REMOVED", "UNKNOWN"]:
+        presence = await self.inspect_image_tag(image_tag)
+        if presence.status == "ABSENT":
+            return "ABSENT"
+        if presence.status != "PRESENT" or presence.state is None:
+            return "UNKNOWN"
+        if dict(presence.state.labels) != self._validated_labels(labels):
+            return "UNKNOWN"
+        await self.remove_image_tags((image_tag,))
+        return "REMOVED"
+
+    async def _compensate_failed_build(
+        self,
+        image_tag: str,
+        labels: Mapping[str, str],
+        failure: BaseException,
     ) -> None:
-        cleanup = asyncio.create_task(self._run(argv))
+        cleanup = asyncio.create_task(
+            asyncio.wait_for(
+                self._reconcile_image_tag(image_tag, labels),
+                _CLEANUP_TIMEOUT_MS / 1000,
+            )
+        )
         while not cleanup.done():
             try:
                 await asyncio.shield(cleanup)
             except asyncio.CancelledError:
                 continue
         try:
-            outcome = cleanup.result()
-            self._require_success("DOCKER_CANCELLATION_CLEANUP_FAILED", outcome)
-        except BaseException as cleanup_error:
-            cancellation.add_note("DOCKER_CANCELLATION_CLEANUP_FAILED")
-            raise cancellation from cleanup_error
+            if cleanup.result() == "UNKNOWN":
+                raise DockerOperationError("DOCKER_CANCELLATION_CLEANUP_FAILED")
+        except BaseException:
+            failure.add_note("DOCKER_CANCELLATION_CLEANUP_FAILED")
 
     async def _run(
         self,

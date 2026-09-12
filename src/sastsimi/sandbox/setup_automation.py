@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,8 +40,11 @@ from .cleanup import OwnedResourceRegistry
 from .docker_adapter import (
     DockerAdapter,
     DockerCommandOutcome,
+    DockerContainerPresence,
     DockerContainerState,
     DockerImageState,
+    DockerImageTagPresence,
+    DockerOperationError,
 )
 from .health_check import SandboxHealthChecker
 from .recipe_store import (
@@ -48,6 +52,8 @@ from .recipe_store import (
     PreparedRecipeSource,
     fresh_record_meta,
 )
+
+_CLEANUP_TIMEOUT_SECONDS = 10.0
 
 
 class DockerLifecyclePort(Protocol):
@@ -86,9 +92,14 @@ class DockerLifecyclePort(Protocol):
         working_directory: str,
     ) -> DockerCommandOutcome: ...
     async def inspect(self, container_id: str) -> DockerContainerState: ...
+    async def inspect_container_presence(
+        self, container_id: str, *, by_name: bool = False
+    ) -> DockerContainerPresence: ...
     async def remove(self, resource_ids: tuple[str, ...]) -> None: ...
     async def inspect_owned_image(self, image_digest: str) -> DockerImageState: ...
+    async def inspect_image_tag(self, image_tag: str) -> DockerImageTagPresence: ...
     async def remove_images(self, image_digests: tuple[str, ...]) -> None: ...
+    async def remove_image_tags(self, image_tags: tuple[str, ...]) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,21 +161,45 @@ class ReproductionSetupAutomation:
 
         spec = self._validate_build(approval, source, request, requirements, meta)
         labels = self._image_labels(meta)
-        recipe = await self._recipes.build(
-            docker=self._docker,
-            source=source,
-            labels=labels,
-            build_spec=spec,
-            build_timeout_ms=spec.requested_execution_ms,
-        )
-        if recipe.build_disposition == "BUILT":
-            image_ref = self._resources.register_image(
-                image_digest=recipe.built_image_digest,
+        image_tag = DockerAdapter.runtime_image_tag(labels)
+        self._resources.reserve_image(image_tag=image_tag, labels=labels)
+        try:
+            async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
+                preparation = await self._resources.prepare_image_intent(
+                    docker=self._docker,
+                    image_tag=image_tag,
+                )
+            if preparation != "READY":
+                self._resources.forget_image_intent(image_tag)
+                raise DockerOperationError("DOCKER_IMAGE_TAG_OWNERSHIP_CONFLICT")
+            recipe = await self._recipes.build(
+                docker=self._docker,
+                source=source,
                 labels=labels,
+                build_spec=spec,
+                build_timeout_ms=spec.requested_execution_ms,
+            )
+        except BaseException as failure:
+            try:
+                async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
+                    status = await self._resources.reconcile_image_intent(
+                        docker=self._docker,
+                        image_tag=image_tag,
+                    )
+                if status == "UNKNOWN":
+                    failure.add_note("DOCKER_BUILD_RECONCILIATION_REQUIRED")
+            except BaseException:
+                failure.add_note("DOCKER_BUILD_RECONCILIATION_REQUIRED")
+            raise
+        if recipe.build_disposition == "BUILT":
+            image_ref = self._resources.register_reserved_image(
+                image_digest=recipe.built_image_digest,
+                image_tag=image_tag,
                 meta=meta,
                 preservation_reason="REUSABLE_BASELINE",
             )
         else:
+            self._resources.forget_image_intent(image_tag)
             preserved_ref = self._resources.preserved_image_ref(
                 recipe.built_image_digest
             )
@@ -335,18 +370,23 @@ class ReproductionSetupAutomation:
         )
         try:
             container_id = await self._docker.create(spec, labels)
-        except BaseException:
+        except BaseException as failure:
+            status = "UNKNOWN"
             try:
-                await self._resources.reconcile_intent(
-                    docker=self._docker,
-                    container_name=container_name,
-                )
-            except BaseException as cleanup_error:
+                async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
+                    status = await self._resources.reconcile_intent(
+                        docker=self._docker,
+                        container_name=container_name,
+                    )
+            except BaseException:
+                failure.add_note("DOCKER_CONTAINER_RECONCILIATION_REQUIRED")
+            if status == "UNKNOWN":
                 resource_ref = self._resources.register_reserved_container(
                     container_name=container_name,
                     container_id=container_name,
                     meta=meta,
                     reconcile_required=True,
+                    lookup_by_name=True,
                 )
                 failed = PreparedSandbox(
                     recipe,
@@ -363,7 +403,7 @@ class ReproductionSetupAutomation:
                     ),
                     (resource_ref,),
                 )
-                raise SandboxSetupCleanupError(failed) from cleanup_error
+                raise SandboxSetupCleanupError(failed) from failure
             raise
         resource_ref = self._resources.register_reserved_container(
             container_name=container_name,
