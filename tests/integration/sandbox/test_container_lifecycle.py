@@ -620,6 +620,44 @@ async def test_repository_profile_keeps_equal_file_refs_distinct(
 
 
 @pytest.mark.asyncio
+async def test_repository_profile_prefers_existing_dockerfile(tmp_path: Path) -> None:
+    files = {
+        "Dockerfile": b"FROM fixture:local\nWORKDIR /workspace\nCOPY . /workspace\n",
+        "package.json": b'{"dependencies": {}}\n',
+        "server.js": b"console.log('ready')\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    request, requirements, _ = _dynamic_records()
+    docker = FakeDockerAdapter()
+    setup = _setup(docker)
+
+    source = await setup.preflight(
+        workspace_root=tmp_path,
+        repository_profile=_repository_profile(files),
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "existing-dockerfile-source"),
+    )
+    await setup.build(
+        approval=_build_approval(tmp_path, request, source),
+        source=source,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "existing-dockerfile-recipe"),
+    )
+
+    assert source.dockerfile_origin == "REPOSITORY"
+    archive, dockerfile_path, _ = docker.built_contexts[0]
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as bundle:
+        dockerfile = bundle.extractfile(dockerfile_path)
+        assert dockerfile is not None
+        content = dockerfile.read()
+    assert f"FROM fixture@{IMAGE_DIGEST}\n".encode() in content
+    assert b"COPY . /workspace" in content
+
+
+@pytest.mark.asyncio
 async def test_prepare_creates_clean_non_root_default_deny_container(
     tmp_path: Path,
 ) -> None:
@@ -1234,6 +1272,51 @@ async def test_docker_context_build_rejects_link_member_before_daemon(
             labels,
             timeout_ms=10_000,
         )
+
+
+@pytest.mark.asyncio
+async def test_docker_context_build_streams_tar_without_host_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = EnvironmentRecipeStore._archive(
+        {"Dockerfile": (b"FROM scratch\n", 0o644), "app.py": (b"pass\n", 0o644)}
+    )
+    calls: list[tuple[tuple[str, ...], int | None, bytes | None]] = []
+
+    async def run(
+        argv: tuple[str, ...],
+        *,
+        timeout_ms: int | None = None,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        calls.append((argv, timeout_ms, input_bytes))
+        return DockerCommandOutcome(0, (IMAGE_DIGEST + "\n").encode(), b"", False)
+
+    labels = {
+        "sastsimi.owner": "reproduction-setup-automation",
+        "sastsimi.analysis-id": "analysis-1",
+        "sastsimi.workspace-id": "workspace-1",
+        "sastsimi.commit-id": "commit-1",
+        "sastsimi.hypothesis-id": "hypothesis-1",
+        "sastsimi.attempt-id": "dynamic-attempt-1",
+    }
+    adapter = DockerAdapter()
+    monkeypatch.setattr(adapter, "_run", run)
+
+    digest = await adapter.build_context(
+        archive,
+        "Dockerfile",
+        labels,
+        timeout_ms=10_000,
+    )
+
+    assert digest == IMAGE_DIGEST
+    assert len(calls) == 1
+    argv, timeout_ms, input_bytes = calls[0]
+    assert argv[-3:] == ("--file", "Dockerfile", "-")
+    assert timeout_ms == 10_000
+    assert input_bytes == archive
+    assert all(str(Path.cwd()) not in item for item in argv)
 
 
 @pytest.mark.asyncio
