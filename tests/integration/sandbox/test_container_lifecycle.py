@@ -2,27 +2,46 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
+import tarfile
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import cast
 
 import pytest
 
+from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.dynamic import (
     POC_RUNTIME_PATH,
     DynamicReproductionRequest,
     EnvironmentRecipe,
+    EnvironmentRequirement,
     EnvironmentRequirements,
     ReproductionPlan,
     SandboxPolicyDecision,
 )
 from sastsimi.contracts.dynamic_resource import owned_container_resource_ref
-from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
+from sastsimi.contracts.ids import (
+    AnalysisId,
+    CommitId,
+    RecordId,
+    StoredDataId,
+    WorkspaceId,
+)
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.refs import (
+    HostConfigurationRef,
+    RunStoredDataRef,
+    StoredDataRef,
+    reference,
+)
+from sastsimi.contracts.static import RepositoryProfile
+from sastsimi.ports.dto import StagedArtifact
+from sastsimi.ports.dynamic_sandbox import SandboxSetupCleanupError, TrustedDockerTarget
+from sastsimi.sandbox import cleanup as cleanup_module
 from sastsimi.sandbox.cleanup import OwnedResourceRegistry
 from sastsimi.sandbox.controller import (
     SandboxBoundaryOutcome,
@@ -33,7 +52,10 @@ from sastsimi.sandbox.controller import (
 from sastsimi.sandbox.docker_adapter import (
     DockerAdapter,
     DockerCommandOutcome,
+    DockerContainerPresence,
     DockerContainerState,
+    DockerImageState,
+    DockerImageTagPresence,
     DockerOperationError,
 )
 from sastsimi.sandbox.health_check import SandboxHealthChecker
@@ -47,12 +69,97 @@ NOW = datetime(2026, 9, 11, tzinfo=UTC)
 IMAGE_DIGEST = "sha256:" + "1" * 64
 
 
+@dataclass
+class _TrustedDockerResolver:
+    target: TrustedDockerTarget
+    current: bool = True
+
+    def resolve_current(self, profile_ref: HostConfigurationRef) -> TrustedDockerTarget:
+        assert self.target.profile_ref == profile_ref
+        return self.target
+
+    def require_current(self, target: TrustedDockerTarget) -> None:
+        if not self.current or target != self.target:
+            raise ValueError("DOCKER_CAPABILITY_NOT_CURRENT")
+
+
+def _trusted_docker_adapter(
+    tmp_path: Path,
+) -> tuple[DockerAdapter, _TrustedDockerResolver]:
+    executable = (tmp_path / "docker.exe").resolve()
+    executable.write_bytes(b"trusted-docker")
+    digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+    profile_ref = HostConfigurationRef(
+        stored_data_id=StoredDataId("docker-profile-data"),
+        data_kind="runtime_capability_profile",
+        content_hash="b" * 64,
+        host_id="host-a",
+        publication_analysis_id=AnalysisId("capability-analysis"),
+        publication_workspace_id=WorkspaceId("capability-workspace"),
+        publication_commit_id=CommitId("capability-commit"),
+        record_id=RecordId("docker-profile-v1"),
+    )
+    target = TrustedDockerTarget(
+        profile_ref=profile_ref,
+        executable=executable,
+        subject_key="docker",
+        subject_sha256=digest,
+        daemon_target="npipe:////./pipe/docker_engine",
+        build_backend="LEGACY_LIMITED",
+        enforced_build_limits=frozenset({"CPU", "MEMORY", "PID", "DISK"}),
+        external_build_disk_limit_bytes=64 * 1024 * 1024,
+    )
+    resolver = _TrustedDockerResolver(target)
+    return DockerAdapter.from_profile(profile_ref, resolver), resolver
+
+
+@dataclass
+class _MemoryArtifacts:
+    values: dict[str, bytes] = field(default_factory=dict)
+
+    def stage_bytes(self, data: bytes, media_type: str) -> StagedArtifact:
+        return StagedArtifact(data, media_type)
+
+    def commit(self, staged: StagedArtifact) -> StoredDataRef:
+        digest = hashlib.sha256(staged.data).hexdigest()
+        self.values[digest] = staged.data
+        return StoredDataRef(
+            stored_data_id=StoredDataId(digest),
+            data_kind="artifact",
+            content_hash=digest,
+            workspace_id=WorkspaceId("workspace-1"),
+            commit_id=CommitId("commit-1"),
+            record_id=None,
+        )
+
+    def commit_run(
+        self, staged: StagedArtifact, analysis_id: AnalysisId
+    ) -> RunStoredDataRef:
+        digest = hashlib.sha256(staged.data).hexdigest()
+        self.values[digest] = staged.data
+        return RunStoredDataRef(
+            stored_data_id=StoredDataId(digest),
+            data_kind="artifact",
+            content_hash=digest,
+            analysis_id=analysis_id,
+            record_id=None,
+        )
+
+    def open_verified(self, ref: StoredDataRef | RunStoredDataRef) -> io.BytesIO:
+        return io.BytesIO(self.values[ref.content_hash])
+
+
+def _git_blob(raw: bytes) -> str:
+    framed = b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw
+    return hashlib.sha1(framed).hexdigest()
+
+
 def _meta(
     kind: str,
     record_id: str,
     *,
     attempt_id: str = "dynamic-attempt-1",
-    hypothesis_id: str = "hypothesis-1",
+    hypothesis_id: str | None = "hypothesis-1",
 ) -> RecordMeta:
     return RecordMeta.model_validate(
         {
@@ -80,6 +187,81 @@ def _ref(kind: str, name: str) -> StoredDataRef:
         workspace_id=WorkspaceId("workspace-1"),
         commit_id=CommitId("commit-1"),
         record_id=RecordId(name),
+    )
+
+
+def _repository_profile(files: Mapping[str, bytes]) -> RepositoryProfile:
+    tracked = tuple(
+        {
+            "git_path": path,
+            "git_mode": "100644",
+            "blob_id": _git_blob(raw),
+            "content_sha256": hashlib.sha256(raw).hexdigest(),
+            "size_bytes": len(raw),
+        }
+        for path, raw in sorted(files.items())
+    )
+    configs = []
+    for path in sorted(files):
+        name = Path(path).name.lower()
+        kind = {
+            "dockerfile": "DOCKERFILE",
+            "requirements.txt": "REQUIREMENTS",
+            "pyproject.toml": "PYPROJECT",
+            "package.json": "PACKAGE_JSON",
+        }.get(name)
+        if kind is not None:
+            configs.append({"path": path, "kind": kind})
+    languages = []
+    if any(path.endswith(".py") for path in files):
+        languages.append(
+            {
+                "name": "PYTHON",
+                "evidence_paths": tuple(
+                    path for path in sorted(files) if path.endswith(".py")
+                ),
+            }
+        )
+    if any(path.endswith((".js", ".mjs", ".cjs")) for path in files):
+        languages.append(
+            {
+                "name": "JAVASCRIPT",
+                "evidence_paths": tuple(
+                    path
+                    for path in sorted(files)
+                    if path.endswith((".js", ".mjs", ".cjs"))
+                ),
+            }
+        )
+    return RepositoryProfile.model_validate(
+        {
+            "meta": _meta(
+                "repository_profile",
+                "repository-profile",
+                attempt_id="repository-profile-attempt",
+                hypothesis_id=None,
+            ),
+            "workspace_id": "workspace-1",
+            "commit_id": "commit-1",
+            "workspace_ref": RunStoredDataRef(
+                stored_data_id=StoredDataId("code-workspace"),
+                data_kind="code_workspace",
+                content_hash="b" * 64,
+                analysis_id=AnalysisId("analysis-1"),
+                record_id=RecordId("code-workspace"),
+            ),
+            "action_decision_ref": _ref("action_decision", "profile-decision"),
+            "manifest_hash": content_hash(tuple(tracked)),
+            "tracked_files": tracked,
+            "languages": tuple(languages),
+            "frameworks": (),
+            "config_files": tuple(configs),
+            "execution_hints": (),
+            "gaps": (),
+            "errors": (),
+            "status": "READY",
+            "confirmation_reasons": (),
+        }
     )
 
 
@@ -199,9 +381,12 @@ def _build_approval(
 ) -> SandboxBuildBoundaryOutcome:
     run = _approval(workspace, request)
     assert run.approved_spec is not None
+    spec = replace(run.approved_spec, image_digest=None)
+    if source.repository_profile_ref is not None:
+        spec = replace(spec, mounts=(), source_baked=True)
     return SandboxBuildBoundaryOutcome(
         decision=run.decision,
-        approved_spec=replace(run.approved_spec, image_digest=None),
+        approved_spec=spec,
         approved_source=source,
     )
 
@@ -322,9 +507,16 @@ async def test_forged_run_digest_never_creates_a_container(tmp_path: Path) -> No
 class FakeDockerAdapter:
     def __init__(self) -> None:
         self.built: list[tuple[bytes, int]] = []
+        self.built_contexts: list[tuple[bytes, str, int]] = []
         self.inspected_images: list[tuple[str, int]] = []
         self.created: dict[str, tuple[SandboxRunSpec, Mapping[str, str]]] = {}
         self.removed: list[str] = []
+        self.removed_images: list[str] = []
+        self.removed_image_tags: list[str] = []
+        self.image_labels: dict[str, Mapping[str, str]] = {}
+        self.image_tags: dict[str, DockerImageState] = {}
+        self.unknown_image_tags: set[str] = set()
+        self.unknown_containers: set[str] = set()
         self.unhealthy: set[str] = set()
         self.inspect_label_overrides: dict[str, Mapping[str, str]] = {}
         self.started: list[str] = []
@@ -336,15 +528,64 @@ class FakeDockerAdapter:
         dockerfile: bytes,
         labels: Mapping[str, str],
         *,
+        spec: SandboxRunSpec,
         timeout_ms: int,
     ) -> str:
+        assert spec.cpu_limit_millicores > 0
         self.built.append((dockerfile, timeout_ms))
+        assert labels["sastsimi.owner"] == "reproduction-setup-automation"
+        return IMAGE_DIGEST
+
+    async def build_context(
+        self,
+        context_archive: bytes,
+        dockerfile_path: str,
+        labels: Mapping[str, str],
+        *,
+        spec: SandboxRunSpec,
+        timeout_ms: int,
+    ) -> str:
+        assert spec.disk_limit_bytes > 0
+        self.built_contexts.append((context_archive, dockerfile_path, timeout_ms))
         assert labels["sastsimi.owner"] == "reproduction-setup-automation"
         return IMAGE_DIGEST
 
     async def inspect_image(self, image: str, *, timeout_ms: int) -> str:
         self.inspected_images.append((image, timeout_ms))
         return IMAGE_DIGEST
+
+    async def inspect_owned_image(self, image_digest: str) -> DockerImageState:
+        return DockerImageState(
+            image_digest=image_digest,
+            labels=self.image_labels[image_digest],
+        )
+
+    async def inspect_image_tag(self, image_tag: str) -> DockerImageTagPresence:
+        if image_tag in self.unknown_image_tags:
+            return DockerImageTagPresence("UNKNOWN")
+        state = self.image_tags.get(image_tag)
+        return DockerImageTagPresence(
+            "PRESENT" if state is not None else "ABSENT",
+            state,
+        )
+
+    async def inspect_container_presence(
+        self, container_id: str, *, by_name: bool = False
+    ) -> DockerContainerPresence:
+        del by_name
+        if container_id in self.unknown_containers:
+            return DockerContainerPresence("UNKNOWN")
+        if container_id not in self.created:
+            return DockerContainerPresence("ABSENT")
+        return DockerContainerPresence("PRESENT", await self.inspect(container_id))
+
+    async def remove_images(self, image_digests: tuple[str, ...]) -> None:
+        self.removed_images.extend(image_digests)
+
+    async def remove_image_tags(self, image_tags: tuple[str, ...]) -> None:
+        for image_tag in image_tags:
+            self.removed_image_tags.append(image_tag)
+            self.image_tags.pop(image_tag, None)
 
     async def create(self, spec: SandboxRunSpec, labels: Mapping[str, str]) -> str:
         self._index += 1
@@ -415,13 +656,716 @@ class FakeDockerAdapter:
         self.unhealthy.add(container_id)
 
 
-def _setup(adapter: FakeDockerAdapter) -> ReproductionSetupAutomation:
+def _setup(
+    adapter: FakeDockerAdapter,
+    *,
+    artifacts: _MemoryArtifacts | None = None,
+) -> ReproductionSetupAutomation:
     return ReproductionSetupAutomation(
         docker=adapter,
-        recipes=EnvironmentRecipeStore(),
+        recipes=EnvironmentRecipeStore(artifacts=artifacts),
         health=SandboxHealthChecker(),
         resources=OwnedResourceRegistry(),
     )
+
+
+class _FailedBuildDocker(FakeDockerAdapter):
+    def __init__(self, failure: str, *, presence: str = "PRESENT") -> None:
+        super().__init__()
+        self.failure = failure
+        self.presence = presence
+        self.build_started = asyncio.Event()
+
+    async def build(
+        self,
+        dockerfile: bytes,
+        labels: Mapping[str, str],
+        *,
+        spec: SandboxRunSpec,
+        timeout_ms: int,
+    ) -> str:
+        self.built.append((dockerfile, timeout_ms))
+        image_tag = DockerAdapter.runtime_image_tag(labels)
+        if self.presence == "PRESENT":
+            self.image_tags[image_tag] = DockerImageState(IMAGE_DIGEST, dict(labels))
+        elif self.presence == "UNKNOWN":
+            self.unknown_image_tags.add(image_tag)
+        self.build_started.set()
+        if self.failure == "cancel":
+            await asyncio.Event().wait()
+        if self.failure == "invalid-digest":
+            return "invalid-digest"
+        raise DockerOperationError(
+            "DOCKER_BUILD_FAILED",
+            DockerCommandOutcome(
+                1,
+                b"",
+                b"",
+                self.failure == "timeout",
+            ),
+        )
+
+
+async def _run_failed_build(docker: FakeDockerAdapter) -> None:
+    workspace = Path(__file__).parents[2] / "fixtures/sandbox/sql_injection"
+    request, requirements, _ = _dynamic_records()
+    setup = _setup(docker)
+    source = await setup.preflight(
+        workspace_root=workspace,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "failed-build-source"),
+    )
+    await setup.build(
+        approval=_build_approval(workspace, request, source),
+        source=source,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "failed-build"),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["timeout", "nonzero", "invalid-digest"])
+async def test_failed_build_reconciles_reserved_owned_image_tag(failure: str) -> None:
+    docker = _FailedBuildDocker(failure)
+
+    with pytest.raises((DockerOperationError, ValueError)):
+        await _run_failed_build(docker)
+
+    assert len(docker.removed_image_tags) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_build_reconciles_reserved_owned_image_tag() -> None:
+    docker = _FailedBuildDocker("cancel")
+    task = asyncio.create_task(_run_failed_build(docker))
+    await docker.build_started.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert len(docker.removed_image_tags) == 1
+
+
+@pytest.mark.asyncio
+async def test_build_failure_keeps_unknown_image_tag_intent_durable(
+    tmp_path: Path,
+) -> None:
+    docker = _FailedBuildDocker("timeout", presence="UNKNOWN")
+    journal = tmp_path / "owned.json"
+    setup = ReproductionSetupAutomation(
+        docker=docker,
+        recipes=EnvironmentRecipeStore(),
+        health=SandboxHealthChecker(),
+        resources=OwnedResourceRegistry(journal_path=journal),
+    )
+    workspace = Path(__file__).parents[2] / "fixtures/sandbox/sql_injection"
+    request, requirements, _ = _dynamic_records()
+    source = await setup.preflight(
+        workspace_root=workspace,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "unknown-build-source"),
+    )
+
+    with pytest.raises(DockerOperationError):
+        await setup.build(
+            approval=_build_approval(workspace, request, source),
+            source=source,
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "unknown-build"),
+        )
+
+    restarted = OwnedResourceRegistry(journal_path=journal)
+    assert any(
+        item.startswith("sastsimi-attempt:")
+        for item in restarted.pending_resource_ids()
+    )
+    assert docker.removed_image_tags == []
+
+
+@pytest.mark.asyncio
+async def test_image_tag_reconciliation_rejects_preexisting_label_mismatch() -> None:
+    registry = OwnedResourceRegistry()
+    docker = FakeDockerAdapter()
+    labels = dict(
+        ReproductionSetupAutomation._image_labels(_meta("environment_recipe", "owned"))
+    )
+    image_tag = DockerAdapter.runtime_image_tag(labels)
+    registry.reserve_image(image_tag=image_tag, labels=labels)
+    docker.image_tags[image_tag] = DockerImageState(
+        IMAGE_DIGEST,
+        labels | {"sastsimi.attempt-id": "foreign-attempt"},
+    )
+
+    status = await registry.reconcile_image_intent(
+        docker=docker,
+        image_tag=image_tag,
+    )
+
+    assert status == "UNKNOWN"
+    assert docker.removed_image_tags == []
+    assert image_tag in registry.pending_resource_ids()
+
+
+@pytest.mark.asyncio
+async def test_build_refuses_to_overwrite_preexisting_foreign_stable_tag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker = FakeDockerAdapter()
+    setup = _setup(docker)
+    labels = dict(
+        ReproductionSetupAutomation._image_labels(_meta("environment_recipe", "owned"))
+    )
+    monkeypatch.setattr(
+        ReproductionSetupAutomation,
+        "_image_labels",
+        staticmethod(lambda _: labels),
+    )
+    image_tag = DockerAdapter.runtime_image_tag(labels)
+    docker.image_tags[image_tag] = DockerImageState(
+        IMAGE_DIGEST,
+        labels | {"sastsimi.attempt-id": "foreign-attempt"},
+    )
+    workspace = Path(__file__).parents[2] / "fixtures/sandbox/sql_injection"
+    request, requirements, _ = _dynamic_records()
+    source = await setup.preflight(
+        workspace_root=workspace,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "preexisting-tag-source"),
+    )
+
+    with pytest.raises(
+        DockerOperationError,
+        match="DOCKER_IMAGE_TAG_OWNERSHIP_CONFLICT",
+    ):
+        await setup.build(
+            approval=_build_approval(workspace, request, source),
+            source=source,
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "preexisting-tag-build"),
+        )
+
+    assert docker.built == []
+    assert docker.removed_image_tags == []
+    assert image_tag not in setup._resources.pending_resource_ids()
+
+
+@pytest.mark.asyncio
+async def test_normal_image_cleanup_removes_only_attempt_owned_tag() -> None:
+    registry = OwnedResourceRegistry()
+    docker = FakeDockerAdapter()
+    labels = dict(
+        ReproductionSetupAutomation._image_labels(_meta("environment_recipe", "owned"))
+    )
+    image_tag = DockerAdapter.runtime_image_tag(labels)
+    docker.image_tags[image_tag] = DockerImageState(IMAGE_DIGEST, labels)
+    image_ref = registry.register_image(
+        image_digest=IMAGE_DIGEST,
+        image_tag=image_tag,
+        labels=labels,
+        meta=_meta("environment_recipe", "owned"),
+        preservation_reason=None,
+    )
+    request, _, _ = _dynamic_records()
+
+    result = await registry.cleanup(
+        docker=docker,
+        request=request,
+        environments=(),
+        resource_refs=(image_ref,),
+        meta=_meta("cleanup_result", "owned-image-cleanup"),
+    )
+
+    assert result.status == "SUCCEEDED"
+    assert docker.removed_image_tags == [image_tag]
+    assert docker.removed_images == []
+
+
+@pytest.mark.asyncio
+async def test_normal_cleanup_has_bounded_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class HungImageInspectDocker(FakeDockerAdapter):
+        async def inspect_image_tag(self, image_tag: str) -> DockerImageTagPresence:
+            del image_tag
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    monkeypatch.setattr(cleanup_module, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
+    registry = OwnedResourceRegistry()
+    docker = HungImageInspectDocker()
+    labels = dict(
+        ReproductionSetupAutomation._image_labels(_meta("environment_recipe", "owned"))
+    )
+    image_tag = DockerAdapter.runtime_image_tag(labels)
+    image_ref = registry.register_image(
+        image_digest=IMAGE_DIGEST,
+        image_tag=image_tag,
+        labels=labels,
+        meta=_meta("environment_recipe", "owned"),
+        preservation_reason=None,
+    )
+    request, _, _ = _dynamic_records()
+
+    result = await registry.cleanup(
+        docker=docker,
+        request=request,
+        environments=(),
+        resource_refs=(image_ref,),
+        meta=_meta("cleanup_result", "bounded-cleanup"),
+    )
+
+    assert result.status == "FAILED"
+    assert result.failure_reason == "OWNED_RESOURCE_CLEANUP_FAILED"
+    owned = registry.exact(image_ref)
+    assert owned is not None
+    assert owned.reconcile_required is True
+
+
+class _CancelledCreateDocker(FakeDockerAdapter):
+    def __init__(self, presence: str) -> None:
+        super().__init__()
+        self.presence = presence
+        self.entered = asyncio.Event()
+        self.container_name: str | None = None
+
+    async def create(self, spec: SandboxRunSpec, labels: Mapping[str, str]) -> str:
+        del spec
+        self.container_name = DockerAdapter.runtime_container_name(labels)
+        if self.presence == "UNKNOWN":
+            self.unknown_containers.add(self.container_name)
+        self.entered.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+@pytest.mark.asyncio
+async def test_early_create_cancellation_treats_absent_as_clean() -> None:
+    docker = _CancelledCreateDocker("ABSENT")
+    setup = _setup(docker)
+    workspace = Path(__file__).parents[2] / "fixtures/sandbox/sql_injection"
+    request, requirements, plan = _dynamic_records()
+    task = asyncio.create_task(
+        _prepare(
+            setup,
+            workspace,
+            request=request,
+            requirements=requirements,
+            plan=plan,
+            meta=_meta("sandbox_environment", "early-absent"),
+        )
+    )
+    await docker.entered.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert docker.container_name not in setup._resources.pending_resource_ids()
+
+
+@pytest.mark.asyncio
+async def test_early_create_cancellation_keeps_unknown_intent() -> None:
+    docker = _CancelledCreateDocker("UNKNOWN")
+    setup = _setup(docker)
+    workspace = Path(__file__).parents[2] / "fixtures/sandbox/sql_injection"
+    request, requirements, plan = _dynamic_records()
+    task = asyncio.create_task(
+        _prepare(
+            setup,
+            workspace,
+            request=request,
+            requirements=requirements,
+            plan=plan,
+            meta=_meta("sandbox_environment", "early-unknown"),
+        )
+    )
+    await docker.entered.wait()
+
+    task.cancel()
+    with pytest.raises(SandboxSetupCleanupError):
+        await task
+
+    assert docker.container_name in setup._resources.pending_resource_ids()
+
+
+@pytest.mark.asyncio
+async def test_repository_profile_generates_python_build_context(
+    tmp_path: Path,
+) -> None:
+    files = {
+        "app.py": b"print('ready')\n",
+        "requirements.txt": b"",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    profile = _repository_profile(files)
+    request, requirements, _ = _dynamic_records()
+    docker = FakeDockerAdapter()
+    setup = _setup(docker, artifacts=_MemoryArtifacts())
+
+    source = await setup.preflight(
+        workspace_root=tmp_path,
+        repository_profile=profile,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "profile-recipe-source"),
+    )
+    recipe = await setup.build(
+        approval=_build_approval(tmp_path, request, source),
+        source=source,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "profile-recipe"),
+    )
+
+    assert source.repository_profile_ref == reference(profile)
+    assert source.dockerfile_origin == "GENERATED"
+    assert recipe.source_refs[0] == reference(profile)
+    assert {item.data_kind for item in recipe.source_refs[1:]} == {"artifact"}
+    assert docker.built == []
+    assert len(docker.built_contexts) == 1
+    archive, dockerfile_path, timeout_ms = docker.built_contexts[0]
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as bundle:
+        names = tuple(sorted(bundle.getnames()))
+        dockerfile = bundle.extractfile(dockerfile_path)
+        assert dockerfile is not None
+        dockerfile_bytes = dockerfile.read()
+    assert names == ("Dockerfile", "app.py", "requirements.txt")
+    assert b"FROM python@" in dockerfile_bytes
+    assert b"COPY . /workspace" in dockerfile_bytes
+    assert b'["python", "-m", "pip", "install"' in dockerfile_bytes
+    assert b'"-r", "requirements.txt"' in dockerfile_bytes
+    assert timeout_ms == 10_000
+
+
+@pytest.mark.asyncio
+async def test_built_image_has_exact_attempt_owner_and_explicit_baseline_reason(
+    tmp_path: Path,
+) -> None:
+    files = {"Dockerfile": b"FROM scratch\n", "app.py": b"pass\n"}
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    request, requirements, _ = _dynamic_records()
+    docker = FakeDockerAdapter()
+    registry = OwnedResourceRegistry(journal_path=tmp_path / "owned.json")
+    setup = ReproductionSetupAutomation(
+        docker=docker,
+        recipes=EnvironmentRecipeStore(artifacts=_MemoryArtifacts()),
+        health=SandboxHealthChecker(),
+        resources=registry,
+    )
+    source = await setup.preflight(
+        workspace_root=tmp_path,
+        repository_profile=_repository_profile(files),
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "owned-image-source"),
+    )
+
+    recipe = await setup.build(
+        approval=_build_approval(tmp_path, request, source),
+        source=source,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "owned-image-recipe"),
+    )
+
+    resource_refs = setup.recipe_resource_refs(recipe)
+    assert len(resource_refs) == 1
+    owned = registry.exact(resource_refs[0])
+    assert owned is not None
+    assert owned.resource_kind == "IMAGE"
+    assert owned.resource_id == recipe.built_image_digest
+    assert owned.preservation_reason == "REUSABLE_BASELINE"
+    assert owned.labels["sastsimi.analysis-id"] == "analysis-1"
+    assert owned.labels["sastsimi.hypothesis-id"] == "hypothesis-1"
+    assert owned.labels["sastsimi.attempt-id"] == "dynamic-attempt-1"
+
+
+@pytest.mark.asyncio
+async def test_persisted_recipe_can_rebuild_after_store_restart(tmp_path: Path) -> None:
+    files = {
+        "app.py": b"print('ready')\n",
+        "requirements.txt": b"requests==2.32.5\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    artifacts = _MemoryArtifacts()
+    request, requirements, _ = _dynamic_records()
+    source = await _setup(FakeDockerAdapter(), artifacts=artifacts).preflight(
+        workspace_root=tmp_path,
+        repository_profile=_repository_profile(files),
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "restart-source"),
+    )
+    first_docker = FakeDockerAdapter()
+    first_store = EnvironmentRecipeStore(artifacts=artifacts)
+    build_spec = _approval(tmp_path, request).approved_spec
+    assert build_spec is not None
+    recipe = await first_store.build(
+        docker=first_docker,
+        source=source,
+        labels={"sastsimi.owner": "reproduction-setup-automation"},
+        build_spec=build_spec,
+        build_timeout_ms=10_000,
+    )
+
+    restarted_store = EnvironmentRecipeStore(artifacts=artifacts)
+    restored = restarted_store.restore_source(recipe, workspace_root=tmp_path)
+    restarted_docker = FakeDockerAdapter()
+    rebuilt = await restarted_store.build(
+        docker=restarted_docker,
+        source=restored,
+        labels={"sastsimi.owner": "reproduction-setup-automation"},
+        build_spec=build_spec,
+        build_timeout_ms=10_000,
+    )
+
+    assert recipe.source_manifest is not None
+    assert rebuilt.recipe_source_ref == recipe.recipe_source_ref
+    assert len(restarted_docker.built_contexts) == 1
+
+
+@pytest.mark.asyncio
+async def test_repository_profile_generates_javascript_dependency_install(
+    tmp_path: Path,
+) -> None:
+    files = {
+        "package.json": b'{"dependencies": {"express": "1.0.0"}}\n',
+        "package-lock.json": b'{"lockfileVersion": 3}\n',
+        "server.js": b"console.log('ready')\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    request, requirements, _ = _dynamic_records()
+
+    source = await _setup(FakeDockerAdapter(), artifacts=_MemoryArtifacts()).preflight(
+        workspace_root=tmp_path,
+        repository_profile=_repository_profile(files),
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "node-recipe-source"),
+    )
+
+    assert b'["npm", "ci", "--ignore-scripts"]' in source.dockerfile
+
+
+@pytest.mark.asyncio
+async def test_repository_profile_blocks_tracked_secret_before_docker(
+    tmp_path: Path,
+) -> None:
+    files = {
+        ".env": b"API_KEY=do-not-send-to-docker\n",
+        "app.py": b"print('ready')\n",
+        "requirements.txt": b"",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    profile = _repository_profile(files)
+    request, requirements, _ = _dynamic_records()
+    docker = FakeDockerAdapter()
+
+    with pytest.raises(ValueError, match="REPOSITORY_SECRET_FILE_DENIED"):
+        await _setup(docker, artifacts=_MemoryArtifacts()).preflight(
+            workspace_root=tmp_path,
+            repository_profile=profile,
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "blocked-recipe-source"),
+        )
+
+    assert docker.inspected_images == []
+    assert docker.built == []
+    assert docker.built_contexts == []
+
+
+@pytest.mark.asyncio
+async def test_repository_profile_blocks_unignored_package_credentials(
+    tmp_path: Path,
+) -> None:
+    files = {
+        ".npmrc": b"//registry.npmjs.org/:_authToken=do-not-send\n",
+        "package.json": b'{"dependencies": {}}\n',
+        "server.js": b"console.log('ready')\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    request, requirements, _ = _dynamic_records()
+
+    with pytest.raises(ValueError, match="REPOSITORY_SECRET_FILE_DENIED"):
+        await _setup(FakeDockerAdapter(), artifacts=_MemoryArtifacts()).preflight(
+            workspace_root=tmp_path,
+            repository_profile=_repository_profile(files),
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "credential-recipe-source"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_repository_profile_honors_simple_dockerignore_before_archiving(
+    tmp_path: Path,
+) -> None:
+    files = {
+        ".dockerignore": b".npmrc\n",
+        ".npmrc": b"//registry.npmjs.org/:_authToken=do-not-send\n",
+        "package.json": b'{"dependencies": {}}\n',
+        "server.js": b"console.log('ready')\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    request, requirements, _ = _dynamic_records()
+
+    source = await _setup(FakeDockerAdapter(), artifacts=_MemoryArtifacts()).preflight(
+        workspace_root=tmp_path,
+        repository_profile=_repository_profile(files),
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "ignored-credential-source"),
+    )
+
+    assert source.context_archive is not None
+    with tarfile.open(fileobj=io.BytesIO(source.context_archive), mode="r:") as bundle:
+        assert ".npmrc" not in bundle.getnames()
+
+
+@pytest.mark.asyncio
+async def test_repository_profile_rejects_unsupported_dockerignore_negation(
+    tmp_path: Path,
+) -> None:
+    files = {
+        ".dockerignore": b"*\n!package.json\n",
+        "package.json": b'{"dependencies": {}}\n',
+        "server.js": b"console.log('ready')\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    request, requirements, _ = _dynamic_records()
+
+    with pytest.raises(ValueError, match="DOCKERIGNORE_UNSUPPORTED"):
+        await _setup(FakeDockerAdapter(), artifacts=_MemoryArtifacts()).preflight(
+            workspace_root=tmp_path,
+            repository_profile=_repository_profile(files),
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "unsupported-ignore-source"),
+        )
+
+
+def test_missing_declared_container_health_is_not_a_match() -> None:
+    request, requirements, _ = _dynamic_records()
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
+    requirements = requirements.model_copy(
+        update={
+            "items": (
+                EnvironmentRequirement(
+                    requirement_id="health",
+                    kind="HEALTH_CHECK",
+                    name="Docker health status",
+                    required=True,
+                    expected="healthy",
+                    expected_ref=None,
+                    alternatives=(),
+                    check_ref=None,
+                    secret_ref=None,
+                    source_refs=(request_ref,),
+                ),
+            )
+        }
+    )
+    evidence_ref = _ref("sandbox_resource", "container")
+    state = DockerContainerState(
+        container_id="owned-container",
+        image_digest=IMAGE_DIGEST,
+        user="65532:65532",
+        network_mode="none",
+        privileged=False,
+        read_only_rootfs=True,
+        running=True,
+        exit_code=0,
+        health_status=None,
+        labels={},
+    )
+
+    checks = SandboxHealthChecker().requirement_checks(
+        requirements=requirements,
+        state=state,
+        evidence_ref=evidence_ref,
+    )
+
+    assert checks[0].status == "NOT_CHECKED"
+    assert checks[0].actual is None
+
+
+@pytest.mark.asyncio
+async def test_repository_profile_keeps_equal_file_refs_distinct(
+    tmp_path: Path,
+) -> None:
+    files = {
+        "a.py": b"pass\n",
+        "b.py": b"pass\n",
+        "requirements.txt": b"",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    request, requirements, _ = _dynamic_records()
+
+    source = await _setup(FakeDockerAdapter(), artifacts=_MemoryArtifacts()).preflight(
+        workspace_root=tmp_path,
+        repository_profile=_repository_profile(files),
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "equal-content-source"),
+    )
+
+    assert len(source.source_refs) == len(set(source.source_refs))
+
+
+@pytest.mark.asyncio
+async def test_repository_profile_prefers_existing_dockerfile(tmp_path: Path) -> None:
+    files = {
+        "Dockerfile": b"FROM fixture:local\nWORKDIR /workspace\nCOPY . /workspace\n",
+        "package.json": b'{"dependencies": {}}\n',
+        "server.js": b"console.log('ready')\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    request, requirements, _ = _dynamic_records()
+    docker = FakeDockerAdapter()
+    setup = _setup(docker, artifacts=_MemoryArtifacts())
+
+    source = await setup.preflight(
+        workspace_root=tmp_path,
+        repository_profile=_repository_profile(files),
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "existing-dockerfile-source"),
+    )
+    await setup.build(
+        approval=_build_approval(tmp_path, request, source),
+        source=source,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "existing-dockerfile-recipe"),
+    )
+
+    assert source.dockerfile_origin == "REPOSITORY"
+    archive, dockerfile_path, _ = docker.built_contexts[0]
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as bundle:
+        dockerfile = bundle.extractfile(dockerfile_path)
+        assert dockerfile is not None
+        content = dockerfile.read()
+    assert f"FROM fixture@{IMAGE_DIGEST}\n".encode() in content
+    assert b"COPY . /workspace" in content
 
 
 @pytest.mark.asyncio
@@ -526,6 +1470,10 @@ async def test_recipe_lock_wait_is_bounded_by_approved_timeout(
                         "sastsimi.hypothesis-id": "hypothesis-1",
                         "sastsimi.attempt-id": "dynamic-attempt-1",
                     },
+                    build_spec=cast(
+                        SandboxRunSpec,
+                        _approval(tmp_path, request).approved_spec,
+                    ),
                     build_timeout_ms=10,
                 ),
                 timeout=0.25,
@@ -843,6 +1791,67 @@ class _Process:
 
 
 @pytest.mark.asyncio
+async def test_docker_uses_exact_trusted_binary_and_daemon_without_host_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[tuple[object, ...], Mapping[str, object]]] = []
+
+    async def spawn(*argv: object, **kwargs: object) -> _Process:
+        calls.append((argv, kwargs))
+        return _Process(b"owned-container-id\n")
+
+    monkeypatch.setenv("DOCKER_HOST", "tcp://attacker.invalid:2375")
+    monkeypatch.setenv("DOCKER_CONTEXT", "attacker-context")
+    monkeypatch.setattr(
+        "sastsimi.sandbox.docker_adapter.asyncio.create_subprocess_exec", spawn
+    )
+    request, _, _ = _dynamic_records()
+    spec = _approval(tmp_path, request).approved_spec
+    assert spec is not None
+    adapter, _ = _trusted_docker_adapter(tmp_path)
+
+    await adapter.create(
+        spec,
+        {
+            "sastsimi.owner": "reproduction-setup-automation",
+            "sastsimi.analysis-id": "analysis-1",
+            "sastsimi.workspace-id": "workspace-1",
+            "sastsimi.commit-id": "commit-1",
+            "sastsimi.hypothesis-id": "hypothesis-1",
+            "sastsimi.attempt-id": "dynamic-attempt-1",
+            "sastsimi.resource-kind": "container",
+            "sastsimi.resource-id": "container-runtime-1",
+        },
+    )
+
+    argv, kwargs = calls[0]
+    assert Path(cast(str, argv[0])).is_absolute()
+    assert argv[1:3] == ("--host", "npipe:////./pipe/docker_engine")
+    environment = cast(Mapping[str, str], kwargs["env"])
+    assert "DOCKER_HOST" not in environment
+    assert "DOCKER_CONTEXT" not in environment
+
+
+@pytest.mark.asyncio
+async def test_docker_rejects_replaced_binary_immediately_before_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    async def unexpected(*_: object, **__: object) -> _Process:
+        raise AssertionError("changed Docker binary must not be invoked")
+
+    monkeypatch.setattr(
+        "sastsimi.sandbox.docker_adapter.asyncio.create_subprocess_exec", unexpected
+    )
+    adapter, resolver = _trusted_docker_adapter(tmp_path)
+    resolver.target.executable.write_bytes(b"replaced-docker")
+
+    with pytest.raises(ValueError, match="DOCKER_EXECUTABLE_CHANGED"):
+        await adapter.start("owned-container-id")
+
+
+@pytest.mark.asyncio
 async def test_docker_create_uses_argv_and_hard_isolation_options(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -859,7 +1868,7 @@ async def test_docker_create_uses_argv_and_hard_isolation_options(
     request, _, _ = _dynamic_records()
     spec = _approval(tmp_path, request).approved_spec
     assert spec is not None
-    adapter = DockerAdapter()
+    adapter, _ = _trusted_docker_adapter(tmp_path)
 
     container_id = await adapter.create(
         spec,
@@ -878,7 +1887,8 @@ async def test_docker_create_uses_argv_and_hard_isolation_options(
     assert container_id == "owned-container-id"
     assert calls
     argv = calls[0]
-    assert argv[0] == "docker"
+    assert Path(cast(str, argv[0])).is_absolute()
+    assert argv[1:3] == ("--host", "npipe:////./pipe/docker_engine")
     assert "--network" in argv and "none" in argv
     assert "--read-only" in argv
     assert "no-new-privileges" in argv
@@ -924,7 +1934,7 @@ async def test_docker_rejects_image_declared_volume_before_start(
     request, _, _ = _dynamic_records()
     spec = _approval(tmp_path, request).approved_spec
     assert spec is not None
-    adapter = DockerAdapter()
+    adapter, _ = _trusted_docker_adapter(tmp_path)
     monkeypatch.setattr(adapter, "_run", run)
 
     with pytest.raises(ValueError, match="DOCKER_MOUNT_BOUNDARY_INVALID"):
@@ -960,8 +1970,125 @@ async def test_docker_cleanup_removes_owned_anonymous_volumes(
 
 
 @pytest.mark.asyncio
+async def test_docker_image_cleanup_never_force_removes_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def run(
+        argv: tuple[str, ...],
+        *,
+        timeout_ms: int | None = None,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        del timeout_ms, input_bytes
+        calls.append(argv)
+        return DockerCommandOutcome(0, b"", b"", False)
+
+    adapter = DockerAdapter()
+    monkeypatch.setattr(adapter, "_run", run)
+
+    await adapter.remove_images((IMAGE_DIGEST,))
+
+    assert calls == [("image", "rm", IMAGE_DIGEST)]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_removes_exact_attempt_owned_nonbaseline_image(
+    tmp_path: Path,
+) -> None:
+    registry = OwnedResourceRegistry(journal_path=tmp_path / "owned.json")
+    docker = FakeDockerAdapter()
+    labels = {
+        "sastsimi.owner": "reproduction-setup-automation",
+        "sastsimi.analysis-id": "analysis-1",
+        "sastsimi.workspace-id": "workspace-1",
+        "sastsimi.commit-id": "commit-1",
+        "sastsimi.hypothesis-id": "hypothesis-1",
+        "sastsimi.attempt-id": "dynamic-attempt-1",
+        "sastsimi.resource-kind": "image",
+        "sastsimi.resource-id": "image-runtime-1",
+    }
+    image_tag = DockerAdapter.runtime_image_tag(labels)
+    docker.image_labels[IMAGE_DIGEST] = labels
+    docker.image_tags[image_tag] = DockerImageState(IMAGE_DIGEST, labels)
+    register_image = getattr(registry, "register_image", None)
+    assert register_image is not None, "attempt-owned image registration is required"
+    image_ref = register_image(
+        image_digest=IMAGE_DIGEST,
+        image_tag=image_tag,
+        labels=labels,
+        meta=_meta("environment_recipe", "recipe-image"),
+        preservation_reason=None,
+    )
+    request, _, _ = _dynamic_records()
+
+    result = await registry.cleanup(
+        docker=docker,
+        request=request,
+        environments=(),
+        resource_refs=(image_ref,),
+        meta=_meta("cleanup_result", "image-cleanup"),
+    )
+
+    assert result.status == "SUCCEEDED"
+    assert docker.removed_image_tags == [image_tag]
+    assert docker.removed_images == []
+    assert registry.exact(image_ref) is None
+
+
+@pytest.mark.asyncio
+async def test_owned_image_inspection_ignores_unrelated_image_labels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ownership_labels = {
+        "sastsimi.owner": "reproduction-setup-automation",
+        "sastsimi.analysis-id": "analysis-1",
+        "sastsimi.workspace-id": "workspace-1",
+        "sastsimi.commit-id": "commit-1",
+        "sastsimi.hypothesis-id": "hypothesis-1",
+        "sastsimi.attempt-id": "dynamic-attempt-1",
+        "sastsimi.resource-kind": "image",
+        "sastsimi.resource-id": "image-runtime-1",
+    }
+
+    async def run(
+        argv: tuple[str, ...],
+        *,
+        timeout_ms: int | None = None,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        del timeout_ms, input_bytes
+        assert argv == ("image", "inspect", IMAGE_DIGEST)
+        return DockerCommandOutcome(
+            0,
+            json.dumps(
+                [
+                    {
+                        "Id": IMAGE_DIGEST,
+                        "Config": {
+                            "Labels": ownership_labels | {"maintainer": "fixture"}
+                        },
+                    }
+                ]
+            ).encode(),
+            b"",
+            False,
+        )
+
+    adapter = DockerAdapter()
+    monkeypatch.setattr(adapter, "_run", run)
+
+    state = await adapter.inspect_owned_image(IMAGE_DIGEST)
+
+    assert state.image_digest == IMAGE_DIGEST
+    assert state.labels == ownership_labels
+
+
+@pytest.mark.asyncio
 async def test_docker_build_uses_stdin_empty_context_and_approved_timeout(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     calls: list[tuple[tuple[str, ...], int | None, bytes | None]] = []
 
@@ -981,27 +2108,384 @@ async def test_docker_build_uses_stdin_empty_context_and_approved_timeout(
         "sastsimi.commit-id": "commit-1",
         "sastsimi.hypothesis-id": "hypothesis-1",
         "sastsimi.attempt-id": "dynamic-attempt-1",
+        "sastsimi.resource-kind": "image",
+        "sastsimi.resource-id": "image-runtime-1",
     }
-    adapter = DockerAdapter()
+    adapter, _ = _trusted_docker_adapter(tmp_path)
     monkeypatch.setattr(adapter, "_run", run)
     dockerfile = b"FROM scratch\nRUN true\n"
+    request, _, _ = _dynamic_records()
+    spec = _approval(tmp_path, request).approved_spec
+    assert spec is not None
 
-    digest = await adapter.build(dockerfile, labels, timeout_ms=10_000)
+    digest = await adapter.build(
+        dockerfile,
+        labels,
+        spec=spec,
+        timeout_ms=10_000,
+    )
 
     assert digest == IMAGE_DIGEST
     assert len(calls) == 1
     argv, timeout_ms, input_bytes = calls[0]
     assert argv[:6] == (
+        "image",
         "build",
         "--quiet",
         "--pull=false",
         "--network",
         "none",
-        "--label",
     )
+    assert "--label" in argv
+    assert ("--tag", DockerAdapter.runtime_image_tag(labels)) == argv[
+        argv.index("--tag") : argv.index("--tag") + 2
+    ]
     assert argv[-1] == "-"
+    assert ("--cpu-period", "100000") == argv[
+        argv.index("--cpu-period") : argv.index("--cpu-period") + 2
+    ]
+    assert ("--cpu-quota", str(spec.cpu_limit_millicores * 100)) == argv[
+        argv.index("--cpu-quota") : argv.index("--cpu-quota") + 2
+    ]
+    assert ("--memory", str(spec.memory_limit_bytes)) == argv[
+        argv.index("--memory") : argv.index("--memory") + 2
+    ]
+    assert ("--ulimit", f"nproc={spec.pid_limit}:{spec.pid_limit}") == argv[
+        argv.index("--ulimit") : argv.index("--ulimit") + 2
+    ]
+    assert "--storage-opt" not in argv
     assert timeout_ms == 10_000
     assert input_bytes == dockerfile
+
+
+@pytest.mark.asyncio
+async def test_docker_build_is_blocked_when_backend_cannot_enforce_every_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    async def unexpected(*_: object, **__: object) -> DockerCommandOutcome:
+        raise AssertionError("unverified build boundary must not reach Docker")
+
+    adapter, resolver = _trusted_docker_adapter(tmp_path)
+    assert adapter._target is not None
+    limited_target = replace(
+        adapter._target,
+        enforced_build_limits=frozenset({"CPU", "MEMORY", "PID"}),
+    )
+    resolver.target = limited_target
+    adapter = DockerAdapter(limited_target, resolver)
+    monkeypatch.setattr(adapter, "_run", unexpected)
+    request, _, _ = _dynamic_records()
+    spec = _approval(tmp_path, request).approved_spec
+    assert spec is not None
+
+    with pytest.raises(DockerOperationError, match="DOCKER_BUILD_LIMITS_UNVERIFIED"):
+        await adapter.build(
+            b"FROM scratch\nRUN true\n",
+            {
+                "sastsimi.owner": "reproduction-setup-automation",
+                "sastsimi.analysis-id": "analysis-1",
+                "sastsimi.workspace-id": "workspace-1",
+                "sastsimi.commit-id": "commit-1",
+                "sastsimi.hypothesis-id": "hypothesis-1",
+                "sastsimi.attempt-id": "dynamic-attempt-1",
+                "sastsimi.resource-kind": "image",
+                "sastsimi.resource-id": "image-runtime-1",
+            },
+            spec=spec,
+            timeout_ms=10_000,
+        )
+
+
+@pytest.mark.asyncio
+async def test_docker_buildx_uses_supported_resource_flags(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def run(
+        argv: tuple[str, ...],
+        **_: object,
+    ) -> DockerCommandOutcome:
+        calls.append(argv)
+        return DockerCommandOutcome(0, (IMAGE_DIGEST + "\n").encode(), b"", False)
+
+    adapter, resolver = _trusted_docker_adapter(tmp_path)
+    assert adapter._target is not None
+    buildx_target = replace(adapter._target, build_backend="BUILDX_RESOURCE")
+    resolver.target = buildx_target
+    adapter = DockerAdapter(buildx_target, resolver)
+    monkeypatch.setattr(adapter, "_run", run)
+    request, _, _ = _dynamic_records()
+    spec = _approval(tmp_path, request).approved_spec
+    assert spec is not None
+
+    await adapter.build(
+        b"FROM scratch\nRUN true\n",
+        {
+            "sastsimi.owner": "reproduction-setup-automation",
+            "sastsimi.analysis-id": "analysis-1",
+            "sastsimi.workspace-id": "workspace-1",
+            "sastsimi.commit-id": "commit-1",
+            "sastsimi.hypothesis-id": "hypothesis-1",
+            "sastsimi.attempt-id": "dynamic-attempt-1",
+            "sastsimi.resource-kind": "image",
+            "sastsimi.resource-id": "image-runtime-1",
+        },
+        spec=spec,
+        timeout_ms=10_000,
+    )
+
+    assert calls[0][:4] == ("buildx", "build", "--quiet", "--load")
+    assert ("--resource", "cpu-period=100000") == calls[0][
+        calls[0].index("--resource") : calls[0].index("--resource") + 2
+    ]
+    assert f"cpu-quota={spec.cpu_limit_millicores * 100}" in calls[0]
+    assert f"memory={spec.memory_limit_bytes}" in calls[0]
+
+
+@pytest.mark.asyncio
+async def test_docker_build_rejects_weaker_external_disk_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    async def unexpected(*_: object, **__: object) -> DockerCommandOutcome:
+        raise AssertionError("weak disk boundary must not reach Docker")
+
+    adapter, resolver = _trusted_docker_adapter(tmp_path)
+    assert adapter._target is not None
+    weak_target = replace(
+        adapter._target,
+        external_build_disk_limit_bytes=128 * 1024 * 1024,
+    )
+    resolver.target = weak_target
+    adapter = DockerAdapter(weak_target, resolver)
+    monkeypatch.setattr(adapter, "_run", unexpected)
+    request, _, _ = _dynamic_records()
+    spec = _approval(tmp_path, request).approved_spec
+    assert spec is not None
+
+    with pytest.raises(
+        DockerOperationError,
+        match="DOCKER_BUILD_DISK_LIMIT_UNVERIFIED",
+    ):
+        await adapter.build(
+            b"FROM scratch\nRUN true\n",
+            {
+                "sastsimi.owner": "reproduction-setup-automation",
+                "sastsimi.analysis-id": "analysis-1",
+                "sastsimi.workspace-id": "workspace-1",
+                "sastsimi.commit-id": "commit-1",
+                "sastsimi.hypothesis-id": "hypothesis-1",
+                "sastsimi.attempt-id": "dynamic-attempt-1",
+                "sastsimi.resource-kind": "image",
+                "sastsimi.resource-id": "image-runtime-1",
+            },
+            spec=spec,
+            timeout_ms=10_000,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_context", [False, True])
+async def test_cancelled_docker_build_reclaims_attempt_owned_image(
+    monkeypatch: pytest.MonkeyPatch,
+    with_context: bool,
+    tmp_path: Path,
+) -> None:
+    started = asyncio.Event()
+    calls: list[tuple[str, ...]] = []
+
+    async def run(
+        argv: tuple[str, ...],
+        *,
+        timeout_ms: int | None = None,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        del timeout_ms, input_bytes
+        calls.append(argv)
+        if argv[:2] == ("image", "build"):
+            started.set()
+            await asyncio.Event().wait()
+        if argv[:2] == ("image", "ls"):
+            return DockerCommandOutcome(0, f"{IMAGE_DIGEST}\n".encode(), b"", False)
+        if argv[:2] == ("image", "inspect"):
+            return DockerCommandOutcome(
+                0,
+                json.dumps(
+                    [{"Id": IMAGE_DIGEST, "Config": {"Labels": labels}}]
+                ).encode(),
+                b"",
+                False,
+            )
+        return DockerCommandOutcome(0, b"", b"", False)
+
+    labels = {
+        "sastsimi.owner": "reproduction-setup-automation",
+        "sastsimi.analysis-id": "analysis-1",
+        "sastsimi.workspace-id": "workspace-1",
+        "sastsimi.commit-id": "commit-1",
+        "sastsimi.hypothesis-id": "hypothesis-1",
+        "sastsimi.attempt-id": "dynamic-attempt-1",
+        "sastsimi.resource-kind": "image",
+        "sastsimi.resource-id": "image-runtime-1",
+    }
+    adapter, _resolver = _trusted_docker_adapter(tmp_path)
+    monkeypatch.setattr(adapter, "_run", run)
+    request, _, _ = _dynamic_records()
+    spec = _approval(Path.cwd(), request).approved_spec
+    assert spec is not None
+    if with_context:
+        archive = EnvironmentRecipeStore._archive(
+            {"Dockerfile": (b"FROM scratch\n", 0o644)}
+        )
+        operation = adapter.build_context(
+            archive,
+            "Dockerfile",
+            labels,
+            spec=spec,
+            timeout_ms=30_000,
+        )
+    else:
+        operation = adapter.build(
+            b"FROM scratch\n",
+            labels,
+            spec=spec,
+            timeout_ms=30_000,
+        )
+    task = asyncio.create_task(operation)
+    await started.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    image_tag = DockerAdapter.runtime_image_tag(labels)
+    assert calls[-1] == ("image", "rm", image_tag)
+
+
+@pytest.mark.asyncio
+async def test_docker_context_build_rejects_link_member_before_daemon(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w") as archive:
+        dockerfile = tarfile.TarInfo("Dockerfile")
+        dockerfile.size = len(b"FROM scratch\n")
+        archive.addfile(dockerfile, io.BytesIO(b"FROM scratch\n"))
+        link = tarfile.TarInfo("escape")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "../../host"
+        archive.addfile(link)
+
+    async def unexpected(*_: object, **__: object) -> DockerCommandOutcome:
+        raise AssertionError("invalid context must not reach Docker")
+
+    adapter = DockerAdapter()
+    monkeypatch.setattr(adapter, "_run", unexpected)
+    labels = {
+        "sastsimi.owner": "reproduction-setup-automation",
+        "sastsimi.analysis-id": "analysis-1",
+        "sastsimi.workspace-id": "workspace-1",
+        "sastsimi.commit-id": "commit-1",
+        "sastsimi.hypothesis-id": "hypothesis-1",
+        "sastsimi.attempt-id": "dynamic-attempt-1",
+    }
+
+    with pytest.raises(ValueError, match="DOCKER_BUILD_CONTEXT_INVALID"):
+        await adapter.build_context(
+            stream.getvalue(),
+            "Dockerfile",
+            labels,
+            spec=SandboxRunSpec(
+                workspace_root=Path.cwd(),
+                image_digest=None,
+                user="65532:65532",
+                mounts=(),
+                network_mode="DEFAULT_DENY",
+                network_targets=(),
+                secret_refs=(),
+                privileged=False,
+                pid_mode=None,
+                ipc_mode=None,
+                capabilities=(),
+                cpu_limit_millicores=500,
+                memory_limit_bytes=256 * 1024 * 1024,
+                disk_limit_bytes=512 * 1024 * 1024,
+                pid_limit=64,
+                requested_execution_ms=10_000,
+                source_baked=True,
+            ),
+            timeout_ms=10_000,
+        )
+
+
+@pytest.mark.asyncio
+async def test_docker_context_build_streams_tar_without_host_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    archive = EnvironmentRecipeStore._archive(
+        {"Dockerfile": (b"FROM scratch\n", 0o644), "app.py": (b"pass\n", 0o644)}
+    )
+    calls: list[tuple[tuple[str, ...], int | None, bytes | None]] = []
+
+    async def run(
+        argv: tuple[str, ...],
+        *,
+        timeout_ms: int | None = None,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        calls.append((argv, timeout_ms, input_bytes))
+        return DockerCommandOutcome(0, (IMAGE_DIGEST + "\n").encode(), b"", False)
+
+    labels = {
+        "sastsimi.owner": "reproduction-setup-automation",
+        "sastsimi.analysis-id": "analysis-1",
+        "sastsimi.workspace-id": "workspace-1",
+        "sastsimi.commit-id": "commit-1",
+        "sastsimi.hypothesis-id": "hypothesis-1",
+        "sastsimi.attempt-id": "dynamic-attempt-1",
+        "sastsimi.resource-kind": "image",
+        "sastsimi.resource-id": "image-runtime-1",
+    }
+    adapter, _ = _trusted_docker_adapter(tmp_path)
+    monkeypatch.setattr(adapter, "_run", run)
+
+    digest = await adapter.build_context(
+        archive,
+        "Dockerfile",
+        labels,
+        spec=SandboxRunSpec(
+            workspace_root=Path.cwd(),
+            image_digest=None,
+            user="65532:65532",
+            mounts=(),
+            network_mode="DEFAULT_DENY",
+            network_targets=(),
+            secret_refs=(),
+            privileged=False,
+            pid_mode=None,
+            ipc_mode=None,
+            capabilities=(),
+            cpu_limit_millicores=500,
+            memory_limit_bytes=256 * 1024 * 1024,
+            disk_limit_bytes=512 * 1024 * 1024,
+            pid_limit=64,
+            requested_execution_ms=10_000,
+            source_baked=True,
+        ),
+        timeout_ms=10_000,
+    )
+
+    assert digest == IMAGE_DIGEST
+    assert len(calls) == 1
+    argv, timeout_ms, input_bytes = calls[0]
+    assert argv[-3:] == ("--file", "Dockerfile", "-")
+    assert timeout_ms == 10_000
+    assert input_bytes == archive
+    assert all(str(Path.cwd()) not in item for item in argv)
 
 
 @pytest.mark.asyncio
@@ -1069,6 +2553,7 @@ async def test_docker_create_rejects_missing_image_digest_before_invocation(
 @pytest.mark.asyncio
 async def test_docker_exec_uses_exact_argv_and_working_directory(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     calls: list[tuple[object, ...]] = []
 
@@ -1079,7 +2564,7 @@ async def test_docker_exec_uses_exact_argv_and_working_directory(
     monkeypatch.setattr(
         "sastsimi.sandbox.docker_adapter.asyncio.create_subprocess_exec", spawn
     )
-    adapter = DockerAdapter()
+    adapter, resolver = _trusted_docker_adapter(tmp_path)
 
     outcome = await adapter.execute(
         "owned-container-id",
@@ -1091,7 +2576,9 @@ async def test_docker_exec_uses_exact_argv_and_working_directory(
     assert outcome.exit_code == 0
     assert calls == [
         (
-            "docker",
+            str(resolver.target.executable),
+            "--host",
+            "npipe:////./pipe/docker_engine",
             "exec",
             "--workdir",
             "/workspace",
@@ -1305,6 +2792,7 @@ def test_runtime_owned_name_does_not_include_repository_path(tmp_path: Path) -> 
 @pytest.mark.asyncio
 async def test_docker_output_limit_stops_process_without_communicate_buffering(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     process = _Process(b"x" * (1024 * 1024 + 1), forbid_communicate=True)
 
@@ -1316,7 +2804,8 @@ async def test_docker_output_limit_stops_process_without_communicate_buffering(
     )
 
     with pytest.raises(DockerOperationError, match="DOCKER_OUTPUT_LIMIT_EXCEEDED"):
-        await DockerAdapter().inspect_image("fixture:latest", timeout_ms=10_000)
+        adapter, _ = _trusted_docker_adapter(tmp_path)
+        await adapter.inspect_image("fixture:latest", timeout_ms=10_000)
 
     assert process.communicate_called is False
     assert process.killed is True

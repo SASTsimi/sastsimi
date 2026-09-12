@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,7 @@ from sastsimi.contracts.dynamic import (
 )
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.static import RepositoryProfile
 from sastsimi.ports.dynamic_sandbox import (
     PreparedRecipeSourceView,
     RecreateReason,
@@ -35,13 +37,23 @@ from sastsimi.ports.dynamic_sandbox import (
 )
 
 from .cleanup import OwnedResourceRegistry
-from .docker_adapter import DockerCommandOutcome, DockerContainerState
+from .docker_adapter import (
+    DockerAdapter,
+    DockerCommandOutcome,
+    DockerContainerPresence,
+    DockerContainerState,
+    DockerImageState,
+    DockerImageTagPresence,
+    DockerOperationError,
+)
 from .health_check import SandboxHealthChecker
 from .recipe_store import (
     EnvironmentRecipeStore,
     PreparedRecipeSource,
     fresh_record_meta,
 )
+
+_CLEANUP_TIMEOUT_SECONDS = 10.0
 
 
 class DockerLifecyclePort(Protocol):
@@ -50,9 +62,19 @@ class DockerLifecyclePort(Protocol):
         dockerfile: bytes,
         labels: Mapping[str, str],
         *,
+        spec: SandboxRunSpec,
         timeout_ms: int,
     ) -> str: ...
     async def inspect_image(self, image: str, *, timeout_ms: int) -> str: ...
+    async def build_context(
+        self,
+        context_archive: bytes,
+        dockerfile_path: str,
+        labels: Mapping[str, str],
+        *,
+        spec: SandboxRunSpec,
+        timeout_ms: int,
+    ) -> str: ...
     async def create(self, spec: SandboxRunSpec, labels: Mapping[str, str]) -> str: ...
     async def verify_created_mounts(
         self, container_id: str, spec: SandboxRunSpec
@@ -70,7 +92,14 @@ class DockerLifecyclePort(Protocol):
         working_directory: str,
     ) -> DockerCommandOutcome: ...
     async def inspect(self, container_id: str) -> DockerContainerState: ...
+    async def inspect_container_presence(
+        self, container_id: str, *, by_name: bool = False
+    ) -> DockerContainerPresence: ...
     async def remove(self, resource_ids: tuple[str, ...]) -> None: ...
+    async def inspect_owned_image(self, image_digest: str) -> DockerImageState: ...
+    async def inspect_image_tag(self, image_tag: str) -> DockerImageTagPresence: ...
+    async def remove_images(self, image_digests: tuple[str, ...]) -> None: ...
+    async def remove_image_tags(self, image_tags: tuple[str, ...]) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +127,7 @@ class ReproductionSetupAutomation:
         self._health = health
         self._resources = resources
         self._contexts: dict[bytes, _PreparationContext] = {}
+        self._recipe_resources: dict[bytes, tuple[StoredDataRef, ...]] = {}
 
     async def preflight(
         self,
@@ -106,6 +136,7 @@ class ReproductionSetupAutomation:
         request: DynamicReproductionRequest,
         requirements: EnvironmentRequirements,
         meta: RecordMeta,
+        repository_profile: RepositoryProfile | None = None,
     ) -> PreparedRecipeSource:
         """Read and validate recipe files without touching Docker."""
 
@@ -114,6 +145,7 @@ class ReproductionSetupAutomation:
             request_ref=self._exact_ref(request),
             requirements=requirements,
             meta=meta,
+            repository_profile=repository_profile,
         )
 
     async def build(
@@ -128,13 +160,62 @@ class ReproductionSetupAutomation:
         """Inspect and build only after the exact source boundary is approved."""
 
         spec = self._validate_build(approval, source, request, requirements, meta)
-        labels = self._labels(meta)
-        return await self._recipes.build(
-            docker=self._docker,
-            source=source,
-            labels=labels,
-            build_timeout_ms=spec.requested_execution_ms,
-        )
+        labels = self._image_labels(meta)
+        image_tag = DockerAdapter.runtime_image_tag(labels)
+        self._resources.reserve_image(image_tag=image_tag, labels=labels)
+        try:
+            async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
+                preparation = await self._resources.prepare_image_intent(
+                    docker=self._docker,
+                    image_tag=image_tag,
+                )
+            if preparation != "READY":
+                self._resources.forget_image_intent(image_tag)
+                raise DockerOperationError("DOCKER_IMAGE_TAG_OWNERSHIP_CONFLICT")
+            recipe = await self._recipes.build(
+                docker=self._docker,
+                source=source,
+                labels=labels,
+                build_spec=spec,
+                build_timeout_ms=spec.requested_execution_ms,
+            )
+        except BaseException as failure:
+            try:
+                async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
+                    status = await self._resources.reconcile_image_intent(
+                        docker=self._docker,
+                        image_tag=image_tag,
+                    )
+                if status == "UNKNOWN":
+                    failure.add_note("DOCKER_BUILD_RECONCILIATION_REQUIRED")
+            except BaseException:
+                failure.add_note("DOCKER_BUILD_RECONCILIATION_REQUIRED")
+            raise
+        if recipe.build_disposition == "BUILT":
+            image_ref = self._resources.register_reserved_image(
+                image_digest=recipe.built_image_digest,
+                image_tag=image_tag,
+                meta=meta,
+                preservation_reason="REUSABLE_BASELINE",
+            )
+        else:
+            self._resources.forget_image_intent(image_tag)
+            preserved_ref = self._resources.preserved_image_ref(
+                recipe.built_image_digest
+            )
+            if preserved_ref is None:
+                raise ValueError("REUSABLE_BASELINE_OWNERSHIP_REQUIRED")
+            image_ref = preserved_ref
+        self._recipe_resources[canonical_bytes(self._exact_ref(recipe))] = (image_ref,)
+        return recipe
+
+    def recipe_resource_refs(
+        self, recipe: EnvironmentRecipe
+    ) -> tuple[StoredDataRef, ...]:
+        try:
+            return self._recipe_resources[canonical_bytes(self._exact_ref(recipe))]
+        except KeyError as error:
+            raise ValueError("RECIPE_RESOURCE_OWNERSHIP_REQUIRED") from error
 
     async def create(
         self,
@@ -282,10 +363,51 @@ class ReproductionSetupAutomation:
     ) -> PreparedSandbox:
         if spec is None:
             raise ValueError("SANDBOX_APPROVAL_REQUIRED")
-        container_id = await self._docker.create(spec, labels)
-        resource_ref = self._resources.register_container(
-            container_id=container_id,
+        container_name = DockerAdapter.runtime_container_name(labels)
+        self._resources.reserve_container(
+            container_name=container_name,
             labels=labels,
+        )
+        try:
+            container_id = await self._docker.create(spec, labels)
+        except BaseException as failure:
+            status = "UNKNOWN"
+            try:
+                async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
+                    status = await self._resources.reconcile_intent(
+                        docker=self._docker,
+                        container_name=container_name,
+                    )
+            except BaseException:
+                failure.add_note("DOCKER_CONTAINER_RECONCILIATION_REQUIRED")
+            if status == "UNKNOWN":
+                resource_ref = self._resources.register_reserved_container(
+                    container_name=container_name,
+                    container_id=container_name,
+                    meta=meta,
+                    reconcile_required=True,
+                    lookup_by_name=True,
+                )
+                failed = PreparedSandbox(
+                    recipe,
+                    self._failed_environment(
+                        request=request,
+                        requirements=requirements,
+                        plan=plan,
+                        recipe=recipe,
+                        container_id=container_name,
+                        reason=reason,
+                        previous_environment_ref=previous_environment_ref,
+                        resource_ref=resource_ref,
+                        meta=meta,
+                    ),
+                    (resource_ref,),
+                )
+                raise SandboxSetupCleanupError(failed) from failure
+            raise
+        resource_ref = self._resources.register_reserved_container(
+            container_name=container_name,
+            container_id=container_id,
             meta=meta,
         )
         try:
@@ -312,6 +434,7 @@ class ReproductionSetupAutomation:
                     (resource_ref,),
                 )
                 raise SandboxSetupCleanupError(failed) from cleanup_error
+            self._resources.forget(resource_ref)
             raise
         checks = self._health.requirement_checks(
             requirements=requirements,
@@ -407,6 +530,10 @@ class ReproductionSetupAutomation:
         ReproductionSetupAutomation._validate_scope(
             (requirements,), meta, request=request, source=source
         )
+        if source.repository_profile_ref is not None and (
+            not approval.approved_spec.source_baked or approval.approved_spec.mounts
+        ):
+            raise ValueError("SANDBOX_HOST_MOUNT_DENIED")
         return approval.approved_spec
 
     @staticmethod
@@ -440,6 +567,13 @@ class ReproductionSetupAutomation:
         ReproductionSetupAutomation._validate_scope(
             (requirements, plan, recipe), meta, request=request
         )
+        has_repository_profile = any(
+            ref.data_kind == "repository_profile" for ref in recipe.source_refs
+        )
+        if has_repository_profile and (
+            not approval.approved_spec.source_baked or approval.approved_spec.mounts
+        ):
+            raise ValueError("SANDBOX_HOST_MOUNT_DENIED")
         return approval.approved_spec
 
     @staticmethod
@@ -576,6 +710,17 @@ class ReproductionSetupAutomation:
         labels.update(
             {
                 "sastsimi.resource-kind": "container",
+                "sastsimi.resource-id": uuid4().hex,
+            }
+        )
+        return labels
+
+    @staticmethod
+    def _image_labels(meta: RecordMeta) -> Mapping[str, str]:
+        labels = dict(ReproductionSetupAutomation._labels(meta))
+        labels.update(
+            {
+                "sastsimi.resource-kind": "image",
                 "sastsimi.resource-id": uuid4().hex,
             }
         )

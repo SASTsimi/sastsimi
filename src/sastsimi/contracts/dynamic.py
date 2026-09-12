@@ -208,6 +208,41 @@ class SandboxProfile(DomainRecord):
     created_at: AwareDatetime
 
 
+class EnvironmentRecipeSourceManifest(ContractModel):
+    """Durable exact inputs needed to rebuild one repository-backed recipe."""
+
+    repository_profile_ref: StoredDataRef
+    dockerfile_ref: StoredDataRef
+    build_context_ref: StoredDataRef
+    dockerfile_path: NonEmptyStr
+    dockerfile_origin: Literal["REPOSITORY", "GENERATED"]
+    dockerfile_digest: Sha256
+    context_digest: Sha256
+
+    @model_validator(mode="after")
+    def exact_sources(self) -> Self:
+        require_record_ref(self.repository_profile_ref, "repository_profile")
+        if (
+            self.dockerfile_ref.data_kind != "artifact"
+            or self.build_context_ref.data_kind != "artifact"
+            or self.dockerfile_ref.record_id is not None
+            or self.build_context_ref.record_id is not None
+            or self.dockerfile_ref.content_hash != self.dockerfile_digest
+            or self.build_context_ref.content_hash != self.context_digest
+        ):
+            raise ValueError("RECIPE_SOURCE_MANIFEST_INVALID")
+        if any(
+            (ref.workspace_id, ref.commit_id)
+            != (
+                self.repository_profile_ref.workspace_id,
+                self.repository_profile_ref.commit_id,
+            )
+            for ref in (self.dockerfile_ref, self.build_context_ref)
+        ):
+            raise ValueError("RECIPE_SOURCE_MANIFEST_SCOPE_MISMATCH")
+        return self
+
+
 class EnvironmentRecipe(DynamicRecord):
     KIND = "environment_recipe"
     environment_requirements_ref: StoredDataRef
@@ -217,12 +252,28 @@ class EnvironmentRecipe(DynamicRecord):
     built_image_digest: NonEmptyStr
     baseline_recipe_ref: StoredDataRef | None
     build_disposition: Literal["BUILT", "REUSED"]
+    source_manifest: EnvironmentRecipeSourceManifest | None
     created_at: AwareDatetime
 
     @model_validator(mode="after")
     def baseline(self) -> Self:
         if self.build_disposition == "REUSED" and self.baseline_recipe_ref is None:
             raise ValueError("BASELINE_RECIPE_REQUIRED")
+        repository_refs = tuple(
+            ref for ref in self.source_refs if ref.data_kind == "repository_profile"
+        )
+        if bool(repository_refs) != (self.source_manifest is not None):
+            raise ValueError("RECIPE_SOURCE_MANIFEST_REQUIRED")
+        if self.source_manifest is not None:
+            manifest_refs = (
+                self.source_manifest.repository_profile_ref,
+                self.source_manifest.dockerfile_ref,
+                self.source_manifest.build_context_ref,
+            )
+            if repository_refs != (self.source_manifest.repository_profile_ref,) or set(
+                manifest_refs
+            ) != set(self.source_refs):
+                raise ValueError("RECIPE_SOURCE_MANIFEST_MISMATCH")
         return self
 
 
