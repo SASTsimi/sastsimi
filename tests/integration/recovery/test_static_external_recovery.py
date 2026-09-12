@@ -448,6 +448,93 @@ async def test_complete_static_receipt_recovers_without_rerunning_tool(
 
 
 @pytest.mark.asyncio
+async def test_public_coordinator_recovers_a_durable_static_receipt(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "fixture-python"
+    executable.write_bytes(b"bounded executable")
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+    _, runner, request, profile = _runtime_request(
+        tmp_path, executable_sha256=digest
+    )
+    assert isinstance(request.action.meta, RecordMeta)
+    assert request.action.meta.attempt_id is not None
+    calls = 0
+
+    class Adapter:
+        def __init__(self, executable_path: Path) -> None:
+            self.executable = executable_path
+
+        async def execute(
+            self,
+            _request: StaticToolRequest,
+            _workspace_root: Path,
+            _profile: StaticToolProfile,
+            _deadline: object,
+        ) -> StaticToolObservation:
+            nonlocal calls
+            calls += 1
+            return _observation()
+
+        async def cancel(self, _attempt_id: str) -> CancellationResult:
+            return CancellationResult(False, None)
+
+    class Workspace:
+        def root_for(self, _workspace: CodeWorkspace) -> Path:
+            return workspace_root
+
+        async def assert_unchanged(
+            self,
+            _workspace: CodeWorkspace,
+            _deadline: object,
+            *,
+            attempt_id: str,
+            check_id: str,
+        ) -> tuple[ProcessReceipt, ...]:
+            del attempt_id, check_id
+            return ()
+
+    process = _process(
+        str(request.action.action_id), str(request.action.meta.attempt_id), 0
+    )
+
+    def checkpoint(stage: str) -> None:
+        if stage == "STATIC_RECEIPT_DURABLE":
+            raise _Crash
+
+    external = StaticExternalRunner(
+        runner,
+        tmp_path / "static-receipts",
+        cast(Any, None),
+        cast(Any, None),
+        checkpoint=checkpoint,
+        static_process_receipts=lambda _action, _attempt: (process,),
+        static_dispatch_state=_dispatch_reader(runner),
+    )
+    coordinator = StaticToolCoordinator(
+        cast(
+            Any,
+            SimpleNamespace(
+                resolve=runner.runtime.configuration.resolve_static_tool_profile
+            ),
+        ),
+        {"PYTHON_AST": cast(Any, Adapter(executable))},
+        external,
+        cast(Any, Workspace()),
+        {"python": executable},
+    )
+
+    with pytest.raises(_Crash):
+        await coordinator.run(request)
+    recovered = await coordinator.recover(request)
+
+    assert recovered.status == "SUCCEEDED"
+    assert calls == 1
+
+
+@pytest.mark.asyncio
 async def test_prepared_static_dispatch_resumes_exact_attempt_without_prior_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
