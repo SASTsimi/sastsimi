@@ -6,9 +6,10 @@ from pathlib import Path
 import pytest
 
 from sastsimi import bootstrap
+from sastsimi.contracts.evaluation import AnalysisRunResult
 from sastsimi.interfaces.cli import analyze as analyze_command
 from sastsimi.interfaces.cli.main import main
-from sastsimi.ports.scheduler import RunOutcome
+from sastsimi.ports.scheduler import AnalysisStatusView, RunOutcome
 
 
 class _Entrypoint:
@@ -20,6 +21,21 @@ class _Entrypoint:
     ) -> RunOutcome:
         self.calls.append(request)
         return RunOutcome("analysis-1", "BLOCKED", None)
+
+
+class _Application:
+    def status(self, analysis_id: str) -> AnalysisStatusView:
+        return AnalysisStatusView(
+            analysis_id=analysis_id,
+            run_status="BLOCKED",
+            work_counts=(("DYNAMIC_REPRO:BLOCKED", 1),),
+            cancel_requested=False,
+            waiting_for=("INPUT",),
+            result_ref=None,
+        )
+
+    def result(self, analysis_id: str) -> AnalysisRunResult:
+        raise ValueError(f"not terminal: {analysis_id}")
 
 
 def test_production_analyze_passes_only_explicit_exact_inputs(
@@ -126,6 +142,35 @@ def test_production_analyze_without_composition_fails_closed_not_fake(
         )
         == 4
     )
+
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "CAPABILITY_UNSUPPORTED" in output.err
+
+
+def test_production_status_is_separate_from_demo_results(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    application = _Application()
+
+    assert (
+        main(
+            ["status", "analysis-1", "--format", "json"],
+            production_query=application,
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["data"]["analysis_id"] == "analysis-1"
+    assert output["data"]["status"] == "BLOCKED"
+    assert output["data"]["waiting_for"] == ["INPUT"]
+
+
+def test_production_results_without_query_composition_fails_closed(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["results", "analysis-1", "--format", "json"]) == 4
 
     output = capsys.readouterr()
     assert output.out == ""

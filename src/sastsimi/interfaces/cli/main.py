@@ -14,6 +14,8 @@ from sastsimi.interfaces.cli import commands
 from sastsimi.interfaces.cli import demo as demo_command
 from sastsimi.interfaces.cli import report as report_command
 from sastsimi.interfaces.cli import reports as reports_command
+from sastsimi.interfaces.cli import result as result_command
+from sastsimi.interfaces.cli import status as status_command
 from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.output import emit_data, emit_result
 
@@ -38,6 +40,7 @@ def main(
     argv: list[str] | None = None,
     *,
     production_analyze: analyze_command.ProductionAnalyzeEntrypoint | None = None,
+    production_query: analyze_command.ProductionQueryEntrypoint | None = None,
 ) -> int:
     output_format = "text"
     command_name = "doctor"
@@ -84,6 +87,16 @@ def main(
     demo_analyze.add_argument("--format", choices=["text", "json"])
     demo_results = demo_commands.add_parser("results", allow_abbrev=False)
     demo_results.add_argument("--format", choices=["text", "json"])
+    status_parser = subparsers.add_parser(
+        "status", help="read production analysis progress", allow_abbrev=False
+    )
+    status_parser.add_argument("analysis_id")
+    status_parser.add_argument("--format", choices=["text", "json"])
+    results_parser = subparsers.add_parser(
+        "results", help="read one terminal production result", allow_abbrev=False
+    )
+    results_parser.add_argument("analysis_id")
+    results_parser.add_argument("--format", choices=["text", "json"])
     reports_parser = subparsers.add_parser(
         "reports", help="list current human-review reports", allow_abbrev=False
     )
@@ -146,6 +159,24 @@ def main(
                 data = demo_command.analyze(config.data_dir, args.scenario or "TRUE")
             else:
                 data = demo_command.results(config.data_dir)
+            emit_data(output_format, sys.stdout, command=command_name, data=data)
+            return int(ExitCode.OK)
+        if args.command == "status":
+            command_name = "status"
+            if production_query is None:
+                raise analyze_command.ProductionAnalyzeUnavailable
+            data = status_command.run(production_query, args.analysis_id)
+            emit_data(output_format, sys.stdout, command=command_name, data=data)
+            return int(ExitCode.OK)
+        if args.command == "results":
+            command_name = "results"
+            if production_query is None:
+                raise analyze_command.ProductionAnalyzeUnavailable
+            data = result_command.run(
+                production_query,
+                args.analysis_id,
+                output_format="json" if output_format == "json" else "summary",
+            )
             emit_data(output_format, sys.stdout, command=command_name, data=data)
             return int(ExitCode.OK)
         if args.command == "reports":

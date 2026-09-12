@@ -1,9 +1,15 @@
 """Read-only production analysis status leaf."""
 
-from sastsimi.ports.scheduler import AnalysisApplicationPort, AnalysisStatusView
+from typing import Protocol
+
+from sastsimi.ports.scheduler import AnalysisStatusView
 
 
-def run(application: AnalysisApplicationPort, analysis_id: str) -> dict[str, object]:
+class StatusApplicationPort(Protocol):
+    def status(self, analysis_id: str) -> AnalysisStatusView: ...
+
+
+def run(application: StatusApplicationPort, analysis_id: str) -> dict[str, object]:
     return project(application.status(analysis_id))
 
 
