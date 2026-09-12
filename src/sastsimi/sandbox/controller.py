@@ -7,7 +7,6 @@ locally constrained run specification.
 
 import re
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
 from ipaddress import ip_address
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
@@ -31,8 +30,21 @@ from sastsimi.contracts.dynamic import (
 from sastsimi.contracts.policy import RunPolicyState
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference, require_record_ref
-
-from .recipe_store import PreparedRecipeSource
+from sastsimi.ports.dynamic_sandbox import (
+    PreparedRecipeSourceView,
+)
+from sastsimi.ports.dynamic_sandbox import (
+    SandboxBoundaryOutcome as SandboxBoundaryOutcome,
+)
+from sastsimi.ports.dynamic_sandbox import (
+    SandboxBuildBoundaryOutcome as SandboxBuildBoundaryOutcome,
+)
+from sastsimi.ports.dynamic_sandbox import (
+    SandboxMount as SandboxMount,
+)
+from sastsimi.ports.dynamic_sandbox import (
+    SandboxRunSpec as SandboxRunSpec,
+)
 
 _IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _NUMERIC_USER = re.compile(r"^[1-9][0-9]*(?::[1-9][0-9]*)?$")
@@ -43,47 +55,6 @@ _DOCKER_ENDPOINTS = (
     "/run/podman/podman.sock",
     "//./pipe/docker_engine",
 )
-
-
-@dataclass(frozen=True)
-class SandboxMount:
-    source: Path | None
-    target: PurePosixPath
-    read_only: bool
-
-
-@dataclass(frozen=True)
-class SandboxRunSpec:
-    workspace_root: Path
-    image_digest: str | None
-    user: str
-    mounts: tuple[SandboxMount, ...]
-    network_mode: str
-    network_targets: tuple[str, ...]
-    secret_refs: tuple[StoredDataRef, ...]
-    privileged: bool
-    pid_mode: str | None
-    ipc_mode: str | None
-    capabilities: tuple[str, ...]
-    cpu_limit_millicores: int
-    memory_limit_bytes: int
-    disk_limit_bytes: int
-    pid_limit: int
-    requested_execution_ms: int
-
-
-@dataclass(frozen=True)
-class SandboxBoundaryOutcome:
-    decision: SandboxPolicyDecision
-    approved_spec: SandboxRunSpec | None
-    approved_recipe_ref: StoredDataRef | None = None
-
-
-@dataclass(frozen=True)
-class SandboxBuildBoundaryOutcome:
-    decision: SandboxPolicyDecision
-    approved_spec: SandboxRunSpec | None
-    approved_source: PreparedRecipeSource | None
 
 
 RecordResolver = Callable[[StoredDataRef], object]
@@ -117,7 +88,7 @@ class SandboxController:
         self,
         *,
         spec: SandboxRunSpec,
-        source: PreparedRecipeSource,
+        source: PreparedRecipeSourceView,
         action: ActionRequest,
         action_decision_ref: StoredDataRef,
         request: DynamicReproductionRequest,
@@ -488,7 +459,7 @@ class SandboxController:
         spec: SandboxRunSpec,
         request: DynamicReproductionRequest,
         plan: ReproductionPlan,
-        source: PreparedRecipeSource,
+        source: PreparedRecipeSourceView,
     ) -> None:
         if source.workspace_root.resolve(strict=False) != spec.workspace_root.resolve(
             strict=False

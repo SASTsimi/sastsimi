@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Literal, cast
 
 from pydantic import ValidationError
@@ -14,20 +11,10 @@ from sastsimi.contracts.domain import DomainRecord, exact, same_scope
 from sastsimi.contracts.dynamic import (
     AgentLog,
     AgentLogEvent,
-    CleanupResult,
     DynamicReproductionConclusion,
-    DynamicReproductionRequest,
     DynamicReproductionResult,
-    DynamicReproductionToolRequest,
-    EnvironmentRecipe,
-    EnvironmentRequirements,
-    PlanIssueItem,
     PoCBundle,
     PoCCandidate,
-    ReproductionPlan,
-    SandboxCommandRecord,
-    SandboxEnvironment,
-    SandboxPolicyDecision,
     is_poc_execution_command,
     validate_dynamic_closure,
     validate_log_revision,
@@ -37,58 +24,16 @@ from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
-
-type DynamicStatus = Literal["SUCCEEDED", "PARTIAL", "FAILED", "BLOCKED", "CANCELLED"]
-type FailureCategory = Literal[
-    "NONE",
-    "POLICY_BLOCKED",
-    "EXTERNAL_CONFIGURATION",
-    "PLAN",
-    "ENVIRONMENT_SETUP",
-    "DEPENDENCY",
-    "AGENT",
-    "EXECUTION",
-    "OBSERVATION",
-    "TIMEOUT",
-    "RESOURCE_LIMIT",
-    "RETRY_LIMIT",
-    "INTERNAL",
-]
-
-
-@dataclass(frozen=True)
-class DynamicFinalizationInput:
-    request: DynamicReproductionRequest
-    plan: ReproductionPlan | None
-    policy: SandboxPolicyDecision | None
-    recipe: EnvironmentRecipe | None
-    environment: SandboxEnvironment | None
-    candidate: PoCCandidate | None
-    conclusion: DynamicReproductionConclusion | None
-    cleanup: CleanupResult | None
-    observation_refs: tuple[StoredDataRef, ...]
-    status: DynamicStatus
-    failure_category: FailureCategory
-    failure_reason: str | None
-    plan_issues: tuple[PlanIssueItem, ...]
-    started_at: datetime
-    finished_at: datetime
-    requirements: EnvironmentRequirements | None = None
-    command_records: tuple[SandboxCommandRecord, ...] = ()
-    tool_requests: tuple[DynamicReproductionToolRequest, ...] = ()
-    attempt_environments: tuple[SandboxEnvironment, ...] = ()
-    attempt_recipes: tuple[EnvironmentRecipe, ...] = ()
-    attempt_resource_refs: tuple[StoredDataRef, ...] = ()
-    resolved_evidence: Mapping[StoredDataRef, DomainRecord] = field(
-        default_factory=dict
-    )
-
-
-@dataclass(frozen=True)
-class FinalizedDynamicRecords:
-    log: AgentLog
-    poc: PoCBundle | None
-    result: DynamicReproductionResult
+from sastsimi.ports.reproduction_session import (
+    DynamicFinalizationInput as DynamicFinalizationInput,
+)
+from sastsimi.ports.reproduction_session import (
+    DynamicStatus,
+    FailureCategory,
+)
+from sastsimi.ports.reproduction_session import (
+    FinalizedDynamicRecords as FinalizedDynamicRecords,
+)
 
 
 class ReproductionSessionManager:
