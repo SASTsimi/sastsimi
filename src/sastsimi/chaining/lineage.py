@@ -115,8 +115,10 @@ def expected_lineage_exclusions(
     ):
         raise ValueError("CHAINING_LINEAGE_INPUT_MISMATCH")
     successful_keys = {canonical_bytes(ref) for ref in successful_candidate_refs}
-    if len(successful_keys) != len(successful_candidate_refs) or not (
-        successful_keys <= set(considered)
+    if (
+        len(successful_keys) != len(successful_candidate_refs)
+        or not (successful_keys <= set(considered))
+        or canonical_bytes(trigger_ref) in successful_keys
     ):
         raise ValueError("CHAINING_LINEAGE_INPUT_MISMATCH")
     excluded: set[bytes] = set()
@@ -131,13 +133,11 @@ def expected_lineage_exclusions(
             candidate_ref, resolve, analysis_id=analysis_id
         ).ancestors:
             ancestor_key = canonical_bytes(ancestor_ref)
-            if (
-                ancestor_key not in considered
-                or ancestor_ref == trigger_ref
-                or ancestor_ref == candidate_ref
-                or ancestor_key in successful_keys
-                or ancestor_key in excluded
-            ):
+            if ancestor_key not in considered or ancestor_ref == trigger_ref:
+                raise ValueError("CHAINING_LINEAGE_INPUT_MISMATCH")
+            if ancestor_key in successful_keys:
+                raise ValueError("CHAINING_SUCCESSFUL_CANDIDATE_EXCLUDED")
+            if ancestor_ref == candidate_ref or ancestor_key in excluded:
                 continue
             excluded.add(ancestor_key)
             output.append(

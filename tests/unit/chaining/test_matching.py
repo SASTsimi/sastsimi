@@ -139,3 +139,23 @@ def test_pair_owner_rejects_incomplete_current_pool() -> None:
         assert str(error) == "CHAINING_POOL_HISTORY_MISMATCH"
     else:
         raise AssertionError("incomplete pinned pool must fail closed")
+
+
+def test_directional_comparisons_reject_foreign_or_inexact_primitive() -> None:
+    trigger_ref, trigger = _primitive("z-record", "h1", result_id="provided")
+    other_ref, other = _primitive("a-record", "h2", inputs=("needed",))
+    foreign = other.model_copy(update={"workspace_id": "other-workspace"})
+
+    for bad_entry in (
+        PrimitiveEntry(other_ref, foreign),
+        PrimitiveEntry(other_ref.model_copy(update={"content_hash": "f" * 64}), other),
+    ):
+        try:
+            directional_comparisons(
+                trigger_ref,
+                (PrimitiveEntry(trigger_ref, trigger), bad_entry),
+            )
+        except ValueError as error:
+            assert str(error) == "CHAINING_PINNED_UNIVERSE_MISMATCH"
+        else:
+            raise AssertionError("foreign or inexact primitive must fail closed")

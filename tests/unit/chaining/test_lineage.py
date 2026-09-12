@@ -105,3 +105,17 @@ def test_lineage_fails_closed_on_scope_or_commit_state() -> None:
         lineage(a, foreign, analysis_id="a1")
     with pytest.raises(ValueError, match="CHAINING_LINEAGE_NOT_COMMITTED"):
         lineage(a, uncommitted, analysis_id="a1")
+
+
+def test_exclusion_rejects_ancestor_outside_pinned_universe() -> None:
+    trigger, parent, child = _ref("a"), _ref("b"), _ref("c")
+    resolve = _resolver({trigger: (), parent: (), child: (parent,)})
+
+    with pytest.raises(ValueError, match="CHAINING_LINEAGE_INPUT_MISMATCH"):
+        expected_lineage_exclusions(
+            considered_refs=(trigger, child),
+            trigger_ref=trigger,
+            successful_candidate_refs=(child,),
+            resolve=resolve,
+            analysis_id="a1",
+        )

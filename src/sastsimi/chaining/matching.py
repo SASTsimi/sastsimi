@@ -6,7 +6,8 @@ from dataclasses import dataclass
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.chaining import Primitive
-from sastsimi.contracts.refs import StoredDataRef, require_record_ref
+from sastsimi.contracts.records import RecordMeta
+from sastsimi.contracts.refs import StoredDataRef, reference, require_record_ref
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,20 @@ def directional_comparisons(
     if len(by_key) != len(entries) or _key(trigger_ref) not in by_key:
         raise ValueError("CHAINING_PINNED_UNIVERSE_MISMATCH")
     trigger = by_key[_key(trigger_ref)]
+    if not isinstance(trigger.primitive.meta, RecordMeta):
+        raise ValueError("CHAINING_PINNED_UNIVERSE_MISMATCH")
+    for entry in entries:
+        meta = entry.primitive.meta
+        if (
+            not isinstance(meta, RecordMeta)
+            or reference(entry.primitive) != entry.ref
+            or meta.analysis_id != trigger.primitive.meta.analysis_id
+            or meta.workspace_id != trigger.primitive.meta.workspace_id
+            or meta.commit_id != trigger.primitive.meta.commit_id
+            or entry.primitive.workspace_id != meta.workspace_id
+            or entry.primitive.commit_id != meta.commit_id
+        ):
+            raise ValueError("CHAINING_PINNED_UNIVERSE_MISMATCH")
     comparisons: list[DirectionalComparison] = []
     ordinal = 0
     for other in entries:
