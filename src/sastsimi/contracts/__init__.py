@@ -1,5 +1,6 @@
 """Public Architecture v5 common and domain contracts."""
 
+from ._domain import same_scope as same_scope
 from .actions import REQUIRED_CHECKS as REQUIRED_CHECKS
 from .actions import ActionCheck as ActionCheck
 from .actions import ActionDecision as ActionDecision

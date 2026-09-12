@@ -90,6 +90,7 @@ def action_shape(kind: str) -> dict[str, Any]:
                     "sandbox_profile",
                     "dynamic_reproduction_lifecycle_profile",
                     "environment_requirements",
+                    "recipe_source",
                 )
             ],
         )

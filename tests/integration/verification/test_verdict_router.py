@@ -4,23 +4,41 @@ import inspect
 
 import pytest
 
+from sastsimi.contracts._domain import DomainRecord
 from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
+from sastsimi.contracts.dynamic import DynamicReproductionRequest
+from sastsimi.contracts.hypothesis import HypothesisProcessState
+from sastsimi.contracts.refs import (
+    RecordRef,
+    StoredDataRef,
+    reference,
+)
 from sastsimi.contracts.verification import VerificationResult
 from sastsimi.verification.verdict_router import VerdictRouter
 from tests.contract.domain.canonical_fixtures import make
+from tests.contract.domain.success_fixture import bound, dynamic_success
 
 
 class _Records:
-    def __init__(self, result: VerificationResult) -> None:
-        ref = reference(result)
-        assert isinstance(ref, StoredDataRef)
-        self.ref = ref
+    def __init__(self, *values: DomainRecord) -> None:
+        self.values: dict[RecordRef, DomainRecord] = {}
+        for index, value in enumerate(values):
+            ref = (
+                reference(value)
+                if index == 0
+                else StoredDataRef.model_validate(bound(value))
+            )
+            assert isinstance(ref, StoredDataRef)
+            self.values[ref] = value
+        result = values[0]
+        assert isinstance(result, VerificationResult)
         self.result = result
+        result_ref = reference(result)
+        assert isinstance(result_ref, StoredDataRef)
+        self.ref = result_ref
 
-    def get_exact(self, ref: RecordRef) -> object:
-        assert ref == self.ref
-        return self.result
+    def get_exact(self, ref: RecordRef) -> DomainRecord:
+        return self.values[ref]
 
 
 def _result(
@@ -44,14 +62,14 @@ def _result(
             else []
         )
     else:
-        # This bypasses the T11 dynamic requirement only to test router fail-closed.
-        payload["verdict"] = "HOLD"
-        payload["initial_verdict"] = "HOLD"
-        payload["unresolved_conditions"] = ["T11 output is not available"]
-        result = VerificationResult.model_validate_json(
-            canonical_bytes(payload)
-        ).model_copy(update={"verdict": "TRUE"})
-        records = _Records(result)
+        chain = dynamic_success()
+        payload.update(
+            dynamic_request_ref=bound(chain["request"]),
+            dynamic_result_ref=bound(chain["result"]),
+            poc_ref=bound(chain["poc"]),
+        )
+        result = VerificationResult.model_validate_json(canonical_bytes(payload))
+        records = _Records(result, chain["request"], chain["result"], chain["poc"])
         return records, records.ref
     result = VerificationResult.model_validate_json(canonical_bytes(payload))
     records = _Records(result)
@@ -67,7 +85,7 @@ def test_false_has_no_downstream_work() -> None:
 def test_hold_only_proposes_primitive_update_registration() -> None:
     records, result_ref = _result("HOLD")
 
-    (route,) = VerdictRouter(records).route(result_ref)
+    (route,) = VerdictRouter(records, current_process=lambda _: None).route(result_ref)
 
     assert route.work_type == "PRIMITIVE_UPDATE"
     assert route.input_refs == (result_ref,)
@@ -79,11 +97,43 @@ def test_hold_without_required_primitive_has_no_downstream_work() -> None:
     assert VerdictRouter(records).route(result_ref) == ()
 
 
-def test_t10_router_rejects_true_and_has_no_concrete_downstream_imports() -> None:
+def test_committed_true_only_proposes_cwe_label_registration() -> None:
+    records, result_ref = _result("TRUE")
+    dynamic_request_ref = records.result.dynamic_request_ref
+    assert dynamic_request_ref is not None
+    request = records.get_exact(dynamic_request_ref)
+    assert isinstance(request, DynamicReproductionRequest)
+    process = HypothesisProcessState.model_construct(
+        meta=records.result.meta.model_copy(
+            update={"record_type": "hypothesis_process_state", "attempt_id": None}
+        ),
+        proposal_ref=records.result.playbook_application_ref,
+        status="TERMINAL",
+        verification_assignment_ref=request.verification_assignment_ref,
+        verification_generation=request.verification_generation,
+        verification_work_ref=None,
+        verification_result_ref=result_ref,
+        started_at=records.result.meta.created_at,
+        finished_at=records.result.meta.created_at,
+        elapsed_ms=0,
+    )
+
+    (route,) = VerdictRouter(records, current_process=lambda _: process).route(
+        result_ref
+    )
+
+    assert route.work_type == "CWE_LABEL"
+    assert route.input_refs == (result_ref,)
+
+
+def test_true_with_uncommitted_process_pointer_is_rejected() -> None:
     records, result_ref = _result("TRUE")
 
-    with pytest.raises(ValueError, match="T11_OUTPUT_REQUIRED"):
-        VerdictRouter(records).route(result_ref)
+    with pytest.raises(ValueError, match="STALE_RESULT"):
+        VerdictRouter(records, current_process=lambda _: None).route(result_ref)
+
+
+def test_router_has_no_concrete_downstream_imports() -> None:
     source = inspect.getsource(
         __import__("sastsimi.verification.verdict_router", fromlist=["*"])
     )

@@ -126,7 +126,7 @@ async def test_success_pins_exact_invocation_and_artifact_before_completion() ->
         }
     )
     workflow = HypothesisWorkflow(
-        agent=_Agent(outcome),  # type: ignore[arg-type]
+        agent=_Agent(outcome),
         runner=runner,  # type: ignore[arg-type]
         records=records,  # type: ignore[arg-type]
     )
@@ -157,7 +157,7 @@ async def test_missing_persisted_log_stops_storage() -> None:
     work = _work(bundle_ref)
     runner = _Runner(work)
     workflow = HypothesisWorkflow(
-        agent=_Agent(outcome),  # type: ignore[arg-type]
+        agent=_Agent(outcome),
         runner=runner,  # type: ignore[arg-type]
         records=_Records({}),  # type: ignore[arg-type]
     )
