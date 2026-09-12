@@ -34,6 +34,10 @@ from sastsimi.ports.dto import (
     WorkspaceStoragePolicy,
 )
 from sastsimi.ports.workspace import WorkspaceStoragePort
+from sastsimi.security.sensitive_paths import (
+    DEFAULT_SENSITIVE_PATH_POLICY,
+    SensitivePathPolicy,
+)
 
 from .process import process_command_fingerprint
 
@@ -353,7 +357,7 @@ def _error(code: str, *, retryable: bool) -> CandidateError:
 
 
 def _build_manifest(
-    root: Path, raw: bytes, sensitive_names: frozenset[str]
+    root: Path, raw: bytes, sensitive_path_policy: SensitivePathPolicy
 ) -> tuple[tuple[TrackedFile, ...], tuple[CandidateGap, ...]]:
     safe: list[TrackedFile] = []
     gaps: list[CandidateGap] = []
@@ -380,15 +384,7 @@ def _build_manifest(
         if mode not in {"100644", "100755"}:
             gaps.append(_gap("UNSUPPORTED_FILE_TYPE", "UNSUPPORTED", path))
             continue
-        path_object = Path(path)
-        if (
-            path_object.name.lower() in sensitive_names
-            or path_object.suffix.lower()
-            in {
-                ".pem",
-                ".key",
-            }
-        ):
+        if sensitive_path_policy.is_sensitive(path):
             gaps.append(_gap("SENSITIVE_PATH_EXCLUDED", "BLOCKED", path))
             continue
         candidate = workspace.joinpath(*path.split("/"))
@@ -429,9 +425,7 @@ class WorkspaceGuard:
         process_runner_factory: GuardProcessRunnerFactory,
         git_executable: Path,
         output_dir: Path,
-        sensitive_names: frozenset[str] = frozenset(
-            {".env", ".env.local", "id_rsa", "id_ed25519"}
-        ),
+        sensitive_path_policy: SensitivePathPolicy = DEFAULT_SENSITIVE_PATH_POLICY,
     ) -> None:
         self._roots = dict(roots)
         self._manifests = dict(manifests)
@@ -440,7 +434,7 @@ class WorkspaceGuard:
             git_executable
         )
         self._output = output_dir.resolve(strict=True)
-        self._sensitive_names = sensitive_names
+        self._sensitive_path_policy = sensitive_path_policy
 
     def _verified_git_executable(self) -> Path:
         current, subject_key, digest = _git_executable_identity(self._git)
@@ -682,7 +676,7 @@ class WorkspaceGuard:
                 raise ValueError("WORKSPACE_MUTATED")
             if spec.command_kind == "guard-manifest":
                 manifest, _ = _build_manifest(
-                    root, result.stdout, self._sensitive_names
+                    root, result.stdout, self._sensitive_path_policy
                 )
                 if manifest != expected_manifest:
                     raise ValueError("WORKSPACE_MUTATED")
@@ -769,9 +763,7 @@ class RepositoryLoader:
         git_executable: Path,
         output_dir: Path,
         allow_local_file: bool = False,
-        sensitive_names: frozenset[str] = frozenset(
-            {".env", ".env.local", "id_rsa", "id_ed25519"}
-        ),
+        sensitive_path_policy: SensitivePathPolicy = DEFAULT_SENSITIVE_PATH_POLICY,
     ) -> None:
         if output_dir.is_symlink() or not output_dir.resolve(strict=True).is_dir():
             raise ValueError("PROCESS_OUTPUT_ROOT_INVALID")
@@ -784,7 +776,7 @@ class RepositoryLoader:
         ) = _git_executable_identity(git_executable)
         self.output_dir = output_dir.resolve(strict=True)
         self.allow_local_file = allow_local_file
-        self.sensitive_names = sensitive_names
+        self.sensitive_path_policy = sensitive_path_policy
         self.process_receipts: tuple[ProcessReceipt, ...] = ()
 
     def _verified_git_executable(self) -> Path:
@@ -1054,4 +1046,4 @@ class RepositoryLoader:
     def build_manifest(
         self, root: Path, raw: bytes
     ) -> tuple[tuple[TrackedFile, ...], tuple[CandidateGap, ...]]:
-        return _build_manifest(root, raw, self.sensitive_names)
+        return _build_manifest(root, raw, self.sensitive_path_policy)

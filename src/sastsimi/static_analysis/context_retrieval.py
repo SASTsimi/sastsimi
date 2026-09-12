@@ -33,6 +33,10 @@ from sastsimi.ports.context import (
     RelationQuery,
 )
 from sastsimi.ports.dto import MonotonicActionDeadline, TrackedFile
+from sastsimi.security.sensitive_paths import (
+    DEFAULT_SENSITIVE_PATH_POLICY,
+    SensitivePathPolicy,
+)
 
 _CONTEXT_PLAN_ADAPTER = TypeAdapter(ContextReadPlan)
 
@@ -559,9 +563,7 @@ def read_context_files(
     deadline: MonotonicActionDeadline,
     monotonic_ns: Callable[[], int] = time.monotonic_ns,
     cancelled: Callable[[], bool] = lambda: False,
-    sensitive_names: frozenset[str] = frozenset(
-        {".env", ".env.local", "id_rsa", "id_ed25519"}
-    ),
+    sensitive_path_policy: SensitivePathPolicy = DEFAULT_SENSITIVE_PATH_POLICY,
 ) -> ContextReadObservation:
     """Read only the authorized, tracked paths with no-follow identity checks."""
     if cancelled() or deadline.remaining_ms(monotonic_ns()) <= 0:
@@ -588,7 +590,7 @@ def read_context_files(
             break
         git_path = str(location.file_path)
         path = _safe_git_path(git_path)
-        if any(part.casefold() in sensitive_names for part in path.parts):
+        if sensitive_path_policy.is_sensitive(git_path):
             raise ValueError("CONTEXT_PATH_SENSITIVE")
         tracked = manifest.get(git_path)
         if tracked is None or tracked.git_mode not in {"100644", "100755"}:

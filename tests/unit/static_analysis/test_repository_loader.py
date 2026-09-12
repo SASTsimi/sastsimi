@@ -635,6 +635,9 @@ async def test_manifest_excludes_git_links_submodules_lfs_and_unsafe_paths(
             b"120000 " + b"2" * 40 + b" 0\tlinked.py\0",
             b"160000 " + b"3" * 40 + b" 0\tvendor/sub\0",
             b"100644 " + b"4" * 40 + b" 0\t.env\0",
+            b"100644 " + b"5" * 40 + b" 0\t.npmrc\0",
+            b"100644 " + b"6" * 40 + b" 0\tconfig/service-account.json\0",
+            b"100644 " + b"7" * 40 + b" 0\tmaven/settings.xml\0",
         )
     )
     subject, runner = loader(
@@ -660,12 +663,28 @@ async def test_manifest_excludes_git_links_submodules_lfs_and_unsafe_paths(
     assert root is not None
     (root / "safe.py").write_text("print('safe')", encoding="utf-8")
     (root / ".env").write_text("SECRET=x", encoding="utf-8")
+    (root / ".npmrc").write_text("_authToken=x", encoding="utf-8")
+    (root / "config").mkdir()
+    (root / "config" / "service-account.json").write_text("{}", encoding="utf-8")
+    (root / "maven").mkdir()
+    (root / "maven" / "settings.xml").write_text("<settings/>", encoding="utf-8")
     reparsed = subject.build_manifest(root, manifest)
     assert tuple(item.git_path for item in reparsed[0]) == ("safe.py",)
     assert {gap.code for gap in reparsed[1]} == {
         "SYMLINK_EXCLUDED",
         "SUBMODULE_UNAVAILABLE",
         "SENSITIVE_PATH_EXCLUDED",
+    }
+    assert {
+        path
+        for gap in reparsed[1]
+        if gap.code == "SENSITIVE_PATH_EXCLUDED"
+        for path in gap.affected_paths
+    } == {
+        ".env",
+        ".npmrc",
+        "config/service-account.json",
+        "maven/settings.xml",
     }
     assert len(runner.specs) == 5
 
