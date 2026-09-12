@@ -311,9 +311,9 @@ class _Resolver:
             }.items()
             for adapter in adapters
         }
-        self.pinned = {
-            item.profile_ref: item.profile for item in self.selections.values()
-        }
+        self.pinned: dict[
+            HostConfigurationRef, RuntimeCapabilityProfile | StaticToolProfile
+        ] = {item.profile_ref: item.profile for item in self.selections.values()}
         self.git_profile, self.git_evidence = _git_capability()
         git_ref = reference(self.git_profile)
         assert isinstance(git_ref, HostConfigurationRef)

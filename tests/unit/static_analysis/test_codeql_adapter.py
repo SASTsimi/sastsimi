@@ -16,7 +16,7 @@ import pytest
 
 from sastsimi.contracts.actions import ActionRequest
 from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
 from sastsimi.contracts.static import CodeWorkspace, StaticToolProfile
 from sastsimi.ports.dto import (
     CancellationResult,
@@ -255,7 +255,9 @@ class HardQuotaGuard:
         self.active = active
         self.limit_breached = False
         self.breach_evidence: str | None = None
-        self.calls: list[tuple[str, str, str, StoredDataRef, Path, int]] = []
+        self.calls: list[
+            tuple[str, str, str, StoredDataRef | HostConfigurationRef, Path, int]
+        ] = []
 
     def verify(
         self,
@@ -263,7 +265,7 @@ class HardQuotaGuard:
         lease_id: str,
         action_id: str,
         attempt_id: str,
-        profile_ref: StoredDataRef,
+        profile_ref: StoredDataRef | HostConfigurationRef,
         root: Path,
         limit_bytes: int,
     ) -> StaticOutputQuotaBinding:

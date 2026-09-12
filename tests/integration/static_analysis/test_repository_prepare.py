@@ -178,6 +178,9 @@ class FakeRepositoryLoader:
         self.root = root
         self.calls = 0
 
+    def verify_git_capability(self, subject_key: str, expected_sha256: str) -> None:
+        del subject_key, expected_sha256
+
     async def prepare(self, **values: Any) -> RepositoryPreparation:
         self.calls += 1
         deadline = values["deadline"]
