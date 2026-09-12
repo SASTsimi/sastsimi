@@ -7,26 +7,50 @@ from typing import Any, cast
 
 import pytest
 
-from sastsimi.chaining.service import ChainingWorkflowService, chaining_input_hash
+from sastsimi.chaining.service import (
+    ChainingCallRefs,
+    ChainingCallResolver,
+    ChainingWorkflowService,
+    chaining_input_hash,
+)
 from sastsimi.contracts.canonical_json import content_hash
-from sastsimi.contracts.chaining import Primitive
+from sastsimi.contracts.chaining import ChainingResult, Primitive
 from sastsimi.contracts.gates import TechnicalEvidenceReview
-from sastsimi.contracts.ids import OpaqueId, StoredDataId, WorkspaceId
+from sastsimi.contracts.ids import (
+    AttemptId,
+    CommitId,
+    OpaqueId,
+    ProposalId,
+    StoredDataId,
+    WorkspaceId,
+)
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.refs import (
+    BudgetScopeRef,
+    RecordRef,
+    ReferencedRecord,
+    StoredDataRef,
+    reference,
+)
 from sastsimi.contracts.verification import VerificationResult
 from sastsimi.contracts.work import WorkAttempt, WorkExecutionState
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.chaining import (
     ChainedHypothesisContent,
+    ChainingAgentInput,
+    ChainingAgentOutcome,
     ChainingAgentOutput,
     ChainingDecision,
     ChainingPoolHistory,
     PinnedChainingUniverse,
 )
 from sastsimi.ports.dto import WorkContext
+from sastsimi.ports.llm_invocation import InvocationMetadataFactory
+from sastsimi.ports.record_store import RecordStore
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import location, meta, ref, wire
+
+_LLM_PROOF_REFS = cast(tuple[RecordRef, ...], ("llm-proof",))
 
 
 def _stored(kind: str, name: str) -> dict[str, object]:
@@ -137,9 +161,17 @@ def _as_ref(kind: str, name: str) -> StoredDataRef:
     return StoredDataRef.model_validate(_stored(kind, name))
 
 
+def _exact_refs(*values: Primitive) -> tuple[StoredDataRef, ...]:
+    refs = tuple(reference(value) for value in values)
+    assert all(isinstance(value, StoredDataRef) for value in refs)
+    return cast(tuple[StoredDataRef, ...], refs)
+
+
 class _Records:
-    def __init__(self, records: tuple[object, ...]) -> None:
-        self.values = {reference(value): value for value in records}  # type: ignore[arg-type]
+    def __init__(self, records: tuple[ReferencedRecord, ...]) -> None:
+        self.values: dict[RecordRef, ReferencedRecord] = {
+            reference(value): value for value in records
+        }
         for value in records:
             if not isinstance(value, Primitive):
                 continue
@@ -158,7 +190,7 @@ class _Records:
                 if technical_ref == value.technical_review_ref:
                     self.values.setdefault(technical_ref, technical)
 
-    def get_exact(self, value: object) -> object:
+    def get_exact(self, value: RecordRef) -> ReferencedRecord:
         return self.values[value]
 
 
@@ -173,8 +205,8 @@ class _Artifacts:
             stored_data_id=StoredDataId(digest),
             data_kind="artifact",
             content_hash=digest,
-            workspace_id="ws1",
-            commit_id="c1",
+            workspace_id=WorkspaceId("ws1"),
+            commit_id=CommitId("c1"),
             record_id=None,
         )
 
@@ -220,7 +252,10 @@ class _Lineage:
         self.parents = parents
 
     def ancestors(
-        self, *, primitive_ref: StoredDataRef, universe: object
+        self,
+        *,
+        primitive_ref: StoredDataRef,
+        universe: PinnedChainingUniverse,
     ) -> tuple[StoredDataRef, ...]:
         del universe
         return self.parents.get(primitive_ref, ())
@@ -230,7 +265,7 @@ class _Ids:
     def __init__(self) -> None:
         self.value = 0
 
-    def new(self, kind: type[OpaqueId]) -> OpaqueId:
+    def new[T: OpaqueId](self, kind: type[T]) -> T:
         self.value += 1
         return kind(f"generated-{self.value}")
 
@@ -238,10 +273,18 @@ class _Ids:
 class _Agent:
     def __init__(self, match_comparisons: tuple[str, ...]) -> None:
         self.match_comparisons = match_comparisons
-        self.content = None
+        self.content: ChainingAgentInput | None = None
 
-    async def match(self, **kwargs: object) -> object:
-        content = kwargs["content"]
+    async def match(
+        self,
+        *,
+        context: WorkContext,
+        decision_ref: StoredDataRef,
+        reservation_ref: RecordRef,
+        call_spec_ref: StoredDataRef,
+        content: ChainingAgentInput,
+    ) -> ChainingAgentOutcome:
+        del context, decision_ref, reservation_ref, call_spec_ref
         self.content = content
         decisions = tuple(
             ChainingDecision(
@@ -271,24 +314,27 @@ class _Agent:
             )
             for item in content.comparisons
         )
-        return SimpleNamespace(
-            content=ChainingAgentOutput(decisions),
-            invocation=SimpleNamespace(),
+        return cast(
+            ChainingAgentOutcome,
+            SimpleNamespace(
+                content=ChainingAgentOutput(decisions),
+                invocation=SimpleNamespace(),
+            ),
         )
 
 
 class _Publisher:
     def __init__(self) -> None:
-        self.result = None
+        self.result: ChainingResult | None = None
 
     def publish(
         self,
         *,
         context: WorkContext,
-        result: object,
-        action_input_refs: tuple[object, ...],
+        result: ChainingResult,
+        action_input_refs: tuple[RecordRef, ...],
     ) -> WorkExecutionState:
-        assert action_input_refs == ("llm-proof",)
+        assert action_input_refs == _LLM_PROOF_REFS
         self.result = result
         return context.work.model_copy(
             update={
@@ -303,45 +349,67 @@ class _Children:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def enqueue_ready(self, **kwargs: object) -> WorkExecutionState:
-        proposal_id = str(kwargs["proposal_id"])
-        self.calls.append(proposal_id)
+    def enqueue_ready(
+        self,
+        *,
+        source_result_ref: StoredDataRef,
+        proposal_id: ProposalId,
+        requester_identity_ref: BudgetScopeRef,
+    ) -> WorkExecutionState:
+        del requester_identity_ref
+        proposal_id_value = str(proposal_id)
+        self.calls.append(proposal_id_value)
         return WorkExecutionState.model_construct(
-            work_id=f"child-{proposal_id}",
+            work_id=f"child-{proposal_id_value}",
             work_type="HYPOTHESIS_PROPOSAL",
             subject_type="PROPOSAL",
-            subject_id=proposal_id,
+            subject_id=proposal_id_value,
             status="READY",
             active_attempt_id=None,
-            input_refs=(kwargs["source_result_ref"],),
+            input_refs=(source_result_ref,),
             output_refs=(),
         )
 
 
-def _metadata(source: RecordMeta, kind: str, attempt_id: object) -> RecordMeta:
-    _metadata.value += 1
+_metadata_counter = 0
+
+
+def _metadata(
+    source: RecordMeta,
+    kind: str,
+    attempt_id: AttemptId | None,
+) -> RecordMeta:
+    global _metadata_counter
+    _metadata_counter += 1
     return source.model_copy(
         update={
-            "record_id": f"{kind}-{_metadata.value}",
-            "logical_record_id": f"{kind}-logical-{_metadata.value}",
+            "record_id": f"{kind}-{_metadata_counter}",
+            "logical_record_id": f"{kind}-logical-{_metadata_counter}",
             "record_type": kind,
             "attempt_id": attempt_id,
         }
     )
 
 
-_metadata.value = 0
-
-
-def _resolve_call(_context: object, content: object) -> object:
+def _resolve_call(
+    _context: WorkContext,
+    content: ChainingAgentInput,
+) -> tuple[ChainingCallRefs, str]:
     return (
-        SimpleNamespace(
-            decision_ref=_as_ref("action_decision", "decision"),
-            reservation_ref=_as_ref("budget_reservation", "reservation"),
-            call_spec_ref=_as_ref("llm_call_spec", "spec"),
+        cast(
+            ChainingCallRefs,
+            SimpleNamespace(
+                decision_ref=_as_ref("action_decision", "decision"),
+                reservation_ref=_as_ref("budget_reservation", "reservation"),
+                call_spec_ref=_as_ref("llm_call_spec", "spec"),
+            ),
         ),
-        chaining_input_hash(content),  # type: ignore[arg-type]
+        chaining_input_hash(content),
     )
+
+
+_metadata_factory = cast(InvocationMetadataFactory, _metadata)
+_call_resolver = cast(ChainingCallResolver, _resolve_call)
 
 
 def _verification(
@@ -472,7 +540,7 @@ async def test_true_hold_and_true_true_create_child_only_after_commit(
 ) -> None:
     monkeypatch.setattr(
         "sastsimi.chaining.service.llm_invocation_save_refs",
-        lambda **_: ("llm-proof",),
+        lambda **_: _LLM_PROOF_REFS,
     )
     trigger = _primitive(
         "A",
@@ -484,31 +552,30 @@ async def test_true_hold_and_true_true_create_child_only_after_commit(
         inputs=() if hold_trigger else ("needed",),
         result="provided",
     )
-    refs = tuple(reference(value) for value in (trigger, other))
-    assert all(isinstance(value, StoredDataRef) for value in refs)
-    context = _context(refs, refs[0])  # type: ignore[arg-type]
+    refs = _exact_refs(trigger, other)
+    context = _context(refs, refs[0])
     universe = PinnedChainingUniverse(
-        trigger_primitive_ref=refs[0],  # type: ignore[arg-type]
+        trigger_primitive_ref=refs[0],
         index_refs=(_as_ref("primitive_index_state", "index"),),
-        considered_primitive_refs=refs,  # type: ignore[arg-type]
+        considered_primitive_refs=refs,
     )
     publisher, children = _Publisher(), _Children()
     service = ChainingWorkflowService(
         agent=_Agent(("comparison-1",)),
-        records=_Records((trigger, other)),
+        records=cast(RecordStore, _Records((trigger, other))),
         artifacts=cast(ArtifactStore, _Artifacts()),
         pools=_Pools(reference(context.work), universe),  # type: ignore[arg-type]
         lineage=_Lineage({}),
         publisher=publisher,
         children=children,
         ids=_Ids(),
-        metadata_factory=_metadata,
+        metadata_factory=_metadata_factory,
         requester_identity_ref=_as_ref("requester_identity", "r"),
     )
 
     outcome = await service.execute(
         context=context,
-        resolve_call=_resolve_call,
+        resolve_call=_call_resolver,
     )
 
     assert len(outcome.result.primitive_match_candidates) == 1
@@ -525,7 +592,7 @@ async def test_one_call_keeps_deepest_success_and_ignores_ancestor_decisions(
 ) -> None:
     monkeypatch.setattr(
         "sastsimi.chaining.service.llm_invocation_save_refs",
-        lambda **_: ("llm-proof",),
+        lambda **_: _LLM_PROOF_REFS,
     )
     values = (
         _primitive("A", inputs=(), result="a"),
@@ -533,32 +600,30 @@ async def test_one_call_keeps_deepest_success_and_ignores_ancestor_decisions(
         _primitive("BC", inputs=("a",), result="bc"),
         _primitive("BCD", inputs=("a",), result="bcd"),
     )
-    refs = tuple(reference(value) for value in values)
-    context = _context(refs, refs[0])  # type: ignore[arg-type]
+    refs = _exact_refs(*values)
+    context = _context(refs, refs[0])
     universe = PinnedChainingUniverse(
-        trigger_primitive_ref=refs[0],  # type: ignore[arg-type]
+        trigger_primitive_ref=refs[0],
         index_refs=(_as_ref("primitive_index_state", "index"),),
-        considered_primitive_refs=refs,  # type: ignore[arg-type]
+        considered_primitive_refs=refs,
     )
     publisher, children = _Publisher(), _Children()
     service = ChainingWorkflowService(
         agent=_Agent(("comparison-1", "comparison-2", "comparison-3")),
-        records=_Records(values),
+        records=cast(RecordStore, _Records(values)),
         artifacts=cast(ArtifactStore, _Artifacts()),
         pools=_Pools(reference(context.work), universe),  # type: ignore[arg-type]
-        lineage=_Lineage(  # type: ignore[arg-type]
-            {refs[2]: (refs[1],), refs[3]: (refs[2], refs[1])}
-        ),
+        lineage=_Lineage({refs[2]: (refs[1],), refs[3]: (refs[2], refs[1])}),
         publisher=publisher,
         children=children,
         ids=_Ids(),
-        metadata_factory=_metadata,
+        metadata_factory=_metadata_factory,
         requester_identity_ref=_as_ref("requester_identity", "r"),
     )
 
     outcome = await service.execute(
         context=context,
-        resolve_call=_resolve_call,
+        resolve_call=_call_resolver,
     )
 
     assert len(outcome.result.primitive_match_candidates) == 1
@@ -577,7 +642,7 @@ async def test_one_directional_pair_preserves_each_matched_input(
 
     monkeypatch.setattr(
         "sastsimi.chaining.service.llm_invocation_save_refs",
-        lambda **_: ("llm-proof",),
+        lambda **_: _LLM_PROOF_REFS,
     )
     trigger = _primitive("A", inputs=(), result="provided")
     other = _primitive(
@@ -585,30 +650,30 @@ async def test_one_directional_pair_preserves_each_matched_input(
         inputs=("first-required-input", "second-required-input"),
         result="next",
     )
-    refs = tuple(reference(value) for value in (trigger, other))
-    context = _context(refs, refs[0])  # type: ignore[arg-type]
+    refs = _exact_refs(trigger, other)
+    context = _context(refs, refs[0])
     universe = PinnedChainingUniverse(
-        trigger_primitive_ref=refs[0],  # type: ignore[arg-type]
+        trigger_primitive_ref=refs[0],
         index_refs=(_as_ref("primitive_index_state", "index"),),
-        considered_primitive_refs=refs,  # type: ignore[arg-type]
+        considered_primitive_refs=refs,
     )
     publisher, children = _Publisher(), _Children()
     service = ChainingWorkflowService(
         agent=_Agent(("comparison-1", "comparison-2")),
-        records=_Records((trigger, other)),
+        records=cast(RecordStore, _Records((trigger, other))),
         artifacts=cast(ArtifactStore, _Artifacts()),
         pools=_Pools(reference(context.work), universe),  # type: ignore[arg-type]
         lineage=_Lineage({}),
         publisher=publisher,
         children=children,
         ids=_Ids(),
-        metadata_factory=_metadata,
+        metadata_factory=_metadata_factory,
         requester_identity_ref=_as_ref("requester_identity", "r"),
     )
 
     outcome = await service.execute(
         context=context,
-        resolve_call=_resolve_call,
+        resolve_call=_call_resolver,
     )
 
     assert {
@@ -624,7 +689,7 @@ async def test_prompt_uses_exact_redacted_semantic_evidence(
 ) -> None:
     monkeypatch.setattr(
         "sastsimi.chaining.service.llm_invocation_save_refs",
-        lambda **_: ("llm-proof",),
+        lambda **_: _LLM_PROOF_REFS,
     )
     trigger_verification = _verification(
         "A",
@@ -650,25 +715,28 @@ async def test_prompt_uses_exact_redacted_semantic_evidence(
         verification=other_verification,
         technical=other_technical,
     )
-    refs = tuple(reference(value) for value in (trigger, other))
-    context = _context(refs, refs[0])  # type: ignore[arg-type]
+    refs = _exact_refs(trigger, other)
+    context = _context(refs, refs[0])
     universe = PinnedChainingUniverse(
-        trigger_primitive_ref=refs[0],  # type: ignore[arg-type]
+        trigger_primitive_ref=refs[0],
         index_refs=(_as_ref("primitive_index_state", "index"),),
-        considered_primitive_refs=refs,  # type: ignore[arg-type]
+        considered_primitive_refs=refs,
     )
     agent = _Agent(())
     service = ChainingWorkflowService(
         agent=agent,
-        records=_Records(
-            (
-                trigger,
-                other,
-                trigger_verification,
-                other_verification,
-                trigger_technical,
-                other_technical,
-            )
+        records=cast(
+            RecordStore,
+            _Records(
+                (
+                    trigger,
+                    other,
+                    trigger_verification,
+                    other_verification,
+                    trigger_technical,
+                    other_technical,
+                )
+            ),
         ),
         artifacts=cast(ArtifactStore, _Artifacts()),
         pools=_Pools(reference(context.work), universe),  # type: ignore[arg-type]
@@ -676,13 +744,13 @@ async def test_prompt_uses_exact_redacted_semantic_evidence(
         publisher=_Publisher(),
         children=_Children(),
         ids=_Ids(),
-        metadata_factory=_metadata,
+        metadata_factory=_metadata_factory,
         requester_identity_ref=_as_ref("requester_identity", "r"),
     )
 
     await service.execute(
         context=context,
-        resolve_call=_resolve_call,
+        resolve_call=_call_resolver,
     )
 
     assert agent.content is not None
@@ -701,7 +769,7 @@ async def test_prompt_projects_verified_artifact_evidence_bounded_and_redacted(
 ) -> None:
     monkeypatch.setattr(
         "sastsimi.chaining.service.llm_invocation_save_refs",
-        lambda **_: ("llm-proof",),
+        lambda **_: _LLM_PROOF_REFS,
     )
     artifacts = _Artifacts()
     artifact_ref = artifacts.add(
@@ -716,6 +784,7 @@ async def test_prompt_projects_verified_artifact_evidence_bounded_and_redacted(
             artifact_ref=artifact_ref,
         )
     )
+    assert trigger_technical is not None
     other_verification = _verification(
         "B", rationale="Downstream input is reachable", final_true=True
     )
@@ -727,25 +796,28 @@ async def test_prompt_projects_verified_artifact_evidence_bounded_and_redacted(
         verification=other_verification,
         technical=other_technical,
     )
-    refs = tuple(reference(value) for value in (trigger, other))
-    context = _context(refs, refs[0])  # type: ignore[arg-type]
+    refs = _exact_refs(trigger, other)
+    context = _context(refs, refs[0])
     universe = PinnedChainingUniverse(
-        trigger_primitive_ref=refs[0],  # type: ignore[arg-type]
+        trigger_primitive_ref=refs[0],
         index_refs=(_as_ref("primitive_index_state", "index"),),
-        considered_primitive_refs=refs,  # type: ignore[arg-type]
+        considered_primitive_refs=refs,
     )
     agent = _Agent(())
     service = ChainingWorkflowService(
         agent=agent,
-        records=_Records(
-            (
-                trigger,
-                other,
-                trigger_verification,
-                trigger_technical,
-                other_verification,
-                other_technical,
-            )
+        records=cast(
+            RecordStore,
+            _Records(
+                (
+                    trigger,
+                    other,
+                    trigger_verification,
+                    trigger_technical,
+                    other_verification,
+                    other_technical,
+                )
+            ),
         ),
         artifacts=cast(ArtifactStore, artifacts),
         pools=_Pools(reference(context.work), universe),  # type: ignore[arg-type]
@@ -753,11 +825,11 @@ async def test_prompt_projects_verified_artifact_evidence_bounded_and_redacted(
         publisher=_Publisher(),
         children=_Children(),
         ids=_Ids(),
-        metadata_factory=_metadata,
+        metadata_factory=_metadata_factory,
         requester_identity_ref=_as_ref("requester_identity", "r"),
     )
 
-    await service.execute(context=context, resolve_call=_resolve_call)
+    await service.execute(context=context, resolve_call=_call_resolver)
 
     assert agent.content is not None
     summaries = "\n".join(item.summary for item in agent.content.evidence)
@@ -775,7 +847,7 @@ async def test_artifact_evidence_tampering_is_rejected(
 ) -> None:
     monkeypatch.setattr(
         "sastsimi.chaining.service.llm_invocation_save_refs",
-        lambda **_: ("llm-proof",),
+        lambda **_: _LLM_PROOF_REFS,
     )
     artifacts = _Artifacts()
     artifact_ref = artifacts.add(b"allow_admin()")
@@ -807,27 +879,30 @@ async def test_artifact_evidence_tampering_is_rejected(
         artifact_ref,
     )
     other = _primitive("B", inputs=("provided",), result="next")
-    refs = tuple(reference(value) for value in (trigger, other))
-    context = _context(refs, refs[0])  # type: ignore[arg-type]
+    refs = _exact_refs(trigger, other)
+    context = _context(refs, refs[0])
     universe = PinnedChainingUniverse(
-        trigger_primitive_ref=refs[0],  # type: ignore[arg-type]
+        trigger_primitive_ref=refs[0],
         index_refs=(_as_ref("primitive_index_state", "index"),),
-        considered_primitive_refs=refs,  # type: ignore[arg-type]
+        considered_primitive_refs=refs,
     )
     agent = _Agent(())
     service = ChainingWorkflowService(
         agent=agent,
-        records=_Records((trigger, other, verification, technical)),
+        records=cast(
+            RecordStore,
+            _Records((trigger, other, verification, technical)),
+        ),
         artifacts=cast(ArtifactStore, artifacts),
         pools=_Pools(reference(context.work), universe),  # type: ignore[arg-type]
         lineage=_Lineage({}),
         publisher=_Publisher(),
         children=_Children(),
         ids=_Ids(),
-        metadata_factory=_metadata,
+        metadata_factory=_metadata_factory,
         requester_identity_ref=_as_ref("requester_identity", "r"),
     )
 
     with pytest.raises(ValueError, match="CHAINING_EVIDENCE_REFERENCE_INVALID"):
-        await service.execute(context=context, resolve_call=_resolve_call)
+        await service.execute(context=context, resolve_call=_call_resolver)
     assert agent.content is None

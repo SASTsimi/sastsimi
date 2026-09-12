@@ -28,6 +28,8 @@ from sastsimi.contracts.refs import (
 )
 from sastsimi.contracts.work import WorkAttempt, WorkExecutionState
 from sastsimi.ports.chaining import (
+    ChainingCohortRegistration,
+    ChainingReconciliationPort,
     ChainingResultReconciliationRequest,
     PrimitiveUpdateOutcome,
     PrimitiveUpdateReconciliationRequest,
@@ -47,9 +49,36 @@ class _Sources:
     result: ChainingResult
     reads: int = 0
 
+    def primitive_update(
+        self, source_update_ref: StoredDataRef
+    ) -> PrimitiveUpdateOutcome:
+        del source_update_ref
+        raise LookupError("primitive update is not configured for this test")
+
     def chaining_result(self, source_result_ref: StoredDataRef) -> ChainingResult:
+        del source_result_ref
         self.reads += 1
         return self.result
+
+
+class _ReconciliationSpy(ChainingReconciliationPort):
+    def __init__(self) -> None:
+        self.primitive_calls: list[PrimitiveUpdateReconciliationRequest] = []
+        self.result_calls: list[ChainingResultReconciliationRequest] = []
+
+    def reconcile_primitive_update(
+        self,
+        request: PrimitiveUpdateReconciliationRequest,
+    ) -> ChainingCohortRegistration | None:
+        self.primitive_calls.append(request)
+        return None
+
+    def reconcile_chaining_result(
+        self,
+        request: ChainingResultReconciliationRequest,
+    ) -> tuple[WorkExecutionState, ...]:
+        self.result_calls.append(request)
+        return ()
 
 
 class _Child:
@@ -230,12 +259,7 @@ def test_startup_reconciler_enumerates_committed_t13_sources_once() -> None:
     commit_ref = _ref("transition_commit")
     update = _completed_primitive_work(_ref("primitive"), commit_ref)
     result = wire(ChainingResult, make("ChainingResult"))
-    primitive_calls: list[object] = []
-    result_calls: list[object] = []
-    delegate = SimpleNamespace(
-        reconcile_primitive_update=lambda request: primitive_calls.append(request),
-        reconcile_chaining_result=lambda request: result_calls.append(request) or (),
-    )
+    delegate = _ReconciliationSpy()
     startup = ChainingStartupReconciler(
         reconciliation=delegate,
         published_records=lambda analysis_id: (update, result),
@@ -245,8 +269,10 @@ def test_startup_reconciler_enumerates_committed_t13_sources_once() -> None:
 
     assert summary.primitive_update_refs == (commit_ref,)
     assert summary.chaining_result_refs == (reference(result),)
-    assert tuple(item.source_update_ref for item in primitive_calls) == (commit_ref,)
-    assert tuple(item.source_result_ref for item in result_calls) == (
+    assert tuple(item.source_update_ref for item in delegate.primitive_calls) == (
+        commit_ref,
+    )
+    assert tuple(item.source_result_ref for item in delegate.result_calls) == (
         reference(result),
     )
 
@@ -255,11 +281,7 @@ def test_startup_reconciler_ignores_irrelevant_run_scoped_records() -> None:
     run = _running_analysis()
     assert isinstance(reference(run), RunStoredDataRef)
     result = wire(ChainingResult, make("ChainingResult"))
-    result_calls: list[object] = []
-    delegate = SimpleNamespace(
-        reconcile_primitive_update=lambda request: None,
-        reconcile_chaining_result=lambda request: result_calls.append(request) or (),
-    )
+    delegate = _ReconciliationSpy()
     startup = ChainingStartupReconciler(
         reconciliation=delegate,
         published_records=lambda analysis_id: (run, result),
@@ -269,7 +291,7 @@ def test_startup_reconciler_ignores_irrelevant_run_scoped_records() -> None:
 
     assert summary.primitive_update_refs == ()
     assert summary.chaining_result_refs == (reference(result),)
-    assert tuple(item.source_result_ref for item in result_calls) == (
+    assert tuple(item.source_result_ref for item in delegate.result_calls) == (
         reference(result),
     )
 
@@ -282,11 +304,7 @@ def test_startup_reconciler_rejects_cross_analysis_records_before_replay() -> No
             )
         }
     )
-    replayed: list[object] = []
-    delegate = SimpleNamespace(
-        reconcile_primitive_update=lambda request: replayed.append(request),
-        reconcile_chaining_result=lambda request: replayed.append(request) or (),
-    )
+    delegate = _ReconciliationSpy()
     startup = ChainingStartupReconciler(
         reconciliation=delegate,
         published_records=lambda analysis_id: (result,),
@@ -295,7 +313,8 @@ def test_startup_reconciler_rejects_cross_analysis_records_before_replay() -> No
     with pytest.raises(ValueError, match="^CHAINING_STARTUP_SCOPE_MISMATCH$"):
         startup(AnalysisId("a1"))
 
-    assert replayed == []
+    assert delegate.primitive_calls == []
+    assert delegate.result_calls == []
 
 
 def test_primitive_reconciliation_rebuilds_whole_cohort_from_committed_update() -> None:
@@ -328,7 +347,8 @@ def test_primitive_reconciliation_rebuilds_whole_cohort_from_committed_update() 
         PrimitiveUpdateReconciliationRequest(commit_ref)
     )
 
-    assert registration.status == "READY"  # type: ignore[union-attr]
+    assert registration is not None
+    assert registration.status == "READY"
     assert cohorts.pending is not None
     assert cohorts.pending["outcome"] == outcome
     assert cohorts.pending["generation"] == 4

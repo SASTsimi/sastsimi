@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from sastsimi.chaining.lineage import (
     LineageNode,
+    LineageResolver,
     SuccessfulMatchPair,
     expected_lineage_exclusions,
     lineage,
@@ -30,7 +33,7 @@ def _resolver(
     graph: dict[StoredDataRef, tuple[StoredDataRef, ...]],
     *,
     committed: bool = True,
-):
+) -> LineageResolver:
     def resolve(item: StoredDataRef) -> LineageNode:
         if item not in graph:
             raise LookupError("missing lineage")
@@ -43,7 +46,7 @@ def _resolver(
             committed=committed,
         )
 
-    return resolve
+    return cast(LineageResolver, resolve)
 
 
 def test_deepest_success_excludes_only_its_ancestors() -> None:
@@ -104,9 +107,9 @@ def test_lineage_fails_closed_on_scope_or_commit_state() -> None:
         return LineageNode(a, (), "a1", "ws1", "c1", False)
 
     with pytest.raises(ValueError, match="CHAINING_LINEAGE_SCOPE_MISMATCH"):
-        lineage(a, foreign, analysis_id="a1")
+        lineage(a, cast(LineageResolver, foreign), analysis_id="a1")
     with pytest.raises(ValueError, match="CHAINING_LINEAGE_NOT_COMMITTED"):
-        lineage(a, uncommitted, analysis_id="a1")
+        lineage(a, cast(LineageResolver, uncommitted), analysis_id="a1")
 
 
 def test_exclusion_rejects_ancestor_outside_pinned_universe() -> None:
