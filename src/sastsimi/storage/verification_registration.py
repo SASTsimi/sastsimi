@@ -79,6 +79,7 @@ class VerificationRegistrationService:
         owner_identity_ref: StoredDataRef,
         requester_identity_ref: BudgetScopeRef,
         budget_binding_ref: StoredDataRef,
+        evidence_ref: StoredDataRef | None = None,
     ) -> VerificationRegistration:
         works = self.transitions.works
         records = works.records
@@ -93,7 +94,12 @@ class VerificationRegistrationService:
                 )
             records.resolve(connection, requester_identity_ref)
             records.resolve(connection, owner_identity_ref)
-            for ref in (hypothesis_ref, policy_ref, playbook_ref):
+            for ref in (
+                hypothesis_ref,
+                policy_ref,
+                playbook_ref,
+                *((evidence_ref,) if evidence_ref is not None else ()),
+            ):
                 current(records, connection, ref)
             hypothesis = records.resolve(connection, hypothesis_ref)
             proposal = records.resolve(connection, proposal_ref)
@@ -122,7 +128,18 @@ class VerificationRegistrationService:
             ):
                 raise ValueError("REGISTRATION_INPUT_MISMATCH")
             generation = max(1, process.verification_generation)
-            stable_inputs = (hypothesis_ref, proposal_ref, policy_ref, playbook_ref)
+            if evidence_ref is not None and evidence_ref.data_kind not in {
+                "static_fact_bundle",
+                "code_context_response",
+            }:
+                raise ValueError("VERIFICATION_EVIDENCE_INPUT_MISMATCH")
+            stable_inputs = (
+                hypothesis_ref,
+                proposal_ref,
+                policy_ref,
+                playbook_ref,
+                *((evidence_ref,) if evidence_ref is not None else ()),
+            )
             dedupe = content_hash([stable_inputs, generation])
             key = content_hash(
                 [

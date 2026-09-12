@@ -28,6 +28,7 @@ class VerificationRegistrationPort(Protocol):
         owner_identity_ref: StoredDataRef,
         requester_identity_ref: BudgetScopeRef,
         budget_binding_ref: StoredDataRef,
+        evidence_ref: StoredDataRef | None = None,
     ) -> VerificationRegistration: ...
 
     def revise(
