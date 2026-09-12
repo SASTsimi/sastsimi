@@ -21,6 +21,7 @@ from .budget import (
     WorkBudgetLimit,
     WorkBudgetProfile,
 )
+from .capabilities import CapabilityApprovalEvidence, RuntimeCapabilityProfile
 from .chaining import PrimitiveIndexState
 from .dynamic import DynamicReproductionState, SandboxProfile
 from .evaluation import EvaluationRunConfig
@@ -68,6 +69,8 @@ CORE_SCHEMAS: Mapping[str, type[BaseModel]] = MappingProxyType(
         "sandbox_profile": SandboxProfile,
         "code_context_request": CodeContextRequest,
         "static_tool_profile": StaticToolProfile,
+        "tool_capability_evidence": CapabilityApprovalEvidence,
+        "runtime_capability_profile": RuntimeCapabilityProfile,
         "vulnerability_hypothesis": VulnerabilityHypothesis,
         "playbook_application": PlaybookApplication,
         "dynamic_reproduction_state": DynamicReproductionState,

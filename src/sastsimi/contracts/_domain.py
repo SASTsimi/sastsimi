@@ -58,6 +58,7 @@ REFERENCE_KINDS = {
     "policy_record_ref": "program_policy_record",
     "policy_work_ref": "work_execution_state",
     "sandbox_profile_ref": "sandbox_profile",
+    "capability_evidence_ref": "tool_capability_evidence",
     "resource_profile_ref": "dynamic_reproduction_lifecycle_profile",
     "finding_ref": "finding",
     "stale_finding_ref": "finding",

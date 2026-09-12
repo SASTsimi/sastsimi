@@ -1,0 +1,419 @@
+{
+  "$defs": {
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "AttemptId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AttemptId",
+      "type": "string"
+    },
+    "CapabilityArchitecture": {
+      "enum": [
+        "x86_64",
+        "aarch64"
+      ],
+      "type": "string"
+    },
+    "CapabilityControlEvidence": {
+      "additionalProperties": false,
+      "description": "Exact evidence that one required production boundary was exercised.",
+      "properties": {
+        "control": {
+          "$ref": "#/$defs/CapabilitySecurityControl"
+        },
+        "evidence_ref": {
+          "$ref": "#/$defs/StoredDataRef"
+        }
+      },
+      "required": [
+        "control",
+        "evidence_ref"
+      ],
+      "title": "CapabilityControlEvidence",
+      "type": "object"
+    },
+    "CapabilityKind": {
+      "enum": [
+        "GIT",
+        "AST",
+        "CODEQL",
+        "OPENGREP",
+        "DOCKER",
+        "PYTHON_RUNTIME",
+        "JAVASCRIPT_RUNTIME",
+        "PACKAGE_MANAGER",
+        "BUILD",
+        "START"
+      ],
+      "type": "string"
+    },
+    "CapabilityLanguage": {
+      "enum": [
+        "ANY",
+        "PYTHON",
+        "JAVASCRIPT"
+      ],
+      "type": "string"
+    },
+    "CapabilityOperatingSystem": {
+      "enum": [
+        "windows",
+        "linux",
+        "macos"
+      ],
+      "type": "string"
+    },
+    "CapabilityOperation": {
+      "enum": [
+        "CLONE",
+        "CHECKOUT",
+        "PARSE",
+        "ANALYZE",
+        "IMAGE_BUILD",
+        "CONTAINER_RUN",
+        "HEALTH_CHECK",
+        "CLEANUP",
+        "PACKAGE_INSTALL",
+        "BUILD",
+        "START"
+      ],
+      "type": "string"
+    },
+    "CapabilitySecurityControl": {
+      "enum": [
+        "SAFE_REPOSITORY_LOADER",
+        "STATIC_WRITE_DENYING_QUOTA",
+        "SANDBOX_OUTER_BOUNDARY"
+      ],
+      "type": "string"
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "HypothesisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "HypothesisId",
+      "type": "string"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RecordMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hypothesis_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HypothesisId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "attempt_id"
+      ],
+      "title": "RecordMeta",
+      "type": "object"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Exact R8 probe plus human decision for one profile revision.",
+  "properties": {
+    "approval_target_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Approval Target Hash",
+      "type": "string"
+    },
+    "approved_at": {
+      "format": "date-time",
+      "title": "Approved At",
+      "type": "string"
+    },
+    "approved_by": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Approved By",
+      "type": "string"
+    },
+    "approved_by_role": {
+      "const": "HUMAN",
+      "title": "Approved By Role",
+      "type": "string"
+    },
+    "architecture": {
+      "$ref": "#/$defs/CapabilityArchitecture"
+    },
+    "capability_kind": {
+      "$ref": "#/$defs/CapabilityKind"
+    },
+    "checked_at": {
+      "format": "date-time",
+      "title": "Checked At",
+      "type": "string"
+    },
+    "checked_by": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Checked By",
+      "type": "string"
+    },
+    "checked_by_role": {
+      "const": "R8",
+      "title": "Checked By Role",
+      "type": "string"
+    },
+    "decision": {
+      "enum": [
+        "ACTIVATE",
+        "RETIRE",
+        "REJECT"
+      ],
+      "title": "Decision",
+      "type": "string"
+    },
+    "languages": {
+      "items": {
+        "$ref": "#/$defs/CapabilityLanguage"
+      },
+      "title": "Languages",
+      "type": "array"
+    },
+    "meta": {
+      "$ref": "#/$defs/RecordMeta"
+    },
+    "observed_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Observed Sha256",
+      "type": "string"
+    },
+    "observed_version": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Observed Version",
+      "type": "string"
+    },
+    "operating_system": {
+      "$ref": "#/$defs/CapabilityOperatingSystem"
+    },
+    "operations": {
+      "items": {
+        "$ref": "#/$defs/CapabilityOperation"
+      },
+      "title": "Operations",
+      "type": "array"
+    },
+    "probe_evidence_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Probe Evidence Refs",
+      "type": "array"
+    },
+    "probe_status": {
+      "enum": [
+        "PASSED",
+        "BLOCKED",
+        "FAILED"
+      ],
+      "title": "Probe Status",
+      "type": "string"
+    },
+    "profile_key": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Profile Key",
+      "type": "string"
+    },
+    "safe_summary": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Safe Summary",
+      "type": "string"
+    },
+    "security_control_evidence": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/CapabilityControlEvidence"
+      },
+      "title": "Security Control Evidence",
+      "type": "array"
+    },
+    "subject_key": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Subject Key",
+      "type": "string"
+    }
+  },
+  "required": [
+    "meta",
+    "profile_key",
+    "capability_kind",
+    "subject_key",
+    "observed_version",
+    "observed_sha256",
+    "operating_system",
+    "architecture",
+    "languages",
+    "operations",
+    "probe_status",
+    "probe_evidence_refs",
+    "checked_at",
+    "checked_by",
+    "checked_by_role",
+    "decision",
+    "approved_at",
+    "approved_by",
+    "approved_by_role",
+    "approval_target_hash",
+    "safe_summary"
+  ],
+  "title": "CapabilityApprovalEvidence",
+  "type": "object"
+}

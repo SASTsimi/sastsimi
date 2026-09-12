@@ -7,6 +7,17 @@ from sastsimi.contracts.budget import (
     VerificationBudgetProfile,
     WorkBudgetProfile,
 )
+from sastsimi.contracts.capabilities import (
+    CapabilityApprovalEvidence,
+    CapabilityArchitecture,
+    CapabilityKind,
+    CapabilityLanguage,
+    CapabilityOperatingSystem,
+    CapabilityOperation,
+    RuntimeCapabilityProfile,
+    RuntimeCapabilitySelection,
+    StaticToolCapabilitySelection,
+)
 from sastsimi.contracts.dynamic import SandboxProfile
 from sastsimi.contracts.evaluation import EvaluationRunConfig
 from sastsimi.contracts.llm import (
@@ -31,6 +42,49 @@ from sastsimi.ports.dto import CapabilityProbeResult
 
 
 class ConfigurationRegistryPort(Protocol):
+    def register_capability_approval(
+        self, record: CapabilityApprovalEvidence
+    ) -> StoredDataRef: ...
+
+    def register_runtime_capability(
+        self, record: RuntimeCapabilityProfile
+    ) -> StoredDataRef: ...
+
+    def get_runtime_capability(
+        self, profile_ref: StoredDataRef
+    ) -> RuntimeCapabilityProfile: ...
+
+    def resolve_active_capability(
+        self,
+        *,
+        capability_kind: CapabilityKind,
+        language: CapabilityLanguage,
+        operation: CapabilityOperation,
+        operating_system: CapabilityOperatingSystem,
+        architecture: CapabilityArchitecture,
+    ) -> RuntimeCapabilitySelection: ...
+
+    def register_production_static_tool_profile(
+        self, record: StaticToolProfile
+    ) -> StoredDataRef: ...
+
+    def get_production_static_tool_profile(
+        self, profile_ref: StoredDataRef
+    ) -> StaticToolProfile: ...
+
+    def resolve_production_static_tool_profile(
+        self, profile_ref: StoredDataRef
+    ) -> StaticToolProfile: ...
+
+    def resolve_active_static_tool(
+        self,
+        *,
+        adapter_key: str,
+        language: CapabilityLanguage,
+        operating_system: CapabilityOperatingSystem,
+        architecture: CapabilityArchitecture,
+    ) -> StaticToolCapabilitySelection: ...
+
     def register_static_tool_profile(
         self, record: StaticToolProfile
     ) -> StoredDataRef: ...

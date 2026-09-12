@@ -1,0 +1,325 @@
+{
+  "$defs": {
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "AttemptId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AttemptId",
+      "type": "string"
+    },
+    "CapabilityArchitecture": {
+      "enum": [
+        "x86_64",
+        "aarch64"
+      ],
+      "type": "string"
+    },
+    "CapabilityKind": {
+      "enum": [
+        "GIT",
+        "AST",
+        "CODEQL",
+        "OPENGREP",
+        "DOCKER",
+        "PYTHON_RUNTIME",
+        "JAVASCRIPT_RUNTIME",
+        "PACKAGE_MANAGER",
+        "BUILD",
+        "START"
+      ],
+      "type": "string"
+    },
+    "CapabilityLanguage": {
+      "enum": [
+        "ANY",
+        "PYTHON",
+        "JAVASCRIPT"
+      ],
+      "type": "string"
+    },
+    "CapabilityOperatingSystem": {
+      "enum": [
+        "windows",
+        "linux",
+        "macos"
+      ],
+      "type": "string"
+    },
+    "CapabilityOperation": {
+      "enum": [
+        "CLONE",
+        "CHECKOUT",
+        "PARSE",
+        "ANALYZE",
+        "IMAGE_BUILD",
+        "CONTAINER_RUN",
+        "HEALTH_CHECK",
+        "CLEANUP",
+        "PACKAGE_INSTALL",
+        "BUILD",
+        "START"
+      ],
+      "type": "string"
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "HypothesisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "HypothesisId",
+      "type": "string"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RecordMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hypothesis_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HypothesisId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "attempt_id"
+      ],
+      "title": "RecordMeta",
+      "type": "object"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One immutable executable host capability revision.",
+  "properties": {
+    "architecture": {
+      "$ref": "#/$defs/CapabilityArchitecture"
+    },
+    "capability_evidence_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "capability_kind": {
+      "$ref": "#/$defs/CapabilityKind"
+    },
+    "expected_version": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Expected Version",
+      "type": "string"
+    },
+    "languages": {
+      "items": {
+        "$ref": "#/$defs/CapabilityLanguage"
+      },
+      "title": "Languages",
+      "type": "array"
+    },
+    "meta": {
+      "$ref": "#/$defs/RecordMeta"
+    },
+    "operating_system": {
+      "$ref": "#/$defs/CapabilityOperatingSystem"
+    },
+    "operations": {
+      "items": {
+        "$ref": "#/$defs/CapabilityOperation"
+      },
+      "title": "Operations",
+      "type": "array"
+    },
+    "profile_key": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Profile Key",
+      "type": "string"
+    },
+    "purpose": {
+      "const": "PRODUCTION",
+      "title": "Purpose",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "ACTIVE",
+        "RETIRED"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "subject_key": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Subject Key",
+      "type": "string"
+    },
+    "subject_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Subject Sha256",
+      "type": "string"
+    }
+  },
+  "required": [
+    "meta",
+    "profile_key",
+    "purpose",
+    "status",
+    "capability_kind",
+    "subject_key",
+    "expected_version",
+    "subject_sha256",
+    "operating_system",
+    "architecture",
+    "languages",
+    "operations",
+    "capability_evidence_ref"
+  ],
+  "title": "RuntimeCapabilityProfile",
+  "type": "object"
+}

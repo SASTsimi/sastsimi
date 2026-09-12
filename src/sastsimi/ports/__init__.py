@@ -1,5 +1,8 @@
 from .artifact_store import ArtifactStore as ArtifactStore
 from .budget_ledger import BudgetLedgerPort as BudgetLedgerPort
+from .capability_registry import (
+    ProductionCapabilityResolverPort as ProductionCapabilityResolverPort,
+)
 from .clock import Clock as Clock
 from .dto import ApprovedSandboxCommand as ApprovedSandboxCommand
 from .dto import AttemptOutputBudgetPort as AttemptOutputBudgetPort

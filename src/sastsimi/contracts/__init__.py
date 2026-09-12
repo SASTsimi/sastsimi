@@ -50,6 +50,20 @@ from .canonical_json import CANONICAL_JSON_VERSION as CANONICAL_JSON_VERSION
 from .canonical_json import SetListPolicy as SetListPolicy
 from .canonical_json import canonical_bytes as canonical_bytes
 from .canonical_json import content_hash as content_hash
+from .capabilities import CapabilityApprovalEvidence as CapabilityApprovalEvidence
+from .capabilities import CapabilityArchitecture as CapabilityArchitecture
+from .capabilities import CapabilityControlEvidence as CapabilityControlEvidence
+from .capabilities import CapabilityKind as CapabilityKind
+from .capabilities import CapabilityLanguage as CapabilityLanguage
+from .capabilities import CapabilityOperatingSystem as CapabilityOperatingSystem
+from .capabilities import CapabilityOperation as CapabilityOperation
+from .capabilities import CapabilitySecurityControl as CapabilitySecurityControl
+from .capabilities import RuntimeCapabilityProfile as RuntimeCapabilityProfile
+from .capabilities import RuntimeCapabilitySelection as RuntimeCapabilitySelection
+from .capabilities import (
+    StaticToolCapabilitySelection as StaticToolCapabilitySelection,
+)
+from .capabilities import capability_target_hash as capability_target_hash
 from .chaining import ChainingResult as ChainingResult
 from .chaining import LineageExclusion as LineageExclusion
 from .chaining import NoMatchReason as NoMatchReason

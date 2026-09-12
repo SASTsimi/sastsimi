@@ -12,6 +12,18 @@ from sastsimi.contracts.budget import (
     WorkBudgetProfile,
 )
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.capabilities import (
+    CapabilityApprovalEvidence,
+    CapabilityArchitecture,
+    CapabilityKind,
+    CapabilityLanguage,
+    CapabilityOperatingSystem,
+    CapabilityOperation,
+    RuntimeCapabilityProfile,
+    RuntimeCapabilitySelection,
+    StaticToolCapabilitySelection,
+    capability_target_hash,
+)
 from sastsimi.contracts.dynamic import SandboxProfile
 from sastsimi.contracts.evaluation import (
     EvaluationRecommendation,
@@ -40,6 +52,7 @@ from sastsimi.contracts.prompt_redaction import (
     redact_projected_json,
     render_provider_prompt,
 )
+from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
@@ -55,6 +68,448 @@ class ConfigurationRegistry:
     def __init__(self, records: SQLiteRecordStore, artifacts: ArtifactStore) -> None:
         self.records = records
         self.artifacts = artifacts
+
+    def register_capability_approval(
+        self, record: CapabilityApprovalEvidence
+    ) -> StoredDataRef:
+        """Publish immutable R8 probe evidence plus the human decision."""
+
+        record = CapabilityApprovalEvidence.model_validate(record)
+        if not self.records.evidence.capability_approval_authorized(record):
+            raise ValueError("CAPABILITY_APPROVAL_REQUIRED")
+        evidence_refs = record.probe_evidence_refs + tuple(
+            item.evidence_ref for item in record.security_control_evidence
+        )
+        for evidence_ref in evidence_refs:
+            if evidence_ref.record_id is None:
+                try:
+                    with self.artifacts.open_verified(evidence_ref) as stream:
+                        stream.read()
+                except (LookupError, OSError, ValueError) as error:
+                    raise ValueError("CAPABILITY_PROBE_EVIDENCE_MISSING") from error
+            else:
+                with self.records.database.engine.connect() as connection:
+                    evidence_record = self.records.resolve(connection, evidence_ref)
+                evidence_meta = evidence_record.meta
+                if (
+                    not isinstance(evidence_meta, RecordMeta)
+                    or evidence_meta.analysis_id != record.meta.analysis_id
+                    or evidence_meta.workspace_id != record.meta.workspace_id
+                    or evidence_meta.commit_id != record.meta.commit_id
+                ):
+                    raise ValueError("CAPABILITY_PROBE_EVIDENCE_SCOPE_MISMATCH")
+        return self._publish(
+            record, self.records.evidence.capability_approval_authorized
+        )
+
+    @staticmethod
+    def _language_matches(
+        supported: tuple[CapabilityLanguage, ...], requested: CapabilityLanguage
+    ) -> bool:
+        return requested in supported or "ANY" in supported
+
+    @staticmethod
+    def _language_routes_overlap(
+        left: tuple[CapabilityLanguage, ...],
+        right: tuple[CapabilityLanguage, ...],
+    ) -> bool:
+        return "ANY" in left or "ANY" in right or bool(set(left) & set(right))
+
+    @staticmethod
+    def _current_records(
+        connection: Connection, kind: str
+    ) -> tuple[tuple[str, str], ...]:
+        rows = connection.execute(
+            select(
+                models.current_records.c.logical_record_id,
+                models.records.c.payload,
+            )
+            .select_from(
+                models.current_records.join(
+                    models.records,
+                    models.current_records.c.record_id == models.records.c.record_id,
+                )
+            )
+            .where(models.records.c.kind == kind)
+        ).all()
+        return tuple((str(row.logical_record_id), str(row.payload)) for row in rows)
+
+    def _require_capability_evidence(
+        self,
+        connection: Connection,
+        profile: RuntimeCapabilityProfile | StaticToolProfile,
+    ) -> CapabilityApprovalEvidence:
+        capability_ref = profile.capability_evidence_ref
+        if capability_ref is None:
+            raise ValueError("CAPABILITY_EVIDENCE_REQUIRED")
+        try:
+            evidence = self.records.resolve(connection, capability_ref)
+        except (LookupError, ValueError) as error:
+            raise ValueError("CAPABILITY_EVIDENCE_REQUIRED") from error
+        if not isinstance(evidence, CapabilityApprovalEvidence):
+            raise ValueError("CAPABILITY_EVIDENCE_REQUIRED")
+        current = (
+            connection.execute(
+                select(models.current_records.c.record_id).where(
+                    models.current_records.c.logical_record_id
+                    == str(evidence.meta.logical_record_id)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if current != str(evidence.meta.record_id):
+            raise ValueError("CAPABILITY_EVIDENCE_NOT_CURRENT")
+        if (
+            evidence.meta.analysis_id != profile.meta.analysis_id
+            or evidence.meta.workspace_id != profile.meta.workspace_id
+            or evidence.meta.commit_id != profile.meta.commit_id
+            or not self.records.evidence.capability_approval_authorized(evidence)
+        ):
+            raise ValueError("CAPABILITY_APPROVAL_REQUIRED")
+        if evidence.approval_target_hash != capability_target_hash(profile):
+            raise ValueError("CAPABILITY_APPROVAL_TARGET_MISMATCH")
+        expected_decision = "ACTIVATE" if profile.status == "ACTIVE" else "RETIRE"
+        if evidence.decision != expected_decision:
+            raise ValueError("CAPABILITY_APPROVAL_DECISION_MISMATCH")
+        if profile.status == "ACTIVE" and evidence.probe_status != "PASSED":
+            raise ValueError("CAPABILITY_ACTIVATION_PROBE_NOT_PASSED")
+        return evidence
+
+    @staticmethod
+    def _runtime_identity_matches(
+        profile: RuntimeCapabilityProfile, evidence: CapabilityApprovalEvidence
+    ) -> bool:
+        return (
+            profile.profile_key,
+            profile.capability_kind,
+            profile.subject_key,
+            profile.expected_version,
+            profile.subject_sha256,
+            profile.operating_system,
+            profile.architecture,
+            profile.languages,
+            profile.operations,
+        ) == (
+            evidence.profile_key,
+            evidence.capability_kind,
+            evidence.subject_key,
+            evidence.observed_version,
+            evidence.observed_sha256,
+            evidence.operating_system,
+            evidence.architecture,
+            evidence.languages,
+            evidence.operations,
+        )
+
+    def _require_runtime_retirement_predecessor(
+        self, connection: Connection, record: RuntimeCapabilityProfile
+    ) -> None:
+        if record.status != "RETIRED":
+            return
+        candidates = tuple(
+            RuntimeCapabilityProfile.model_validate_json(payload)
+            for logical_id, payload in self._current_records(
+                connection, RuntimeCapabilityProfile.KIND
+            )
+            if logical_id == str(record.meta.logical_record_id)
+        )
+        if len(candidates) != 1:
+            raise ValueError("CAPABILITY_RETIREMENT_PREDECESSOR_MISSING")
+        current = candidates[0]
+        immutable = (
+            "profile_key",
+            "capability_kind",
+            "subject_key",
+            "expected_version",
+            "subject_sha256",
+            "operating_system",
+            "architecture",
+            "languages",
+            "operations",
+        )
+        if (
+            current.status != "ACTIVE"
+            or record.meta.previous_record_id != current.meta.record_id
+            or any(getattr(current, key) != getattr(record, key) for key in immutable)
+        ):
+            raise ValueError("CAPABILITY_RETIREMENT_IDENTITY_MISMATCH")
+
+    def register_runtime_capability(
+        self, record: RuntimeCapabilityProfile
+    ) -> StoredDataRef:
+        """Activate or retire one exact non-static production capability."""
+
+        record = RuntimeCapabilityProfile.model_validate(record)
+        ref = reference(record)
+        if not isinstance(ref, StoredDataRef):
+            raise ValueError("CAPABILITY_SCOPE_MISMATCH")
+        with self.records.database.write() as connection:
+            self._require_runtime_retirement_predecessor(connection, record)
+            evidence = self._require_capability_evidence(connection, record)
+            if not self._runtime_identity_matches(record, evidence):
+                raise ValueError("CAPABILITY_EVIDENCE_IDENTITY_MISMATCH")
+            if record.status == "ACTIVE":
+                for logical_id, payload in self._current_records(
+                    connection, RuntimeCapabilityProfile.KIND
+                ):
+                    current = RuntimeCapabilityProfile.model_validate_json(payload)
+                    if logical_id == str(record.meta.logical_record_id) or (
+                        current.status != "ACTIVE"
+                    ):
+                        continue
+                    if (
+                        current.capability_kind == record.capability_kind
+                        and current.operating_system == record.operating_system
+                        and current.architecture == record.architecture
+                        and self._language_routes_overlap(
+                            current.languages, record.languages
+                        )
+                        and bool(set(current.operations) & set(record.operations))
+                    ):
+                        raise ValueError("CAPABILITY_ACTIVE_ROUTE_CONFLICT")
+            staged = self.records.stage(connection, record)
+            assert staged == ref
+            self.records.publish(connection, ref)
+            self._point(connection, record)
+            self._require_capability_evidence(connection, record)
+        return ref
+
+    def get_runtime_capability(
+        self, profile_ref: StoredDataRef
+    ) -> RuntimeCapabilityProfile:
+        """Read one exact historical revision; this does not authorize execution."""
+
+        if profile_ref.data_kind != RuntimeCapabilityProfile.KIND:
+            raise ValueError("CAPABILITY_PROFILE_REFERENCE_MISMATCH")
+        with self.records.database.engine.connect() as connection:
+            record = self.records.resolve(connection, profile_ref)
+        if not isinstance(record, RuntimeCapabilityProfile):
+            raise ValueError("CAPABILITY_PROFILE_REFERENCE_MISMATCH")
+        return record
+
+    def resolve_active_capability(
+        self,
+        *,
+        capability_kind: CapabilityKind,
+        language: CapabilityLanguage,
+        operation: CapabilityOperation,
+        operating_system: CapabilityOperatingSystem,
+        architecture: CapabilityArchitecture,
+    ) -> RuntimeCapabilitySelection:
+        """Resolve one trusted current ACTIVE route and return its exact ref."""
+
+        if not operating_system.strip() or not architecture.strip():
+            raise ValueError("CAPABILITY_ROUTE_INCOMPLETE")
+        matches: list[RuntimeCapabilityProfile] = []
+        with self.records.database.engine.connect() as connection:
+            for _, payload in self._current_records(
+                connection, RuntimeCapabilityProfile.KIND
+            ):
+                profile = RuntimeCapabilityProfile.model_validate_json(payload)
+                if (
+                    profile.status == "ACTIVE"
+                    and profile.capability_kind == capability_kind
+                    and profile.operating_system == operating_system
+                    and profile.architecture == architecture
+                    and self._language_matches(profile.languages, language)
+                    and operation in profile.operations
+                ):
+                    evidence = self._require_capability_evidence(connection, profile)
+                    if not self._runtime_identity_matches(profile, evidence):
+                        raise ValueError("CAPABILITY_EVIDENCE_IDENTITY_MISMATCH")
+                    matches.append(profile)
+        if not matches:
+            raise LookupError("CAPABILITY_ROUTE_NOT_ACTIVE")
+        if len(matches) != 1:
+            raise ValueError("CAPABILITY_ACTIVE_ROUTE_CONFLICT")
+        profile = matches[0]
+        profile_ref = reference(profile)
+        assert isinstance(profile_ref, StoredDataRef)
+        return RuntimeCapabilitySelection(profile_ref=profile_ref, profile=profile)
+
+    @staticmethod
+    def _static_identity_matches(
+        profile: StaticToolProfile, evidence: CapabilityApprovalEvidence
+    ) -> bool:
+        kind = {
+            "PYTHON_AST": "AST",
+            "CODEQL": "CODEQL",
+            "OPENGREP": "OPENGREP",
+        }[profile.adapter_key]
+        operation = "PARSE" if profile.adapter_key == "PYTHON_AST" else "ANALYZE"
+        return (
+            evidence.profile_key == profile.profile_key
+            and evidence.capability_kind == kind
+            and evidence.subject_key == profile.executable_key
+            and evidence.observed_version == profile.expected_version
+            and evidence.observed_sha256 == profile.executable_sha256
+            and operation in evidence.operations
+        )
+
+    def register_production_static_tool_profile(
+        self, record: StaticToolProfile
+    ) -> StoredDataRef:
+        """Publish an exact production static profile after trusted activation."""
+
+        record = StaticToolProfile.model_validate(record)
+        if record.purpose != "PRODUCTION" or record.status not in {
+            "ACTIVE",
+            "RETIRED",
+        }:
+            raise ValueError("STATIC_TOOL_PRODUCTION_PROFILE_INVALID")
+        ref = reference(record)
+        if not isinstance(ref, StoredDataRef):
+            raise ValueError("CAPABILITY_SCOPE_MISMATCH")
+        with self.records.database.write() as connection:
+            self._require_static_retirement_predecessor(connection, record)
+            evidence = self._require_capability_evidence(connection, record)
+            if not self._static_identity_matches(record, evidence):
+                raise ValueError("CAPABILITY_EVIDENCE_IDENTITY_MISMATCH")
+            if record.status == "ACTIVE":
+                for logical_id, payload in self._current_records(
+                    connection, StaticToolProfile.KIND
+                ):
+                    current = StaticToolProfile.model_validate_json(payload)
+                    if logical_id == str(record.meta.logical_record_id) or (
+                        current.status != "ACTIVE"
+                    ):
+                        continue
+                    current_evidence = self._require_capability_evidence(
+                        connection, current
+                    )
+                    if (
+                        current.adapter_key == record.adapter_key
+                        and current_evidence.operating_system
+                        == evidence.operating_system
+                        and current_evidence.architecture == evidence.architecture
+                        and self._language_routes_overlap(
+                            current_evidence.languages, evidence.languages
+                        )
+                    ):
+                        raise ValueError("STATIC_TOOL_ACTIVE_ROUTE_CONFLICT")
+            staged = self.records.stage(connection, record)
+            assert staged == ref
+            self.records.publish(connection, ref)
+            self._point(connection, record)
+            self._require_capability_evidence(connection, record)
+        return ref
+
+    def _require_static_retirement_predecessor(
+        self, connection: Connection, record: StaticToolProfile
+    ) -> None:
+        if record.status != "RETIRED":
+            return
+        candidates = tuple(
+            StaticToolProfile.model_validate_json(payload)
+            for logical_id, payload in self._current_records(
+                connection, StaticToolProfile.KIND
+            )
+            if logical_id == str(record.meta.logical_record_id)
+        )
+        if len(candidates) != 1:
+            raise ValueError("STATIC_TOOL_RETIREMENT_PREDECESSOR_MISSING")
+        current = candidates[0]
+        immutable = (
+            "profile_key",
+            "purpose",
+            "adapter_key",
+            "tool_name",
+            "tool_kind",
+            "executable_key",
+            "executable_sha256",
+            "expected_version",
+            "probe_timeout_ms",
+            "run_timeout_ms",
+            "stdout_limit_bytes",
+            "stderr_limit_bytes",
+            "max_attempt_output_bytes",
+            "max_output_file_bytes",
+            "max_artifact_read_bytes",
+        )
+        if (
+            current.status != "ACTIVE"
+            or record.meta.previous_record_id != current.meta.record_id
+            or any(getattr(current, key) != getattr(record, key) for key in immutable)
+        ):
+            raise ValueError("STATIC_TOOL_RETIREMENT_IDENTITY_MISMATCH")
+
+    def resolve_production_static_tool_profile(
+        self, profile_ref: StoredDataRef
+    ) -> StaticToolProfile:
+        """Resolve one exact current production profile for execution."""
+
+        record = self.get_production_static_tool_profile(profile_ref)
+        with self.records.database.engine.connect() as connection:
+            current = (
+                connection.execute(
+                    select(models.current_records.c.record_id).where(
+                        models.current_records.c.logical_record_id
+                        == str(record.meta.logical_record_id)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if current != str(record.meta.record_id):
+                raise ValueError("STALE_CONFIGURATION_REVISION")
+            evidence = self._require_capability_evidence(connection, record)
+            if not self._static_identity_matches(record, evidence):
+                raise ValueError("CAPABILITY_EVIDENCE_IDENTITY_MISMATCH")
+        if record.purpose != "PRODUCTION" or record.status != "ACTIVE":
+            raise ValueError("STATIC_TOOL_PROFILE_NOT_EXECUTABLE")
+        return record
+
+    def get_production_static_tool_profile(
+        self, profile_ref: StoredDataRef
+    ) -> StaticToolProfile:
+        """Read one exact historical revision; this does not authorize execution."""
+
+        if profile_ref.data_kind != StaticToolProfile.KIND:
+            raise ValueError("STATIC_TOOL_PROFILE_REFERENCE_MISMATCH")
+        with self.records.database.engine.connect() as connection:
+            record = self.records.resolve(connection, profile_ref)
+            if not isinstance(record, StaticToolProfile):
+                raise ValueError("STATIC_TOOL_PROFILE_REFERENCE_MISMATCH")
+        return record
+
+    def resolve_active_static_tool(
+        self,
+        *,
+        adapter_key: str,
+        language: CapabilityLanguage,
+        operating_system: CapabilityOperatingSystem,
+        architecture: CapabilityArchitecture,
+    ) -> StaticToolCapabilitySelection:
+        """Select one current production static profile from trusted evidence."""
+
+        if not operating_system.strip() or not architecture.strip():
+            raise ValueError("CAPABILITY_ROUTE_INCOMPLETE")
+        matches: list[tuple[StaticToolProfile, CapabilityApprovalEvidence]] = []
+        with self.records.database.engine.connect() as connection:
+            for _, payload in self._current_records(connection, StaticToolProfile.KIND):
+                profile = StaticToolProfile.model_validate_json(payload)
+                if profile.status != "ACTIVE" or profile.adapter_key != adapter_key:
+                    continue
+                evidence = self._require_capability_evidence(connection, profile)
+                if (
+                    not self._static_identity_matches(profile, evidence)
+                    or evidence.operating_system != operating_system
+                    or evidence.architecture != architecture
+                    or not self._language_matches(evidence.languages, language)
+                ):
+                    continue
+                matches.append((profile, evidence))
+        if not matches:
+            raise LookupError("STATIC_TOOL_ROUTE_NOT_ACTIVE")
+        if len(matches) != 1:
+            raise ValueError("STATIC_TOOL_ACTIVE_ROUTE_CONFLICT")
+        profile, evidence = matches[0]
+        profile_ref = reference(profile)
+        assert isinstance(profile_ref, StoredDataRef)
+        return StaticToolCapabilitySelection(
+            profile_ref=profile_ref, profile=profile, evidence=evidence
+        )
 
     def register_static_tool_profile(self, record: StaticToolProfile) -> StoredDataRef:
         record = StaticToolProfile.model_validate(record)

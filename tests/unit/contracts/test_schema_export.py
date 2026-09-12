@@ -55,6 +55,8 @@ EXPECTED_KINDS = {
     "budget_remaining",
     "evaluation_run_config",
     "static_tool_profile",
+    "tool_capability_evidence",
+    "runtime_capability_profile",
 }
 
 
