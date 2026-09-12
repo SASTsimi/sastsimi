@@ -708,6 +708,12 @@ class ConfigurationRegistry:
         active_entry = (
             connection.execute(
                 select(models.prompt_active_entries).where(
+                    models.prompt_active_entries.c.analysis_id
+                    == str(entry.meta.analysis_id),
+                    models.prompt_active_entries.c.workspace_id
+                    == str(entry.meta.workspace_id),
+                    models.prompt_active_entries.c.commit_id
+                    == str(entry.meta.commit_id),
                     models.prompt_active_entries.c.agent_role == entry.agent_role,
                     models.prompt_active_entries.c.task_kind == entry.task_kind,
                     models.prompt_active_entries.c.purpose == entry.purpose,
@@ -1115,6 +1121,9 @@ class ConfigurationRegistry:
             self._validate_production_activation(connection, record)
         table = models.prompt_active_entries
         key = (
+            table.c.analysis_id == str(record.meta.analysis_id),
+            table.c.workspace_id == str(record.meta.workspace_id),
+            table.c.commit_id == str(record.meta.commit_id),
             table.c.agent_role == record.agent_role,
             table.c.task_kind == record.task_kind,
             table.c.purpose == record.purpose,
@@ -1181,6 +1190,9 @@ class ConfigurationRegistry:
         if current is None:
             connection.execute(
                 insert(table).values(
+                    analysis_id=str(record.meta.analysis_id),
+                    workspace_id=str(record.meta.workspace_id),
+                    commit_id=str(record.meta.commit_id),
                     agent_role=record.agent_role,
                     task_kind=record.task_kind,
                     purpose=record.purpose,
@@ -1244,6 +1256,9 @@ class ConfigurationRegistry:
         active = (
             connection.execute(
                 select(table).where(
+                    table.c.analysis_id == str(record.meta.analysis_id),
+                    table.c.workspace_id == str(record.meta.workspace_id),
+                    table.c.commit_id == str(record.meta.commit_id),
                     table.c.agent_role == record.agent_role,
                     table.c.task_kind == record.task_kind,
                     table.c.purpose == record.purpose,
