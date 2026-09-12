@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, Protocol, TextIO, cast
 
 from sastsimi.config.loader import ConfigError as ConfigError
@@ -15,6 +16,7 @@ from sastsimi.config.models import AppConfig
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.ids import (
+    AnalysisId,
     AttemptId,
     CommitId,
     LogicalRecordId,
@@ -35,12 +37,18 @@ from sastsimi.storage.action_validator import (
 from sastsimi.storage.schema_version import MigrationRequired as MigrationRequired
 
 if TYPE_CHECKING:
+    from sastsimi.chaining.service import ChainingCallResolver
+    from sastsimi.chaining.work_handlers import (
+        ChainingWorkHandler,
+        HypothesisProposalHandler,
+        PrimitiveUpdateHandler,
+    )
     from sastsimi.contracts.dynamic import DynamicReproductionRequest
     from sastsimi.contracts.evaluation import AnalysisRunResult
     from sastsimi.contracts.hypothesis import HypothesisProcessState
     from sastsimi.contracts.reporting import ReportDraft
     from sastsimi.contracts.static import StaticToolProfile
-    from sastsimi.contracts.work import WorkExecutionState
+    from sastsimi.contracts.work import WorkExecutionState, WorkType
     from sastsimi.orchestration.fake_pipeline import FakePipeline
     from sastsimi.orchestration.fake_scenario_runtime import WorkflowBundle
     from sastsimi.orchestration.hypothesis_workflow import HypothesisWorkflow
@@ -57,9 +65,13 @@ if TYPE_CHECKING:
     from sastsimi.orchestration.static_publication import (
         StaticNormalizationPublisher,
     )
+    from sastsimi.ports.chaining import (
+        ChainingLineagePort,
+    )
     from sastsimi.ports.context import ContextLineageReaderPort
     from sastsimi.ports.dto import StaticRuleMapping, WorkHandlerResult
     from sastsimi.ports.static_tool import StaticProcessAdapter
+    from sastsimi.ports.work_handler import WorkHandler
     from sastsimi.ports.workspace import WorkspaceLocatorPort
     from sastsimi.reporting.cwe_work_handler import (
         CWELabelingHandler,
@@ -78,10 +90,19 @@ if TYPE_CHECKING:
     )
     from sastsimi.reproduction.production import DynamicSandboxAuthorizationResolver
     from sastsimi.reproduction.service import DynamicStageAuthorizations
+    from sastsimi.runtime.chaining_reconciliation import (
+        ChainingReconciliationService,
+        ChainingStartupReconciler,
+        ChainingStartupReconciliationResult,
+    )
+    from sastsimi.runtime.work_handler_registry import WorkHandlerRegistry
     from sastsimi.runtime.workflow_runner import WorkflowRunner
     from sastsimi.static_analysis.coordinator import StaticToolCoordinator
     from sastsimi.static_analysis.normalizer import DecoderKey, RawDecoder
-    from sastsimi.verification.completion import VerificationCompletionCoordinator
+    from sastsimi.verification.completion import (
+        NonDynamicVerificationCompletionCoordinator,
+        VerificationCompletionCoordinator,
+    )
     from sastsimi.verification.context_service import (
         ContextRetrievalService,
         TrackedFilesResolver,
@@ -151,6 +172,65 @@ class T12Services:
     reporter: ReporterWorkHandler
     primitive_handoff: PrimitiveUpdateHandoff
     technical_revisions: TechnicalRevisionReconciler
+
+
+@dataclass(frozen=True)
+class T13Services:
+    """Primitive admission and Chaining handlers owned by root composition."""
+
+    primitive_update: PrimitiveUpdateHandler
+    chaining: ChainingWorkHandler
+    hypothesis_proposal: HypothesisProposalHandler
+    reconciliation: ChainingReconciliationService
+    reconcile_startup: ChainingStartupReconciler
+
+    @property
+    def work_handlers(self) -> Mapping[WorkType, WorkHandler]:
+        """Typed T13 registry seam consumed by the T14 production worker."""
+
+        from sastsimi.contracts.work import WorkType
+
+        return MappingProxyType(
+            {
+                WorkType.PRIMITIVE_UPDATE: self.primitive_update,
+                WorkType.CHAINING: self.chaining,
+                WorkType.HYPOTHESIS_PROPOSAL: self.hypothesis_proposal,
+            }
+        )
+
+
+@dataclass(frozen=True)
+class T13ProductionInstallation:
+    """Proof that T13 routes and active-analysis recovery were installed."""
+
+    registered_work_types: tuple[WorkType, ...]
+    reconciliations: tuple[ChainingStartupReconciliationResult, ...]
+
+
+def install_t13_services(
+    services: T13Services,
+    *,
+    registry: WorkHandlerRegistry,
+    active_analysis_ids: tuple[AnalysisId, ...],
+) -> T13ProductionInstallation:
+    """Register T13 routes and reconcile each exact active analysis once.
+
+    General runtime recovery must already have run before this function. T14
+    still owns polling, claiming, concurrency, cancellation, and retry policy;
+    installation only makes the existing T13 handlers reachable and repairs
+    their deterministic post-commit handoffs.
+    """
+
+    handlers = services.work_handlers
+    registry.register_many(handlers)
+    reconciliations = tuple(
+        services.reconcile_startup(analysis_id)
+        for analysis_id in sorted(set(active_analysis_ids), key=str)
+    )
+    return T13ProductionInstallation(
+        registered_work_types=tuple(handlers),
+        reconciliations=reconciliations,
+    )
 
 
 def _require_current_dynamic_request(
@@ -237,7 +317,9 @@ class T10Services:
     hypothesis: HypothesisWorkflow
     debate: DebateService
     verification: VerificationService
+    non_dynamic_completion: NonDynamicVerificationCompletionCoordinator
     verdict_router: VerdictRouter
+    primitive_handoff: PrimitiveUpdateHandoff
     revision: RevisionWorkflow
 
 
@@ -636,6 +718,15 @@ def _load_fake_outputs(
     return persisted_analysis_result(queries, "fake-analysis"), reports
 
 
+def build_report_markdown_service(data_dir: Path) -> object:
+    """Compose the report application service with its concrete read adapter."""
+
+    from sastsimi.reporting.markdown_export import ReportMarkdownService
+    from sastsimi.storage.report_export import SQLiteCurrentReportSource
+
+    return ReportMarkdownService(data_dir, SQLiteCurrentReportSource(data_dir))
+
+
 def load_fake_progress(data_dir: Path) -> dict[str, object]:
     """Read only durable fake-run progress; never synthesize a terminal result."""
     import json
@@ -703,8 +794,10 @@ def _build_runtime(
     finding_service_identity_ref: StoredDataRef | None = None,
     analysis_finalization_identity_ref: BudgetScopeRef | None = None,
     llm_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter] | None = None,
+    chaining_lineage: ChainingLineagePort | None = None,
     *,
     validator_factory: Callable[..., SQLiteRuntimeValidator],
+    bind_sqlite_chaining_lineage: bool = False,
 ) -> RuntimeServices:
     from sastsimi.runtime.action_validator import RuntimeValidator
     from sastsimi.runtime.analysis_finalization import AnalysisFinalizationService
@@ -732,6 +825,7 @@ def _build_runtime(
     from sastsimi.storage.attempt_service import AttemptService as SQLiteAttempts
     from sastsimi.storage.budget_registry import BudgetProfileRegistry as SQLiteRegistry
     from sastsimi.storage.budget_service import BudgetService as SQLiteBudget
+    from sastsimi.storage.chaining_lineage import SQLiteChainingLineage
     from sastsimi.storage.configuration_registry import (
         ConfigurationRegistry as SQLiteConfigurationRegistry,
     )
@@ -761,6 +855,9 @@ def _build_runtime(
     database = Database(paths.database)
     database.check_ready()
     records = SQLiteRecordStore(database, evidence, finding_service_identity_ref)
+    effective_chaining_lineage = chaining_lineage
+    if effective_chaining_lineage is None and bind_sqlite_chaining_lineage:
+        effective_chaining_lineage = SQLiteChainingLineage(records)
     artifacts = LocalArtifactStore(paths.artifacts, workspace_id, commit_id)
     registry = SQLiteRegistry(records, clock, ids)
     budget = SQLiteBudget(records, registry, clock, ids)
@@ -772,7 +869,11 @@ def _build_runtime(
         artifacts,
     )
     works = SQLiteWorks(records, authorization, clock, ids)
-    transitions = SQLiteTransitions(works, artifacts)
+    transitions = SQLiteTransitions(
+        works,
+        artifacts,
+        chaining_lineage=effective_chaining_lineage,
+    )
     unit = SQLiteUnitOfWork(records, artifacts, transitions)
     recovery = RecoveryService(SQLiteRecovery(transitions, recovery_identity_ref))
     recovery.recover()
@@ -840,6 +941,7 @@ def _build_runtime(
         ),
         llm_calls,
         PolicyRuntimeService(SQLitePolicyRuntime(works), clock, ids),
+        effective_chaining_lineage,
     )
 
 
@@ -855,6 +957,7 @@ def build_runtime(
     finding_service_identity_ref: StoredDataRef | None = None,
     analysis_finalization_identity_ref: BudgetScopeRef | None = None,
     llm_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter] | None = None,
+    chaining_lineage: ChainingLineagePort | None = None,
 ) -> RuntimeServices:
     """Compose the production runtime without fake output capabilities."""
     return _build_runtime(
@@ -869,7 +972,9 @@ def build_runtime(
         finding_service_identity_ref,
         analysis_finalization_identity_ref,
         llm_adapters,
+        chaining_lineage,
         validator_factory=SQLiteRuntimeValidator,
+        bind_sqlite_chaining_lineage=True,
     )
 
 
@@ -889,18 +994,35 @@ def build_t10_services(
     from sastsimi.contracts.refs import reference
     from sastsimi.contracts.verification import ConEvidenceResult, ProEvidenceResult
     from sastsimi.orchestration.hypothesis_workflow import HypothesisWorkflow
+    from sastsimi.orchestration.primitive_handoff import PrimitiveUpdateHandoff
     from sastsimi.ports.llm_invocation import PersistedLLMInvocation
     from sastsimi.prompts.builder import PromptBuilder
+    from sastsimi.verification.completion import (
+        NonDynamicVerificationCompletionCoordinator,
+    )
     from sastsimi.verification.debate_service import (
         CurrentEvidenceParallelLimit,
         DebateService,
     )
     from sastsimi.verification.revision_workflow import RevisionWorkflow
     from sastsimi.verification.service import VerificationService
-    from sastsimi.verification.verdict_router import VerdictRouter
+    from sastsimi.verification.verdict_router import VerdictRouter, current_process_from
 
     records = runtime.unit_of_work.records
     artifacts = runtime.unit_of_work.artifacts
+
+    verification_identity = role_identity_refs.get(RequesterRole.VERIFICATION)
+    if verification_identity is None:
+        raise ValueError("VERIFICATION_IDENTITY_REQUIRED")
+    orchestration_identity = role_identity_refs.get(RequesterRole.ORCHESTRATION)
+    if orchestration_identity is None:
+        raise ValueError("ORCHESTRATION_IDENTITY_REQUIRED")
+
+    def budget_scope(analysis_id: str) -> BudgetScopeRef:
+        state = runtime.budget_registry.current_state(analysis_id)
+        if state.status != "RUNNING" or state.budget_binding_ref is None:
+            raise ValueError("CURRENT_BUDGET_SCOPE_REQUIRED")
+        return state.budget_binding_ref
 
     def metadata(
         source: RecordMeta, record_type: str, attempt_id: AttemptId | None
@@ -1014,14 +1136,34 @@ def build_t10_services(
         records=records,
         artifacts=artifacts,
         metadata_factory=metadata,
+        draft_id_factory=lambda: str(ids.new(RecordId)),
         work_resolver=resolve_work,
         evidence_session_resolver=evidence_session,
+    )
+    verification = VerificationService(verification_agent)
+    primitive_handoff = PrimitiveUpdateHandoff(
+        records=records, current=runtime.queries, ready_work=runner
     )
     return T10Services(
         hypothesis=hypothesis,
         debate=debate,
-        verification=VerificationService(verification_agent),
-        verdict_router=VerdictRouter(records),
+        verification=verification,
+        non_dynamic_completion=NonDynamicVerificationCompletionCoordinator(
+            verification=verification,
+            runner=runner,
+            records=records,
+            work_resolver=resolve_work,
+            current=runtime.queries,
+            budget_scope=budget_scope,
+            hold_handoff=primitive_handoff,
+            verification_identity_ref=verification_identity,
+            orchestration_identity_ref=orchestration_identity,
+        ),
+        verdict_router=VerdictRouter(
+            records,
+            current_process=current_process_from(runtime.queries.current_records),
+        ),
+        primitive_handoff=primitive_handoff,
         revision=RevisionWorkflow(
             registrar=runtime.verification_registration,
             records=records,
@@ -1158,7 +1300,6 @@ def build_t12_services(
         VerificationAssignment,
     )
     from sastsimi.contracts.verification import VerificationResult
-    from sastsimi.orchestration.primitive_handoff import PrimitiveUpdateHandoff
     from sastsimi.reporting.cwe_work_handler import CWELabelingHandler
     from sastsimi.reporting.cwe_workflow import CWELabelingService
     from sastsimi.reporting.finding_normalization import FindingNormalizationService
@@ -1353,11 +1494,248 @@ def build_t12_services(
         reporter=ReporterWorkHandler(
             workflow=reporter_workflow, resolve_inputs=reporter_inputs
         ),
-        primitive_handoff=PrimitiveUpdateHandoff(
-            records=records, current=runtime.queries, ready_work=runner
-        ),
+        primitive_handoff=t10_services.primitive_handoff,
         technical_revisions=TechnicalRevisionReconciler(
             service=technical_service,
             current=runtime.queries,
         ),
+    )
+
+
+def build_t13_services(
+    *,
+    runtime: RuntimeServices,
+    runner: WorkflowRunner,
+    clock: Clock,
+    ids: IdGenerator,
+    budget_scope_ref: BudgetScopeRef,
+    role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
+    chaining_call_resolver: ChainingCallResolver,
+    chaining_lineage: ChainingLineagePort,
+    verification_policy_ref: StoredDataRef | None,
+    verification_playbook_ref: StoredDataRef | None,
+) -> T13Services:
+    """Build T13 from injected T09 calls and the runtime's concrete lineage.
+
+    The caller must provide the exact-call resolver selected by T09 and the same
+    concrete lineage adapter already bound to ``runtime``.  There is no fake or
+    empty production fallback, and this builder never selects a Provider/model.
+    """
+
+    from sastsimi.agents.chaining import ChainingAgent
+    from sastsimi.chaining.publication import RuntimeChainingResultPublisher
+    from sastsimi.chaining.service import ChainingWorkflowService
+    from sastsimi.chaining.work_handlers import (
+        ChainingWorkHandler,
+        HypothesisProposalHandler,
+        PrimitiveUpdateHandler,
+    )
+    from sastsimi.reporting.primitive_admission import PrimitiveAdmissionRuntime
+    from sastsimi.runtime.chaining_reconciliation import (
+        ChainingReconciliationService,
+        ChainingStartupReconciler,
+    )
+    from sastsimi.runtime.llm_invocation_provenance import (
+        validate_llm_invocation_provenance,
+    )
+    from sastsimi.storage.chaining_child_registration import (
+        ChainingChildRegistrationConfig,
+        SQLiteChainingChildRegistration,
+    )
+    from sastsimi.storage.chaining_registration import (
+        ChainingCohortStore,
+        ChainingCommittedSourceStore,
+    )
+    from sastsimi.storage.repositories import SQLiteRecordStore
+    from sastsimi.storage.verification_registration import (
+        VerificationRegistrationService as SQLiteVerificationRegistration,
+    )
+    from sastsimi.storage.work_service import WorkService as SQLiteWorkService
+
+    def identity(role: RequesterRole) -> BudgetScopeRef:
+        value = role_identity_refs.get(role)
+        if value is None:
+            raise ValueError(f"{role.value}_IDENTITY_REQUIRED")
+        return value
+
+    orchestration_identity = identity(RequesterRole.ORCHESTRATION)
+    chaining_identity = identity(RequesterRole.CHAINING)
+    primitive_identity = identity(RequesterRole.PRIMITIVE_ADMISSION_RUNTIME)
+    recovery_identity = identity(RequesterRole.RECOVERY)
+    verification_identity = identity(RequesterRole.VERIFICATION)
+
+    records = runtime.unit_of_work.records
+    works = runtime.work.store
+    verification = runtime.verification_registration.store
+    if runner.runtime is not runtime:
+        raise ValueError("T13_RUNTIME_MISMATCH")
+    if (
+        not isinstance(records, SQLiteRecordStore)
+        or not isinstance(works, SQLiteWorkService)
+        or works.records is not records
+        or not isinstance(verification, SQLiteVerificationRegistration)
+        or verification.transitions.works is not works
+    ):
+        raise ValueError("T13_STORAGE_RUNTIME_MISMATCH")
+    if runtime.chaining_lineage is not chaining_lineage:
+        raise ValueError("CHAINING_LINEAGE_RUNTIME_MISMATCH")
+    if (
+        not isinstance(budget_scope_ref, StoredDataRef)
+        or not isinstance(verification_identity, StoredDataRef)
+        or verification_policy_ref is None
+        or verification_playbook_ref is None
+    ):
+        raise ValueError("T13_CHILD_CONFIG_REQUIRED")
+    child_config = ChainingChildRegistrationConfig(
+        budget_binding_ref=budget_scope_ref,
+        verification_owner_identity_ref=verification_identity,
+        verification_policy_ref=verification_policy_ref,
+        verification_playbook_ref=verification_playbook_ref,
+    )
+    if (
+        len(
+            {
+                (ref.workspace_id, ref.commit_id)
+                for ref in (
+                    child_config.budget_binding_ref,
+                    child_config.verification_owner_identity_ref,
+                    child_config.verification_policy_ref,
+                    child_config.verification_playbook_ref,
+                )
+            }
+        )
+        != 1
+    ):
+        raise ValueError("T13_CHILD_CONFIG_SCOPE_MISMATCH")
+    child_registration = SQLiteChainingChildRegistration(
+        works=works,
+        transitions=verification.transitions,
+        verification=verification,
+        lineage=chaining_lineage,
+        config=child_config,
+    )
+
+    def metadata(
+        source: RecordMeta,
+        record_type: str,
+        attempt_id: AttemptId | None,
+    ) -> RecordMeta:
+        record_id = ids.new(RecordId)
+        return RecordMeta(
+            record_id=record_id,
+            logical_record_id=LogicalRecordId(str(record_id)),
+            record_type=record_type,
+            schema_version=source.schema_version,
+            revision_number=1,
+            previous_record_id=None,
+            created_at=clock.now(),
+            analysis_id=source.analysis_id,
+            workspace_id=source.workspace_id,
+            commit_id=source.commit_id,
+            hypothesis_id=source.hypothesis_id,
+            attempt_id=attempt_id,
+        )
+
+    sources = ChainingCommittedSourceStore(records)
+    cohorts = ChainingCohortStore(works)
+    admission = PrimitiveAdmissionRuntime(
+        records=records,
+        current=runtime.queries,
+        publisher=runner,
+        identity_ref=primitive_identity,
+        clock=clock,
+        ids=ids,
+    )
+    agent = ChainingAgent(
+        llm_calls=runtime.llm_calls,
+        records=records,
+        artifacts=runtime.unit_of_work.artifacts,
+        provenance_validator=validate_llm_invocation_provenance,
+    )
+    publisher = RuntimeChainingResultPublisher(runner, chaining_identity)
+    workflow = ChainingWorkflowService(
+        agent=agent,
+        records=records,
+        artifacts=runtime.unit_of_work.artifacts,
+        pools=cohorts.pools,
+        lineage=chaining_lineage,
+        publisher=publisher,
+        children=child_registration,
+        ids=ids,
+        metadata_factory=metadata,
+        requester_identity_ref=orchestration_identity,
+    )
+    reconciliation = ChainingReconciliationService(
+        sources=sources,
+        cohorts=cohorts,
+        children=child_registration,
+        records=records,
+        budget_scope_ref=budget_scope_ref,
+        requester_identity_ref=recovery_identity,
+    )
+    return T13Services(
+        primitive_update=PrimitiveUpdateHandler(
+            admission=admission,
+            sources=sources,
+            cohorts=cohorts,
+            budget_scope_ref=budget_scope_ref,
+            requester_identity_ref=primitive_identity,
+        ),
+        chaining=ChainingWorkHandler(
+            service=workflow,
+            resolve_call=chaining_call_resolver,
+        ),
+        hypothesis_proposal=HypothesisProposalHandler(
+            registration=child_registration,
+            requester_identity_ref=orchestration_identity,
+        ),
+        reconciliation=reconciliation,
+        reconcile_startup=ChainingStartupReconciler(
+            reconciliation=reconciliation,
+            published_records=runtime.queries.published_records,
+        ),
+    )
+
+
+def build_and_install_t13_application(
+    *,
+    runtime: RuntimeServices,
+    runner: WorkflowRunner,
+    clock: Clock,
+    ids: IdGenerator,
+    budget_scope_ref: BudgetScopeRef,
+    role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
+    chaining_call_resolver: ChainingCallResolver,
+    verification_policy_ref: StoredDataRef | None,
+    verification_playbook_ref: StoredDataRef | None,
+    registry: WorkHandlerRegistry,
+    active_analysis_ids: tuple[AnalysisId, ...],
+) -> T13ProductionInstallation:
+    """Compose and install the production T13 slice in startup order.
+
+    Recovery is deliberately repeated before T13 handoff reconciliation because
+    it is idempotent and closes the ordering contract even when a caller passes
+    an already-built runtime. The worker loop itself remains a T14 concern.
+    """
+
+    lineage = runtime.chaining_lineage
+    if lineage is None:
+        raise ValueError("CHAINING_LINEAGE_REQUIRED")
+    runtime.recovery.recover()
+    services = build_t13_services(
+        runtime=runtime,
+        runner=runner,
+        clock=clock,
+        ids=ids,
+        budget_scope_ref=budget_scope_ref,
+        role_identity_refs=role_identity_refs,
+        chaining_call_resolver=chaining_call_resolver,
+        chaining_lineage=lineage,
+        verification_policy_ref=verification_policy_ref,
+        verification_playbook_ref=verification_playbook_ref,
+    )
+    return install_t13_services(
+        services,
+        registry=registry,
+        active_analysis_ids=active_analysis_ids,
     )

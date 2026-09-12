@@ -1,13 +1,17 @@
-"""Read persisted ReportDraft records; submission is intentionally absent."""
+"""List current, safe ReportDraft records; submission is intentionally absent."""
 
 from pathlib import Path
 
-from sastsimi.bootstrap import build_fake_pipeline
+from sastsimi.interfaces.cli import report as report_command
 
 
-def run(data_dir: Path) -> dict[str, object]:
-    reports = build_fake_pipeline(data_dir).reports()
+def run(data_dir: Path, analysis_id: str) -> dict[str, object]:
+    service = report_command.service(data_dir)
+    try:
+        reports = service.summaries(analysis_id)
+    except ValueError as error:
+        raise report_command.ReportCommandError from error
     return {
         "count": len(reports),
-        "reports": [report.model_dump(mode="json") for report in reports],
+        "reports": list(reports),
     }
