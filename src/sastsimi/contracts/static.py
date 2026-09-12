@@ -9,10 +9,16 @@ from pydantic import AfterValidator, AwareDatetime, model_validator
 from ._domain import DomainRecord, exact, exact_set, same_scope, unique
 from ._domain import SafeDiagnostic as SafeDiagnostic
 from .base import ContractModel, NonEmptyStr, NonNegativeInt, PositiveInt, Sha256
+from .canonical_json import content_hash
 from .closure import validate_committed_output
 from .ids import AnalysisId, AttemptId, CommitId, ErrorId, GapId, WorkId, WorkspaceId
 from .records import RunMeta
-from .refs import HostConfigurationRef, StoredDataRef, require_record_ref
+from .refs import (
+    HostConfigurationRef,
+    RunStoredDataRef,
+    StoredDataRef,
+    require_record_ref,
+)
 from .work import (
     TransitionCommit,
     WorkAttempt,
@@ -121,6 +127,178 @@ class CodeWorkspace(ContractModel):
         return self
 
 
+class RepositoryTrackedFile(ContractModel):
+    """One regular file from the exact safe Git manifest used for detection."""
+
+    git_path: GitPath
+    git_mode: Literal["100644", "100755"]
+    blob_id: NonEmptyStr
+    content_sha256: Sha256
+    size_bytes: NonNegativeInt
+
+    @model_validator(mode="after")
+    def blob_shape(self) -> Self:
+        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", self.blob_id):
+            raise ValueError("INVALID_GIT_BLOB_ID")
+        return self
+
+
+class RepositoryLanguage(ContractModel):
+    name: Literal["PYTHON", "JAVASCRIPT", "TYPESCRIPT", "JAVA"]
+    evidence_paths: tuple[GitPath, ...]
+
+    @model_validator(mode="after")
+    def evidence_required(self) -> Self:
+        unique(self.evidence_paths)
+        if not self.evidence_paths:
+            raise ValueError("LANGUAGE_EVIDENCE_REQUIRED")
+        return self
+
+
+class RepositoryFramework(ContractModel):
+    name: Literal["DJANGO", "FASTAPI", "FLASK", "EXPRESS", "NEXTJS", "NESTJS"]
+    evidence_paths: tuple[GitPath, ...]
+
+    @model_validator(mode="after")
+    def evidence_required(self) -> Self:
+        unique(self.evidence_paths)
+        if not self.evidence_paths:
+            raise ValueError("FRAMEWORK_EVIDENCE_REQUIRED")
+        return self
+
+
+class RepositoryConfigFile(ContractModel):
+    path: GitPath
+    kind: Literal[
+        "REQUIREMENTS",
+        "PYPROJECT",
+        "PACKAGE_JSON",
+        "DOCKERFILE",
+        "DOCKER_COMPOSE",
+        "MAVEN_POM",
+        "GRADLE",
+        "PACKAGE_LOCK",
+        "YARN_LOCK",
+        "PNPM_LOCK",
+        "PYTHON_LOCK",
+        "PIPFILE",
+    ]
+
+
+class RepositoryExecutionHint(ContractModel):
+    """Tracked declaration that may be selected only by an ACTIVE capability."""
+
+    path: GitPath
+    kind: Literal["DOCKERFILE", "PACKAGE_SCRIPT", "PYTHON_SCRIPT"]
+    name: NonEmptyStr
+
+
+class RepositoryProfileLocation(ContractModel):
+    """Source location retained from a repository-preparation gap."""
+
+    file_path: GitPath
+    start_line: PositiveInt
+    start_column: PositiveInt | None
+    end_line: PositiveInt
+    end_column: PositiveInt | None
+
+    @model_validator(mode="after")
+    def range_shape(self) -> Self:
+        if self.end_line < self.start_line or (self.start_column is None) != (
+            self.end_column is None
+        ):
+            raise ValueError("INVALID_CODE_RANGE")
+        if (
+            self.start_line == self.end_line
+            and self.start_column is not None
+            and self.end_column is not None
+            and self.end_column <= self.start_column
+        ):
+            raise ValueError("INVALID_CODE_RANGE")
+        return self
+
+
+class RepositoryProfileGap(ContractModel):
+    code: NonEmptyStr
+    reason: Literal[
+        "MISSING", "FAILED", "TRUNCATED", "UNSUPPORTED", "BLOCKED", "TIMEOUT"
+    ]
+    description: NonEmptyStr
+    affected_paths: tuple[GitPath, ...]
+    affected_languages: tuple[NonEmptyStr, ...]
+    affected_locations: tuple[RepositoryProfileLocation, ...]
+    retryable: bool
+
+
+class RepositoryProfileError(ContractModel):
+    code: NonEmptyStr
+    safe_message: SafeDiagnostic
+    retryable: bool
+
+
+class RepositoryProfile(DomainRecord):
+    """Immutable detection result closed over one exact tracked-file manifest."""
+
+    KIND = "repository_profile"
+    HYPOTHESIS = False
+    ATTEMPT = True
+    workspace_id: WorkspaceId
+    commit_id: CommitId
+    workspace_ref: RunStoredDataRef
+    action_decision_ref: StoredDataRef
+    manifest_hash: Sha256
+    tracked_files: tuple[RepositoryTrackedFile, ...]
+    languages: tuple[RepositoryLanguage, ...]
+    frameworks: tuple[RepositoryFramework, ...]
+    config_files: tuple[RepositoryConfigFile, ...]
+    execution_hints: tuple[RepositoryExecutionHint, ...]
+    gaps: tuple[RepositoryProfileGap, ...]
+    errors: tuple[RepositoryProfileError, ...]
+    status: Literal["READY", "NEEDS_CONFIRMATION"]
+    confirmation_reasons: tuple[NonEmptyStr, ...]
+
+    @model_validator(mode="after")
+    def profile_shape(self) -> Self:
+        if (
+            self.workspace_ref.data_kind != "code_workspace"
+            or self.workspace_ref.record_id is None
+            or self.action_decision_ref.data_kind != "action_decision"
+            or self.action_decision_ref.record_id is None
+        ):
+            raise ValueError("REPOSITORY_PROFILE_WORKSPACE_INVALID")
+        unique(item.git_path for item in self.tracked_files)
+        unique(item.name for item in self.languages)
+        unique(item.name for item in self.frameworks)
+        unique(item.path for item in self.config_files)
+        unique((item.path, item.kind, item.name) for item in self.execution_hints)
+        unique((item.code, item.reason, item.description) for item in self.gaps)
+        unique((item.code, item.safe_message) for item in self.errors)
+        unique(self.confirmation_reasons)
+        tracked = {item.git_path for item in self.tracked_files}
+        evidence_paths = {
+            path for item in self.languages for path in item.evidence_paths
+        } | {path for item in self.frameworks for path in item.evidence_paths}
+        declared_paths = {item.path for item in self.config_files} | {
+            item.path for item in self.execution_hints
+        }
+        if (
+            tuple(item.git_path for item in self.tracked_files)
+            != tuple(sorted(tracked))
+            or not evidence_paths <= tracked
+            or not declared_paths <= tracked
+            or self.manifest_hash
+            != content_hash(
+                tuple(item.model_dump(mode="json") for item in self.tracked_files)
+            )
+        ):
+            raise ValueError("REPOSITORY_PROFILE_MANIFEST_MISMATCH")
+        if self.status == "READY" and self.confirmation_reasons:
+            raise ValueError("REPOSITORY_PROFILE_STATUS_MISMATCH")
+        if self.status == "NEEDS_CONFIRMATION" and not self.confirmation_reasons:
+            raise ValueError("REPOSITORY_PROFILE_STATUS_MISMATCH")
+        return self
+
+
 class CodeLocation(ContractModel):
     workspace_id: WorkspaceId
     commit_id: CommitId
@@ -198,6 +376,110 @@ class AnalysisError(ContractModel):
     attempt_id: AttemptId | None
     related_record_ids: tuple[NonEmptyStr, ...]
     created_at: AwareDatetime
+
+
+class RepositorySelectedTool(ContractModel):
+    """One exact production static-tool revision selected for child work."""
+
+    adapter_key: Literal["PYTHON_AST", "CODEQL", "OPENGREP"]
+    operation: Literal["PARSE", "ANALYZE"]
+    tool_profile_ref: HostConfigurationRef
+    languages: tuple[Literal["PYTHON", "JAVASCRIPT"], ...]
+
+    @model_validator(mode="after")
+    def route_shape(self) -> Self:
+        if (
+            self.tool_profile_ref.data_kind != "static_tool_profile"
+            or not self.languages
+            or len(set(self.languages)) != len(self.languages)
+            or self.operation
+            != ("PARSE" if self.adapter_key == "PYTHON_AST" else "ANALYZE")
+            or (self.adapter_key == "PYTHON_AST" and self.languages != ("PYTHON",))
+        ):
+            raise ValueError("REPOSITORY_TOOL_SELECTION_INVALID")
+        return self
+
+
+class RepositoryExecutionSelection(DomainRecord):
+    """Durable exact capability closure for one repository profile attempt."""
+
+    KIND = "repository_execution_selection"
+    HYPOTHESIS = False
+    ATTEMPT = True
+    repository_profile_ref: StoredDataRef
+    git_clone_profile_ref: HostConfigurationRef
+    git_checkout_profile_ref: HostConfigurationRef
+    languages: tuple[Literal["PYTHON", "JAVASCRIPT"], ...]
+    selected_tools: tuple[RepositorySelectedTool, ...]
+    gaps: tuple[DataGap, ...]
+    errors: tuple[AnalysisError, ...]
+    status: Literal["READY", "BLOCKED", "FAILED"]
+
+    @model_validator(mode="after")
+    def closed_selection(self) -> Self:
+        require_record_ref(self.repository_profile_ref, "repository_profile")
+        if any(
+            ref.data_kind != "runtime_capability_profile"
+            for ref in (self.git_clone_profile_ref, self.git_checkout_profile_ref)
+        ):
+            raise ValueError("REPOSITORY_GIT_SELECTION_INVALID")
+        unique(self.languages)
+        unique(
+            (item.adapter_key, item.tool_profile_ref, item.languages)
+            for item in self.selected_tools
+        )
+        unique(item.gap_id for item in self.gaps)
+        unique(item.error_id for item in self.errors)
+        expected_routes = {
+            (adapter, language)
+            for language in self.languages
+            for adapter in (
+                ("PYTHON_AST", "CODEQL", "OPENGREP")
+                if language == "PYTHON"
+                else ("CODEQL", "OPENGREP")
+            )
+        }
+        actual_routes = {
+            (item.adapter_key, language)
+            for item in self.selected_tools
+            for language in item.languages
+        }
+        if self.status == "READY":
+            missing_routes = expected_routes - actual_routes
+            represented_missing_routes = {
+                (parts[1], parts[2])
+                for gap in self.gaps
+                if len(parts := gap.code.split(":")) == 3
+                and parts[0] == "NO_ACTIVE_STATIC_CAPABILITY"
+            }
+            has_required_structure = all(
+                language != "PYTHON" or ("PYTHON_AST", language) in actual_routes
+                for language in self.languages
+            )
+            has_sast = all(
+                any(
+                    (adapter, language) in actual_routes
+                    for adapter in ("CODEQL", "OPENGREP")
+                )
+                for language in self.languages
+            )
+            if (
+                not self.languages
+                or self.errors
+                or not actual_routes
+                or not actual_routes.issubset(expected_routes)
+                or not has_required_structure
+                or not has_sast
+                or represented_missing_routes != missing_routes
+                or any(gap.reason != "MISSING" for gap in self.gaps)
+            ):
+                raise ValueError("REPOSITORY_EXECUTION_SELECTION_INCOMPLETE")
+        elif self.status == "BLOCKED":
+            if self.selected_tools or not self.gaps or self.errors:
+                raise ValueError("REPOSITORY_EXECUTION_SELECTION_STATUS_MISMATCH")
+        elif self.selected_tools or self.gaps or not self.errors:
+            raise ValueError("REPOSITORY_EXECUTION_SELECTION_STATUS_MISMATCH")
+        return self
 
 
 class ToolSource(ContractModel):

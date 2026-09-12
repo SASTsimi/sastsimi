@@ -491,6 +491,7 @@ worker pool을 선행 조건으로 요구하지 않는다.
 - [ ] testing restriction과 다른 scope·impact 값을 Primitive 결정으로 선저장하지 않고 exact Rule Scope 결과로 Task 13에 넘긴다.
 - [ ] 다른 scope·impact 실패는 Finding을 보존하고 Reporter만 차단한다.
 - [ ] ReportDraft의 모든 `path:line`을 EvidenceClaim 위치와 대조한다.
+- [x] current exact ReportDraft closure와 redaction 증거만 사용해 `<data-dir>/reports/<analysis_id>/<finding_id>.md`로 원자적 Markdown 출력하고, `reports`, `report show`, `report export --format markdown` CLI를 제공한다.
 - [ ] R5·R3·R4·R6·R8 검토 뒤 PR을 병합한다.
 
 #### T12 production follow-up — Issue #166
@@ -500,7 +501,7 @@ worker pool을 선행 조건으로 요구하지 않는다.
 stale·redaction·경로 검사를 통과한 결과만 저장·조회한다. #166은 T14가
 production `reports`와 `report export`를 조합하기 전에 반드시 병합한다.
 
-- [ ] `reports`, `report show <finding-id>`, `report export <finding-id> --format markdown` public service와 CLI 경계를 제공한다.
+- [ ] `reports <analysis-id>`, `report show <finding-id>`, `report export <finding-id> --format markdown` public service와 CLI 경계를 제공한다.
 - [ ] `<data-dir>/reports/<analysis_id>/<finding_id>.md` 밖으로 나가는 경로, stale upstream, redaction 미승인과 실제 실행에 묶이지 않은 PoC를 차단한다.
 - [ ] T14 production composition이나 worker pool을 직접 구현하지 않고, T14가 나중에 등록할 public reporting service만 생산한다.
 
@@ -639,6 +640,7 @@ T16은 하나의 Issue 안에서 다음 두 merge tranche로 나눈다. T16-A는
 - [ ] 최소 한 실제 Provider의 인증·호출 성공, 실제 정적 분석과 안전한 Docker fixture 경로를 검증한다. credential 부재를 `BLOCKED`로 허용하는 것은 지정된 필수 경로 외의 선택·추가 Provider뿐이다.
 - [ ] secret scan, architecture validator, Ruff, mypy와 전체 pytest를 실행한다.
 - [ ] README와 installation/usage/provider-setup/troubleshooting 문서에 설치 → 설정 → 인증 → 실제 URL/local path + commit 분석 → 상태·실패 조회 → 결과 → Markdown ReportDraft → 복구 흐름을 기록한다.
+- [ ] 설치한 CLI에서 Markdown 보고서의 목록·show·export 정상 흐름과 stale/redaction 차단 실패 흐름을 실행하고 release artifact에 증거를 남긴다. HTML·PDF는 출시 차단 조건이 아니다.
 - [ ] 모든 open Critical·Important가 0인지 최종 독립 검토한다.
 - [ ] 최종 PR head SHA와 검토 SHA가 같을 때만 병합한다.
 

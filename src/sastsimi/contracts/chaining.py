@@ -208,6 +208,14 @@ class ChainingResult(DomainRecord):
                 raise ValueError("LINEAGE_EXCLUSION_MISMATCH")
         if any(p.origin != "CHAINING" for p in self.chained_hypothesis_proposals):
             raise ValueError("CHAINING_PROPOSAL_ORIGIN")
+        if Counter(
+            proposal.source_primitive_match_id
+            for proposal in self.chained_hypothesis_proposals
+        ) != Counter(
+            candidate.primitive_match_id
+            for candidate in self.primitive_match_candidates
+        ):
+            raise ValueError("CHAINING_PROPOSAL_CLOSURE")
         return self
 
 

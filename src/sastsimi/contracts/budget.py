@@ -24,6 +24,7 @@ class ProfileStatus(StrEnum):
 
 class OperationKind(StrEnum):
     WORKSPACE_PREP = "WORKSPACE_PREP"
+    REPOSITORY_PROFILE = "REPOSITORY_PROFILE"
     STATIC_TOOL = "STATIC_TOOL"
     STATIC_NORMALIZE = "STATIC_NORMALIZE"
     POLICY_COLLECT = "POLICY_COLLECT"
@@ -65,6 +66,10 @@ WORK_OPERATIONS = MappingProxyType(
         WorkType.WORKSPACE_PREP: (
             OperationKind.WORKSPACE_PREP,
             BudgetAgentRole.REPOSITORY_LOADER,
+        ),
+        WorkType.REPOSITORY_PROFILE: (
+            OperationKind.REPOSITORY_PROFILE,
+            BudgetAgentRole.STATIC_ANALYSIS,
         ),
         WorkType.STATIC_TOOL: (
             OperationKind.STATIC_TOOL,

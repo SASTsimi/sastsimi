@@ -31,7 +31,13 @@ from sastsimi.contracts.ids import (
 from sastsimi.contracts.llm import LLMInvocationRequest, LLMInvocationResult
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
-from sastsimi.contracts.static import CodeLocation
+from sastsimi.contracts.static import (
+    CodeFact,
+    CodeLocation,
+    CodeSymbol,
+    StaticFactBundle,
+    ToolSource,
+)
 from sastsimi.contracts.verification import (
     AppliedPlaybookQuestion,
     ConEvidenceResult,
@@ -191,6 +197,15 @@ class _MetaFactory:
         return _meta(record_type, suffix=f"runtime-{self.index}", attempt=attempt_id)
 
 
+class _DraftIdFactory:
+    def __init__(self) -> None:
+        self.index = 0
+
+    def __call__(self) -> str:
+        self.index += 1
+        return f"runtime-draft-{self.index}"
+
+
 def _evidence(
     role: Literal["PRO", "CON"], evidence_ref: StoredDataRef
 ) -> ProEvidenceResult | ConEvidenceResult:
@@ -240,6 +255,21 @@ class _Fixture:
         self.records = _MemoryRecords()
         self.llm = _QueuedLLM()
         self.evidence_ref = self.artifacts.add_json({"evidence": "code path"})
+        self.entity = CodeSymbol(
+            symbol_id="route-handler",
+            symbol_kind="CALLABLE",
+            native_kind="function",
+            name="handle_request",
+            location=CodeLocation(
+                workspace_id=WORKSPACE_ID,
+                commit_id=COMMIT_ID,
+                file_path="src/app.py",
+                start_line=1,
+                end_line=2,
+                start_column=None,
+                end_column=None,
+            ),
+        )
         proposal = HypothesisProposal.model_construct(
             meta=_meta("hypothesis_proposal", suffix="proposal", attempt=None),
             proposal_id=ProposalId("proposal-1"),
@@ -248,7 +278,7 @@ class _Fixture:
             statement="Input may reach SQL execution",
             origin="INITIAL",
             vulnerability_type_candidates=("CWE-89",),
-            target_entities=(),
+            target_entities=(self.entity,),
             target_locations=(
                 CodeLocation(
                     workspace_id=WORKSPACE_ID,
@@ -287,7 +317,7 @@ class _Fixture:
                 "proposal_ref": self.proposal_ref,
                 "statement": "Input may reach SQL execution",
                 "origin": "INITIAL",
-                "target_entities": (),
+                "target_entities": (self.entity,),
                 "target_locations": proposal.target_locations,
                 "suspected_path": (),
                 "falsification_questions": proposal.falsification_questions,
@@ -363,6 +393,7 @@ class _Fixture:
             records=self.records,
             artifacts=self.artifacts,
             metadata_factory=_MetaFactory(),
+            draft_id_factory=_DraftIdFactory(),
             work_resolver=lambda work_id: self.work if work_id == WORK_ID else None,
             evidence_session_resolver=lambda call_id, _analysis_id: (
                 (f"session-{call_id}", "NEW")
@@ -461,7 +492,16 @@ class _Fixture:
         *,
         outcome: str = "DISPROVED",
         unresolved: tuple[str, ...] = (),
+        required: tuple[dict[str, object], ...] = (),
+        provided: tuple[dict[str, object], ...] | None = None,
     ) -> dict[str, object]:
+        actual_provided = provided
+        if actual_provided is None:
+            actual_provided = (
+                (self.primitive_content("Validated capability"),)
+                if verdict == "TRUE"
+                else ()
+            )
         return {
             "verdict": verdict,
             "verdict_rationale": "The exact named checks determine the result",
@@ -482,8 +522,65 @@ class _Fixture:
                     "summary": "Reachability checked",
                 }
             ],
+            "required_primitive_candidates": list(required),
+            "provided_primitive_candidates": list(actual_provided),
             "unresolved_conditions": list(unresolved),
         }
+
+    def primitive_content(
+        self,
+        description: str,
+        *,
+        entity: CodeSymbol | None = None,
+        evidence_ref: StoredDataRef | None = None,
+        privilege_level: str | None = None,
+    ) -> dict[str, object]:
+        return {
+            "entity_refs": [(entity or self.entity).model_dump(mode="json")],
+            "privilege_level": privilege_level,
+            "evidence_refs": [
+                (evidence_ref or self.evidence_ref).model_dump(mode="json")
+            ],
+            "description": description,
+        }
+
+    def install_permission_bundle(self) -> StoredDataRef:
+        bundle = StaticFactBundle.model_construct(
+            meta=_meta("static_fact_bundle", suffix="permission", attempt=None),
+            entities=(self.entity,),
+            locations=(self.entity.location,),
+            source_candidates=(),
+            sink_candidates=(),
+            sanitizer_candidates=(),
+            validator_candidates=(),
+            auth_and_permission_checks=(
+                CodeFact(
+                    fact_id="permission-handle-request",
+                    fact_kind="PERMISSION_CHECK",
+                    symbol_id=self.entity.symbol_id,
+                    location=self.entity.location,
+                    producer=ToolSource(
+                        attempt_id=AttemptId("static-attempt-1"),
+                        tool_name="AST",
+                        tool_version="1.0",
+                        rule_id=None,
+                        raw_result_ref=self.evidence_ref,
+                    ),
+                ),
+            ),
+            other_facts=(),
+            call_edges=(),
+            data_flow_candidates=(),
+            route_bindings=(),
+            tool_runs=(),
+            gaps=(),
+            errors=(),
+        )
+        bundle_ref = self.records.add(bundle)
+        self.work = self.work.model_copy(
+            update={"input_refs": (*self.work.input_refs, bundle_ref)}
+        )
+        return bundle_ref
 
     def install_dynamic_success(self) -> dict[str, StoredDataRef]:
         """Re-scope the canonical executed-PoC chain to this Verification fixture."""
@@ -806,6 +903,264 @@ async def test_hold_without_unresolved_condition_is_rejected() -> None:
 
 
 @pytest.mark.asyncio
+async def test_hold_preserves_required_primitive_content_with_trusted_id() -> None:
+    fixture = _Fixture()
+    fixture.queue(
+        fixture.assessment_payload("HOLD", unresolved=("Need authenticated caller",)),
+        task_kind="ASSESS_INITIAL",
+        context_refs=fixture.assessment_context(),
+    )
+    assessment = await fixture.service.assess_initial(
+        generation=fixture.generation,
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+    assessment_ref = reference(assessment)
+    assert isinstance(assessment_ref, StoredDataRef)
+    fixture.queue(
+        fixture.final_payload(
+            "HOLD",
+            outcome="INCONCLUSIVE",
+            unresolved=("Need authenticated caller",),
+            required=(fixture.primitive_content("Authenticated caller required"),),
+        ),
+        task_kind="FINAL_VERDICT",
+        context_refs=(*fixture.assessment_context(), assessment_ref),
+    )
+
+    result = await fixture.service.finalize_without_dynamic(
+        generation=fixture.generation,
+        assessment_ref=assessment_ref,
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+
+    assert result.required_primitive_candidates[0].description == (
+        "Authenticated caller required"
+    )
+    assert result.required_primitive_candidates[0].draft_id == "runtime-draft-1"
+    assert result.provided_primitive_candidates == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("privilege_level", "accepted"),
+    [("handle_request", True), ("fabricated-admin", False)],
+)
+async def test_primitive_privilege_requires_exact_permission_fact(
+    privilege_level: str, accepted: bool
+) -> None:
+    fixture = _Fixture()
+    permission_ref = fixture.install_permission_bundle()
+    fixture.queue(
+        fixture.assessment_payload("HOLD", unresolved=("Need capability",)),
+        task_kind="ASSESS_INITIAL",
+        context_refs=(*fixture.assessment_context(), permission_ref),
+    )
+    assessment = await fixture.service.assess_initial(
+        generation=fixture.generation,
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+    assessment_ref = reference(assessment)
+    assert isinstance(assessment_ref, StoredDataRef)
+    fixture.queue(
+        fixture.final_payload(
+            "HOLD",
+            outcome="INCONCLUSIVE",
+            unresolved=("Need capability",),
+            required=(
+                fixture.primitive_content(
+                    "Permission-bound capability",
+                    evidence_ref=permission_ref,
+                    privilege_level=privilege_level,
+                ),
+            ),
+        ),
+        task_kind="FINAL_VERDICT",
+        context_refs=(*fixture.assessment_context(), assessment_ref, permission_ref),
+    )
+
+    if not accepted:
+        with pytest.raises(
+            ValueError, match="VERIFICATION_PRIMITIVE_PRIVILEGE_CLOSURE_MISMATCH"
+        ):
+            await fixture.service.finalize_without_dynamic(
+                generation=fixture.generation,
+                assessment_ref=assessment_ref,
+                pro_ref=fixture.pro_ref,
+                con_ref=fixture.con_ref,
+                call=fixture.call,
+            )
+        return
+
+    result = await fixture.service.finalize_without_dynamic(
+        generation=fixture.generation,
+        assessment_ref=assessment_ref,
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+
+    assert result.required_primitive_candidates[0].privilege_level == privilege_level
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("forgery", "message"),
+    [
+        ("entity", "VERIFICATION_PRIMITIVE_ENTITY_CLOSURE_MISMATCH"),
+        ("entity_scope", "VERIFICATION_PRIMITIVE_ENTITY_CLOSURE_MISMATCH"),
+        ("evidence", "VERIFICATION_EVIDENCE_CLOSURE_MISMATCH"),
+        ("evidence_scope", "VERIFICATION_EVIDENCE_CLOSURE_MISMATCH"),
+        ("draft_id", "OUTPUT_RUNTIME_AUTHORITY_DENIED"),
+    ],
+)
+async def test_primitive_content_forgery_is_rejected(
+    forgery: str, message: str
+) -> None:
+    fixture = _Fixture()
+    fixture.queue(
+        fixture.assessment_payload("HOLD", unresolved=("Need capability",)),
+        task_kind="ASSESS_INITIAL",
+        context_refs=fixture.assessment_context(),
+    )
+    assessment = await fixture.service.assess_initial(
+        generation=fixture.generation,
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+    assessment_ref = reference(assessment)
+    assert isinstance(assessment_ref, StoredDataRef)
+    primitive = fixture.primitive_content("Capability required")
+    if forgery.startswith("entity"):
+        entity_location = fixture.entity.location
+        if forgery == "entity_scope":
+            entity_location = entity_location.model_copy(
+                update={"workspace_id": WorkspaceId("foreign-workspace")}
+            )
+        primitive["entity_refs"] = [
+            CodeSymbol(
+                symbol_id="fabricated-handler",
+                symbol_kind="CALLABLE",
+                native_kind="function",
+                name="fabricated_handler",
+                location=entity_location,
+            ).model_dump(mode="json")
+        ]
+    elif forgery.startswith("evidence"):
+        evidence_ref = fixture.artifacts.add_json({"forged": "evidence"})
+        if forgery == "evidence_scope":
+            evidence_ref = evidence_ref.model_copy(
+                update={"workspace_id": WorkspaceId("foreign-workspace")}
+            )
+        primitive["evidence_refs"] = [evidence_ref.model_dump(mode="json")]
+    else:
+        primitive["draft_id"] = "caller-controlled-id"
+    fixture.queue(
+        fixture.final_payload(
+            "HOLD",
+            outcome="INCONCLUSIVE",
+            unresolved=("Need capability",),
+            required=(primitive,),
+        ),
+        task_kind="FINAL_VERDICT",
+        context_refs=(*fixture.assessment_context(), assessment_ref),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        await fixture.service.finalize_without_dynamic(
+            generation=fixture.generation,
+            assessment_ref=assessment_ref,
+            pro_ref=fixture.pro_ref,
+            con_ref=fixture.con_ref,
+            call=fixture.call,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("verdict", "candidate_field", "message"),
+    [
+        ("FALSE", "required", "FALSE_PRIMITIVE_FORBIDDEN"),
+        ("HOLD", "provided", "HOLD_PROVIDED_PRIMITIVE_FORBIDDEN"),
+        ("TRUE", "none", "TRUE_PROVIDED_PRIMITIVE_REQUIRED"),
+    ],
+)
+async def test_primitive_candidates_follow_final_verdict_shape(
+    verdict: str, candidate_field: str, message: str
+) -> None:
+    fixture = _Fixture()
+    dynamic_verdict = verdict == "TRUE"
+    unresolved = ("Need capability",) if verdict == "HOLD" else ()
+    fixture.queue(
+        fixture.assessment_payload(
+            verdict,
+            next_step=(
+                "POC_CONFIRMATION" if dynamic_verdict else "FINALIZE_WITHOUT_DYNAMIC"
+            ),
+            unresolved=unresolved,
+        ),
+        task_kind="ASSESS_INITIAL",
+        context_refs=fixture.assessment_context(),
+    )
+    assessment = await fixture.service.assess_initial(
+        generation=fixture.generation,
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+    assessment_ref = reference(assessment)
+    assert isinstance(assessment_ref, StoredDataRef)
+    candidate = fixture.primitive_content("Candidate")
+    required = (candidate,) if candidate_field == "required" else ()
+    provided = (candidate,) if candidate_field == "provided" else ()
+    dynamic = fixture.install_dynamic_success() if dynamic_verdict else None
+    fixture.queue(
+        fixture.final_payload(
+            verdict,
+            outcome={"FALSE": "DISPROVED", "HOLD": "INCONCLUSIVE"}.get(
+                verdict, "NOT_DISPROVED"
+            ),
+            unresolved=unresolved,
+            required=required,
+            provided=provided,
+        ),
+        task_kind="FINAL_VERDICT",
+        context_refs=(
+            fixture.dynamic_context(assessment_ref, dynamic)
+            if dynamic is not None
+            else (*fixture.assessment_context(), assessment_ref)
+        ),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        if dynamic is None:
+            await fixture.service.finalize_without_dynamic(
+                generation=fixture.generation,
+                assessment_ref=assessment_ref,
+                pro_ref=fixture.pro_ref,
+                con_ref=fixture.con_ref,
+                call=fixture.call,
+            )
+        else:
+            await fixture.service.finalize_with_dynamic(
+                generation=fixture.generation,
+                assessment_ref=assessment_ref,
+                dynamic_request_ref=dynamic["request"],
+                dynamic_result_ref=dynamic["result"],
+                poc_ref=dynamic["poc"],
+                pro_ref=fixture.pro_ref,
+                con_ref=fixture.con_ref,
+                call=fixture.call,
+            )
+
+
+@pytest.mark.asyncio
 async def test_initial_hold_without_unresolved_condition_is_rejected() -> None:
     fixture = _Fixture()
     fixture.queue(
@@ -930,7 +1285,12 @@ async def test_dynamic_supported_produces_true_with_exact_validated_poc() -> Non
     assert isinstance(assessment_ref, StoredDataRef)
     dynamic = fixture.install_dynamic_success()
     fixture.queue(
-        fixture.final_payload("TRUE", outcome="NOT_DISPROVED"),
+        fixture.final_payload(
+            "TRUE",
+            outcome="NOT_DISPROVED",
+            required=(fixture.primitive_content("Attacker-controlled input"),),
+            provided=(fixture.primitive_content("Validated sink execution"),),
+        ),
         task_kind="FINAL_VERDICT",
         context_refs=fixture.dynamic_context(assessment_ref, dynamic),
     )
@@ -948,6 +1308,19 @@ async def test_dynamic_supported_produces_true_with_exact_validated_poc() -> Non
 
     assert outcome.record.verdict == "TRUE"
     assert outcome.record.poc_ref == dynamic["poc"]
+    assert [
+        item.description for item in outcome.record.required_primitive_candidates
+    ] == ["Attacker-controlled input"]
+    assert [
+        item.description for item in outcome.record.provided_primitive_candidates
+    ] == ["Validated sink execution"]
+    assert [
+        item.draft_id
+        for item in (
+            *outcome.record.required_primitive_candidates,
+            *outcome.record.provided_primitive_candidates,
+        )
+    ] == ["runtime-draft-1", "runtime-draft-2"]
     assert outcome.invocation.request.llm_call_id == "llm-FINAL_VERDICT"
 
 

@@ -183,6 +183,9 @@ from .static import CodeSymbol as CodeSymbol
 from .static import CodeWorkspace as CodeWorkspace
 from .static import ContextRetrievalLimits as ContextRetrievalLimits
 from .static import DataGap as DataGap
+from .static import RepositoryExecutionSelection as RepositoryExecutionSelection
+from .static import RepositoryProfile as RepositoryProfile
+from .static import RepositorySelectedTool as RepositorySelectedTool
 from .static import Restriction as Restriction
 from .static import RuleExecutionItem as RuleExecutionItem
 from .static import RuleExecutionRecord as RuleExecutionRecord

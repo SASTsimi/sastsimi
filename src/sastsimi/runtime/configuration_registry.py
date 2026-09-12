@@ -121,6 +121,18 @@ class ConfigurationRegistry:
     ) -> StaticToolProfile:
         return self.registry.resolve_static_tool_profile(profile_ref)
 
+    def resolve_static_tool_profile_ref(
+        self, profile_ref: StoredDataRef | HostConfigurationRef
+    ) -> StaticToolProfile:
+        """Resolve fixture/evaluation or exact current production profiles."""
+
+        if isinstance(profile_ref, HostConfigurationRef):
+            profile = self.registry.resolve_pinned_active_profile(profile_ref)
+            if not isinstance(profile, StaticToolProfile):
+                raise ValueError("STATIC_TOOL_PROFILE_REFERENCE_MISMATCH")
+            return profile
+        return self.registry.resolve_static_tool_profile(profile_ref)
+
     def register_work_budget(self, record: WorkBudgetProfile) -> StoredDataRef:
         return self.registry.register_work_budget(record)
 

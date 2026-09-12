@@ -21,10 +21,18 @@ from sastsimi.contracts.ids import (
 )
 from sastsimi.contracts.policy import RunPolicyState
 from sastsimi.contracts.records import RecordMeta, RecordMetadata
-from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef
+from sastsimi.contracts.refs import (
+    BudgetScopeRef,
+    HostConfigurationRef,
+    RecordRef,
+    StoredDataRef,
+)
 from sastsimi.contracts.work import (
+    CommitState,
+    CommitTargetStatus,
     StateTransition,
     TransitionCommit,
+    TransitionTargetStatus,
     WorkAttempt,
     WorkExecutionState,
 )
@@ -200,7 +208,11 @@ class WorkflowRunner:
         reservation = BudgetReservation.model_validate_json(
             canonical_bytes(
                 dict(
-                    meta=self.metadata(work.meta, "budget_reservation"),
+                    meta=self.metadata(
+                        work.meta,
+                        "budget_reservation",
+                        attempt_id=work.active_attempt_id,
+                    ),
                     reservation_id=self.ids.new(ReservationId),
                     budget_binding_ref=scope,
                     action_ref=records.stage_record(action),
@@ -495,6 +507,10 @@ class WorkflowRunner:
         )
         records = self.runtime.unit_of_work.records
         for input_ref in inputs:
+            if isinstance(input_ref, HostConfigurationRef):
+                # Host configuration is deliberately reusable across analyses.
+                # Authorization revalidates its exact current revision before use.
+                continue
             try:
                 input_record = records.get_exact(input_ref)
             except (LookupError, ValueError):
@@ -739,3 +755,83 @@ class WorkflowRunner:
             TransitionCommitRequest(transition, commit, outputs)
         )
         return self.runtime.work.get(str(work.work_id))
+
+    def block(
+        self,
+        work: WorkExecutionState,
+        identity: BudgetScopeRef,
+        cause: str,
+        *,
+        role: str = "ORCHESTRATION",
+        error_ids: tuple[str, ...] = (),
+        gap_ids: tuple[str, ...] = (),
+    ) -> WorkExecutionState:
+        """Atomically end the current attempt without publishing a result."""
+        current = self.runtime.work.get(str(work.work_id))
+        if current != work or current.status != "RUNNING":
+            raise ValueError("WORK_CONTEXT_NOT_CURRENT")
+        action = self.action(
+            current,
+            identity,
+            role,
+            "CHANGE_WORK_STATE",
+            input_refs=current.input_refs,
+            reason=cause,
+        )
+        decision = self.authorize(current, action)
+        transition = StateTransition.model_validate_json(
+            canonical_bytes(
+                dict(
+                    meta=self.metadata(
+                        current.meta,
+                        "state_transition",
+                        attempt_id=current.active_attempt_id,
+                    ),
+                    transition_id=self.ids.new(TransitionId),
+                    work_id=current.work_id,
+                    action_decision_ref=decision,
+                    from_status=current.status,
+                    to_status=TransitionTargetStatus.BLOCKED,
+                    expected_state_version=current.state_version,
+                    new_state_version=current.state_version + 1,
+                    attempt_id=current.active_attempt_id,
+                    cause=cause,
+                    output_refs=(),
+                    gap_ids=gap_ids,
+                    error_ids=error_ids,
+                    dedupe_key=content_hash(
+                        [current.work_id, current.state_version, "BLOCKED", cause]
+                    ),
+                    created_at=self.clock.now(),
+                )
+            )
+        )
+        commit = TransitionCommit.model_validate_json(
+            canonical_bytes(
+                dict(
+                    meta=self.metadata(
+                        current.meta,
+                        "transition_commit",
+                        attempt_id=current.active_attempt_id,
+                    ),
+                    transition_commit_id=self.ids.new(TransitionCommitId),
+                    work_id=current.work_id,
+                    transition_ref=self.runtime.unit_of_work.records.stage_record(
+                        transition
+                    ),
+                    expected_state_version=current.state_version,
+                    target_state_version=current.state_version + 1,
+                    attempt_id=current.active_attempt_id,
+                    target_status=CommitTargetStatus.BLOCKED,
+                    output_refs=(),
+                    gap_ids=gap_ids,
+                    error_ids=error_ids,
+                    state=CommitState.PREPARED,
+                    prepared_at=self.clock.now(),
+                    committed_at=None,
+                    abort_reason=None,
+                )
+            )
+        )
+        self.runtime.transitions.commit(TransitionCommitRequest(transition, commit, ()))
+        return self.runtime.work.get(str(current.work_id))

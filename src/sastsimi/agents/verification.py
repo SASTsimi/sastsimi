@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import BinaryIO, Literal, Protocol, cast
 
@@ -32,11 +32,13 @@ from sastsimi.contracts.hypothesis import HypothesisProposal, VulnerabilityHypot
 from sastsimi.contracts.ids import AttemptId, WorkId
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
+from sastsimi.contracts.static import CodeContextResponse, CodeSymbol, StaticFactBundle
 from sastsimi.contracts.verification import (
     ConEvidenceResult,
     EvidenceAgentResult,
     FalsificationResult,
     PlaybookApplication,
+    PrimitiveDraft,
     ProEvidenceResult,
     ValidationCheckResult,
     VerificationInitialAssessment,
@@ -103,6 +105,9 @@ class MetadataFactory(Protocol):
     ) -> RecordMeta: ...
 
 
+type DraftIdFactory = Callable[[], str]
+
+
 class LLMCallInvoker(Protocol):
     async def invoke(
         self,
@@ -148,11 +153,22 @@ class _ValidationContent(ContractModel):
     summary: NonEmptyStr
 
 
+class _PrimitiveDraftContent(ContractModel):
+    """Content-only proposal; trusted finalization supplies ``draft_id``."""
+
+    entity_refs: tuple[CodeSymbol, ...]
+    privilege_level: NonEmptyStr | None
+    evidence_refs: tuple[StoredDataRef, ...]
+    description: NonEmptyStr
+
+
 class _FinalContent(ContractModel):
     verdict: Literal["TRUE", "FALSE", "HOLD"]
     verdict_rationale: NonEmptyStr
     falsification_results: tuple[_FalsificationContent, ...]
     validation_results: tuple[_ValidationContent, ...]
+    required_primitive_candidates: tuple[_PrimitiveDraftContent, ...]
+    provided_primitive_candidates: tuple[_PrimitiveDraftContent, ...]
     unresolved_conditions: tuple[NonEmptyStr, ...]
 
 
@@ -166,6 +182,7 @@ class VerificationAgent:
         records: VerificationRecordStore,
         artifacts: VerificationArtifactReader,
         metadata_factory: MetadataFactory,
+        draft_id_factory: DraftIdFactory,
         work_resolver: WorkResolver,
         evidence_session_resolver: EvidenceSessionResolver,
     ) -> None:
@@ -173,6 +190,7 @@ class VerificationAgent:
         self._records = records
         self._artifacts = artifacts
         self._metadata = metadata_factory
+        self._draft_id = draft_id_factory
         self._work = work_resolver
         self._evidence_session = evidence_session_resolver
 
@@ -298,6 +316,7 @@ class VerificationAgent:
                 assessment_ref,
             ),
         )
+        self._reject_primitive_runtime_authority(payload)
         content = _FinalContent.model_validate_json(canonical_bytes(payload))
         if content.verdict == "TRUE":
             raise ValueError("T11_OUTPUT_REQUIRED")
@@ -309,6 +328,16 @@ class VerificationAgent:
             self._require_allowed_evidence(
                 validation.evidence_refs, generation, pro, con
             )
+        required, provided = self._finalize_primitive_drafts(
+            content,
+            work=work,
+            hypothesis=hypothesis,
+            proposal=proposal,
+            generation=generation,
+            pro=pro,
+            con=con,
+            context_refs=invocation.request.context_refs,
+        )
         result = VerificationResult.model_validate(
             {
                 "meta": self._trusted_meta(work, "verification_result"),
@@ -338,8 +367,8 @@ class VerificationAgent:
                 "verdict_rationale": content.verdict_rationale,
                 "restrictions": proposal.restrictions,
                 "bypass_candidates": (),
-                "required_primitive_candidates": (),
-                "provided_primitive_candidates": (),
+                "required_primitive_candidates": required,
+                "provided_primitive_candidates": provided,
                 "impact_escalation_candidates": (),
                 "material_child_proposals": (),
                 "unresolved_conditions": content.unresolved_conditions,
@@ -470,6 +499,7 @@ class VerificationAgent:
             task_kind="FINAL_VERDICT",
             required_context=required_context,
         )
+        self._reject_primitive_runtime_authority(payload)
         content = _FinalContent.model_validate_json(canonical_bytes(payload))
         expected_verdict = {
             "SUPPORTED": "TRUE",
@@ -510,6 +540,24 @@ class VerificationAgent:
             if not set(dynamic.result.disproof_evidence_refs) <= named_disproof_refs:
                 raise ValueError("DYNAMIC_DISPROOF_NOT_NAMED")
 
+        dynamic_evidence = (
+            *dynamic.result.observation_refs,
+            *dynamic.result.hypothesis_evidence_refs,
+            *dynamic.result.disproof_evidence_refs,
+            *(dynamic.poc.evidence_refs if dynamic.poc is not None else ()),
+        )
+        required, provided = self._finalize_primitive_drafts(
+            content,
+            work=work,
+            hypothesis=hypothesis,
+            proposal=proposal,
+            generation=generation,
+            pro=pro,
+            con=con,
+            context_refs=invocation.request.context_refs,
+            additional_evidence=dynamic_evidence,
+        )
+
         result = VerificationResult.model_validate(
             {
                 "meta": self._trusted_meta(work, "verification_result"),
@@ -539,8 +587,8 @@ class VerificationAgent:
                 "verdict_rationale": content.verdict_rationale,
                 "restrictions": proposal.restrictions,
                 "bypass_candidates": (),
-                "required_primitive_candidates": (),
-                "provided_primitive_candidates": (),
+                "required_primitive_candidates": required,
+                "provided_primitive_candidates": provided,
                 "impact_escalation_candidates": (),
                 "material_child_proposals": (),
                 "unresolved_conditions": content.unresolved_conditions,
@@ -714,6 +762,185 @@ class VerificationAgent:
                 ):
                     pending.extend(cast(_EvidenceRefsCarrier, value).evidence_refs)
         return resolved
+
+    @staticmethod
+    def _reject_primitive_runtime_authority(payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        for field in (
+            "required_primitive_candidates",
+            "provided_primitive_candidates",
+        ):
+            values = payload.get(field)
+            if isinstance(values, list) and any(
+                isinstance(item, dict) and ({"draft_id", "meta"} & item.keys())
+                for item in values
+            ):
+                raise ValueError("OUTPUT_RUNTIME_AUTHORITY_DENIED")
+
+    def _finalize_primitive_drafts(
+        self,
+        content: _FinalContent,
+        *,
+        work: WorkExecutionState,
+        hypothesis: VulnerabilityHypothesis,
+        proposal: HypothesisProposal,
+        generation: VerificationGenerationInputs,
+        pro: ProEvidenceResult,
+        con: ConEvidenceResult,
+        context_refs: tuple[StoredDataRef, ...],
+        additional_evidence: tuple[StoredDataRef, ...] = (),
+    ) -> tuple[tuple[PrimitiveDraft, ...], tuple[PrimitiveDraft, ...]]:
+        if not isinstance(work.meta, RecordMeta):
+            raise ValueError("ATTEMPT_NOT_ACTIVE")
+        if content.verdict == "FALSE" and (
+            content.required_primitive_candidates
+            or content.provided_primitive_candidates
+        ):
+            raise ValueError("FALSE_PRIMITIVE_FORBIDDEN")
+        if content.verdict == "HOLD" and content.provided_primitive_candidates:
+            raise ValueError("HOLD_PROVIDED_PRIMITIVE_FORBIDDEN")
+        if content.verdict == "TRUE" and not content.provided_primitive_candidates:
+            raise ValueError("TRUE_PROVIDED_PRIMITIVE_REQUIRED")
+
+        evidence_roots = (
+            generation.evidence_ref,
+            *(
+                ref
+                for restriction in proposal.restrictions
+                for ref in restriction.evidence_refs
+            ),
+            *(
+                ref
+                for claim in (*pro.evidence, *con.evidence)
+                for ref in claim.evidence_refs
+            ),
+            *(
+                ref
+                for ref in context_refs
+                if ref.data_kind in {"static_fact_bundle", "code_context_response"}
+            ),
+            *additional_evidence,
+        )
+        allowed_evidence, evidence_records = self._evidence_closure(
+            evidence_roots, work
+        )
+        entity_records = (
+            hypothesis,
+            proposal,
+            pro,
+            con,
+            *evidence_records,
+        )
+        allowed_entities = {
+            canonical_bytes(item)
+            for record in entity_records
+            for item in walk(record)
+            if isinstance(item, CodeSymbol)
+        }
+
+        proposed = (
+            *content.required_primitive_candidates,
+            *content.provided_primitive_candidates,
+        )
+        for draft in proposed:
+            if any(
+                (entity.location.workspace_id, entity.location.commit_id)
+                != (work.meta.workspace_id, work.meta.commit_id)
+                or canonical_bytes(entity) not in allowed_entities
+                for entity in draft.entity_refs
+            ):
+                raise ValueError("VERIFICATION_PRIMITIVE_ENTITY_CLOSURE_MISMATCH")
+            if not draft.evidence_refs or any(
+                ref not in allowed_evidence for ref in draft.evidence_refs
+            ):
+                raise ValueError("VERIFICATION_EVIDENCE_CLOSURE_MISMATCH")
+            if not self._privilege_is_grounded(draft, evidence_records):
+                raise ValueError("VERIFICATION_PRIMITIVE_PRIVILEGE_CLOSURE_MISMATCH")
+
+        drafts = tuple(
+            PrimitiveDraft(
+                draft_id=self._draft_id(),
+                entity_refs=draft.entity_refs,
+                privilege_level=draft.privilege_level,
+                evidence_refs=draft.evidence_refs,
+                description=draft.description,
+            )
+            for draft in proposed
+        )
+        required_count = len(content.required_primitive_candidates)
+        return drafts[:required_count], drafts[required_count:]
+
+    @staticmethod
+    def _privilege_is_grounded(
+        draft: _PrimitiveDraftContent,
+        evidence_records: tuple[DomainRecord, ...],
+    ) -> bool:
+        if draft.privilege_level is None:
+            return True
+        for record in evidence_records:
+            if not isinstance(record, StaticFactBundle):
+                continue
+            bundle_ref = reference(record)
+            if (
+                not isinstance(bundle_ref, StoredDataRef)
+                or bundle_ref not in draft.evidence_refs
+            ):
+                continue
+            for entity in draft.entity_refs:
+                if (
+                    entity.name != draft.privilege_level
+                    or entity not in record.entities
+                ):
+                    continue
+                if any(
+                    fact.fact_kind in {"AUTH_CHECK", "PERMISSION_CHECK"}
+                    and fact.symbol_id == entity.symbol_id
+                    and fact.location == entity.location
+                    for fact in record.auth_and_permission_checks
+                ):
+                    return True
+        return False
+
+    def _evidence_closure(
+        self,
+        roots: tuple[StoredDataRef, ...],
+        work: WorkExecutionState,
+    ) -> tuple[set[StoredDataRef], tuple[DomainRecord, ...]]:
+        if not isinstance(work.meta, RecordMeta):
+            raise ValueError("ATTEMPT_NOT_ACTIVE")
+        allowed: set[StoredDataRef] = set()
+        resolved: list[DomainRecord] = []
+        pending = list(roots)
+        while pending:
+            ref = pending.pop()
+            if ref in allowed:
+                continue
+            if (ref.workspace_id, ref.commit_id) != (
+                work.meta.workspace_id,
+                work.meta.commit_id,
+            ):
+                raise ValueError("VERIFICATION_EVIDENCE_CLOSURE_MISMATCH")
+            allowed.add(ref)
+            if ref.record_id is None:
+                continue
+            record = self._exact(ref, DomainRecord)
+            if (
+                record.meta.analysis_id != work.meta.analysis_id
+                or record.meta.workspace_id != work.meta.workspace_id
+                or record.meta.commit_id != work.meta.commit_id
+            ):
+                raise ValueError("VERIFICATION_EVIDENCE_CLOSURE_MISMATCH")
+            resolved.append(record)
+            for value in walk(record):
+                if (
+                    isinstance(value, ContractModel)
+                    and "evidence_refs" in type(value).model_fields
+                ):
+                    pending.extend(cast(_EvidenceRefsCarrier, value).evidence_refs)
+                if isinstance(value, CodeContextResponse):
+                    pending.extend(value.code_fragment_refs)
+        return allowed, tuple(resolved)
 
     @staticmethod
     def _unique_refs(refs: Iterable[StoredDataRef]) -> tuple[StoredDataRef, ...]:
