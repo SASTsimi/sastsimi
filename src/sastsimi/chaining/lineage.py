@@ -28,6 +28,14 @@ class Lineage:
     depth: int
 
 
+@dataclass(frozen=True)
+class SuccessfulMatchPair:
+    """The two Primitive records actually used by one successful match."""
+
+    upstream_ref: StoredDataRef
+    downstream_ref: StoredDataRef
+
+
 class LineageResolver(Protocol):
     def __call__(self, primitive_ref: StoredDataRef) -> LineageNode: ...
 
@@ -102,7 +110,7 @@ def expected_lineage_exclusions(
     *,
     considered_refs: tuple[StoredDataRef, ...],
     trigger_ref: StoredDataRef,
-    successful_candidate_refs: tuple[StoredDataRef, ...],
+    successful_match_pairs: tuple[SuccessfulMatchPair, ...],
     resolve: LineageResolver,
     analysis_id: str,
 ) -> tuple[LineageExclusion, ...]:
@@ -114,39 +122,58 @@ def expected_lineage_exclusions(
         or canonical_bytes(trigger_ref) not in considered
     ):
         raise ValueError("CHAINING_LINEAGE_INPUT_MISMATCH")
-    successful_keys = {canonical_bytes(ref) for ref in successful_candidate_refs}
-    if (
-        len(successful_keys) != len(successful_candidate_refs)
-        or not (successful_keys <= set(considered))
-        or canonical_bytes(trigger_ref) in successful_keys
+    trigger_key = canonical_bytes(trigger_ref)
+    pair_keys: list[tuple[bytes, bytes]] = []
+    successful_keys: set[bytes] = set()
+    pairs_by_candidate: dict[bytes, SuccessfulMatchPair] = {}
+    for pair in successful_match_pairs:
+        upstream_key = canonical_bytes(pair.upstream_ref)
+        downstream_key = canonical_bytes(pair.downstream_ref)
+        if (
+            upstream_key == downstream_key
+            or trigger_key not in {upstream_key, downstream_key}
+            or not {upstream_key, downstream_key} <= set(considered)
+        ):
+            raise ValueError("CHAINING_LINEAGE_INPUT_MISMATCH")
+        pair_key = (upstream_key, downstream_key)
+        pair_keys.append(pair_key)
+        candidate_key = downstream_key if upstream_key == trigger_key else upstream_key
+        pairs_by_candidate[candidate_key] = pair
+        successful_keys.update(pair_key)
+    if len(set(pair_keys)) != len(pair_keys) or len(pairs_by_candidate) != len(
+        pair_keys
     ):
         raise ValueError("CHAINING_LINEAGE_INPUT_MISMATCH")
     excluded: set[bytes] = set()
     output: list[LineageExclusion] = []
     for candidate_ref in order_deepest_first(
-        successful_candidate_refs, resolve, analysis_id=analysis_id
+        tuple(considered[key] for key in pairs_by_candidate),
+        resolve,
+        analysis_id=analysis_id,
     ):
         candidate_key = canonical_bytes(candidate_ref)
         if candidate_key in excluded:
             raise ValueError("CHAINING_SUCCESSFUL_CANDIDATE_EXCLUDED")
-        for ancestor_ref in lineage(
-            candidate_ref, resolve, analysis_id=analysis_id
-        ).ancestors:
-            ancestor_key = canonical_bytes(ancestor_ref)
-            if ancestor_key not in considered or ancestor_ref == trigger_ref:
-                raise ValueError("CHAINING_LINEAGE_INPUT_MISMATCH")
-            if ancestor_key in successful_keys:
-                raise ValueError("CHAINING_SUCCESSFUL_CANDIDATE_EXCLUDED")
-            if ancestor_ref == candidate_ref or ancestor_key in excluded:
-                continue
-            excluded.add(ancestor_key)
-            output.append(
-                LineageExclusion(
-                    excluded_primitive_ref=ancestor_ref,
-                    excluded_by_ref=candidate_ref,
-                    reason_code="ANCESTOR_REUSE",
+        pair = pairs_by_candidate[candidate_key]
+        for matched_ref in (pair.upstream_ref, pair.downstream_ref):
+            for ancestor_ref in lineage(
+                matched_ref, resolve, analysis_id=analysis_id
+            ).ancestors:
+                ancestor_key = canonical_bytes(ancestor_ref)
+                if ancestor_key not in considered:
+                    raise ValueError("CHAINING_LINEAGE_INPUT_MISMATCH")
+                if ancestor_key in successful_keys:
+                    raise ValueError("CHAINING_SUCCESSFUL_CANDIDATE_EXCLUDED")
+                if ancestor_ref == matched_ref or ancestor_key in excluded:
+                    continue
+                excluded.add(ancestor_key)
+                output.append(
+                    LineageExclusion(
+                        excluded_primitive_ref=ancestor_ref,
+                        excluded_by_ref=matched_ref,
+                        reason_code="ANCESTOR_REUSE",
+                    )
                 )
-            )
     return tuple(output)
 
 
@@ -182,6 +209,7 @@ __all__ = [
     "Lineage",
     "LineageNode",
     "LineageResolver",
+    "SuccessfulMatchPair",
     "expected_lineage_exclusions",
     "lineage",
     "order_deepest_first",

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from sastsimi.contracts.ids import ProposalId
-from sastsimi.contracts.records import RecordMetadata
+from sastsimi.contracts.records import RecordMeta, RecordMetadata
 from sastsimi.contracts.refs import (
     BudgetScopeRef,
     RecordRef,
@@ -19,7 +19,7 @@ from sastsimi.contracts.refs import (
     reference,
     require_record_ref,
 )
-from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.contracts.work import SubjectType, WorkExecutionState, WorkType
 
 from .dto import WorkContext
 from .llm_invocation import PersistedLLMInvocation
@@ -253,22 +253,39 @@ class ChainingCohortRegistration:
         )
         _require_unique(work_ids, "CHAINING_COHORT_MEMBER_DUPLICATE")
         _require_unique(trigger_refs, "CHAINING_COHORT_MEMBER_DUPLICATE")
+        first = self.members[0].work
+        if not isinstance(first.meta, RecordMeta):
+            raise ValueError("CHAINING_COHORT_SCOPE_MISMATCH")
         for member in self.members:
-            if member.work.status != self.status:
+            work = member.work
+            if work.status != self.status:
                 raise ValueError("CHAINING_COHORT_PARTIAL_VISIBILITY")
-            work_ref = reference(member.work)
+            if not isinstance(work.meta, RecordMeta) or any(
+                (
+                    work.work_type != WorkType.CHAINING,
+                    work.subject_type != SubjectType.ANALYSIS,
+                    work.meta.analysis_id != first.meta.analysis_id,
+                    work.meta.workspace_id != first.meta.workspace_id,
+                    work.meta.commit_id != first.meta.commit_id,
+                    work.work_generation != first.work_generation,
+                    self.source_update_ref.workspace_id != work.meta.workspace_id,
+                    self.source_update_ref.commit_id != work.meta.commit_id,
+                )
+            ):
+                raise ValueError("CHAINING_COHORT_SCOPE_MISMATCH")
+            work_ref = reference(work)
+            expected_inputs = (
+                *member.pool.universe.index_refs,
+                *member.pool.universe.considered_primitive_refs,
+            )
             if (
                 not isinstance(work_ref, StoredDataRef)
                 or member.pool.trigger_work_ref != work_ref
-                or member.work.trigger_primitive_ref
+                or work.trigger_primitive_ref
                 != member.pool.universe.trigger_primitive_ref
-                or any(
-                    value not in member.work.input_refs
-                    for value in (
-                        *member.pool.universe.index_refs,
-                        *member.pool.universe.considered_primitive_refs,
-                    )
-                )
+                or len(work.input_refs) != len(expected_inputs)
+                or any(value not in work.input_refs for value in expected_inputs)
+                or any(value not in expected_inputs for value in work.input_refs)
             ):
                 raise ValueError("CHAINING_COHORT_POOL_MISMATCH")
 

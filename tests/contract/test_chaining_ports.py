@@ -196,6 +196,78 @@ def test_cohort_rejects_a_pool_item_that_was_not_pinned_by_the_work() -> None:
         )
 
 
+def test_cohort_rejects_extra_work_input_outside_the_exact_pool() -> None:
+    trigger = _ref("primitive", suffix="trigger")
+    index_ref = _ref("primitive_index_state")
+    injected = _ref("primitive", suffix="injected")
+    work_data = _pending_chaining_work(trigger).model_dump(mode="json")
+    work_data["input_refs"] = [
+        trigger.model_dump(mode="json"),
+        index_ref.model_dump(mode="json"),
+        injected.model_dump(mode="json"),
+    ]
+    work = wire(WorkExecutionState, work_data)
+    work_ref = reference(work)
+    assert isinstance(work_ref, StoredDataRef)
+    pool = ChainingPoolHistory(
+        trigger_work_ref=work_ref,
+        universe=PinnedChainingUniverse(
+            trigger_primitive_ref=trigger,
+            index_refs=(index_ref,),
+            considered_primitive_refs=(trigger,),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="CHAINING_COHORT_POOL_MISMATCH"):
+        ChainingCohortRegistration(
+            source_update_ref=_ref("transition_commit"),
+            members=(ChainingCohortMember(work=work, pool=pool),),
+            status="PENDING",
+        )
+
+
+def test_cohort_rejects_cross_scope_or_generation_siblings() -> None:
+    first_trigger = _ref("primitive", suffix="first")
+    second_trigger = _ref("primitive", suffix="second")
+    first = _pending_chaining_work(first_trigger)
+    second_data = _pending_chaining_work(second_trigger).model_dump(mode="json")
+    second_data["work_id"] = "work-second"
+    second_data["meta"]["record_id"] = "work-second-record"
+    second_data["meta"]["logical_record_id"] = "work-second-logical"
+    second_data["work_generation"] = first.work_generation + 1
+    second = wire(WorkExecutionState, second_data)
+
+    def member(work: WorkExecutionState) -> ChainingCohortMember:
+        work_ref = reference(work)
+        assert isinstance(work_ref, StoredDataRef)
+        trigger_ref = work.trigger_primitive_ref
+        assert trigger_ref is not None
+        indexes = tuple(
+            ref
+            for ref in work.input_refs
+            if isinstance(ref, StoredDataRef)
+            and ref.data_kind == "primitive_index_state"
+        )
+        return ChainingCohortMember(
+            work=work,
+            pool=ChainingPoolHistory(
+                trigger_work_ref=work_ref,
+                universe=PinnedChainingUniverse(
+                    trigger_primitive_ref=trigger_ref,
+                    index_refs=indexes,
+                    considered_primitive_refs=(trigger_ref,),
+                ),
+            ),
+        )
+
+    with pytest.raises(ValueError, match="CHAINING_COHORT_SCOPE_MISMATCH"):
+        ChainingCohortRegistration(
+            source_update_ref=_ref("transition_commit"),
+            members=(member(first), member(second)),
+            status="PENDING",
+        )
+
+
 def test_agent_boundary_is_content_only_and_uses_prompt_local_keys() -> None:
     evidence = ChainingEvidence(
         evidence_key="ev-1",

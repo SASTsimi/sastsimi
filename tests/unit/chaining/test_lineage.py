@@ -4,6 +4,7 @@ import pytest
 
 from sastsimi.chaining.lineage import (
     LineageNode,
+    SuccessfulMatchPair,
     expected_lineage_exclusions,
     lineage,
     order_deepest_first,
@@ -64,7 +65,7 @@ def test_deepest_success_excludes_only_its_ancestors() -> None:
     exclusions = expected_lineage_exclusions(
         considered_refs=(a, b, bc, bcd, bcde),
         trigger_ref=a,
-        successful_candidate_refs=(bcde,),
+        successful_match_pairs=(SuccessfulMatchPair(a, bcde),),
         resolve=resolve,
         analysis_id="a1",
     )
@@ -76,7 +77,7 @@ def test_deepest_success_excludes_only_its_ancestors() -> None:
         expected_lineage_exclusions(
             considered_refs=(a, b, bc, bcd, bcde),
             trigger_ref=a,
-            successful_candidate_refs=(),
+            successful_match_pairs=(),
             resolve=resolve,
             analysis_id="a1",
         )
@@ -115,7 +116,31 @@ def test_exclusion_rejects_ancestor_outside_pinned_universe() -> None:
         expected_lineage_exclusions(
             considered_refs=(trigger, child),
             trigger_ref=trigger,
-            successful_candidate_refs=(child,),
+            successful_match_pairs=(SuccessfulMatchPair(trigger, child),),
             resolve=resolve,
             analysis_id="a1",
         )
+
+
+def test_successful_match_excludes_ancestors_from_both_sides() -> None:
+    trigger_parent, trigger, other_parent, other = map(_ref, ("a", "b", "c", "d"))
+    resolve = _resolver(
+        {
+            trigger_parent: (),
+            trigger: (trigger_parent,),
+            other_parent: (),
+            other: (other_parent,),
+        }
+    )
+
+    exclusions = expected_lineage_exclusions(
+        considered_refs=(trigger_parent, trigger, other_parent, other),
+        trigger_ref=trigger,
+        successful_match_pairs=(SuccessfulMatchPair(trigger, other),),
+        resolve=resolve,
+        analysis_id="a1",
+    )
+
+    assert {
+        (item.excluded_primitive_ref, item.excluded_by_ref) for item in exclusions
+    } == {(trigger_parent, trigger), (other_parent, other)}
