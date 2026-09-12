@@ -65,6 +65,46 @@ def _expected_lineage_exclusions(
     return tuple(expected)
 
 
+def _validate_terminal_verification(
+    works: WorkService,
+    connection: Connection,
+    processes: tuple[HypothesisProcessState, ...],
+    work_meta: RecordMeta,
+    *,
+    hypothesis_id: str,
+    verification_ref: StoredDataRef,
+) -> None:
+    matching_processes = tuple(
+        process
+        for process in processes
+        if process.status == "TERMINAL"
+        and process.verification_result_ref == verification_ref
+        and str(process.meta.hypothesis_id) == hypothesis_id
+    )
+    if len(matching_processes) != 1:
+        raise ValueError("CHAINING_PINNED_VERIFICATION_MISMATCH")
+    verification = resolved(
+        works.records,
+        connection,
+        verification_ref,
+        VerificationResult,
+    )
+    if (
+        not isinstance(verification.meta, RecordMeta)
+        or verification.meta.analysis_id != work_meta.analysis_id
+        or verification.meta.workspace_id != work_meta.workspace_id
+        or verification.meta.commit_id != work_meta.commit_id
+        or str(verification.meta.hypothesis_id) != hypothesis_id
+    ):
+        raise ValueError("CHAINING_PINNED_VERIFICATION_MISMATCH")
+    require_committed(
+        works.records,
+        connection,
+        verification,
+        WorkType.VERIFICATION,
+    )
+
+
 def validate_chaining_output(
     works: WorkService,
     connection: Connection,
@@ -140,50 +180,45 @@ def validate_chaining_output(
         for index in indexes
         if index.meta.hypothesis_id is not None
     }
-    for primitive in primitives:
-        hypothesis_id = str(primitive.meta.hypothesis_id)
-        index = index_by_hypothesis.get(hypothesis_id)
-        matching_processes = tuple(
-            process
-            for process in processes
-            if process.status == "TERMINAL"
-            and process.verification_result_ref == primitive.source_verification_ref
-            and process.meta.hypothesis_id == primitive.meta.hypothesis_id
-        )
-        if index is None or len(matching_processes) != 1:
-            raise ValueError("CHAINING_PINNED_VERIFICATION_MISMATCH")
-        process = matching_processes[0]
-        verification = resolved(
-            works.records,
+    for hypothesis_id, index in index_by_hypothesis.items():
+        _validate_terminal_verification(
+            works,
             connection,
-            primitive.source_verification_ref,
-            VerificationResult,
+            processes,
+            work_meta,
+            hypothesis_id=hypothesis_id,
+            verification_ref=index.current_verification_ref,
         )
-        if not isinstance(verification.meta, RecordMeta) or not isinstance(
-            primitive.meta, RecordMeta
-        ):
+    for primitive_ref, primitive in zip(
+        result.considered_primitive_refs,
+        primitives,
+        strict=True,
+    ):
+        if not isinstance(primitive.meta, RecordMeta):
             raise ValueError("CHAINING_CODE_SCOPE_REQUIRED")
-        require_committed(
-            works.records,
-            connection,
-            verification,
-            WorkType.VERIFICATION,
-        )
+        hypothesis_id = str(primitive.meta.hypothesis_id)
+        primitive_index = index_by_hypothesis.get(hypothesis_id)
         if (
-            index.current_verification_ref != primitive.source_verification_ref
-            or process.verification_result_ref != primitive.source_verification_ref
-            or verification.meta.analysis_id != work.meta.analysis_id
-            or verification.meta.workspace_id != work_meta.workspace_id
-            or verification.meta.commit_id != work_meta.commit_id
-            or primitive.meta.analysis_id != work.meta.analysis_id
+            primitive_index is None
+            or primitive_ref not in primitive_index.primitive_refs
+        ):
+            raise ValueError("CHAINING_PINNED_INDEX_MISMATCH")
+        if (
+            primitive.meta.analysis_id != work.meta.analysis_id
             or primitive.meta.workspace_id != work_meta.workspace_id
             or primitive.meta.commit_id != work_meta.commit_id
-            or verification.meta.hypothesis_id != primitive.meta.hypothesis_id
             or primitive.workspace_id != work_meta.workspace_id
             or primitive.commit_id != work_meta.commit_id
-            or process.meta.hypothesis_id != primitive.meta.hypothesis_id
         ):
             raise ValueError("CHAINING_PINNED_VERIFICATION_MISMATCH")
+        _validate_terminal_verification(
+            works,
+            connection,
+            processes,
+            work_meta,
+            hypothesis_id=hypothesis_id,
+            verification_ref=primitive.source_verification_ref,
+        )
     expected_exclusions: tuple[LineageExclusion, ...] = ()
     if result.primitive_match_candidates or result.excluded_lineage_refs:
         if lineage is None or work.trigger_primitive_ref is None:
