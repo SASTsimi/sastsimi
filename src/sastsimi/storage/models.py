@@ -213,6 +213,8 @@ chaining_work_pools = Table(
     Column("workspace_id", Text, nullable=False),
     Column("commit_id", Text, nullable=False),
     Column("trigger_work_ref", Text, nullable=False, unique=True),
+    Column("work_generation", Integer, nullable=False),
+    Column("input_hash", Text, nullable=False),
     Column("trigger_primitive_ref", Text, nullable=False),
     Column("index_refs", Text, nullable=False),
     Column("considered_primitive_refs", Text, nullable=False),

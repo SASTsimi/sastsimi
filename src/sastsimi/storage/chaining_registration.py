@@ -84,7 +84,31 @@ class ChainingPoolHistoryStore:
     def get_for_trigger(self, trigger_work_ref: StoredDataRef) -> ChainingPoolHistory:
         require_record_ref(trigger_work_ref, "work_execution_state")
         with self.records.database.engine.connect() as connection:
-            return self._get(connection, trigger_work_ref)
+            work = self.records.resolve(connection, trigger_work_ref)
+            if not isinstance(work, WorkExecutionState):
+                raise ValueError("CHAINING_POOL_WORK_MISMATCH")
+            current_payload = connection.execute(
+                select(models.work_states.c.payload).where(
+                    models.work_states.c.work_id == str(work.work_id)
+                )
+            ).scalar_one_or_none()
+            if current_payload is None:
+                raise LookupError("CHAINING_POOL_NOT_FOUND")
+            current = WorkExecutionState.model_validate_json(current_payload)
+            if reference(current) != trigger_work_ref:
+                raise ValueError("CHAINING_POOL_WORK_MISMATCH")
+            row = (
+                connection.execute(
+                    select(models.chaining_work_pools).where(
+                        models.chaining_work_pools.c.work_id == str(work.work_id)
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                raise LookupError("CHAINING_POOL_NOT_FOUND")
+            return self._decode_row(connection, row, trigger_work_ref)
 
     def get_for_primitive(
         self, trigger_primitive_ref: StoredDataRef
@@ -113,30 +137,31 @@ class ChainingPoolHistoryStore:
                 row["commit_id"],
             ):
                 raise ValueError("CHAINING_POOL_TRIGGER_MISMATCH")
-            trigger_work_ref = REF_ADAPTER.validate_json(row["trigger_work_ref"])
-            if not isinstance(trigger_work_ref, StoredDataRef):
+            stored_work_ref = REF_ADAPTER.validate_json(row["trigger_work_ref"])
+            if not isinstance(stored_work_ref, StoredDataRef):
                 raise ValueError("CHAINING_POOL_REF_KIND")
-            return self._get(connection, trigger_work_ref)
+            return self._decode_row(connection, row, stored_work_ref)
 
-    def _get(
-        self, connection: Connection, trigger_work_ref: StoredDataRef
+    def _decode_row(
+        self,
+        connection: Connection,
+        row: object,
+        trigger_work_ref: StoredDataRef,
     ) -> ChainingPoolHistory:
-        row = (
-            connection.execute(
-                select(models.chaining_work_pools).where(
-                    models.chaining_work_pools.c.trigger_work_ref
-                    == _wire(trigger_work_ref)
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
-        if row is None:
-            raise LookupError("CHAINING_POOL_NOT_FOUND")
+        from collections.abc import Mapping
+
+        from sastsimi.contracts.canonical_json import content_hash
+
+        if not isinstance(row, Mapping):
+            raise ValueError("CHAINING_POOL_INTEGRITY_MISMATCH")
         work = self.records.resolve(connection, trigger_work_ref)
         if (
             not isinstance(work, WorkExecutionState)
             or str(work.work_id) != row["work_id"]
+            or work.work_type != WorkType.CHAINING
+            or work.work_generation != row["work_generation"]
+            or work.input_hash != row["input_hash"]
+            or work.input_hash != content_hash(work.input_refs)
         ):
             raise ValueError("CHAINING_POOL_WORK_MISMATCH")
         trigger_ref = REF_ADAPTER.validate_json(row["trigger_primitive_ref"])
@@ -149,10 +174,13 @@ class ChainingPoolHistoryStore:
             index_refs=index_refs,
             considered_primitive_refs=considered_refs,
         )
-        if row["pool_hash"] != self._pool_hash(universe) or _scope(work) != (
-            row["analysis_id"],
-            row["workspace_id"],
-            row["commit_id"],
+        expected_inputs = (*universe.index_refs, *universe.considered_primitive_refs)
+        if (
+            row["pool_hash"] != self._pool_hash(universe)
+            or _scope(work)
+            != (row["analysis_id"], row["workspace_id"], row["commit_id"])
+            or work.trigger_primitive_ref != universe.trigger_primitive_ref
+            or work.input_refs != expected_inputs
         ):
             raise ValueError("CHAINING_POOL_INTEGRITY_MISMATCH")
         return ChainingPoolHistory(
@@ -227,16 +255,45 @@ class ChainingCommittedSourceStore:
                 if isinstance(value := reference(output), StoredDataRef)
             )
             if (
-                len(admissions) != 1
+                len(outputs) != len(admission_outputs) + len(primitive_outputs)
                 or len(admissions) != len(admission_outputs)
                 or len(primitive_refs) != len(primitive_outputs)
             ):
                 raise ValueError("CHAINING_UPDATE_OUTCOME_MISMATCH")
+            if admissions:
+                if (
+                    len(admissions) != 1
+                    or (
+                        primitive_outputs
+                        and (
+                            admission_outputs[0].decision != "ALLOW"
+                            or any(
+                                primitive.result is None
+                                or primitive.admission_decision_ref != admissions[0]
+                                for primitive in primitive_outputs
+                            )
+                        )
+                    )
+                    or (
+                        not primitive_outputs
+                        and admission_outputs[0].decision != "DENY"
+                    )
+                ):
+                    raise ValueError("CHAINING_UPDATE_OUTCOME_MISMATCH")
+                admission_ref: StoredDataRef | None = admissions[0]
+            else:
+                if any(
+                    primitive.result is not None
+                    or primitive.admission_decision_ref is not None
+                    for primitive in primitive_outputs
+                ):
+                    raise ValueError("CHAINING_UPDATE_OUTCOME_MISMATCH")
+                admission_ref = None
             index_ref = self._index_for_update(connection, work, primitive_refs)
             return PrimitiveUpdateOutcome(
                 source_work_ref=work_ref,
                 transition_commit_ref=source_update_ref,
-                admission_decision_ref=admissions[0],
+                admission_decision_ref=admission_ref,
                 primitive_refs=primitive_refs,
                 primitive_index_ref=index_ref,
             )
@@ -327,12 +384,25 @@ class ChainingCohortStore:
         if not isinstance(metadata, RecordMeta) or generation < 1:
             raise ValueError("CHAINING_REGISTRATION_SCOPE_MISMATCH")
         with self.records.database.write() as connection:
-            index = self._validate_outcome(connection, outcome, metadata)
+            self._validate_outcome(connection, outcome, metadata, generation)
+            index_refs, considered_refs = self._current_universe(
+                connection,
+                source_index_ref=outcome.primitive_index_ref,
+                metadata=metadata,
+            )
+            if any(ref not in considered_refs for ref in outcome.primitive_refs):
+                raise ValueError("CHAINING_UPDATE_INDEX_NOT_CURRENT")
             existing = self._read_registration(
                 connection, outcome.transition_commit_ref, required=False
             )
             if existing is not None:
-                self._validate_replay(existing, outcome, index, generation)
+                self._validate_replay(
+                    existing,
+                    outcome,
+                    index_refs,
+                    considered_refs,
+                    generation,
+                )
                 return existing
 
             source_wire = _wire(outcome.transition_commit_ref)
@@ -351,13 +421,11 @@ class ChainingCohortStore:
                 )
             )
             members: list[ChainingCohortMember] = []
-            index_ref = outcome.primitive_index_ref
-            assert index_ref is not None
             for order, trigger_ref in enumerate(outcome.primitive_refs):
                 universe = PinnedChainingUniverse(
                     trigger_primitive_ref=trigger_ref,
-                    index_refs=(index_ref,),
-                    considered_primitive_refs=index.primitive_refs,
+                    index_refs=index_refs,
+                    considered_primitive_refs=considered_refs,
                 )
                 inputs = (*universe.index_refs, *universe.considered_primitive_refs)
                 work = self._pending_work(
@@ -388,6 +456,8 @@ class ChainingCohortStore:
                         workspace_id=str(metadata.workspace_id),
                         commit_id=str(metadata.commit_id),
                         trigger_work_ref=_wire(work_ref),
+                        work_generation=work.work_generation,
+                        input_hash=work.input_hash,
                         trigger_primitive_ref=_wire(trigger_ref),
                         index_refs=canonical_bytes(universe.index_refs).decode(),
                         considered_primitive_refs=canonical_bytes(
@@ -469,6 +539,7 @@ class ChainingCohortStore:
         connection: Connection,
         outcome: PrimitiveUpdateOutcome,
         metadata: RecordMeta,
+        generation: int,
     ) -> PrimitiveIndexState:
         if not outcome.primitive_refs or outcome.primitive_index_ref is None:
             raise ValueError("CHAINING_COHORT_EMPTY")
@@ -489,6 +560,8 @@ class ChainingCohortStore:
             or _scope(work) != _scope(metadata)
         ):
             raise ValueError("CHAINING_UPDATE_OUTCOME_MISMATCH")
+        if generation != work.work_generation:
+            raise ValueError("CHAINING_UPDATE_GENERATION_MISMATCH")
         expected_outputs = set(outcome.primitive_refs)
         if outcome.admission_decision_ref is not None:
             expected_outputs.add(outcome.admission_decision_ref)
@@ -505,6 +578,55 @@ class ChainingCohortStore:
         if outcome.admission_decision_ref is not None:
             self.records.resolve(connection, outcome.admission_decision_ref)
         return index
+
+    def _current_universe(
+        self,
+        connection: Connection,
+        *,
+        source_index_ref: StoredDataRef | None,
+        metadata: RecordMeta,
+    ) -> tuple[tuple[StoredDataRef, ...], tuple[StoredDataRef, ...]]:
+        if source_index_ref is None:
+            raise ValueError("CHAINING_COHORT_EMPTY")
+        scoped: list[tuple[StoredDataRef, PrimitiveIndexState]] = []
+        for wire in connection.execute(
+            select(models.records.c.ref)
+            .join(
+                models.current_records,
+                models.current_records.c.record_id == models.records.c.record_id,
+            )
+            .where(models.records.c.kind == "primitive_index_state")
+        ).scalars():
+            candidate_ref = REF_ADAPTER.validate_json(wire)
+            if not isinstance(candidate_ref, StoredDataRef):
+                raise ValueError("CHAINING_PINNED_REF_KIND")
+            candidate = self.records.resolve(connection, candidate_ref)
+            if isinstance(candidate, PrimitiveIndexState) and _scope(
+                candidate
+            ) == _scope(metadata):
+                scoped.append((candidate_ref, candidate))
+        scoped.sort(key=lambda item: _wire(item[0]))
+        index_refs = tuple(item[0] for item in scoped)
+        if source_index_ref not in index_refs:
+            raise ValueError("CHAINING_UPDATE_INDEX_NOT_CURRENT")
+        hypotheses = tuple(str(item.meta.hypothesis_id) for _, item in scoped)
+        if any(item.meta.hypothesis_id is None for _, item in scoped) or len(
+            set(hypotheses)
+        ) != len(hypotheses):
+            raise ValueError("CHAINING_INDEX_SCOPE_CONFLICT")
+        considered: dict[bytes, StoredDataRef] = {}
+        for _, current_index in scoped:
+            for primitive_ref in current_index.primitive_refs:
+                primitive = self.records.resolve(connection, primitive_ref)
+                if (
+                    not isinstance(primitive, Primitive)
+                    or _scope(primitive) != _scope(metadata)
+                    or primitive.meta.hypothesis_id != current_index.meta.hypothesis_id
+                ):
+                    raise ValueError("CHAINING_INDEX_PRIMITIVE_MISMATCH")
+                considered.setdefault(canonical_bytes(primitive_ref), primitive_ref)
+        considered_refs = tuple(considered[key] for key in sorted(considered))
+        return index_refs, considered_refs
 
     def _pending_work(
         self,
@@ -832,7 +954,7 @@ class ChainingCohortStore:
             if not isinstance(resolved_work, WorkExecutionState):
                 raise ValueError("CHAINING_POOL_WORK_MISMATCH")
             work = resolved_work
-            pool = self.pools._get(connection, work_ref)
+            pool = self.pools._decode_row(connection, pool_row, work_ref)
             members.append(ChainingCohortMember(work=work, pool=pool))
         return ChainingCohortRegistration(
             source_update_ref=source_update_ref,
@@ -869,7 +991,8 @@ class ChainingCohortStore:
     def _validate_replay(
         registration: ChainingCohortRegistration,
         outcome: PrimitiveUpdateOutcome,
-        index: PrimitiveIndexState,
+        index_refs: tuple[StoredDataRef, ...],
+        considered_refs: tuple[StoredDataRef, ...],
         generation: int,
     ) -> None:
         if (
@@ -879,11 +1002,11 @@ class ChainingCohortStore:
             )
             != outcome.primitive_refs
             or any(
-                member.pool.universe.index_refs != (outcome.primitive_index_ref,)
+                member.pool.universe.index_refs != index_refs
                 for member in registration.members
             )
             or any(
-                member.pool.universe.considered_primitive_refs != index.primitive_refs
+                member.pool.universe.considered_primitive_refs != considered_refs
                 for member in registration.members
             )
             or any(

@@ -17,6 +17,13 @@ def test_operator_db_upgrade_explicitly_creates_current_schema(tmp_path: Path) -
         "chaining_work_pools",
         "chaining_cohorts",
     }
+    assert {
+        "work_generation",
+        "input_hash",
+    } <= {
+        column["name"]
+        for column in inspect(database.engine).get_columns("chaining_work_pools")
+    }
     assert ScriptDirectory.from_config(config(database)).get_heads() == [
         "0005_chaining_matches"
     ]

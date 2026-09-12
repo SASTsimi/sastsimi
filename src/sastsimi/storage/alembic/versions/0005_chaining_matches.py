@@ -43,6 +43,8 @@ def upgrade() -> None:
         sa.Column("workspace_id", sa.Text(), nullable=False),
         sa.Column("commit_id", sa.Text(), nullable=False),
         sa.Column("trigger_work_ref", sa.Text(), nullable=False, unique=True),
+        sa.Column("work_generation", sa.Integer(), nullable=False),
+        sa.Column("input_hash", sa.Text(), nullable=False),
         sa.Column("trigger_primitive_ref", sa.Text(), nullable=False),
         sa.Column("index_refs", sa.Text(), nullable=False),
         sa.Column("considered_primitive_refs", sa.Text(), nullable=False),
