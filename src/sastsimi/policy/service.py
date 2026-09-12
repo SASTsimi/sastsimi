@@ -157,6 +157,7 @@ class PolicyPreparationService:
         )
         self.runner.account(fetch_reservation, fetch_units)
         if fetched_source != expected_source:
+            self.runtime.policy.reject_preparing(work)
             raise ValueError("FAKE_POLICY_SOURCE_MISMATCH")
         criterion = self._artifact("freshness_criterion", record=True)
         parser_candidate = PolicyParserResult.model_validate_json(

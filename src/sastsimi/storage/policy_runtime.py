@@ -1,6 +1,6 @@
 """SQLite policy lifecycle with same-logical state and exact cache-head CAS."""
 
-from sqlalchemy import Connection, insert, select, update
+from sqlalchemy import Connection, delete, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from sastsimi.contracts.analysis import AnalysisRunState
@@ -77,6 +77,47 @@ class PolicyRuntime:
         if not isinstance(state, RunPolicyState):
             raise ValueError("POLICY_STATE_CLOSURE_MISMATCH")
         return state
+
+    def reject_preparing(self, work: WorkExecutionState) -> None:
+        """Withdraw only the exact PREPARING head rejected at a fake boundary."""
+        with self.records.database.write() as connection:
+            run = get_run(connection, str(work.meta.analysis_id))
+            if run.status != "RUNNING" or run.run_policy_state_ref is None:
+                raise ValueError("POLICY_PREPARING_REQUIRED")
+            state = self.records.resolve(connection, run.run_policy_state_ref)
+            if not isinstance(state, RunPolicyState):
+                raise ValueError("POLICY_STATE_CLOSURE_MISMATCH")
+            pending = self.records.resolve(connection, state.policy_work_ref)
+            current = self.works.get(str(work.work_id), connection)
+            if (
+                not isinstance(pending, WorkExecutionState)
+                or current != work
+                or work.status != WorkStatus.RUNNING
+                or pending.work_id != work.work_id
+                or pending.input_hash != work.input_hash
+                or pending.work_generation != work.work_generation
+            ):
+                raise ValueError("POLICY_PREPARING_WORK_MISMATCH")
+            _validate_preparing(pending, state)
+            removed = connection.execute(
+                delete(models.current_records).where(
+                    models.current_records.c.logical_record_id
+                    == str(state.meta.logical_record_id),
+                    models.current_records.c.record_id == str(state.meta.record_id),
+                    models.current_records.c.state_version
+                    == state.meta.revision_number,
+                )
+            )
+            if removed.rowcount != 1:
+                raise ValueError("POLICY_STATE_REVISION_MISMATCH")
+            updated = AnalysisRunState.model_validate(
+                run.model_dump()
+                | dict(
+                    meta=next_meta(run.meta, self.works.clock, self.works.ids),
+                    run_policy_state_ref=None,
+                )
+            )
+            save_run(self.records, connection, updated, run)
 
     def current_cache(self, key: PolicyCacheKey) -> PolicyCacheRecord | None:
         with self.records.database.engine.connect() as connection:

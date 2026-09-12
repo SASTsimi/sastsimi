@@ -34,6 +34,9 @@ class PolicyRuntimeService:
     ) -> PolicyPreparation:
         return self.store.begin(work, decision_ref, reservation_ref, state)
 
+    def reject_preparing(self, work: WorkExecutionState) -> None:
+        self.store.reject_preparing(work)
+
     def current_state(self, analysis_id: str) -> RunPolicyState | None:
         return self.store.current_state(analysis_id)
 

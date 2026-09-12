@@ -177,7 +177,14 @@ def test_true_pipeline_closes_exact_report_without_submission(tmp_path: Path) ->
     for log in logs:
         assert log.parsed_output_ref is not None
         assert log.exposed_response_ref is not None
-        output = published_by_ref[log.parsed_output_ref]
+        if log.parsed_output_ref.record_id is None:
+            assert log.parsed_output_ref == log.exposed_response_ref
+            with pipeline.runtime.unit_of_work.artifacts.open_verified(
+                log.parsed_output_ref
+            ) as stream:
+                parsed_output = stream.read()
+        else:
+            parsed_output = canonical_bytes(published_by_ref[log.parsed_output_ref])
         spec = published_by_ref[log.call_spec_ref]
         assert isinstance(spec, LLMCallSpec)
         request = next(
@@ -250,7 +257,7 @@ def test_true_pipeline_closes_exact_report_without_submission(tmp_path: Path) ->
         with pipeline.runtime.unit_of_work.artifacts.open_verified(
             log.exposed_response_ref
         ) as stream:
-            assert stream.read() == canonical_bytes(output)
+            assert stream.read() == parsed_output
     synthesis = next(
         log
         for log in logs
