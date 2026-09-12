@@ -3,7 +3,7 @@ import hashlib
 import inspect
 import io
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -38,6 +38,7 @@ from sastsimi.contracts.llm import (
     LLMInvocationLog,
     LLMInvocationRequest,
     LLMInvocationResult,
+    LLMRole,
     OutputSchemaSpec,
     PromptPayload,
     ProviderProfile,
@@ -71,6 +72,7 @@ from sastsimi.providers.base import (
     ProviderInputMismatchError,
 )
 from sastsimi.providers.storage_io import (
+    RequestSemanticValidator,
     StoredInvocationResultBuilder,
     StoredOutputValidator,
     StoredPromptInputResolver,
@@ -213,6 +215,35 @@ class MemoryRecords:
             return self.published[ref_key(ref)]
         except KeyError as error:
             raise LookupError("exact record not published") from error
+
+    def is_revision_descendant(
+        self, earlier_ref: RecordRef, later_ref: RecordRef
+    ) -> bool:
+        earlier = self.get_exact(earlier_ref)
+        current = self.get_exact(later_ref)
+        if (
+            type(earlier.meta) is not type(current.meta)
+            or earlier.meta.logical_record_id != current.meta.logical_record_id
+            or earlier.meta.record_type != current.meta.record_type
+            or current.meta.revision_number < earlier.meta.revision_number
+        ):
+            return False
+        by_record_id = {
+            record.meta.record_id: record for record in self.published.values()
+        }
+        visited = set()
+        while current.meta.record_id != earlier.meta.record_id:
+            if (
+                current.meta.record_id in visited
+                or current.meta.previous_record_id is None
+            ):
+                return False
+            visited.add(current.meta.record_id)
+            predecessor = by_record_id.get(current.meta.previous_record_id)
+            if predecessor is None:
+                return False
+            current = predecessor
+        return True
 
     def stage_record(self, record: Record) -> RecordRef:
         exact = reference(record)
@@ -759,6 +790,8 @@ def build_service(
     entered: asyncio.Event | None = None,
     release: asyncio.Event | None = None,
     cancellation: CancellationResult | None = None,
+    request_semantic_validators: Mapping[tuple[LLMRole, str], RequestSemanticValidator]
+    | None = None,
 ) -> tuple[LLMCallService, FakeAdapter, RecordingAuthorization]:
     prompt_resolver = StoredPromptInputResolver(data.records, data.artifacts)
     validators: dict[StoredDataRef, Callable[[object], None]] = {
@@ -768,6 +801,7 @@ def build_service(
         data.records,
         validators,
         validate_output,
+        request_semantic_validators=request_semantic_validators,
     )
     result_builder = StoredInvocationResultBuilder(
         data.records, data.artifacts, data.metadata_factory

@@ -13,6 +13,7 @@ from sastsimi.contracts.budget import (
 )
 from sastsimi.contracts.dynamic import (
     DynamicReproductionRequest,
+    EnvironmentRecipe,
     EnvironmentRequirements,
     ReproductionPlan,
     SandboxProfile,
@@ -36,8 +37,9 @@ def make(name: str) -> dict[str, Any]:
 @pytest.mark.parametrize(
     "invalid", [None, "plan", "generation", "profile", "lifecycle"]
 )
+@pytest.mark.parametrize("run_phase", [False, True])
 def test_public_sandbox_context_binds_current_plan_and_run_local_profiles(
-    tmp_path: Path, invalid: str | None
+    tmp_path: Path, invalid: str | None, run_phase: bool
 ) -> None:
     h, _, _ = capacity_fixture(tmp_path)
     runtime = build_runtime(tmp_path, None, None, h.clock, h.ids, evidence=h.evidence)
@@ -71,6 +73,19 @@ def test_public_sandbox_context_binds_current_plan_and_run_local_profiles(
     )
     plan = ReproductionPlan.model_validate_json(json.dumps(plan_data))
     plan_ref = h.records.stage_record(plan)
+    recipe_data = make("EnvironmentRecipe")
+    recipe_data.update(
+        request_ref=request_ref.model_dump(mode="json"),
+        environment_requirements_ref=requirements_ref.model_dump(mode="json"),
+        recipe_source_ref=ref("recipe_source", True) | {"record_id": None},
+        source_refs=[ref("recipe_input", True) | {"record_id": None}],
+        base_image_digest="scratch",
+        built_image_digest="sha256:" + "1" * 64,
+        baseline_recipe_ref=None,
+        build_disposition="BUILT",
+    )
+    recipe = EnvironmentRecipe.model_validate_json(json.dumps(recipe_data))
+    recipe_ref = h.records.stage_record(recipe)
     process_data = make("HypothesisProcessState")
     process_data.update(
         status="ASSIGNED",
@@ -99,7 +114,7 @@ def test_public_sandbox_context_binds_current_plan_and_run_local_profiles(
             )
         )
     )
-    for record in (requirements, plan, process, target):
+    for record in (requirements, plan, recipe, process, target):
         h.publish(record)
         if invalid == "plan" and record == plan:
             continue
@@ -154,6 +169,13 @@ def test_public_sandbox_context_binds_current_plan_and_run_local_profiles(
     h.publish(other_lifecycle)
     chosen_profile = other_profile_ref if invalid == "profile" else profile_ref
     chosen_lifecycle = other_lifecycle_ref if invalid == "lifecycle" else lifecycle
+    phase_ref = (
+        recipe_ref
+        if run_phase
+        else StoredDataRef.model_validate(
+            ref("recipe_source", True) | {"record_id": None}
+        )
+    )
     h.evidence.identities[profile_ref] = RequesterRole.REPRODUCTION_SETUP_AUTOMATION
     candidate = ActionRequest.model_validate_json(
         json.dumps(
@@ -171,6 +193,7 @@ def test_public_sandbox_context_binds_current_plan_and_run_local_profiles(
                 sandbox_profile_ref=chosen_profile.model_dump(mode="json"),
                 resource_profile_ref=chosen_lifecycle.model_dump(mode="json"),
                 run_policy_state_ref=ref("run_policy_state", True),
+                image_digest=("sha256:" + "1" * 64) if run_phase else None,
                 input_refs=[
                     r.model_dump(mode="json")
                     for r in (
@@ -179,6 +202,7 @@ def test_public_sandbox_context_binds_current_plan_and_run_local_profiles(
                         plan_ref,
                         chosen_profile,
                         chosen_lifecycle,
+                        phase_ref,
                     )
                 ],
             )

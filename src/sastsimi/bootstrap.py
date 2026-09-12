@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TextIO, cast
+from typing import TYPE_CHECKING, Literal, Protocol, TextIO, cast
 
-from sastsimi.agents.hypothesis import HypothesisAgent
-from sastsimi.agents.verification import VerificationAgent
 from sastsimi.config.loader import ConfigError as ConfigError
 from sastsimi.config.loader import load_config
 from sastsimi.config.models import AppConfig
@@ -21,42 +19,32 @@ from sastsimi.contracts.ids import (
     CommitId,
     LogicalRecordId,
     RecordId,
-    WorkId,
     WorkspaceId,
 )
-from sastsimi.contracts.llm import LLMInvocationLog
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
-from sastsimi.contracts.verification import ConEvidenceResult, ProEvidenceResult
-from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.logging import SafeJsonHandler, safe_event
-from sastsimi.orchestration.hypothesis_workflow import HypothesisWorkflow
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
 from sastsimi.ports.llm_provider import LLMProviderAdapter
 from sastsimi.ports.trusted_evidence import TrustedEvidencePort
-from sastsimi.prompts.builder import PromptBuilder
-from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
 from sastsimi.runtime.services import RuntimeServices
-from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.storage.action_validator import (
     RuntimeValidator as SQLiteRuntimeValidator,
 )
 from sastsimi.storage.schema_version import MigrationRequired as MigrationRequired
-from sastsimi.verification.debate_service import (
-    CurrentEvidenceParallelLimit,
-    DebateService,
-)
-from sastsimi.verification.revision_workflow import RevisionWorkflow
-from sastsimi.verification.service import VerificationService
-from sastsimi.verification.verdict_router import VerdictRouter
 
 if TYPE_CHECKING:
+    from sastsimi.contracts.dynamic import DynamicReproductionRequest
     from sastsimi.contracts.evaluation import AnalysisRunResult
+    from sastsimi.contracts.hypothesis import HypothesisProcessState
     from sastsimi.contracts.reporting import ReportDraft
     from sastsimi.contracts.static import StaticToolProfile
+    from sastsimi.contracts.work import WorkExecutionState
     from sastsimi.orchestration.fake_pipeline import FakePipeline
     from sastsimi.orchestration.fake_scenario_runtime import WorkflowBundle
+    from sastsimi.orchestration.hypothesis_workflow import HypothesisWorkflow
+    from sastsimi.orchestration.primitive_handoff import PrimitiveUpdateHandoff
     from sastsimi.orchestration.static_external_runner import (
         RepositoryRecoveryValidatorPort,
         RepositorySourceCanonicalizer,
@@ -70,16 +58,187 @@ if TYPE_CHECKING:
         StaticNormalizationPublisher,
     )
     from sastsimi.ports.context import ContextLineageReaderPort
-    from sastsimi.ports.dto import StaticRuleMapping
+    from sastsimi.ports.dto import StaticRuleMapping, WorkHandlerResult
     from sastsimi.ports.static_tool import StaticProcessAdapter
     from sastsimi.ports.workspace import WorkspaceLocatorPort
+    from sastsimi.reporting.cwe_work_handler import (
+        CWELabelingHandler,
+        GateCallResolver,
+    )
+    from sastsimi.reporting.rule_scope_gate_handler import (
+        RuleScopeCallResolver,
+        RuleScopeGateHandler,
+    )
+    from sastsimi.reporting.technical_gate_handler import TechnicalGateHandler
+    from sastsimi.reporting.technical_gate_workflow import TechnicalRevisionReconciler
+    from sastsimi.reporting.work_handlers import (
+        FindingNormalizeHandler,
+        ReporterCallResolver,
+        ReporterWorkHandler,
+    )
+    from sastsimi.reproduction.production import DynamicSandboxAuthorizationResolver
+    from sastsimi.reproduction.service import DynamicStageAuthorizations
     from sastsimi.runtime.workflow_runner import WorkflowRunner
     from sastsimi.static_analysis.coordinator import StaticToolCoordinator
     from sastsimi.static_analysis.normalizer import DecoderKey, RawDecoder
+    from sastsimi.verification.completion import VerificationCompletionCoordinator
     from sastsimi.verification.context_service import (
         ContextRetrievalService,
         TrackedFilesResolver,
     )
+    from sastsimi.verification.debate_service import DebateService
+    from sastsimi.verification.revision_workflow import RevisionWorkflow
+    from sastsimi.verification.service import VerificationService
+    from sastsimi.verification.verdict_router import VerdictRouter
+
+
+class DynamicExecutor(Protocol):
+    async def __call__(
+        self,
+        *,
+        work: WorkExecutionState,
+        request: DynamicReproductionRequest,
+        request_ref: StoredDataRef,
+        authorizations: DynamicStageAuthorizations,
+    ) -> WorkHandlerResult: ...
+
+
+type CurrentProcessResolver = Callable[
+    [DynamicReproductionRequest], HypothesisProcessState
+]
+
+
+@dataclass(frozen=True)
+class T11Services:
+    """Production T11 slice assembled only at the application composition root."""
+
+    execute_dynamic: DynamicExecutor
+    current_process: CurrentProcessResolver
+    completion: VerificationCompletionCoordinator
+
+    async def execute(
+        self,
+        *,
+        work: WorkExecutionState,
+        request: DynamicReproductionRequest,
+        request_ref: StoredDataRef,
+        authorizations: DynamicStageAuthorizations,
+    ) -> WorkHandlerResult:
+        process = self.current_process(request)
+        _require_current_dynamic_request(work, request, request_ref, process)
+        result = await self.execute_dynamic(
+            work=work,
+            request=request,
+            request_ref=request_ref,
+            authorizations=authorizations,
+        )
+        if len(result.output_refs) != 1 or any(
+            output.data_kind != "dynamic_reproduction_result"
+            for output in result.output_refs
+        ):
+            raise ValueError("R7_OUTPUT_AUTHORITY_DENIED")
+        return result
+
+
+@dataclass(frozen=True)
+class T12Services:
+    """CWE, Gate, Finding, and Reporter services owned by root composition."""
+
+    cwe: CWELabelingHandler
+    technical: TechnicalGateHandler
+    rule_scope: RuleScopeGateHandler
+    finding: FindingNormalizeHandler
+    reporter: ReporterWorkHandler
+    primitive_handoff: PrimitiveUpdateHandoff
+    technical_revisions: TechnicalRevisionReconciler
+
+
+def _require_current_dynamic_request(
+    work: WorkExecutionState,
+    request: DynamicReproductionRequest,
+    request_ref: StoredDataRef,
+    process: HypothesisProcessState,
+) -> None:
+    if not isinstance(work.meta, RecordMeta) or not isinstance(
+        process.meta, RecordMeta
+    ):
+        raise ValueError("DYNAMIC_REQUEST_NOT_CURRENT")
+    if (
+        reference(request) != request_ref
+        or work.work_type != "DYNAMIC_REPRO"
+        or work.status != "RUNNING"
+        or work.active_attempt_id is None
+        or work.input_refs != (request_ref,)
+        or request.verification_generation != work.work_generation
+        or process.status != "VERIFYING"
+        or process.verification_generation != request.verification_generation
+        or process.verification_assignment_ref != request.verification_assignment_ref
+        or request.meta.analysis_id != work.meta.analysis_id
+        or request.meta.workspace_id != work.meta.workspace_id
+        or request.meta.commit_id != work.meta.commit_id
+        or request.meta.hypothesis_id != work.meta.hypothesis_id
+        or process.meta.analysis_id != work.meta.analysis_id
+        or process.meta.workspace_id != work.meta.workspace_id
+        or process.meta.commit_id != work.meta.commit_id
+        or process.meta.hypothesis_id != work.meta.hypothesis_id
+    ):
+        raise ValueError("DYNAMIC_REQUEST_NOT_CURRENT")
+
+
+def _current_process_from(
+    records: Callable[[str, str], tuple[object, ...]],
+) -> CurrentProcessResolver:
+    """Build an exact current-process resolver over the runtime query port."""
+
+    from sastsimi.contracts.hypothesis import HypothesisProcessState
+
+    def resolve(request: DynamicReproductionRequest) -> HypothesisProcessState:
+        candidates = tuple(
+            item
+            for item in records(
+                str(request.meta.analysis_id), "hypothesis_process_state"
+            )
+            if isinstance(item, HypothesisProcessState)
+            and item.meta.hypothesis_id == request.meta.hypothesis_id
+        )
+        if len(candidates) != 1:
+            raise ValueError("DYNAMIC_REQUEST_NOT_CURRENT")
+        return candidates[0]
+
+    return resolve
+
+
+def _dynamic_executor(
+    execute: Callable[..., Awaitable[WorkHandlerResult]],
+) -> DynamicExecutor:
+    """Narrow an injected workflow method to the T11 executor seam."""
+
+    async def invoke(
+        *,
+        work: WorkExecutionState,
+        request: DynamicReproductionRequest,
+        request_ref: StoredDataRef,
+        authorizations: DynamicStageAuthorizations,
+    ) -> WorkHandlerResult:
+        return await execute(
+            work=work,
+            request=request,
+            request_ref=request_ref,
+            authorizations=authorizations,
+        )
+
+    return invoke
+
+
+@dataclass(frozen=True)
+class T10Services:
+    """Production T10 slice assembled only at the application composition root."""
+
+    hypothesis: HypothesisWorkflow
+    debate: DebateService
+    verification: VerificationService
+    verdict_router: VerdictRouter
+    revision: RevisionWorkflow
 
 
 @dataclass(frozen=True, slots=True)
@@ -558,6 +717,7 @@ def _build_runtime(
     from sastsimi.runtime.external_call_service import ExternalCallService
     from sastsimi.runtime.intermediate_publication import IntermediatePublicationService
     from sastsimi.runtime.llm_call_service import ExactAdapterResolver, LLMCallService
+    from sastsimi.runtime.policy_runtime import PolicyRuntimeService
     from sastsimi.runtime.queries import RuntimeQueries
     from sastsimi.runtime.recovery_service import RecoveryService
     from sastsimi.runtime.transition_service import TransitionService
@@ -584,6 +744,7 @@ def _build_runtime(
         IntermediatePublicationService as SQLiteIntermediates,
     )
     from sastsimi.storage.llm_session_guard import LLMParentSessionGuard
+    from sastsimi.storage.policy_runtime import PolicyRuntime as SQLitePolicyRuntime
     from sastsimi.storage.queries import RuntimeQueries as SQLiteQueries
     from sastsimi.storage.recovery_service import RecoveryService as SQLiteRecovery
     from sastsimi.storage.repositories import SQLiteRecordStore
@@ -678,6 +839,7 @@ def _build_runtime(
             )
         ),
         llm_calls,
+        PolicyRuntimeService(SQLitePolicyRuntime(works), clock, ids),
     )
 
 
@@ -720,34 +882,22 @@ def build_t10_services(
     role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
 ) -> T10Services:
     """Build the real T10 role slice after runtime identities are registered."""
-
-    return compose_t10_services(
-        runtime=runtime,
-        runner=runner,
-        clock=clock,
-        ids=ids,
-        role_identity_refs=role_identity_refs,
+    from sastsimi.agents.hypothesis import HypothesisAgent
+    from sastsimi.agents.verification import VerificationAgent
+    from sastsimi.contracts.ids import WorkId
+    from sastsimi.contracts.llm import LLMInvocationLog
+    from sastsimi.contracts.refs import reference
+    from sastsimi.contracts.verification import ConEvidenceResult, ProEvidenceResult
+    from sastsimi.orchestration.hypothesis_workflow import HypothesisWorkflow
+    from sastsimi.ports.llm_invocation import PersistedLLMInvocation
+    from sastsimi.prompts.builder import PromptBuilder
+    from sastsimi.verification.debate_service import (
+        CurrentEvidenceParallelLimit,
+        DebateService,
     )
-
-
-@dataclass(frozen=True)
-class T10Services:
-    hypothesis: HypothesisWorkflow
-    debate: DebateService
-    verification: VerificationService
-    verdict_router: VerdictRouter
-    revision: RevisionWorkflow
-
-
-def compose_t10_services(
-    *,
-    runtime: RuntimeServices,
-    runner: WorkflowRunner,
-    clock: Clock,
-    ids: IdGenerator,
-    role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
-) -> T10Services:
-    """Compose real T09-backed roles without selecting a Provider or model."""
+    from sastsimi.verification.revision_workflow import RevisionWorkflow
+    from sastsimi.verification.service import VerificationService
+    from sastsimi.verification.verdict_router import VerdictRouter
 
     records = runtime.unit_of_work.records
     artifacts = runtime.unit_of_work.artifacts
@@ -875,5 +1025,339 @@ def compose_t10_services(
         revision=RevisionWorkflow(
             registrar=runtime.verification_registration,
             records=records,
+        ),
+    )
+
+
+def build_t11_services(
+    *,
+    runtime: RuntimeServices,
+    runner: WorkflowRunner,
+    clock: Clock,
+    ids: IdGenerator,
+    workspace_root: Path,
+    workspace_id: WorkspaceId,
+    commit_id: CommitId,
+    role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
+    sandbox_authorization: DynamicSandboxAuthorizationResolver,
+    verification: VerificationService,
+    docker_executable: str = "docker",
+) -> T11Services:
+    """Build the real local-Docker T11 slice after trusted config resolution."""
+
+    from sastsimi.agents.dynamic_reproduction import DynamicReproductionAgent
+    from sastsimi.contracts.ids import WorkId
+    from sastsimi.ports.dynamic_sandbox import (
+        DynamicDockerExecutionPort,
+        ReproductionSetupPort,
+        SandboxControllerPort,
+    )
+    from sastsimi.ports.reproduction_session import ReproductionSessionPort
+    from sastsimi.reproduction.production import (
+        ProductionDynamicExecutor,
+        ProductionDynamicWorkflow,
+        RuntimeDynamicRecordSink,
+    )
+    from sastsimi.reproduction.service import DynamicAgentPort
+    from sastsimi.sandbox.cleanup import OwnedResourceRegistry
+    from sastsimi.sandbox.controller import SandboxController
+    from sastsimi.sandbox.docker_adapter import DockerAdapter
+    from sastsimi.sandbox.health_check import SandboxHealthChecker
+    from sastsimi.sandbox.recipe_store import EnvironmentRecipeStore
+    from sastsimi.sandbox.session_manager import ReproductionSessionManager
+    from sastsimi.sandbox.setup_automation import ReproductionSetupAutomation
+    from sastsimi.verification.completion import VerificationCompletionCoordinator
+
+    artifacts = runtime.unit_of_work.artifacts
+    docker = DockerAdapter(docker_executable)
+    setup = ReproductionSetupAutomation(
+        docker=docker,
+        recipes=EnvironmentRecipeStore(),
+        health=SandboxHealthChecker(),
+        resources=OwnedResourceRegistry(),
+    )
+    controller = SandboxController(
+        workspace_root=workspace_root,
+        workspace_id=str(workspace_id),
+        commit_id=str(commit_id),
+        record_resolver=runtime.unit_of_work.records.get_exact,
+    )
+    agent = DynamicReproductionAgent(
+        llm_calls=runtime.llm_calls,
+        artifacts=artifacts,
+        ids=ids,
+        clock=clock,
+    )
+    sessions = ReproductionSessionManager(clock=clock, ids=ids)
+    sink = RuntimeDynamicRecordSink(runner, role_identity_refs)
+    process_resolver = _current_process_from(runtime.queries.current_records)
+
+    def resolve_work(work_id: WorkId) -> WorkExecutionState | None:
+        try:
+            return runtime.work.get(str(work_id))
+        except LookupError:
+            return None
+
+    verification_identity = role_identity_refs.get(RequesterRole.VERIFICATION)
+    if verification_identity is None:
+        raise ValueError("VERIFICATION_IDENTITY_REQUIRED")
+
+    def workflow_factory(work: WorkExecutionState) -> ProductionDynamicWorkflow:
+        return ProductionDynamicWorkflow(
+            work=work,
+            controller=cast(SandboxControllerPort, controller),
+            setup=cast(ReproductionSetupPort, setup),
+            docker=cast(DynamicDockerExecutionPort, docker),
+            sessions=cast(ReproductionSessionPort, sessions),
+            artifacts=artifacts,
+            clock=clock,
+            ids=ids,
+            sink=sink,
+            authorization=sandbox_authorization,
+        )
+
+    production = ProductionDynamicExecutor(
+        cast(DynamicAgentPort, agent), workflow_factory
+    )
+    return T11Services(
+        execute_dynamic=_dynamic_executor(production),
+        current_process=process_resolver,
+        completion=VerificationCompletionCoordinator(
+            verification=verification,
+            runner=runner,
+            records=runtime.unit_of_work.records,
+            work_resolver=resolve_work,
+            current_process=process_resolver,
+            verification_identity_ref=verification_identity,
+        ),
+    )
+
+
+def build_t12_services(
+    *,
+    runtime: RuntimeServices,
+    runner: WorkflowRunner,
+    clock: Clock,
+    ids: IdGenerator,
+    t10_services: T10Services,
+    taxonomy_version: str,
+    role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
+    cwe_call_resolver: GateCallResolver,
+    technical_call_resolver: GateCallResolver,
+    rule_scope_call_resolver: RuleScopeCallResolver,
+    reporter_call_resolver: ReporterCallResolver,
+) -> T12Services:
+    """Build T12 from trusted call resolvers without choosing Provider/model."""
+
+    from sastsimi.agents.cwe_labeling import CWELabelingAgent
+    from sastsimi.agents.reporter import ReporterAgent
+    from sastsimi.agents.rule_scope_gate import RuleScopeGateAgent
+    from sastsimi.agents.technical_gate import TechnicalGateAgent
+    from sastsimi.contracts.hypothesis import (
+        HypothesisProcessState,
+        VerificationAssignment,
+    )
+    from sastsimi.contracts.verification import VerificationResult
+    from sastsimi.orchestration.primitive_handoff import PrimitiveUpdateHandoff
+    from sastsimi.reporting.cwe_work_handler import CWELabelingHandler
+    from sastsimi.reporting.cwe_workflow import CWELabelingService
+    from sastsimi.reporting.finding_normalization import FindingNormalizationService
+    from sastsimi.reporting.rule_scope_gate_handler import (
+        RuleScopeGateHandler,
+        StoredRuleScopeInputResolver,
+        WorkflowRuleScopePublisher,
+    )
+    from sastsimi.reporting.rule_scope_gate_workflow import (
+        ExactRuleScopePromptGuard,
+        RuleScopeGateService,
+    )
+    from sastsimi.reporting.technical_gate_handler import TechnicalGateHandler
+    from sastsimi.reporting.technical_gate_workflow import (
+        TechnicalGateService,
+        TechnicalRevisionReconciler,
+    )
+    from sastsimi.reporting.work_handlers import (
+        FindingNormalizeHandler,
+        ReporterDraftWorkflow,
+        ReporterWorkHandler,
+        StoredReporterInputResolver,
+    )
+    from sastsimi.runtime.llm_invocation_provenance import (
+        validate_llm_invocation_provenance,
+    )
+
+    records = runtime.unit_of_work.records
+    artifacts = runtime.unit_of_work.artifacts
+
+    def metadata(
+        source: RecordMeta, record_type: str, attempt_id: AttemptId | None
+    ) -> RecordMeta:
+        record_id = ids.new(RecordId)
+        return RecordMeta(
+            record_id=record_id,
+            logical_record_id=LogicalRecordId(str(record_id)),
+            record_type=record_type,
+            schema_version=source.schema_version,
+            revision_number=1,
+            previous_record_id=None,
+            created_at=clock.now(),
+            analysis_id=source.analysis_id,
+            workspace_id=source.workspace_id,
+            commit_id=source.commit_id,
+            hypothesis_id=source.hypothesis_id,
+            attempt_id=attempt_id,
+        )
+
+    def identity(role: RequesterRole) -> BudgetScopeRef:
+        value = role_identity_refs.get(role)
+        if value is None:
+            raise ValueError(f"{role.value}_IDENTITY_REQUIRED")
+        return value
+
+    def stored_identity(role: RequesterRole) -> StoredDataRef:
+        value = identity(role)
+        if not isinstance(value, StoredDataRef):
+            raise ValueError(f"{role.value}_CODE_SCOPE_IDENTITY_REQUIRED")
+        return value
+
+    def current_owner(verification: VerificationResult) -> StoredDataRef:
+        candidates = tuple(
+            item
+            for item in runtime.queries.current_records(
+                str(verification.meta.analysis_id), "hypothesis_process_state"
+            )
+            if isinstance(item, HypothesisProcessState)
+            and item.meta.hypothesis_id == verification.meta.hypothesis_id
+        )
+        if (
+            len(candidates) != 1
+            or candidates[0].status != "TERMINAL"
+            or candidates[0].verification_result_ref != reference(verification)
+            or candidates[0].verification_assignment_ref is None
+        ):
+            raise ValueError("STALE_VERIFICATION_OWNER")
+        assignment_ref = candidates[0].verification_assignment_ref
+        assignment = records.get_exact(assignment_ref)
+        if (
+            not isinstance(assignment, VerificationAssignment)
+            or reference(assignment) != assignment_ref
+            or assignment.status != "ACTIVE"
+        ):
+            raise ValueError("STALE_VERIFICATION_OWNER")
+        return assignment.owner_identity_ref
+
+    def reporter_owner(work: WorkExecutionState) -> StoredDataRef:
+        refs = tuple(
+            ref
+            for ref in work.input_refs
+            if isinstance(ref, StoredDataRef) and ref.data_kind == "verification_result"
+        )
+        if len(refs) != 1:
+            raise ValueError("STALE_VERIFICATION_OWNER")
+        verification = records.get_exact(refs[0])
+        if not isinstance(verification, VerificationResult):
+            raise ValueError("STALE_VERIFICATION_OWNER")
+        return current_owner(verification)
+
+    def current_policy_state(analysis_id: str) -> StoredDataRef:
+        state_ref = runtime.budget_registry.current_state(
+            analysis_id
+        ).run_policy_state_ref
+        if not isinstance(state_ref, StoredDataRef):
+            raise ValueError("CURRENT_RUN_POLICY_STATE_REQUIRED")
+        return state_ref
+
+    cwe_agent = CWELabelingAgent(
+        llm_calls=runtime.llm_calls,
+        records=records,
+        artifacts=artifacts,
+        metadata_factory=metadata,
+        provenance_validator=validate_llm_invocation_provenance,
+    )
+    cwe_service = CWELabelingService(
+        agent=cwe_agent,
+        publisher=runner,
+        records=records,
+        identity_ref=identity(RequesterRole.CWE_LABELING),
+        taxonomy_version=taxonomy_version,
+    )
+    technical_agent = TechnicalGateAgent(
+        llm_calls=runtime.llm_calls,
+        records=records,
+        artifacts=artifacts,
+        metadata_factory=metadata,
+        provenance_validator=validate_llm_invocation_provenance,
+    )
+    technical_service = TechnicalGateService(
+        agent=technical_agent,
+        publisher=runner,
+        records=records,
+        identity_ref=identity(RequesterRole.TECHNICAL_GATE),
+        orchestration_identity_ref=identity(RequesterRole.ORCHESTRATION),
+        t10_services=t10_services,
+        ready_work=runner,
+    )
+    rule_scope_agent = RuleScopeGateAgent(
+        llm_calls=runtime.llm_calls,
+        records=records,
+        artifacts=artifacts,
+        provenance_validator=validate_llm_invocation_provenance,
+    )
+    rule_scope_service = RuleScopeGateService(
+        agent=rule_scope_agent,
+        execution_factory=None,
+        publisher=WorkflowRuleScopePublisher(runner),
+        metadata_factory=metadata,
+        id_factory=lambda _prefix: str(ids.new(RecordId)),
+        current_owner=current_owner,
+        current_policy_state=current_policy_state,
+        prompt_guard=ExactRuleScopePromptGuard(records=records, artifacts=artifacts),
+    )
+    rule_scope_inputs = StoredRuleScopeInputResolver(
+        records=records,
+        artifacts=artifacts,
+        resolve_call=rule_scope_call_resolver,
+        current_owner=current_owner,
+        gate_identity_ref=stored_identity(RequesterRole.RULE_SCOPE_GATE),
+    )
+    finding_service = FindingNormalizationService(
+        records=records,
+        current_records=runtime.queries.current_records,
+        published_records=runtime.queries.published_records,
+        ids=ids,
+        clock=clock,
+    )
+    reporter_agent = ReporterAgent(
+        llm_calls=runtime.llm_calls,
+        records=records,
+        artifacts=artifacts,
+        provenance_validator=validate_llm_invocation_provenance,
+        owner_resolver=reporter_owner,
+    )
+    reporter_workflow = ReporterDraftWorkflow(
+        agent=reporter_agent,
+        records=records,
+        artifacts=artifacts,
+        metadata_factory=metadata,
+    )
+    reporter_inputs = StoredReporterInputResolver(
+        records=records, resolve_call=reporter_call_resolver
+    )
+    return T12Services(
+        cwe=CWELabelingHandler(cwe_service, cwe_call_resolver),
+        technical=TechnicalGateHandler(technical_service, technical_call_resolver),
+        rule_scope=RuleScopeGateHandler(
+            rule_scope_service, resolve_inputs=rule_scope_inputs
+        ),
+        finding=FindingNormalizeHandler(service=finding_service, records=records),
+        reporter=ReporterWorkHandler(
+            workflow=reporter_workflow, resolve_inputs=reporter_inputs
+        ),
+        primitive_handoff=PrimitiveUpdateHandoff(
+            records=records, current=runtime.queries, ready_work=runner
+        ),
+        technical_revisions=TechnicalRevisionReconciler(
+            service=technical_service,
+            current=runtime.queries,
         ),
     )

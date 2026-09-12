@@ -8,6 +8,7 @@ import pytest
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.policy import PolicyCollectionResult, RunPolicyState
+from sastsimi.contracts.refs import reference
 from tests.contract.domain.canonical_fixtures import make
 from tests.integration.storage.test_intermediate_publication import (
     prepared_policy_parser,
@@ -20,7 +21,11 @@ from tests.integration.storage.test_intermediate_publication import (
 def test_policy_completion_atomically_pins_analysis_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid: str | None
 ) -> None:
-    h, runtime, runner, work, parser, decision = prepared_policy_parser(tmp_path)
+    h, runtime, runner, work, parser, decision = prepared_policy_parser(
+        tmp_path, prepare=True
+    )
+    preparing = runtime.policy.current_state("a1")
+    assert preparing is not None
     (parser_ref,) = runtime.intermediate.publish(str(work.work_id), decision, (parser,))
     identity = next(
         ref
@@ -48,7 +53,7 @@ def test_policy_completion_atomically_pins_analysis_state(
     policy = RunPolicyState.model_validate_json(
         canonical_bytes(
             dict(
-                meta=runner.metadata(work.meta, "run_policy_state"),
+                meta=runner.revision_metadata(preparing.meta),
                 program_id="program",
                 status="UNVERIFIED",
                 preparation_source="COLLECTED",
@@ -69,9 +74,7 @@ def test_policy_completion_atomically_pins_analysis_state(
     refs = (h.records.stage_record(policy), collection_ref, parser_ref)
     if invalid in {"program", "work"}:
         data = policy.model_dump(mode="json")
-        data["meta"].update(
-            record_id="invalid-policy", logical_record_id="invalid-policy"
-        )
+        data["meta"]["record_id"] = f"invalid-{invalid}-policy"
         if invalid == "program":
             data["program_id"] = "another-program"
         else:
@@ -84,7 +87,9 @@ def test_policy_completion_atomically_pins_analysis_state(
             runner.complete(
                 work, identity, "POLICY_COLLECTOR", (policy, collection, parser)
             )
-        assert runtime.budget_registry.current_state("a1").run_policy_state_ref is None
+        assert runtime.budget_registry.current_state(
+            "a1"
+        ).run_policy_state_ref == reference(preparing)
         return
     if invalid is not None:
 
@@ -107,7 +112,7 @@ def test_policy_completion_atomically_pins_analysis_state(
             assert h.records.get_exact(refs[0]) == policy
             assert runtime.work.get(str(work.work_id)).status == "SUCCEEDED"
         else:
-            assert state.run_policy_state_ref is None
+            assert state.run_policy_state_ref == reference(preparing)
             with pytest.raises(LookupError):
                 h.records.get_exact(refs[0])
             assert runtime.work.get(str(work.work_id)).status == "RUNNING"

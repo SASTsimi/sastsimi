@@ -97,6 +97,33 @@ class FakeRecords:
                 return record
         raise LookupError(ref.record_id)
 
+    def is_revision_descendant(
+        self, earlier_ref: RecordRef, later_ref: RecordRef
+    ) -> bool:
+        earlier = self.get_exact(earlier_ref)
+        current = self.get_exact(later_ref)
+        if (
+            type(earlier.meta) is not type(current.meta)
+            or earlier.meta.logical_record_id != current.meta.logical_record_id
+            or earlier.meta.record_type != current.meta.record_type
+            or current.meta.revision_number < earlier.meta.revision_number
+        ):
+            return False
+        by_record_id = {record.meta.record_id: record for _, record in self.entries}
+        visited = set()
+        while current.meta.record_id != earlier.meta.record_id:
+            if (
+                current.meta.record_id in visited
+                or current.meta.previous_record_id is None
+            ):
+                return False
+            visited.add(current.meta.record_id)
+            predecessor = by_record_id.get(current.meta.previous_record_id)
+            if predecessor is None:
+                return False
+            current = predecessor
+        return True
+
     def stage_record(self, record: Record) -> RecordRef:
         raise NotImplementedError
 

@@ -22,7 +22,11 @@ from tests.integration.runtime_support import Harness
 
 
 def prepared_policy_parser(
-    tmp_path: Path, *, context: bool = False, parallel: int = 1
+    tmp_path: Path,
+    *,
+    context: bool = False,
+    parallel: int = 1,
+    prepare: bool = False,
 ) -> tuple[Any, ...]:
     h = Harness(tmp_path)
     execution = h.execution(max_work=20)
@@ -136,7 +140,27 @@ def prepared_policy_parser(
         RunStoredDataRef.model_validate_json(json.dumps(workspace_ref)),
     )
     runner = WorkflowRunner(runtime, h.clock, h.ids)
-    work = runner.start(scope, binding.meta, "POLICY_FETCH", "ANALYSIS", "a1", identity)
+    if prepare:
+        pending = runner.begin_policy(
+            scope,
+            binding.meta,
+            identity,
+            program_id="program",
+            source_config_ref=identity,
+            parser_name="fake",
+            parser_version="1",
+        ).work
+        ready = runner.enqueue_registered(pending, scope, identity)
+        work = runner.activate(ready, scope, identity)
+    else:
+        work = runner.start(
+            scope,
+            binding.meta,
+            "POLICY_FETCH",
+            "ANALYSIS",
+            "a1",
+            identity,
+        )
     h.evidence.identities[identity] = RequesterRole.POLICY_PARSER
     metadata = runner.metadata(binding.meta, "policy_parser_result")
     metadata["attempt_id"] = work.active_attempt_id

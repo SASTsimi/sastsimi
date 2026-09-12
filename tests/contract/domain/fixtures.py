@@ -294,6 +294,7 @@ def event() -> dict[str, Any]:
         input_refs=[],
         output_refs=[],
         exit_code=None,
+        timed_out=None,
         safe_message="Setup unavailable",
         occurred_at="2026-09-08T00:00:00Z",
     )

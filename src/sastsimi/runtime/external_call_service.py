@@ -2,12 +2,10 @@
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Literal
 
 from sastsimi.contracts.refs import RecordRef
+from sastsimi.ports.llm_invocation import ExternalDispatchState
 from sastsimi.ports.runtime_store import ActionAuthorizationPort
-
-type ExternalDispatchState = Literal["RETURNED", "UNRESOLVED"]
 
 
 @dataclass(frozen=True)

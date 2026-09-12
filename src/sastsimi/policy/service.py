@@ -7,7 +7,6 @@ from typing import Any
 
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.ids import LogicalRecordId, RecordId
 from sastsimi.contracts.policy import (
     PolicyCacheRecord,
     PolicyCollectionResult,
@@ -16,17 +15,16 @@ from sastsimi.contracts.policy import (
     ProgramPolicyRecord,
     RunPolicyState,
 )
-from sastsimi.contracts.records import PolicyCacheMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.ports.dto import OfficialPolicyFetchRequest, OfficialPolicySource
 from sastsimi.ports.fake_workflow import PolicyFetcher, ProviderInvoker, ProviderProber
+from sastsimi.ports.policy_runtime import PolicyCacheKey
 from sastsimi.runtime.fake_llm_configuration import register_fake_llm_call
 from sastsimi.runtime.fake_llm_invocation import (
     invoke_fake_provider,
     persist_fake_invocation,
 )
 from sastsimi.runtime.fake_support import (
-    ANALYSIS_ID,
     PROGRAM_ID,
     FakeClock,
     FakeEvidence,
@@ -89,13 +87,20 @@ class PolicyPreparationService:
 
     def start(self, scope: StoredDataRef, orchestrator_ref: StoredDataRef) -> Any:
         self.evidence.bind_identity(orchestrator_ref, RequesterRole.ORCHESTRATION)
-        return self.runner.start(
+        preparation = self.runner.begin_policy(
             scope,
             self._record_meta("fake_policy_stage"),
-            "POLICY_FETCH",
-            "ANALYSIS",
-            str(ANALYSIS_ID),
             orchestrator_ref,
+            program_id=str(PROGRAM_ID),
+            source_config_ref=scope,
+            parser_name="fake-policy-parser",
+            parser_version="1",
+        )
+        return self.runner.activate(
+            preparation.work,
+            scope,
+            orchestrator_ref,
+            role="ORCHESTRATION",
         )
 
     def prepare(
@@ -152,6 +157,7 @@ class PolicyPreparationService:
         )
         self.runner.account(fetch_reservation, fetch_units)
         if fetched_source != expected_source:
+            self.runtime.policy.reject_preparing(work)
             raise ValueError("FAKE_POLICY_SOURCE_MISMATCH")
         criterion = self._artifact("freshness_criterion", record=True)
         parser_candidate = PolicyParserResult.model_validate_json(
@@ -275,15 +281,18 @@ class PolicyPreparationService:
         )
         collection_ref = reference(collection)
         assert isinstance(collection_ref, StoredDataRef)
-        cache_meta = PolicyCacheMeta(
-            record_id=self.ids.new(RecordId),
-            logical_record_id=LogicalRecordId("fake-policy-cache"),
-            record_type="policy_cache_record",
+        preparing = self.runtime.policy.current_state(str(work.meta.analysis_id))
+        if preparing is None or preparing.status != "PREPARING":
+            raise ValueError("POLICY_PREPARING_REQUIRED")
+        cache_meta = self.runtime.policy.cache_metadata(
+            PolicyCacheKey(
+                program_id=PROGRAM_ID,
+                source_config_hash=scope.content_hash,
+                parser_name="fake-policy-parser",
+                parser_version="1",
+                freshness_criterion_hash=criterion.content_hash,
+            ),
             schema_version="1.0.0",
-            revision_number=1,
-            previous_record_id=None,
-            created_at=checked,
-            program_id=PROGRAM_ID,
         )
         cache = PolicyCacheRecord.model_validate_json(
             canonical_bytes(
@@ -308,7 +317,7 @@ class PolicyPreparationService:
         state = RunPolicyState.model_validate_json(
             canonical_bytes(
                 dict(
-                    meta=self.runner.metadata(work.meta, "run_policy_state"),
+                    meta=self.runner.revision_metadata(preparing.meta),
                     program_id=PROGRAM_ID,
                     status="CURRENT",
                     preparation_source="COLLECTED",

@@ -19,8 +19,9 @@ from sastsimi.contracts.ids import (
     TransitionId,
     WorkId,
 )
+from sastsimi.contracts.policy import RunPolicyState
 from sastsimi.contracts.records import RecordMeta, RecordMetadata
-from sastsimi.contracts.refs import BudgetScopeRef, RecordRef
+from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef
 from sastsimi.contracts.work import (
     StateTransition,
     TransitionCommit,
@@ -36,6 +37,7 @@ from sastsimi.ports.dto import (
     TransitionCommitRequest,
 )
 from sastsimi.ports.id_generator import IdGenerator
+from sastsimi.ports.policy_runtime import PolicyPreparation
 
 from .services import RuntimeServices
 
@@ -227,23 +229,7 @@ class WorkflowRunner:
         )
         if decision.decision != "ALLOW":
             if reservation is not None:
-                released = BudgetReservation.model_validate_json(
-                    canonical_bytes(
-                        reservation.model_dump()
-                        | dict(
-                            meta=reservation.meta.model_dump()
-                            | dict(
-                                record_id=self.ids.new(RecordId),
-                                previous_record_id=reservation.meta.record_id,
-                                revision_number=reservation.meta.revision_number + 1,
-                                created_at=self.clock.now(),
-                            ),
-                            status="RELEASED",
-                            finalized_at=self.clock.now(),
-                        )
-                    )
-                )
-                self.runtime.budget.release(BudgetReleaseRequest(released))
+                self._release_reservation(reservation)
             reasons = "; ".join(
                 check.reason_code
                 for check in decision.check_results
@@ -251,6 +237,25 @@ class WorkflowRunner:
             )
             raise ValueError("ACTION_DENIED: " + reasons)
         return records.stage_record(decision)
+
+    def _release_reservation(self, reservation: BudgetReservation) -> None:
+        released = BudgetReservation.model_validate_json(
+            canonical_bytes(
+                reservation.model_dump()
+                | dict(
+                    meta=reservation.meta.model_dump()
+                    | dict(
+                        record_id=self.ids.new(RecordId),
+                        previous_record_id=reservation.meta.record_id,
+                        revision_number=reservation.meta.revision_number + 1,
+                        created_at=self.clock.now(),
+                    ),
+                    status="RELEASED",
+                    finalized_at=self.clock.now(),
+                )
+            )
+        )
+        self.runtime.budget.release(BudgetReleaseRequest(released))
 
     def account(self, reservation: BudgetReservation, actual: BudgetUnits) -> None:
         records = self.runtime.unit_of_work.records
@@ -321,6 +326,139 @@ class WorkflowRunner:
         parent: RecordRef | None = None,
         trigger_primitive_ref: RecordRef | None = None,
     ) -> WorkExecutionState:
+        registered = self._register_pending(
+            scope,
+            self._pending_work(
+                metadata,
+                work_type,
+                subject_type,
+                subject_id,
+                generation=generation,
+                inputs=inputs,
+                parent=parent,
+                trigger_primitive_ref=trigger_primitive_ref,
+            ),
+            identity,
+            role=role,
+        )
+        return self.activate(registered, scope, identity, role=role)
+
+    def enqueue(
+        self,
+        scope: BudgetScopeRef,
+        metadata: RecordMetadata,
+        work_type: str,
+        subject_type: str,
+        subject_id: str,
+        identity: BudgetScopeRef,
+        *,
+        role: str = "ORCHESTRATION",
+        generation: int = 1,
+        inputs: tuple[RecordRef, ...] = (),
+        parent: RecordRef | None = None,
+        trigger_primitive_ref: RecordRef | None = None,
+    ) -> WorkExecutionState:
+        """Register and authorize downstream work, stopping before attempt claim."""
+        registered = self._register_pending(
+            scope,
+            self._pending_work(
+                metadata,
+                work_type,
+                subject_type,
+                subject_id,
+                generation=generation,
+                inputs=inputs,
+                parent=parent,
+                trigger_primitive_ref=trigger_primitive_ref,
+            ),
+            identity,
+            role=role,
+        )
+        return self.enqueue_registered(
+            registered,
+            scope,
+            identity,
+            role=role,
+        )
+
+    def begin_policy(
+        self,
+        scope: BudgetScopeRef,
+        metadata: RecordMetadata,
+        identity: BudgetScopeRef,
+        *,
+        program_id: str,
+        source_config_ref: BudgetScopeRef,
+        parser_name: str,
+        parser_version: str,
+        generation: int = 1,
+        role: str = "ORCHESTRATION",
+    ) -> PolicyPreparation:
+        """Atomically register PENDING policy work and its PREPARING state."""
+        analysis_id = getattr(metadata, "analysis_id", None)
+        if analysis_id is None:
+            raise ValueError("POLICY_WORK_REQUIRES_RUN_SCOPE")
+        candidate = self._pending_work(
+            metadata,
+            "POLICY_FETCH",
+            "ANALYSIS",
+            str(analysis_id),
+            generation=generation,
+            inputs=(source_config_ref,),
+            parent=None,
+            trigger_primitive_ref=None,
+        )
+        records = self.runtime.unit_of_work.records
+        request = self.action(candidate, identity, role, "REGISTER_WORK")
+        reservation = self.reserve(candidate, scope, request, self.units(work_count=1))
+        decision_ref = self.authorize(candidate, request, reservation)
+        work_ref = records.stage_record(candidate)
+        if not isinstance(work_ref, StoredDataRef):
+            raise ValueError("POLICY_WORK_REQUIRES_CODE_SCOPE")
+        state = RunPolicyState.model_validate(
+            dict(
+                meta=self.metadata(candidate.meta, "run_policy_state"),
+                program_id=program_id,
+                status="PREPARING",
+                preparation_source=None,
+                source_config_ref=source_config_ref,
+                parser_name=parser_name,
+                parser_version=parser_version,
+                policy_work_ref=work_ref,
+                policy_cache_ref=None,
+                collection_result_ref=None,
+                policy_record_ref=None,
+                freshness_criterion_ref=None,
+                freshness_checked_at=None,
+                freshness_evidence_refs=(),
+                freshness_valid_until=None,
+            )
+        )
+        try:
+            started = self.runtime.policy.begin(
+                candidate,
+                decision_ref,
+                records.stage_record(reservation),
+                state,
+            )
+        except Exception:
+            self._release_reservation(reservation)
+            raise
+        self.account(reservation, reservation.requested_units)
+        return started
+
+    def _pending_work(
+        self,
+        metadata: RecordMetadata,
+        work_type: str,
+        subject_type: str,
+        subject_id: str,
+        *,
+        generation: int,
+        inputs: tuple[RecordRef, ...],
+        parent: RecordRef | None,
+        trigger_primitive_ref: RecordRef | None,
+    ) -> WorkExecutionState:
         metadata_analysis_id = getattr(metadata, "analysis_id", None)
         if subject_type == "ANALYSIS" and subject_id != str(metadata_analysis_id):
             raise ValueError("ANALYSIS_SCOPE_MISMATCH")
@@ -369,6 +507,17 @@ class WorkflowRunner:
                 and input_analysis_id != candidate.meta.analysis_id
             ):
                 raise ValueError("ANALYSIS_SCOPE_MISMATCH")
+        return candidate
+
+    def _register_pending(
+        self,
+        scope: BudgetScopeRef,
+        candidate: WorkExecutionState,
+        identity: BudgetScopeRef,
+        *,
+        role: str,
+    ) -> WorkExecutionState:
+        records = self.runtime.unit_of_work.records
         request = self.action(candidate, identity, role, "REGISTER_WORK")
         reservation = self.reserve(candidate, scope, request, self.units(work_count=1))
         registered = self.runtime.work.register(
@@ -377,7 +526,32 @@ class WorkflowRunner:
             records.stage_record(reservation),
         )
         self.account(reservation, reservation.requested_units)
-        return self.activate(registered, scope, identity, role=role)
+        return registered
+
+    def enqueue_registered(
+        self,
+        registered: WorkExecutionState,
+        scope: BudgetScopeRef,
+        identity: BudgetScopeRef,
+        *,
+        role: str = "ORCHESTRATION",
+    ) -> WorkExecutionState:
+        """Move one exact existing PENDING work to READY without an attempt."""
+        if registered.status != "PENDING":
+            raise ValueError("READY_ENQUEUE_REQUIRES_PENDING")
+        current = self.runtime.work.get(str(registered.work_id))
+        if current != registered:
+            raise ValueError("STALE_REGISTERED_WORK")
+        if self.runtime.work.registration_scope(str(registered.work_id)) != scope:
+            raise ValueError("READY_ENQUEUE_SCOPE_MISMATCH")
+        ready_action = self.action(registered, identity, role, "CHANGE_WORK_STATE")
+        return self.runtime.work.make_ready(
+            self.transition(
+                registered,
+                self.authorize(registered, ready_action),
+                "READY",
+            )
+        )
 
     def activate(
         self,
@@ -390,14 +564,27 @@ class WorkflowRunner:
         records = self.runtime.unit_of_work.records
         metadata = registered.meta
         work_id = registered.work_id
-        ready_action = self.action(registered, identity, role, "CHANGE_WORK_STATE")
-        ready = self.runtime.work.make_ready(
-            self.transition(
-                registered,
-                self.authorize(registered, ready_action),
-                "READY",
+        if registered.status == "PENDING":
+            # Existing trusted aggregate registrars may atomically create a
+            # PENDING work without using WorkflowRunner's REGISTER_WORK
+            # reservation.  `activate` immediately claims an attempt under
+            # the supplied scope, whereas the downstream-only
+            # `enqueue_registered` boundary deliberately requires the exact
+            # registration scope before exposing READY work to another worker.
+            ready_action = self.action(registered, identity, role, "CHANGE_WORK_STATE")
+            ready = self.runtime.work.make_ready(
+                self.transition(
+                    registered,
+                    self.authorize(registered, ready_action),
+                    "READY",
+                )
             )
-        )
+        elif registered.status == "READY":
+            ready = self.runtime.work.get(str(registered.work_id))
+            if ready != registered:
+                raise ValueError("STALE_REGISTERED_WORK")
+        else:
+            raise ValueError("ATTEMPT_START_REQUIRES_PENDING_OR_READY")
         attempt_id = self.ids.new(AttemptId)
         attempt_metadata = self.metadata(metadata, "work_attempt")
         if isinstance(metadata, RecordMeta):

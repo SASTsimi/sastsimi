@@ -79,6 +79,13 @@ def test_true_pipeline_closes_exact_report_without_submission(tmp_path: Path) ->
     assert isinstance(report, ReportDraft)
     published = pipeline.runtime.queries.published_records("fake-analysis")
     published_by_ref = {reference(item): item for item in published}
+    report_decision = published_by_ref[report.action_decision_ref]
+    assert isinstance(report_decision, ActionDecision)
+    report_action = published_by_ref[report_decision.action_ref]
+    assert isinstance(report_action, ActionRequest)
+    assert report_decision.use_status == "USED"
+    assert report_action.action_type == "CREATE_REPORT_DRAFT"
+    assert report_action.requested_by == RequesterRole.VERIFICATION
     actions = tuple(item for item in published if isinstance(item, ActionRequest))
     action_counts = Counter(action.action_type.value for action in actions)
     assert action_counts["RUN_TOOL"] == 2
@@ -170,7 +177,14 @@ def test_true_pipeline_closes_exact_report_without_submission(tmp_path: Path) ->
     for log in logs:
         assert log.parsed_output_ref is not None
         assert log.exposed_response_ref is not None
-        output = published_by_ref[log.parsed_output_ref]
+        if log.parsed_output_ref.record_id is None:
+            assert log.parsed_output_ref == log.exposed_response_ref
+            with pipeline.runtime.unit_of_work.artifacts.open_verified(
+                log.parsed_output_ref
+            ) as stream:
+                parsed_output = stream.read()
+        else:
+            parsed_output = canonical_bytes(published_by_ref[log.parsed_output_ref])
         spec = published_by_ref[log.call_spec_ref]
         assert isinstance(spec, LLMCallSpec)
         request = next(
@@ -243,7 +257,7 @@ def test_true_pipeline_closes_exact_report_without_submission(tmp_path: Path) ->
         with pipeline.runtime.unit_of_work.artifacts.open_verified(
             log.exposed_response_ref
         ) as stream:
-            assert stream.read() == canonical_bytes(output)
+            assert stream.read() == parsed_output
     synthesis = next(
         log
         for log in logs

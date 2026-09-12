@@ -187,6 +187,58 @@ class VerificationService:
             call=call,
         )
 
+    async def finalize_with_dynamic(
+        self,
+        *,
+        generation: VerificationGenerationInputs,
+        assessment_ref: StoredDataRef,
+        dynamic_request_ref: StoredDataRef,
+        dynamic_result_ref: StoredDataRef,
+        poc_ref: StoredDataRef | None,
+        pro_ref: StoredDataRef,
+        con_ref: StoredDataRef,
+        call: VerificationCallRefs,
+    ) -> VerificationResult:
+        """Finalize an exact completed dynamic attempt; never convert R7 failures."""
+        if self._trusted_agent is None:
+            raise RuntimeError("TRUSTED_VERIFICATION_AGENT_NOT_CONFIGURED")
+        return await self._trusted_agent.finalize_with_dynamic(
+            generation=generation,
+            assessment_ref=assessment_ref,
+            dynamic_request_ref=dynamic_request_ref,
+            dynamic_result_ref=dynamic_result_ref,
+            poc_ref=poc_ref,
+            pro_ref=pro_ref,
+            con_ref=con_ref,
+            call=call,
+        )
+
+    async def finalize_with_dynamic_with_invocation(
+        self,
+        *,
+        generation: VerificationGenerationInputs,
+        assessment_ref: StoredDataRef,
+        dynamic_request_ref: StoredDataRef,
+        dynamic_result_ref: StoredDataRef,
+        poc_ref: StoredDataRef | None,
+        pro_ref: StoredDataRef,
+        con_ref: StoredDataRef,
+        call: VerificationCallRefs,
+    ) -> VerificationAgentOutcome[VerificationResult]:
+        """Return the exact FINAL_VERDICT invocation with the trusted result."""
+        if self._trusted_agent is None:
+            raise RuntimeError("TRUSTED_VERIFICATION_AGENT_NOT_CONFIGURED")
+        return await self._trusted_agent.finalize_with_dynamic_with_invocation(
+            generation=generation,
+            assessment_ref=assessment_ref,
+            dynamic_request_ref=dynamic_request_ref,
+            dynamic_result_ref=dynamic_result_ref,
+            poc_ref=poc_ref,
+            pro_ref=pro_ref,
+            con_ref=con_ref,
+            call=call,
+        )
+
     def run_initial(
         self,
         inputs: InitialVerificationInputs,

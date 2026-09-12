@@ -1946,7 +1946,7 @@ $authorityScenarioMarkers = @(
     '`SAVE_RESULT` 검사 뒤 candidate bytes를 바꿈',
     '실행 오류만 든 `FALSE` 후보를 저장',
     '다른 역할이 만든 결과 후보를 저장'
-    '`RUN_SANDBOX` 허가 뒤 request·requirements·current exact plan·`sandbox_profile_ref`·`DynamicReproductionLifecycleProfile` revision 또는 실행 대상·network·mount·secret 경계 중 하나가 바뀜'
+    'build/run `RUN_SANDBOX` 허가 뒤 request·requirements·current exact plan·`sandbox_profile_ref`·`DynamicReproductionLifecycleProfile` revision, 해당 단계 source/recipe/digest 또는 실행 대상·network·mount·secret 경계 중 하나가 바뀜'
     'Sandbox 내부 command가 host·Docker socket·secret·미허용 egress에 접근하거나 출처 불명 endpoint·외부 계정을 대상으로 삼음'
     '동적 결과의 recipe·환경·AgentLog·candidate·PoC·cleanup attempt 또는 digest가 다름'
     '`COMMAND_STARTED`와 `COMMAND_FINISHED`의 command ref·digest·action·attempt·environment가 다르거나 redaction이 유효하지 않음'
@@ -1961,7 +1961,7 @@ foreach ($marker in $authorityScenarioMarkers) {
 $sandboxReviewPatterns = @(
     @{
         Name = 'Sandbox Controller enforces the R7 sandbox admission boundary'
-        Pattern = '(?s)`action_decision_ref`는 plan 입력 부족·모순.*?pre-boundary 결과에서만 `null`.*?`action_decision_ref\.record_id`는 R7 호출자의 권한·상태·예산.*?exact `DynamicReproductionRequest`.*?current `EnvironmentRequirements`.*?Sandbox Controller는 R7 소유 `sandbox_profile_ref`의 host, Docker daemon/socket, host mount·namespace, secret, 허용되지 않은 egress, 다른 workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 수치를 강제.*?컨테이너 내부 command를 allowlist로 재판단하지 않는다'
+        Pattern = '(?s)`action_decision_ref`는 첫 build `RUN_SANDBOX` 요청 자체.*?pre-boundary 결과에서만 `null`.*?그 밖의 결과에서 `action_decision_ref\.record_id`는 최종 사용 환경을 허용했거나 마지막으로 차단한 build/run 단계의 exact `RUN_SANDBOX` decision.*?Sandbox Controller는 R7 소유 `sandbox_profile_ref`의 host, Docker daemon/socket, host mount·namespace, secret, 허용되지 않은 egress, 다른 workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 수치를 강제.*?컨테이너 내부 command를 allowlist로 재판단하지 않는다'
     },
     @{
         Name = 'ReproductionPlan is strategy rather than an execution allowlist'
@@ -1973,7 +1973,7 @@ $sandboxReviewPatterns = @(
     },
     @{
         Name = 'dynamic result save repeats same-attempt provenance checks'
-        Pattern = '(?s)`SAVE_RESULT\(requested_by=REPRODUCTION_SESSION_MANAGER, result_kind=dynamic_reproduction_result\)`.*?current Verification generation의 exact R6 request reference와 purpose가 결과에 그대로 연결.*?plan·recipe·정책 결정·환경·AgentLog·candidate·validated PoC·cleanup과 동적 결과가 같은 R7 `DYNAMIC_REPRO` work·attempt'
+        Pattern = '(?s)`SAVE_RESULT\(requested_by=REPRODUCTION_SESSION_MANAGER, result_kind=dynamic_reproduction_result\)`.*?current Verification generation의 exact R6 request reference와 purpose가 결과에 그대로 연결.*?plan·recipe·최종 run 정책 결정·환경·AgentLog·candidate·validated PoC·cleanup과 동적 결과가 같은 R7 `DYNAMIC_REPRO` work·attempt.*?run action이 build policy·decision provenance를 가리키는지'
     },
     @{
         Name = 'Session Manager owns logs validated PoCs and dynamic results'
@@ -2021,7 +2021,7 @@ $sandboxReviewPatterns = @(
     },
     @{
         Name = 'same-attempt policy provenance links SandboxPolicyDecision, AgentLog and DynamicReproductionResult'
-        Pattern = '(?s)같은 `DYNAMIC_REPRO` attempt 안에서 Sandbox 경계 판정 provenance는 exact reference로 이어진다.*?`AgentLog`의 `SESSION_STARTED` event.*?`input_refs`에는 그 attempt에 고정한 exact `SandboxPolicyDecision`.*?`DynamicReproductionResult\.policy_decision_ref`는 `AgentLog`가 그 attempt에 고정한 exact `SandboxPolicyDecision`과 동일.*?`agent_log_ref`는 같은 attempt의 `AgentLog` exact revision.*?latest lookup으로 다른 attempt의 policy decision·log·result를 보정하지 않는다'
+        Pattern = '(?s)같은 `DYNAMIC_REPRO` attempt 안에서 Sandbox 경계 판정 provenance는 exact reference로 이어진다.*?build와 run의 `RUN_SANDBOX` action·decision·`SandboxPolicyDecision`은 모두 append-only.*?`AgentLog`의 `SESSION_STARTED` event `input_refs`에는.*?current run 단계의 exact `SandboxPolicyDecision`.*?`DynamicReproductionResult\.policy_decision_ref`는 `AgentLog`가 그 attempt에 고정한 current run 단계의 exact `SandboxPolicyDecision`과 동일.*?`action_decision_ref`도 그 단계의 exact `USED` decision.*?`agent_log_ref`는 같은 attempt의 `AgentLog` exact revision.*?latest lookup으로 다른 attempt의 policy decision·log·result를 보정하지 않는다'
     },
     @{
         Name = 'execution scope is local only with no active external path'

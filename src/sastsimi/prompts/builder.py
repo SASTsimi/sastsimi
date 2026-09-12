@@ -18,6 +18,7 @@ from sastsimi.contracts.llm import (
     ProviderProfile,
 )
 from sastsimi.contracts.prompt_projection import project_prompt_value
+from sastsimi.contracts.prompt_redaction import assert_safe_provider_text
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.ports.artifact_store import ArtifactStore
@@ -29,6 +30,15 @@ from .registry import LoadedPromptDefinition
 
 @dataclass(frozen=True)
 class PromptSource:
+    slot: str
+    source_ref: StoredDataRef
+    value: BaseModel
+
+
+@dataclass(frozen=True)
+class ArtifactPromptSource:
+    """Bind a verified redacted artifact through a trusted metadata wrapper."""
+
     slot: str
     source_ref: StoredDataRef
     value: BaseModel
@@ -58,7 +68,7 @@ class PromptBuilder:
         definition: LoadedPromptDefinition,
         registry_entry_ref: StoredDataRef,
         metadata: RecordMeta,
-        sources: tuple[PromptSource, ...],
+        sources: tuple[PromptSource | ArtifactPromptSource, ...],
     ) -> PromptPayload:
         entry = definition.entry
         if _stored_ref(entry) != registry_entry_ref:
@@ -83,7 +93,9 @@ class PromptBuilder:
                 raise ValueError("PROMPT_CONTEXT_DENIED")
             if slot.trust_class != "UNTRUSTED_DATA":
                 raise ValueError("PROMPT_TRUST_ESCALATION_DENIED")
-            if _stored_ref(source.value) != source.source_ref:
+            if isinstance(source, ArtifactPromptSource):
+                self._validate_artifact_source(source)
+            elif _stored_ref(source.value) != source.source_ref:
                 raise ValueError("PROMPT_SOURCE_REFERENCE_MISMATCH")
             source_key = canonical_bytes(source.source_ref)
             if source_key in source_refs:
@@ -129,6 +141,27 @@ class PromptBuilder:
             rendered_prompt_ref=rendered_ref,
             output_schema_ref=entry.output_schema_ref,
         )
+
+    def _validate_artifact_source(self, source: ArtifactPromptSource) -> None:
+        ref = source.source_ref
+        if (
+            ref.record_id is not None
+            or ref.data_kind != "artifact"
+            or str(ref.stored_data_id) != ref.content_hash
+        ):
+            raise ValueError("PROMPT_SOURCE_REFERENCE_MISMATCH")
+        raw = self.read_artifact(ref)
+        assert_safe_provider_text(raw)
+        wrapped_ref = getattr(source.value, "source_ref", None)
+        wrapped_hash = getattr(source.value, "content_hash", None)
+        redacted_body = getattr(source.value, "redacted_body", None)
+        if (
+            wrapped_ref != ref
+            or wrapped_hash != ref.content_hash
+            or not isinstance(redacted_body, str)
+            or redacted_body.encode("utf-8") != raw
+        ):
+            raise ValueError("PROMPT_ARTIFACT_PROJECTION_MISMATCH")
 
     def build_call_spec(
         self,

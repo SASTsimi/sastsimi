@@ -33,7 +33,7 @@ from sastsimi.contracts.verification import (
     VerificationPlaybook,
     validate_playbook_application,
 )
-from sastsimi.contracts.work import WorkExecutionState, WorkType
+from sastsimi.contracts.work import WorkExecutionState, WorkStatus, WorkType
 from sastsimi.ports.dto import BudgetCommitRequest, BudgetReservationRequest
 from sastsimi.ports.verification_registration import VerificationRegistration
 
@@ -563,12 +563,39 @@ class VerificationRegistrationService:
                 current_process = records.resolve(
                     connection, REF_ADAPTER.validate_json(current_process_wire)
                 )
+                existing_ref = reference(existing)
+                if not isinstance(existing_ref, StoredDataRef):
+                    raise ValueError("TECHNICAL_REVISE_CLOSURE_MISMATCH")
+                if not isinstance(current_process, HypothesisProcessState):
+                    raise ValueError("TECHNICAL_REVISE_CLOSURE_MISMATCH")
+                registered_ref = current_process.verification_work_ref
+                if registered_ref is None:
+                    raise ValueError("TECHNICAL_REVISE_CLOSURE_MISMATCH")
+                registered = records.resolve(connection, registered_ref)
                 if (
-                    not isinstance(current_process, HypothesisProcessState)
-                    or current_process.verification_work_ref != reference(existing)
+                    not isinstance(registered, WorkExecutionState)
+                    or registered.work_id != existing.work_id
+                    or registered.meta.logical_record_id
+                    != existing.meta.logical_record_id
+                    or registered.work_type
+                    != existing.work_type
+                    != WorkType.VERIFICATION
+                    or registered.work_generation != existing.work_generation
+                    or registered.subject_type != existing.subject_type
+                    or registered.subject_id != existing.subject_id
+                    or registered.input_refs != existing.input_refs
+                    or registered.input_hash != existing.input_hash
+                    or registered.dedupe_key != existing.dedupe_key
+                    or registered.status != WorkStatus.PENDING
+                    or existing.state_version < registered.state_version
+                    or not records.is_revision_descendant(
+                        registered_ref, existing_ref, connection=connection
+                    )
+                    or current_process.status != "VERIFYING"
                     or current_process.verification_generation != generation
                     or current_process.verification_assignment_ref
                     != process.verification_assignment_ref
+                    or current_process.verification_result_ref is not None
                 ):
                     raise ValueError("TECHNICAL_REVISE_CLOSURE_MISMATCH")
                 current_process_ref = reference(current_process)

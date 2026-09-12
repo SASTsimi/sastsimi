@@ -12,12 +12,18 @@ from sastsimi.contracts.llm import (
     LLMInvocationRequest,
     LLMInvocationResult,
 )
-from sastsimi.contracts.refs import RecordRef, RunStoredDataRef, StoredDataRef
+from sastsimi.contracts.refs import (
+    BudgetScopeRef,
+    RecordRef,
+    RunStoredDataRef,
+    StoredDataRef,
+)
 from sastsimi.contracts.work import StateTransition, WorkAttempt, WorkExecutionState
 
 
 class WorkStatePort(Protocol):
     def get(self, work_id: str) -> WorkExecutionState: ...
+    def registration_scope(self, work_id: str) -> BudgetScopeRef: ...
     def register(
         self,
         work: WorkExecutionState,

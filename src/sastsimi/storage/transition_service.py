@@ -10,8 +10,10 @@ from sastsimi.contracts.analysis import AnalysisRunState
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.hypothesis import VerificationAssignment
+from sastsimi.contracts.policy import PolicyCacheRecord, RunPolicyState
 from sastsimi.contracts.records import validate_revision
 from sastsimi.contracts.refs import RecordRef, StoredDataRef
+from sastsimi.contracts.reporting import ReportDraft
 from sastsimi.contracts.result_registry import validate_result_owner
 from sastsimi.contracts.static import CodeContextResponse, CodeWorkspace
 from sastsimi.contracts.work import (
@@ -45,7 +47,8 @@ from .primitive_projection import (
     validate_primitive_outputs,
 )
 from .records import next_meta
-from .report_projection import validate_report_output
+from .report_projection import report_creation_decision, validate_report_output
+from .report_state import report_process_projection
 from .run_projections import run_policy_projection
 from .run_states import get_run, save_run
 from .verification_projection import verification_projection
@@ -282,7 +285,9 @@ class TransitionService:
         validate_finding_output(self.works, connection, work, request.records)
         validate_primitive_outputs(self.works, connection, work, request.records)
         validate_chaining_output(self.works, connection, work, request.records)
-        validate_report_output(self.works, connection, work, request.records)
+        validate_report_output(
+            self.works, connection, work, request.records, self.artifacts
+        )
         return work
 
     def finish(self, request: TransitionCommitRequest) -> TransitionCommit:
@@ -325,7 +330,8 @@ class TransitionService:
                 ):
                     continue
                 records.publish(connection, reference(record))
-                self.publish_pointer(connection, reference(record))
+                if not isinstance(record, (PolicyCacheRecord, RunPolicyState)):
+                    self.publish_pointer(connection, reference(record))
                 if isinstance(record, CodeWorkspace):
                     state = get_run(connection, str(record.analysis_id))
                     updated_state = AnalysisRunState.model_validate(
@@ -420,6 +426,27 @@ class TransitionService:
                 index_ref = records.stage(connection, index)
                 records.publish(connection, index_ref)
                 self.publish_pointer(connection, index_ref)
+            report_state = report_process_projection(
+                self.works, connection, previous, request.records, committed
+            )
+            if report_state is not None:
+                if report_state.report_draft_ref is not None:
+                    drafts = tuple(
+                        item
+                        for item in request.records
+                        if isinstance(item, ReportDraft)
+                    )
+                    if len(drafts) != 1:
+                        raise ValueError("REPORT_EXACT_OUTPUT_REQUIRED")
+                    create_decision = report_creation_decision(
+                        self.works, connection, previous, drafts[0]
+                    )
+                    self.works.validator.record_outcome(
+                        connection, create_decision, (report_state.report_draft_ref,)
+                    )
+                report_state_ref = records.stage(connection, report_state)
+                records.publish(connection, report_state_ref)
+                self.publish_pointer(connection, report_state_ref)
             primitive_index = primitive_index_projection(
                 self.works,
                 connection,

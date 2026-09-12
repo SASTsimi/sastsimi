@@ -20,7 +20,12 @@ from sastsimi.contracts.llm import (
     ProviderProfile,
 )
 from sastsimi.contracts.llm_closure import llm_action_input_refs
-from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
+from sastsimi.contracts.refs import (
+    BudgetScopeRef,
+    ReferencedRecord,
+    StoredDataRef,
+    reference,
+)
 from sastsimi.ports.dto import Record
 from sastsimi.ports.fake_workflow import ProviderInvoker
 from sastsimi.runtime.services import RuntimeServices
@@ -32,7 +37,7 @@ class FakeInvocation:
     request: LLMInvocationRequest
     result: LLMInvocationResult
     log: LLMInvocationLog
-    output: Record
+    output: BaseModel
 
 
 def invoke_fake_provider(
@@ -47,10 +52,11 @@ def invoke_fake_provider(
     call_spec_ref: StoredDataRef,
     provider_profile_ref: StoredDataRef,
     artifact: Callable[[str], StoredDataRef],
-    build_output: Callable[[StoredDataRef], Record],
+    build_output: Callable[[StoredDataRef], BaseModel],
     provider_invoke: ProviderInvoker,
     bind_request: Callable[[Record, StoredDataRef], Record] | None = None,
-) -> tuple[Record, FakeInvocation]:
+    artifact_output: bool = False,
+) -> tuple[BaseModel, FakeInvocation]:
     """Invoke one configured fake call and return its not-yet-published output."""
     from sastsimi.contracts.work import WorkExecutionState
 
@@ -80,7 +86,7 @@ def invoke_fake_provider(
 
     async def operation(
         claimed_ref: object,
-    ) -> tuple[Record, LLMInvocationRequest, LLMInvocationResult]:
+    ) -> tuple[BaseModel, LLMInvocationRequest, LLMInvocationResult]:
         if not isinstance(claimed_ref, StoredDataRef):
             raise ValueError("FAKE_PROVIDER_DECISION_SCOPE_MISMATCH")
         output = build_output(claimed_ref)
@@ -100,13 +106,17 @@ def invoke_fake_provider(
         if not isinstance(request_ref, StoredDataRef):
             raise ValueError("FAKE_PROVIDER_REQUEST_SCOPE_MISMATCH")
         if bind_request is not None:
-            output = bind_request(output, request_ref)
+            if artifact_output:
+                raise ValueError("FAKE_ARTIFACT_OUTPUT_CANNOT_BIND_RECORD")
+            output = cast(BaseModel, bind_request(cast(Record, output), request_ref))
         if isinstance(output, BaseModel) and "llm_call_id" in type(output).model_fields:
-            output = cast(
-                Record,
-                output.model_copy(update={"llm_call_id": spec.llm_call_id}),
-            )
+            output = output.model_copy(update={"llm_call_id": spec.llm_call_id})
         response_ref = _artifact_bytes(runtime, canonical_bytes(output))
+        parsed_output_ref = (
+            response_ref
+            if artifact_output
+            else reference(cast(ReferencedRecord, output))
+        )
         result = LLMInvocationResult.model_validate(
             dict(
                 meta=runner.metadata(
@@ -122,7 +132,7 @@ def invoke_fake_provider(
                 actual_session_mode="NEW",
                 session_ref=f"fake-session-{spec.llm_call_id}",
                 response_ref=response_ref,
-                parsed_output_ref=reference(output),
+                parsed_output_ref=parsed_output_ref,
                 usage=dict(
                     token_source="PROVIDER_REPORTED",
                     input_tokens=1,
@@ -146,7 +156,7 @@ def invoke_fake_provider(
         if (
             returned.status != "SUCCEEDED"
             or returned.safe_error is not None
-            or returned.parsed_output_ref != reference(output)
+            or returned.parsed_output_ref != parsed_output_ref
             or returned.response_ref != response_ref
             or returned.llm_call_id != spec.llm_call_id
             or returned.purpose != spec.purpose
@@ -231,8 +241,17 @@ def persist_fake_invocation(
     runtime: RuntimeServices, invocation: FakeInvocation
 ) -> StoredDataRef:
     """Commit complete call provenance before any domain candidate is published."""
-    candidate_ref = runtime.unit_of_work.records.stage_record(invocation.output)
-    if candidate_ref != invocation.result.parsed_output_ref:
+    if invocation.result.parsed_output_ref is None:
+        raise ValueError("INVOCATION_OUTPUT_MISMATCH")
+    if invocation.result.parsed_output_ref.record_id is not None:
+        if not hasattr(invocation.output, "meta"):
+            raise ValueError("INVOCATION_OUTPUT_MISMATCH")
+        candidate_ref = runtime.unit_of_work.records.stage_record(
+            cast(Record, invocation.output)
+        )
+        if candidate_ref != invocation.result.parsed_output_ref:
+            raise ValueError("INVOCATION_OUTPUT_MISMATCH")
+    elif invocation.result.parsed_output_ref != invocation.result.response_ref:
         raise ValueError("INVOCATION_OUTPUT_MISMATCH")
     return runtime.validator.record_invocation(
         invocation.request, invocation.result, invocation.log

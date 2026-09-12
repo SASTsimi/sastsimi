@@ -61,6 +61,7 @@ REFERENCE_KINDS = {
     "resource_profile_ref": "dynamic_reproduction_lifecycle_profile",
     "finding_ref": "finding",
     "stale_finding_ref": "finding",
+    "report_draft_ref": "report_draft",
     "normalization_work_ref": "work_execution_state",
     "last_transition_commit_ref": "transition_commit",
     "evaluation_result_ref": "evaluation_run_result",

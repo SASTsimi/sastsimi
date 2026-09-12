@@ -7,6 +7,7 @@ from typing import Protocol, cast
 
 from pydantic import JsonValue, ValidationError
 
+from sastsimi.contracts import same_scope
 from sastsimi.contracts.base import ContractModel, NonEmptyStr
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.hypothesis import (
@@ -23,7 +24,6 @@ from sastsimi.contracts.ids import (
 from sastsimi.contracts.llm import PromptPayload
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
-from sastsimi.contracts.scopes import same_scope
 from sastsimi.contracts.static import (
     CodeFact,
     CodeLocation,
@@ -35,10 +35,8 @@ from sastsimi.contracts.static import (
 from sastsimi.contracts.work import WorkExecutionState, WorkStatus, WorkType
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.clock import Clock
+from sastsimi.ports.hypothesis_agent import HypothesisAgentOutcome
 from sastsimi.ports.id_generator import IdGenerator
-from sastsimi.ports.llm_invocation import (
-    HypothesisAgentOutcome as HypothesisAgentOutcome,
-)
 from sastsimi.ports.llm_invocation import PersistedLLMInvocation
 from sastsimi.prompts.builder import PromptBuilder, PromptSource
 from sastsimi.prompts.registry import LoadedPromptDefinition
