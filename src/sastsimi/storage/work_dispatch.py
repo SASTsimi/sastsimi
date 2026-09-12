@@ -45,6 +45,7 @@ from . import models
 from .attempt_service import AttemptService
 from .authorization import authorize
 from .codec import encode, reference
+from .dispatches import reject_uncertain
 from .records import fresh_meta, next_meta
 from .run_control import cancel_latched, reject_cancelled
 from .run_states import get_run
@@ -68,6 +69,118 @@ class WorkDispatchStore:
 
     def attempts_for_work(self, work_id: str) -> tuple[WorkAttempt, ...]:
         return self.works.attempts_for_work(work_id)
+
+    def resume_blocked(
+        self,
+        candidates: tuple[tuple[WorkExecutionState, WorkAttempt], ...],
+    ) -> tuple[WorkExecutionState, ...]:
+        """Open an exact blocked cohort only after one atomic revalidation."""
+
+        if not candidates:
+            raise ValueError("RESUME_CANDIDATES_REQUIRED")
+        analysis_ids = {str(work.meta.analysis_id) for work, _ in candidates}
+        work_ids = [str(work.work_id) for work, _ in candidates]
+        if len(analysis_ids) != 1 or len(work_ids) != len(set(work_ids)):
+            raise ValueError("RESUME_SCOPE_MISMATCH")
+        analysis_id = analysis_ids.pop()
+        records = self.works.records
+        with records.database.write() as connection:
+            reject_cancelled(connection, analysis_id)
+            run = get_run(connection, analysis_id)
+            if run.status != "RUNNING":
+                raise ValueError("RUN_NOT_RESUMABLE")
+
+            validated: list[tuple[WorkExecutionState, WorkAttempt, ActionDecision]] = []
+            for supplied_work, supplied_attempt in candidates:
+                row = (
+                    connection.execute(
+                        select(models.work_states).where(
+                            models.work_states.c.work_id == str(supplied_work.work_id),
+                            models.work_states.c.analysis_id == analysis_id,
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                work = WorkExecutionState.model_validate_json(row["payload"])
+                attempt_payload = (
+                    connection.execute(
+                        select(models.work_attempts.c.payload)
+                        .where(models.work_attempts.c.work_id == str(work.work_id))
+                        .order_by(models.work_attempts.c.attempt_number.desc())
+                    )
+                    .scalars()
+                    .first()
+                )
+                if attempt_payload is None:
+                    raise ValueError("RESUME_ATTEMPT_HISTORY_REQUIRED")
+                previous_attempt = WorkAttempt.model_validate_json(attempt_payload)
+                if (
+                    work != supplied_work
+                    or previous_attempt != supplied_attempt
+                    or work.status != WorkStatus.BLOCKED
+                    or work.active_attempt_id is not None
+                    or row["active_attempt_id"] is not None
+                    or row["worker_id"] is not None
+                    or row["lease_expires_at"] is not None
+                    or previous_attempt.status == "RUNNING"
+                    or previous_attempt.work_id != work.work_id
+                    or previous_attempt.input_hash != work.input_hash
+                ):
+                    raise ValueError("RESUME_CANDIDATE_NOT_CURRENT")
+
+                reject_uncertain(connection, str(work.work_id))
+                scope, registration = self._registration_context(connection, work)
+                self._require_resume_capacity(
+                    connection,
+                    work,
+                    previous_attempt,
+                    scope,
+                    registration,
+                )
+                action = self._resume_action(work, registration)
+                decision = authorize(
+                    self.works.validator,
+                    action,
+                    work,
+                    None,
+                    _connection=connection,
+                )
+                if decision.decision != Decision.ALLOW:
+                    reasons = "; ".join(
+                        check.reason_code
+                        for check in decision.check_results
+                        if check.result == "FAIL"
+                    )
+                    raise ValueError("ACTION_DENIED: " + reasons)
+                validated.append((work, previous_attempt, decision))
+
+            resumed: list[WorkExecutionState] = []
+            for work, _previous_attempt, decision in validated:
+                transition = self._resume_transition(work, decision)
+                self.works.validator.claim(
+                    connection,
+                    reference(decision),
+                    ActionType.CHANGE_WORK_STATE,
+                    work,
+                )
+                transition_ref = records.stage(connection, transition)
+                records.publish(connection, transition_ref)
+                ready = WorkExecutionState.model_validate(
+                    work.model_dump()
+                    | {
+                        "meta": next_meta(work.meta, self.works.clock, self.works.ids),
+                        "status": WorkStatus.READY,
+                        "state_version": transition.new_state_version,
+                        "last_transition_ref": transition_ref,
+                        "output_refs": (),
+                        "waiting_for": (),
+                        "stop_reason": None,
+                    }
+                )
+                self.works.save(connection, work, ready)
+                resumed.append(ready)
+            return tuple(resumed)
 
     def try_claim_ready(
         self,
@@ -446,6 +559,123 @@ class WorkDispatchStore:
                     "requested_at": self.works.clock.now(),
                 }
             )
+        )
+
+    def _require_resume_capacity(
+        self,
+        connection: Connection,
+        work: WorkExecutionState,
+        previous_attempt: WorkAttempt,
+        scope: BudgetScopeRef,
+        registration: ActionRequest,
+    ) -> None:
+        budget = self.works.validator.budget
+        profile = budget.registry.execution(
+            connection, scope, str(work.meta.analysis_id)
+        )
+        action = self._start_action(work, registration)
+        reservation = BudgetReservation.model_validate_json(
+            canonical_bytes(
+                {
+                    "meta": self._resume_meta(work.meta, "budget_reservation"),
+                    "reservation_id": self.works.ids.new(ReservationId),
+                    "budget_binding_ref": scope,
+                    "action_ref": reference(action),
+                    "work_ref": reference(work),
+                    "requested_units": BudgetUnits(
+                        elapsed_ms=0,
+                        work_count=0,
+                        llm_call_count=0,
+                        retry_count=1,
+                        cost_minor_units=0,
+                        currency=profile.currency,
+                    ),
+                    "status": "RESERVED",
+                    "ledger_entry_ref": None,
+                    "reserved_at": self.works.clock.now(),
+                    "finalized_at": None,
+                }
+            )
+        )
+        if previous_attempt.attempt_number < 1:
+            raise ValueError("RESUME_ATTEMPT_HISTORY_REQUIRED")
+        budget.validate_operation(connection, reservation, work, action)
+
+    def _resume_action(
+        self, work: WorkExecutionState, registration: ActionRequest
+    ) -> ActionRequest:
+        return ActionRequest.model_validate_json(
+            canonical_bytes(
+                {
+                    "meta": self._resume_meta(work.meta, "action_request"),
+                    "action_id": self.works.ids.new(ActionId),
+                    "requested_by": registration.requested_by,
+                    "requester_identity_ref": registration.requester_identity_ref,
+                    "action_type": ActionType.CHANGE_WORK_STATE,
+                    "work_ref": reference(work),
+                    "expected_state_version": work.state_version,
+                    "expected_verification_generation": None,
+                    "generation_restart_reason": None,
+                    "generation_restart_basis_refs": (),
+                    "input_refs": work.input_refs,
+                    "dynamic_request_ref": None,
+                    "reproduction_plan_ref": None,
+                    "result_kind": None,
+                    "candidate_result_ref": None,
+                    "llm_call_spec_ref": None,
+                    "tool_name": None,
+                    "file_paths": (),
+                    "provider_profile_ref": None,
+                    "session_mode": None,
+                    "sandbox_profile_ref": None,
+                    "resource_profile_ref": None,
+                    "run_policy_state_ref": None,
+                    "image_digest": None,
+                    "network_targets": (),
+                    "resource_limits": None,
+                    "reason": "Resume exact blocked work",
+                    "requested_at": self.works.clock.now(),
+                }
+            )
+        )
+
+    def _resume_transition(
+        self, work: WorkExecutionState, decision: ActionDecision
+    ) -> StateTransition:
+        return StateTransition.model_validate_json(
+            canonical_bytes(
+                {
+                    "meta": self._resume_meta(work.meta, "state_transition"),
+                    "transition_id": self.works.ids.new(TransitionId),
+                    "work_id": work.work_id,
+                    "action_decision_ref": reference(decision),
+                    "from_status": WorkStatus.BLOCKED,
+                    "to_status": TransitionTargetStatus.READY,
+                    "expected_state_version": work.state_version,
+                    "new_state_version": work.state_version + 1,
+                    "attempt_id": None,
+                    "cause": "USER_RESUME",
+                    "output_refs": (),
+                    "gap_ids": (),
+                    "error_ids": (),
+                    "dedupe_key": content_hash(
+                        [work.work_id, work.state_version, "USER_RESUME"]
+                    ),
+                    "created_at": self.works.clock.now(),
+                }
+            )
+        )
+
+    def _resume_meta(self, source: RecordMetadata, kind: str) -> RecordMetadata:
+        fields: dict[str, object] = {}
+        if isinstance(source, RecordMeta):
+            fields["attempt_id"] = None
+        return fresh_meta(
+            source,
+            kind,
+            self.works.clock,
+            self.works.ids,
+            **fields,
         )
 
     def _start_transition(

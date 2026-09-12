@@ -24,11 +24,18 @@ from tests.contract.domain.canonical_fixtures import make
 from tests.integration.runtime_support import NOW, Harness
 
 
-def _ready_work(tmp_path: Path, *, parallel: int = 1, count: int = 1):
+def _ready_work(
+    tmp_path: Path,
+    *,
+    parallel: int = 1,
+    count: int = 1,
+    total_retries: int | None = None,
+):
     harness = Harness(tmp_path)
-    execution = harness.execution(max_work=10).model_copy(
-        update={"max_parallel_work": parallel}
-    )
+    execution_updates = {"max_parallel_work": parallel}
+    if total_retries is not None:
+        execution_updates["max_total_retries"] = total_retries
+    execution = harness.execution(max_work=10).model_copy(update=execution_updates)
     assert execution.approval_ref is not None
     harness.evidence.identities[execution.approval_ref] = RequesterRole.ORCHESTRATION
     runtime = build_runtime(
@@ -256,6 +263,67 @@ def test_blocked_work_claim_records_resume_trigger(tmp_path: Path) -> None:
     assert resumed.attempt.attempt_number == 2
     assert resumed.attempt.trigger == "RESUME"
     assert resumed.attempt.input_hash == context.attempt.input_hash
+
+
+def _block_for_resume(harness, runtime, ready, worker_id: str):
+    dispatch = WorkDispatchStore(runtime.work.store)
+    runner = WorkflowRunner(
+        runtime, harness.clock, harness.ids, scheduler_store=dispatch
+    )
+    context = runner.claim_ready(
+        "a1",
+        str(ready.work_id),
+        ready.state_version,
+        worker_id,
+        NOW + timedelta(seconds=30),
+    )
+    assert context is not None
+    state = runtime.budget_registry.current_state("a1")
+    profile = harness.records.get_exact(state.execution_budget_profile_ref)
+    assert profile.approval_ref is not None
+    blocked = runner.block(context.work, profile.approval_ref, "WAITING_FOR_INPUT")
+    attempts = dispatch.attempts_for_work(str(blocked.work_id))
+    assert attempts
+    return dispatch, blocked, attempts[-1]
+
+
+def test_resume_blocked_is_atomic_for_every_candidate(tmp_path: Path) -> None:
+    harness, runtime, ready = _ready_work(tmp_path, parallel=2, count=2)
+    dispatch, first, first_attempt = _block_for_resume(
+        harness, runtime, ready[0], "worker-1"
+    )
+    _, second, second_attempt = _block_for_resume(
+        harness, runtime, ready[1], "worker-2"
+    )
+
+    resumed = dispatch.resume_blocked(
+        ((first, first_attempt), (second, second_attempt))
+    )
+
+    assert tuple(item.status.value for item in resumed) == ("READY", "READY")
+    assert tuple(item.work_id for item in resumed) == (first.work_id, second.work_id)
+    assert all(item.last_transition_ref is not None for item in resumed)
+
+
+@pytest.mark.parametrize("case", ["stale", "cancelled", "budget"])
+def test_resume_blocked_failure_opens_no_work(tmp_path: Path, case: str) -> None:
+    harness, runtime, (ready,) = _ready_work(
+        tmp_path,
+        total_retries=0 if case == "budget" else None,
+    )
+    dispatch, blocked, attempt = _block_for_resume(harness, runtime, ready, "worker-1")
+    candidate = blocked
+    if case == "stale":
+        candidate = blocked.model_copy(update={"input_hash": "f" * 64})
+    elif case == "cancelled":
+        RunControlStore(harness.database, harness.clock).request_cancel(
+            "a1", "USER_REQUEST"
+        )
+
+    with pytest.raises(ValueError):
+        dispatch.resume_blocked(((candidate, attempt),))
+
+    assert runtime.work.get(str(blocked.work_id)) == blocked
 
 
 @pytest.mark.parametrize(
