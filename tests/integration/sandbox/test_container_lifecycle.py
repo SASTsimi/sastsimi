@@ -102,7 +102,9 @@ def _trusted_docker_adapter(
         subject_key="docker",
         subject_sha256=digest,
         daemon_target="npipe:////./pipe/docker_engine",
+        build_backend="LEGACY_LIMITED",
         enforced_build_limits=frozenset({"CPU", "MEMORY", "PID", "DISK"}),
+        external_build_disk_limit_bytes=64 * 1024 * 1024,
     )
     resolver = _TrustedDockerResolver(target)
     return DockerAdapter.from_profile(profile_ref, resolver), resolver
@@ -1726,7 +1728,8 @@ async def test_docker_build_uses_stdin_empty_context_and_approved_timeout(
     assert digest == IMAGE_DIGEST
     assert len(calls) == 1
     argv, timeout_ms, input_bytes = calls[0]
-    assert argv[:5] == (
+    assert argv[:6] == (
+        "image",
         "build",
         "--quiet",
         "--pull=false",
@@ -1747,9 +1750,7 @@ async def test_docker_build_uses_stdin_empty_context_and_approved_timeout(
     assert ("--ulimit", f"nproc={spec.pid_limit}:{spec.pid_limit}") == argv[
         argv.index("--ulimit") : argv.index("--ulimit") + 2
     ]
-    assert ("--storage-opt", f"size={spec.disk_limit_bytes}") == argv[
-        argv.index("--storage-opt") : argv.index("--storage-opt") + 2
-    ]
+    assert "--storage-opt" not in argv
     assert timeout_ms == 10_000
     assert input_bytes == dockerfile
 
@@ -1776,6 +1777,92 @@ async def test_docker_build_is_blocked_when_backend_cannot_enforce_every_limit(
     assert spec is not None
 
     with pytest.raises(DockerOperationError, match="DOCKER_BUILD_LIMITS_UNVERIFIED"):
+        await adapter.build(
+            b"FROM scratch\nRUN true\n",
+            {
+                "sastsimi.owner": "reproduction-setup-automation",
+                "sastsimi.analysis-id": "analysis-1",
+                "sastsimi.workspace-id": "workspace-1",
+                "sastsimi.commit-id": "commit-1",
+                "sastsimi.hypothesis-id": "hypothesis-1",
+                "sastsimi.attempt-id": "dynamic-attempt-1",
+            },
+            spec=spec,
+            timeout_ms=10_000,
+        )
+
+
+@pytest.mark.asyncio
+async def test_docker_buildx_uses_supported_resource_flags(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def run(
+        argv: tuple[str, ...],
+        **_: object,
+    ) -> DockerCommandOutcome:
+        calls.append(argv)
+        return DockerCommandOutcome(0, (IMAGE_DIGEST + "\n").encode(), b"", False)
+
+    adapter, resolver = _trusted_docker_adapter(tmp_path)
+    assert adapter._target is not None
+    buildx_target = replace(adapter._target, build_backend="BUILDX_RESOURCE")
+    resolver.target = buildx_target
+    adapter = DockerAdapter(buildx_target, resolver)
+    monkeypatch.setattr(adapter, "_run", run)
+    request, _, _ = _dynamic_records()
+    spec = _approval(tmp_path, request).approved_spec
+    assert spec is not None
+
+    await adapter.build(
+        b"FROM scratch\nRUN true\n",
+        {
+            "sastsimi.owner": "reproduction-setup-automation",
+            "sastsimi.analysis-id": "analysis-1",
+            "sastsimi.workspace-id": "workspace-1",
+            "sastsimi.commit-id": "commit-1",
+            "sastsimi.hypothesis-id": "hypothesis-1",
+            "sastsimi.attempt-id": "dynamic-attempt-1",
+        },
+        spec=spec,
+        timeout_ms=10_000,
+    )
+
+    assert calls[0][:4] == ("buildx", "build", "--quiet", "--load")
+    assert ("--resource", "cpu-period=100000") == calls[0][
+        calls[0].index("--resource") : calls[0].index("--resource") + 2
+    ]
+    assert f"cpu-quota={spec.cpu_limit_millicores * 100}" in calls[0]
+    assert f"memory={spec.memory_limit_bytes}" in calls[0]
+
+
+@pytest.mark.asyncio
+async def test_docker_build_rejects_weaker_external_disk_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    async def unexpected(*_: object, **__: object) -> DockerCommandOutcome:
+        raise AssertionError("weak disk boundary must not reach Docker")
+
+    adapter, resolver = _trusted_docker_adapter(tmp_path)
+    assert adapter._target is not None
+    weak_target = replace(
+        adapter._target,
+        external_build_disk_limit_bytes=128 * 1024 * 1024,
+    )
+    resolver.target = weak_target
+    adapter = DockerAdapter(weak_target, resolver)
+    monkeypatch.setattr(adapter, "_run", unexpected)
+    request, _, _ = _dynamic_records()
+    spec = _approval(tmp_path, request).approved_spec
+    assert spec is not None
+
+    with pytest.raises(
+        DockerOperationError,
+        match="DOCKER_BUILD_DISK_LIMIT_UNVERIFIED",
+    ):
         await adapter.build(
             b"FROM scratch\nRUN true\n",
             {
