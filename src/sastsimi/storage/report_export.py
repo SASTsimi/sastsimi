@@ -69,10 +69,14 @@ class SQLiteCurrentReportSource:
         self._records = SQLiteRecordStore(self._database)
         self._data_dir = data_dir
 
-    def list_current(self) -> tuple[CurrentReport, ...]:
+    def list_current(self, analysis_id: str) -> tuple[CurrentReport, ...]:
         reports: list[CurrentReport] = []
         for state in self._current("report_process_state", ReportProcessState):
-            if state.status != "DRAFTED" or state.report_draft_ref is None:
+            if (
+                state.meta.analysis_id != analysis_id
+                or state.status != "DRAFTED"
+                or state.report_draft_ref is None
+            ):
                 continue
             try:
                 reports.append(self._resolve(state))

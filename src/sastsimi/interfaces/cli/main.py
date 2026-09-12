@@ -69,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     reports_parser = subparsers.add_parser(
         "reports", help="list current human-review reports", allow_abbrev=False
     )
+    reports_parser.add_argument("analysis_id")
     reports_parser.add_argument("--format", choices=["text", "json"])
     report_parser = subparsers.add_parser(
         "report", help="show or export one current report", allow_abbrev=False
@@ -122,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
             return int(ExitCode.OK)
         if args.command == "reports":
             command_name = "reports"
-            data = reports_command.run(config.data_dir)
+            data = reports_command.run(config.data_dir, args.analysis_id)
             emit_data(output_format, sys.stdout, command=command_name, data=data)
             return int(ExitCode.OK)
         if args.command == "report":

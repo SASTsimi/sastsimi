@@ -93,7 +93,7 @@ class CurrentReport:
 
 
 class CurrentReportSource(Protocol):
-    def list_current(self) -> tuple[CurrentReport, ...]: ...
+    def list_current(self, analysis_id: str) -> tuple[CurrentReport, ...]: ...
 
     def get_current(self, finding_id: str) -> CurrentReport: ...
 
@@ -106,9 +106,11 @@ class ReportMarkdownService:
         self._data_dir_identity = _capture_directory_identity(self._data_dir)
         self._source = source
 
-    def summaries(self) -> tuple[dict[str, str], ...]:
+    def summaries(self, analysis_id: str) -> tuple[dict[str, str], ...]:
         summaries: list[dict[str, str]] = []
-        for report in self._source.list_current():
+        for report in self._source.list_current(analysis_id):
+            if report.analysis_id != analysis_id:
+                raise ReportUnavailable("REPORT_SCOPE_INVALID")
             validate_redaction_authority(report)
             summary = {
                 "analysis_id": report.analysis_id,
@@ -120,6 +122,8 @@ class ReportMarkdownService:
             }
             try:
                 assert_safe_provider_text(canonical_bytes(summary))
+                for value in summary.values():
+                    _assert_terminal_safe(value)
             except ValueError as error:
                 raise ReportUnavailable("REPORT_REDACTION_NOT_PROVEN") from error
             summaries.append(summary)
@@ -130,13 +134,21 @@ class ReportMarkdownService:
 
     def export(self, finding_id: str) -> Path:
         report = self._source.get_current(finding_id)
+        expected_identity = _report_identity(report)
         markdown = render_markdown(report)
         destination = self._destination(report)
+
+        def assert_still_current() -> None:
+            current = self._source.get_current(finding_id)
+            if _report_identity(current) != expected_identity:
+                raise ReportUnavailable("STALE_REPORT")
+
         _atomic_write_report(
             destination,
             report.analysis_id,
             markdown.encode("utf-8"),
             self._data_dir_identity,
+            assert_still_current,
         )
         return destination
 
@@ -309,9 +321,45 @@ def render_markdown(report: CurrentReport) -> str:
     rendered = "\n".join(lines)
     try:
         assert_safe_provider_text(rendered.encode("utf-8"))
+        _assert_terminal_safe(rendered)
     except ValueError as error:
         raise ReportUnavailable("REPORT_REDACTION_NOT_PROVEN") from error
     return rendered
+
+
+def _assert_terminal_safe(value: str) -> None:
+    """Reject terminal control sequences while preserving Markdown whitespace."""
+
+    if any(
+        (ord(character) < 0x20 and character not in {"\n", "\t"})
+        or 0x7F <= ord(character) <= 0x9F
+        for character in value
+    ):
+        raise ValueError("REPORT_TERMINAL_CONTROL_FORBIDDEN")
+
+
+def _report_identity(report: CurrentReport) -> tuple[object, ...]:
+    """Exact immutable inputs whose change makes an export stale."""
+
+    records = (
+        report.draft,
+        report.finding,
+        report.verification,
+        report.cwe,
+        report.technical,
+        report.rule_scope,
+        report.dynamic,
+        report.poc,
+        report.poc_candidate,
+        report.agent_log,
+        report.execution_command,
+        report.content,
+        report.report_action,
+        report.report_decision,
+    )
+    return tuple(
+        record.model_dump(mode="python", warnings=False) for record in records
+    ) + (report.poc_text,)
 
 
 def _locations(
@@ -374,7 +422,9 @@ def _execution_method(command: SandboxCommandRecord) -> str:
     return f"working_directory={command.working_directory}\ncommand={argv}"
 
 
-def _atomic_write(path: Path, data: bytes) -> None:
+def _atomic_write(
+    path: Path, data: bytes, assert_still_current: Callable[[], None]
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     try:
@@ -382,10 +432,17 @@ def _atomic_write(path: Path, data: bytes) -> None:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
+        assert_still_current()
         os.replace(temporary, path)
         sync_directory(path.parent)
         if path.read_bytes() != data:
             raise ReportUnavailable("REPORT_EXPORT_WRITE_FAILED")
+        try:
+            assert_still_current()
+        except Exception:
+            path.unlink(missing_ok=True)
+            sync_directory(path.parent)
+            raise
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -410,6 +467,7 @@ def _atomic_write_report(
     analysis_id: str,
     data: bytes,
     data_dir_identity: tuple[int, int, int] | None,
+    assert_still_current: Callable[[], None],
 ) -> None:
     if data_dir_identity is None:
         raise ReportUnavailable("UNSAFE_REPORT_PATH")
@@ -419,9 +477,11 @@ def _atomic_write_report(
         ):
             with _locked_windows_directory(path.parent.parent):
                 with _guarded_windows_replace_directory(path.parent):
-                    _atomic_write(path, data)
+                    _atomic_write(path, data, assert_still_current)
         return
-    _atomic_write_report_posix(path, analysis_id, data, data_dir_identity)
+    _atomic_write_report_posix(
+        path, analysis_id, data, data_dir_identity, assert_still_current
+    )
 
 
 def _atomic_write_report_posix(
@@ -429,6 +489,7 @@ def _atomic_write_report_posix(
     analysis_id: str,
     data: bytes,
     data_dir_identity: tuple[int, int, int],
+    assert_still_current: Callable[[], None],
 ) -> None:
     data_dir = path.parent.parent.parent
     directory_flag = getattr(os, "O_DIRECTORY", 0)
@@ -470,6 +531,7 @@ def _atomic_write_report_posix(
                             stream.write(data)
                             stream.flush()
                             os.fsync(descriptor)
+                            assert_still_current()
                             os.replace(
                                 temporary,
                                 path.name,
@@ -480,6 +542,12 @@ def _atomic_write_report_posix(
                             stream.seek(0)
                             if stream.read() != data:
                                 raise ReportUnavailable("REPORT_EXPORT_WRITE_FAILED")
+                            try:
+                                assert_still_current()
+                            except Exception:
+                                os.unlink(path.name, dir_fd=parent_fd)
+                                os.fsync(parent_fd)
+                                raise
                         if (
                             _directory_identity(
                                 os.stat(data_dir, follow_symlinks=False)

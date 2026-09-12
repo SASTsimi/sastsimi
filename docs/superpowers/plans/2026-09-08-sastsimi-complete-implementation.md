@@ -501,7 +501,7 @@ worker pool을 선행 조건으로 요구하지 않는다.
 stale·redaction·경로 검사를 통과한 결과만 저장·조회한다. #166은 T14가
 production `reports`와 `report export`를 조합하기 전에 반드시 병합한다.
 
-- [ ] `reports`, `report show <finding-id>`, `report export <finding-id> --format markdown` public service와 CLI 경계를 제공한다.
+- [ ] `reports <analysis-id>`, `report show <finding-id>`, `report export <finding-id> --format markdown` public service와 CLI 경계를 제공한다.
 - [ ] `<data-dir>/reports/<analysis_id>/<finding_id>.md` 밖으로 나가는 경로, stale upstream, redaction 미승인과 실제 실행에 묶이지 않은 PoC를 차단한다.
 - [ ] T14 production composition이나 worker pool을 직접 구현하지 않고, T14가 나중에 등록할 public reporting service만 생산한다.
 

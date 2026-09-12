@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from sastsimi.interfaces.cli import report as report_command
+from sastsimi.interfaces.cli import reports as reports_command
 from sastsimi.interfaces.cli.main import main
 
 
@@ -15,11 +16,31 @@ def test_report_show_and_export_cli(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     exported = tmp_path / "reports" / "analysis-1" / "finding-1.md"
-    assert main(["--data-dir", str(tmp_path), "reports", "--format", "json"]) == 0
+    requested_analyses: list[str] = []
+
+    def list_reports(_data_dir: Path, analysis_id: str) -> dict[str, object]:
+        requested_analyses.append(analysis_id)
+        return {"count": 0, "reports": []}
+
+    monkeypatch.setattr(reports_command, "run", list_reports)
+    assert (
+        main(
+            [
+                "--data-dir",
+                str(tmp_path),
+                "reports",
+                "analysis-1",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
     assert json.loads(capsys.readouterr().out)["data"] == {
         "count": 0,
         "reports": [],
     }
+    assert requested_analyses == ["analysis-1"]
     monkeypatch.setattr(
         report_command, "show", lambda _data_dir, _finding_id: "# Current report\n"
     )

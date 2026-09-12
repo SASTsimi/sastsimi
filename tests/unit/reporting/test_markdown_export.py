@@ -53,8 +53,8 @@ class Source:
     def __init__(self, report: CurrentReport) -> None:
         self.report = report
 
-    def list_current(self) -> tuple[CurrentReport, ...]:
-        return (self.report,)
+    def list_current(self, analysis_id: str) -> tuple[CurrentReport, ...]:
+        return (self.report,) if analysis_id == self.report.analysis_id else ()
 
     def get_current(self, finding_id: str) -> CurrentReport:
         if finding_id != self.report.finding_id:
@@ -65,6 +65,23 @@ class Source:
 class StaleSource(Source):
     def get_current(self, finding_id: str) -> CurrentReport:
         raise ReportUnavailable("STALE_REPORT")
+
+
+class WrongScopeSource(Source):
+    def list_current(self, analysis_id: str) -> tuple[CurrentReport, ...]:
+        return (self.report,)
+
+
+class BecomesStaleSource(Source):
+    def __init__(self, report: CurrentReport) -> None:
+        super().__init__(report)
+        self.reads = 0
+
+    def get_current(self, finding_id: str) -> CurrentReport:
+        self.reads += 1
+        if self.reads > 1:
+            raise ReportUnavailable("STALE_REPORT")
+        return super().get_current(finding_id)
 
 
 def ref(kind: str, record_id: str) -> StoredDataRef:
@@ -261,13 +278,39 @@ def test_markdown_export_rejects_unproven_redaction_and_unsafe_path(
         cwe=report.cwe.model_copy(update={"primary": "token=not-for-output"}),
     )
     with pytest.raises(ReportUnavailable, match="REDACTION"):
-        ReportMarkdownService(tmp_path, Source(unsafe_summary)).summaries()
+        ReportMarkdownService(tmp_path, Source(unsafe_summary)).summaries(
+            report.analysis_id
+        )
 
     stale_file = tmp_path / "reports" / "analysis-1" / "finding-1.md"
     stale_file.parent.mkdir(parents=True)
     stale_file.write_text("obsolete report", encoding="utf-8")
     with pytest.raises(ReportUnavailable, match="STALE"):
         ReportMarkdownService(tmp_path, StaleSource(report)).show(report.finding_id)
+    stale_file.unlink()
+
+    terminal_control = replace(
+        report,
+        content=report.content.model_copy(
+            update={"title": "unsafe\x1b]52;c;copied-secret\x07"}
+        ),
+    )
+    with pytest.raises(ReportUnavailable, match="REDACTION"):
+        ReportMarkdownService(tmp_path, Source(terminal_control)).show(
+            report.finding_id
+        )
+
+    with pytest.raises(ReportUnavailable, match="SCOPE"):
+        ReportMarkdownService(tmp_path, WrongScopeSource(report)).summaries(
+            "analysis-2"
+        )
+
+    stale_export = ReportMarkdownService(tmp_path, BecomesStaleSource(report))
+    with pytest.raises(ReportUnavailable, match="STALE"):
+        stale_export.export(report.finding_id)
+    assert not (
+        tmp_path / "reports" / report.analysis_id / f"{report.finding_id}.md"
+    ).exists()
 
     unsafe_meta = SimpleNamespace(
         analysis_id="../other-analysis",
@@ -515,6 +558,7 @@ def test_markdown_export_rejects_data_dir_swap_before_directory_lock(
         analysis_id: str,
         data: bytes,
         data_dir_identity: tuple[int, int, int] | None,
+        assert_still_current: Callable[[], None],
     ) -> None:
         data_dir.rename(backup)
         if os.name == "nt":
@@ -525,7 +569,7 @@ def test_markdown_export_rejects_data_dir_swap_before_directory_lock(
             )
         else:
             data_dir.symlink_to(outside, target_is_directory=True)
-        real_write(path, analysis_id, data, data_dir_identity)
+        real_write(path, analysis_id, data, data_dir_identity, assert_still_current)
 
     monkeypatch.setattr(markdown_export, "_atomic_write_report", racing_write)
     try:
@@ -559,11 +603,12 @@ def test_markdown_export_rejects_replaced_data_dir_identity(
         analysis_id: str,
         data: bytes,
         data_dir_identity: tuple[int, int, int] | None,
+        assert_still_current: Callable[[], None],
     ) -> None:
         data_dir.rename(backup)
         victim.parent.mkdir(parents=True)
         victim.write_text("victim", encoding="utf-8")
-        real_write(path, analysis_id, data, data_dir_identity)
+        real_write(path, analysis_id, data, data_dir_identity, assert_still_current)
 
     monkeypatch.setattr(markdown_export, "_atomic_write_report", racing_write)
 

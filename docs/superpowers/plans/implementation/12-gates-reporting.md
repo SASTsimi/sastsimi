@@ -28,7 +28,8 @@ outside T12.
 - Final analysis inventory derives `report_draft_refs` from current `DRAFTED`
   `ReportProcessState` records; callers cannot omit or fabricate the exact set.
 - A post-T12 output extension renders the exact current closure as human-readable
-  Markdown at `<data-dir>/reports/<analysis_id>/<finding_id>.md`. The `reports`,
+  Markdown at `<data-dir>/reports/<analysis_id>/<finding_id>.md`. The
+  `reports <analysis_id>`,
   `report show`, and `report export --format markdown` commands never treat an old
   file as current data; each read rechecks the database pointers and redaction proof.
 

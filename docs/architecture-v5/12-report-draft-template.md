@@ -244,7 +244,7 @@ access/session token, password, private key, credential, cookie·authorization s
 만드는 record가 아니라 current `ReportDraft`와 그 exact upstream record를 읽기 쉽게 표현한
 출력물이다.
 
-- `reports`: current 보고서 목록과 짧은 요약을 조회한다.
+- `reports <analysis_id>`: 지정한 분석의 current 보고서 목록과 짧은 요약만 조회한다.
 - `report show <finding_id>`: 저장 파일을 재사용하지 않고 current exact record를 다시 검사해
   터미널에 표시한다.
 - `report export <finding_id> --format markdown`: 같은 검사를 통과한 내용을 원자적으로 쓴다.
@@ -257,6 +257,9 @@ access/session token, password, private key, credential, cookie·authorization s
 - current Finding pointer, exact reference closure, Reporter의 사용 완료된
   `CREATE_REPORT_DRAFT` 결정과 `REDACTION=PASS` 중 하나라도 확인되지 않으면 목록·표시·출력을
   fail-closed 한다. 기존 Markdown 파일을 current 결과로 읽어 주지 않는다.
+- 렌더링 도중 upstream current revision이 바뀌면 파일 교체 전·후 exact 입력을 다시 확인하고
+  출력을 폐기한다. 터미널 명령 실행이나 clipboard 조작에 쓰일 수 있는 제어문자는 파일과
+  터미널 출력 모두에서 거부한다.
 - `analysis_id`와 `finding_id`는 안전한 단일 경로 이름인지 검사하며 다른 분석·Finding 파일을
   덮어쓰는 경로를 허용하지 않는다. `reports` root와 분석 디렉터리가 data-dir 밖을 가리키는
   symlink·junction이면 출력하지 않는다. 쓰기는 같은 디렉터리의 임시 파일을 fsync한 뒤
