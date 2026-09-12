@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from sastsimi.contracts.actions import ActionType
+from sastsimi.contracts.actions import ActionType, RequesterRole
 from sastsimi.contracts.analysis import AnalysisRunState
 from sastsimi.contracts.budget import BudgetProfileBinding, BudgetReservation
 from sastsimi.contracts.evaluation import EvaluationRecommendation
@@ -157,7 +157,7 @@ class ProductionPreparedCallAuthorizer:
         *,
         runner: WorkflowRunner,
         records: RecordStore,
-        requester_identities: Mapping[tuple[str, LLMRole], BudgetScopeRef],
+        requester_identities: Mapping[tuple[str, str], BudgetScopeRef],
         reserved_cost_minor_units: int,
     ) -> None:
         if (
@@ -175,8 +175,9 @@ class ProductionPreparedCallAuthorizer:
     ) -> AuthorizedLLMCall:
         spec, payload = self._prepared(work, prepared)
         analysis_id = str(work.meta.analysis_id)
+        action_type, requester_role = production_call_authority(spec.agent_role)
         try:
-            identity = self._identities[(analysis_id, spec.agent_role)]
+            identity = self._identities[(analysis_id, str(requester_role))]
         except KeyError as error:
             raise ValueError("PRODUCTION_LLM_IDENTITY_NOT_APPROVED") from error
         require_record_ref(identity)
@@ -185,8 +186,8 @@ class ProductionPreparedCallAuthorizer:
         action = self._runner.action(
             work,
             identity,
-            str(spec.agent_role),
-            ActionType.CALL_LLM,
+            str(requester_role),
+            action_type,
             llm_call_spec_ref=prepared.call_spec_ref,
             provider_profile_ref=spec.provider_profile_ref,
             session_mode=spec.session_policy,
@@ -366,8 +367,25 @@ class ProductionPreparedCallAuthorizer:
         return reservation
 
 
+def production_call_authority(
+    agent_role: LLMRole,
+) -> tuple[ActionType, RequesterRole]:
+    """Return the exact workflow authority for one production LLM call."""
+
+    semantic_actions = {
+        "TECHNICAL_GATE": ActionType.CALL_TECHNICAL_GATE,
+        "RULE_SCOPE_GATE": ActionType.CALL_RULE_SCOPE_GATE,
+        "REPORTER": ActionType.CREATE_REPORT_DRAFT,
+    }
+    action_type = semantic_actions.get(agent_role)
+    if action_type is not None:
+        return action_type, RequesterRole.VERIFICATION
+    return ActionType.CALL_LLM, RequesterRole(agent_role)
+
+
 __all__ = [
     "AnalysisApprovedRoute",
     "ExactAnalysisProductionRouteLookup",
     "ProductionPreparedCallAuthorizer",
+    "production_call_authority",
 ]

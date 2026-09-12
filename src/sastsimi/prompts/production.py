@@ -150,7 +150,7 @@ REQUIRED_PRODUCTION_PROMPT_ROUTES = (
     ),
     _required(
         "POLICY_PARSER",
-        "PARSE_POLICY",
+        "PARSE_OFFICIAL_POLICY",
         "policy_parser_result",
         "src/sastsimi/prompts/templates/policy-parser/parse-policy/1.0.0.md",
     ),

@@ -1563,9 +1563,17 @@ def build_t12_services(
         rule_scope=RuleScopeGateHandler(
             rule_scope_service, resolve_inputs=rule_scope_inputs
         ),
-        finding=FindingNormalizeHandler(service=finding_service, records=records),
+        finding=FindingNormalizeHandler(
+            service=finding_service,
+            records=records,
+            publisher=runner,
+            identity_ref=stored_identity(RequesterRole.VERIFICATION),
+        ),
         reporter=ReporterWorkHandler(
-            workflow=reporter_workflow, resolve_inputs=reporter_inputs
+            workflow=reporter_workflow,
+            resolve_inputs=reporter_inputs,
+            publisher=runner,
+            identity_ref=stored_identity(RequesterRole.REPORTER),
         ),
         primitive_handoff=t10_services.primitive_handoff,
         technical_revisions=TechnicalRevisionReconciler(

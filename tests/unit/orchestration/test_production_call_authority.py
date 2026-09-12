@@ -43,11 +43,30 @@ from sastsimi.orchestration.production_call_authority import (
     AnalysisApprovedRoute,
     ExactAnalysisProductionRouteLookup,
     ProductionPreparedCallAuthorizer,
+    production_call_authority,
 )
 from sastsimi.orchestration.production_llm_work_handlers import (
     ConfiguredProductionCallResolver,
 )
 from sastsimi.ports.dto import BudgetCommitRequest, BudgetReservationRequest
+
+
+@pytest.mark.parametrize(
+    ("role", "action_type", "requested_by"),
+    (
+        ("HYPOTHESIS", "CALL_LLM", "HYPOTHESIS"),
+        ("TECHNICAL_GATE", "CALL_TECHNICAL_GATE", "VERIFICATION"),
+        ("RULE_SCOPE_GATE", "CALL_RULE_SCOPE_GATE", "VERIFICATION"),
+        ("REPORTER", "CREATE_REPORT_DRAFT", "VERIFICATION"),
+    ),
+)
+def test_production_call_authority_uses_role_specific_workflow_actions(
+    role: Any, action_type: str, requested_by: str
+) -> None:
+    actual_action, actual_role = production_call_authority(role)
+
+    assert str(actual_action) == action_type
+    assert str(actual_role) == requested_by
 from sastsimi.ports.llm_invocation import PersistedLLMInvocation
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from tests.contract.domain.fixtures import bundle

@@ -39,6 +39,7 @@ from sastsimi.ports.llm_invocation import (
 from sastsimi.ports.record_store import RecordStore
 from sastsimi.reporting.finding_normalization import FindingNormalizationService
 from sastsimi.reporting.readiness import ReportingReadinessService
+from sastsimi.runtime.workflow_runner import WorkflowRunner
 
 
 @dataclass(frozen=True)
@@ -109,10 +110,17 @@ class StoredReporterInputResolver:
 
 class FindingNormalizeHandler:
     def __init__(
-        self, *, service: FindingNormalizationService, records: RecordStore
+        self,
+        *,
+        service: FindingNormalizationService,
+        records: RecordStore,
+        publisher: WorkflowRunner | None = None,
+        identity_ref: StoredDataRef | None = None,
     ) -> None:
         self._service = service
         self._records = records
+        self._publisher = publisher
+        self._identity_ref = identity_ref
 
     async def execute(self, context: WorkContext) -> WorkHandlerResult:
         _require_claimed(context, WorkType.FINDING_NORMALIZE)
@@ -123,10 +131,16 @@ class FindingNormalizeHandler:
             technical_review_ref=_one(context, "technical_evidence_review"),
             rule_scope_review_ref=_one(context, "rule_scope_impact_review"),
         )
-        ref = self._records.stage_record(finding)
-        if not isinstance(ref, StoredDataRef) or ref != reference(finding):
-            raise ValueError("FINDING_STAGE_MISMATCH")
-        return WorkHandlerResult((ref,))
+        if self._publisher is None or self._identity_ref is None:
+            raise ValueError("FINDING_PUBLISHER_REQUIRED")
+        committed = self._publisher.complete(
+            context.work,
+            self._identity_ref,
+            "VERIFICATION",
+            (finding,),
+            action_input_refs=context.work.input_refs,
+        )
+        return WorkHandlerResult(committed.output_refs)
 
 
 class ReporterDraftWorkflow:
@@ -272,10 +286,17 @@ class ReporterDraftWorkflow:
 
 class ReporterWorkHandler:
     def __init__(
-        self, *, workflow: ReporterDraftWorkflow, resolve_inputs: ReporterInputResolver
+        self,
+        *,
+        workflow: ReporterDraftWorkflow,
+        resolve_inputs: ReporterInputResolver,
+        publisher: WorkflowRunner | None = None,
+        identity_ref: StoredDataRef | None = None,
     ) -> None:
         self._workflow = workflow
         self.resolve_inputs = resolve_inputs
+        self._publisher = publisher
+        self._identity_ref = identity_ref
 
     async def execute(self, context: WorkContext) -> WorkHandlerResult:
         _require_claimed(context, WorkType.REPORT_DRAFT)
@@ -283,8 +304,17 @@ class ReporterWorkHandler:
         outcome = await self._workflow.create_draft(
             work=context.work, inputs=inputs, call=call
         )
+        if self._publisher is None or self._identity_ref is None:
+            raise ValueError("REPORT_DRAFT_PUBLISHER_REQUIRED")
+        committed = self._publisher.complete(
+            context.work,
+            self._identity_ref,
+            "REPORTER",
+            (outcome.draft,),
+            action_input_refs=outcome.save_input_refs,
+        )
         return WorkHandlerResult(
-            (outcome.draft_ref,), action_input_refs=outcome.save_input_refs
+            committed.output_refs, action_input_refs=outcome.save_input_refs
         )
 
 
