@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Protocol, cast
 
 from sastsimi.agents.cwe_labeling import CWECallRefs
+from sastsimi.agents.policy_parser import PolicyParserAgent
 from sastsimi.agents.reporter import ReporterCallRefs
 from sastsimi.agents.rule_scope_gate import RuleScopeCallRefs
 from sastsimi.bootstrap import (
@@ -46,9 +47,14 @@ from sastsimi.orchestration.production_verification_dispatch import (
 )
 from sastsimi.orchestration.run_initialization import PostWorkspaceSeederPort
 from sastsimi.policy.adapters.official_http import OfficialHttpPolicySource
+from sastsimi.policy.cache_service import PolicyCacheService
+from sastsimi.policy.collector import PolicyCollector
+from sastsimi.policy.preparation_service import PolicyPreparationService
+from sastsimi.policy.program_catalog import ProgramCatalog
 from sastsimi.policy.work_handler import PolicyWorkHandler
 from sastsimi.ports.chaining import ChainingAgentInput
 from sastsimi.ports.dto import WorkContext, WorkHandlerResult
+from sastsimi.ports.llm_invocation import PersistedLLMInvocation
 from sastsimi.ports.scheduler import ExternalCancellationPort
 from sastsimi.ports.work_handler import WorkHandler
 from sastsimi.reporting.cwe_workflow import GateCallRefs
@@ -75,9 +81,44 @@ class T08ProductionFeature:
 class PolicyProductionFeature:
     """Official HTTPS policy collection and its post-workspace seed."""
 
+    catalog: ProgramCatalog
     source: OfficialHttpPolicySource
     handler: PolicyWorkHandler
-    seeder: PostWorkspaceSeederPort
+
+
+@dataclass(frozen=True, slots=True)
+class OfficialPolicyPostWorkspaceSeeder:
+    """Register the exact ProgramCatalog policy work after workspace commit."""
+
+    context: ProductionInstallationContext
+    catalog: ProgramCatalog
+
+    def ensure_initial(
+        self,
+        request: AnalysisStartRequest,
+        state: AnalysisRunState,
+        binding_ref: StoredDataRef,
+    ) -> tuple[WorkExecutionState, ...]:
+        if state.run_policy_state_ref is not None:
+            # Recovery must not create a second frozen policy lifecycle.
+            return ()
+        entry = self.catalog.resolve_policy_entry(request.program_id)
+        prepared = self.context.runner.begin_policy(
+            binding_ref,
+            state.meta,
+            self.context.role_identity_refs[RequesterRole.ORCHESTRATION],
+            program_id=str(request.program_id),
+            source_config_ref=entry.source_config_ref,
+            parser_name=entry.parser_name,
+            parser_version=entry.parser_version,
+        )
+        ready = self.context.runner.enqueue_registered(
+            prepared.work,
+            binding_ref,
+            self.context.role_identity_refs[RequesterRole.ORCHESTRATION],
+            role="ORCHESTRATION",
+        )
+        return (ready,)
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +254,72 @@ class _CallAdapters:
             task_kind=task,
             source_refs=_stored_inputs(context.work),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _ProductionPolicyParserInvocation:
+    calls: ProductionCallPort
+    context: ProductionInstallationContext
+
+    async def invoke(
+        self, *, work: WorkExecutionState, source_ref: StoredDataRef
+    ) -> PersistedLLMInvocation:
+        call = self.calls.resolve(
+            work=work,
+            role="POLICY_PARSER",
+            task_kind="PARSE_OFFICIAL_POLICY",
+            source_refs=(source_ref,),
+        )
+        invocation = await self.context.runtime.llm_calls.invoke(
+            work=work,
+            decision_ref=call.decision_ref,
+            reservation_ref=call.reservation_ref,
+            call_spec_ref=call.call_spec_ref,
+        )
+        self.calls.settle(call, invocation)
+        return invocation
+
+
+def build_official_policy_feature(
+    *,
+    context: ProductionInstallationContext,
+    calls: ProductionCallPort,
+    catalog: ProgramCatalog,
+    source: OfficialHttpPolicySource,
+) -> PolicyProductionFeature:
+    """Build the non-Fake policy handler around the pinned HTTPS source."""
+
+    entry = catalog.resolve_policy_entry(context.request.program_id)
+    parser = PolicyParserAgent(
+        invocations=_ProductionPolicyParserInvocation(calls, context),
+        artifacts=context.runtime.unit_of_work.artifacts,
+        ids=context.ids,
+        clock=context.clock,
+        parser_name=entry.parser_name,
+        parser_version=entry.parser_version,
+    )
+    service = PolicyPreparationService(
+        runtime=context.runtime,
+        runner=context.runner,
+        catalog=catalog,
+        source=source,
+        parser=parser,
+        cache=PolicyCacheService(
+            runtime=context.runtime.policy,
+            records=context.runtime.unit_of_work.records,
+        ),
+        collector=PolicyCollector(
+            runner=context.runner,
+            policy_runtime=context.runtime.policy,
+            ids=context.ids,
+            clock=context.clock,
+        ),
+        collector_identity_ref=context.role_identity_refs[
+            RequesterRole.POLICY_COLLECTOR
+        ],
+        parser_identity_ref=context.role_identity_refs[RequesterRole.POLICY_PARSER],
+    )
+    return PolicyProductionFeature(catalog, source, PolicyWorkHandler(service))
 
 
 class ProductionFeatureInstaller:
@@ -355,7 +462,8 @@ class ProductionFeatureInstaller:
         return InstalledProductionServices(
             handlers=tuple(handlers.items()),
             seeder=CombinedPostWorkspaceSeeder(
-                self.inputs.t08.seeder, self.inputs.policy.seeder
+                self.inputs.t08.seeder,
+                OfficialPolicyPostWorkspaceSeeder(context, self.inputs.policy.catalog),
             ),
             readiness=ExactProductionReadiness(
                 str(context.scope.analysis_id),
@@ -380,6 +488,18 @@ class ProductionFeatureInstaller:
             )
             or not isinstance(self.inputs.policy.source, OfficialHttpPolicySource)
             or not isinstance(self.inputs.policy.handler, PolicyWorkHandler)
+            or getattr(
+                getattr(self.inputs.policy.handler, "_service", None),
+                "_source",
+                None,
+            )
+            is not self.inputs.policy.source
+            or getattr(
+                getattr(self.inputs.policy.handler, "_service", None),
+                "_catalog",
+                None,
+            )
+            is not self.inputs.policy.catalog
         ):
             raise ProductionCapabilityUnavailable(
                 "PRODUCTION_FEATURE_INPUT_NOT_EXACT"
@@ -420,9 +540,11 @@ __all__ = [
     "CombinedPostWorkspaceSeeder",
     "DynamicProductionFeature",
     "ExactProductionReadiness",
+    "OfficialPolicyPostWorkspaceSeeder",
     "PolicyProductionFeature",
     "ProductionFeatureInputs",
     "ProductionFeatureInstaller",
     "SubjectDispatchWorkHandler",
     "T08ProductionFeature",
+    "build_official_policy_feature",
 ]
