@@ -13,3 +13,8 @@ class DynamicRegistrationService:
         self, work_id: str, decision_ref: RecordRef, reservation_ref: RecordRef
     ) -> WorkExecutionState:
         return self.store.register(work_id, decision_ref, reservation_ref)
+
+    def register_and_park(
+        self, work_id: str, decision_ref: RecordRef, reservation_ref: RecordRef
+    ) -> WorkExecutionState:
+        return self.store.register_and_park(work_id, decision_ref, reservation_ref)
