@@ -5,9 +5,12 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import stat
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import uuid4
 
 from sastsimi.config.runtime_paths import RuntimePaths
@@ -42,7 +45,13 @@ from sastsimi.contracts.static import CodeLocation
 from sastsimi.contracts.verification import EvidenceClaim, VerificationResult
 from sastsimi.storage.artifact_store import sync_directory
 
-_SAFE_PATH_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+_SAFE_PATH_SEGMENT = re.compile(r"[a-z0-9][a-z0-9_-]{0,127}\Z")
+_WINDOWS_RESERVED_STEMS = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{index}" for index in range(1, 10)}
+    | {f"lpt{index}" for index in range(1, 10)}
+)
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
 
 class ReportUnavailable(ValueError):
@@ -122,12 +131,15 @@ class ReportMarkdownService:
         report = self._source.get_current(finding_id)
         markdown = render_markdown(report)
         destination = self._destination(report)
-        _atomic_write(destination, markdown.encode("utf-8"))
+        _atomic_write_report(destination, report.analysis_id, markdown.encode("utf-8"))
         return destination
 
     def _destination(self, report: CurrentReport) -> Path:
         for value in (report.analysis_id, report.finding_id):
-            if _SAFE_PATH_SEGMENT.fullmatch(value) is None or value in {".", ".."}:
+            if (
+                _SAFE_PATH_SEGMENT.fullmatch(value) is None
+                or value in _WINDOWS_RESERVED_STEMS
+            ):
                 raise ReportUnavailable("UNSAFE_REPORT_PATH_ID")
         expected_root = RuntimePaths(self._data_dir).reports
         root = expected_root.resolve()
@@ -370,6 +382,163 @@ def _atomic_write(path: Path, data: bytes) -> None:
             raise ReportUnavailable("REPORT_EXPORT_WRITE_FAILED")
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _directory_identity(info: os.stat_result) -> tuple[int, int, int]:
+    if not stat.S_ISDIR(info.st_mode):
+        raise ReportUnavailable("UNSAFE_REPORT_PATH")
+    return info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)
+
+
+def _atomic_write_report(path: Path, analysis_id: str, data: bytes) -> None:
+    if os.name == "nt":
+        with _locked_windows_directory(path.parent.parent):
+            with _locked_windows_directory(path.parent):
+                _atomic_write(path, data)
+        return
+    _atomic_write_report_posix(path, analysis_id, data)
+
+
+def _atomic_write_report_posix(path: Path, analysis_id: str, data: bytes) -> None:
+    root = path.parent.parent
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    nofollow_flag = getattr(os, "O_NOFOLLOW", 0)
+    if not directory_flag or not nofollow_flag:
+        raise ReportUnavailable("UNSAFE_REPORT_PATH")
+    directory_flags = os.O_RDONLY | directory_flag | nofollow_flag
+    try:
+        root.mkdir(exist_ok=True)
+        root_fd = os.open(root, directory_flags)
+    except OSError as error:
+        raise ReportUnavailable("UNSAFE_REPORT_PATH") from error
+    try:
+        root_identity = _directory_identity(os.fstat(root_fd))
+        try:
+            os.mkdir(analysis_id, mode=0o700, dir_fd=root_fd)
+        except FileExistsError:
+            pass
+        parent_fd = os.open(analysis_id, directory_flags, dir_fd=root_fd)
+        try:
+            parent_identity = _directory_identity(os.fstat(parent_fd))
+            temporary = f".{path.name}.{uuid4().hex}.tmp"
+            descriptor = os.open(
+                temporary,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=parent_fd,
+            )
+            try:
+                with os.fdopen(descriptor, "w+b", closefd=False) as stream:
+                    stream.write(data)
+                    stream.flush()
+                    os.fsync(descriptor)
+                    os.replace(
+                        temporary,
+                        path.name,
+                        src_dir_fd=parent_fd,
+                        dst_dir_fd=parent_fd,
+                    )
+                    os.fsync(parent_fd)
+                    stream.seek(0)
+                    if stream.read() != data:
+                        raise ReportUnavailable("REPORT_EXPORT_WRITE_FAILED")
+                if (
+                    _directory_identity(os.stat(root, follow_symlinks=False))
+                    != root_identity
+                    or _directory_identity(
+                        os.stat(analysis_id, dir_fd=root_fd, follow_symlinks=False)
+                    )
+                    != parent_identity
+                ):
+                    raise ReportUnavailable("UNSAFE_REPORT_PATH")
+            finally:
+                os.close(descriptor)
+                try:
+                    os.unlink(temporary, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    pass
+        finally:
+            os.close(parent_fd)
+    except OSError as error:
+        raise ReportUnavailable("UNSAFE_REPORT_PATH") from error
+    finally:
+        os.close(root_fd)
+
+
+class _WindowsFunction(Protocol):
+    argtypes: list[object]
+    restype: object
+
+    def __call__(self, *args: object) -> int | None: ...
+
+
+class _Kernel32(Protocol):
+    CreateFileW: _WindowsFunction
+    CloseHandle: _WindowsFunction
+
+
+def _platform_attribute(owner: object, name: str) -> object:
+    return getattr(owner, name)
+
+
+@contextmanager
+def _locked_windows_directory(path: Path) -> Iterator[None]:
+    import ctypes
+
+    try:
+        path.mkdir(exist_ok=True)
+    except OSError as error:
+        raise ReportUnavailable("UNSAFE_REPORT_PATH") from error
+    load_library = cast(Callable[..., object], _platform_attribute(ctypes, "WinDLL"))
+    kernel32 = cast(_Kernel32, load_library("kernel32", use_last_error=True))
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    create_file.restype = ctypes.c_void_p
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [ctypes.c_void_p]
+    close_handle.restype = ctypes.c_int
+    generic_read = 0x80000000
+    share_read_write = 0x00000001 | 0x00000002
+    open_existing = 3
+    file_flag_backup_semantics = 0x02000000
+    file_flag_open_reparse_point = 0x00200000
+    handle = create_file(
+        str(path),
+        generic_read,
+        share_read_write,
+        None,
+        open_existing,
+        file_flag_backup_semantics | file_flag_open_reparse_point,
+        None,
+    )
+    invalid_handle = ctypes.c_void_p(-1).value
+    if handle is None or handle == invalid_handle:
+        get_last_error = cast(
+            Callable[[], int], _platform_attribute(ctypes, "get_last_error")
+        )
+        raise ReportUnavailable("UNSAFE_REPORT_PATH") from OSError(
+            get_last_error(), "REPORT_DIRECTORY_OPEN_FAILED", str(path)
+        )
+    try:
+        information = path.lstat()
+        if (
+            not stat.S_ISDIR(information.st_mode)
+            or int(getattr(information, "st_file_attributes", 0))
+            & _FILE_ATTRIBUTE_REPARSE_POINT
+            or int(getattr(information, "st_reparse_tag", 0)) != 0
+        ):
+            raise ReportUnavailable("UNSAFE_REPORT_PATH")
+        yield
+    finally:
+        close_handle(handle)
 
 
 __all__ = [

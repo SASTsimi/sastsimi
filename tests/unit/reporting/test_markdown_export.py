@@ -301,6 +301,139 @@ def test_markdown_export_rejects_reports_root_symlink_escape(tmp_path: Path) -> 
     assert not (outside / report.analysis_id / f"{report.finding_id}.md").exists()
 
 
+def test_markdown_export_rejects_analysis_directory_symlink_escape(
+    tmp_path: Path,
+) -> None:
+    report = current_report()
+    outside = tmp_path / "outside-analysis"
+    outside.mkdir()
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    link = reports / report.analysis_id
+    if os.name == "nt":
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+            check=True,
+            capture_output=True,
+        )
+    else:
+        link.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ReportUnavailable, match="UNSAFE_REPORT_PATH"):
+        ReportMarkdownService(tmp_path, Source(report)).export(report.finding_id)
+
+    assert not (outside / f"{report.finding_id}.md").exists()
+
+
+@pytest.mark.parametrize(
+    ("analysis_id", "finding_id"),
+    (
+        ("Analysis-1", "finding-1"),
+        ("analysis-1", "Finding-1"),
+        ("con", "finding-1"),
+        ("analysis-1", "nul"),
+        ("a" * 129, "finding-1"),
+        ("analysis-1", "f" * 129),
+        ("analysis.", "finding-1"),
+    ),
+)
+def test_markdown_export_rejects_noncanonical_filesystem_ids(
+    tmp_path: Path, analysis_id: str, finding_id: str
+) -> None:
+    report = current_report()
+    draft_meta = SimpleNamespace(
+        analysis_id=analysis_id,
+        hypothesis_id=report.draft.meta.hypothesis_id,
+        record_id=report.draft.meta.record_id,
+        created_at=report.draft.meta.created_at,
+    )
+    unsafe = replace(
+        report,
+        draft=report.draft.model_copy(update={"meta": draft_meta}),
+        finding=report.finding.model_copy(
+            update={"meta": SimpleNamespace(record_id=finding_id)}
+        ),
+    )
+
+    with pytest.raises(ReportUnavailable, match="UNSAFE_REPORT_PATH_ID"):
+        ReportMarkdownService(tmp_path, Source(unsafe)).export(finding_id)
+
+
+def test_markdown_export_does_not_follow_directory_swap_during_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = current_report()
+    service = ReportMarkdownService(tmp_path, Source(report))
+    parent = tmp_path / "reports" / report.analysis_id
+    parent.mkdir(parents=True)
+    backup = tmp_path / "analysis-backup"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / f"{report.finding_id}.md"
+    victim.write_text("victim", encoding="utf-8")
+    real_replace = os.replace
+    swapped = False
+    blocked = False
+
+    def racing_replace(
+        source: str | os.PathLike[str],
+        destination: str | os.PathLike[str],
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        nonlocal blocked, swapped
+        if not swapped and not blocked:
+            try:
+                parent.rename(backup)
+            except OSError:
+                blocked = True
+            else:
+                swapped = True
+                if os.name == "nt":
+                    subprocess.run(
+                        ["cmd", "/c", "mklink", "/J", str(parent), str(outside)],
+                        check=True,
+                        capture_output=True,
+                    )
+                else:
+                    parent.symlink_to(outside, target_is_directory=True)
+                if src_dir_fd is None and dst_dir_fd is None:
+                    source_name = Path(source).name
+                    real_replace(backup / source_name, outside / source_name)
+        real_replace(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
+
+    monkeypatch.setattr(os, "replace", racing_replace)
+    try:
+        if os.name == "nt":
+            exported = service.export(report.finding_id)
+            assert blocked
+            assert exported.read_text(encoding="utf-8") == service.show(
+                report.finding_id
+            )
+        else:
+            with pytest.raises(ReportUnavailable, match="UNSAFE_REPORT_PATH"):
+                service.export(report.finding_id)
+            assert swapped
+        assert victim.read_text(encoding="utf-8") == "victim"
+    finally:
+        monkeypatch.undo()
+        if parent.is_symlink() or (
+            hasattr(parent, "is_junction") and parent.is_junction()
+        ):
+            if os.name == "nt":
+                parent.rmdir()
+            else:
+                parent.unlink()
+        if backup.exists() and not parent.exists():
+            backup.rename(parent)
+
+
 def test_current_report_requires_exact_execution_log_and_command() -> None:
     assert "agent_log" in CurrentReport.__dataclass_fields__
     assert "execution_command" in CurrentReport.__dataclass_fields__
