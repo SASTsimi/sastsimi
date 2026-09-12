@@ -782,6 +782,11 @@ T11 service, Controller, Setup Automation, Session Manager가 직접 `TRUE | FAL
 
 ## 4. 후속 목록 — 이번 Task에서 구현하지 않음
 
+- **T08 동기화 지점(H7)**: 이 보안 보정 branch는 `f7ab0b6`의
+  `RepositoryProfile` 계약을 기준으로 한다. T11 통합자는 최신 T08을 합친 뒤
+  `content_sha256`, 탐지 hint, gap/error 필드와 current profile revision을 recipe
+  source manifest 및 Runtime authorization input에 정확히 연결하고, 값이
+  불명확하거나 누락되면 legacy host mount로 우회하지 말고 build를 중단한다.
 - 다양한 언어·framework별 Sandbox base image 최적화.
 - 원격 container runtime, Kubernetes, microVM 지원.
 - package cache와 image GC 고도화.
