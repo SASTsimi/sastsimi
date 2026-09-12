@@ -194,9 +194,7 @@ class SubprocessCommandProbeRunner:
         try:
             # start_new_session=True makes the original pid the process-group id.
             # The group remains addressable after its leader exits.
-            kill_group = cast(
-                Callable[[int, int], None], os.__dict__["killpg"]
-            )
+            kill_group = cast(Callable[[int, int], None], os.__dict__["killpg"])
             kill_signal = cast(int, signal.__dict__["SIGKILL"])
             kill_group(process.pid, kill_signal)
             return

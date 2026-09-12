@@ -82,12 +82,8 @@ class _NativeApprovalIdentity:
             class _PasswdRecord(Protocol):
                 pw_name: str
 
-            get_effective_user_id = cast(
-                Callable[[], int], os.__dict__["geteuid"]
-            )
-            get_user = cast(
-                Callable[[int], _PasswdRecord], pwd.__dict__["getpwuid"]
-            )
+            get_effective_user_id = cast(Callable[[], int], os.__dict__["geteuid"])
+            get_user = cast(Callable[[int], _PasswdRecord], pwd.__dict__["getpwuid"])
             identity = get_user(get_effective_user_id()).pw_name
         if not identity:
             raise ValueError("APPROVER_UNAVAILABLE")
