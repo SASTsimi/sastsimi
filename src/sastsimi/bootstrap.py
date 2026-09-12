@@ -196,6 +196,28 @@ class T13Services:
         )
 
 
+@dataclass(frozen=True)
+class T13ProductionInstallation:
+    """One immutable T13 boundary installed by the T14 production worker."""
+
+    work_handlers: Mapping[WorkType, WorkHandler]
+    reconcile_startup: ChainingStartupReconciler
+
+
+def install_t13_services(services: T13Services) -> T13ProductionInstallation:
+    """Expose T13 routing and recovery without selecting a scheduler or model.
+
+    T14 owns handler registration and decides when startup reconciliation runs.
+    The exact handlers retain the T09 call resolver and the runtime-bound lineage
+    supplied to :func:`build_t13_services`.
+    """
+
+    return T13ProductionInstallation(
+        work_handlers=MappingProxyType(dict(services.work_handlers)),
+        reconcile_startup=services.reconcile_startup,
+    )
+
+
 def _require_current_dynamic_request(
     work: WorkExecutionState,
     request: DynamicReproductionRequest,

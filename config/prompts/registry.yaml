@@ -112,3 +112,123 @@ entries:
         - R3
         - R4
         - R8
+  - template_path: src/sastsimi/prompts/templates/chaining/match-primitives/1.0.0.md
+    template_sha256: a3fe16a5f6c19b450df55d7ef2ba4a809bbfb799d864598eba571ca19f092d4e
+    entry:
+      meta:
+        record_id: prompt-chaining-fixture-record
+        logical_record_id: prompt-chaining-fixture-logical
+        record_type: prompt_registry_entry
+        schema_version: "1.0.0"
+        analysis_id: prompt-evaluation-fixture
+        revision_number: 1
+        previous_record_id: null
+        created_at: "2026-09-12T00:00:00Z"
+        workspace_id: prompt-evaluation-workspace
+        commit_id: prompt-evaluation-commit
+        hypothesis_id: null
+        attempt_id: null
+      prompt_key: chaining.match-primitives.fixture-v1
+      agent_role: CHAINING
+      task_kind: MATCH_PRIMITIVES
+      purpose: EVALUATION
+      template_ref:
+        stored_data_id: a3fe16a5f6c19b450df55d7ef2ba4a809bbfb799d864598eba571ca19f092d4e
+        data_kind: artifact
+        content_hash: a3fe16a5f6c19b450df55d7ef2ba4a809bbfb799d864598eba571ca19f092d4e
+        workspace_id: prompt-evaluation-workspace
+        commit_id: prompt-evaluation-commit
+        record_id: null
+      template_version: "1.0.0"
+      input_slots:
+        - slot: indexes
+          data_kind: primitive_index_state
+          field_paths:
+            - $
+          cardinality: REQUIRED_MANY
+          trust_class: UNTRUSTED_DATA
+        - slot: considered
+          data_kind: primitive
+          field_paths:
+            - $
+          cardinality: REQUIRED_MANY
+          trust_class: UNTRUSTED_DATA
+        - slot: lineage_hypotheses
+          data_kind: vulnerability_hypothesis
+          field_paths:
+            - /meta
+            - /origin
+            - /parent_hypothesis_ids
+            - /source_primitive_match_id
+          cardinality: REQUIRED_MANY
+          trust_class: UNTRUSTED_DATA
+        - slot: lineage_results
+          data_kind: chaining_result
+          field_paths:
+            - /primitive_match_candidates
+            - /input_primitive_refs
+          cardinality: OPTIONAL_MANY
+          trust_class: UNTRUSTED_DATA
+      forbidden_context_kinds:
+        - credential
+        - provider_profile
+        - llm_invocation_log
+      output_schema_ref:
+        stored_data_id: chaining-output-schema-fixture-stored
+        data_kind: output_schema_spec
+        content_hash: "2222222222222222222222222222222222222222222222222222222222222222"
+        workspace_id: prompt-evaluation-workspace
+        commit_id: prompt-evaluation-commit
+        record_id: chaining-output-schema-fixture-record
+      session_policy: NEW
+      provider_profile_refs:
+        - stored_data_id: provider-fixture-stored
+          data_kind: provider_profile
+          content_hash: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+          workspace_id: prompt-evaluation-workspace
+          commit_id: prompt-evaluation-commit
+          record_id: provider-fixture-record
+      execution_limits_ref:
+        stored_data_id: chaining-limits-fixture-stored
+        data_kind: execution_limits
+        content_hash: "3333333333333333333333333333333333333333333333333333333333333333"
+        workspace_id: prompt-evaluation-workspace
+        commit_id: prompt-evaluation-commit
+        record_id: chaining-limits-fixture-record
+      retry_policy_ref:
+        stored_data_id: retry-fixture-stored
+        data_kind: llm_retry_policy
+        content_hash: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+        workspace_id: prompt-evaluation-workspace
+        commit_id: prompt-evaluation-commit
+        record_id: retry-fixture-record
+      semantic_validator_ref:
+        stored_data_id: chaining-semantic-fixture-stored
+        data_kind: semantic_validator_spec
+        content_hash: "4444444444444444444444444444444444444444444444444444444444444444"
+        workspace_id: prompt-evaluation-workspace
+        commit_id: prompt-evaluation-commit
+        record_id: chaining-semantic-fixture-record
+      tool_policy_ref:
+        stored_data_id: tool-fixture-stored
+        data_kind: llm_tool_policy
+        content_hash: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+        workspace_id: prompt-evaluation-workspace
+        commit_id: prompt-evaluation-commit
+        record_id: tool-fixture-record
+      redaction_policy_ref:
+        stored_data_id: redaction-fixture-stored
+        data_kind: prompt_redaction_policy
+        content_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+        workspace_id: prompt-evaluation-workspace
+        commit_id: prompt-evaluation-commit
+        record_id: redaction-fixture-record
+      result_kind: chaining_result
+      status: DRAFT
+      quality_evaluation_ref: null
+      owner_role: R1
+      reviewer_roles:
+        - R3
+        - R4
+        - R5
+        - R8

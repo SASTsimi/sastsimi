@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import operator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from inspect import signature
@@ -10,7 +11,13 @@ from uuid import uuid4
 import pytest
 
 from sastsimi.agents.chaining import ChainingAgent
-from sastsimi.bootstrap import T13Services, build_runtime, build_t13_services
+from sastsimi.bootstrap import (
+    T13ProductionInstallation,
+    T13Services,
+    build_runtime,
+    build_t13_services,
+    install_t13_services,
+)
 from sastsimi.chaining.publication import RuntimeChainingResultPublisher
 from sastsimi.chaining.service import ChainingCallRefs
 from sastsimi.contracts.actions import RequesterRole
@@ -230,6 +237,27 @@ def test_compose_t13_services_builds_one_concrete_child_registration() -> None:
     assert startup.analysis_id == AnalysisId("empty-analysis")
     assert startup.primitive_update_refs == ()
     assert startup.chaining_result_refs == ()
+
+
+def test_install_t13_services_exposes_one_immutable_production_seam() -> None:
+    services = _build(_composition(_run_dir("installation")))
+
+    installation = install_t13_services(services)
+
+    assert isinstance(installation, T13ProductionInstallation)
+    assert tuple(installation.work_handlers) == (
+        WorkType.PRIMITIVE_UPDATE,
+        WorkType.CHAINING,
+        WorkType.HYPOTHESIS_PROPOSAL,
+    )
+    assert installation.work_handlers[WorkType.CHAINING] is services.chaining
+    assert installation.reconcile_startup is services.reconcile_startup
+    with pytest.raises(TypeError):
+        operator.setitem(
+            installation.work_handlers,
+            WorkType.CHAINING,
+            services.chaining,
+        )
 
 
 @pytest.mark.parametrize(

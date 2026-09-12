@@ -274,16 +274,33 @@ def _fixture(
 def test_canonical_registry_is_draft_evaluation_only() -> None:
     root = Path(__file__).resolve().parents[3]
     registry = PromptLoader(root).load_registry(Path("config/prompts/registry.yaml"))
-    assert len(registry.definitions) == 1
-    entry = registry.definitions[0].entry
-    assert (entry.purpose, entry.status, entry.agent_role, entry.task_kind) == (
-        "EVALUATION",
-        "DRAFT",
-        "HYPOTHESIS",
-        "GENERATE_INITIAL",
+    entries = {
+        (definition.entry.agent_role, definition.entry.task_kind): definition.entry
+        for definition in registry.definitions
+    }
+    assert set(entries) == {
+        ("HYPOTHESIS", "GENERATE_INITIAL"),
+        ("CHAINING", "MATCH_PRIMITIVES"),
+    }
+    assert all(
+        (entry.purpose, entry.status) == ("EVALUATION", "DRAFT")
+        for entry in entries.values()
     )
-    with pytest.raises(LookupError, match="PROMPT_REGISTRY_NOT_ACTIVE"):
-        registry.select("HYPOTHESIS", "GENERATE_INITIAL", "EVALUATION")
+    chaining = entries[("CHAINING", "MATCH_PRIMITIVES")]
+    assert chaining.result_kind == "chaining_result"
+    chaining_slots = tuple(
+        (slot.slot, slot.data_kind, slot.cardinality)
+        for slot in chaining.input_slots
+    )
+    assert chaining_slots == (
+        ("indexes", "primitive_index_state", "REQUIRED_MANY"),
+        ("considered", "primitive", "REQUIRED_MANY"),
+        ("lineage_hypotheses", "vulnerability_hypothesis", "REQUIRED_MANY"),
+        ("lineage_results", "chaining_result", "OPTIONAL_MANY"),
+    )
+    for role, task in entries:
+        with pytest.raises(LookupError, match="PROMPT_REGISTRY_NOT_ACTIVE"):
+            registry.select(role, task, "EVALUATION")
 
 
 def test_builder_creates_redacted_exact_payload_and_call_spec(work_path: Path) -> None:
