@@ -37,7 +37,8 @@ jobs:
       - name: Strict types
         run: uv run mypy --strict src tests
       - name: All existing suites
-        run: uv run pytest tests -q
+        timeout-minutes: 90
+        run: uv run pytest tests -v --tb=short -o faulthandler_timeout=120
       - name: Architecture validator (Windows PowerShell)
         if: runner.os == 'Windows'
         shell: powershell

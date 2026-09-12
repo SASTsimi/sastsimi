@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -616,6 +617,11 @@ async def test_posix_real_process_preserves_argv_env_and_kills_descendant(
     )
     check = replace(
         spec(tmp_path, executable),
+        deadline=MonotonicActionDeadline(
+            action_id="action-1",
+            started_ns=(started := time.monotonic_ns()),
+            expires_ns=started + 10_000_000_000,
+        ),
         argv=(
             str(executable),
             "-c",
@@ -1062,6 +1068,7 @@ async def test_posix_cleanup_failure_prevents_cancelled_receipt(
         executable=executable,
         output_budget=output_budget(),
         backend=backend,
+        monotonic_ns=lambda: 0,
     )
     request = replace(
         spec(tmp_path, executable),
