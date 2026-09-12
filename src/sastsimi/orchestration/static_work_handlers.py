@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from typing import Protocol, cast
 
+from sastsimi.contracts.actions import ActionRequest, ActionType, RequesterRole
 from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.hypothesis import HypothesisProposal
@@ -163,6 +165,7 @@ class StaticToolRoute:
 class StaticToolCall:
     request: StaticToolRequest
     selected_tool: RepositorySelectedTool
+    recover: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +180,78 @@ class ContextRetrievalCall:
     workspace: CodeWorkspace
     bundle: StaticFactBundle
     budget_scope_ref: StoredDataRef
+
+
+class _UncertainStaticRecoveryPort(Protocol):
+    def block_uncertain(self, work: WorkExecutionState) -> None: ...
+
+
+def resolve_static_tool_recovery_action(
+    runner: WorkflowRunner,
+    context: WorkContext,
+    *,
+    requester_identity_ref: BudgetScopeRef,
+    tool_name: str,
+    file_paths: tuple[str, ...],
+) -> ActionRequest | None:
+    """Return the one durable action owned by this exact current attempt.
+
+    A prior-attempt action never closes a newer attempt.  Multiple or malformed
+    actions for the same current work revision make the external outcome
+    ambiguous, so the work is blocked instead of dispatching again.
+    """
+
+    require_current_work_context(context, runner, WorkType.STATIC_TOOL)
+    work = context.work
+    if (
+        not isinstance(work.meta, RecordMeta)
+        or work.status != WorkStatus.RUNNING
+        or work.active_attempt_id is None
+    ):
+        raise ValueError("STATIC_TOOL_RECOVERY_AMBIGUOUS")
+    work_ref = reference(work)
+    candidates = tuple(
+        item
+        for item in runner.runtime.queries.published_records(
+            str(work.meta.analysis_id)
+        )
+        if isinstance(item, ActionRequest)
+        and item.action_type == ActionType.RUN_TOOL
+        and item.work_ref == work_ref
+    )
+    if not candidates:
+        return None
+    action = candidates[0]
+    valid = (
+        len(candidates) == 1
+        and isinstance(action.meta, RecordMeta)
+        and action.meta.attempt_id == work.active_attempt_id
+        and (
+            action.meta.analysis_id,
+            action.meta.workspace_id,
+            action.meta.commit_id,
+            action.meta.hypothesis_id,
+        )
+        == (
+            work.meta.analysis_id,
+            work.meta.workspace_id,
+            work.meta.commit_id,
+            work.meta.hypothesis_id,
+        )
+        and action.requested_by == RequesterRole.STATIC_ANALYSIS
+        and action.requester_identity_ref == requester_identity_ref
+        and action.expected_state_version == work.state_version
+        and action.input_refs == work.input_refs
+        and action.tool_name == tool_name
+        and action.file_paths == file_paths
+    )
+    if not valid:
+        recovery = runner.runtime.recovery.recovery
+        if not hasattr(recovery, "block_uncertain"):
+            raise ValueError("STATIC_TOOL_RECOVERY_BLOCKER_UNAVAILABLE")
+        cast(_UncertainStaticRecoveryPort, recovery).block_uncertain(work)
+        raise ValueError("STATIC_TOOL_RECOVERY_AMBIGUOUS")
+    return action
 
 
 class StaticProductionGraph:
@@ -751,7 +826,14 @@ class ExactStaticToolCallResolver:
         ):
             raise ValueError("STATIC_TOOL_CALL_INVALID")
         paths = selected_static_paths(repository.tracked_files, selected[0])
-        action = self.runner.action(
+        existing_action = resolve_static_tool_recovery_action(
+            self.runner,
+            context,
+            requester_identity_ref=self.requester_identity_ref,
+            tool_name=profile.tool_name,
+            file_paths=paths,
+        )
+        action = existing_action or self.runner.action(
             work,
             self.requester_identity_ref,
             "STATIC_ANALYSIS",
@@ -770,6 +852,7 @@ class ExactStaticToolCallResolver:
                 execution_selection_ref=selection_refs[0],
             ),
             selected[0],
+            recover=existing_action is not None,
         )
 
 
@@ -781,7 +864,10 @@ class StaticToolWorkHandler:
 
     async def execute(self, context: WorkContext) -> WorkHandlerResult:
         call = self.resolve_call(context)
-        await self.tools.run(call.request)
+        if call.recover:
+            await self.tools.recover(call.request)
+        else:
+            await self.tools.run(call.request)
         current = self.graph.runner.runtime.work.get(str(context.work.work_id))
         self.graph.ensure_normalization(current)
         return WorkHandlerResult(
@@ -1050,5 +1136,6 @@ __all__ = [
     "StaticToolRoute",
     "StaticToolWorkHandler",
     "require_current_work_context",
+    "resolve_static_tool_recovery_action",
     "selected_static_paths",
 ]

@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
+from typing import cast
 
 from pydantic import TypeAdapter
 
@@ -34,6 +35,7 @@ from sastsimi.ports.dto import (
 )
 from sastsimi.ports.static_tool import (
     StaticExternalExecutionPort,
+    StaticExternalRecoveryPort,
     StaticProcessAdapter,
     StaticToolProfileResolverPort,
 )
@@ -207,6 +209,16 @@ class StaticToolCoordinator:
         return ToolCapabilityResult(ref=profile_ref, **observation.__dict__)
 
     async def run(self, request: StaticToolRequest) -> ToolRunResult:
+        return await self._run_or_recover(request, recover=False)
+
+    async def recover(self, request: StaticToolRequest) -> ToolRunResult:
+        """Resume one exact durable action instead of dispatching it again."""
+
+        return await self._run_or_recover(request, recover=True)
+
+    async def _run_or_recover(
+        self, request: StaticToolRequest, *, recover: bool
+    ) -> ToolRunResult:
         profile, adapter = self._resolve(request.tool_profile_ref)
         self._validate_request_binding(request, profile)
         if not isinstance(request.action.meta, RecordMeta):
@@ -263,6 +275,12 @@ class StaticToolCoordinator:
 
         self._active[str(attempt_id)] = adapter
         try:
+            if recover:
+                if not hasattr(self._external, "recover_tool"):
+                    raise ValueError("STATIC_TOOL_RECOVERY_UNAVAILABLE")
+                return await cast(
+                    StaticExternalRecoveryPort, self._external
+                ).recover_tool(request, profile, operation)
             return await self._external.invoke(request, profile, operation)
         finally:
             self._active.pop(str(attempt_id), None)

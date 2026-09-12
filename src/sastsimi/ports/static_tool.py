@@ -89,6 +89,20 @@ class StaticExternalExecutionPort(Protocol):
     ) -> ToolRunResult: ...
 
 
+class StaticExternalRecoveryPort(Protocol):
+    """Resume one exact claimed static action without a second dispatch."""
+
+    async def recover_tool(
+        self,
+        request: StaticToolRequest,
+        profile: StaticToolProfile,
+        operation: Callable[
+            [MonotonicActionDeadline], Awaitable[StaticToolObservation]
+        ]
+        | None = None,
+    ) -> ToolRunResult: ...
+
+
 class StaticToolProfileResolverPort(Protocol):
     def resolve(
         self, profile_ref: StoredDataRef | HostConfigurationRef
