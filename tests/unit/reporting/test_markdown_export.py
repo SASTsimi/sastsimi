@@ -1,5 +1,7 @@
 """Human-readable report rendering is current-only and fail-closed."""
 
+import os
+import subprocess
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,9 +21,13 @@ from sastsimi.contracts.actions import (
     UseStatus,
 )
 from sastsimi.contracts.dynamic import (
+    POC_RUNTIME_PATH,
+    AgentLog,
+    AgentLogEvent,
     DynamicReproductionResult,
     PoCBundle,
     PoCCandidate,
+    SandboxCommandRecord,
 )
 from sastsimi.contracts.gates import (
     CWELabel,
@@ -37,6 +43,7 @@ from sastsimi.reporting.markdown_export import (
     ReportMarkdownService,
     ReportUnavailable,
 )
+from sastsimi.storage.report_export import SQLiteCurrentReportSource
 
 
 class Source:
@@ -175,10 +182,19 @@ def current_report() -> CurrentReport:
             limitations=(),
         ),
         poc=PoCBundle.model_construct(
+            agent_log_ref=ref("agent_log", "agent-log-1"),
             candidate_digest="b" * 64,
+            execution_action_id="execute",
             validated_at=now,
         ),
         poc_candidate=PoCCandidate.model_construct(),
+        agent_log=AgentLog.model_construct(),
+        execution_command=SandboxCommandRecord.model_construct(
+            executable="/bin/sh",
+            arguments=(POC_RUNTIME_PATH,),
+            working_directory="/workspace",
+            command_digest="c" * 64,
+        ),
         content=ReportContent(
             title="Validated vulnerability finding",
             summary="A validated input reaches a sensitive SQL operation.",
@@ -203,6 +219,11 @@ def test_markdown_export_contains_human_review_sections_and_exact_path(
 
     assert path == tmp_path / "reports" / "analysis-1" / "finding-1.md"
     assert path.read_text(encoding="utf-8") == markdown
+    assert "- AgentLog ref: `agent-log-1`" in markdown
+    assert "- 실제 실행 action_id: `execute`" in markdown
+    assert "### 실제 실행 방법" in markdown
+    assert "command=/bin/sh '<validated-poc-candidate>'" in markdown
+    assert "### validated PoC candidate 내용" in markdown
     for heading in (
         "# Validated vulnerability finding",
         "## 취약점 요약",
@@ -257,4 +278,99 @@ def test_markdown_export_rejects_unproven_redaction_and_unsafe_path(
     with pytest.raises(ReportUnavailable, match="UNSAFE_REPORT_PATH_ID"):
         ReportMarkdownService(tmp_path, Source(unsafe_report)).export(
             unsafe_report.finding_id
+        )
+
+
+def test_markdown_export_rejects_reports_root_symlink_escape(tmp_path: Path) -> None:
+    report = current_report()
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-reports"
+    outside.mkdir()
+    link = tmp_path / "reports"
+    if os.name == "nt":
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+            check=True,
+            capture_output=True,
+        )
+    else:
+        link.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ReportUnavailable, match="UNSAFE_REPORT_PATH"):
+        ReportMarkdownService(tmp_path, Source(report)).export(report.finding_id)
+
+    assert not (outside / report.analysis_id / f"{report.finding_id}.md").exists()
+
+
+def test_current_report_requires_exact_execution_log_and_command() -> None:
+    assert "agent_log" in CurrentReport.__dataclass_fields__
+    assert "execution_command" in CurrentReport.__dataclass_fields__
+
+
+def test_report_source_rejects_execution_command_digest_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_ref = ref("dynamic_reproduction_request", "request-1")
+    log_ref = ref("agent_log", "agent-log-1")
+    candidate_ref = ref("poc_candidate", "candidate-1")
+    command_ref = ref("sandbox_command_record", "command-1")
+    environment_ref = ref("sandbox_environment", "environment-1")
+    recipe_ref = ref("environment_recipe", "recipe-1")
+    execution_meta = SimpleNamespace(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+        attempt_id="attempt-1",
+    )
+    execution = AgentLogEvent.model_construct(
+        event_type="POC_EXECUTION_FINISHED",
+        action_id="execute",
+        poc_candidate_ref=candidate_ref,
+        command_ref=command_ref,
+        command_digest="c" * 64,
+        environment_ref=environment_ref,
+        environment_recipe_ref=recipe_ref,
+        exit_code=0,
+        timed_out=False,
+    )
+    log = AgentLog.model_construct(
+        meta=execution_meta,
+        request_ref=request_ref,
+        events=(execution,),
+    )
+    command = SandboxCommandRecord.model_construct(
+        meta=execution_meta,
+        request_ref=request_ref,
+        action_id="execute",
+        command_digest="d" * 64,
+        environment_ref=environment_ref,
+        environment_recipe_ref=recipe_ref,
+    )
+    result = DynamicReproductionResult.model_construct(
+        meta=execution_meta,
+        request_ref=request_ref,
+        agent_log_ref=log_ref,
+        environment_ref=environment_ref,
+        environment_recipe_ref=recipe_ref,
+        poc_candidate_ref=candidate_ref,
+    )
+    poc = PoCBundle.model_construct(
+        meta=execution_meta,
+        request_ref=request_ref,
+        agent_log_ref=log_ref,
+        execution_action_id="execute",
+        candidate_ref=candidate_ref,
+        environment_ref=environment_ref,
+        environment_recipe_ref=recipe_ref,
+    )
+    source = object.__new__(SQLiteCurrentReportSource)
+    values = {log_ref: log, command_ref: command}
+    monkeypatch.setattr(source, "_exact", lambda value, _expected: values[value])
+
+    with pytest.raises(ReportUnavailable, match="REPORT_POC_EXECUTION_INVALID"):
+        source._poc_execution(
+            result,
+            poc,
+            PoCCandidate.model_construct(),
+            (),
         )

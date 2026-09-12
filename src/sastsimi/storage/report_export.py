@@ -9,11 +9,14 @@ from sqlalchemy import select
 
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.actions import ActionDecision, ActionRequest
-from sastsimi.contracts.domain import DomainRecord
+from sastsimi.contracts.domain import DomainRecord, same_scope
 from sastsimi.contracts.dynamic import (
+    AgentLog,
     DynamicReproductionResult,
     PoCBundle,
     PoCCandidate,
+    SandboxCommandRecord,
+    validate_execution_support,
     validate_poc_candidate,
 )
 from sastsimi.contracts.gates import (
@@ -153,6 +156,12 @@ class SQLiteCurrentReportSource:
             poc_text = poc_bytes.decode("utf-8")
             action, decision = self._report_authority(draft)
             condition_records = self._condition_records(finding)
+            agent_log, execution_command = self._poc_execution(
+                dynamic,
+                poc,
+                candidate,
+                condition_records,
+            )
             validate_report_closure(
                 draft,
                 finding,
@@ -186,6 +195,8 @@ class SQLiteCurrentReportSource:
                 dynamic=dynamic,
                 poc=poc,
                 poc_candidate=candidate,
+                agent_log=agent_log,
+                execution_command=execution_command,
                 content=content,
                 poc_text=poc_text,
                 report_action=action,
@@ -222,6 +233,64 @@ class SQLiteCurrentReportSource:
         ):
             raise ReportUnavailable("REPORT_REDACTION_NOT_PROVEN")
         return action, decision
+
+    def _poc_execution(
+        self,
+        result: DynamicReproductionResult,
+        poc: PoCBundle,
+        candidate: PoCCandidate,
+        evidence_records: tuple[tuple[StoredDataRef, DomainRecord], ...],
+    ) -> tuple[AgentLog, SandboxCommandRecord]:
+        if (
+            result.agent_log_ref != poc.agent_log_ref
+            or result.request_ref != poc.request_ref
+            or result.environment_ref != poc.environment_ref
+            or result.environment_recipe_ref != poc.environment_recipe_ref
+            or result.poc_candidate_ref != poc.candidate_ref
+        ):
+            raise ReportUnavailable("REPORT_POC_EXECUTION_INVALID")
+        log = self._exact(poc.agent_log_ref, AgentLog)
+        executions = tuple(
+            event
+            for event in log.events
+            if event.event_type == "POC_EXECUTION_FINISHED"
+            and event.action_id == poc.execution_action_id
+            and event.poc_candidate_ref == poc.candidate_ref
+            and event.exit_code == 0
+            and event.timed_out is False
+        )
+        if len(executions) != 1:
+            raise ReportUnavailable("REPORT_POC_EXECUTION_INVALID")
+        execution = executions[0]
+        command_ref = execution.command_ref
+        if command_ref is None:
+            raise ReportUnavailable("REPORT_POC_EXECUTION_INVALID")
+        command = self._exact(command_ref, SandboxCommandRecord)
+        try:
+            same_scope(result.meta, poc.meta, attempt=True)
+            same_scope(result.meta, log.meta, attempt=True)
+            same_scope(result.meta, command.meta, attempt=True)
+        except ValueError as error:
+            raise ReportUnavailable("REPORT_POC_EXECUTION_INVALID") from error
+        if (
+            command.action_id != execution.action_id
+            or command.command_digest != execution.command_digest
+            or command.environment_ref != result.environment_ref
+            or command.environment_recipe_ref != result.environment_recipe_ref
+            or command.request_ref != result.request_ref
+            or log.request_ref != result.request_ref
+        ):
+            raise ReportUnavailable("REPORT_POC_EXECUTION_INVALID")
+        validate_execution_support(
+            result,
+            poc,
+            candidate,
+            execution,
+            log,
+            (command,),
+            dict(evidence_records),
+        )
+        return log, command
 
     def _condition_records(
         self, finding: Finding

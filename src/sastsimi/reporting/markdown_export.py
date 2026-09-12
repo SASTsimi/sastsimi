@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -22,9 +23,12 @@ from sastsimi.contracts.actions import (
 )
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.dynamic import (
+    POC_RUNTIME_PATH,
+    AgentLog,
     DynamicReproductionResult,
     PoCBundle,
     PoCCandidate,
+    SandboxCommandRecord,
 )
 from sastsimi.contracts.gates import (
     CWELabel,
@@ -56,6 +60,8 @@ class CurrentReport:
     dynamic: DynamicReproductionResult
     poc: PoCBundle
     poc_candidate: PoCCandidate
+    agent_log: AgentLog
+    execution_command: SandboxCommandRecord
     content: ReportContent
     poc_text: str
     report_action: ActionRequest
@@ -123,9 +129,13 @@ class ReportMarkdownService:
         for value in (report.analysis_id, report.finding_id):
             if _SAFE_PATH_SEGMENT.fullmatch(value) is None or value in {".", ".."}:
                 raise ReportUnavailable("UNSAFE_REPORT_PATH_ID")
-        root = RuntimePaths(self._data_dir).reports.resolve()
-        parent = (root / report.analysis_id).resolve()
-        if parent.parent != root:
+        expected_root = RuntimePaths(self._data_dir).reports
+        root = expected_root.resolve()
+        if root != expected_root or root.parent != self._data_dir:
+            raise ReportUnavailable("UNSAFE_REPORT_PATH_ROOT")
+        expected_parent = root / report.analysis_id
+        parent = expected_parent.resolve()
+        if parent != expected_parent or parent.parent != root:
             raise ReportUnavailable("UNSAFE_REPORT_PATH_ID")
         return parent / f"{report.finding_id}.md"
 
@@ -234,6 +244,15 @@ def render_markdown(report: CurrentReport) -> str:
         f"- validated PoC ref: `{report.draft.poc_ref.record_id}`",
         f"- candidate digest: `{report.poc.candidate_digest}`",
         f"- validated at: `{report.poc.validated_at.isoformat()}`",
+        f"- AgentLog ref: `{report.poc.agent_log_ref.record_id}`",
+        f"- 실제 실행 action_id: `{report.poc.execution_action_id}`",
+        f"- 실제 실행 command digest: `{report.execution_command.command_digest}`",
+        "",
+        "### 실제 실행 방법",
+        "",
+        *_indented(_execution_method(report.execution_command)),
+        "",
+        "### validated PoC candidate 내용",
         "",
         *_indented(report.poc_text),
         "",
@@ -324,6 +343,17 @@ def _inline(values: tuple[object, ...]) -> str:
 
 def _indented(value: str) -> list[str]:
     return [f"    {line}" for line in value.splitlines()] or ["    "]
+
+
+def _execution_method(command: SandboxCommandRecord) -> str:
+    """Render exact safe argv, naming only the fixed internal candidate path."""
+
+    arguments = tuple(
+        "<validated-poc-candidate>" if value == POC_RUNTIME_PATH else value
+        for value in command.arguments
+    )
+    argv = shlex.join((command.executable, *arguments))
+    return f"working_directory={command.working_directory}\ncommand={argv}"
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
