@@ -20,7 +20,7 @@ from typing import Literal, Protocol, cast
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef, reference, require_record_ref
+from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.static import (
     StaticToolProfile,
     is_runnable_static_tool_profile,
@@ -41,6 +41,7 @@ from sastsimi.ports.dto import (
     StaticToolRequest,
     TrackedFile,
 )
+from sastsimi.ports.static_tool import validate_static_material_ref
 from sastsimi.static_analysis.normalizer import StaticRawReplayInput
 
 _WINDOWS_COMMAND_LIMIT_BYTES = 32_767 * 2
@@ -103,8 +104,14 @@ class OpenGrepExecutionInputs:
         catalog_ids = tuple(item.rule_id for item in self.rule_catalog)
         tracked_paths = tuple(item.git_path for item in self.tracked_files)
         try:
-            require_record_ref(self.analysis_config_ref, "analysis_config")
-            require_record_ref(self.rule_catalog_ref, "rule_catalog")
+            validate_static_material_ref(
+                self.analysis_config_ref,
+                legacy_data_kind="analysis_config",
+            )
+            validate_static_material_ref(
+                self.rule_catalog_ref,
+                legacy_data_kind="rule_catalog",
+            )
         except ValueError as error:
             raise ValueError("OPENGREP_INPUT_CLOSURE_INVALID") from error
         if (

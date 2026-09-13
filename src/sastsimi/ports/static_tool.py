@@ -54,6 +54,27 @@ class StaticProcessAdapter(Protocol):
     async def cancel(self, attempt_id: str) -> CancellationResult: ...
 
 
+def validate_static_material_ref(
+    ref: StoredDataRef, *, legacy_data_kind: str
+) -> None:
+    """Accept the immutable route artifact or an exact legacy record reference.
+
+    Production ``StaticToolRoute`` stores configuration and rule material in
+    the code-scoped CAS, whose references deliberately have no ``record_id``.
+    Evaluation fixtures created before that contract may still use a semantic
+    stored record.  No other ambiguous shape is accepted.
+    """
+
+    artifact = (
+        ref.data_kind == "artifact"
+        and ref.record_id is None
+        and str(ref.stored_data_id) == ref.content_hash
+    )
+    legacy = ref.data_kind == legacy_data_kind and ref.record_id is not None
+    if not (artifact or legacy):
+        raise ValueError("STATIC_MATERIAL_REFERENCE_INVALID")
+
+
 class StaticOutputQuotaPort(Protocol):
     """Trusted status proof for an attempt root's write-denying hard quota.
 

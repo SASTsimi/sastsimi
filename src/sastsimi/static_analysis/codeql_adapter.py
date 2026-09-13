@@ -24,7 +24,6 @@ from sastsimi.contracts.refs import (
     HostConfigurationRef,
     StoredDataRef,
     reference,
-    require_record_ref,
 )
 from sastsimi.contracts.static import (
     StaticToolProfile,
@@ -49,7 +48,10 @@ from sastsimi.ports.dto import (
     StaticToolRequest,
     TrackedFile,
 )
-from sastsimi.ports.static_tool import StaticOutputQuotaPort
+from sastsimi.ports.static_tool import (
+    StaticOutputQuotaPort,
+    validate_static_material_ref,
+)
 from sastsimi.static_analysis.normalizer import StaticRawReplayInput
 
 
@@ -150,8 +152,14 @@ class CodeQLExecutionInputs:
         rule_ids = tuple(item.rule_id for item in self.rule_catalog)
         tracked = tuple(item.git_path for item in self.tracked_files)
         try:
-            require_record_ref(self.analysis_config_ref, "analysis_config")
-            require_record_ref(self.rule_catalog_ref, "rule_catalog")
+            validate_static_material_ref(
+                self.analysis_config_ref,
+                legacy_data_kind="analysis_config",
+            )
+            validate_static_material_ref(
+                self.rule_catalog_ref,
+                legacy_data_kind="rule_catalog",
+            )
         except ValueError as error:
             raise ValueError("CODEQL_INPUT_CLOSURE_INVALID") from error
         if (
