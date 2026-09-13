@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 jobs:
-  core:
-    name: core (${{ matrix.os }})
+  quality:
+    name: quality (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -36,18 +36,6 @@ jobs:
         run: uv run ruff check .
       - name: Strict types
         run: uv run mypy --strict src tests
-      - name: Require real Docker dynamic reproduction E2E
-        if: runner.os == 'Linux'
-        env:
-          SASTSIMI_REQUIRE_DOCKER_E2E: '1'
-        run: |
-          docker version
-          docker pull python:3.12-slim
-          uv run python -m pytest tests/e2e/test_dynamic_reproduction.py -q
-      - name: All existing suites
-        # Each test remains part of the one final CI suite.  Independent test
-        # processes only shorten wall-clock time; they do not skip coverage.
-        run: uv run pytest tests -q -n 4
       - name: Architecture validator (Windows PowerShell)
         if: runner.os == 'Windows'
         shell: powershell
@@ -96,3 +84,102 @@ jobs:
           }
           git diff --check "$rangeBase..$rangeHead"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  tests:
+    name: tests (${{ matrix.os }}, ${{ matrix.shard.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+        shard:
+          - name: unit
+            paths: tests/unit
+          - name: contract
+            paths: tests/contract
+          - name: integration-analysis
+            paths: tests/integration/static_analysis tests/integration/providers tests/integration/policy
+          - name: integration-workflow
+            paths: tests/integration/budget tests/integration/chaining tests/integration/reporting tests/integration/verification
+          - name: integration-state
+            paths: tests/integration/storage tests/integration/recovery
+          - name: integration-sandbox
+            paths: tests/integration/sandbox tests/integration/test_cli.py
+          - name: security-negative
+            paths: tests/security_negative
+          - name: e2e
+            paths: tests/e2e
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: astral-sh/setup-uv@v6
+      - name: Install frozen dependencies
+        run: uv sync --frozen --all-groups
+      - name: Run non-overlapping test shard
+        env:
+          SHARD_NAME: ${{ matrix.shard.name }}
+          TEST_PATHS: ${{ matrix.shard.paths }}
+          TEST_OS: ${{ runner.os }}
+        run: |
+          $pytestArguments = @($env:TEST_PATHS -split '\s+')
+          if ($env:TEST_OS -eq 'Linux' -and $env:SHARD_NAME -eq 'e2e') {
+            $pytestArguments += '--ignore=tests/e2e/test_dynamic_reproduction.py'
+          }
+          $pytestArguments += @('-q', '-n', '4')
+          uv run pytest @pytestArguments
+
+  real-docker-e2e:
+    name: real Docker dynamic reproduction E2E (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: astral-sh/setup-uv@v6
+      - name: Install frozen dependencies
+        run: uv sync --frozen --all-groups
+      - name: Require real Docker dynamic reproduction E2E
+        env:
+          SASTSIMI_REQUIRE_DOCKER_E2E: '1'
+        run: |
+          docker version
+          docker pull python:3.12-slim
+          uv run python -m pytest tests/e2e/test_dynamic_reproduction.py -q
+
+  core:
+    name: core (${{ matrix.os }})
+    if: always()
+    needs: [quality, tests, real-docker-e2e]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Require every quality, test, and Docker job
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          TEST_RESULT: ${{ needs.tests.result }}
+          DOCKER_RESULT: ${{ needs.real-docker-e2e.result }}
+        run: |
+          $results = @($env:QUALITY_RESULT, $env:TEST_RESULT, $env:DOCKER_RESULT)
+          if ($results -contains 'failure' -or $results -contains 'cancelled') {
+            throw "At least one required CI job failed or was cancelled: $results"
+          }
+          if ($results | Where-Object { $_ -ne 'success' }) {
+            throw "At least one required CI job did not succeed: $results"
+          }
