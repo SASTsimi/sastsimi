@@ -32,10 +32,11 @@ from sastsimi.contracts.ids import (
     RecordId,
     ReservationId,
     StoredDataId,
+    WorkId,
     WorkspaceId,
 )
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef, reference
 from sastsimi.contracts.static import RepositoryProfile
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.orchestration.production_dynamic_feature_builder import (
@@ -50,6 +51,7 @@ from sastsimi.orchestration.production_provisioning import (
     ResolvedProductionProvisioning,
     SandboxProfileProvisioning,
 )
+from sastsimi.ports.dynamic_sandbox import TrustedDockerTarget
 
 NOW = datetime(2026, 9, 13, tzinfo=UTC)
 ANALYSIS = AnalysisId("analysis")
@@ -86,6 +88,19 @@ def _artifact(kind: str, value: str) -> StoredDataRef:
     )
 
 
+def _host_artifact(kind: str, value: str) -> HostConfigurationRef:
+    return HostConfigurationRef(
+        stored_data_id=StoredDataId(value),
+        data_kind=kind,
+        content_hash="b" * 64,
+        host_id="host",
+        publication_analysis_id=ANALYSIS,
+        publication_workspace_id=WORKSPACE,
+        publication_commit_id=COMMIT,
+        record_id=RecordId(value),
+    )
+
+
 def _sandbox() -> SandboxProfile:
     return SandboxProfile(
         meta=_meta(SandboxProfile.KIND, "sandbox"),
@@ -110,15 +125,48 @@ def _docker(path: Path) -> RuntimeCapabilityProfile:
         purpose="PRODUCTION",
         status="ACTIVE",
         capability_kind="DOCKER",
-        subject_key=str(path.resolve()),
+        subject_key="docker",
         expected_version="1",
         subject_sha256=digest,
         operating_system="windows",
         architecture="x86_64",
         languages=("ANY",),
         operations=("IMAGE_BUILD", "CONTAINER_RUN", "HEALTH_CHECK", "CLEANUP"),
-        capability_evidence_ref=cast(Any, object()),
+        capability_evidence_ref=_host_artifact(
+            "tool_capability_evidence", "docker-evidence"
+        ),
     )
+
+
+class _DockerTargetResolver:
+    def __init__(self, profile: RuntimeCapabilityProfile, executable: Path) -> None:
+        profile_ref = reference(profile)
+        assert isinstance(profile_ref, HostConfigurationRef)
+        self.profile = profile
+        self.target = TrustedDockerTarget(
+            profile_ref=profile_ref,
+            executable=executable.resolve(),
+            subject_key=str(profile.subject_key),
+            subject_sha256=str(profile.subject_sha256),
+            daemon_target="npipe:////./pipe/docker_engine",
+            build_backend="LEGACY_LIMITED",
+            enforced_build_limits=frozenset({"CPU", "MEMORY", "PID", "DISK"}),
+            external_build_disk_limit_bytes=1024 * 1024 * 1024,
+        )
+
+    def resolve_current(self, profile_ref: HostConfigurationRef) -> TrustedDockerTarget:
+        if profile_ref != self.target.profile_ref:
+            raise ValueError("PRODUCTION_DOCKER_CAPABILITY_STALE")
+        return self.target
+
+    def require_current(self, target: TrustedDockerTarget) -> None:
+        if (
+            target != self.target
+            or not target.executable.is_file()
+            or hashlib.sha256(target.executable.read_bytes()).hexdigest()
+            != target.subject_sha256
+        ):
+            raise ValueError("PRODUCTION_DOCKER_CAPABILITY_STALE")
 
 
 def _provisioning(sandbox: SandboxProfile, policy: bytes) -> SandboxProfileProvisioning:
@@ -194,6 +242,7 @@ def test_builder_pins_exact_sandbox_docker_and_t11_settings() -> None:
     policy = b"approved compiled boundary policy"
     document = _provisioning(sandbox, policy)
     docker = _docker(executable)
+    docker_targets = _DockerTargetResolver(docker, executable)
     resolved = ResolvedProductionProvisioning(
         capabilities={"DOCKER": docker}, artifacts={}
     )
@@ -226,11 +275,11 @@ def test_builder_pins_exact_sandbox_docker_and_t11_settings() -> None:
         resolved=resolved,
         materialized=materialized,
         workspace_root_for=lambda _work: data_dir,
-        docker_probe=lambda _path: None,
+        docker_target_resolver=docker_targets,
     )
 
-    assert built.feature.docker_executable == str(executable.resolve())
-    assert built.feature.max_execute_turns == 8
+    assert built.feature.docker_profile_ref == reference(docker)
+    assert built.feature.docker_target_resolver is docker_targets
     assert (
         built.feature.resource_journal_path
         == (data_dir / "sandbox" / str(ANALYSIS) / "resource-journal.json").resolve()
@@ -250,8 +299,11 @@ def test_builder_rejects_changed_docker_binary_and_unapproved_egress() -> None:
     docker = _docker(executable)
     executable.write_bytes(b"changed")
 
+    docker_targets = _DockerTargetResolver(docker, executable)
     with pytest.raises(ValueError, match="PRODUCTION_DOCKER_CAPABILITY_STALE"):
-        DockerCapabilityReadiness(docker, lambda _path: None)()
+        DockerCapabilityReadiness(
+            cast(HostConfigurationRef, reference(docker)), docker_targets
+        )()
 
     sandbox = _sandbox().model_copy(
         update={"allowed_egress_refs": (_artifact("artifact", "egress"),)}
@@ -299,7 +351,16 @@ def test_builder_rejects_changed_docker_binary_and_unapproved_egress() -> None:
             ),
             materialized=materialized,
             workspace_root_for=lambda _work: data_dir,
-            docker_probe=lambda _path: None,
+            docker_target_resolver=_DockerTargetResolver(
+                docker.model_copy(
+                    update={
+                        "subject_sha256": hashlib.sha256(
+                            executable.read_bytes()
+                        ).hexdigest()
+                    }
+                ),
+                executable,
+            ),
         )
     executable.unlink()
     binary_dir.rmdir()
@@ -330,6 +391,7 @@ def test_authorization_resolver_builds_baked_source_default_deny_spec() -> None:
     phase_ref = _artifact("recipe_source", "recipe-source")
     work = WorkExecutionState.model_construct(
         meta=_meta("work_execution_state", "work", attempt=True),
+        work_id=WorkId("work"),
         active_attempt_id=ATTEMPT,
         state_version=2,
         input_refs=(request_ref,),
@@ -404,6 +466,14 @@ def test_authorization_resolver_builds_baked_source_default_deny_spec() -> None:
         container_user="65532:65532",
         workspace_root_for=lambda _work: Path.cwd(),
         docker_readiness=lambda: None,
+        authorization=cast(
+            Any,
+            SimpleNamespace(
+                claim_external=lambda _work, _decision, _reservation: _artifact(
+                    "action_decision", "claimed-decision"
+                )
+            ),
+        ),
     )
 
     authorization = resolver(
@@ -432,6 +502,7 @@ def test_authorization_resolver_builds_baked_source_default_deny_spec() -> None:
         phase_ref,
     )
     assert reservation.units == {"elapsed_ms": 1, "cost_minor_units": 1}
+    assert authorization.action_decision_ref.data_kind == "action_decision"
 
 
 def test_current_repository_resolver_builds_real_t11_with_exact_feature() -> None:
@@ -441,11 +512,11 @@ def test_current_repository_resolver_builds_real_t11_with_exact_feature() -> Non
     )
     feature = DynamicProductionFeature(
         sandbox_authorization=cast(Any, object()),
-        authorization_lifecycle=cast(Any, object()),
         sandbox_profile=cast(Any, object()),
         resource_journal_path=root / "journal.json",
-        max_execute_turns=4,
-        docker_executable=str(root / "docker.exe"),
+        docker_profile_ref=cast(Any, object()),
+        docker_target_resolver=cast(Any, object()),
+        docker=cast(Any, object()),
     )
     context = SimpleNamespace(
         runtime=SimpleNamespace(
@@ -470,7 +541,6 @@ def test_current_repository_resolver_builds_real_t11_with_exact_feature() -> Non
             workspace_for=cast(Any, object()),
             workspace_locator=cast(Any, object()),
             verification=cast(Any, object()),
-            dynamic_call_resolver=cast(Any, object()),
         )
         assert resolver.build(profile, root) is expected
 
@@ -479,6 +549,6 @@ def test_current_repository_resolver_builds_real_t11_with_exact_feature() -> Non
     assert called["repository_profile"] is profile
     assert called["workspace_root"] == root
     assert called["sandbox_authorization"] is feature.sandbox_authorization
-    assert called["sandbox_authorization_lifecycle"] is feature.authorization_lifecycle
     assert called["resource_journal_path"] == feature.resource_journal_path
-    assert called["docker_executable"] == feature.docker_executable
+    assert called["docker_profile_ref"] is feature.docker_profile_ref
+    assert called["docker_target_resolver"] is feature.docker_target_resolver

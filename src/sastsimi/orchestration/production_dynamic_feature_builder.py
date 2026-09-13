@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import re
-import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePath
-from typing import Literal, Protocol
+from typing import Literal
 
 from sastsimi.bootstrap import T11Services, build_t11_services
 from sastsimi.contracts.actions import RequesterRole
@@ -18,26 +17,33 @@ from sastsimi.contracts.budget import (
 )
 from sastsimi.contracts.capabilities import RuntimeCapabilityProfile
 from sastsimi.contracts.dynamic import (
+    DependencyBundle,
     DynamicReproductionRequest,
     EnvironmentRequirements,
     ReproductionPlan,
     SandboxProfile,
 )
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
+from sastsimi.contracts.refs import (
+    BudgetScopeRef,
+    HostConfigurationRef,
+    StoredDataRef,
+    reference,
+)
 from sastsimi.contracts.static import CodeWorkspace, RepositoryProfile
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import Record
-from sastsimi.ports.dynamic_sandbox import SandboxRunSpec
+from sastsimi.ports.dynamic_sandbox import (
+    SandboxRunSpec,
+    TrustedDockerTargetResolverPort,
+)
 from sastsimi.ports.record_store import RecordStore
 from sastsimi.ports.runtime_query import RuntimeQueryPort
+from sastsimi.ports.runtime_store import ActionAuthorizationPort
 from sastsimi.ports.workspace import WorkspaceLocatorPort
-from sastsimi.reproduction.production import (
-    DynamicSandboxAuthorization,
-    RuntimeDynamicSandboxAuthorizationLifecycle,
-)
-from sastsimi.reproduction.service import DynamicStageCallResolver
+from sastsimi.reproduction.production import DynamicSandboxAuthorization
 from sastsimi.runtime.workflow_runner import WorkflowRunner
+from sastsimi.sandbox.docker_adapter import DockerAdapter
 from sastsimi.verification.service import VerificationService
 
 from .production_composition import ProductionInstallationContext
@@ -59,25 +65,16 @@ _NUMERIC_USER = re.compile(r"^[1-9][0-9]*(?::[1-9][0-9]*)?$")
 _IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
-class DockerProbe(Protocol):
-    def __call__(self, executable: Path) -> None: ...
-
-
 @dataclass(frozen=True, slots=True)
 class DockerCapabilityReadiness:
-    """Recheck the exact approved Docker binary and daemon before each run."""
+    """Recheck the exact approved Docker target before each run."""
 
-    profile: RuntimeCapabilityProfile
-    probe: DockerProbe
+    profile_ref: HostConfigurationRef
+    resolver: TrustedDockerTargetResolverPort
 
     def __call__(self) -> None:
-        executable = _docker_executable(self.profile)
-        if _sha256_file(executable) != str(self.profile.subject_sha256):
-            raise ValueError("PRODUCTION_DOCKER_CAPABILITY_STALE")
-        try:
-            self.probe(executable)
-        except (OSError, subprocess.SubprocessError, ValueError):
-            raise ValueError("PRODUCTION_DOCKER_CAPABILITY_UNAVAILABLE") from None
+        target = self.resolver.resolve_current(self.profile_ref)
+        self.resolver.require_current(target)
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +90,7 @@ class ProductionDynamicAuthorizationResolver:
     container_user: str
     workspace_root_for: Callable[[WorkExecutionState], Path]
     docker_readiness: ReadinessCheck
+    authorization: ActionAuthorizationPort
 
     def __call__(
         self,
@@ -238,14 +236,18 @@ class ProductionDynamicAuthorizationResolver:
         reservation_ref = reference(reservation)
         if not isinstance(reservation_ref, StoredDataRef):
             raise ValueError("PRODUCTION_SANDBOX_RESERVATION_NOT_STORED")
+        claimed_ref = self.authorization.claim_external(
+            str(work.work_id), decision_ref, reservation_ref
+        )
+        if not isinstance(claimed_ref, StoredDataRef):
+            raise ValueError("PRODUCTION_SANDBOX_DECISION_NOT_STORED")
         return DynamicSandboxAuthorization(
             action=action,
-            action_decision_ref=decision_ref,
+            action_decision_ref=claimed_ref,
             sandbox_profile=profile,
             lifecycle_profile=lifecycle,
             run_policy_state_ref=run_policy_ref,
             run_spec=spec,
-            reservation_ref=reservation_ref,
         )
 
 
@@ -267,7 +269,8 @@ def build_production_dynamic_feature(
     resolved: ResolvedProductionProvisioning,
     materialized: MaterializedProvisioningArtifacts,
     workspace_root_for: Callable[[WorkExecutionState], Path],
-    docker_probe: DockerProbe | None = None,
+    docker_target_resolver: TrustedDockerTargetResolverPort,
+    dependency_bundle: DependencyBundle | None = None,
 ) -> BuiltDynamicProductionFeature:
     """Build R7 only from one exact run's materialized approved inputs."""
 
@@ -305,10 +308,10 @@ def build_production_dynamic_feature(
     docker = resolved.capabilities.get("DOCKER")
     if not isinstance(docker, RuntimeCapabilityProfile):
         raise ValueError("PRODUCTION_DOCKER_CAPABILITY_REQUIRED")
-    readiness = DockerCapabilityReadiness(
-        docker,
-        docker_probe or _probe_docker,
-    )
+    docker_profile_ref = reference(docker)
+    if not isinstance(docker_profile_ref, HostConfigurationRef):
+        raise ValueError("PRODUCTION_DOCKER_CAPABILITY_REQUIRED")
+    readiness = DockerCapabilityReadiness(docker_profile_ref, docker_target_resolver)
     readiness()
     journal_relative = PurePath(document.resource_journal_relative)
     journal = _inside(
@@ -331,12 +334,13 @@ def build_production_dynamic_feature(
         container_user=document.container_user,
         workspace_root_for=workspace_root_for,
         docker_readiness=readiness,
+        authorization=context.runtime.validator,
+    )
+    docker_adapter = DockerAdapter.from_profile(
+        docker_profile_ref, docker_target_resolver
     )
     feature = DynamicProductionFeature(
         sandbox_authorization=resolver,
-        authorization_lifecycle=RuntimeDynamicSandboxAuthorizationLifecycle(
-            context.runtime.validator
-        ),
         sandbox_profile=lambda work: _profile_ref_for_work(
             work,
             profile=profile,
@@ -344,8 +348,10 @@ def build_production_dynamic_feature(
             queries=context.runtime.queries,
         ),
         resource_journal_path=journal,
-        max_execute_turns=document.max_execute_turns,
-        docker_executable=str(_docker_executable(docker)),
+        docker_profile_ref=docker_profile_ref,
+        docker_target_resolver=docker_target_resolver,
+        docker=docker_adapter,
+        dependency_bundle=dependency_bundle,
     )
     return BuiltDynamicProductionFeature(feature, readiness)
 
@@ -357,7 +363,6 @@ def build_current_repository_t11_resolver(
     workspace_for: Callable[[WorkExecutionState], CodeWorkspace],
     workspace_locator: WorkspaceLocatorPort,
     verification: VerificationService,
-    dynamic_call_resolver: DynamicStageCallResolver | None = None,
 ) -> CurrentRepositoryProfileT11Resolver:
     """Join the exact current RepositoryProfile to the real T11 service builder."""
 
@@ -372,12 +377,12 @@ def build_current_repository_t11_resolver(
             commit_id=context.scope.commit_id,
             role_identity_refs=context.role_identity_refs,
             sandbox_authorization=feature.sandbox_authorization,
-            sandbox_authorization_lifecycle=feature.authorization_lifecycle,
             verification=verification,
             repository_profile=profile,
             resource_journal_path=feature.resource_journal_path,
-            docker_executable=feature.docker_executable,
-            dynamic_call_resolver=dynamic_call_resolver,
+            docker_profile_ref=feature.docker_profile_ref,
+            docker_target_resolver=feature.docker_target_resolver,
+            dependency_bundle=feature.dependency_bundle,
         )
 
     return CurrentRepositoryProfileT11Resolver(
@@ -425,41 +430,6 @@ def _require_current_sandbox(
     )
     if len(current) != 1 or reference(current[0]) != expected_ref:
         raise ValueError("PRODUCTION_SANDBOX_PROFILE_STALE")
-
-
-def _docker_executable(profile: RuntimeCapabilityProfile) -> Path:
-    path = Path(str(profile.subject_key))
-    if (
-        profile.status != "ACTIVE"
-        or profile.purpose != "PRODUCTION"
-        or profile.capability_kind != "DOCKER"
-        or not _DOCKER_OPERATIONS <= set(profile.operations)
-        or not path.is_absolute()
-        or path.name.casefold() not in {"docker", "docker.exe"}
-        or not path.is_file()
-    ):
-        raise ValueError("PRODUCTION_DOCKER_CAPABILITY_UNSUPPORTED")
-    return path.resolve(strict=True)
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def _probe_docker(executable: Path) -> None:
-    outcome = subprocess.run(
-        (str(executable), "version", "--format", "{{.Server.Version}}"),
-        check=False,
-        capture_output=True,
-        shell=False,
-        timeout=10,
-    )
-    if outcome.returncode != 0 or not outcome.stdout.strip():
-        raise ValueError("DOCKER_DAEMON_UNAVAILABLE")
 
 
 def _inside(root: Path, relative: str) -> Path:

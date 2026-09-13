@@ -28,13 +28,14 @@ from sastsimi.chaining.service import ChainingCallRefs, ChainingCallResolver
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
 from sastsimi.contracts.canonical_json import content_hash
-from sastsimi.contracts.dynamic import DynamicReproductionRequest
+from sastsimi.contracts.dynamic import DependencyBundle, DynamicReproductionRequest
 from sastsimi.contracts.hypothesis import HypothesisProcessState
 from sastsimi.contracts.ids import WorkId
 from sastsimi.contracts.llm import LLMRole
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import (
     BudgetScopeRef,
+    HostConfigurationRef,
     RunStoredDataRef,
     StoredDataRef,
     reference,
@@ -46,7 +47,10 @@ from sastsimi.orchestration.dynamic_verification_handoff import (
     DynamicReproductionWorkHandler,
     ProductionDynamicVerificationHandoff,
 )
-from sastsimi.orchestration.production_cancellation import AttemptCancellationPort
+from sastsimi.orchestration.production_cancellation import (
+    AttemptCancellationPort,
+    SandboxCancellationDockerPort,
+)
 from sastsimi.orchestration.production_composition import (
     InstalledProductionServices,
     ProductionCapabilityUnavailable,
@@ -60,7 +64,6 @@ from sastsimi.orchestration.production_llm_work_handlers import (
     HypothesisWorkflowPort,
     NonDynamicCompletionPort,
     ProductionCallPort,
-    ProductionDynamicStageCallResolver,
     VerificationWorkHandler,
 )
 from sastsimi.orchestration.production_stage_handoff import (
@@ -79,6 +82,7 @@ from sastsimi.policy.program_catalog import ProgramCatalog
 from sastsimi.policy.work_handler import PolicyWorkHandler
 from sastsimi.ports.chaining import ChainingAgentInput
 from sastsimi.ports.dto import WorkContext, WorkHandlerResult
+from sastsimi.ports.dynamic_sandbox import TrustedDockerTargetResolverPort
 from sastsimi.ports.llm_invocation import PersistedLLMInvocation
 from sastsimi.ports.record_store import RecordStore
 from sastsimi.ports.runtime_query import RuntimeQueryPort
@@ -86,10 +90,7 @@ from sastsimi.ports.scheduler import ExternalCancellationPort
 from sastsimi.ports.work_handler import WorkHandler
 from sastsimi.ports.workspace import WorkspaceLocatorPort
 from sastsimi.reporting.cwe_workflow import GateCallRefs
-from sastsimi.reproduction.production import (
-    DynamicSandboxAuthorizationLifecyclePort,
-    DynamicSandboxAuthorizationResolver,
-)
+from sastsimi.reproduction.production import DynamicSandboxAuthorizationResolver
 from sastsimi.verification.completion import VerificationCompletionCoordinator
 from sastsimi.verification.debate_service import AuthorizedLLMCall
 
@@ -161,11 +162,12 @@ class DynamicProductionFeature:
     """Exact T11 configuration; RepositoryProfile is resolved only at execution."""
 
     sandbox_authorization: DynamicSandboxAuthorizationResolver
-    authorization_lifecycle: DynamicSandboxAuthorizationLifecyclePort
     sandbox_profile: Callable[[WorkExecutionState], StoredDataRef]
     resource_journal_path: Path
-    max_execute_turns: int
-    docker_executable: str
+    docker_profile_ref: HostConfigurationRef
+    docker_target_resolver: TrustedDockerTargetResolverPort
+    docker: SandboxCancellationDockerPort
+    dependency_bundle: DependencyBundle | None = None
 
 
 type T11Builder = Callable[[RepositoryProfile, Path], T11Services]
@@ -505,10 +507,6 @@ class ProductionFeatureInstaller:
             runner=runner,
             verification_identity_ref=verification_identity,
         )
-        dynamic_calls = ProductionDynamicStageCallResolver(
-            self.inputs.calls,
-            max_execute_turns=self.inputs.dynamic.max_execute_turns,
-        )
 
         def build_t11(profile: RepositoryProfile, root: Path) -> T11Services:
             return build_t11_services(
@@ -521,14 +519,12 @@ class ProductionFeatureInstaller:
                 commit_id=context.scope.commit_id,
                 role_identity_refs=context.role_identity_refs,
                 sandbox_authorization=self.inputs.dynamic.sandbox_authorization,
-                sandbox_authorization_lifecycle=(
-                    self.inputs.dynamic.authorization_lifecycle
-                ),
                 verification=t10.verification,
                 repository_profile=profile,
                 resource_journal_path=self.inputs.dynamic.resource_journal_path,
-                docker_executable=self.inputs.dynamic.docker_executable,
-                dynamic_call_resolver=dynamic_calls,
+                docker_profile_ref=self.inputs.dynamic.docker_profile_ref,
+                docker_target_resolver=self.inputs.dynamic.docker_target_resolver,
+                dependency_bundle=self.inputs.dynamic.dependency_bundle,
             )
 
         dynamic_services = CurrentRepositoryProfileT11Resolver(
@@ -700,19 +696,15 @@ class ProductionFeatureInstaller:
             self.inputs.t08.seeder,
             self.inputs.t08.workspace_locator,
             self.inputs.dynamic.sandbox_authorization,
-            self.inputs.dynamic.authorization_lifecycle,
             self.inputs.dynamic.sandbox_profile,
+            self.inputs.dynamic.docker_target_resolver,
+            self.inputs.dynamic.docker,
             self.inputs.calls,
             self.inputs.external_cancellation,
         ):
             if "fake" in type(component).__module__.casefold():
                 raise ProductionCapabilityUnavailable("FAKE_PRODUCTION_COMPONENT")
-        if (
-            isinstance(self.inputs.dynamic.max_execute_turns, bool)
-            or self.inputs.dynamic.max_execute_turns < 1
-            or not self.inputs.dynamic.docker_executable.strip()
-            or not self.inputs.dynamic.resource_journal_path.is_absolute()
-        ):
+        if not self.inputs.dynamic.resource_journal_path.is_absolute():
             raise ProductionCapabilityUnavailable("PRODUCTION_DYNAMIC_CONFIG_INVALID")
 
 
