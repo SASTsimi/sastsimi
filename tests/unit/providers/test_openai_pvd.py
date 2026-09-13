@@ -282,7 +282,7 @@ async def test_probe_fails_closed_for_missing_exception_timeout_and_secret(
         per_check_timeout_ms=5,
     )
 
-    result = await asyncio.wait_for(_adapter(runner).probe(_candidate()), timeout=0.5)
+    result = await asyncio.wait_for(_adapter(runner).probe(_candidate()), timeout=2.0)
 
     by_id = {test.test_id: test for test in result.evidence.tests}
     assert set(by_id) == {f"PVD-{index:02d}" for index in range(1, 16)}

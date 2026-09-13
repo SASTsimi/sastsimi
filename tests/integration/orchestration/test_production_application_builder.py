@@ -68,7 +68,7 @@ def _profile() -> ProductionProfile:
             "schema_version": 1,
             "program_id": "program",
             "host_id": "local-host",
-            "workspace_root": Path("C:/sastsimi-workspaces"),
+            "workspace_root": (Path.cwd() / ".test-workspaces").resolve(),
             "taxonomy_version": "CWE-4.17",
             "worker": {
                 "max_workers": 4,
