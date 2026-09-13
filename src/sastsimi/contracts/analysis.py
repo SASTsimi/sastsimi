@@ -22,13 +22,22 @@ class AnalysisStartRequest(ContractModel):
 
 
 class AnalysisRunInput(ScopedRecord):
-    """Immutable, credential-free input pinned to one allocated analysis run."""
+    """Immutable, credential-free input pinned to one allocated analysis run.
+
+    The four optional restart fields retain legacy read compatibility. Production
+    composition supplies all four; inspection rejects legacy rows. Their absent
+    values alone are omitted from canonical JSON to preserve legacy exact hashes.
+    """
 
     meta: RunMeta
     repository_ref: NonEmptyStr
     requested_git_ref: NonEmptyStr
     program_id: ProgramId
     purpose: Purpose
+    workspace_id: WorkspaceId | None = None
+    commit_id: CommitId | None = None
+    production_profile_ref: RunStoredDataRef | None = None
+    production_onboarding_ref: RunStoredDataRef | None = None
 
     @model_validator(mode="after")
     def input_shape(self) -> Self:

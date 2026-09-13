@@ -6,6 +6,12 @@
       "title": "AnalysisId",
       "type": "string"
     },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
     "LogicalRecordId": {
       "minLength": 1,
       "pattern": "\\S",
@@ -88,14 +94,100 @@
       ],
       "title": "RunMeta",
       "type": "object"
+    },
+    "RunStoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "analysis_id",
+        "record_id"
+      ],
+      "title": "RunStoredDataRef",
+      "type": "object"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Immutable, credential-free input pinned to one allocated analysis run.",
+  "description": "Immutable, credential-free input pinned to one allocated analysis run.\n\nThe four optional restart fields retain legacy read compatibility. Production\ncomposition supplies all four; inspection rejects legacy rows. Their absent\nvalues alone are omitted from canonical JSON to preserve legacy exact hashes.",
   "properties": {
+    "commit_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommitId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "meta": {
       "$ref": "#/$defs/RunMeta"
+    },
+    "production_onboarding_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RunStoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "production_profile_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RunStoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "program_id": {
       "$ref": "#/$defs/ProgramId"
@@ -114,6 +206,17 @@
       "pattern": "\\S",
       "title": "Requested Git Ref",
       "type": "string"
+    },
+    "workspace_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkspaceId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     }
   },
   "required": [
