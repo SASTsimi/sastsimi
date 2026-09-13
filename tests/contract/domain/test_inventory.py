@@ -89,6 +89,5 @@ def test_result_field_names_and_required_nulls_match_canonical_blocks() -> None:
         }
         assert actual_optional == legacy_optional, kind
         assert all(
-            binding.model.model_fields[name].default is None
-            for name in legacy_optional
+            binding.model.model_fields[name].default is None for name in legacy_optional
         ), kind
