@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import replace
 from typing import Protocol
 
-from sastsimi.contracts.llm import LLMCallSpec
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import CancellationResult
-from sastsimi.ports.llm_provider import LLMProviderAdapter
 from sastsimi.ports.record_store import RecordStore
 from sastsimi.ports.scheduler import (
     CancellationObservation,
@@ -25,6 +23,24 @@ from sastsimi.sandbox.cleanup import CleanupDockerPort, OwnedResourceRegistry
 
 class AttemptCancellationPort(Protocol):
     async def cancel(self, attempt_id: str) -> CancellationResult: ...
+
+
+class ProviderCancellationPort(Protocol):
+    def validate_cancellation(
+        self,
+        *,
+        work: WorkExecutionState,
+        decision_ref: StoredDataRef,
+        call_spec_ref: StoredDataRef,
+    ) -> None: ...
+
+    async def cancel(
+        self,
+        *,
+        work: WorkExecutionState,
+        decision_ref: StoredDataRef,
+        call_spec_ref: StoredDataRef,
+    ) -> CancellationResult: ...
 
 
 class SandboxCancellationDockerPort(CleanupDockerPort, Protocol):
@@ -45,29 +61,39 @@ class ProductionStaticCancellation:
 
 
 class ProductionProviderCancellation:
-    """Resolve the exact call spec before addressing one exact Provider adapter."""
+    """Cancel through the authorized LLM service, never a raw adapter."""
 
-    def __init__(
-        self,
-        *,
-        records: RecordStore,
-        adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter],
-    ) -> None:
-        self._records = records
-        self._adapters = dict(adapters)
+    def __init__(self, calls: ProviderCancellationPort) -> None:
+        self._calls = calls
+
+    async def prepare(self, target: CancellationTarget) -> CancellationTarget:
+        decision_ref, call_spec_ref = self._inputs(target)
+        self._calls.validate_cancellation(
+            work=target.work,
+            decision_ref=decision_ref,
+            call_spec_ref=call_spec_ref,
+        )
+        return target
 
     async def cancel(self, target: CancellationTarget) -> CancellationObservation:
-        if target.target_kind != "PROVIDER" or target.call_spec_ref is None:
-            raise ValueError("CANCELLATION_TARGET_KIND_MISMATCH")
-        spec = self._records.get_exact(target.call_spec_ref)
-        if not isinstance(spec, LLMCallSpec) or reference(spec) != target.call_spec_ref:
-            raise ValueError("CANCELLATION_CALL_SPEC_NOT_EXACT")
-        try:
-            adapter = self._adapters[(spec.provider_profile_ref, spec.model)]
-        except KeyError as error:
-            raise ValueError("CANCELLATION_PROVIDER_NOT_EXACT") from error
-        result = await adapter.cancel(spec.llm_call_id)
+        decision_ref, call_spec_ref = self._inputs(target)
+        result = await self._calls.cancel(
+            work=target.work,
+            decision_ref=decision_ref,
+            call_spec_ref=call_spec_ref,
+        )
         return _observation(target, result, "PROVIDER_CANCELLATION_UNRESOLVED")
+
+    @staticmethod
+    def _inputs(target: CancellationTarget) -> tuple[StoredDataRef, StoredDataRef]:
+        issued = target.issued_action_decision_ref
+        if (
+            target.target_kind != "PROVIDER"
+            or not isinstance(issued, StoredDataRef)
+            or target.call_spec_ref is None
+        ):
+            raise ValueError("CANCELLATION_PROVIDER_NOT_EXACT")
+        return issued, target.call_spec_ref
 
 
 class ProductionSandboxCancellation:
@@ -213,7 +239,7 @@ def build_production_cancellation_router(
     *,
     records: RecordStore,
     static: AttemptCancellationPort,
-    provider_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter],
+    provider_calls: ProviderCancellationPort,
     docker: SandboxCancellationDockerPort,
     resources: OwnedResourceRegistry,
 ) -> ExactCancellationRouter:
@@ -221,9 +247,7 @@ def build_production_cancellation_router(
 
     return ExactCancellationRouter(
         static=ProductionStaticCancellation(static),
-        provider=ProductionProviderCancellation(
-            records=records, adapters=provider_adapters
-        ),
+        provider=ProductionProviderCancellation(provider_calls),
         sandbox=ProductionSandboxCancellation(
             records=records, docker=docker, resources=resources
         ),
@@ -250,6 +274,7 @@ def _unknown_resource(
 
 __all__ = [
     "ProductionProviderCancellation",
+    "ProviderCancellationPort",
     "ProductionSandboxCancellation",
     "ProductionStaticCancellation",
     "SandboxCancellationDockerPort",

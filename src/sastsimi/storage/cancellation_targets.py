@@ -50,6 +50,8 @@ class CancellationTargetStore:
             if _connection is None
             else nullcontext(_connection) as connection
         ):
+            if _connection is None:
+                connection.exec_driver_sql("BEGIN")
             rows = connection.execute(
                 select(
                     models.external_dispatches,

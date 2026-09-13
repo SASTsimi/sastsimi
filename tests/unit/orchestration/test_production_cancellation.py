@@ -76,38 +76,49 @@ def _target(
         action_decision_ref=cast(RecordRef, _run_ref("action_decision")),
         call_spec_ref=call_spec_ref,
         sandbox_resource_refs=resources,
+        issued_action_decision_ref=cast(RecordRef, _ref("action_decision", "issued")),
     )
 
 
 @pytest.mark.asyncio
 async def test_provider_cancellation_uses_exact_profile_model_and_call_id() -> None:
-    data = fixture()
-
-    class Provider:
+    class Calls:
         def __init__(self) -> None:
-            self.cancelled_ids: list[str] = []
+            self.validated: list[tuple[object, StoredDataRef, StoredDataRef]] = []
+            self.cancelled: list[tuple[object, StoredDataRef, StoredDataRef]] = []
 
-        async def probe(self, _candidate: object) -> object:
-            raise AssertionError("not used")
+        def validate_cancellation(
+            self,
+            *,
+            work: WorkExecutionState,
+            decision_ref: StoredDataRef,
+            call_spec_ref: StoredDataRef,
+        ) -> None:
+            self.validated.append((work, decision_ref, call_spec_ref))
 
-        async def invoke(self, _request: object) -> object:
-            raise AssertionError("not used")
-
-        async def cancel(self, invocation_id: str) -> CancellationResult:
-            self.cancelled_ids.append(invocation_id)
+        async def cancel(
+            self,
+            *,
+            work: WorkExecutionState,
+            decision_ref: StoredDataRef,
+            call_spec_ref: StoredDataRef,
+        ) -> CancellationResult:
+            self.cancelled.append((work, decision_ref, call_spec_ref))
             return CancellationResult(True, None)
 
-    adapter = Provider()
-    service = ProductionProviderCancellation(
-        records=data.records,
-        adapters={(data.provider_ref, "gpt-test"): cast(Any, adapter)},
-    )
+    calls = Calls()
+    service = ProductionProviderCancellation(calls)
+    target = _target("PROVIDER", call_spec_ref=_ref("llm_call_spec", "call-spec"))
 
-    observed = await service.cancel(_target("PROVIDER", call_spec_ref=data.spec_ref))
+    await service.prepare(target)
+    observed = await service.cancel(target)
 
     assert observed.status == "STOPPED"
     assert observed.reason_code is None
-    assert adapter.cancelled_ids == ["call-1"]
+    assert calls.validated == [
+        (target.work, target.issued_action_decision_ref, target.call_spec_ref)
+    ]
+    assert calls.cancelled == calls.validated
 
 
 class _Docker:

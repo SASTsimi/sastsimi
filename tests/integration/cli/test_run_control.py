@@ -188,6 +188,23 @@ class _Controls:
         self.events.append("targets")
         return self.targets
 
+    def cancellation_observations(
+        self, targets: tuple[CancellationTarget, ...]
+    ) -> tuple[CancellationObservation | None, ...]:
+        return tuple(None for _target in targets)
+
+    def record_cancellation_observation(
+        self, observation: CancellationObservation
+    ) -> None:
+        del observation
+
+    def reconcile_cancellation(
+        self,
+        analysis_id: str,
+        observations: tuple[CancellationObservation, ...],
+    ) -> None:
+        del analysis_id, observations
+
 
 class _SchedulerStore:
     def __init__(self, works: tuple[WorkExecutionState, ...]) -> None:

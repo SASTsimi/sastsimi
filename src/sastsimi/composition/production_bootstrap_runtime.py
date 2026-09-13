@@ -217,10 +217,11 @@ class ProductionCancellationFactory:
     ) -> ExternalCancellationPort:
         from sastsimi.sandbox.cleanup import OwnedResourceRegistry
 
+        del provider_adapters
         return build_production_cancellation_router(
             records=context.runtime.unit_of_work.records,
             static=static.static_cancellation,
-            provider_adapters=provider_adapters,
+            provider_calls=context.runtime.llm_calls,
             docker=dynamic.docker,
             # A new owner reloads the durable journal before taking the exact
             # attempt snapshot; no prior process memory is trusted.

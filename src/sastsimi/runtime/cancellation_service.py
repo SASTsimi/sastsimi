@@ -110,12 +110,7 @@ class CancellationService:
                 targets = prepared
                 for target in targets:
                     _validate_target(target, analysis_id)
-        read_observations = getattr(self._controls, "cancellation_observations", None)
-        durable = callable(read_observations)
-        if callable(read_observations):
-            existing = read_observations(targets)
-        else:
-            existing = tuple(None for _target in targets)
+        existing = self._controls.cancellation_observations(targets)
         if len(existing) != len(targets):
             raise ValueError("CANCELLATION_OBSERVATION_INVENTORY_MISMATCH")
         observations: list[CancellationObservation] = []
@@ -140,12 +135,9 @@ class CancellationService:
                 observed = CancellationObservation(
                     target, "UNKNOWN", "CANCELLATION_ADAPTER_INVALID"
                 )
-            if durable:
-                self._controls.record_cancellation_observation(observed)
+            self._controls.record_cancellation_observation(observed)
             observations.append(observed)
-        reconciler = getattr(self._controls, "reconcile_cancellation", None)
-        if callable(reconciler):
-            reconciler(analysis_id, tuple(observations))
+        self._controls.reconcile_cancellation(analysis_id, tuple(observations))
         if all(item.status != "UNKNOWN" for item in observations) and all(
             item.status in TERMINAL_WORK_STATUSES
             for item in self._works.work_for_run(analysis_id)
