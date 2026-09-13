@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 
 from sqlalchemy import select
@@ -9,7 +10,7 @@ from sqlalchemy import select
 from sastsimi.contracts.evaluation import AnalysisRunResult
 from sastsimi.contracts.refs import reference
 from sastsimi.contracts.work import WorkExecutionState
-from sastsimi.ports.scheduler import AnalysisStatusView
+from sastsimi.ports.scheduler import AnalysisStatusView, WorkFailureView
 
 from . import models
 from .database import Database
@@ -60,6 +61,20 @@ class SQLiteProductionQuery:
                 sorted({reason.value for item in works for reason in item.waiting_for})
             ),
             result_ref=state.analysis_result_ref,
+            failures=tuple(
+                WorkFailureView(
+                    work_id=str(item.work_id),
+                    work_type=item.work_type.value,
+                    status=item.status.value,
+                    stop_reason=_safe_reason(item.stop_reason),
+                    error_ids=tuple(
+                        _safe_identifier(str(value)) for value in item.error_ids
+                    ),
+                    waiting_for=tuple(value.value for value in item.waiting_for),
+                )
+                for item in works
+                if item.status in {"BLOCKED", "FAILED", "PARTIAL"}
+            ),
         )
 
     def result(self, analysis_id: str) -> AnalysisRunResult:
@@ -78,6 +93,20 @@ class SQLiteProductionQuery:
         ):
             raise ValueError("ANALYSIS_RESULT_EXACT_REF_MISMATCH")
         return result
+
+
+_SAFE_REASON = re.compile(r"[A-Z][A-Z0-9_]{0,127}\Z")
+_SAFE_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+
+
+def _safe_reason(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return value if _SAFE_REASON.fullmatch(value) else "STOP_REASON_REDACTED"
+
+
+def _safe_identifier(value: str) -> str:
+    return value if _SAFE_IDENTIFIER.fullmatch(value) else "IDENTIFIER_REDACTED"
 
 
 __all__ = ["SQLiteProductionQuery"]

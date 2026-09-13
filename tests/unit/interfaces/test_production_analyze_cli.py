@@ -9,7 +9,7 @@ from sastsimi import bootstrap
 from sastsimi.contracts.evaluation import AnalysisRunResult
 from sastsimi.interfaces.cli import analyze as analyze_command
 from sastsimi.interfaces.cli.main import main
-from sastsimi.ports.scheduler import AnalysisStatusView, RunOutcome
+from sastsimi.ports.scheduler import AnalysisStatusView, RunOutcome, WorkFailureView
 
 
 class _Entrypoint:
@@ -32,6 +32,16 @@ class _Application:
             cancel_requested=False,
             waiting_for=("INPUT",),
             result_ref=None,
+            failures=(
+                WorkFailureView(
+                    work_id="dynamic-1",
+                    work_type="DYNAMIC_REPRO",
+                    status="BLOCKED",
+                    stop_reason="SANDBOX_CAPABILITY_MISSING",
+                    error_ids=(),
+                    waiting_for=("INPUT",),
+                ),
+            ),
         )
 
     def result(self, analysis_id: str) -> AnalysisRunResult:
@@ -172,6 +182,49 @@ def test_production_status_is_separate_from_demo_results(
     assert output["data"]["analysis_id"] == "analysis-1"
     assert output["data"]["status"] == "BLOCKED"
     assert output["data"]["waiting_for"] == ["INPUT"]
+    assert output["data"]["failures"] == [
+        {
+            "work_id": "dynamic-1",
+            "work_type": "DYNAMIC_REPRO",
+            "status": "BLOCKED",
+            "stop_reason": "SANDBOX_CAPABILITY_MISSING",
+            "error_ids": [],
+            "waiting_for": ["INPUT"],
+        }
+    ]
+
+
+def test_production_unavailable_prints_only_the_safe_reason_code(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def unavailable(_request: object) -> RunOutcome:
+        raise analyze_command.ProductionAnalyzeUnavailable(
+            "PRODUCTION_PROVIDER_APPROVAL_INCOMPLETE"
+        )
+
+    assert (
+        main(
+            [
+                "--data-dir",
+                "data",
+                "analyze",
+                "--repo",
+                "repository",
+                "--commit",
+                "c" * 40,
+                "--profile",
+                "profile.toml",
+                "--format",
+                "json",
+            ],
+            production_analyze=unavailable,
+        )
+        == 4
+    )
+    output = json.loads(capsys.readouterr().err)
+    assert output["data"]["reason_code"] == (
+        "PRODUCTION_PROVIDER_APPROVAL_INCOMPLETE"
+    )
 
 
 def test_production_results_without_available_query_fails_closed(

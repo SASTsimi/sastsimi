@@ -47,6 +47,18 @@ class RunOutcome:
 
 
 @dataclass(frozen=True)
+class WorkFailureView:
+    """Safe, structured non-success detail for one production work item."""
+
+    work_id: str
+    work_type: str
+    status: str
+    stop_reason: str | None
+    error_ids: tuple[str, ...]
+    waiting_for: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class AnalysisStatusView:
     analysis_id: str
     run_status: str
@@ -54,6 +66,7 @@ class AnalysisStatusView:
     cancel_requested: bool
     waiting_for: tuple[str, ...]
     result_ref: RunStoredDataRef | None
+    failures: tuple[WorkFailureView, ...] = ()
 
 
 class SchedulerStorePort(Protocol):
@@ -135,4 +148,5 @@ __all__ = [
     "RunOutcome",
     "SchedulerStorePort",
     "WorkSchedulerPort",
+    "WorkFailureView",
 ]

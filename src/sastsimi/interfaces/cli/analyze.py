@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -12,7 +13,13 @@ from sastsimi.ports.scheduler import AnalysisStatusView, RunOutcome
 
 
 class ProductionAnalyzeUnavailable(RuntimeError):
-    """The production composition root was not explicitly installed."""
+    """Fail-closed production unavailability with one safe public reason code."""
+
+    def __init__(self, reason_code: str = "PRODUCTION_ANALYZE_UNAVAILABLE") -> None:
+        if re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", reason_code) is None:
+            reason_code = "PRODUCTION_ANALYZE_UNAVAILABLE"
+        self.reason_code = reason_code
+        super().__init__(reason_code)
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,7 +51,7 @@ async def run(
     request: ProductionAnalyzeRequest,
 ) -> dict[str, object]:
     if entrypoint is None:
-        raise ProductionAnalyzeUnavailable
+        raise ProductionAnalyzeUnavailable()
     return project(await entrypoint(request))
 
 

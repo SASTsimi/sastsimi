@@ -14,6 +14,7 @@ def emit_result(
     trace_id: str | None = None,
     command: str = "doctor",
     revision: str | None = None,
+    reason_code: str | None = None,
 ) -> None:
     messages = {
         ExitCode.OK: (
@@ -44,6 +45,8 @@ def emit_result(
         data["revision"] = revision
     if trace_id is not None:
         data["trace_id"] = trace_id
+    if reason_code is not None:
+        data["reason_code"] = reason_code
     if output_format == "json":
         envelope = {
             "schema_version": 1,
@@ -57,6 +60,7 @@ def emit_result(
         stream.write(
             str(data["message"])
             + (f" Revision: {revision}" if revision else "")
+            + (f" Reason: {reason_code}" if reason_code else "")
             + (f" Trace: {trace_id}" if trace_id else "")
             + "\n"
         )

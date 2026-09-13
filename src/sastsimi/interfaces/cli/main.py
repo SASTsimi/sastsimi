@@ -279,8 +279,15 @@ def main(
         code = ExitCode.CONFIG_ERROR
     except bootstrap.MigrationRequired:
         code = ExitCode.CONFIG_ERROR
-    except analyze_command.ProductionAnalyzeUnavailable:
-        code = ExitCode.CAPABILITY_UNSUPPORTED
+    except analyze_command.ProductionAnalyzeUnavailable as error:
+        emit_result(
+            ExitCode.CAPABILITY_UNSUPPORTED,
+            output_format,
+            sys.stderr,
+            command=command_name,
+            reason_code=error.reason_code,
+        )
+        return int(ExitCode.CAPABILITY_UNSUPPORTED)
     except report_command.ReportCommandError:
         code = ExitCode.REPORT_UNAVAILABLE
     except Exception:
