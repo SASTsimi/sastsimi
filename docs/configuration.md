@@ -67,7 +67,7 @@ public fake `analyze`는 외부 provider 인증을 사용하지 않습니다.
 ### OpenAI API key
 
 OpenAI API는 usage-based billing을 사용합니다. 공식
-[API quickstart](https://platform.openai.com/docs/quickstart/make-your-first-api-request)에서
+[API quickstart](https://developers.openai.com/api/docs/quickstart)에서
 key를 만들고 `OPENAI_API_KEY` 같은 process 환경으로 주입합니다. key를 파일이나
 명령 history에 남기지 않습니다.
 
@@ -79,7 +79,7 @@ key를 만들고 `OPENAI_API_KEY` 같은 process 환경으로 주입합니다. k
 ### ChatGPT 구독으로 Codex 로그인
 
 Codex CLI는 공식
-[Codex 인증 안내](https://learn.chatgpt.com/docs/auth)에 따라 브라우저에서
+[Codex 인증 안내](https://developers.openai.com/codex/auth)에 따라 브라우저에서
 `codex login`하고 `codex login status`로 상태를 확인할 수 있습니다. ChatGPT
 구독 로그인은 subscription access이고 API key 사용은 별도 API billing입니다.
 
