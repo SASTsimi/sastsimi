@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 
@@ -340,7 +340,7 @@ def _dependency_bundle(
     artifacts: _MemoryArtifacts,
     profile: RepositoryProfile,
     request: DynamicReproductionRequest,
-    ecosystem: str,
+    ecosystem: Literal["PYTHON_WHEELS", "NPM_CACHE"],
     files: Mapping[str, bytes],
     dependency_hash: str | None = None,
 ) -> DependencyBundle:
