@@ -45,6 +45,32 @@ run_controls = Table(
     Column("cancel_reason", Text, nullable=False),
     Column("quiescent_at", Text),
 )
+cancellation_observations = Table(
+    "cancellation_observations",
+    metadata,
+    Column("observation_key", Text, primary_key=True),
+    Column(
+        "analysis_id",
+        Text,
+        ForeignKey("analysis_runs.analysis_id"),
+        nullable=False,
+    ),
+    Column("work_id", Text, nullable=False),
+    Column("attempt_id", Text, nullable=False),
+    Column("action_ref", Text, nullable=False),
+    Column("issued_decision_ref", Text, nullable=False),
+    Column("decision_ref", Text, nullable=False),
+    Column("target_kind", Text, nullable=False),
+    Column("resource_kind", Text, nullable=False),
+    Column("resource_id", Text, nullable=False),
+    Column("resource_ref", Text),
+    Column("resource_tag", Text),
+    Column("labels", Text, nullable=False),
+    Column("lookup_by_name", Integer, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("reason_code", Text),
+    Column("observed_at", Text, nullable=False),
+)
 action_requests = Table(
     "action_requests",
     metadata,

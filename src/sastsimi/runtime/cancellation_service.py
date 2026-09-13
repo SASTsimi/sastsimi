@@ -44,7 +44,7 @@ class ExactCancellationRouter:
             # turn an adapter error into an affirmative cancellation claim.
             return CancellationObservation(
                 target=target,
-                status="UNRESOLVED",
+                status="UNKNOWN",
                 reason_code="CANCELLATION_ADAPTER_FAILED",
             )
         if observation.target != target:
@@ -84,10 +84,45 @@ class CancellationService:
         # one corrupt/foreign row must not cause a partial broad cancellation.
         for target in targets:
             _validate_target(target, analysis_id)
+        prepare = getattr(self._external, "prepare", None)
+        if callable(prepare):
+            await prepare(targets)
+        read_observations = getattr(self._controls, "cancellation_observations", None)
+        durable = callable(read_observations)
+        if callable(read_observations):
+            existing = read_observations(targets)
+        else:
+            existing = tuple(None for _target in targets)
+        if len(existing) != len(targets):
+            raise ValueError("CANCELLATION_OBSERVATION_INVENTORY_MISMATCH")
         observations: list[CancellationObservation] = []
-        for target in targets:
-            observations.append(await self._external.cancel(target))
-        if all(item.status != "UNRESOLVED" for item in observations) and all(
+        for target, replay in zip(targets, existing, strict=True):
+            if replay is not None:
+                if replay.target != target:
+                    raise ValueError("CANCELLATION_OBSERVATION_TARGET_MISMATCH")
+                observations.append(replay)
+                continue
+            try:
+                observed = await self._external.cancel(target)
+            except Exception:
+                observed = CancellationObservation(
+                    target, "UNKNOWN", "CANCELLATION_ADAPTER_FAILED"
+                )
+            if observed.target != target or observed.status not in {
+                "STOPPED",
+                "ABSENT",
+                "UNKNOWN",
+            }:
+                observed = CancellationObservation(
+                    target, "UNKNOWN", "CANCELLATION_ADAPTER_INVALID"
+                )
+            if durable:
+                self._controls.record_cancellation_observation(observed)
+            observations.append(observed)
+        reconciler = getattr(self._controls, "reconcile_cancellation", None)
+        if callable(reconciler):
+            reconciler(analysis_id, tuple(observations))
+        if all(item.status != "UNKNOWN" for item in observations) and all(
             item.status in TERMINAL_WORK_STATUSES
             for item in self._works.work_for_run(analysis_id)
         ):

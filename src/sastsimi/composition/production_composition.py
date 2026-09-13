@@ -237,7 +237,12 @@ class ConcreteProductionApplicationFactory:
         )
         _require_installed_services(installation)
 
-        controls = RunControlStore(Database(RuntimePaths(data_dir).database), clock)
+        controls = RunControlStore(
+            Database(RuntimePaths(data_dir).database),
+            clock,
+            works=cast(SQLiteWorkService, runtime.work.store),
+            ids=ids,
+        )
         cancellation = CancellationService(
             controls,
             scheduler_store,

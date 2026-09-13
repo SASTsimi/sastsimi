@@ -1,5 +1,6 @@
 """S1 atomic READY claim and cancellation-latch integration tests."""
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
@@ -22,6 +23,8 @@ from sastsimi.contracts.work import (
     WorkExecutionState,
 )
 from sastsimi.ports.dto import WorkContext
+from sastsimi.ports.scheduler import CancellationObservation, CancellationTarget
+from sastsimi.runtime.cancellation_service import CancellationService
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.storage import models
@@ -179,6 +182,112 @@ def test_cancellation_inventory_rejects_one_stale_dispatch_instead_of_filtering(
 
     with pytest.raises(ValueError, match="CANCELLATION_TARGET_SCOPE_MISMATCH"):
         controls.cancellation_targets("a1")
+
+
+class _ExactStaticCancellation:
+    def __init__(self, status: str = "STOPPED") -> None:
+        self.status = status
+        self.calls = 0
+
+    async def cancel(self, target: CancellationTarget) -> CancellationObservation:
+        self.calls += 1
+        return CancellationObservation(
+            target=target,
+            status=self.status,  # type: ignore[arg-type]
+            reason_code=None if self.status == "STOPPED" else "STATIC_UNKNOWN",
+        )
+
+
+class _NoReplayCancellation:
+    async def cancel(self, target: CancellationTarget) -> CancellationObservation:
+        raise AssertionError(f"durable observation replayed externally: {target}")
+
+
+def _durable_controls(
+    harness: Harness, runtime: RuntimeServices
+) -> RunControlStore:
+    works = runtime.work.store
+    assert isinstance(works, StorageWorkService)
+    return RunControlStore(
+        harness.database,
+        harness.clock,
+        works=works,
+        ids=harness.ids,
+    )
+
+
+def test_owner_dead_replays_durable_stop_without_external_redispatch(
+    tmp_path: Path,
+) -> None:
+    harness, runtime, context, _controls = _running_static_dispatch(tmp_path)
+    controls = _durable_controls(harness, runtime)
+    controls.request_cancel("a1", "OPERATOR_REQUEST")
+    target = controls.cancellation_targets("a1")[0]
+    stopped = CancellationObservation(target=target, status="STOPPED", reason_code=None)
+
+    # Simulate owner death after the external stop was observed durably but
+    # before work/attempt/dispatch reconciliation.
+    controls.record_cancellation_observation(stopped)
+    restarted = _durable_controls(harness, runtime)
+    observations = asyncio.run(
+        CancellationService(
+            restarted,
+            _dispatch(runtime),
+            _NoReplayCancellation(),
+        ).drain_latched("a1")
+    )
+
+    assert observations == (stopped,)
+    work = runtime.work.get(str(context.work.work_id))
+    attempt = _dispatch(runtime).attempts_for_work(str(context.work.work_id))[-1]
+    assert work.status == "CANCELLED"
+    assert work.active_attempt_id is None
+    assert attempt.status == "CANCELLED"
+    with harness.database.engine.connect() as connection:
+        dispatch = (
+            connection.execute(select(models.external_dispatches)).mappings().one()
+        )
+        control = connection.execute(select(models.run_controls)).mappings().one()
+    assert dispatch["returned_at"] is None
+    assert dispatch["reconciled_at"] is not None
+    assert control["quiescent_at"] is not None
+
+
+def test_unknown_observation_is_durable_and_preserves_uncertain_budget(
+    tmp_path: Path,
+) -> None:
+    harness, runtime, context, _controls = _running_static_dispatch(tmp_path)
+    controls = _durable_controls(harness, runtime)
+    adapter = _ExactStaticCancellation("UNKNOWN")
+    service = CancellationService(controls, _dispatch(runtime), adapter)
+
+    first = asyncio.run(service.request("a1", "OPERATOR_REQUEST"))
+    second = asyncio.run(service.drain_latched("a1"))
+
+    assert first == second
+    assert first[0].status == "UNKNOWN"
+    assert adapter.calls == 1
+    assert runtime.work.get(str(context.work.work_id)).status == "RUNNING"
+    with harness.database.engine.connect() as connection:
+        dispatch = (
+            connection.execute(select(models.external_dispatches)).mappings().one()
+        )
+        control = connection.execute(select(models.run_controls)).mappings().one()
+        reservations = connection.execute(
+            select(models.budget_reservations.c.status)
+        ).scalars().all()
+    assert dispatch["reconciled_at"] is None
+    assert control["quiescent_at"] is None
+    assert "RESERVED" in reservations
+
+
+def test_mark_quiescent_rejects_live_work(tmp_path: Path) -> None:
+    harness, runtime, _context, _controls = _running_static_dispatch(tmp_path)
+    controls = _durable_controls(harness, runtime)
+    controls.request_cancel("a1", "OPERATOR_REQUEST")
+
+    with pytest.raises(ValueError, match="RUN_NOT_QUIESCENT"):
+        controls.mark_quiescent("a1")
 
 
 def test_ready_claim_publishes_one_exact_attempt_lease_and_work_revision(

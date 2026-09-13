@@ -87,7 +87,7 @@ class ProductionSandboxCancellation:
                 environments.append(record)
         if not environments:
             return CancellationObservation(
-                target, "UNRESOLVED", "SANDBOX_CANCELLATION_RESOURCE_MISSING"
+                target, "UNKNOWN", "SANDBOX_CANCELLATION_RESOURCE_MISSING"
             )
         resource_ids = tuple(
             dict.fromkeys(item.container_instance_id for item in environments)
@@ -168,7 +168,7 @@ def _observation(
 ) -> CancellationObservation:
     return CancellationObservation(
         target=target,
-        status="STOPPED" if result.cancelled else "UNRESOLVED",
+        status="STOPPED" if result.cancelled else "UNKNOWN",
         reason_code=None if result.cancelled else unresolved,
     )
 

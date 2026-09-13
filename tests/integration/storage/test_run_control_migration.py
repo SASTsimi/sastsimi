@@ -23,8 +23,31 @@ def test_run_control_migration_and_cancel_latch_are_durable(tmp_path: Path) -> N
         "cancel_reason",
         "quiescent_at",
     }
+    observation_columns = {
+        item["name"]
+        for item in inspect(database.engine).get_columns("cancellation_observations")
+    }
+    assert observation_columns == {
+        "observation_key",
+        "analysis_id",
+        "work_id",
+        "attempt_id",
+        "action_ref",
+        "issued_decision_ref",
+        "decision_ref",
+        "target_kind",
+        "resource_kind",
+        "resource_id",
+        "resource_ref",
+        "resource_tag",
+        "labels",
+        "lookup_by_name",
+        "status",
+        "reason_code",
+        "observed_at",
+    }
     assert ScriptDirectory.from_config(config(database)).get_heads() == [
-        "0007_prompt_analysis_scope"
+        "0008_cancellation_observations"
     ]
     with database.write() as connection:
         connection.execute(

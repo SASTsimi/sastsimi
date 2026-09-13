@@ -1,6 +1,6 @@
 """Shared migration identity without a database/migration import cycle."""
 
-HEAD = "0007_prompt_analysis_scope"
+HEAD = "0008_cancellation_observations"
 
 
 class MigrationRequired(ValueError):

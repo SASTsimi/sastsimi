@@ -15,7 +15,7 @@ from .dto import WorkContext
 from .work_handler import WorkHandler
 
 type CancellationTargetKind = Literal["STATIC", "PROVIDER", "SANDBOX"]
-type CancellationStatus = Literal["STOPPED", "ALREADY_TERMINAL", "UNRESOLVED"]
+type CancellationStatus = Literal["STOPPED", "ABSENT", "UNKNOWN"]
 type RunDisposition = Literal["TERMINAL", "BLOCKED", "CANCELLED", "FAILED"]
 
 
@@ -30,6 +30,10 @@ class CancellationTarget:
     action_decision_ref: RecordRef
     call_spec_ref: StoredDataRef | None
     sandbox_resource_refs: tuple[StoredDataRef, ...]
+    # The dispatch row retains the exact issued/UNUSED decision while the
+    # action projection retains its unique USED revision.  Cancellation needs
+    # both identities and must never substitute one for the other.
+    issued_action_decision_ref: RecordRef | None = None
 
 
 @dataclass(frozen=True)
@@ -106,6 +110,20 @@ class RunControlPort(Protocol):
     def cancellation_targets(
         self, analysis_id: str
     ) -> tuple[CancellationTarget, ...]: ...
+
+    def cancellation_observations(
+        self, targets: tuple[CancellationTarget, ...]
+    ) -> tuple[CancellationObservation | None, ...]: ...
+
+    def record_cancellation_observation(
+        self, observation: CancellationObservation
+    ) -> None: ...
+
+    def reconcile_cancellation(
+        self,
+        analysis_id: str,
+        observations: tuple[CancellationObservation, ...],
+    ) -> None: ...
 
 
 class ExternalCancellationPort(Protocol):

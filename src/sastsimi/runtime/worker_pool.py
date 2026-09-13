@@ -74,11 +74,9 @@ class WorkerPool:
             while True:
                 if self._run_control.cancel_requested(analysis_id):
                     await self._cancel_tasks(owned)
-                    if all(
-                        work.status != WorkStatus.RUNNING
-                        for work in self._scheduler.work_for_run(analysis_id)
-                    ):
-                        self._run_control.mark_quiescent(analysis_id)
+                    # The cancellation reconciler is the only authority that
+                    # can prove exact attempts, dispatches, and resources are
+                    # closed. Local task absence is not a quiescence proof.
                     return RunOutcome(analysis_id, "CANCELLED", None)
 
                 self._fill_available_slots(analysis_id, owned)

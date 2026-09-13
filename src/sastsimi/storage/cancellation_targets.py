@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 from sqlalchemy import Connection, select
 
-from sastsimi.contracts.actions import ActionDecision, ActionRequest, ActionType
+from sastsimi.contracts.actions import (
+    ActionDecision,
+    ActionRequest,
+    ActionType,
+    validate_decision_revision,
+)
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.refs import RecordRef, StoredDataRef
 from sastsimi.contracts.work import WorkAttempt, WorkExecutionState
@@ -42,11 +49,17 @@ class CancellationTargetStore:
     def __init__(self, database: Database) -> None:
         self._database = database
 
-    def cancellation_targets(self, analysis_id: str) -> tuple[CancellationTarget, ...]:
+    def cancellation_targets(
+        self, analysis_id: str, *, _connection: Connection | None = None
+    ) -> tuple[CancellationTarget, ...]:
         if not analysis_id:
             raise ValueError("RUN_CONTROL_INPUT_INVALID")
         targets: list[CancellationTarget] = []
-        with self._database.engine.connect() as connection:
+        with (
+            self._database.engine.connect()
+            if _connection is None
+            else nullcontext(_connection) as connection
+        ):
             rows = connection.execute(
                 select(
                     models.external_dispatches,
@@ -113,13 +126,16 @@ class CancellationTargetStore:
                     raise ValueError("CANCELLATION_TARGET_EXACT_REF_REQUIRED")
                 used = ActionDecision.model_validate_json(used_payload)
                 if (
-                    used.use_status != "USED"
+                    issued.use_status != "UNUSED"
+                    or used.use_status != "USED"
+                    or issued.action_ref != reference(action)
                     or used.action_ref != reference(action)
                     or str(action.action_id) != row["action_id"]
                     or action.work_ref != reference(work)
                     or action.expected_state_version != work.state_version
                 ):
                     raise ValueError("CANCELLATION_TARGET_SCOPE_MISMATCH")
+                validate_decision_revision(issued, used)
                 kind = self._target_kind(action.action_type)
                 if kind is None:
                     raise ValueError("CANCELLATION_TARGET_KIND_MISMATCH")
@@ -148,6 +164,7 @@ class CancellationTargetStore:
                         action_decision_ref=reference(used),
                         call_spec_ref=action.llm_call_spec_ref,
                         sandbox_resource_refs=resources,
+                        issued_action_decision_ref=issued_ref,
                     )
                 )
         identities = {
