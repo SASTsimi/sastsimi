@@ -362,10 +362,7 @@ def _manifest() -> tuple[
     )
     return (
         manifest,
-        cast(
-            dict[HostConfigurationRef, RuntimeCapabilityProfile | StaticToolProfile],
-            records,
-        ),
+        records,
         artifacts,
     )
 
