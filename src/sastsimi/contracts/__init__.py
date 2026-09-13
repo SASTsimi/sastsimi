@@ -18,10 +18,10 @@ from .actions import validate_decision_revision as validate_decision_revision
 from .actions import (
     validate_generation_restart_context as validate_generation_restart_context,
 )
-from .base import ContractModel as ContractModel
 from .analysis import AnalysisRunInput as AnalysisRunInput
 from .analysis import AnalysisRunState as AnalysisRunState
 from .analysis import AnalysisStartRequest as AnalysisStartRequest
+from .base import ContractModel as ContractModel
 from .base import NonEmptyStr as NonEmptyStr
 from .base import NonNegativeInt as NonNegativeInt
 from .base import PositiveInt as PositiveInt
