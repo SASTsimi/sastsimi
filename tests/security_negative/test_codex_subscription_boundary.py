@@ -388,6 +388,33 @@ def test_supported_codex_binding_requires_and_rechecks_exact_pvd() -> None:
         )
 
 
+def test_execution_binding_validator_runs_at_start_and_before_each_call() -> None:
+    executable = Path(__file__).resolve()
+    profile, client, evidence = _supported_records()
+    binding = ApprovedCodexExecutionBinding(
+        provider_profile=profile,
+        client_execution_profile=client,
+        provider_validation_evidence=evidence,
+        executable=ApprovedCodexExecutable(
+            path=executable,
+            sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
+        ),
+        codex_home=executable.parent,
+        runtime_environment="PERSONAL_LOCAL",
+    )
+    checked: list[ApprovedCodexExecutionBinding] = []
+    runner = CodexCliProcessRunner(
+        binding=binding,
+        binding_validator=checked.append,
+    )
+
+    approved_profile_ref = reference(profile)
+    assert isinstance(approved_profile_ref, StoredDataRef)
+    runner.verify_binding(request(approved_profile_ref))
+
+    assert checked == [binding, binding]
+
+
 def test_execution_binding_rechecks_codex_home_before_use(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

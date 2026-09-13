@@ -265,6 +265,7 @@ def build_production_adapter_feature(
                         metadata_factory=metadata_factory,
                         clock=clock,
                         request_semantic_validators=request_validators,
+                        queries=queries,
                     )
             if not isinstance(adapter, LLMProviderAdapter):
                 raise ProductionProviderBuildUnavailable(
@@ -397,12 +398,18 @@ def _build_codex_adapter(
     metadata_factory: InvocationMetadataFactory,
     clock: Clock,
     request_semantic_validators: Mapping[tuple[LLMRole, str], RequestSemanticValidator],
+    queries: RuntimeQueryPort,
 ) -> CodexSubscriptionAdapter:
     return CodexSubscriptionAdapter(
         provider_profile_ref=provider_profile_ref,
         model=model,
         prompt_resolver=StoredPromptInputResolver(records, artifacts),
-        process_runner=CodexCliProcessRunner(binding=binding),
+        process_runner=CodexCliProcessRunner(
+            binding=binding,
+            binding_validator=lambda current: _require_codex_binding_current(
+                current, queries
+            ),
+        ),
         session_store=StoredProviderSessionStore(artifacts),
         output_schema_validator=StoredOutputValidator(
             records,
@@ -441,6 +448,28 @@ def _require_document_scope(
         raise ProductionProviderBuildUnavailable(
             "PRODUCTION_PROVISIONING_SCOPE_MISMATCH"
         )
+
+
+def _require_codex_binding_current(
+    binding: ApprovedCodexExecutionBinding,
+    queries: RuntimeQueryPort,
+) -> None:
+    validation = binding.provider_validation_evidence
+    if validation is None:
+        raise ProductionProviderBuildUnavailable(
+            "PRODUCTION_PROVIDER_EVIDENCE_MISMATCH"
+        )
+    for record in (
+        binding.provider_profile,
+        binding.client_execution_profile,
+        validation,
+    ):
+        exact_ref = reference(record)
+        if not isinstance(exact_ref, StoredDataRef):
+            raise ProductionProviderBuildUnavailable(
+                "PRODUCTION_PROVIDER_EVIDENCE_MISMATCH"
+            )
+        _require_current(exact_ref, record, queries)
 
 
 def _approved_routes(

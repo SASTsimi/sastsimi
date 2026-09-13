@@ -196,12 +196,20 @@ class CodexCliProcessRunner:
         self,
         *,
         binding: ApprovedCodexExecutionBinding,
+        binding_validator: Callable[[ApprovedCodexExecutionBinding], None]
+        | None = None,
     ) -> None:
         self.binding = binding
         self.executable = binding.executable
         self.codex_home = binding.codex_home
-        _validate_execution_binding(self.binding)
+        self._binding_validator = binding_validator
+        self._verify_approval()
         self.verify_executable()
+
+    def _verify_approval(self) -> None:
+        _validate_execution_binding(self.binding)
+        if self._binding_validator is not None:
+            self._binding_validator(self.binding)
 
     def verify_executable(self) -> None:
         """Recheck the immutable approval immediately before every spawn."""
@@ -224,7 +232,7 @@ class CodexCliProcessRunner:
     def verify_binding(self, request: CodexProcessRequest) -> None:
         """Revalidate exact approved records and request identity before a call."""
         _validate_process_request(request)
-        _validate_execution_binding(self.binding)
+        self._verify_approval()
         if (
             request.provider_profile_ref != reference(self.binding.provider_profile)
             or request.model != self.binding.provider_profile.model
