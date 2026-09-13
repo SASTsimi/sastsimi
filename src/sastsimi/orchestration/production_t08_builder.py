@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -27,6 +27,10 @@ from sastsimi.orchestration.production_provisioning import (
     StaticAnalysisProvisioning,
     StaticRouteProvisioning,
     WorkspaceStorageProvisioning,
+)
+from sastsimi.orchestration.production_static_adapters import (
+    StaticAdapterCancellationRouter,
+    StaticAttemptDispatchReader,
 )
 from sastsimi.orchestration.repository_profile_handler import (
     RepositoryProfileHandler,
@@ -135,6 +139,7 @@ class StaticAdapterBuildContext:
 
     data_dir: Path
     workspace_locator: WorkspaceLocatorPort
+    tracked_files_for: Callable[[CodeWorkspace], tuple[TrackedFile, ...]]
     routes: Mapping[str, StaticToolRoute]
     profiles: Mapping[str, StaticToolProfile]
     evidence: Mapping[str, bytes]
@@ -163,6 +168,7 @@ class ProductionT08Inputs:
     static_process_receipts: StaticProcessReceiptReader
     static_cancellation_observation: StaticCancellationObservationReader
     static_dispatch_state: StaticDispatchStateReader
+    static_attempt_dispatch: StaticAttemptDispatchReader
     workspace_timeout_ms: int
     repository_profile_timeout_ms: int
     allow_local_repository: bool = False
@@ -594,6 +600,7 @@ def build_production_t08_feature(
     adapter_context = StaticAdapterBuildContext(
         context.data_dir,
         locator,
+        locator.tracked_files_for,
         MappingProxyType(routes),
         profiles,
         evidence,
@@ -735,6 +742,11 @@ def build_production_t08_feature(
             graph,
         ),
         workspace_locator=locator,
+        static_cancellation=StaticAdapterCancellationRouter(
+            adapters=adapters,
+            profiles={profile.adapter_key: profile for profile in profiles.values()},
+            dispatch_for_attempt=inputs.static_attempt_dispatch,
+        ),
     )
 
 

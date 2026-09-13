@@ -358,6 +358,7 @@ def _inputs(
         static_process_receipts=lambda _action, _attempt: None,
         static_cancellation_observation=lambda _request, _profile: None,
         static_dispatch_state=lambda _action: None,
+        static_attempt_dispatch=lambda _attempt: None,
         workspace_timeout_ms=1_000,
         repository_profile_timeout_ms=1_000,
         allow_local_repository=True,

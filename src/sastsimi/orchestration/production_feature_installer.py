@@ -46,6 +46,7 @@ from sastsimi.orchestration.dynamic_verification_handoff import (
     DynamicReproductionWorkHandler,
     ProductionDynamicVerificationHandoff,
 )
+from sastsimi.orchestration.production_cancellation import AttemptCancellationPort
 from sastsimi.orchestration.production_composition import (
     InstalledProductionServices,
     ProductionCapabilityUnavailable,
@@ -108,6 +109,7 @@ class T08ProductionFeature:
     context_retrieval: WorkHandler
     seeder: PostWorkspaceSeederPort
     workspace_locator: WorkspaceLocatorPort
+    static_cancellation: AttemptCancellationPort
 
 
 @dataclass(frozen=True, slots=True)
