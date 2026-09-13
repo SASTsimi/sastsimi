@@ -21,7 +21,11 @@ class SensitivePathPolicy:
         names = pure.parts
         file_name = pure.name
         return (
-            normalized in self.exact_paths
+            any(
+                len(names) >= len(sensitive.parts)
+                and names[-len(sensitive.parts) :] == sensitive.parts
+                for sensitive in map(PurePosixPath, self.exact_paths)
+            )
             or any(name in self.file_names for name in names)
             or any(
                 name.startswith(prefix)

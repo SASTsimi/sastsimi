@@ -20,7 +20,9 @@ def test_sensitive_path_policy_allows_regular_source() -> None:
         ".env.production",
         "keys/client.pem",
         ".aws/credentials",
+        "services/api/.aws/credentials",
         ".docker/config.json",
+        "services/api/.docker/config.json",
     ),
 )
 def test_sensitive_path_policy_blocks_known_credential_files(git_path: str) -> None:
