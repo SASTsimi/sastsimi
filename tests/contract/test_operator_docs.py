@@ -85,7 +85,7 @@ def test_production_profile_example_is_complete_and_contains_no_secret() -> None
         ("TECHNICAL_GATE", "REVIEW_TECHNICAL"),
         ("RULE_SCOPE_GATE", "REVIEW"),
         ("REPORTER", "CREATE_DRAFT"),
-        ("POLICY_PARSER", "PARSE_POLICY"),
+        ("POLICY_PARSER", "PARSE_OFFICIAL_POLICY"),
         ("CHAINING", "MATCH_PRIMITIVES"),
     }
     assert all(

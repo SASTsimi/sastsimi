@@ -186,10 +186,10 @@ prompt_key = "reporter.create-draft.production-v1"
 
 [[llm_routes]]
 role = "POLICY_PARSER"
-task_kind = "PARSE_POLICY"
+task_kind = "PARSE_OFFICIAL_POLICY"
 provider_profile_key = "approved-openai-profile"
 model = "replace-with-approved-model-id"
-prompt_key = "policy-parser.parse-policy.production-v1"
+prompt_key = "policy-parser.parse-official-policy.production-v1"
 
 [[llm_routes]]
 role = "CHAINING"
