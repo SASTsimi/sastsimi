@@ -8,7 +8,7 @@ from typing import Protocol
 
 from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
 from sastsimi.contracts.evaluation import AnalysisRunResult
-from sastsimi.contracts.refs import RecordRef, reference
+from sastsimi.contracts.refs import RecordRef, RunStoredDataRef, reference
 from sastsimi.contracts.work import (
     WorkAttempt,
     WorkExecutionState,
@@ -43,6 +43,8 @@ class ExactRecordReader(Protocol):
 class BlockedWorkResumePort(Protocol):
     """Atomically revalidate and move exact BLOCKED works to READY.
 
+    The mandatory expected run reference is the caller-observed snapshot; storage
+    rejects a newer run revision even when all supplied works are unchanged.
     The storage implementation must re-read every work and prior attempt,
     unchanged input/config references, remaining budget, cancellation latch,
     and unresolved external-dispatch state in one transaction.  It returns all
@@ -53,6 +55,8 @@ class BlockedWorkResumePort(Protocol):
     def resume_blocked(
         self,
         candidates: tuple[tuple[WorkExecutionState, WorkAttempt], ...],
+        *,
+        expected_run_state_ref: RunStoredDataRef,
     ) -> tuple[WorkExecutionState, ...]: ...
 
 
@@ -139,7 +143,12 @@ class ProductionRunControl:
                 raise ValueError("RESUME_INPUT_CHANGED")
             candidates.append((item, previous))
         if candidates:
-            resumed = self._resumer.resume_blocked(tuple(candidates))
+            expected_run_state_ref = reference(state)
+            if not isinstance(expected_run_state_ref, RunStoredDataRef):
+                raise ValueError("RESUME_RUN_STATE_REFERENCE_INVALID")
+            resumed = self._resumer.resume_blocked(
+                tuple(candidates), expected_run_state_ref=expected_run_state_ref
+            )
             if len(resumed) != len(candidates) or any(
                 ready.status != "READY"
                 or ready.work_id != blocked_item.work_id

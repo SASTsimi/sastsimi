@@ -12,6 +12,7 @@ from sastsimi.contracts.actions import (
     ActionType,
     Decision,
 )
+from sastsimi.contracts.analysis import AnalysisRunInput
 from sastsimi.contracts.budget import (
     BudgetLedgerEntry,
     BudgetReservation,
@@ -26,7 +27,7 @@ from sastsimi.contracts.ids import (
     TransitionId,
 )
 from sastsimi.contracts.records import RecordMeta, RecordMetadata
-from sastsimi.contracts.refs import BudgetScopeRef
+from sastsimi.contracts.refs import BudgetScopeRef, RunStoredDataRef
 from sastsimi.contracts.work import (
     AttemptTrigger,
     StateTransition,
@@ -34,6 +35,7 @@ from sastsimi.contracts.work import (
     WorkAttempt,
     WorkExecutionState,
     WorkStatus,
+    validate_attempt_context,
 )
 from sastsimi.ports.dto import (
     BudgetCommitRequest,
@@ -42,9 +44,11 @@ from sastsimi.ports.dto import (
 )
 
 from . import models
+from .action_context import current_process
 from .attempt_service import AttemptService
 from .authorization import authorize
-from .codec import encode, reference
+from .codec import REF_ADAPTER, encode, reference
+from .current_inputs import check_current_input
 from .dispatches import reject_uncertain
 from .records import fresh_meta, next_meta
 from .run_control import cancel_latched, reject_cancelled
@@ -73,6 +77,8 @@ class WorkDispatchStore:
     def resume_blocked(
         self,
         candidates: tuple[tuple[WorkExecutionState, WorkAttempt], ...],
+        *,
+        expected_run_state_ref: RunStoredDataRef,
     ) -> tuple[WorkExecutionState, ...]:
         """Open an exact blocked cohort only after one atomic revalidation."""
 
@@ -87,10 +93,71 @@ class WorkDispatchStore:
         with records.database.write() as connection:
             reject_cancelled(connection, analysis_id)
             run = get_run(connection, analysis_id)
+            if reference(run) != expected_run_state_ref:
+                raise ValueError("RESUME_RUN_STATE_CHANGED")
             if run.status != "RUNNING":
                 raise ValueError("RUN_NOT_RESUMABLE")
+            check_current_input(records, connection, reference(run))
+            run_input = records.resolve(connection, run.analysis_input_ref)
+            if (
+                not isinstance(run_input, AnalysisRunInput)
+                or run_input.meta.analysis_id != run.meta.analysis_id
+                or run_input.program_id != run.program_id
+                or run_input.purpose != run.purpose
+            ):
+                raise ValueError("RESUME_INPUT_CHANGED")
+
+            all_rows = (
+                connection.execute(
+                    select(models.work_states).where(
+                        models.work_states.c.analysis_id == analysis_id
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            cohort_ids = set(work_ids)
+            blocked_ids = {
+                row["work_id"] for row in all_rows if row["status"] == "BLOCKED"
+            }
+            ready_ids = {row["work_id"] for row in all_rows if row["status"] == "READY"}
+            replay = not blocked_ids and ready_ids == cohort_ids
+            # The only READY exception is an exact replay of this cohort's own
+            # USER_RESUME revisions, checked below without writing more records.
+            if not replay and blocked_ids != cohort_ids:
+                raise ValueError("RESUME_COHORT_MISMATCH")
+            if any(
+                row["status"] in {"PENDING", "RUNNING"}
+                or (row["status"] == "READY" and not replay)
+                or row["active_attempt_id"] is not None
+                or row["worker_id"] is not None
+                or row["lease_expires_at"] is not None
+                for row in all_rows
+            ):
+                raise ValueError("RUN_NOT_QUIESCENT")
+            run_work_ids = [row["work_id"] for row in all_rows]
+            for table, condition in (
+                (
+                    models.transition_commits,
+                    models.transition_commits.c.state == "PREPARED",
+                ),
+                (models.work_attempts, models.work_attempts.c.status == "RUNNING"),
+                (
+                    models.external_dispatches,
+                    models.external_dispatches.c.returned_at.is_(None)
+                    & models.external_dispatches.c.reconciled_at.is_(None),
+                ),
+            ):
+                if connection.execute(
+                    select(table.c.work_id).where(
+                        table.c.work_id.in_(run_work_ids), condition
+                    )
+                ).first():
+                    raise ValueError("RUN_NOT_QUIESCENT")
 
             validated: list[tuple[WorkExecutionState, WorkAttempt, ActionDecision]] = []
+            replayed: list[WorkExecutionState] = []
+            retry_demand = 0
             for supplied_work, supplied_attempt in candidates:
                 row = (
                     connection.execute(
@@ -103,6 +170,11 @@ class WorkDispatchStore:
                     .one()
                 )
                 work = WorkExecutionState.model_validate_json(row["payload"])
+                if (
+                    row["state_version"] != work.state_version
+                    or row["status"] != work.status.value
+                ):
+                    raise ValueError("RESUME_CANDIDATE_NOT_CURRENT")
                 attempt_payload = (
                     connection.execute(
                         select(models.work_attempts.c.payload)
@@ -115,6 +187,81 @@ class WorkDispatchStore:
                 if attempt_payload is None:
                     raise ValueError("RESUME_ATTEMPT_HISTORY_REQUIRED")
                 previous_attempt = WorkAttempt.model_validate_json(attempt_payload)
+                check_current_input(records, connection, reference(work))
+                records.resolve(connection, reference(previous_attempt))
+                validate_attempt_context(previous_attempt, work)
+                initial_ref = connection.execute(
+                    select(models.records.c.ref)
+                    .join(models.record_revisions)
+                    .where(
+                        models.records.c.logical_record_id
+                        == str(work.meta.logical_record_id),
+                        models.records.c.revision_number == 1,
+                    )
+                ).scalar_one()
+                initial = records.resolve(
+                    connection, REF_ADAPTER.validate_json(initial_ref)
+                )
+                if not isinstance(initial, WorkExecutionState) or any(
+                    getattr(initial, name) != getattr(work, name)
+                    for name in (
+                        "work_id",
+                        "work_type",
+                        "subject_type",
+                        "subject_id",
+                        "work_generation",
+                        "input_hash",
+                        "input_refs",
+                        "parent_work_ref",
+                        "trigger_primitive_ref",
+                        "dedupe_key",
+                    )
+                ):
+                    raise ValueError("RESUME_INPUT_CHANGED")
+                if isinstance(work.meta, RecordMeta) and (
+                    work.meta.workspace_id != run.workspace_id
+                    or work.meta.commit_id != run.commit_id
+                ):
+                    raise ValueError("RESUME_SCOPE_MISMATCH")
+                if getattr(work.meta, "hypothesis_id", None) is not None:
+                    process = current_process(records, connection, work)
+                    if process.verification_generation != work.work_generation:
+                        raise ValueError("RESUME_GENERATION_CHANGED")
+                scope, registration = self._registration_context(connection, work)
+                self._require_resume_capacity(
+                    connection,
+                    work,
+                    previous_attempt,
+                    scope,
+                    registration,
+                )
+                retry_demand += 1
+                # START_ATTEMPT requests only a retry unit here. Existing
+                # reservations are already deducted by available(); sum this
+                # cohort before publishing any READY revision.
+                remaining = self.works.validator.budget.available(
+                    connection, scope, analysis_id
+                )
+                if retry_demand > remaining.available_units.retry_count:
+                    raise ValueError("BUDGET_EXCEEDED: resume cohort retries")
+                if replay:
+                    if work.last_transition_ref is None:
+                        raise ValueError("RESUME_CANDIDATE_NOT_CURRENT")
+                    transition = records.resolve(connection, work.last_transition_ref)
+                    if (
+                        not isinstance(transition, StateTransition)
+                        or transition.cause != "USER_RESUME"
+                        or transition.from_status != "BLOCKED"
+                        or transition.expected_state_version
+                        != supplied_work.state_version
+                        or work.meta.previous_record_id != supplied_work.meta.record_id
+                        or records.resolve(connection, reference(supplied_work))
+                        != supplied_work
+                        or previous_attempt != supplied_attempt
+                    ):
+                        raise ValueError("RESUME_CANDIDATE_NOT_CURRENT")
+                    replayed.append(work)
+                    continue
                 if (
                     work != supplied_work
                     or previous_attempt != supplied_attempt
@@ -128,16 +275,14 @@ class WorkDispatchStore:
                     or previous_attempt.input_hash != work.input_hash
                 ):
                     raise ValueError("RESUME_CANDIDATE_NOT_CURRENT")
+                allowed_waiting = {
+                    "WAITING_FOR_INPUT": ("INPUT",),
+                    "LEASE_EXPIRED": ("RETRY",),
+                }
+                if allowed_waiting.get(work.stop_reason or "") != work.waiting_for:
+                    raise ValueError("RESUME_REASON_NOT_RESOLVABLE")
 
                 reject_uncertain(connection, str(work.work_id))
-                scope, registration = self._registration_context(connection, work)
-                self._require_resume_capacity(
-                    connection,
-                    work,
-                    previous_attempt,
-                    scope,
-                    registration,
-                )
                 action = self._resume_action(work, registration)
                 decision = authorize(
                     self.works.validator,
@@ -155,6 +300,8 @@ class WorkDispatchStore:
                     raise ValueError("ACTION_DENIED: " + reasons)
                 validated.append((work, previous_attempt, decision))
 
+            if replay:
+                return tuple(replayed)
             resumed: list[WorkExecutionState] = []
             for work, _previous_attempt, decision in validated:
                 transition = self._resume_transition(work, decision)

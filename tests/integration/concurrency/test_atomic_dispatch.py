@@ -14,7 +14,7 @@ from sastsimi.contracts.budget import BudgetReservation, ExecutionBudgetProfile
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.evaluation import AnalysisRunResult
 from sastsimi.contracts.ids import AnalysisId, TransitionId
-from sastsimi.contracts.refs import reference
+from sastsimi.contracts.refs import RunStoredDataRef, reference
 from sastsimi.contracts.work import (
     StateTransition,
     TransitionTargetStatus,
@@ -118,6 +118,12 @@ def _dispatch(runtime: RuntimeServices) -> WorkDispatchStore:
     works = runtime.work.store
     assert isinstance(works, StorageWorkService)
     return WorkDispatchStore(works)
+
+
+def _run_state_ref(runtime: RuntimeServices) -> RunStoredDataRef:
+    ref = reference(runtime.budget_registry.current_state("a1"))
+    assert isinstance(ref, RunStoredDataRef)
+    return ref
 
 
 def test_ready_claim_publishes_one_exact_attempt_lease_and_work_revision(
@@ -286,6 +292,7 @@ def _block_for_resume(
     runtime: RuntimeServices,
     ready: WorkExecutionState,
     worker_id: str,
+    reason: str = "WAITING_FOR_INPUT",
 ) -> tuple[WorkDispatchStore, WorkExecutionState, WorkAttempt]:
     dispatch = _dispatch(runtime)
     runner = WorkflowRunner(
@@ -303,7 +310,7 @@ def _block_for_resume(
     profile = harness.records.get_exact(state.execution_budget_profile_ref)
     assert isinstance(profile, ExecutionBudgetProfile)
     assert profile.approval_ref is not None
-    blocked = runner.block(context.work, profile.approval_ref, "WAITING_FOR_INPUT")
+    blocked = runner.block(context.work, profile.approval_ref, reason)
     attempts = dispatch.attempts_for_work(str(blocked.work_id))
     assert attempts
     return dispatch, blocked, attempts[-1]
@@ -319,7 +326,8 @@ def test_resume_blocked_is_atomic_for_every_candidate(tmp_path: Path) -> None:
     )
 
     resumed = dispatch.resume_blocked(
-        ((first, first_attempt), (second, second_attempt))
+        expected_run_state_ref=_run_state_ref(runtime),
+        candidates=((first, first_attempt), (second, second_attempt)),
     )
 
     assert tuple(item.status.value for item in resumed) == ("READY", "READY")
@@ -343,7 +351,10 @@ def test_resume_blocked_failure_opens_no_work(tmp_path: Path, case: str) -> None
         )
 
     with pytest.raises(ValueError):
-        dispatch.resume_blocked(((candidate, attempt),))
+        dispatch.resume_blocked(
+            expected_run_state_ref=_run_state_ref(runtime),
+            candidates=((candidate, attempt),),
+        )
 
     assert runtime.work.get(str(blocked.work_id)) == blocked
 

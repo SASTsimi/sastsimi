@@ -407,6 +407,8 @@ class _Resumer:
     def resume_blocked(
         self,
         candidates: tuple[tuple[WorkExecutionState, WorkAttempt], ...],
+        *,
+        expected_run_state_ref: RunStoredDataRef,
     ) -> tuple[WorkExecutionState, ...]:
         if self.error:
             raise ValueError(self.error)
