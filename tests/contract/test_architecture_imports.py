@@ -185,6 +185,11 @@ SYMBOL_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
             "sastsimi.config.production_profile.ProductionProfile",
         }
     ),
+    "sastsimi.orchestration.production_descriptor": frozenset(
+        {
+            "sastsimi.config.production_profile.ProductionProfile",
+        }
+    ),
     "sastsimi.orchestration.production_entrypoint": frozenset(
         {
             "sastsimi.config.production_profile.ProductionProfile",
@@ -578,6 +583,21 @@ def test_symbol_exception_does_not_allow_a_concrete_service() -> None:
         module,
     )
     assert violations("import sastsimi.prompts.production as prompts", module)
+
+
+def test_descriptor_may_import_only_the_profile_value_model() -> None:
+    module = "sastsimi.orchestration.production_descriptor"
+    assert violations(
+        "from sastsimi.config.production_profile import ProductionProfile", module
+    ) == []
+    assert violations(
+        "from sastsimi.config.production_profile import load_production_profile", module
+    )
+    assert violations("import sastsimi.config.production_profile as profiles", module)
+    assert violations(
+        "from sastsimi.config.production_profile import ProductionProfile",
+        "sastsimi.orchestration.unrelated",
+    )
 
 
 def test_policy_adapter_may_import_only_its_adapter_siblings() -> None:
