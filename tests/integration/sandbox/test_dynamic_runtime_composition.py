@@ -272,6 +272,11 @@ def test_production_bootstrap_uses_real_sandbox_components() -> None:
     parameters = inspect.signature(build_t11_services).parameters
     assert "docker_profile_ref" in parameters
     assert "docker_target_resolver" in parameters
+    assert "dynamic_calls" in parameters
+    assert "max_execute_turns" in parameters
+    assert "ProductionDynamicStageCallResolver(" in source
+    assert "records=runtime.unit_of_work.records" in source
+    assert "artifacts=artifacts" in source
     assert "verification=verification" in source
 
     assert "completion=VerificationCompletionCoordinator(" in source

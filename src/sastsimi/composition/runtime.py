@@ -1331,6 +1331,8 @@ def build_t11_services(
         call_resolver_factory=lambda _work: ProductionDynamicStageCallResolver(
             dynamic_calls,
             max_execute_turns=max_execute_turns,
+            records=runtime.unit_of_work.records,
+            artifacts=artifacts,
         ),
     )
     return T11Services(
