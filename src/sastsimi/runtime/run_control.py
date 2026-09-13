@@ -19,16 +19,17 @@ from sastsimi.ports.scheduler import (
     RunControlPort,
     RunOutcome,
     SchedulerStorePort,
-    WorkSchedulerPort,
 )
 
 from .cancellation_service import CancellationService
 
 
-class RunInitializerPort(Protocol):
-    """Create one production run and return its durable analysis ID."""
+class RunLifecyclePort(Protocol):
+    """Start and continue the complete durable production pipeline."""
 
-    def initialize(self, request: AnalysisStartRequest) -> str: ...
+    def start(self, request: AnalysisStartRequest) -> str: ...
+
+    async def continue_run(self, analysis_id: str) -> RunOutcome: ...
 
 
 class AnalysisRunReader(Protocol):
@@ -61,8 +62,7 @@ class ProductionRunControl:
     def __init__(
         self,
         *,
-        initializer: RunInitializerPort,
-        scheduler: WorkSchedulerPort,
+        lifecycle: RunLifecyclePort,
         scheduler_store: SchedulerStorePort,
         controls: RunControlPort,
         cancellation: CancellationService,
@@ -74,8 +74,7 @@ class ProductionRunControl:
     ) -> None:
         if shutdown_timeout_seconds <= 0:
             raise ValueError("SHUTDOWN_TIMEOUT_INVALID")
-        self._initializer = initializer
-        self._scheduler = scheduler
+        self._lifecycle = lifecycle
         self._scheduler_store = scheduler_store
         self.controls = controls
         self._cancellation = cancellation
@@ -87,7 +86,7 @@ class ProductionRunControl:
 
     async def run(self, request: AnalysisStartRequest) -> RunOutcome:
         self._recovery.recover()
-        analysis_id = self._initializer.initialize(request)
+        analysis_id = self._lifecycle.start(request)
         return await self._drain_interrupt_safe(analysis_id)
 
     def status(self, analysis_id: str) -> AnalysisStatusView:
@@ -130,8 +129,6 @@ class ProductionRunControl:
         if any(item.status in {"PENDING", "READY", "RUNNING"} for item in works):
             raise ValueError("RUN_NOT_QUIESCENT")
         blocked = tuple(item for item in works if item.status == "BLOCKED")
-        if not blocked:
-            raise ValueError("RUN_NOT_RESUMABLE")
         candidates: list[tuple[WorkExecutionState, WorkAttempt]] = []
         for item in blocked:
             attempts = self._scheduler_store.attempts_for_work(str(item.work_id))
@@ -141,16 +138,17 @@ class ProductionRunControl:
             if previous.status == "RUNNING" or previous.input_hash != item.input_hash:
                 raise ValueError("RESUME_INPUT_CHANGED")
             candidates.append((item, previous))
-        resumed = self._resumer.resume_blocked(tuple(candidates))
-        if len(resumed) != len(candidates) or any(
-            ready.status != "READY"
-            or ready.work_id != blocked_item.work_id
-            or ready.input_hash != blocked_item.input_hash
-            for ready, (blocked_item, _previous) in zip(
-                resumed, candidates, strict=True
-            )
-        ):
-            raise ValueError("RESUME_RESULT_MISMATCH")
+        if candidates:
+            resumed = self._resumer.resume_blocked(tuple(candidates))
+            if len(resumed) != len(candidates) or any(
+                ready.status != "READY"
+                or ready.work_id != blocked_item.work_id
+                or ready.input_hash != blocked_item.input_hash
+                for ready, (blocked_item, _previous) in zip(
+                    resumed, candidates, strict=True
+                )
+            ):
+                raise ValueError("RESUME_RESULT_MISMATCH")
         return await self._drain_interrupt_safe(analysis_id)
 
     def result(self, analysis_id: str) -> AnalysisRunResult:
@@ -169,7 +167,7 @@ class ProductionRunControl:
 
     async def _drain_interrupt_safe(self, analysis_id: str) -> RunOutcome:
         try:
-            outcome = await self._scheduler.drain(analysis_id)
+            outcome = await self._lifecycle.continue_run(analysis_id)
             if outcome.analysis_id != analysis_id or (
                 outcome.result_ref is not None
                 and str(outcome.result_ref.analysis_id) != analysis_id
@@ -197,5 +195,5 @@ __all__ = [
     "BlockedWorkResumePort",
     "ExactRecordReader",
     "ProductionRunControl",
-    "RunInitializerPort",
+    "RunLifecyclePort",
 ]

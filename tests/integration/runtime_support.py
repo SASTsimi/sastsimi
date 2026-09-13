@@ -82,8 +82,22 @@ class Harness:
         return exact.model_dump(mode="json")
 
     def analysis(self, profile: ExecutionBudgetProfile) -> Any:
-        from sastsimi.contracts.analysis import AnalysisRunState
+        from sastsimi.contracts.analysis import AnalysisRunInput, AnalysisRunState
         from sastsimi.storage.codec import reference
+
+        input_key = "run-input-" + profile.purpose.value.lower()
+        run_input = AnalysisRunInput.model_validate_json(
+            json.dumps(
+                dict(
+                meta=metadata("analysis_run_input", input_key),
+                repository_ref="https://example.invalid/repository",
+                requested_git_ref="requested-ref",
+                program_id="program",
+                purpose=profile.purpose.value,
+                )
+            )
+        )
+        self.publish(run_input)
 
         return AnalysisRunState.model_validate_json(
             json.dumps(
@@ -91,6 +105,7 @@ class Harness:
                     meta=metadata("analysis_run_state", "run-state"),
                     purpose=profile.purpose.value,
                     eval_config_refs=[],
+                    analysis_input_ref=reference(run_input).model_dump(mode="json"),
                     program_id="program",
                     execution_budget_profile_ref=reference(profile).model_dump(
                         mode="json"

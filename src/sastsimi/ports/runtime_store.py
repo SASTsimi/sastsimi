@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Protocol
 
 from sastsimi.contracts.actions import ActionDecision, ActionRequest
-from sastsimi.contracts.analysis import AnalysisRunState
+from sastsimi.contracts.analysis import AnalysisRunInput, AnalysisRunState
 from sastsimi.contracts.budget import BudgetProfileBinding, ExecutionBudgetProfile
 from sastsimi.contracts.llm import (
     LLMInvocationLog,
@@ -76,9 +76,13 @@ class ActionAuthorizationPort(Protocol):
 
 class BudgetRegistryPort(Protocol):
     def pin_execution(
-        self, profile: ExecutionBudgetProfile, state: AnalysisRunState | None = None
+        self,
+        profile: ExecutionBudgetProfile,
+        state: AnalysisRunState | None = None,
+        run_input: AnalysisRunInput | None = None,
     ) -> RunStoredDataRef: ...
     def current_state(self, analysis_id: str) -> AnalysisRunState: ...
+    def current_input(self, analysis_id: str) -> AnalysisRunInput: ...
     def pin_binding(
         self,
         binding: BudgetProfileBinding,

@@ -128,6 +128,9 @@ def _run_state(status: str = "RUNNING") -> AnalysisRunState:
                 ),
                 "purpose": "PRODUCTION",
                 "eval_config_refs": (),
+                "analysis_input_ref": _run_ref("analysis_run_input").model_dump(
+                    mode="json"
+                ),
                 "program_id": "program",
                 "execution_budget_profile_ref": _run_ref(
                     "execution_budget_profile"
@@ -325,19 +328,17 @@ class _Recovery:
         return object()
 
 
-class _Initializer:
-    def initialize(self, request: AnalysisStartRequest) -> str:
-        assert request.repository_ref == "https://example.invalid/repository"
-        assert request.requested_git_ref == "abc123"
-        return "a1"
-
-
-class _Scheduler:
+class _Lifecycle:
     def __init__(self, outcome: RunOutcome | BaseException) -> None:
         self.outcome = outcome
         self.calls: list[str] = []
 
-    async def drain(self, analysis_id: str) -> RunOutcome:
+    def start(self, request: AnalysisStartRequest) -> str:
+        assert request.repository_ref == "https://example.invalid/repository"
+        assert request.requested_git_ref == "abc123"
+        return "a1"
+
+    async def continue_run(self, analysis_id: str) -> RunOutcome:
         self.calls.append(analysis_id)
         if isinstance(self.outcome, BaseException):
             raise self.outcome
@@ -431,8 +432,7 @@ def _service(
         )
     return (
         ProductionRunControl(
-            initializer=_Initializer(),
-            scheduler=_Scheduler(
+            lifecycle=_Lifecycle(
                 scheduler_outcome or RunOutcome("a1", "BLOCKED", None)
             ),
             scheduler_store=store,

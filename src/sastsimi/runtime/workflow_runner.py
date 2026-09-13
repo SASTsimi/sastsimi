@@ -397,6 +397,52 @@ class WorkflowRunner:
             role=role,
         )
 
+    def ensure_enqueue(
+        self,
+        scope: BudgetScopeRef,
+        metadata: RecordMetadata,
+        work_type: str,
+        subject_type: str,
+        subject_id: str,
+        identity: BudgetScopeRef,
+        *,
+        stable_key: str,
+        role: str = "ORCHESTRATION",
+        generation: int = 1,
+        inputs: tuple[RecordRef, ...] = (),
+        parent: RecordRef | None = None,
+        trigger_primitive_ref: RecordRef | None = None,
+    ) -> WorkExecutionState:
+        """Converge repeated registration of one phase-root work item."""
+
+        if not stable_key:
+            raise ValueError("STABLE_WORK_KEY_REQUIRED")
+        candidate = self._pending_work(
+            metadata,
+            work_type,
+            subject_type,
+            subject_id,
+            generation=generation,
+            inputs=inputs,
+            parent=parent,
+            trigger_primitive_ref=trigger_primitive_ref,
+            stable_key=stable_key,
+        )
+        registered = self._register_pending(
+            scope, candidate, identity, role=role
+        )
+        if registered.status != "PENDING":
+            return registered
+        try:
+            return self.enqueue_registered(
+                registered, scope, identity, role=role
+            )
+        except ValueError as error:
+            current = self.runtime.work.get(str(registered.work_id))
+            if current.status == "PENDING":
+                raise error
+            return current
+
     def begin_policy(
         self,
         scope: BudgetScopeRef,
@@ -474,11 +520,16 @@ class WorkflowRunner:
         inputs: tuple[RecordRef, ...],
         parent: RecordRef | None,
         trigger_primitive_ref: RecordRef | None,
+        stable_key: str | None = None,
     ) -> WorkExecutionState:
         metadata_analysis_id = getattr(metadata, "analysis_id", None)
         if subject_type == "ANALYSIS" and subject_id != str(metadata_analysis_id):
             raise ValueError("ANALYSIS_SCOPE_MISMATCH")
-        work_id = self.ids.new(WorkId)
+        work_id = (
+            WorkId("stable-" + content_hash(stable_key)[:32])
+            if stable_key is not None
+            else self.ids.new(WorkId)
+        )
         candidate = WorkExecutionState.model_validate_json(
             canonical_bytes(
                 dict(
@@ -495,7 +546,11 @@ class WorkflowRunner:
                     last_transition_commit_ref=None,
                     active_attempt_id=None,
                     input_hash=content_hash(inputs),
-                    dedupe_key=content_hash([work_id, inputs]),
+                    dedupe_key=content_hash(
+                        [stable_key, inputs]
+                        if stable_key is not None
+                        else [work_id, inputs]
+                    ),
                     trigger_primitive_ref=trigger_primitive_ref,
                     input_refs=inputs,
                     output_refs=(),
@@ -549,6 +604,9 @@ class WorkflowRunner:
         except Exception:
             self._release_reservation(reservation)
             raise
+        if registered != candidate:
+            self._release_reservation(reservation)
+            return registered
         self.account(reservation, reservation.requested_units)
         return registered
 

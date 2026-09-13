@@ -24,6 +24,15 @@ AnalysisStartRequest:
   purpose: PRODUCTION | EVALUATION
 ```
 
+```yaml
+AnalysisRunInput:
+  meta: RunMeta
+  repository_ref: string
+  requested_git_ref: string
+  program_id: string
+  purpose: PRODUCTION | EVALUATION
+```
+
 `AnalysisStartRequest`는 내부 `program_id` 하나만 받는다. runtime은 `analysis_id`나 work를 만들기 전에 이 ID가 승인된 Program Catalog에서 정확히 하나의 사용 가능한 프로그램으로 해석되는지 확인한다. 없거나 알 수 없거나 둘 이상으로 해석되면 `INPUT_ERROR`로 요청을 거절하며 `AnalysisRunState`를 만들지 않는다. `program_namespace + external_program_id`는 Program Catalog 등록·조회 입력이며 `AnalysisStartRequest`의 대체 입력이 아니다. CLI나 UI가 외부 프로그램 키를 받더라도 먼저 catalog에서 내부 ID 하나로 해석한 뒤 이 요청을 만들어야 한다. 저장소 하나가 여러 프로그램에 연결돼 있으면 호출자가 하나를 선택하고 프로그램마다 별도 analysis run을 시작한다. runtime은 repository URL만 보고 프로그램을 임의 선택하거나 한 run에 여러 프로그램을 자동 결합하지 않는다.
 
 `CodeWorkspace`는 별도 저장소 복사본이 아니라 `Repository Loader`가 실행별로 clone하고 지정한 commit을 checkout한 로컬 분석 폴더다.
@@ -210,6 +219,7 @@ AnalysisRunState:
   meta: RunMeta
   purpose: PRODUCTION | EVALUATION
   eval_config_refs: [RunStoredDataRef | StoredDataRef]
+  analysis_input_ref: RunStoredDataRef
   program_id: string
   execution_budget_profile_ref: RunStoredDataRef
   budget_binding_ref: StoredDataRef | null
@@ -291,6 +301,8 @@ ReportProcessState:
   finished_at: timestamp | null
   elapsed_ms: integer
 ```
+
+`AnalysisStartRequest`가 검증되고 `analysis_id`가 발급되면 runtime은 저장소 입력, 요청 commit, 프로그램, 실행 목적을 credential-free `AnalysisRunInput`으로 한 번 저장한다. `AnalysisRunState.analysis_input_ref`는 이 immutable run record의 exact revision을 가리키며 같은 `analysis_id`에서 바꾸지 않는다. `WORKSPACE_PREP` 입력도 이 reference를 포함해야 하므로 프로세스를 다시 시작한 뒤에도 동일 입력만 이어서 처리하고 checkout 전 실패도 원래 요청 기준으로 집계할 수 있다.
 
 `AnalysisRunState.program_id`는 검증된 `AnalysisStartRequest.program_id`와 같고 분석 요청을 승인된 Program Catalog의 정확히 한 프로그램과 연결한다. `program_id`가 없거나 승인된 catalog에서 하나로 해석되지 않으면 분석을 시작하지 않는다. 한 분석에는 프로그램 하나만 허용하고 시작 뒤에는 바꾸지 않는다. `execution_budget_profile_ref`는 `analysis_id` 발급 직후 trusted Budget Profile Registry가 같은 purpose의 승인 원본에서 run-local로 고정한 exact `ExecutionBudgetProfile(status=ACTIVE)`을 가리킨다. 이 reference가 없으면 `WORKSPACE_PREP`도 시작하지 않는다. `budget_binding_ref`는 workspace·commit 준비 전에는 `null`이고, `CodeWorkspace.status=READY` 뒤 full `BudgetProfileBinding(status=ACTIVE)`을 확정하면 그 exact revision을 가리킨다. full binding이 고정되기 전에는 `STATIC_TOOL | POLICY_FETCH`를 포함한 후속 work를 등록하지 않는다. `AnalysisRunState`는 처음에는 `workspace_id: null`, `commit_id: null`, `workspace_ref=null`일 수 있다. Repository Loader가 첫 `CodeWorkspace` revision을 저장하면 같은 atomic transition에서 `workspace_id`와 exact `workspace_ref`를 기록하고, checkout을 확인한 `READY` revision을 저장하면 그 revision으로 `workspace_ref`를 갱신하면서 `commit_id`를 기록한다. `workspace_id`와 실제 `commit_id`는 같은 분석에서 값이 생긴 뒤 바꾸지 않는다. 이후 cleanup이 `REMOVED` revision을 만들면 `workspace_ref`만 그 revision으로 갱신하고 ID 연결은 보존한다. `COMPLETE`와 `PARTIAL`은 두 ID가 모두 필요하고, clone·checkout 전 `FAILED | CANCELLED`는 둘 중 하나 또는 모두가 `null`일 수 있다. 코드 근거 record는 두 ID가 모두 있고 exact `workspace_ref`가 가리키는 `CodeWorkspace.status=READY`일 때만 만들 수 있다.
 
@@ -680,6 +692,8 @@ Orchestration Runtime은 schema-valid proposal의 전역 등록과 Verification 
 `ActionCheck.check_type=BUDGET`은 versioned runtime policy의 시간·비용·호출·work·retry·repair·Gate 보완 한도만 검사한다. `LLMCallSpec.token_budget=null`, provider usage 미제공 또는 실제 token 사용량이 계획값을 넘었다는 이유만으로 check를 `FAIL`로 만들거나 `DENY`하지 않는다. profile·가격·잔여량을 확인할 수 없으면 새 실행을 `BLOCKED + waiting_for=BUDGET`으로 두고 확인 불가 사유를 남긴다. 승인된 한도가 실제로 소진된 경우에만 `AnalysisError(stage=ORCHESTRATION, code=BUDGET_EXCEEDED)`를 기록한다. 어느 경우도 가설 verdict나 LLM `INVALID_OUTPUT`으로 바꾸지 않으며, 운영 Verification의 Pro/Con 중 하나라도 실행할 비-token 예산이 없으면 두 호출과 final result 저장을 시작하지 않는다.
 
 `SAVE_RESULT`는 검사할 결과 후보를 action에 정확히 고정한다.
+
+`analysis_run_input -> AnalysisRunInput -> ORCHESTRATION`도 아래 핵심 result-owner registry와 같은 정본 항목이다.
 
 - `result_kind`와 `candidate_result_ref`는 `SAVE_RESULT`에서 필수이고 다른 action에서는 `null`이다. `candidate_result_ref.data_kind`는 `result_kind`와 같고 `candidate_result_ref.record_id`에는 저장 runtime이 미리 발급한 결과 revision ID가 있어야 한다.
 - `PolicyCacheRef`는 `POLICY_FETCH`의 work·attempt·transition·action input/output/candidate/outcome reference에만 추가한다. 다른 work가 이를 일반 `StoredDataRef` 대신 사용하거나 cache publication을 우회해 cross-run artifact를 연결하면 `SCHEMA_INVALID | AUTHORITY_DENIED`로 거절한다.
