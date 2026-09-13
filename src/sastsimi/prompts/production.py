@@ -42,7 +42,7 @@ from sastsimi.ports.prompt_registry import PromptRegistryPort
 from sastsimi.ports.record_store import RecordStore
 from sastsimi.ports.runtime_query import RuntimeQueryPort
 
-from .builder import PromptBuilder, PromptSource
+from .builder import ArtifactPromptSource, PromptBuilder, PromptSource
 from .loader import PromptLoader
 from .registry import LoadedPromptDefinition
 
@@ -327,7 +327,7 @@ class ProductionLLMConfigurationService:
         route: ProductionRoute,
         approval: ApprovedProductionRoute,
         work: WorkExecutionState,
-        sources: tuple[PromptSource, ...],
+        sources: tuple[PromptSource | ArtifactPromptSource, ...],
         parent_session_ref: str | None = None,
     ) -> PreparedProductionCall:
         if (
@@ -369,6 +369,11 @@ class ProductionLLMConfigurationService:
         )
         call_spec_ref = self._configuration.register_call_spec(call_spec)
         return PreparedProductionCall(payload, payload_ref, call_spec, call_spec_ref)
+
+    def bind_artifact_source(
+        self, slot: str, ref: StoredDataRef
+    ) -> ArtifactPromptSource:
+        return self._builder.bind_artifact(slot, ref)
 
     def _approval_graph(
         self,

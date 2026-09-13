@@ -20,7 +20,7 @@ from sastsimi.ports.production_prompt import (
     ProductionRoute,
 )
 from sastsimi.ports.record_store import RecordStore
-from sastsimi.prompts.builder import PromptSource
+from sastsimi.prompts.builder import ArtifactPromptSource, PromptSource
 from sastsimi.prompts.production import ProductionLLMConfigurationService
 
 
@@ -108,7 +108,7 @@ class ConfiguredProductionCallResolver:
         work_meta: RecordMeta,
         slots: tuple[PromptInputSlot, ...],
         refs: tuple[StoredDataRef, ...],
-    ) -> tuple[PromptSource, ...]:
+    ) -> tuple[PromptSource | ArtifactPromptSource, ...]:
         # PromptInputSlot is deliberately consumed structurally so this adapter
         # does not introduce another prompt-contract model.
         slot_by_kind: dict[str, PromptInputSlot] = {}
@@ -117,10 +117,21 @@ class ConfiguredProductionCallResolver:
             if not kind or kind in slot_by_kind:
                 raise ValueError("PRODUCTION_PROMPT_SOURCE_AMBIGUOUS")
             slot_by_kind[kind] = slot
-        sources: list[PromptSource] = []
+        sources: list[PromptSource | ArtifactPromptSource] = []
         counts: dict[str, int] = {}
         for ref in refs:
             candidate_slot = slot_by_kind.get(ref.data_kind)
+            if ref.data_kind == "artifact" and ref.record_id is None:
+                if candidate_slot is None:
+                    raise ValueError("PRODUCTION_PROMPT_SOURCE_NOT_EXACT")
+                name = str(candidate_slot.slot)
+                try:
+                    source = self.configuration.bind_artifact_source(name, ref)
+                except (OSError, ValueError) as error:
+                    raise ValueError("PRODUCTION_PROMPT_SOURCE_NOT_EXACT") from error
+                sources.append(source)
+                counts[name] = counts.get(name, 0) + 1
+                continue
             try:
                 value = self.records.get_exact(ref)
             except (LookupError, ValueError) as error:

@@ -2,16 +2,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+from collections.abc import Generator
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from uuid import uuid4
 
 import pytest
 
 from sastsimi.agents.dynamic_reproduction import DynamicAgentInvocation
 from sastsimi.agents.verification import VerificationAgentOutcome
-from sastsimi.contracts.canonical_json import content_hash
+from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
+from sastsimi.contracts.dynamic import (
+    DynamicReproductionRequest,
+    ReproductionPlan,
+    SandboxEnvironment,
+)
 from sastsimi.contracts.hypothesis import VulnerabilityHypothesis
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.llm import (
@@ -22,7 +31,7 @@ from sastsimi.contracts.llm import (
 )
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
-from sastsimi.contracts.static import StaticFactBundle
+from sastsimi.contracts.static import CodeContextResponse, StaticFactBundle
 from sastsimi.contracts.verification import (
     PlaybookApplication,
     PlaybookPolicy,
@@ -49,6 +58,7 @@ from sastsimi.ports.dto import (
 from sastsimi.ports.llm_invocation import PersistedLLMInvocation
 from sastsimi.ports.verification_assembly import VerificationGenerationInputs
 from sastsimi.runtime.workflow_runner import WorkflowRunner
+from sastsimi.storage.artifact_store import LocalArtifactStore
 from sastsimi.verification.debate_service import DebateIncompleteError, DebateService
 from sastsimi.verification.production_llm_work_handlers import (
     DynamicVerificationPort,
@@ -61,6 +71,18 @@ from sastsimi.verification.production_llm_work_handlers import (
 )
 from sastsimi.verification.service import VerificationService
 from tests.contract.domain.canonical_fixtures import make
+
+
+@pytest.fixture
+def candidate_work_path() -> Generator[Path, None, None]:
+    """Avoid broken pytest temp ACLs on Windows."""
+
+    path = Path(__file__).resolve().parents[3] / f".t11-code-context-{uuid4().hex}"
+    path.mkdir()
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def _ref(kind: str, name: str) -> StoredDataRef:
@@ -297,6 +319,289 @@ def test_dynamic_stage_resolver_rejects_unknown_settlement() -> None:
 
     with pytest.raises(ValueError, match="DYNAMIC_LLM_SETTLEMENT_MISMATCH"):
         resolver.settle(authorization, cast(PersistedLLMInvocation, invocation))
+
+
+def _dynamic_candidate_fixture(
+    tmp_path: Path,
+) -> tuple[
+    _Records,
+    LocalArtifactStore,
+    WorkExecutionState,
+    StoredDataRef,
+    StoredDataRef,
+    StoredDataRef,
+    StoredDataRef,
+    StoredDataRef,
+]:
+    artifacts = LocalArtifactStore(
+        tmp_path / "artifacts", WorkspaceId("ws1"), CommitId("c1")
+    )
+    fragment_ref = artifacts.commit(
+        artifacts.stage_bytes(
+            b"token = 'sk-sensitive-code-token'\nprint('safe')", "text/plain"
+        )
+    )
+    response = CodeContextResponse.model_validate_json(
+        canonical_bytes(
+            make("CodeContextResponse")
+            | {
+                "meta": _meta(
+                    "code_context_response",
+                    "context-response",
+                    hypothesis_id="h1",
+                    attempt_id="upstream-context-attempt",
+                ),
+                "code_fragment_refs": (fragment_ref,),
+                "returned_fragment_count": 1,
+                "returned_bytes": len(
+                    b"token = 'sk-sensitive-code-token'\nprint('safe')"
+                ),
+            }
+        )
+    )
+    response_ref = cast(StoredDataRef, reference(response))
+    request = DynamicReproductionRequest.model_validate_json(
+        canonical_bytes(
+            make("DynamicReproductionRequest")
+            | {
+                "meta": _meta(
+                    "dynamic_reproduction_request",
+                    "request",
+                    hypothesis_id="h1",
+                    attempt_id="upstream-verification-attempt",
+                ),
+                "code_refs": (response_ref,),
+            }
+        )
+    )
+    request_ref = cast(StoredDataRef, reference(request))
+    work = _context(
+        WorkType.DYNAMIC_REPRO,
+        (request_ref,),
+        hypothesis_id="h1",
+        subject_type=SubjectType.HYPOTHESIS,
+        subject_id="h1",
+        parent_ref=_ref("work_execution_state", "verification-work"),
+    ).work
+    plan = ReproductionPlan.model_validate_json(
+        canonical_bytes(
+            make("ReproductionPlan")
+            | {
+                "meta": _meta(
+                    "reproduction_plan",
+                    "plan",
+                    hypothesis_id="h1",
+                    attempt_id=str(work.active_attempt_id),
+                ),
+                "request_ref": request_ref,
+                "purpose": request.purpose,
+                "hypothesis_ref": request.hypothesis_ref,
+                "sandbox_profile_ref": request.sandbox_profile_ref,
+            }
+        )
+    )
+    plan_ref = cast(StoredDataRef, reference(plan))
+    environment = SandboxEnvironment.model_validate_json(
+        canonical_bytes(
+            make("SandboxEnvironment")
+            | {
+                "meta": _meta(
+                    "sandbox_environment",
+                    "environment",
+                    hypothesis_id="h1",
+                    attempt_id=str(work.active_attempt_id),
+                ),
+                "request_ref": request_ref,
+                "reproduction_plan_ref": plan_ref,
+                "status": "READY",
+            }
+        )
+    )
+    environment_ref = cast(StoredDataRef, reference(environment))
+    records = _Records(
+        {
+            request_ref: request,
+            plan_ref: plan,
+            environment_ref: environment,
+            response_ref: response,
+        }
+    )
+    return (
+        records,
+        artifacts,
+        work,
+        request_ref,
+        plan_ref,
+        environment_ref,
+        response_ref,
+        fragment_ref,
+    )
+
+
+def test_candidate_stage_expands_exact_code_context_fragments(
+    candidate_work_path: Path,
+) -> None:
+    (
+        records,
+        artifacts,
+        work,
+        request_ref,
+        plan_ref,
+        environment_ref,
+        response_ref,
+        fragment_ref,
+    ) = _dynamic_candidate_fixture(candidate_work_path)
+    calls = _Calls()
+    resolver = ProductionDynamicStageCallResolver(
+        calls,
+        max_execute_turns=1,
+        records=records,
+        artifacts=artifacts,
+    )
+
+    authorization = resolver.resolve(
+        work=work,
+        task_kind="CREATE_POC_CANDIDATE",
+        context_refs=(request_ref, plan_ref, environment_ref),
+    )
+
+    expected = (
+        request_ref,
+        plan_ref,
+        environment_ref,
+        response_ref,
+        fragment_ref,
+    )
+    assert calls.requests == [
+        ("DYNAMIC_REPRODUCTION", "CREATE_POC_CANDIDATE", expected)
+    ]
+    assert authorization.context_refs == expected
+
+
+@pytest.mark.parametrize("invalid", ("reference", "lineage", "plan", "environment"))
+def test_candidate_stage_rejects_invalid_code_or_current_attempt_before_call(
+    candidate_work_path: Path,
+    invalid: str,
+) -> None:
+    (
+        records,
+        artifacts,
+        work,
+        request_ref,
+        plan_ref,
+        environment_ref,
+        response_ref,
+        _,
+    ) = _dynamic_candidate_fixture(candidate_work_path)
+    if invalid == "reference":
+        original = records.values[response_ref]
+        assert isinstance(original, CodeContextResponse)
+        records.values[response_ref] = original.model_copy(
+            update={
+                "meta": original.meta.model_copy(
+                    update={"record_id": RecordId("different-record")}
+                )
+            }
+        )
+    elif invalid == "lineage":
+        original = records.values[response_ref]
+        assert isinstance(original, CodeContextResponse)
+        cross_hypothesis_response = original.model_copy(
+            update={"meta": original.meta.model_copy(update={"hypothesis_id": "h2"})}
+        )
+        response_ref = cast(StoredDataRef, reference(cross_hypothesis_response))
+        original_request = records.values[request_ref]
+        assert isinstance(original_request, DynamicReproductionRequest)
+        request = original_request.model_copy(update={"code_refs": (response_ref,)})
+        request_ref = cast(StoredDataRef, reference(request))
+        work = work.model_copy(update={"input_refs": (request_ref,)})
+        original_plan = records.values[plan_ref]
+        assert isinstance(original_plan, ReproductionPlan)
+        plan = original_plan.model_copy(update={"request_ref": request_ref})
+        plan_ref = cast(StoredDataRef, reference(plan))
+        original_environment = records.values[environment_ref]
+        assert isinstance(original_environment, SandboxEnvironment)
+        environment = original_environment.model_copy(
+            update={
+                "request_ref": request_ref,
+                "reproduction_plan_ref": plan_ref,
+            }
+        )
+        environment_ref = cast(StoredDataRef, reference(environment))
+        records.values = {
+            request_ref: request,
+            plan_ref: plan,
+            environment_ref: environment,
+            response_ref: cross_hypothesis_response,
+        }
+    elif invalid == "plan":
+        original = records.values[plan_ref]
+        assert isinstance(original, ReproductionPlan)
+        records.values[plan_ref] = original.model_copy(
+            update={
+                "meta": original.meta.model_copy(update={"attempt_id": "old-attempt"})
+            }
+        )
+    else:
+        original = records.values[environment_ref]
+        assert isinstance(original, SandboxEnvironment)
+        records.values[environment_ref] = original.model_copy(
+            update={
+                "meta": original.meta.model_copy(update={"attempt_id": "old-attempt"})
+            }
+        )
+    calls = _Calls()
+    resolver = ProductionDynamicStageCallResolver(
+        calls,
+        max_execute_turns=1,
+        records=records,
+        artifacts=artifacts,
+    )
+
+    with pytest.raises(ValueError, match="DYNAMIC_CANDIDATE_CONTEXT_MISMATCH"):
+        resolver.resolve(
+            work=work,
+            task_kind="CREATE_POC_CANDIDATE",
+            context_refs=(request_ref, plan_ref, environment_ref),
+        )
+
+    assert calls.requests == []
+
+
+class _UnreadableArtifacts:
+    def open_verified(self, ref: StoredDataRef) -> object:
+        raise OSError(f"unavailable: {ref.data_kind}")
+
+
+def test_candidate_stage_storage_failure_stops_before_call(
+    candidate_work_path: Path,
+) -> None:
+    (
+        records,
+        _,
+        work,
+        request_ref,
+        plan_ref,
+        environment_ref,
+        _,
+        _,
+    ) = _dynamic_candidate_fixture(candidate_work_path)
+    calls = _Calls()
+    resolver = ProductionDynamicStageCallResolver(
+        calls,
+        max_execute_turns=1,
+        records=records,
+        artifacts=cast(Any, _UnreadableArtifacts()),
+    )
+
+    with pytest.raises(ValueError, match="DYNAMIC_CANDIDATE_CODE_UNAVAILABLE"):
+        resolver.resolve(
+            work=work,
+            task_kind="CREATE_POC_CANDIDATE",
+            context_refs=(request_ref, plan_ref, environment_ref),
+        )
+
+    assert calls.requests == []
 
 
 def _persisted_invocation(

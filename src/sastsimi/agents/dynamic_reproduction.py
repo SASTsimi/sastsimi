@@ -62,6 +62,7 @@ class DynamicAgentInvocation:
     decision_ref: StoredDataRef
     reservation_ref: RecordRef
     call_spec_ref: StoredDataRef
+    context_refs: tuple[StoredDataRef, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -490,6 +491,9 @@ class DynamicReproductionAgent:
         task_kind: str,
         context_refs: tuple[StoredDataRef, ...],
     ) -> tuple[PersistedLLMInvocation, JsonValue | None]:
+        expected_context_refs = authorization.context_refs or context_refs
+        if expected_context_refs[: len(context_refs)] != context_refs:
+            raise ValueError("DYNAMIC_INVOCATION_MISMATCH")
         invocation = await self._llm_calls.invoke(
             work=work,
             decision_ref=authorization.decision_ref,
@@ -501,7 +505,7 @@ class DynamicReproductionAgent:
             work=work,
             authorization=authorization,
             task_kind=task_kind,
-            context_refs=context_refs,
+            context_refs=expected_context_refs,
         )
         if invocation.result.status != "SUCCEEDED":
             return invocation, None
