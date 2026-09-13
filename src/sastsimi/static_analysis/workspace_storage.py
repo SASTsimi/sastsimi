@@ -25,6 +25,53 @@ _POLICY_FIELDS = frozenset(WorkspaceStoragePolicy.__dataclass_fields__) | {"kind
 _MAX_POLICY_INTEGER = (1 << 63) - 1
 
 
+def _measure_workspace(root: Path, capacity_bytes: int) -> WorkspaceStorageUsage:
+    """Measure one live tree without treating already-removed entries as failure.
+
+    Git creates and atomically removes lock files while clone/checkout is running.
+    A directory entry that disappears before ``stat`` no longer consumes quota;
+    every other filesystem error remains fail-closed and the caller repeats the
+    measurement while the process runs and once more after it exits.
+    """
+
+    git_bytes = checkout_bytes = file_count = 0
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            entries = tuple(os.scandir(directory))
+        except FileNotFoundError:
+            continue
+        for entry in entries:
+            path = Path(entry.path)
+            relative = path.relative_to(root)
+            in_git = bool(relative.parts and relative.parts[0] == ".git")
+            try:
+                details = entry.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            attributes = getattr(details, "st_file_attributes", 0)
+            link_like = entry.is_symlink() or bool(attributes & 0x400)
+            if not in_git:
+                file_count += 1
+            if link_like:
+                continue
+            if stat.S_ISDIR(details.st_mode):
+                pending.append(path)
+            elif stat.S_ISREG(details.st_mode):
+                if in_git:
+                    git_bytes += details.st_size
+                else:
+                    checkout_bytes += details.st_size
+    used = git_bytes + checkout_bytes
+    return WorkspaceStorageUsage(
+        git_bytes=git_bytes,
+        checkout_bytes=checkout_bytes,
+        file_count=file_count,
+        free_bytes=max(0, capacity_bytes - used),
+    )
+
+
 class WorkspaceQuotaExceeded(RuntimeError):
     """The backend denied or observed a write beyond the immutable lease policy."""
 
@@ -168,36 +215,7 @@ class FixtureQuotaWorkspaceStorage:
         registered, _ = self._registered(lease)
         if not registered.root.is_dir() or registered.root.is_symlink():
             raise ValueError("WORKSPACE_LEASE_INVALID")
-        git_bytes = checkout_bytes = file_count = 0
-        pending = [registered.root]
-        while pending:
-            directory = pending.pop()
-            with os.scandir(directory) as entries:
-                for entry in entries:
-                    path = Path(entry.path)
-                    relative = path.relative_to(registered.root)
-                    in_git = bool(relative.parts and relative.parts[0] == ".git")
-                    details = entry.stat(follow_symlinks=False)
-                    attributes = getattr(details, "st_file_attributes", 0)
-                    link_like = entry.is_symlink() or bool(attributes & 0x400)
-                    if not in_git:
-                        file_count += 1
-                    if link_like:
-                        continue
-                    if stat.S_ISDIR(details.st_mode):
-                        pending.append(path)
-                    elif stat.S_ISREG(details.st_mode):
-                        if in_git:
-                            git_bytes += details.st_size
-                        else:
-                            checkout_bytes += details.st_size
-        used = git_bytes + checkout_bytes
-        return WorkspaceStorageUsage(
-            git_bytes=git_bytes,
-            checkout_bytes=checkout_bytes,
-            file_count=file_count,
-            free_bytes=max(0, self._capacity_bytes - used),
-        )
+        return _measure_workspace(registered.root, self._capacity_bytes)
 
     def resolve(self, lease_id: str) -> WorkspaceStorageLease:
         registered = self._leases.get(lease_id)
@@ -514,36 +532,7 @@ class ProductionWorkspaceStorage:
 
     def measure(self, lease: WorkspaceStorageLease) -> WorkspaceStorageUsage:
         registered, _policy, _sealed = self._registered(lease)
-        git_bytes = checkout_bytes = file_count = 0
-        pending = [registered.root]
-        while pending:
-            directory = pending.pop()
-            with os.scandir(directory) as entries:
-                for entry in entries:
-                    path = Path(entry.path)
-                    relative = path.relative_to(registered.root)
-                    in_git = bool(relative.parts and relative.parts[0] == ".git")
-                    details = entry.stat(follow_symlinks=False)
-                    attributes = getattr(details, "st_file_attributes", 0)
-                    link_like = entry.is_symlink() or bool(attributes & 0x400)
-                    if not in_git:
-                        file_count += 1
-                    if link_like:
-                        continue
-                    if stat.S_ISDIR(details.st_mode):
-                        pending.append(path)
-                    elif stat.S_ISREG(details.st_mode):
-                        if in_git:
-                            git_bytes += details.st_size
-                        else:
-                            checkout_bytes += details.st_size
-        used = git_bytes + checkout_bytes
-        return WorkspaceStorageUsage(
-            git_bytes=git_bytes,
-            checkout_bytes=checkout_bytes,
-            file_count=file_count,
-            free_bytes=max(0, self._capacity_bytes - used),
-        )
+        return _measure_workspace(registered.root, self._capacity_bytes)
 
     def resolve(self, lease_id: str) -> WorkspaceStorageLease:
         lease, _policy, sealed = self._decode_row(self._row(lease_id))
