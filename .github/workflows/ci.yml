@@ -182,6 +182,7 @@ jobs:
           TEST_PATHS: ${{ matrix.shard.paths }}
           OPTIONAL_TEST_PATHS: ${{ matrix.shard.optional_paths }}
           TEST_OS: ${{ runner.os }}
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           $pytestArguments = @($env:TEST_PATHS -split '\s+' | Where-Object { $_ })
           $optionalPaths = @($env:OPTIONAL_TEST_PATHS -split '\s+' | Where-Object { $_ })
