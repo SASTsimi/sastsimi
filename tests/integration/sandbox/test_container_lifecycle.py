@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import cast
+from typing import BinaryIO, cast
 
 import pytest
 
@@ -24,7 +24,13 @@ from sastsimi.contracts.dynamic import (
     SandboxPolicyDecision,
 )
 from sastsimi.contracts.dynamic_resource import owned_container_resource_ref
-from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
+from sastsimi.contracts.ids import (
+    AnalysisId,
+    CommitId,
+    RecordId,
+    StoredDataId,
+    WorkspaceId,
+)
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
 from sastsimi.contracts.static import RepositoryProfile
@@ -64,15 +70,28 @@ class _MemoryArtifacts:
         digest = hashlib.sha256(staged.data).hexdigest()
         self.values[digest] = staged.data
         return StoredDataRef(
-            stored_data_id=digest,
+            stored_data_id=StoredDataId(digest),
             data_kind="artifact",
             content_hash=digest,
-            workspace_id="workspace-1",
-            commit_id="commit-1",
+            workspace_id=WorkspaceId("workspace-1"),
+            commit_id=CommitId("commit-1"),
             record_id=None,
         )
 
-    def open_verified(self, ref: StoredDataRef) -> io.BytesIO:
+    def commit_run(
+        self, staged: StagedArtifact, analysis_id: AnalysisId
+    ) -> RunStoredDataRef:
+        digest = hashlib.sha256(staged.data).hexdigest()
+        self.values[digest] = staged.data
+        return RunStoredDataRef(
+            stored_data_id=StoredDataId(digest),
+            data_kind="artifact",
+            content_hash=digest,
+            analysis_id=analysis_id,
+            record_id=None,
+        )
+
+    def open_verified(self, ref: StoredDataRef | RunStoredDataRef) -> BinaryIO:
         return io.BytesIO(self.values[ref.content_hash])
 
 
@@ -86,7 +105,7 @@ def _meta(
     record_id: str,
     *,
     attempt_id: str = "dynamic-attempt-1",
-    hypothesis_id: str = "hypothesis-1",
+    hypothesis_id: str | None = "hypothesis-1",
 ) -> RecordMeta:
     return RecordMeta.model_validate(
         {
@@ -171,11 +190,11 @@ def _repository_profile(files: Mapping[str, bytes]) -> RepositoryProfile:
             "workspace_id": "workspace-1",
             "commit_id": "commit-1",
             "workspace_ref": RunStoredDataRef(
-                stored_data_id="code-workspace",
+                stored_data_id=StoredDataId("code-workspace"),
                 data_kind="code_workspace",
                 content_hash="b" * 64,
-                analysis_id="analysis-1",
-                record_id="code-workspace",
+                analysis_id=AnalysisId("analysis-1"),
+                record_id=RecordId("code-workspace"),
             ),
             "action_decision_ref": _ref("action_decision", "profile-decision"),
             "manifest_hash": content_hash(tuple(tracked)),

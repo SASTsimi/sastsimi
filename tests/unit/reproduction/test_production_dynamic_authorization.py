@@ -5,6 +5,7 @@ from typing import Any, cast
 
 import pytest
 
+from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.reproduction.production import (
     DynamicSandboxAuthorization,
@@ -14,12 +15,12 @@ from sastsimi.reproduction.production import (
 
 def _ref(kind: str, marker: str) -> StoredDataRef:
     return StoredDataRef(
-        stored_data_id=f"{marker}-stored",
+        stored_data_id=StoredDataId(f"{marker}-stored"),
         data_kind=kind,
         content_hash=marker * 64,
-        workspace_id="workspace",
-        commit_id="c" * 40,
-        record_id=f"{marker}-record",
+        workspace_id=WorkspaceId("workspace"),
+        commit_id=CommitId("c" * 40),
+        record_id=RecordId(f"{marker}-record"),
     )
 
 

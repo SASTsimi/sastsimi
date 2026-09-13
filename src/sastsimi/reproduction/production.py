@@ -295,8 +295,7 @@ class ProductionDynamicWorkflow:
         ids: IdGenerator,
         sink: DynamicRecordSink,
         authorization: DynamicSandboxAuthorizationResolver,
-        authorization_lifecycle: DynamicSandboxAuthorizationLifecyclePort
-        | None = None,
+        authorization_lifecycle: DynamicSandboxAuthorizationLifecyclePort | None = None,
         repository_profile: RepositoryProfile | None = None,
     ) -> None:
         self._work = work
