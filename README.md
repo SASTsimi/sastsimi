@@ -73,6 +73,8 @@ uv run sastsimi --data-dir <demo-data-dir> demo analyze --scenario TRUE --format
 [실패 해결](./docs/troubleshooting.md). 모르는 용어는
 [쉬운 용어집](./docs/GLOSSARY.md), 파일별 목적은
 [전체 문서 지도](./docs/DOCUMENT_GUIDE.md)에서 확인할 수 있습니다.
+T17까지 구현된 범위와 다음 작업의 정확한 기준은
+[T17 구현 인계서](./docs/handoff/T17_IMPLEMENTATION_HANDOFF.md)를 확인하세요.
 
 ## 전체 분석 흐름
 
