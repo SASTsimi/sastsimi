@@ -1165,15 +1165,21 @@ class EnvironmentRecipeStore:
                 if dependency_bundle is not None:
                     raise ValueError("DEPENDENCY_BUNDLE_NOT_REQUIRED")
                 return ""
-            raise ValueError("DEPENDENCY_FILE_CONFIRMATION_REQUIRED")
+            if dependency_bundle is not None:
+                raise ValueError("DEPENDENCY_BUNDLE_NOT_REQUIRED")
+            return ""
 
         package_paths = tuple(
             item.path
             for item in profile.config_files
             if item.kind == "PACKAGE_JSON" and item.path in entries
         )
-        if len(package_paths) != 1:
+        if len(package_paths) > 1:
             raise ValueError("DEPENDENCY_FILE_SELECTION_CONFIRMATION_REQUIRED")
+        if not package_paths:
+            if dependency_bundle is not None:
+                raise ValueError("DEPENDENCY_BUNDLE_NOT_REQUIRED")
+            return ""
         try:
             package = json.loads(entries[package_paths[0]][0])
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
