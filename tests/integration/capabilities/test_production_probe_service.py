@@ -25,7 +25,7 @@ from sastsimi.capabilities.store import (
 from sastsimi.config.secrets import SecretReference
 from sastsimi.contracts.capabilities import DockerBuildCapability
 from sastsimi.contracts.ids import CommitId, WorkspaceId
-from sastsimi.orchestration.production_static_adapters import (
+from sastsimi.ports.static_tool import (
     ProductionStaticOutputQuotaPort,
     StaticOutputPurpose,
 )

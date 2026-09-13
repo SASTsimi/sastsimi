@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
-from sastsimi.orchestration.production_static_adapters import StaticOutputPurpose
 from sastsimi.ports.dto import StaticOutputQuotaBinding
+from sastsimi.ports.static_tool import StaticOutputPurpose
 
 
 class TestQuota:
