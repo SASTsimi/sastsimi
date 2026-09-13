@@ -1637,6 +1637,26 @@ async def test_repository_profile_honors_simple_dockerignore_before_archiving(
     for name, raw in files.items():
         (tmp_path / name).write_bytes(raw)
     request, requirements, _ = _dynamic_records()
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
+    requirements = requirements.model_copy(
+        update={
+            "items": (
+                EnvironmentRequirement(
+                    requirement_id="node-version",
+                    kind="VERSION",
+                    name="node",
+                    required=True,
+                    expected="22",
+                    expected_ref=None,
+                    alternatives=(),
+                    check_ref=None,
+                    secret_ref=None,
+                    source_refs=(request_ref,),
+                ),
+            )
+        }
+    )
 
     source = await _setup(FakeDockerAdapter(), artifacts=_MemoryArtifacts()).preflight(
         workspace_root=tmp_path,
@@ -1794,6 +1814,26 @@ async def test_repository_profile_keeps_equal_file_refs_distinct(
     for name, raw in files.items():
         (tmp_path / name).write_bytes(raw)
     request, requirements, _ = _dynamic_records()
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
+    requirements = requirements.model_copy(
+        update={
+            "items": (
+                EnvironmentRequirement(
+                    requirement_id="python-version",
+                    kind="VERSION",
+                    name="python",
+                    required=True,
+                    expected="3.12",
+                    expected_ref=None,
+                    alternatives=(),
+                    check_ref=None,
+                    secret_ref=None,
+                    source_refs=(request_ref,),
+                ),
+            )
+        }
+    )
 
     source = await _setup(FakeDockerAdapter(), artifacts=_MemoryArtifacts()).preflight(
         workspace_root=tmp_path,
