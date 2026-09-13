@@ -766,9 +766,10 @@ async def test_supported_fixture_produces_validated_poc(tmp_path: Path) -> None:
     request_ref = cast(StoredDataRef, reference(request))
     work = _work(request_ref)
     docker = RecordingDockerAdapter()
+    artifacts = MemoryArtifacts()
     setup = ReproductionSetupAutomation(
         docker=docker,
-        recipes=EnvironmentRecipeStore(),
+        recipes=EnvironmentRecipeStore(artifacts=artifacts),
         health=SandboxHealthChecker(),
         resources=OwnedResourceRegistry(),
     )
@@ -779,7 +780,6 @@ async def test_supported_fixture_produces_validated_poc(tmp_path: Path) -> None:
         record_resolver=authorizer.resolve,
         require_baked_source=True,
     )
-    artifacts = MemoryArtifacts()
     sink = MemorySink([], [])
     clock = TestClock()
     ids = TestIds()
@@ -1011,14 +1011,22 @@ async def test_forbidden_request_is_blocked_before_docker(tmp_path: Path) -> Non
     fixture = Path(__file__).parents[1] / "fixtures" / "sandbox" / "sql_injection"
     workspace = tmp_path / "runtime-workspace"
     shutil.copytree(fixture, workspace)
+    repository_profile = _repository_profile(
+        {
+            path.relative_to(workspace).as_posix(): path.read_bytes()
+            for path in workspace.rglob("*")
+            if path.is_file()
+        }
+    )
     authorizer = SandboxAuthorizer(workspace, forbidden=True)
     request, requirements, plan = _records_for(authorizer)
     request_ref = cast(StoredDataRef, reference(request))
     work = _work(request_ref)
     docker = RecordingDockerAdapter()
+    artifacts = MemoryArtifacts()
     setup = ReproductionSetupAutomation(
         docker=docker,
-        recipes=EnvironmentRecipeStore(),
+        recipes=EnvironmentRecipeStore(artifacts=artifacts),
         health=SandboxHealthChecker(),
         resources=OwnedResourceRegistry(),
     )
@@ -1028,7 +1036,6 @@ async def test_forbidden_request_is_blocked_before_docker(tmp_path: Path) -> Non
         commit_id="commit-1",
         record_resolver=authorizer.resolve,
     )
-    artifacts = MemoryArtifacts()
     sink = MemorySink([], [])
     clock = TestClock()
     ids = TestIds()
@@ -1043,6 +1050,7 @@ async def test_forbidden_request_is_blocked_before_docker(tmp_path: Path) -> Non
         ids=ids,
         sink=cast(DynamicRecordSink, sink),
         authorization=authorizer.authorize,
+        repository_profile=repository_profile,
     )
 
     session = await workflow.open_session(
