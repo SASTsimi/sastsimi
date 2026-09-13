@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -16,11 +17,15 @@ from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.reproduction.production import DynamicSandboxAuthorization
 from sastsimi.reproduction.service import DynamicOperationalError
+from sastsimi.sandbox.cleanup import OwnedResourceRegistry
 from sastsimi.sandbox.controller import (
     SandboxBoundaryOutcome,
     SandboxController,
     SandboxRunSpec,
 )
+from sastsimi.sandbox.docker_adapter import DockerAdapter, DockerContainerState
+from sastsimi.sandbox.health_check import SandboxHealthChecker
+from sastsimi.sandbox.recipe_store import EnvironmentRecipeStore
 from sastsimi.sandbox.setup_automation import (
     PreparedSandbox,
     ReproductionSetupAutomation,
@@ -29,7 +34,9 @@ from sastsimi.sandbox.setup_automation import (
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import wire
 from tests.integration.sandbox.test_container_lifecycle import (
+    IMAGE_DIGEST,
     FakeDockerAdapter,
+    _approval,
     _dynamic_records,
     _meta,
     _prepare,
@@ -60,6 +67,22 @@ class _StartFailureDocker(FakeDockerAdapter):
         await super().remove(resource_ids)
 
 
+class _AmbiguousCreateDocker(FakeDockerAdapter):
+    async def create(self, spec: SandboxRunSpec, labels: Mapping[str, str]) -> str:
+        name = DockerAdapter.runtime_container_name(labels)
+        self.created[name] = (spec, dict(labels))
+        raise RuntimeError("DOCKER_CREATE_RESULT_LOST")
+
+
+class _TemporarilyUnreconciledCreateDocker(_AmbiguousCreateDocker):
+    inspection_fails = True
+
+    async def inspect(self, container_id: str) -> DockerContainerState:
+        if self.inspection_fails:
+            raise RuntimeError("DOCKER_INSPECT_UNAVAILABLE")
+        return await super().inspect(container_id)
+
+
 @pytest.mark.asyncio
 async def test_failed_start_is_compensated_before_setup_error_escapes(
     tmp_path: Path,
@@ -82,6 +105,134 @@ async def test_failed_start_is_compensated_before_setup_error_escapes(
 
     assert docker.remove_attempts == ["owned-container-1"]
     assert docker.removed == ["owned-container-1"]
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_create_is_reconciled_by_deterministic_owned_name(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "Dockerfile").write_bytes(b"FROM scratch\n")
+    request, requirements, plan = _dynamic_records()
+    docker = _AmbiguousCreateDocker()
+    registry = OwnedResourceRegistry(journal_path=tmp_path / "owned.json")
+    setup = ReproductionSetupAutomation(
+        docker=docker,
+        recipes=EnvironmentRecipeStore(),
+        health=SandboxHealthChecker(),
+        resources=registry,
+    )
+
+    with pytest.raises(RuntimeError, match="DOCKER_CREATE_RESULT_LOST"):
+        await _prepare(
+            setup,
+            tmp_path,
+            request=request,
+            requirements=requirements,
+            plan=plan,
+            meta=_meta("sandbox_environment", "ambiguous-create"),
+        )
+
+    assert len(docker.removed) == 1
+    assert docker.removed[0].startswith("sastsimi-")
+    restarted = OwnedResourceRegistry(journal_path=tmp_path / "owned.json")
+    assert restarted.pending_resource_ids() == (IMAGE_DIGEST,)
+
+
+@pytest.mark.asyncio
+async def test_restart_reconciles_a_durable_pre_create_intent(tmp_path: Path) -> None:
+    request, _, _ = _dynamic_records()
+    docker = FakeDockerAdapter()
+    spec = _approval(tmp_path, request).approved_spec
+    assert spec is not None
+    labels = ReproductionSetupAutomation._container_labels(
+        _meta("sandbox_environment", "crashed-create")
+    )
+    name = DockerAdapter.runtime_container_name(labels)
+    journal = tmp_path / "owned.json"
+    registry = OwnedResourceRegistry(journal_path=journal)
+    registry.reserve_container(container_name=name, labels=labels)
+    docker.created[name] = (spec, labels)
+
+    restarted = OwnedResourceRegistry(journal_path=journal)
+    failures = await restarted.reconcile_pending(docker=docker)
+
+    assert failures == ()
+    assert docker.removed == [name]
+    assert restarted.pending_resource_ids() == ()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_skips_live_resources_but_restart_marks_them_orphaned(
+    tmp_path: Path,
+) -> None:
+    request, _, _ = _dynamic_records()
+    spec = _approval(tmp_path, request).approved_spec
+    assert spec is not None
+    docker = FakeDockerAdapter()
+    labels = ReproductionSetupAutomation._container_labels(
+        _meta("sandbox_environment", "live-container")
+    )
+    container_id = await docker.create(spec, labels)
+    journal = tmp_path / "owned.json"
+    registry = OwnedResourceRegistry(journal_path=journal)
+    registry.register_container(
+        container_id=container_id,
+        labels=labels,
+        meta=_meta("sandbox_environment", "live-container"),
+    )
+
+    assert await registry.reconcile_pending(docker=docker) == ()
+    assert docker.removed == []
+
+    restarted = OwnedResourceRegistry(journal_path=journal)
+    assert await restarted.reconcile_pending(docker=docker) == ()
+    assert docker.removed == [container_id]
+
+
+@pytest.mark.asyncio
+async def test_unresolved_ambiguous_create_exposes_required_cleanup(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "Dockerfile").write_bytes(b"FROM scratch\n")
+    request, requirements, plan = _dynamic_records()
+    docker = _TemporarilyUnreconciledCreateDocker()
+    journal = tmp_path / "owned.json"
+    setup = ReproductionSetupAutomation(
+        docker=docker,
+        recipes=EnvironmentRecipeStore(),
+        health=SandboxHealthChecker(),
+        resources=OwnedResourceRegistry(journal_path=journal),
+    )
+
+    with pytest.raises(SandboxSetupCleanupError) as raised:
+        await _prepare(
+            setup,
+            tmp_path,
+            request=request,
+            requirements=requirements,
+            plan=plan,
+            meta=_meta("sandbox_environment", "unresolved-create"),
+        )
+
+    prepared = raised.value.prepared
+    assert prepared.environment.limitations == ("Sandbox setup did not complete",)
+    assert OwnedResourceRegistry(journal_path=journal).pending_resource_ids()
+
+    docker.inspection_fails = False
+    restarted = OwnedResourceRegistry(journal_path=journal)
+    assert await restarted.reconcile_pending(docker=docker) == ()
+    assert restarted.pending_resource_ids() == (IMAGE_DIGEST,)
+    assert len(docker.removed) == 1
+    cleanup = await setup.cleanup(
+        request=request,
+        environments=(prepared.environment,),
+        resource_refs=prepared.resource_refs,
+        meta=_meta("cleanup_result", "unresolved-create-cleanup"),
+    )
+    assert cleanup.status == "SUCCEEDED"
+    assert OwnedResourceRegistry(journal_path=journal).pending_resource_ids() == (
+        IMAGE_DIGEST,
+    )
 
 
 @pytest.mark.asyncio

@@ -240,6 +240,7 @@ def _context(tmp_path: Path) -> BoundaryContext:
             "built_image_digest": image_digest,
             "baseline_recipe_ref": None,
             "build_disposition": "BUILT",
+            "source_manifest": None,
             "created_at": NOW.isoformat(),
         },
     )
@@ -537,6 +538,45 @@ def _forbidden_spec(context: BoundaryContext, case: str) -> SandboxRunSpec:
     if case == "ACTION_SPEC_DRIFT":
         return replace(spec, image_digest="sha256:" + "2" * 64)
     raise AssertionError(case)
+
+
+def test_baked_repository_source_uses_no_host_mount(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    spec = replace(context.spec, mounts=(), source_baked=True)
+
+    outcome = cast(Any, context.controller.evaluate)(
+        **(context.arguments | {"spec": spec})
+    )
+
+    assert outcome.decision.decision == "ALLOW", outcome.decision.reason_codes
+
+
+def test_production_boundary_rejects_legacy_workspace_mount(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+
+    controller = SandboxController(
+        workspace_root=context.spec.workspace_root,
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        record_resolver=lambda ref: context.records[str(ref.record_id)],
+        require_baked_source=True,
+    )
+    outcome = controller.evaluate(**context.arguments)  # type: ignore[arg-type]
+
+    assert outcome.decision.decision == "DENY"
+    assert "HOST_MOUNT_DENIED" in outcome.decision.reason_codes
+
+
+def test_baked_repository_source_rejects_even_workspace_mount(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    spec = replace(context.spec, source_baked=True)
+
+    outcome = cast(Any, context.controller.evaluate)(
+        **(context.arguments | {"spec": spec})
+    )
+
+    assert outcome.decision.decision == "DENY"
+    assert "HOST_MOUNT_DENIED" in outcome.decision.reason_codes
 
 
 @pytest.mark.parametrize(

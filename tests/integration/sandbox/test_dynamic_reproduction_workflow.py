@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -738,6 +739,14 @@ class UnexpectedAfterOpenAgent(BlockedFlowAgent):
         raise RuntimeError("TEST_ONLY_SECRET unexpected provider failure")
 
 
+@dataclass
+class CancelledAfterOpenAgent(BlockedFlowAgent):
+    async def create_poc_candidate(
+        self, **_: object
+    ) -> DynamicAgentOutcome[PoCCandidate]:
+        raise asyncio.CancelledError
+
+
 @pytest.mark.asyncio
 async def test_operational_failure_has_no_r6_verdict_or_gate() -> None:
     artifacts = MemoryArtifacts()
@@ -862,6 +871,60 @@ async def test_unexpected_failure_is_cleaned_and_recorded_safely() -> None:
     assert port.failure.failure_reason == (  # type: ignore[attr-defined]
         "Unexpected dynamic workflow failure"
     )
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_open_cleans_exact_session_resources() -> None:
+    artifacts = MemoryArtifacts()
+    request = reproduction_request()
+    request_ref = cast(StoredDataRef, reference(request))
+    work = dynamic_work(request_ref)
+    persisted_invocation = invocation(
+        artifacts,
+        work,
+        task="DERIVE_ENVIRONMENT",
+        contexts=(request_ref,),
+        content={"items": []},
+        sequence=1,
+    )
+    env = environment(
+        request_ref,
+        stored_ref("reproduction_plan", "allowed-plan"),
+        stored_ref("environment_requirements", "allowed-requirements"),
+    )
+    log = agent_log(request_ref)
+    port = FakeWorkflowPort(
+        DynamicSandboxSession(
+            allowed=True,
+            policy_ref=stored_ref("sandbox_policy_decision", "allowed-policy"),
+            log_ref=cast(StoredDataRef, reference(log)),
+            environment=env,
+            environment_ref=cast(StoredDataRef, reference(env)),
+            log=log,
+        )
+    )
+    service = DynamicReproductionWorkflowService(
+        agent=CancelledAfterOpenAgent(persisted_invocation),
+        workflow=port,
+    )
+    authorization = auth(persisted_invocation)
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.execute(
+            work=work,
+            request=request,
+            request_ref=request_ref,
+            authorizations=DynamicStageAuthorizations(
+                derive=authorization,
+                plan=authorization,
+                candidate=authorization,
+                execute=(),
+                interpret=None,
+            ),
+        )
+
+    assert port.cleanup_calls == 1
+    assert port.failure is None
 
 
 @pytest.mark.asyncio

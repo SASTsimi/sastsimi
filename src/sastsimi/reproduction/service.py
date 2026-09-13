@@ -397,6 +397,7 @@ class DynamicReproductionService:
                     built_image_digest="sha256:" + "2" * 64,
                     baseline_recipe_ref=None,
                     build_disposition="BUILT",
+                    source_manifest=None,
                     created_at=self.clock.now(),
                 )
             )
@@ -1307,6 +1308,10 @@ class DynamicReproductionWorkflowService:
                 conclusion_ref=conclusion_ref,
                 session=session,
             )
+        except asyncio.CancelledError:
+            if session is not None:
+                await self._workflow.cleanup(session)
+            raise
         except DynamicOperationalError as error:
             if session is not None and session.allowed:
                 session = await self._workflow.cleanup(session)
