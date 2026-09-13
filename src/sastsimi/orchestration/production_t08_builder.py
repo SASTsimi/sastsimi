@@ -225,10 +225,9 @@ class _ProductionWorkspaceLocator:
         ):
             raise ValueError("WORKSPACE_PREPARATION_NOT_READY")
         lease = self._storage.resolve(outcome.lease_id)
-        if (
-            lease.workspace_id != outcome.workspace_id
-            or lease.root.resolve(strict=True) != outcome.root.resolve(strict=True)
-        ):
+        if lease.workspace_id != outcome.workspace_id or lease.root.resolve(
+            strict=True
+        ) != outcome.root.resolve(strict=True):
             raise ValueError("WORKSPACE_PREPARATION_SCOPE_MISMATCH")
         self._storage.enforce(lease)
         self._roots[outcome.workspace_id] = outcome.root.resolve(strict=True)
@@ -446,7 +445,8 @@ def _resolve_profiles(
         or checkout.capability_kind != "GIT"
         or "CLONE" not in clone.operations
         or "CHECKOUT" not in checkout.operations
-        or (clone.subject_key, clone.subject_sha256) != (
+        or (clone.subject_key, clone.subject_sha256)
+        != (
             checkout.subject_key,
             checkout.subject_sha256,
         )
@@ -558,11 +558,10 @@ def build_production_t08_feature(
                 evidence[digest], "application/octet-stream"
             )
         )
-        if (
-            ref.content_hash != digest
-            or (str(ref.workspace_id), str(ref.commit_id))
-            != (str(context.scope.workspace_id), str(context.scope.commit_id))
-        ):
+        if ref.content_hash != digest or (
+            str(ref.workspace_id),
+            str(ref.commit_id),
+        ) != (str(context.scope.workspace_id), str(context.scope.commit_id)):
             raise ValueError("PRODUCTION_T08_ARTIFACT_REFERENCE_MISMATCH")
         committed_artifacts[digest] = ref
 
@@ -709,9 +708,7 @@ def build_production_t08_feature(
             context.scope.workspace_id,
             inputs.workspace_timeout_ms,
         ),
-        repository_profile=RepositoryProfileFanoutWorkHandler(
-            profile_handler, graph
-        ),
+        repository_profile=RepositoryProfileFanoutWorkHandler(profile_handler, graph),
         static_tool=StaticToolWorkHandler(
             static_slice.tools,
             ExactStaticToolCallResolver(

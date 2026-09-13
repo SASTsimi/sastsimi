@@ -54,9 +54,7 @@ class StaticProcessAdapter(Protocol):
     async def cancel(self, attempt_id: str) -> CancellationResult: ...
 
 
-def validate_static_material_ref(
-    ref: StoredDataRef, *, legacy_data_kind: str
-) -> None:
+def validate_static_material_ref(ref: StoredDataRef, *, legacy_data_kind: str) -> None:
     """Accept the immutable route artifact or an exact legacy record reference.
 
     Production ``StaticToolRoute`` stores configuration and rule material in

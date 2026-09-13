@@ -407,9 +407,10 @@ async def test_real_repository_reaches_expected_tool_selection(
     assert tuple(item.name for item in profile.languages) == languages
     assert tuple(item.name for item in profile.frameworks) == frameworks
     assert tuple(item.kind for item in profile.config_files) == config_kinds
-    assert tuple(
-        (item.path, item.kind, item.name) for item in profile.execution_hints
-    ) == execution_hints
+    assert (
+        tuple((item.path, item.kind, item.name) for item in profile.execution_hints)
+        == execution_hints
+    )
     assert {item.git_path for item in profile.tracked_files} == set(tracked)
     assert not ({item.git_path for item in profile.tracked_files} & set(untracked))
     selection = _selection(profile, resolver, git_ref)

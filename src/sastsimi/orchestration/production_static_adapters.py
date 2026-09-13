@@ -86,9 +86,7 @@ class StaticAttemptAdapterDispatch:
     state: Literal["PREPARED", "DISPATCHED", "RETURNED"]
 
 
-type StaticAttemptDispatchReader = Callable[
-    [str], StaticAttemptAdapterDispatch | None
-]
+type StaticAttemptDispatchReader = Callable[[str], StaticAttemptAdapterDispatch | None]
 
 
 class StaticAdapterCancellationRouter:
@@ -392,9 +390,7 @@ def _materialize_file(
 
 
 def _is_link_like(path: Path) -> bool:
-    return path.is_symlink() or (
-        hasattr(path, "is_junction") and path.is_junction()
-    )
+    return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
 
 
 def _safe_existing_directory(path: Path, error_code: str) -> Path:
@@ -406,8 +402,7 @@ def _safe_existing_directory(path: Path, error_code: str) -> Path:
     if (
         not stat.S_ISDIR(info.st_mode)
         or _is_link_like(path)
-        or int(getattr(info, "st_file_attributes", 0))
-        & _FILE_ATTRIBUTE_REPARSE_POINT
+        or int(getattr(info, "st_file_attributes", 0)) & _FILE_ATTRIBUTE_REPARSE_POINT
         or resolved != path.absolute()
     ):
         raise ValueError(error_code)
@@ -446,9 +441,7 @@ def _bound_attempt_root(
     attempt_root = root / tool.lower() / key
     try:
         attempt_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        exact = _safe_existing_directory(
-            attempt_root, "STATIC_ATTEMPT_ROOT_INVALID"
-        )
+        exact = _safe_existing_directory(attempt_root, "STATIC_ATTEMPT_ROOT_INVALID")
         marker = exact / "sastsimi-attempt.json"
         payload = canonical_bytes(binding)
         try:
@@ -1243,8 +1236,8 @@ class ProductionStaticAdapterFactory:
                 context.evidence, config_ref.content_hash
             )
             material_tools = {
-                *(('OPENGREP',) if material.opengrep_config_sha256 else ()),
-                *(('CODEQL',) if material.codeql else ()),
+                *(("OPENGREP",) if material.opengrep_config_sha256 else ()),
+                *(("CODEQL",) if material.codeql else ()),
             }
             if material_tools != configured_rule_tools:
                 raise ValueError("STATIC_MATERIAL_TOOL_SET_MISMATCH")
@@ -1255,9 +1248,7 @@ class ProductionStaticAdapterFactory:
         for tool, route in context.routes.items():
             profile = context.profiles[tool]
             try:
-                executable = self._executables[profile.adapter_key].resolve(
-                    strict=True
-                )
+                executable = self._executables[profile.adapter_key].resolve(strict=True)
             except (KeyError, OSError) as error:
                 raise ValueError("PRODUCTION_STATIC_EXECUTABLE_MISSING") from error
             if _digest(executable) != profile.executable_sha256:

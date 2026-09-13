@@ -348,9 +348,7 @@ def _inputs(
         static=static,
         git_clone_profile_ref=cast(HostConfigurationRef, reference(git_profile)),
         git_checkout_profile_ref=cast(HostConfigurationRef, reference(git_profile)),
-        static_profile_refs={
-            "AST": cast(HostConfigurationRef, reference(ast_profile))
-        },
+        static_profile_refs={"AST": cast(HostConfigurationRef, reference(ast_profile))},
         evidence=evidence,
         rule_closures={},
         git_executable=git,

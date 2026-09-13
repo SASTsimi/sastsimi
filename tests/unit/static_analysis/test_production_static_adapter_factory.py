@@ -63,9 +63,7 @@ def _artifact(payload: bytes) -> StoredDataRef:
     )
 
 
-def _rule_payloads() -> tuple[
-    bytes, bytes, bytes, ApprovedStaticRuleClosure
-]:
+def _rule_payloads() -> tuple[bytes, bytes, bytes, ApprovedStaticRuleClosure]:
     mapping = StaticRuleMapping("R1", "SINK", "SOURCE", True)
     catalog = canonical_bytes({"schema_version": 1, "rule_ids": ["R1"]})
     selection = canonical_bytes(
@@ -205,9 +203,7 @@ async def test_ast_adapter_is_built_from_current_manifest_at_execute_time(
     workspace_root.mkdir()
     source = workspace_root / "app.py"
     source.write_text("value = input()\nprint(value)\n", encoding="utf-8")
-    tracked = (
-        TrackedFile("app.py", "100644", "blob-app", source.stat().st_size),
-    )
+    tracked = (TrackedFile("app.py", "100644", "blob-app", source.stat().st_size),)
     locator = _Locator(workspace_root, tracked)
     executable = Path(sys.executable).resolve(strict=True)
     worker = (

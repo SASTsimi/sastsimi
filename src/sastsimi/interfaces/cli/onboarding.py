@@ -69,8 +69,7 @@ def run_init(
             }
         )
         capability_probes = [
-            _probe_plan(kind, host_id=profile.host_id)
-            for kind in _HOST_PROBE_KINDS
+            _probe_plan(kind, host_id=profile.host_id) for kind in _HOST_PROBE_KINDS
         ]
         capability_probes.extend(
             _probe_plan(
@@ -321,9 +320,7 @@ def _blocked(reason_code: str) -> OnboardingCommandResult:
     )
 
 
-def _blocked_with_code(
-    reason_code: str, code: ExitCode
-) -> OnboardingCommandResult:
+def _blocked_with_code(reason_code: str, code: ExitCode) -> OnboardingCommandResult:
     return OnboardingCommandResult(
         code,
         {"reason_code": reason_code, "status": "BLOCKED"},
