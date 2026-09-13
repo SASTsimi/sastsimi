@@ -6,6 +6,7 @@ import asyncio
 import errno
 import json
 import os
+import sys
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from contextvars import ContextVar
@@ -987,16 +988,16 @@ def _open_creation_lock(path: Path) -> BinaryIO:
 def _try_creation_lock(handle: BinaryIO) -> bool:
     handle.seek(0)
     try:
-        if os.name == "nt":
+        if sys.platform == "win32":
             import msvcrt
 
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         else:
             import fcntl
 
-            fcntl.flock(  # type: ignore[attr-defined]
+            fcntl.flock(
                 handle.fileno(),
-                fcntl.LOCK_EX | fcntl.LOCK_NB,  # type: ignore[attr-defined]
+                fcntl.LOCK_EX | fcntl.LOCK_NB,
             )
     except OSError as error:
         if error.errno in {errno.EACCES, errno.EAGAIN} or getattr(
@@ -1009,14 +1010,14 @@ def _try_creation_lock(handle: BinaryIO) -> bool:
 
 def _unlock_creation_lock(handle: BinaryIO) -> None:
     handle.seek(0)
-    if os.name == "nt":
+    if sys.platform == "win32":
         import msvcrt
 
         msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
     else:
         import fcntl
 
-        fcntl.flock(  # type: ignore[attr-defined]
+        fcntl.flock(
             handle.fileno(),
-            fcntl.LOCK_UN,  # type: ignore[attr-defined]
+            fcntl.LOCK_UN,
         )
