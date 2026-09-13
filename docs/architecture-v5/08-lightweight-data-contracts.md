@@ -693,7 +693,7 @@ Orchestration Runtime은 schema-valid proposal의 전역 등록과 Verification 
 
 `SAVE_RESULT`는 검사할 결과 후보를 action에 정확히 고정한다.
 
-`analysis_run_input -> AnalysisRunInput -> ORCHESTRATION`도 아래 핵심 result-owner registry와 같은 정본 항목이다.
+- 핵심 registry 추가 항목은 `analysis_run_input -> AnalysisRunInput -> ORCHESTRATION`이다.
 
 - `result_kind`와 `candidate_result_ref`는 `SAVE_RESULT`에서 필수이고 다른 action에서는 `null`이다. `candidate_result_ref.data_kind`는 `result_kind`와 같고 `candidate_result_ref.record_id`에는 저장 runtime이 미리 발급한 결과 revision ID가 있어야 한다.
 - `PolicyCacheRef`는 `POLICY_FETCH`의 work·attempt·transition·action input/output/candidate/outcome reference에만 추가한다. 다른 work가 이를 일반 `StoredDataRef` 대신 사용하거나 cache publication을 우회해 cross-run artifact를 연결하면 `SCHEMA_INVALID | AUTHORITY_DENIED`로 거절한다.
