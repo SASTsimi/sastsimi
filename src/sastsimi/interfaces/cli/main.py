@@ -265,7 +265,12 @@ def main(
                     output_format,
                     sys.stdout,
                     command=command_name,
-                    data={"finding_id": args.finding_id, "path": str(path)},
+                    data={
+                        "finding_id": args.finding_id,
+                        "path": report_command.safe_export_reference(
+                            config.data_dir, path
+                        ),
+                    },
                 )
             return int(ExitCode.OK)
         if args.command == "onboarding":

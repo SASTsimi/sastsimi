@@ -7,6 +7,7 @@ import pytest
 
 from sastsimi.interfaces.cli import report as report_command
 from sastsimi.interfaces.cli import reports as reports_command
+from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.main import main
 
 
@@ -16,6 +17,8 @@ def test_report_show_and_export_cli(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     exported = tmp_path / "reports" / "analysis-1" / "finding-1.md"
+    exported.parent.mkdir(parents=True)
+    exported.write_text("# Current report\n", encoding="utf-8")
     requested_analyses: list[str] = []
 
     def list_reports(_data_dir: Path, analysis_id: str) -> dict[str, object]:
@@ -67,5 +70,32 @@ def test_report_show_and_export_cli(
     )
     assert json.loads(capsys.readouterr().out) == {
         "finding_id": "finding-1",
-        "path": str(exported),
+        "path": "reports/analysis-1/finding-1.md",
     }
+
+
+def test_report_export_rejects_a_path_outside_the_data_directory(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outside = tmp_path.parent / "outside-report.md"
+    outside.write_text("# Must not be disclosed\n", encoding="utf-8")
+    monkeypatch.setattr(
+        report_command, "export", lambda _data_dir, _finding_id: outside
+    )
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "report",
+            "export",
+            "finding-1",
+            "--format",
+            "markdown",
+        ]
+    ) == int(ExitCode.REPORT_UNAVAILABLE)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert str(outside) not in captured.err
