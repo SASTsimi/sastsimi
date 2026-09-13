@@ -93,7 +93,10 @@ if TYPE_CHECKING:
         ReporterCallResolver,
         ReporterWorkHandler,
     )
-    from sastsimi.reproduction.production import DynamicSandboxAuthorizationResolver
+    from sastsimi.reproduction.production import (
+        DynamicSandboxAuthorizationLifecyclePort,
+        DynamicSandboxAuthorizationResolver,
+    )
     from sastsimi.reproduction.service import (
         DynamicStageAuthorizations,
         DynamicStageCallResolver,
@@ -1261,6 +1264,8 @@ def build_t11_services(
     commit_id: CommitId,
     role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
     sandbox_authorization: DynamicSandboxAuthorizationResolver,
+    sandbox_authorization_lifecycle: DynamicSandboxAuthorizationLifecyclePort
+    | None = None,
     verification: VerificationService,
     repository_profile: RepositoryProfile,
     resource_journal_path: Path,
@@ -1340,6 +1345,7 @@ def build_t11_services(
             ids=ids,
             sink=sink,
             authorization=sandbox_authorization,
+            authorization_lifecycle=sandbox_authorization_lifecycle,
             repository_profile=repository_profile,
         )
 

@@ -85,7 +85,10 @@ from sastsimi.ports.scheduler import ExternalCancellationPort
 from sastsimi.ports.work_handler import WorkHandler
 from sastsimi.ports.workspace import WorkspaceLocatorPort
 from sastsimi.reporting.cwe_workflow import GateCallRefs
-from sastsimi.reproduction.production import DynamicSandboxAuthorizationResolver
+from sastsimi.reproduction.production import (
+    DynamicSandboxAuthorizationLifecyclePort,
+    DynamicSandboxAuthorizationResolver,
+)
 from sastsimi.verification.completion import VerificationCompletionCoordinator
 from sastsimi.verification.debate_service import AuthorizedLLMCall
 
@@ -156,6 +159,7 @@ class DynamicProductionFeature:
     """Exact T11 configuration; RepositoryProfile is resolved only at execution."""
 
     sandbox_authorization: DynamicSandboxAuthorizationResolver
+    authorization_lifecycle: DynamicSandboxAuthorizationLifecyclePort
     sandbox_profile: Callable[[WorkExecutionState], StoredDataRef]
     resource_journal_path: Path
     max_execute_turns: int
@@ -521,6 +525,9 @@ class ProductionFeatureInstaller:
                 commit_id=context.scope.commit_id,
                 role_identity_refs=context.role_identity_refs,
                 sandbox_authorization=self.inputs.dynamic.sandbox_authorization,
+                sandbox_authorization_lifecycle=(
+                    self.inputs.dynamic.authorization_lifecycle
+                ),
                 verification=t10.verification,
                 repository_profile=profile,
                 resource_journal_path=self.inputs.dynamic.resource_journal_path,
@@ -701,6 +708,7 @@ class ProductionFeatureInstaller:
             self.inputs.t08.seeder,
             self.inputs.t08.workspace_locator,
             self.inputs.dynamic.sandbox_authorization,
+            self.inputs.dynamic.authorization_lifecycle,
             self.inputs.dynamic.sandbox_profile,
             self.inputs.calls,
             self.inputs.external_cancellation,
