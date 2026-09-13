@@ -52,3 +52,35 @@ def test_wheel_contains_readme_and_operator_resources(tmp_path: Path) -> None:
     assert "Description-Content-Type: text/markdown" in metadata
     assert "SASTSIMI" in metadata
     assert str(root) not in metadata
+
+
+def test_operator_examples_do_not_embed_secrets_or_local_absolute_paths() -> None:
+    root = Path(__file__).resolve().parents[2]
+    paths = (
+        root / "README.md",
+        root / "config" / "sastsimi.example.toml",
+        root / "docs" / "installation.md",
+        root / "docs" / "configuration.md",
+        root / "docs" / "usage.md",
+        root / "docs" / "external-tools.md",
+        root / "docs" / "troubleshooting.md",
+        root / "docs" / "architecture-to-code.md",
+        root / "scripts" / "wheel-smoke.ps1",
+    )
+    forbidden = (
+        "C:/Users/",
+        "C:\\Users\\",
+        "/Users/",
+        "/home/",
+        "-----BEGIN PRIVATE KEY-----",
+        "sk-proj-",
+        "ghp_",
+        "https://user:password@",
+    )
+    violations = [
+        f"{path.relative_to(root)}: {marker}"
+        for path in paths
+        for marker in forbidden
+        if marker in path.read_text(encoding="utf-8")
+    ]
+    assert not violations, "\n".join(violations)
