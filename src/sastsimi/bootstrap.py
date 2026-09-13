@@ -1,5 +1,8 @@
 """Public facade for the concrete application composition root."""
 
+from sastsimi.composition.production_control import (
+    request_production_cancel as request_production_cancel,
+)
 from sastsimi.composition.production_entrypoint import (
     build_production_analyze as build_production_analyze,
 )

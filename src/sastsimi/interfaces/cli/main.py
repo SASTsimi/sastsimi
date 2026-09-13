@@ -12,6 +12,7 @@ from uuid import uuid4
 from sastsimi import bootstrap
 from sastsimi.config.production_profile import load_production_profile
 from sastsimi.interfaces.cli import analyze as analyze_command
+from sastsimi.interfaces.cli import cancel as cancel_command
 from sastsimi.interfaces.cli import capability as capability_command
 from sastsimi.interfaces.cli import commands
 from sastsimi.interfaces.cli import demo as demo_command
@@ -96,6 +97,11 @@ def main(
     )
     status_parser.add_argument("analysis_id")
     status_parser.add_argument("--format", choices=["text", "json"])
+    cancel_parser = subparsers.add_parser(
+        "cancel", help="durably request analysis cancellation", allow_abbrev=False
+    )
+    cancel_parser.add_argument("analysis_id")
+    cancel_parser.add_argument("--format", choices=["text", "json"])
     results_parser = subparsers.add_parser(
         "results", help="read one terminal production result", allow_abbrev=False
     )
@@ -233,6 +239,27 @@ def main(
             else:
                 data = demo_command.results(config.data_dir)
             emit_data(output_format, sys.stdout, command=command_name, data=data)
+            return int(ExitCode.OK)
+        if args.command == "cancel":
+            command_name = "cancel"
+            try:
+                view = bootstrap.request_production_cancel(
+                    config.data_dir, args.analysis_id
+                )
+            except ValueError:
+                emit_result(
+                    ExitCode.INTEGRITY_ERROR,
+                    output_format,
+                    sys.stderr,
+                    command=command_name,
+                )
+                return int(ExitCode.INTEGRITY_ERROR)
+            emit_data(
+                output_format,
+                sys.stdout,
+                command=command_name,
+                data=cancel_command.project(view),
+            )
             return int(ExitCode.OK)
         if args.command == "status":
             command_name = "status"
