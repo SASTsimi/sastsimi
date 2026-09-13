@@ -168,6 +168,14 @@ REQUIRED_PRODUCTION_PROMPT_ROUTES = (
 _ROUTES = {
     (route.role, route.task_kind): route for route in REQUIRED_PRODUCTION_PROMPT_ROUTES
 }
+_CANDIDATE_TASK = "CREATE_POC_CANDIDATE"
+_CANDIDATE_ARTIFACT_SLOT = (
+    "code_fragments",
+    "artifact",
+    ("/redacted_body",),
+    "REQUIRED_MANY",
+    "UNTRUSTED_DATA",
+)
 _REQUIRED_REDACTIONS = frozenset(
     {
         "CREDENTIAL",
@@ -493,6 +501,7 @@ class ProductionLLMConfigurationService:
         required: RequiredProductionPromptRoute,
         entry: PromptRegistryEntry,
     ) -> LoadedPromptDefinition:
+        self._require_route_input_contract(required, entry)
         if entry.template_version != required.template_path.stem:
             raise ValueError("PRODUCTION_PROMPT_ROUTE_MISMATCH")
         template = self._loader.load_template(
@@ -503,6 +512,29 @@ class ProductionLLMConfigurationService:
             template_path=required.template_path,
             template=template,
         )
+
+    @staticmethod
+    def _require_route_input_contract(
+        required: RequiredProductionPromptRoute,
+        entry: PromptRegistryEntry,
+    ) -> None:
+        if required.task_kind != _CANDIDATE_TASK:
+            return
+        artifact_slots = tuple(
+            slot for slot in entry.input_slots if slot.data_kind == "artifact"
+        )
+        if len(artifact_slots) != 1:
+            raise ValueError("PRODUCTION_PROMPT_ROUTE_MISMATCH")
+        slot = artifact_slots[0]
+        actual = (
+            slot.slot,
+            slot.data_kind,
+            slot.field_paths,
+            slot.cardinality,
+            slot.trust_class,
+        )
+        if actual != _CANDIDATE_ARTIFACT_SLOT:
+            raise ValueError("PRODUCTION_PROMPT_ROUTE_MISMATCH")
 
     def _required(self, route: ProductionRoute) -> RequiredProductionPromptRoute:
         required = _ROUTES.get((route.role, route.task_kind))

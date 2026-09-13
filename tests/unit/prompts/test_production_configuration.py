@@ -10,11 +10,18 @@ import pytest
 
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.evaluation import EvaluationRecommendation
-from sastsimi.contracts.ids import CommitId, OpaqueId, WorkspaceId
+from sastsimi.contracts.ids import (
+    CommitId,
+    OpaqueId,
+    RecordId,
+    StoredDataId,
+    WorkspaceId,
+)
 from sastsimi.contracts.llm import (
     ExecutionLimits,
     LLMCallSpec,
     LLMRetryPolicy,
+    LLMRole,
     LLMToolPolicy,
     OutputSchemaSpec,
     PromptPayload,
@@ -27,9 +34,11 @@ from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
 from sastsimi.contracts.static import StaticFactBundle
 from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.ports.authorized_llm_call import AuthorizedLLMCall
 from sastsimi.ports.dto import Record
 from sastsimi.ports.production_prompt import (
     ApprovedProductionRoute,
+    PreparedProductionCall,
     ProductionPromptApproval,
 )
 from sastsimi.prompts.builder import PromptSource
@@ -37,11 +46,18 @@ from sastsimi.prompts.production import (
     REQUIRED_PRODUCTION_PROMPT_ROUTES,
     ProductionLLMConfigurationService,
 )
+from sastsimi.prompts.production_calls import ConfiguredProductionCallResolver
 from sastsimi.prompts.registry import REQUIRED_TEMPLATE_SECTIONS
 from sastsimi.runtime.prompt_registry import PromptRegistry
 from sastsimi.storage.artifact_store import LocalArtifactStore
+from sastsimi.verification.production_llm_work_handlers import (
+    ProductionDynamicStageCallResolver,
+)
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import bundle, meta
+from tests.unit.orchestration.test_production_llm_work_handlers import (
+    _dynamic_candidate_fixture,
+)
 
 
 class _Ids:
@@ -136,6 +152,36 @@ class _Route:
     prompt_key: str
 
 
+class _CapturingAuthorizer:
+    def __init__(self) -> None:
+        self.prepared: PreparedProductionCall | None = None
+
+    @staticmethod
+    def _ref(kind: str) -> StoredDataRef:
+        return StoredDataRef(
+            stored_data_id=StoredDataId(f"candidate-{kind}"),
+            data_kind=kind,
+            record_id=RecordId(f"candidate-{kind}"),
+            content_hash="b" * 64,
+            workspace_id=WorkspaceId("ws1"),
+            commit_id=CommitId("c1"),
+        )
+
+    def authorize(
+        self, *, work: WorkExecutionState, prepared: PreparedProductionCall
+    ) -> AuthorizedLLMCall:
+        self.prepared = prepared
+        return AuthorizedLLMCall(
+            work=work,
+            decision_ref=self._ref("action_decision"),
+            reservation_ref=self._ref("budget_reservation"),
+            call_spec_ref=prepared.call_spec_ref,
+        )
+
+    def settle(self, call: AuthorizedLLMCall, invocation: object) -> None:
+        raise AssertionError((call, invocation))
+
+
 def _config_record(record_model: type[Any], kind: str, **changes: object) -> Any:
     payload = make(record_model.__name__)
     payload["meta"] = meta(kind, hypothesis=None, attempt=None)
@@ -175,14 +221,20 @@ def _service(
     )
 
 
-def _approved_hypothesis_route(
+def _approved_route(
     service: ProductionLLMConfigurationService,
     records: _Records,
     artifacts: LocalArtifactStore,
+    *,
+    template_path: Path,
+    template_version: str,
+    role: str,
+    task_kind: str,
+    result_kind: str,
+    evaluation_prompt_key: str,
+    production_prompt_key: str,
+    input_slots: tuple[dict[str, object], ...],
 ) -> tuple[_Route, ApprovedProductionRoute]:
-    template_path = Path(
-        "src/sastsimi/prompts/templates/hypothesis/generate-initial/1.0.0.md"
-    )
     template = template_path.read_bytes()
     template_ref = artifacts.commit(artifacts.stage_bytes(template, "text/markdown"))
     schema_ref = artifacts.commit(
@@ -234,7 +286,7 @@ def _approved_hypothesis_route(
         OutputSchemaSpec,
         "output_schema_spec",
         schema_artifact_ref=schema_ref,
-        result_kind="hypothesis_proposal",
+        result_kind=result_kind,
     )
     semantic = _config_record(
         SemanticValidatorSpec,
@@ -249,27 +301,13 @@ def _approved_hypothesis_route(
     evaluation = _config_record(
         PromptRegistryEntry,
         "prompt_registry_entry",
-        prompt_key="hypothesis.generate-initial.evaluation-v1",
-        agent_role="HYPOTHESIS",
-        task_kind="GENERATE_INITIAL",
+        prompt_key=evaluation_prompt_key,
+        agent_role=role,
+        task_kind=task_kind,
         purpose="EVALUATION",
         template_ref=template_ref,
-        template_version="1.0.0",
-        input_slots=(
-            {
-                "slot": "facts",
-                "data_kind": "static_fact_bundle",
-                "field_paths": (
-                    "/entities",
-                    "/locations",
-                    "/tool_runs",
-                    "/gaps",
-                    "/errors",
-                ),
-                "cardinality": "REQUIRED_ONE",
-                "trust_class": "UNTRUSTED_DATA",
-            },
-        ),
+        template_version=template_version,
+        input_slots=input_slots,
         forbidden_context_kinds=(
             "credential",
             "provider_profile",
@@ -283,7 +321,7 @@ def _approved_hypothesis_route(
         tool_policy_ref=support_refs[2],
         redaction_policy_ref=support_refs[3],
         semantic_validator_ref=support_refs[5],
-        result_kind="hypothesis_proposal",
+        result_kind=result_kind,
         status="ACTIVE",
         quality_evaluation_ref=None,
     )
@@ -299,11 +337,11 @@ def _approved_hypothesis_route(
     )
     recommendation_ref = records.add(recommendation)
     route = _Route(
-        role="HYPOTHESIS",
-        task_kind="GENERATE_INITIAL",
+        role=role,
+        task_kind=task_kind,
         provider_profile_key="approved-provider",
         model="approved-model",
-        prompt_key="hypothesis.generate-initial.production-v1",
+        prompt_key=production_prompt_key,
     )
     activation = service.plan_activation(
         scope=RecordMeta.model_validate_json(
@@ -317,6 +355,126 @@ def _approved_hypothesis_route(
         ),
     )
     return route, service.publish_activation(activation)
+
+
+def _approved_hypothesis_route(
+    service: ProductionLLMConfigurationService,
+    records: _Records,
+    artifacts: LocalArtifactStore,
+) -> tuple[_Route, ApprovedProductionRoute]:
+    return _approved_route(
+        service,
+        records,
+        artifacts,
+        template_path=Path(
+            "src/sastsimi/prompts/templates/hypothesis/generate-initial/1.0.0.md"
+        ),
+        template_version="1.0.0",
+        role="HYPOTHESIS",
+        task_kind="GENERATE_INITIAL",
+        result_kind="hypothesis_proposal",
+        evaluation_prompt_key="hypothesis.generate-initial.evaluation-v1",
+        production_prompt_key="hypothesis.generate-initial.production-v1",
+        input_slots=(
+            {
+                "slot": "facts",
+                "data_kind": "static_fact_bundle",
+                "field_paths": (
+                    "/entities",
+                    "/locations",
+                    "/tool_runs",
+                    "/gaps",
+                    "/errors",
+                ),
+                "cardinality": "REQUIRED_ONE",
+                "trust_class": "UNTRUSTED_DATA",
+            },
+        ),
+    )
+
+
+def _candidate_input_slots(
+    *,
+    fragment_field_paths: tuple[str, ...] = ("/redacted_body",),
+    fragment_cardinality: str = "REQUIRED_MANY",
+    fragment_trust_class: str = "UNTRUSTED_DATA",
+    include_fragment_slot: bool = True,
+) -> tuple[dict[str, object], ...]:
+    record_slots: tuple[dict[str, object], ...] = (
+        {
+            "slot": "request",
+            "data_kind": "dynamic_reproduction_request",
+            "field_paths": ("$",),
+            "cardinality": "REQUIRED_ONE",
+            "trust_class": "UNTRUSTED_DATA",
+        },
+        {
+            "slot": "plan",
+            "data_kind": "reproduction_plan",
+            "field_paths": ("$",),
+            "cardinality": "REQUIRED_ONE",
+            "trust_class": "UNTRUSTED_DATA",
+        },
+        {
+            "slot": "environment",
+            "data_kind": "sandbox_environment",
+            "field_paths": ("$",),
+            "cardinality": "REQUIRED_ONE",
+            "trust_class": "UNTRUSTED_DATA",
+        },
+        {
+            "slot": "code_contexts",
+            "data_kind": "code_context_response",
+            "field_paths": ("$",),
+            "cardinality": "REQUIRED_MANY",
+            "trust_class": "UNTRUSTED_DATA",
+        },
+    )
+    if not include_fragment_slot:
+        return record_slots
+    return (
+        *record_slots,
+        {
+            "slot": "code_fragments",
+            "data_kind": "artifact",
+            "field_paths": fragment_field_paths,
+            "cardinality": fragment_cardinality,
+            "trust_class": fragment_trust_class,
+        },
+    )
+
+
+def _approved_candidate_route(
+    service: ProductionLLMConfigurationService,
+    records: _Records,
+    artifacts: LocalArtifactStore,
+    *,
+    fragment_field_paths: tuple[str, ...] = ("/redacted_body",),
+    fragment_cardinality: str = "REQUIRED_MANY",
+    fragment_trust_class: str = "UNTRUSTED_DATA",
+    include_fragment_slot: bool = True,
+) -> tuple[_Route, ApprovedProductionRoute]:
+    return _approved_route(
+        service,
+        records,
+        artifacts,
+        template_path=Path(
+            "src/sastsimi/prompts/templates/dynamic-reproduction/"
+            "create-poc-candidate/1.0.1.md"
+        ),
+        template_version="1.0.1",
+        role="DYNAMIC_REPRODUCTION",
+        task_kind="CREATE_POC_CANDIDATE",
+        result_kind="poc_candidate",
+        evaluation_prompt_key="dynamic.create-poc-candidate.evaluation-v1",
+        production_prompt_key="dynamic.create-poc-candidate.production-v1",
+        input_slots=_candidate_input_slots(
+            fragment_field_paths=fragment_field_paths,
+            fragment_cardinality=fragment_cardinality,
+            fragment_trust_class=fragment_trust_class,
+            include_fragment_slot=include_fragment_slot,
+        ),
+    )
 
 
 def test_approved_route_creates_active_entry_and_attempt_call(tmp_path: Path) -> None:
@@ -372,6 +530,117 @@ def test_every_production_route_has_a_loadable_canonical_template() -> None:
         assert all(f"# {section}" in text for section in REQUIRED_TEMPLATE_SECTIONS), (
             route.template_path
         )
+
+
+@pytest.mark.parametrize(
+    ("field_paths", "cardinality", "trust_class", "include_slot"),
+    (
+        (("/redacted_body",), "REQUIRED_MANY", "UNTRUSTED_DATA", False),
+        (("/content_hash",), "REQUIRED_MANY", "UNTRUSTED_DATA", True),
+        (("/redacted_body",), "REQUIRED_ONE", "UNTRUSTED_DATA", True),
+        (("/redacted_body",), "REQUIRED_MANY", "TRUSTED_INSTRUCTION", True),
+    ),
+)
+def test_candidate_activation_requires_exact_redacted_artifact_projection(
+    tmp_path: Path,
+    field_paths: tuple[str, ...],
+    cardinality: str,
+    trust_class: str,
+    include_slot: bool,
+) -> None:
+    service, records, artifacts = _service(tmp_path)
+
+    with pytest.raises(ValueError, match="PRODUCTION_PROMPT_ROUTE_MISMATCH"):
+        _approved_candidate_route(
+            service,
+            records,
+            artifacts,
+            fragment_field_paths=field_paths,
+            fragment_cardinality=cardinality,
+            fragment_trust_class=trust_class,
+            include_fragment_slot=include_slot,
+        )
+
+
+def test_candidate_call_renders_redacted_code_and_persists_every_exact_ref(
+    tmp_path: Path,
+) -> None:
+    service, records, artifacts = _service(tmp_path / "configuration")
+    route, approved = _approved_candidate_route(service, records, artifacts)
+    (
+        context_records,
+        context_artifacts,
+        work,
+        request_ref,
+        plan_ref,
+        environment_ref,
+        response_ref,
+        fragment_refs,
+    ) = _dynamic_candidate_fixture(tmp_path / "context")
+    for record in context_records.values.values():
+        records.add(record)
+    for fragment_ref in fragment_refs:
+        with context_artifacts.open_verified(fragment_ref) as stream:
+            fragment = stream.read()
+        copied_fragment_ref = artifacts.commit(
+            artifacts.stage_bytes(fragment, "text/plain")
+        )
+    assert copied_fragment_ref == fragment_ref
+
+    authorizer = _CapturingAuthorizer()
+
+    def route_lookup(
+        analysis_id: str, role: LLMRole, task_kind: str
+    ) -> tuple[_Route, ApprovedProductionRoute]:
+        assert (analysis_id, role, task_kind) == (
+            "a1",
+            "DYNAMIC_REPRODUCTION",
+            "CREATE_POC_CANDIDATE",
+        )
+        return route, approved
+
+    configured = ConfiguredProductionCallResolver(
+        configuration=service,
+        records=records,  # type: ignore[arg-type]
+        route_lookup=route_lookup,  # type: ignore[arg-type]
+        authorizer=authorizer,
+    )
+    resolver = ProductionDynamicStageCallResolver(
+        configured,
+        max_execute_turns=1,
+        records=records,  # type: ignore[arg-type]
+        artifacts=artifacts,
+    )
+
+    authorization = resolver.resolve(
+        work=work,
+        task_kind="CREATE_POC_CANDIDATE",
+        context_refs=(request_ref, plan_ref, environment_ref),
+    )
+
+    expected_refs = (
+        request_ref,
+        plan_ref,
+        environment_ref,
+        response_ref,
+        *fragment_refs,
+    )
+    prepared = authorizer.prepared
+    assert prepared is not None
+    assert prepared.call_spec.context_refs == expected_refs
+    assert (
+        tuple(binding.source_ref for binding in prepared.payload.context_bindings)
+        == expected_refs
+    )
+    assert records.get_exact(prepared.payload_ref) == prepared.payload
+    assert records.get_exact(prepared.call_spec_ref) == prepared.call_spec
+    assert authorization.context_refs == expected_refs
+    with artifacts.open_verified(prepared.payload.rendered_prompt_ref) as stream:
+        rendered = stream.read()
+    assert b"print('safe')" in rendered
+    assert b"safe-fragment-2" in rendered
+    assert b"[REDACTED:TOKEN]" in rendered
+    assert b"sk-sensitive-code-token" not in rendered
 
 
 def test_missing_or_mismatched_approval_fails_closed(tmp_path: Path) -> None:

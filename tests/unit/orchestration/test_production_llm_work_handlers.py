@@ -331,7 +331,7 @@ def _dynamic_candidate_fixture(
     StoredDataRef,
     StoredDataRef,
     StoredDataRef,
-    StoredDataRef,
+    tuple[StoredDataRef, ...],
 ]:
     artifacts = LocalArtifactStore(
         tmp_path / "artifacts", WorkspaceId("ws1"), CommitId("c1")
@@ -341,6 +341,11 @@ def _dynamic_candidate_fixture(
             b"token = 'sk-sensitive-code-token'\nprint('safe')", "text/plain"
         )
     )
+    second_fragment = b"def exploit():\n    return 'safe-fragment-2'"
+    second_fragment_ref = artifacts.commit(
+        artifacts.stage_bytes(second_fragment, "text/plain")
+    )
+    fragment_refs = (fragment_ref, second_fragment_ref)
     response = CodeContextResponse.model_validate_json(
         canonical_bytes(
             make("CodeContextResponse")
@@ -351,11 +356,12 @@ def _dynamic_candidate_fixture(
                     hypothesis_id="h1",
                     attempt_id="upstream-context-attempt",
                 ),
-                "code_fragment_refs": (fragment_ref,),
-                "returned_fragment_count": 1,
+                "code_fragment_refs": fragment_refs,
+                "returned_fragment_count": len(fragment_refs),
                 "returned_bytes": len(
                     b"token = 'sk-sensitive-code-token'\nprint('safe')"
-                ),
+                )
+                + len(second_fragment),
             }
         )
     )
@@ -434,7 +440,7 @@ def _dynamic_candidate_fixture(
         plan_ref,
         environment_ref,
         response_ref,
-        fragment_ref,
+        fragment_refs,
     )
 
 
@@ -449,7 +455,7 @@ def test_candidate_stage_expands_exact_code_context_fragments(
         plan_ref,
         environment_ref,
         response_ref,
-        fragment_ref,
+        fragment_refs,
     ) = _dynamic_candidate_fixture(candidate_work_path)
     calls = _Calls()
     resolver = ProductionDynamicStageCallResolver(
@@ -470,7 +476,7 @@ def test_candidate_stage_expands_exact_code_context_fragments(
         plan_ref,
         environment_ref,
         response_ref,
-        fragment_ref,
+        *fragment_refs,
     )
     assert calls.requests == [
         ("DYNAMIC_REPRODUCTION", "CREATE_POC_CANDIDATE", expected)
@@ -535,21 +541,50 @@ def test_candidate_stage_rejects_invalid_code_or_current_attempt_before_call(
             response_ref: cross_hypothesis_response,
         }
     elif invalid == "plan":
-        original = records.values[plan_ref]
-        assert isinstance(original, ReproductionPlan)
-        records.values[plan_ref] = original.model_copy(
+        original_plan = records.values[plan_ref]
+        assert isinstance(original_plan, ReproductionPlan)
+        plan = original_plan.model_copy(
             update={
-                "meta": original.meta.model_copy(update={"attempt_id": "old-attempt"})
+                "meta": original_plan.meta.model_copy(
+                    update={"attempt_id": "old-attempt"}
+                )
             }
         )
+        plan_ref = cast(StoredDataRef, reference(plan))
+        original_environment = records.values[environment_ref]
+        assert isinstance(original_environment, SandboxEnvironment)
+        environment = original_environment.model_copy(
+            update={"reproduction_plan_ref": plan_ref}
+        )
+        environment_ref = cast(StoredDataRef, reference(environment))
+        request = records.values[request_ref]
+        response = records.values[response_ref]
+        records.values = {
+            request_ref: request,
+            plan_ref: plan,
+            environment_ref: environment,
+            response_ref: response,
+        }
     else:
-        original = records.values[environment_ref]
-        assert isinstance(original, SandboxEnvironment)
-        records.values[environment_ref] = original.model_copy(
+        original_environment = records.values[environment_ref]
+        assert isinstance(original_environment, SandboxEnvironment)
+        environment = original_environment.model_copy(
             update={
-                "meta": original.meta.model_copy(update={"attempt_id": "old-attempt"})
+                "meta": original_environment.meta.model_copy(
+                    update={"attempt_id": "old-attempt"}
+                )
             }
         )
+        environment_ref = cast(StoredDataRef, reference(environment))
+        request = records.values[request_ref]
+        plan = records.values[plan_ref]
+        response = records.values[response_ref]
+        records.values = {
+            request_ref: request,
+            plan_ref: plan,
+            environment_ref: environment,
+            response_ref: response,
+        }
     calls = _Calls()
     resolver = ProductionDynamicStageCallResolver(
         calls,
