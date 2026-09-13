@@ -11,6 +11,7 @@ import os
 import re
 import stat
 import tarfile
+import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -908,10 +909,10 @@ class EnvironmentRecipeStore:
         if family is None:
             raise ValueError("ENVIRONMENT_BUILD_CONFIRMATION_REQUIRED")
         version = cls._runtime_version(requirements, family)
+        if version is None:
+            raise ValueError("ENVIRONMENT_VERSION_CONFIRMATION_REQUIRED")
         image = (
-            f"python:{version or '3.12'}-slim"
-            if family == "PYTHON"
-            else f"node:{version or '22'}-slim"
+            f"python:{version}-slim" if family == "PYTHON" else f"node:{version}-slim"
         )
         install = cls._dependency_install(entries, profile, family)
         dockerfile = (
@@ -929,9 +930,6 @@ class EnvironmentRecipeStore:
         profile: RepositoryProfile,
         family: Literal["PYTHON", "NODE"],
     ) -> str:
-        def run(arguments: tuple[str, ...]) -> str:
-            return "RUN " + json.dumps(arguments) + "\n"
-
         if family == "PYTHON":
             requirement_paths = tuple(
                 item.path
@@ -948,29 +946,21 @@ class EnvironmentRecipeStore:
             ):
                 raise ValueError("DEPENDENCY_FILE_SELECTION_CONFIRMATION_REQUIRED")
             if requirement_paths:
-                return run(
-                    (
-                        "python",
-                        "-m",
-                        "pip",
-                        "install",
-                        "--no-cache-dir",
-                        "-r",
-                        requirement_paths[0],
-                    )
-                )
+                if entries[requirement_paths[0]][0].strip():
+                    raise ValueError("DEPENDENCY_SUPPLY_CONFIRMATION_REQUIRED")
+                return ""
             if pyproject_paths:
-                project_root = str(PurePosixPath(pyproject_paths[0]).parent)
-                return run(
-                    (
-                        "python",
-                        "-m",
-                        "pip",
-                        "install",
-                        "--no-cache-dir",
-                        "." if project_root == "." else project_root,
+                try:
+                    project = tomllib.loads(
+                        entries[pyproject_paths[0]][0].decode("utf-8")
                     )
-                )
+                except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+                    raise ValueError("DEPENDENCY_FILE_CONFIRMATION_REQUIRED") from error
+                declared = project.get("project", {}).get("dependencies", ())
+                build_requires = project.get("build-system", {}).get("requires", ())
+                if declared or build_requires:
+                    raise ValueError("DEPENDENCY_SUPPLY_CONFIRMATION_REQUIRED")
+                return ""
             raise ValueError("DEPENDENCY_FILE_CONFIRMATION_REQUIRED")
 
         package_paths = tuple(
@@ -980,11 +970,23 @@ class EnvironmentRecipeStore:
         )
         if len(package_paths) != 1:
             raise ValueError("DEPENDENCY_FILE_SELECTION_CONFIRMATION_REQUIRED")
-        package_root = str(PurePosixPath(package_paths[0]).parent)
-        prefix = () if package_root == "." else ("--prefix", package_root)
-        lock_path = str(PurePosixPath(package_root) / "package-lock.json")
-        command = "ci" if lock_path in entries else "install"
-        return run(("npm", command, *prefix, "--ignore-scripts"))
+        try:
+            package = json.loads(entries[package_paths[0]][0])
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError("DEPENDENCY_FILE_CONFIRMATION_REQUIRED") from error
+        if not isinstance(package, dict):
+            raise ValueError("DEPENDENCY_FILE_CONFIRMATION_REQUIRED")
+        dependency_fields = (
+            "dependencies",
+            "devDependencies",
+            "optionalDependencies",
+            "peerDependencies",
+        )
+        if any(package.get(field) for field in dependency_fields) or package.get(
+            "workspaces"
+        ):
+            raise ValueError("DEPENDENCY_SUPPLY_CONFIRMATION_REQUIRED")
+        return ""
 
     @staticmethod
     def _runtime_version(
