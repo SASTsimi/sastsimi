@@ -13,7 +13,10 @@ from typing import cast
 import pytest
 
 from sastsimi.contracts.canonical_json import content_hash
-from sastsimi.contracts.capabilities import CapabilityApprovalEvidence
+from sastsimi.contracts.capabilities import (
+    CapabilityApprovalEvidence,
+    CapabilityControlEvidence,
+)
 from sastsimi.contracts.ids import (
     AnalysisId,
     AttemptId,
@@ -24,7 +27,12 @@ from sastsimi.contracts.ids import (
     WorkspaceId,
 )
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
+from sastsimi.contracts.refs import (
+    HostConfigurationRef,
+    RunStoredDataRef,
+    StoredDataRef,
+    reference,
+)
 from sastsimi.contracts.static import (
     RepositoryExecutionSelection,
     RepositoryProfile,
@@ -149,6 +157,81 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _active_registry(
+    root: Path,
+) -> tuple[ProductionCapabilityResolverPort, HostConfigurationRef]:
+    """Publish exact fixture evidence through the production registry."""
+    runtime, evidence, raw_ref = _runtime(root)
+    fixture = _Resolver()
+    for selected in fixture.selections.values():
+        approval = selected.evidence.model_copy(
+            update={
+                "meta": selected.evidence.meta.model_copy(
+                    update={
+                        "workspace_id": raw_ref.workspace_id,
+                        "commit_id": raw_ref.commit_id,
+                    }
+                ),
+                "probe_evidence_refs": (raw_ref,),
+                "security_control_evidence": tuple(
+                    CapabilityControlEvidence(
+                        control=item.control,
+                        evidence_ref=raw_ref,
+                    )
+                    for item in selected.evidence.security_control_evidence
+                ),
+            }
+        )
+        evidence.capability_approvals.add(content_hash(approval))
+        approval_ref = runtime.configuration.register_capability_approval(approval)
+        profile = selected.profile.model_copy(
+            update={
+                "meta": selected.profile.meta.model_copy(
+                    update={
+                        "workspace_id": raw_ref.workspace_id,
+                        "commit_id": raw_ref.commit_id,
+                    }
+                ),
+                "capability_evidence_ref": approval_ref,
+            }
+        )
+        runtime.configuration.register_production_static_tool_profile(profile)
+
+    git_approval = fixture.git_evidence.model_copy(
+        update={
+            "meta": fixture.git_evidence.meta.model_copy(
+                update={
+                    "workspace_id": raw_ref.workspace_id,
+                    "commit_id": raw_ref.commit_id,
+                }
+            ),
+            "probe_evidence_refs": (raw_ref,),
+            "security_control_evidence": tuple(
+                CapabilityControlEvidence(
+                    control=item.control,
+                    evidence_ref=raw_ref,
+                )
+                for item in fixture.git_evidence.security_control_evidence
+            ),
+        }
+    )
+    evidence.capability_approvals.add(content_hash(git_approval))
+    git_approval_ref = runtime.configuration.register_capability_approval(git_approval)
+    git_profile = fixture.git_profile.model_copy(
+        update={
+            "meta": fixture.git_profile.meta.model_copy(
+                update={
+                    "workspace_id": raw_ref.workspace_id,
+                    "commit_id": raw_ref.commit_id,
+                }
+            ),
+            "capability_evidence_ref": git_approval_ref,
+        }
+    )
+    git_ref = runtime.configuration.register_runtime_capability(git_profile)
+    return cast(ProductionCapabilityResolverPort, runtime.configuration), git_ref
+
+
 async def _prepare(
     root: Path, source: Path, commit_id: str, git_executable: Path
 ) -> RepositoryPreparation:
@@ -215,11 +298,11 @@ def _profile(preparation: RepositoryPreparation) -> RepositoryProfile:
 
 def _selection(
     profile: RepositoryProfile,
-    resolver: _Resolver,
+    resolver: ProductionCapabilityResolverPort,
+    git_ref: HostConfigurationRef,
 ) -> RepositoryExecutionSelection:
-    git_ref = resolver.git_ref
     return RepositoryExecutionSelector(
-        cast(ProductionCapabilityResolverPort, resolver),
+        resolver,
         operating_system="windows",
         architecture="x86_64",
     ).select(
@@ -243,7 +326,7 @@ async def test_real_python_and_javascript_repositories_reach_tool_selection(
     if git is None:
         pytest.skip("Git is not installed")
     git_executable = Path(git)
-    resolver = _Resolver()
+    resolver, git_ref = _active_registry(tmp_path / "capabilities")
     cases = (
         (
             "python",
@@ -294,7 +377,7 @@ async def test_real_python_and_javascript_repositories_reach_tool_selection(
         assert tuple(item.kind for item in profile.config_files) == config_kinds
         assert {item.git_path for item in profile.tracked_files} == set(tracked)
         assert not ({item.git_path for item in profile.tracked_files} & set(untracked))
-        selection = _selection(profile, resolver)
+        selection = _selection(profile, resolver, git_ref)
         assert selection.status == "READY"
         assert tuple(item.adapter_key for item in selection.selected_tools) == adapters
 
@@ -307,7 +390,7 @@ async def test_unconfirmed_repository_is_blocked_without_a_false_verdict(
     if git is None:
         pytest.skip("Git is not installed")
     git_executable = Path(git)
-    resolver = _Resolver()
+    resolver, git_ref = _active_registry(tmp_path / "capabilities")
     source, commit_id = _source_repository(
         tmp_path / "unknown" / "source",
         tracked={"README.md": "custom build instructions\n"},
@@ -318,7 +401,7 @@ async def test_unconfirmed_repository_is_blocked_without_a_false_verdict(
         tmp_path / "unknown" / "analysis", source, commit_id, git_executable
     )
     profile = _profile(preparation)
-    selection = _selection(profile, resolver)
+    selection = _selection(profile, resolver, git_ref)
 
     assert profile.status == "NEEDS_CONFIRMATION"
     assert profile.languages == ()
