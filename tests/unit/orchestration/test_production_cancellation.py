@@ -432,6 +432,115 @@ async def test_sandbox_parallel_targets_get_exact_attempt_inventories(
 
 
 @pytest.mark.asyncio
+async def test_sandbox_inventory_ignores_past_preserved_baseline_scope(
+    tmp_path: Path,
+) -> None:
+    """A reusable image from a completed attempt must not block current cancel."""
+
+    past = _sandbox_target_for(
+        hypothesis_id="hypothesis-past",
+        attempt_id="dynamic-attempt-past",
+        suffix="past",
+    )
+    current = _sandbox_target_for(
+        hypothesis_id="hypothesis-current",
+        attempt_id="dynamic-attempt-current",
+        suffix="current",
+    )
+    assert isinstance(past.attempt.meta, RecordMeta)
+    assert isinstance(current.attempt.meta, RecordMeta)
+    journal = tmp_path / "owned-resources.json"
+    writer = OwnedResourceRegistry(journal_path=journal)
+    image_labels = ReproductionSetupAutomation._image_labels(past.attempt.meta)
+    writer.register_image(
+        image_digest="sha256:" + "a" * 64,
+        image_tag=DockerAdapter.runtime_image_tag(image_labels),
+        labels=image_labels,
+        meta=past.attempt.meta,
+        preservation_reason="REUSABLE_BASELINE",
+    )
+    container_labels = ReproductionSetupAutomation._container_labels(
+        current.attempt.meta
+    )
+    current_ref = writer.register_container(
+        container_id="current-container",
+        labels=container_labels,
+        meta=current.attempt.meta,
+    )
+    service = ProductionSandboxCancellation(
+        records=fixture().records,
+        docker=_Docker({}, presence="ABSENT"),
+        resources=OwnedResourceRegistry(journal_path=journal),
+    )
+
+    prepared = await service.prepare(current)
+    service.validate_inventory("analysis-1", (prepared,))
+
+    assert tuple(item.resource_id for item in prepared.sandbox_resources) == (
+        "current-container",
+    )
+    assert prepared.sandbox_resource_refs == (current_ref,)
+
+
+def test_sandbox_inventory_allows_only_past_preserved_baselines(
+    tmp_path: Path,
+) -> None:
+    """A targetless reusable baseline is lifecycle state, not live work."""
+
+    past = _sandbox_target_for(
+        hypothesis_id="hypothesis-past",
+        attempt_id="dynamic-attempt-past",
+        suffix="past",
+    )
+    assert isinstance(past.attempt.meta, RecordMeta)
+    journal = tmp_path / "owned-resources.json"
+    labels = ReproductionSetupAutomation._image_labels(past.attempt.meta)
+    OwnedResourceRegistry(journal_path=journal).register_image(
+        image_digest="sha256:" + "a" * 64,
+        image_tag=DockerAdapter.runtime_image_tag(labels),
+        labels=labels,
+        meta=past.attempt.meta,
+        preservation_reason="REUSABLE_BASELINE",
+    )
+    service = ProductionSandboxCancellation(
+        records=fixture().records,
+        docker=_Docker({}, presence="ABSENT"),
+        resources=OwnedResourceRegistry(journal_path=journal),
+    )
+
+    service.validate_inventory("analysis-1", ())
+
+
+def test_sandbox_inventory_rejects_foreign_preserved_baseline(
+    tmp_path: Path,
+) -> None:
+    """The lifecycle exception must never weaken the analysis boundary."""
+
+    target = _sandbox_target()
+    assert isinstance(target.attempt.meta, RecordMeta)
+    foreign_meta = target.attempt.meta.model_copy(
+        update={"analysis_id": "analysis-foreign"}
+    )
+    journal = tmp_path / "owned-resources.json"
+    labels = ReproductionSetupAutomation._image_labels(foreign_meta)
+    OwnedResourceRegistry(journal_path=journal).register_image(
+        image_digest="sha256:" + "a" * 64,
+        image_tag=DockerAdapter.runtime_image_tag(labels),
+        labels=labels,
+        meta=foreign_meta,
+        preservation_reason="REUSABLE_BASELINE",
+    )
+    service = ProductionSandboxCancellation(
+        records=fixture().records,
+        docker=_Docker({}, presence="ABSENT"),
+        resources=OwnedResourceRegistry(journal_path=journal),
+    )
+
+    with pytest.raises(ValueError, match="CANCELLATION_SANDBOX_FOREIGN_SCOPE"):
+        service.validate_inventory("analysis-1", ())
+
+
+@pytest.mark.asyncio
 async def test_sandbox_inventory_rejects_missing_parallel_target_scope(
     tmp_path: Path,
 ) -> None:
@@ -508,16 +617,35 @@ async def test_sandbox_current_inventory_rejects_growth_after_prepare(
     }
 
 
-def test_sandbox_current_inventory_rejects_targetless_leftover(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "leftover_kind", ["RESOURCE", "CONTAINER_INTENT", "IMAGE_INTENT"]
+)
+def test_sandbox_current_inventory_rejects_targetless_leftover(
+    tmp_path: Path, leftover_kind: str
+) -> None:
     data = fixture()
     target = _sandbox_target()
     assert isinstance(target.attempt.meta, RecordMeta)
     journal = tmp_path / "owned-resources.json"
     labels = ReproductionSetupAutomation._container_labels(target.attempt.meta)
-    OwnedResourceRegistry(journal_path=journal).reserve_container(
-        container_name="leftover-container",
-        labels=labels,
-    )
+    writer = OwnedResourceRegistry(journal_path=journal)
+    if leftover_kind == "RESOURCE":
+        writer.register_container(
+            container_id="leftover-container",
+            labels=labels,
+            meta=target.attempt.meta,
+        )
+    elif leftover_kind == "CONTAINER_INTENT":
+        writer.reserve_container(
+            container_name="leftover-container",
+            labels=labels,
+        )
+    else:
+        image_labels = ReproductionSetupAutomation._image_labels(target.attempt.meta)
+        writer.reserve_image(
+            image_tag=DockerAdapter.runtime_image_tag(image_labels),
+            labels=image_labels,
+        )
     service = ProductionSandboxCancellation(
         records=data.records,
         docker=_Docker(dict(labels), presence="ABSENT"),

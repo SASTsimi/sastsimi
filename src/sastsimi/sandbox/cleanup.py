@@ -193,13 +193,37 @@ class OwnedResourceRegistry:
             *current._intents.values(),
             *current._image_intents.values(),
         )
-        journal_scopes = {ownership_scope(entry.labels) for entry in entries}
-        if any(scope[0] != analysis_id for scope in journal_scopes):
+        all_scopes = {ownership_scope(entry.labels) for entry in entries}
+        if any(scope[0] != analysis_id for scope in all_scopes):
             raise ValueError("CANCELLATION_SANDBOX_FOREIGN_SCOPE")
         expected_scopes = {_record_scope(meta) for meta in metas}
-        if len(expected_scopes) != len(metas) or journal_scopes != expected_scopes:
+        required_entries: tuple[
+            OwnedResource | ContainerOwnershipIntent | ImageOwnershipIntent, ...
+        ] = (
+            *(
+                resource
+                for resource in current._resources.values()
+                if resource.preservation_reason is None
+            ),
+            *current._intents.values(),
+            *current._image_intents.values(),
+        )
+        required_scopes = {ownership_scope(entry.labels) for entry in required_entries}
+        snapshots = tuple(current.snapshot(meta=meta) for meta in metas)
+        represented_scopes = {
+            _record_scope(meta)
+            for meta, snapshot in zip(metas, snapshots, strict=True)
+            if snapshot.resources
+            or snapshot.container_intents
+            or snapshot.image_intents
+        }
+        if (
+            len(expected_scopes) != len(metas)
+            or not required_scopes.issubset(expected_scopes)
+            or represented_scopes != expected_scopes
+        ):
             raise ValueError("CANCELLATION_SANDBOX_INVENTORY_INCOMPLETE")
-        return tuple(current.snapshot(meta=meta) for meta in metas)
+        return snapshots
 
     def reserve_container(
         self,
