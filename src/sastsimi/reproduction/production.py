@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol, cast
@@ -261,13 +262,25 @@ class ProductionDynamicWorkflow:
         plan_ref: StoredDataRef,
     ) -> DynamicSandboxSession:
         self._require_work(work, request, request_ref)
-        source = await self._setup.preflight(
-            workspace_root=self._controller.workspace_root,
-            request=request,
-            requirements=requirements,
-            meta=self._meta("environment_recipe"),
-            repository_profile=self._repository_profile,
-        )
+        try:
+            source = await self._setup.preflight(
+                workspace_root=self._controller.workspace_root,
+                request=request,
+                requirements=requirements,
+                meta=self._meta("environment_recipe"),
+                repository_profile=self._repository_profile,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            reason = _safe_error(error)
+            if "CONFIRMATION_REQUIRED" in reason:
+                raise DynamicOperationalError(
+                    "BLOCKED", "EXTERNAL_CONFIGURATION", reason
+                ) from error
+            raise DynamicOperationalError(
+                "FAILED", "ENVIRONMENT_SETUP", reason
+            ) from error
         repository_context_refs = (
             (source.repository_profile_ref,)
             if source.repository_profile_ref is not None
@@ -1317,6 +1330,12 @@ class ProductionDynamicExecutor:
 
 
 def _safe_error(error: Exception) -> str:
+    code = getattr(error, "code", None)
+    if isinstance(code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{2,127}", code):
+        return code
+    message = str(error)
+    if re.fullmatch(r"[A-Z][A-Z0-9_]{2,127}(?::[A-Z_,]+)?", message):
+        return message
     return type(error).__name__
 
 

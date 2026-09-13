@@ -25,7 +25,7 @@ from sastsimi.contracts.static import RepositoryProfile
 
 type RecreateReason = Literal["STATE_CHANGED", "CONFIG_CHANGED", "STATE_UNCERTAIN"]
 type DockerBuildLimit = Literal["CPU", "MEMORY", "PID", "DISK"]
-type DockerBuildBackend = Literal["BUILDX_RESOURCE", "LEGACY_LIMITED"]
+type DockerBuildBackend = Literal["LEGACY_LIMITED"]
 
 
 @dataclass(frozen=True, slots=True)

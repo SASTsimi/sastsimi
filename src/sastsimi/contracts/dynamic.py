@@ -22,6 +22,8 @@ from .ids import ActionId
 from .records import validate_revision
 from .refs import StoredDataRef, require_record_ref
 
+_VERSION_TOKEN = re.compile(r"(?<![0-9])([0-9]+(?:\.[0-9]+){0,3})(?![0-9])")
+
 
 class DynamicReproductionState(DomainRecord):
     """Current generation projection, owned by Reproduction Session Manager."""
@@ -789,6 +791,9 @@ class DynamicReproductionResult(DynamicRecord):
         if self.action_decision_ref is None:
             pre_boundary_categories = {
                 "PLAN",
+                "EXTERNAL_CONFIGURATION",
+                "ENVIRONMENT_SETUP",
+                "DEPENDENCY",
                 "AGENT",
                 "TIMEOUT",
                 "RESOURCE_LIMIT",
@@ -899,9 +904,27 @@ def validate_environment(
             and check.status == "MATCH"
             and check.actual is not None
         ):
-            if check.actual not in (item.expected, *item.alternatives):
+            allowed_versions = tuple(
+                match.group(1)
+                for value in (item.expected, *item.alternatives)
+                if value is not None
+                for match in (_VERSION_TOKEN.search(value),)
+                if match is not None
+            )
+            if not any(
+                check.actual == value or check.actual.startswith(value + ".")
+                for value in allowed_versions
+            ):
                 raise ValueError("ENVIRONMENT_VERSION_MISMATCH")
-            if check.actual != item.expected and not check.difference:
+            expected_match = (
+                _VERSION_TOKEN.search(item.expected)
+                if item.expected is not None
+                else None
+            )
+            expected_version = (
+                expected_match.group(1) if expected_match is not None else None
+            )
+            if check.actual != expected_version and not check.difference:
                 raise ValueError("ENVIRONMENT_DIFFERENCE_REQUIRED")
 
 

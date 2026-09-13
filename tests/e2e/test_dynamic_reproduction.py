@@ -94,6 +94,7 @@ from tests.integration.sandbox.test_container_lifecycle import (
     _dynamic_records,
     _meta,
     _ref,
+    _repository_profile,
 )
 
 _DOCKER_E2E_ENV = "SASTSIMI_REQUIRE_DOCKER_E2E"
@@ -168,6 +169,24 @@ class RecordingDockerAdapter(DockerAdapter):
         self.calls.append(("build", None))
         return await super().build(
             dockerfile,
+            labels,
+            spec=spec,
+            timeout_ms=timeout_ms,
+        )
+
+    async def build_context(
+        self,
+        context_archive: bytes,
+        dockerfile_path: str,
+        labels: Mapping[str, str],
+        *,
+        spec: SandboxRunSpec,
+        timeout_ms: int,
+    ) -> str:
+        self.calls.append(("build_context", dockerfile_path))
+        return await super().build_context(
+            context_archive,
+            dockerfile_path,
             labels,
             spec=spec,
             timeout_ms=timeout_ms,
@@ -720,6 +739,13 @@ async def test_supported_fixture_produces_validated_poc(tmp_path: Path) -> None:
     fixture = Path(__file__).parents[1] / "fixtures" / "sandbox" / "sql_injection"
     workspace = tmp_path / "runtime-workspace"
     shutil.copytree(fixture, workspace)
+    repository_profile = _repository_profile(
+        {
+            path.relative_to(workspace).as_posix(): path.read_bytes()
+            for path in workspace.rglob("*")
+            if path.is_file()
+        }
+    )
     authorizer = SandboxAuthorizer(workspace)
     request, requirements, plan = _records_for(authorizer)
     request_ref = cast(StoredDataRef, reference(request))
@@ -752,6 +778,7 @@ async def test_supported_fixture_produces_validated_poc(tmp_path: Path) -> None:
         ids=ids,
         sink=cast(DynamicRecordSink, sink),
         authorization=authorizer.authorize,
+        repository_profile=repository_profile,
     )
     session: DynamicSandboxSession | None = None
     cleaned = False
@@ -772,6 +799,9 @@ async def test_supported_fixture_produces_validated_poc(tmp_path: Path) -> None:
         recipe = next(
             item for item in sink.published if isinstance(item, EnvironmentRecipe)
         )
+        assert recipe.source_manifest is not None
+        assert recipe.source_refs[0] == reference(repository_profile)
+        assert ("build_context", "Dockerfile") in docker.calls
         build_policy = next(
             item for item in sink.published if isinstance(item, SandboxPolicyDecision)
         )

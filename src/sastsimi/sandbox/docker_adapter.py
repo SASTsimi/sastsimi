@@ -244,17 +244,6 @@ class DockerAdapter:
             or self._target.external_build_disk_limit_bytes > spec.disk_limit_bytes
         ):
             raise DockerOperationError("DOCKER_BUILD_DISK_LIMIT_UNVERIFIED")
-        if self._target.build_backend == "BUILDX_RESOURCE":
-            return (
-                "--resource",
-                "cpu-period=100000",
-                "--resource",
-                f"cpu-quota={spec.cpu_limit_millicores * 100}",
-                "--resource",
-                f"memory={spec.memory_limit_bytes}",
-                "--ulimit",
-                f"nproc={spec.pid_limit}:{spec.pid_limit}",
-            )
         if self._target.build_backend == "LEGACY_LIMITED":
             return (
                 "--cpu-period",
@@ -271,8 +260,6 @@ class DockerAdapter:
     def _build_command_prefix(self) -> tuple[str, ...]:
         if self._target is None:
             raise DockerOperationError("DOCKER_BUILD_LIMITS_UNVERIFIED")
-        if self._target.build_backend == "BUILDX_RESOURCE":
-            return ("buildx", "build")
         if self._target.build_backend == "LEGACY_LIMITED":
             return ("image", "build")
         raise DockerOperationError("DOCKER_BUILD_BACKEND_UNSUPPORTED")
@@ -280,8 +267,6 @@ class DockerAdapter:
     def _build_output_args(self) -> tuple[str, ...]:
         if self._target is None:
             raise DockerOperationError("DOCKER_BUILD_LIMITS_UNVERIFIED")
-        if self._target.build_backend == "BUILDX_RESOURCE":
-            return ("--load",)
         if self._target.build_backend == "LEGACY_LIMITED":
             return ()
         raise DockerOperationError("DOCKER_BUILD_BACKEND_UNSUPPORTED")
@@ -877,7 +862,7 @@ class DockerAdapter:
         if is_build and self._target is not None:
             if self._target.build_backend == "LEGACY_LIMITED":
                 environment["DOCKER_BUILDKIT"] = "0"
-            elif self._target.build_backend != "BUILDX_RESOURCE":
+            else:
                 raise DockerOperationError("DOCKER_BUILD_BACKEND_UNSUPPORTED")
         process = await asyncio.create_subprocess_exec(
             str(executable),
@@ -942,7 +927,7 @@ class DockerAdapter:
             or target.executable.stem.lower() != target.subject_key.lower()
             or not re.fullmatch(r"[0-9a-f]{64}", target.subject_sha256)
             or not DockerAdapter._local_daemon_target(target.daemon_target)
-            or target.build_backend not in {"BUILDX_RESOURCE", "LEGACY_LIMITED"}
+            or target.build_backend != "LEGACY_LIMITED"
             or target.external_build_disk_limit_bytes <= 0
         ):
             raise ValueError("DOCKER_TRUSTED_TARGET_INVALID")
