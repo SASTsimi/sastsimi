@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import cast
+from typing import BinaryIO, Literal, cast
 
 import pytest
 
@@ -19,7 +19,18 @@ from sastsimi.contracts.budget import (
 )
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.evaluation import AnalysisRunResult
-from sastsimi.contracts.records import RecordMeta, RunMeta
+from sastsimi.contracts.ids import (
+    AnalysisId,
+    CommitId,
+    HypothesisId,
+    LogicalRecordId,
+    ProgramId,
+    RecordId,
+    StoredDataId,
+    WorkId,
+    WorkspaceId,
+)
+from sastsimi.contracts.records import PolicyCacheMeta, RecordMeta, RunMeta
 from sastsimi.contracts.refs import (
     BudgetScopeRef,
     HostConfigurationRef,
@@ -32,6 +43,7 @@ from sastsimi.contracts.reporting import ReportProcessState
 from sastsimi.contracts.static import CodeWorkspace
 from sastsimi.contracts.work import (
     SubjectType,
+    TransitionCommit,
     WorkExecutionState,
     WorkStatus,
     WorkType,
@@ -47,8 +59,14 @@ from sastsimi.orchestration.run_initialization import (
     RunBootstrap,
     RunInitializationService,
 )
-from sastsimi.ports.dto import StagedArtifact, WorkContext, WorkHandlerResult
-from sastsimi.ports.scheduler import RunOutcome
+from sastsimi.ports.dto import (
+    Record,
+    StagedArtifact,
+    TransitionCommitRequest,
+    WorkContext,
+    WorkHandlerResult,
+)
+from sastsimi.ports.scheduler import RunDisposition, RunOutcome
 
 
 @dataclass(frozen=True)
@@ -66,35 +84,35 @@ COMMIT_ID = "a" * 40
 
 def _run_ref(kind: str, key: str) -> RunStoredDataRef:
     return RunStoredDataRef(
-        stored_data_id=key,
+        stored_data_id=StoredDataId(key),
         data_kind=kind,
         content_hash="a" * 64,
-        analysis_id=ANALYSIS_ID,
-        record_id=key,
+        analysis_id=AnalysisId(ANALYSIS_ID),
+        record_id=RecordId(key),
     )
 
 
 def _stored_ref(kind: str, key: str) -> StoredDataRef:
     return StoredDataRef(
-        stored_data_id=key,
+        stored_data_id=StoredDataId(key),
         data_kind=kind,
         content_hash="b" * 64,
-        workspace_id=WORKSPACE_ID,
-        commit_id=COMMIT_ID,
-        record_id=key,
+        workspace_id=WorkspaceId(WORKSPACE_ID),
+        commit_id=CommitId(COMMIT_ID),
+        record_id=RecordId(key),
     )
 
 
 def _run_meta(kind: str, key: str) -> RunMeta:
     return RunMeta(
-        record_id=key,
-        logical_record_id=key,
+        record_id=RecordId(key),
+        logical_record_id=LogicalRecordId(key),
         record_type=kind,
         schema_version="1.0.0",
         revision_number=1,
         previous_record_id=None,
         created_at=NOW,
-        analysis_id=ANALYSIS_ID,
+        analysis_id=AnalysisId(ANALYSIS_ID),
     )
 
 
@@ -103,9 +121,11 @@ def _record_meta(
 ) -> RecordMeta:
     return RecordMeta(
         **_run_meta(kind, key).model_dump(),
-        workspace_id=WORKSPACE_ID,
-        commit_id=COMMIT_ID,
-        hypothesis_id=hypothesis_id,
+        workspace_id=WorkspaceId(WORKSPACE_ID),
+        commit_id=CommitId(COMMIT_ID),
+        hypothesis_id=(
+            HypothesisId(hypothesis_id) if hypothesis_id is not None else None
+        ),
         attempt_id=None,
     )
 
@@ -173,11 +193,11 @@ def _workspace_work(
     }
     return WorkExecutionState(
         meta=_run_meta("work_execution_state", "workspace-work-state"),
-        work_id="workspace-work",
+        work_id=WorkId("workspace-work"),
         parent_work_ref=None,
         work_type=WorkType.WORKSPACE_PREP,
         subject_type=SubjectType.ANALYSIS,
-        subject_id=ANALYSIS_ID,
+        subject_id=AnalysisId(ANALYSIS_ID),
         work_generation=1,
         status=status,
         state_version=2,
@@ -202,21 +222,21 @@ def _workspace_work(
 def _workspace_dependencies() -> tuple[RecordRef, ...]:
     return (
         RunStoredDataRef(
-            stored_data_id="workspace-policy",
+            stored_data_id=StoredDataId("workspace-policy"),
             data_kind="artifact",
             content_hash="d" * 64,
-            analysis_id=ANALYSIS_ID,
+            analysis_id=AnalysisId(ANALYSIS_ID),
             record_id=None,
         ),
         HostConfigurationRef(
-            stored_data_id="git-capability",
+            stored_data_id=StoredDataId("git-capability"),
             data_kind="runtime_capability_profile",
             content_hash="e" * 64,
             host_id="local-host",
-            publication_analysis_id=ANALYSIS_ID,
-            publication_workspace_id="capability-workspace",
-            publication_commit_id="capability-commit",
-            record_id="git-capability-record",
+            publication_analysis_id=AnalysisId(ANALYSIS_ID),
+            publication_workspace_id=WorkspaceId("capability-workspace"),
+            publication_commit_id=CommitId("capability-commit"),
+            record_id=RecordId("git-capability-record"),
         ),
     )
 
@@ -354,30 +374,70 @@ class _ReadyWork:
     def enqueue(
         self,
         scope: BudgetScopeRef,
-        metadata: RunMeta | RecordMeta,
+        metadata: RunMeta | RecordMeta | PolicyCacheMeta,
         work_type: str,
         subject_type: str,
         subject_id: str,
         identity: BudgetScopeRef,
-        **values: object,
+        *,
+        role: str = "ORCHESTRATION",
+        generation: int = 1,
+        inputs: tuple[RecordRef, ...] = (),
+        parent: RecordRef | None = None,
+        trigger_primitive_ref: RecordRef | None = None,
     ) -> WorkExecutionState:
-        del identity
+        del identity, role, generation, parent, trigger_primitive_ref
         assert scope.data_kind == "execution_budget_profile"
+        assert isinstance(metadata, (RunMeta, RecordMeta))
         assert str(metadata.analysis_id) == ANALYSIS_ID
         assert work_type == WorkType.WORKSPACE_PREP
         assert subject_type == "ANALYSIS" and subject_id == ANALYSIS_ID
         self.events.append("enqueue-workspace")
-        inputs = cast(tuple[RecordRef, ...], values["inputs"])
         work = _workspace_work(input_refs=inputs)
         self.work_query.works = (work,)
         return work
 
-    def enqueue_registered(self, *_: object, **__: object) -> WorkExecutionState:
+    def enqueue_registered(
+        self,
+        registered: WorkExecutionState,
+        scope: BudgetScopeRef,
+        identity: BudgetScopeRef,
+        *,
+        role: str = "ORCHESTRATION",
+    ) -> WorkExecutionState:
+        del registered, scope, identity, role
         raise AssertionError("initializer must not use a pre-registered work")
 
-    def ensure_enqueue(self, *args: object, **values: object) -> WorkExecutionState:
-        assert values["stable_key"] == "workspace-prep:" + ANALYSIS_ID
-        return self.enqueue(*args, **values)
+    def ensure_enqueue(
+        self,
+        scope: BudgetScopeRef,
+        metadata: RunMeta | RecordMeta | PolicyCacheMeta,
+        work_type: str,
+        subject_type: str,
+        subject_id: str,
+        identity: BudgetScopeRef,
+        *,
+        stable_key: str,
+        role: str = "ORCHESTRATION",
+        generation: int = 1,
+        inputs: tuple[RecordRef, ...] = (),
+        parent: RecordRef | None = None,
+        trigger_primitive_ref: RecordRef | None = None,
+    ) -> WorkExecutionState:
+        assert stable_key == "workspace-prep:" + ANALYSIS_ID
+        return self.enqueue(
+            scope,
+            metadata,
+            work_type,
+            subject_type,
+            subject_id,
+            identity,
+            role=role,
+            generation=generation,
+            inputs=inputs,
+            parent=parent,
+            trigger_primitive_ref=trigger_primitive_ref,
+        )
 
 
 class _WorkQuery:
@@ -453,7 +513,7 @@ def test_run_initialization_pins_current_budgets_before_each_enqueue_phase() -> 
     request = AnalysisStartRequest(
         repository_ref="C:/fixture/repository",
         requested_git_ref=COMMIT_ID,
-        program_id="program-lane-d",
+        program_id=ProgramId("program-lane-d"),
         purpose=Purpose.PRODUCTION,
     )
 
@@ -539,7 +599,7 @@ def test_restore_rejects_substituted_analysis_input_revision() -> None:
         AnalysisStartRequest(
             repository_ref="C:/fixture/repository",
             requested_git_ref=COMMIT_ID,
-            program_id="program-lane-d",
+            program_id=ProgramId("program-lane-d"),
             purpose=Purpose.PRODUCTION,
         )
     )
@@ -636,7 +696,9 @@ class _Finalizer:
         return _run_ref("analysis_run_result", "terminal-result")
 
 
-def _candidate(status: str = "COMPLETE") -> AnalysisRunResult:
+def _candidate(
+    status: Literal["COMPLETE", "PARTIAL"] = "COMPLETE",
+) -> AnalysisRunResult:
     from tests.contract.domain.canonical_fixtures import make
 
     raw = make("AnalysisRunResult")
@@ -671,8 +733,8 @@ def _candidate(status: str = "COMPLETE") -> AnalysisRunResult:
 
 def _production_fixture(
     *,
-    final_outcome: str = "TERMINAL",
-    candidate_status: str = "COMPLETE",
+    final_outcome: RunDisposition = "TERMINAL",
+    candidate_status: Literal["COMPLETE", "PARTIAL"] = "COMPLETE",
     hypothesis_failure: bool = False,
 ) -> tuple[AnalysisService, _StateFactory, _CandidateAggregator, _Finalizer, list[str]]:
     events: list[str] = []
@@ -733,7 +795,7 @@ async def test_production_registry_reaches_report_draft_without_fake_pipeline() 
         AnalysisStartRequest(
             repository_ref="C:/fixture/repository",
             requested_git_ref=COMMIT_ID,
-            program_id="program-lane-d",
+            program_id=ProgramId("program-lane-d"),
             purpose=Purpose.PRODUCTION,
         )
     )
@@ -761,7 +823,7 @@ async def test_one_hypothesis_failure_is_partial_and_report_sibling_continues() 
         AnalysisStartRequest(
             repository_ref="C:/fixture/repository",
             requested_git_ref=COMMIT_ID,
-            program_id="program-lane-d",
+            program_id=ProgramId("program-lane-d"),
             purpose=Purpose.PRODUCTION,
         )
     )
@@ -784,7 +846,7 @@ async def test_blocked_only_run_has_no_terminal_result() -> None:
         AnalysisStartRequest(
             repository_ref="C:/fixture/repository",
             requested_git_ref=COMMIT_ID,
-            program_id="program-lane-d",
+            program_id=ProgramId("program-lane-d"),
             purpose=Purpose.PRODUCTION,
         )
     )
@@ -797,7 +859,7 @@ async def test_blocked_only_run_has_no_terminal_result() -> None:
 @pytest.mark.asyncio
 async def test_registry_defect_fails_before_run_creation() -> None:
     service, states, _, _, _ = _production_fixture()
-    pipeline = cast(ProductionPipeline, service.pipeline)
+    pipeline = service.pipeline
     pipeline.handlers = ProductionHandlerRegistry(
         (kind, _UnusedHandler())
         for kind in ALL_WORK_TYPES
@@ -809,7 +871,7 @@ async def test_registry_defect_fails_before_run_creation() -> None:
             AnalysisStartRequest(
                 repository_ref="C:/fixture/repository",
                 requested_git_ref=COMMIT_ID,
-                program_id="program-lane-d",
+                program_id=ProgramId("program-lane-d"),
                 purpose=Purpose.PRODUCTION,
             )
         )
@@ -818,32 +880,38 @@ async def test_registry_defect_fails_before_run_creation() -> None:
 
 
 class _ExactRecords:
-    def __init__(self, records: tuple[object, ...]) -> None:
-        self.values = {reference(cast(object, item)): item for item in records}
+    def __init__(self, records: tuple[Record, ...]) -> None:
+        self.values: dict[RecordRef, Record] = {
+            reference(item): item for item in records
+        }
 
-    def get_exact(self, ref: object) -> object:
+    def get_exact(self, ref: RecordRef) -> Record:
         return self.values[ref]
 
-    def is_revision_descendant(self, earlier_ref: object, later_ref: object) -> bool:
+    def is_revision_descendant(
+        self, earlier_ref: RecordRef, later_ref: RecordRef
+    ) -> bool:
         del earlier_ref, later_ref
         return False
 
-    def stage_record(self, record: object) -> object:
+    def stage_record(self, record: Record) -> RecordRef:
         raise AssertionError(record)
 
-    def commit_transition(self, request: object) -> object:
+    def commit_transition(
+        self, request: TransitionCommitRequest
+    ) -> TransitionCommit:
         raise AssertionError(request)
 
 
 class _CurrentRecords:
-    def __init__(self, records: tuple[object, ...]) -> None:
+    def __init__(self, records: tuple[Record, ...]) -> None:
         self.records = records
 
-    def current_records(self, analysis_id: str, kind: str) -> tuple[object, ...]:
+    def current_records(self, analysis_id: str, kind: str) -> tuple[Record, ...]:
         assert analysis_id == ANALYSIS_ID
         return tuple(item for item in self.records if item.meta.record_type == kind)
 
-    def published_records(self, analysis_id: str) -> tuple[object, ...]:
+    def published_records(self, analysis_id: str) -> tuple[Record, ...]:
         assert analysis_id == ANALYSIS_ID
         return self.records
 
@@ -853,7 +921,9 @@ class _DebugArtifacts:
         assert b'"analysis_id":"analysis-lane-d"' in data
         return StagedArtifact(data, media_type)
 
-    def commit_run(self, staged: StagedArtifact, analysis_id: str) -> RunStoredDataRef:
+    def commit_run(
+        self, staged: StagedArtifact, analysis_id: AnalysisId
+    ) -> RunStoredDataRef:
         assert staged.media_type == "application/json"
         assert str(analysis_id) == ANALYSIS_ID
         return _run_ref("debug_trace", "aggregated-debug")
@@ -861,7 +931,7 @@ class _DebugArtifacts:
     def commit(self, staged: StagedArtifact) -> StoredDataRef:
         raise AssertionError(staged)
 
-    def open_verified(self, ref: object) -> object:
+    def open_verified(self, ref: StoredDataRef | RunStoredDataRef) -> BinaryIO:
         raise AssertionError(ref)
 
 
@@ -885,10 +955,10 @@ def test_result_aggregation_uses_exact_current_report_inventory() -> None:
     assert isinstance(execution_ref, RunStoredDataRef)
     workspace = CodeWorkspace(
         meta=_run_meta("code_workspace", "aggregated-workspace"),
-        workspace_id=WORKSPACE_ID,
-        analysis_id=ANALYSIS_ID,
+        workspace_id=WorkspaceId(WORKSPACE_ID),
+        analysis_id=AnalysisId(ANALYSIS_ID),
         repository_url="https://example.invalid/repository.git",
-        commit_id=COMMIT_ID,
+        commit_id=CommitId(COMMIT_ID),
         status="READY",
     )
     workspace_ref = reference(workspace)
@@ -897,7 +967,7 @@ def test_result_aggregation_uses_exact_current_report_inventory() -> None:
         AnalysisStartRequest(
             repository_ref="ignored-after-workspace-ready",
             requested_git_ref=COMMIT_ID,
-            program_id="program-lane-d",
+            program_id=ProgramId("program-lane-d"),
             purpose=Purpose.PRODUCTION,
         )
     )
@@ -908,11 +978,11 @@ def test_result_aggregation_uses_exact_current_report_inventory() -> None:
         purpose=Purpose.PRODUCTION,
         eval_config_refs=(),
         analysis_input_ref=run_input_ref,
-        program_id="program-lane-d",
+        program_id=ProgramId("program-lane-d"),
         execution_budget_profile_ref=execution_ref,
         budget_binding_ref=_stored_ref("budget_profile_binding", "binding-current"),
-        workspace_id=WORKSPACE_ID,
-        commit_id=COMMIT_ID,
+        workspace_id=WorkspaceId(WORKSPACE_ID),
+        commit_id=CommitId(COMMIT_ID),
         workspace_ref=workspace_ref,
         run_policy_state_ref=None,
         status="RUNNING",
@@ -939,7 +1009,7 @@ def test_result_aggregation_uses_exact_current_report_inventory() -> None:
     service = ResultAggregationService(
         states=budgets,
         queries=_CurrentRecords((work, report_state)),
-        records=cast(object, records),
+        records=records,
         artifacts=_DebugArtifacts(),
         clock=_FixedClock(),
         metadata=_ResultMetadata(),

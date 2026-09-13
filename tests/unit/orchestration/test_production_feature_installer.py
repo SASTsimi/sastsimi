@@ -8,10 +8,22 @@ from typing import Any, cast
 import pytest
 
 from sastsimi.bootstrap import T11Services
+from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
 from sastsimi.contracts.canonical_json import content_hash
+from sastsimi.contracts.ids import (
+    AnalysisId,
+    AttemptId,
+    CommitId,
+    LogicalRecordId,
+    RecordId,
+    StoredDataId,
+    WorkId,
+    WorkspaceId,
+)
 from sastsimi.contracts.records import RecordMeta, RunMeta
 from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
 from sastsimi.contracts.static import CodeWorkspace, RepositoryProfile
+from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.orchestration.production_composition import (
     ProductionCapabilityUnavailable,
 )
@@ -27,9 +39,17 @@ class _Seeder:
         self.work_id = work_id
         self.calls = 0
 
-    def ensure_initial(self, *_args: object) -> tuple[object, ...]:
+    def ensure_initial(
+        self,
+        request: AnalysisStartRequest,
+        state: AnalysisRunState,
+        binding_ref: StoredDataRef,
+    ) -> tuple[WorkExecutionState, ...]:
+        del request, state, binding_ref
         self.calls += 1
-        return (SimpleNamespace(work_id=self.work_id),)
+        return (
+            WorkExecutionState.model_construct(work_id=WorkId(self.work_id)),
+        )
 
 
 class _Records:
@@ -60,50 +80,50 @@ class _Locator:
 
 def _run_meta() -> RunMeta:
     return RunMeta(
-        record_id="workspace-record",
-        logical_record_id="workspace-record",
+        record_id=RecordId("workspace-record"),
+        logical_record_id=LogicalRecordId("workspace-record"),
         record_type="code_workspace",
         schema_version="1.0.0",
         revision_number=1,
         previous_record_id=None,
         created_at=datetime(2026, 9, 13, tzinfo=UTC),
-        analysis_id="analysis",
+        analysis_id=AnalysisId("analysis"),
     )
 
 
 def _profile() -> RepositoryProfile:
     workspace_ref = RunStoredDataRef(
-        stored_data_id="workspace-record",
+        stored_data_id=StoredDataId("workspace-record"),
         data_kind="code_workspace",
         content_hash="a" * 64,
-        analysis_id="analysis",
-        record_id="workspace-record",
+        analysis_id=AnalysisId("analysis"),
+        record_id=RecordId("workspace-record"),
     )
     decision_ref = StoredDataRef(
-        stored_data_id="decision-record",
+        stored_data_id=StoredDataId("decision-record"),
         data_kind="action_decision",
         content_hash="b" * 64,
-        workspace_id="workspace",
-        commit_id="c" * 40,
-        record_id="decision-record",
+        workspace_id=WorkspaceId("workspace"),
+        commit_id=CommitId("c" * 40),
+        record_id=RecordId("decision-record"),
     )
     return RepositoryProfile(
         meta=RecordMeta(
-            record_id="profile-record",
-            logical_record_id="profile-record",
+            record_id=RecordId("profile-record"),
+            logical_record_id=LogicalRecordId("profile-record"),
             record_type=RepositoryProfile.KIND,
             schema_version="1.0.0",
             revision_number=1,
             previous_record_id=None,
             created_at=datetime(2026, 9, 13, tzinfo=UTC),
-            analysis_id="analysis",
-            workspace_id="workspace",
-            commit_id="c" * 40,
+            analysis_id=AnalysisId("analysis"),
+            workspace_id=WorkspaceId("workspace"),
+            commit_id=CommitId("c" * 40),
             hypothesis_id=None,
-            attempt_id="attempt",
+            attempt_id=AttemptId("attempt"),
         ),
-        workspace_id="workspace",
-        commit_id="c" * 40,
+        workspace_id=WorkspaceId("workspace"),
+        commit_id=CommitId("c" * 40),
         workspace_ref=workspace_ref,
         action_decision_ref=decision_ref,
         manifest_hash=content_hash(()),
@@ -122,10 +142,10 @@ def _profile() -> RepositoryProfile:
 def _workspace() -> CodeWorkspace:
     return CodeWorkspace(
         meta=_run_meta(),
-        workspace_id="workspace",
-        analysis_id="analysis",
+        workspace_id=WorkspaceId("workspace"),
+        analysis_id=AnalysisId("analysis"),
         repository_url="https://example.invalid/repository.git",
-        commit_id="c" * 40,
+        commit_id=CommitId("c" * 40),
         status="READY",
     )
 
@@ -135,12 +155,14 @@ def test_combined_seeder_starts_static_and_official_policy_once() -> None:
     policy = _Seeder("official-policy")
 
     seeded = CombinedPostWorkspaceSeeder(static, policy).ensure_initial(
-        object(), object(), object()
+        AnalysisStartRequest.model_construct(),
+        AnalysisRunState.model_construct(),
+        StoredDataRef.model_construct(),
     )
 
     assert tuple(item.work_id for item in seeded) == (
-        "repository-profile",
-        "official-policy",
+        WorkId("repository-profile"),
+        WorkId("official-policy"),
     )
     assert static.calls == policy.calls == 1
 
@@ -171,19 +193,18 @@ def test_t11_is_built_lazily_from_current_profile_and_exact_checkout() -> None:
     locator = _Locator(root)
     built: list[tuple[RepositoryProfile, Path]] = []
     service = cast(T11Services, object())
+    def build(found: RepositoryProfile, found_root: Path) -> T11Services:
+        built.append((found, found_root))
+        return service
+
     resolver = CurrentRepositoryProfileT11Resolver(
         records=cast(Any, _Records(profile)),
         queries=cast(Any, _Queries((profile,))),
         workspace_for=lambda _work: _workspace(),
         workspace_locator=cast(Any, locator),
-        build=lambda found, found_root: (
-            built.append((found, found_root)) or service
-        ),
+        build=build,
     )
-    work = cast(
-        Any,
-        SimpleNamespace(meta=profile.meta),
-    )
+    work = WorkExecutionState.model_construct(meta=profile.meta)
 
     assert resolver(work) is service
     assert resolver(work) is service
@@ -203,10 +224,7 @@ def test_t11_fails_closed_before_build_when_current_profile_is_missing() -> None
             T11Services, built.append((found, root))
         ),
     )
-    work = cast(
-        Any,
-        SimpleNamespace(meta=profile.meta),
-    )
+    work = WorkExecutionState.model_construct(meta=profile.meta)
 
     with pytest.raises(ValueError, match="CURRENT_REPOSITORY_PROFILE_REQUIRED"):
         resolver(work)

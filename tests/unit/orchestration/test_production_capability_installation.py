@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import shutil
 from collections.abc import Iterator
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -15,7 +16,16 @@ from sastsimi.config.production_profile import ProductionProfile
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.analysis import AnalysisStartRequest
 from sastsimi.contracts.budget import Purpose
-from sastsimi.contracts.capabilities import RuntimeCapabilityProfile
+from sastsimi.contracts.capabilities import (
+    CapabilityArchitecture,
+    CapabilityKind,
+    CapabilityLanguage,
+    CapabilityOperatingSystem,
+    CapabilityOperation,
+    RuntimeCapabilityProfile,
+    RuntimeCapabilitySelection,
+    StaticToolCapabilitySelection,
+)
 from sastsimi.contracts.ids import (
     AnalysisId,
     CommitId,
@@ -24,6 +34,7 @@ from sastsimi.contracts.ids import (
     StoredDataId,
     WorkspaceId,
 )
+from sastsimi.contracts.llm import LLMRole, PromptRegistryEntry
 from sastsimi.contracts.refs import (
     HostConfigurationRef,
     RecordRef,
@@ -31,7 +42,8 @@ from sastsimi.contracts.refs import (
     StoredDataRef,
     reference,
 )
-from sastsimi.contracts.work import WorkType
+from sastsimi.contracts.static import StaticToolProfile
+from sastsimi.contracts.work import TransitionCommit, WorkType
 from sastsimi.orchestration.production_call_authority import AnalysisApprovedRoute
 from sastsimi.orchestration.production_capabilities import (
     DurableHandlerFailureRecorder,
@@ -45,16 +57,22 @@ from sastsimi.orchestration.production_composition import (
     ProductionInstallationContext,
 )
 from sastsimi.orchestration.run_scope_plan import PlannedRunScope
+from sastsimi.ports.dto import Record, TransitionCommitRequest
 from sastsimi.ports.llm_provider import LLMProviderAdapter
 from sastsimi.ports.trusted_evidence import UnprovenEvidence
 from sastsimi.storage.artifact_store import LocalArtifactStore
 from tests.contract.domain.fixtures import meta
 from tests.integration.orchestration.test_production_composition import _profile
 from tests.unit.orchestration.test_production_llm_work_handlers import _context
-from tests.unit.prompts.test_production_configuration import (
-    _approved_hypothesis_route,
-    _service,
-)
+
+
+def _prompt_fixture(tmp_path: Path) -> tuple[Any, Any, Any, Any, Any]:
+    fixtures = import_module("tests.unit.prompts.test_production_configuration")
+    service, records, artifacts = fixtures._service(tmp_path)
+    route, approval = fixtures._approved_hypothesis_route(
+        service, records, artifacts
+    )
+    return service, records, artifacts, route, approval
 
 
 class _Provider:
@@ -75,9 +93,68 @@ class _Capabilities:
 
     def resolve_pinned_active_profile(
         self, profile_ref: HostConfigurationRef
-    ) -> RuntimeCapabilityProfile:
+    ) -> RuntimeCapabilityProfile | StaticToolProfile:
         self.calls.append(profile_ref)
         return self.profile
+
+    def resolve_active_capability(
+        self,
+        *,
+        capability_kind: CapabilityKind,
+        language: CapabilityLanguage,
+        operation: CapabilityOperation,
+        operating_system: CapabilityOperatingSystem,
+        architecture: CapabilityArchitecture,
+    ) -> RuntimeCapabilitySelection:
+        raise AssertionError("pinned bundle must not discover capabilities")
+
+    def resolve_active_static_tool(
+        self,
+        *,
+        adapter_key: str,
+        language: CapabilityLanguage,
+        operating_system: CapabilityOperatingSystem,
+        architecture: CapabilityArchitecture,
+    ) -> StaticToolCapabilitySelection:
+        raise AssertionError("pinned bundle must not discover capabilities")
+
+
+@dataclass
+class _ProductionRoute:
+    role: LLMRole
+    task_kind: str
+    provider_profile_key: str
+    model: str
+    prompt_key: str
+
+
+class _RecordStore:
+    """Make the narrow prompt-test registry satisfy the production store port."""
+
+    def __init__(self, delegate: Any) -> None:
+        self._delegate = delegate
+
+    def add(self, record: Record) -> StoredDataRef:
+        ref = self._delegate.add(record)
+        if not isinstance(ref, StoredDataRef):
+            raise AssertionError("test record must be code-scoped")
+        return ref
+
+    def get_exact(self, ref: RecordRef) -> Record:
+        return cast(Record, self._delegate.get_exact(ref))
+
+    def is_revision_descendant(
+        self, earlier_ref: RecordRef, later_ref: RecordRef
+    ) -> bool:
+        return earlier_ref == later_ref
+
+    def stage_record(self, record: Record) -> RecordRef:
+        return self.add(record)
+
+    def commit_transition(
+        self, request: TransitionCommitRequest
+    ) -> TransitionCommit:
+        raise AssertionError(request)
 
 
 class _BlockRunner:
@@ -108,7 +185,7 @@ def data_dir() -> Iterator[Path]:
             shutil.rmtree(path)
 
 
-def _single_route_profile(route: object) -> ProductionProfile:
+def _single_route_profile(route: _ProductionRoute) -> ProductionProfile:
     values = _profile().model_dump(mode="python")
     values["providers"] = (
         {
@@ -122,11 +199,11 @@ def _single_route_profile(route: object) -> ProductionProfile:
     )
     values["llm_routes"] = (
         {
-            "role": cast(Any, route).role,
-            "task_kind": cast(Any, route).task_kind,
-            "provider_profile_key": cast(Any, route).provider_profile_key,
-            "model": cast(Any, route).model,
-            "prompt_key": cast(Any, route).prompt_key,
+            "role": route.role,
+            "task_kind": route.task_kind,
+            "provider_profile_key": route.provider_profile_key,
+            "model": route.model,
+            "prompt_key": route.prompt_key,
         },
     )
     return ProductionProfile.model_validate(values)
@@ -203,11 +280,18 @@ def _bundle(
 ) -> tuple[
     ProfileBackedProductionCapabilityBundle,
     ProductionProfile,
-    Any,
+    _RecordStore,
     _Capabilities,
 ]:
-    service, records, artifacts = _service(tmp_path)
-    route, approval = _approved_hypothesis_route(service, records, artifacts)
+    service, prompt_records, artifacts, raw_route, approval = _prompt_fixture(tmp_path)
+    route = _ProductionRoute(
+        role=cast(LLMRole, raw_route.role),
+        task_kind=raw_route.task_kind,
+        provider_profile_key=raw_route.provider_profile_key,
+        model=raw_route.model,
+        prompt_key=raw_route.prompt_key,
+    )
+    records = _RecordStore(prompt_records)
     profile = _single_route_profile(route)
     git_profile = _git_profile()
     git_ref = reference(git_profile)
@@ -301,6 +385,7 @@ def test_profile_backed_resolver_rejects_stale_prompt_before_install(
     bundle, profile, records, _capabilities = _bundle(data_dir)
     active_ref = bundle.approved_llm_routes[0].approval.active_prompt_ref
     active = records.get_exact(active_ref)
+    assert isinstance(active, PromptRegistryEntry)
     records.add(
         active.model_copy(
             update={

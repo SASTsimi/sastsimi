@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from importlib import import_module
 from typing import Any, cast
 
 import pytest
 
 from sastsimi.contracts.dynamic import SandboxEnvironment
-from sastsimi.contracts.refs import RecordRef, StoredDataRef
-from sastsimi.contracts.work import AttemptStatus, AttemptTrigger, WorkAttempt
+from sastsimi.contracts.records import RecordMeta
+from sastsimi.contracts.refs import RecordRef, RunStoredDataRef, StoredDataRef
+from sastsimi.contracts.work import (
+    AttemptStatus,
+    AttemptTrigger,
+    WorkAttempt,
+    WorkExecutionState,
+)
 from sastsimi.orchestration.production_cancellation import (
     ProductionProviderCancellation,
     ProductionSandboxCancellation,
@@ -14,10 +22,55 @@ from sastsimi.orchestration.production_cancellation import (
 from sastsimi.ports.dto import CancellationResult
 from sastsimi.ports.scheduler import CancellationTarget
 from sastsimi.sandbox.docker_adapter import DockerContainerState
-from tests.e2e.test_dynamic_reproduction import _work as _dynamic_work
-from tests.integration.cli.test_run_control import _attempt, _run_ref, _work
 from tests.integration.providers.test_llm_call_service import fixture
-from tests.integration.sandbox.test_container_lifecycle import _meta, _ref
+
+
+def _work(status: str) -> WorkExecutionState:
+    helper = cast(
+        Callable[[str], WorkExecutionState],
+        import_module("tests.integration.cli.test_run_control")._work,
+    )
+    return helper(status)
+
+
+def _attempt(work: WorkExecutionState) -> WorkAttempt:
+    helper = cast(
+        Callable[[WorkExecutionState], WorkAttempt],
+        import_module("tests.integration.cli.test_run_control")._attempt,
+    )
+    return helper(work)
+
+
+def _run_ref(kind: str = "action_request") -> RunStoredDataRef:
+    helper = cast(
+        Callable[[str], RunStoredDataRef],
+        import_module("tests.integration.cli.test_run_control")._run_ref,
+    )
+    return helper(kind)
+
+
+def _meta(kind: str, record_id: str) -> RecordMeta:
+    helper = cast(
+        Callable[[str, str], RecordMeta],
+        import_module("tests.integration.sandbox.test_container_lifecycle")._meta,
+    )
+    return helper(kind, record_id)
+
+
+def _ref(kind: str, name: str) -> StoredDataRef:
+    helper = cast(
+        Callable[[str, str], StoredDataRef],
+        import_module("tests.integration.sandbox.test_container_lifecycle")._ref,
+    )
+    return helper(kind, name)
+
+
+def _dynamic_work(request_ref: StoredDataRef) -> WorkExecutionState:
+    helper = cast(
+        Callable[[StoredDataRef], WorkExecutionState],
+        import_module("tests.e2e.test_dynamic_reproduction")._work,
+    )
+    return helper(request_ref)
 
 
 def _target(

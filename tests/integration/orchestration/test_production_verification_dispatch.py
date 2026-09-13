@@ -2,11 +2,13 @@
 
 import json
 from pathlib import Path
+from typing import cast
 
 from sqlalchemy import insert
 
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.orchestration.production_verification_dispatch import (
     InitialVerificationDispatcher,
@@ -28,8 +30,12 @@ def test_committed_initial_proposal_registers_ready_verification(
     h.evidence.identities[verification_identity] = RequesterRole.VERIFICATION
 
     def data(kind: str) -> dict[str, object]:
-        value = json.loads(json.dumps(make(kind)).replace('"ws1"', '"w1"'))
-        value["meta"]["created_at"] = h.clock.now().isoformat()
+        value = cast(
+            dict[str, object],
+            json.loads(json.dumps(make(kind)).replace('"ws1"', '"w1"')),
+        )
+        meta = cast(dict[str, object], value["meta"])
+        meta["created_at"] = h.clock.now().isoformat()
         return value
 
     book = VerificationPlaybook.model_validate_json(
@@ -52,15 +58,19 @@ def test_committed_initial_proposal_registers_ready_verification(
                 )
             )
 
+    policy_ref = reference(policy)
+    proposal_ref = reference(proposal)
+    assert isinstance(policy_ref, StoredDataRef)
+    assert isinstance(proposal_ref, StoredDataRef)
     InitialVerificationDispatcher(
         records=h.records,
         current=runtime.queries,
         registrar=runtime.verification_registration,
         runner=runner,
-        policy_ref=reference(policy),
+        policy_ref=policy_ref,
         verification_identity_ref=verification_identity,
         orchestration_identity_ref=orchestration,
-    )((reference(proposal),))
+    )((proposal_ref,))
 
     works = runtime.work.store.work_for_run("a1")
     verification = tuple(item for item in works if item.work_type == "VERIFICATION")

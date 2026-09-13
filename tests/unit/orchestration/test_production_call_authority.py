@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -28,17 +29,36 @@ from sastsimi.contracts.budget import (
     Purpose,
 )
 from sastsimi.contracts.evaluation import UsageMeasurement
-from sastsimi.contracts.ids import AnalysisId, CommitId, OpaqueId, WorkspaceId
-from sastsimi.contracts.llm import LLMInvocationRequest, LLMInvocationResult
+from sastsimi.contracts.ids import (
+    AnalysisId,
+    AttemptId,
+    CommitId,
+    DecisionId,
+    LogicalRecordId,
+    OpaqueId,
+    ProgramId,
+    RecordId,
+    StoredDataId,
+    WorkspaceId,
+)
+from sastsimi.contracts.llm import (
+    LLMCallSpec,
+    LLMInvocationRequest,
+    LLMInvocationResult,
+    LLMRole,
+    PromptPayload,
+    PromptRegistryEntry,
+)
 from sastsimi.contracts.llm_closure import llm_action_input_refs
 from sastsimi.contracts.records import RecordMeta, RunMeta
 from sastsimi.contracts.refs import (
+    RecordRef,
     RunStoredDataRef,
     StoredDataRef,
     reference,
 )
 from sastsimi.contracts.static import StaticFactBundle
-from sastsimi.contracts.work import WorkExecutionState, WorkType
+from sastsimi.contracts.work import TransitionCommit, WorkExecutionState, WorkType
 from sastsimi.orchestration.production_call_authority import (
     AnalysisApprovedRoute,
     ExactAnalysisProductionRouteLookup,
@@ -48,14 +68,24 @@ from sastsimi.orchestration.production_call_authority import (
 from sastsimi.orchestration.production_llm_work_handlers import (
     ConfiguredProductionCallResolver,
 )
-from sastsimi.ports.dto import BudgetCommitRequest, BudgetReservationRequest
+from sastsimi.ports.dto import (
+    BudgetCommitRequest,
+    BudgetReservationRequest,
+    Record,
+    TransitionCommitRequest,
+)
 from sastsimi.ports.llm_invocation import PersistedLLMInvocation
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from tests.contract.domain.fixtures import bundle
-from tests.unit.prompts.test_production_configuration import (
-    _approved_hypothesis_route,
-    _service,
-)
+
+
+def _prompt_fixture(tmp_path: Path) -> tuple[Any, Any, Any, Any, Any]:
+    fixtures = import_module("tests.unit.prompts.test_production_configuration")
+    service, records, artifacts = fixtures._service(tmp_path)
+    route, approval = fixtures._approved_hypothesis_route(
+        service, records, artifacts
+    )
+    return service, records, artifacts, route, approval
 
 NOW = datetime(2026, 9, 13, tzinfo=UTC)
 
@@ -80,29 +110,29 @@ def test_production_call_authority_uses_role_specific_workflow_actions(
 
 def _stored(kind: str, name: str) -> StoredDataRef:
     return StoredDataRef(
-        stored_data_id=name,
+        stored_data_id=StoredDataId(name),
         data_kind=kind,
         content_hash=hashlib.sha256(name.encode()).hexdigest(),
         workspace_id=WorkspaceId("ws1"),
         commit_id=CommitId("c1"),
-        record_id=f"{name}-record",
+        record_id=RecordId(f"{name}-record"),
     )
 
 
 def _run_ref(kind: str, name: str) -> RunStoredDataRef:
     return RunStoredDataRef(
-        stored_data_id=name,
+        stored_data_id=StoredDataId(name),
         data_kind=kind,
         content_hash=hashlib.sha256(name.encode()).hexdigest(),
         analysis_id=AnalysisId("a1"),
-        record_id=f"{name}-record",
+        record_id=RecordId(f"{name}-record"),
     )
 
 
 def _record_meta(kind: str, name: str, *, attempt_id: str | None = None) -> RecordMeta:
     return RecordMeta(
-        record_id=f"{name}-record",
-        logical_record_id=f"{name}-logical",
+        record_id=RecordId(f"{name}-record"),
+        logical_record_id=LogicalRecordId(f"{name}-logical"),
         record_type=kind,
         schema_version="1.0.0",
         revision_number=1,
@@ -112,14 +142,14 @@ def _record_meta(kind: str, name: str, *, attempt_id: str | None = None) -> Reco
         workspace_id=WorkspaceId("ws1"),
         commit_id=CommitId("c1"),
         hypothesis_id=None,
-        attempt_id=attempt_id,
+        attempt_id=AttemptId(attempt_id) if attempt_id is not None else None,
     )
 
 
 def _run_meta(kind: str, name: str) -> RunMeta:
     return RunMeta(
-        record_id=f"{name}-record",
-        logical_record_id=f"{name}-logical",
+        record_id=RecordId(f"{name}-record"),
+        logical_record_id=LogicalRecordId(f"{name}-logical"),
         record_type=kind,
         schema_version="1.0.0",
         revision_number=1,
@@ -135,29 +165,64 @@ class _Ids:
 
     def new[T: OpaqueId](self, kind: type[T]) -> T:
         self.value += 1
-        return kind(f"call-authority-{self.value}")
+        return kind.model_validate(f"call-authority-{self.value}")
 
 
 class _Clock:
     def now(self) -> datetime:
         return NOW
 
+    def monotonic_ms(self) -> int:
+        return 0
+
+
+@dataclass
+class _ProductionRoute:
+    role: LLMRole
+    task_kind: str
+    provider_profile_key: str
+    model: str
+    prompt_key: str
+
+
+def _production_route(route: Any) -> _ProductionRoute:
+    return _ProductionRoute(
+        role=cast(LLMRole, route.role),
+        task_kind=cast(str, route.task_kind),
+        provider_profile_key=cast(str, route.provider_profile_key),
+        model=cast(str, route.model),
+        prompt_key=cast(str, route.prompt_key),
+    )
+
 
 class _Records:
     def __init__(self, delegate: Any) -> None:
         self.delegate = delegate
 
-    def add(self, record: Any) -> StoredDataRef:
-        return self.delegate.add(record)
+    def add(self, record: Record) -> StoredDataRef:
+        ref = self.delegate.add(record)
+        if not isinstance(ref, StoredDataRef):
+            raise AssertionError("test record must be code-scoped")
+        return ref
 
-    def get_exact(self, ref: object) -> object:
-        return self.delegate.get_exact(ref)
+    def get_exact(self, ref: RecordRef) -> Record:
+        return cast(Record, self.delegate.get_exact(ref))
 
-    def stage_record(self, record: Any) -> StoredDataRef:
+    def stage_record(self, record: Record) -> RecordRef:
         exact = reference(record)
         assert isinstance(exact, StoredDataRef)
         self.delegate.values[(str(exact.record_id), exact.content_hash)] = record
         return exact
+
+    def is_revision_descendant(
+        self, earlier_ref: RecordRef, later_ref: RecordRef
+    ) -> bool:
+        return earlier_ref == later_ref
+
+    def commit_transition(
+        self, request: TransitionCommitRequest
+    ) -> TransitionCommit:
+        raise AssertionError(request)
 
 
 class _Budget:
@@ -215,17 +280,16 @@ class _Validator:
             )
             for kind in sorted(REQUIRED_CHECKS[action.action_type], key=str)
         )
+        action_ref = self.records.stage_record(action)
+        assert isinstance(action_ref, StoredDataRef)
         decision = ActionDecision(
-            meta=cast(
-                RecordMeta,
-                _record_meta(
-                    "action_decision",
-                    "decision",
-                    attempt_id=str(work.active_attempt_id),
-                ),
+            meta=_record_meta(
+                "action_decision",
+                "decision",
+                attempt_id=str(work.active_attempt_id),
             ),
-            decision_id="decision",
-            action_ref=self.records.stage_record(action),
+            decision_id=DecisionId("decision"),
+            action_ref=action_ref,
             decision=Decision.ALLOW,
             required_checks=tuple(item.check_type for item in checks),
             check_results=checks,
@@ -279,7 +343,7 @@ def _state(binding_ref: StoredDataRef) -> AnalysisRunState:
         purpose=Purpose.PRODUCTION,
         eval_config_refs=(),
         analysis_input_ref=_run_ref("analysis_run_input", "run-input"),
-        program_id="program",
+        program_id=ProgramId("program"),
         execution_budget_profile_ref=_run_ref("execution_budget_profile", "execution"),
         budget_binding_ref=binding_ref,
         workspace_id=WorkspaceId("ws1"),
@@ -303,8 +367,8 @@ def _work(source_ref: StoredDataRef) -> WorkExecutionState:
 def test_exact_route_authorizes_one_call_and_accounts_only_returned_usage(
     tmp_path: Path,
 ) -> None:
-    service, prompt_records, artifacts = _service(tmp_path)
-    route, approval = _approved_hypothesis_route(service, prompt_records, artifacts)
+    service, prompt_records, artifacts, raw_route, approval = _prompt_fixture(tmp_path)
+    route = _production_route(raw_route)
     records = _Records(prompt_records)
     facts = StaticFactBundle.model_validate_json(__import__("json").dumps(bundle()))
     facts_ref = records.add(facts)
@@ -322,18 +386,18 @@ def test_exact_route_authorizes_one_call_and_accounts_only_returned_usage(
     identity_ref = binding.work_budget_profile_ref
     authorizer = ProductionPreparedCallAuthorizer(
         runner=runner,
-        records=records,  # type: ignore[arg-type]
+        records=records,
         requester_identities={("a1", "HYPOTHESIS"): identity_ref},
         reserved_cost_minor_units=100,
     )
     lookup = ExactAnalysisProductionRouteLookup(
-        records=records,  # type: ignore[arg-type]
+        records=records,
         queries=service._queries,  # noqa: SLF001 - exact shared test registry
         approvals=(AnalysisApprovedRoute("a1", route, approval),),
     )
     resolver = ConfiguredProductionCallResolver(
         configuration=service,
-        records=records,  # type: ignore[arg-type]
+        records=records,
         route_lookup=lookup,
         authorizer=authorizer,
     )
@@ -351,13 +415,14 @@ def test_exact_route_authorizes_one_call_and_accounts_only_returned_usage(
         if isinstance(value, ActionRequest)
     )
     authorized_spec = records.get_exact(call.call_spec_ref)
-    assert hasattr(authorized_spec, "prompt_payload_ref")
+    assert isinstance(authorized_spec, LLMCallSpec)
     authorized_payload = records.get_exact(authorized_spec.prompt_payload_ref)
+    assert isinstance(authorized_payload, PromptPayload)
     assert action.action_type == "CALL_LLM"
     assert action.input_refs == llm_action_input_refs(
         call.call_spec_ref,
-        authorized_spec,  # type: ignore[arg-type]
-        authorized_payload,  # type: ignore[arg-type]
+        authorized_spec,
+        authorized_payload,
     )
     assert action.input_refs.count(facts_ref) == 1
     assert action.requested_by == "HYPOTHESIS"
@@ -434,25 +499,26 @@ def test_exact_route_authorizes_one_call_and_accounts_only_returned_usage(
 def test_route_lookup_blocks_cross_analysis_and_stale_approval(
     tmp_path: Path, failure: str
 ) -> None:
-    service, records, artifacts = _service(tmp_path)
-    route, approval = _approved_hypothesis_route(service, records, artifacts)
+    service, records, artifacts, raw_route, approval = _prompt_fixture(tmp_path)
+    route = _production_route(raw_route)
+    exact_records = _Records(records)
     lookup = ExactAnalysisProductionRouteLookup(
-        records=records,  # type: ignore[arg-type]
+        records=exact_records,
         queries=service._queries,  # noqa: SLF001 - exact shared test registry
         approvals=(AnalysisApprovedRoute("a1", route, approval),),
     )
     analysis_id = "a2" if failure == "cross-analysis" else "a1"
     if failure == "stale":
-        active = records.get_exact(approval.active_prompt_ref)
-        assert hasattr(active, "meta")
+        active = exact_records.get_exact(approval.active_prompt_ref)
+        assert isinstance(active, PromptRegistryEntry)
         records.add(
-            active.model_copy(  # type: ignore[union-attr]
+            active.model_copy(
                 update={
-                    "meta": active.meta.model_copy(  # type: ignore[union-attr]
+                    "meta": active.meta.model_copy(
                         update={
                             "record_id": "new-active-record",
-                            "previous_record_id": active.meta.record_id,  # type: ignore[union-attr]
-                            "revision_number": active.meta.revision_number + 1,  # type: ignore[union-attr]
+                            "previous_record_id": active.meta.record_id,
+                            "revision_number": active.meta.revision_number + 1,
                         }
                     )
                 }

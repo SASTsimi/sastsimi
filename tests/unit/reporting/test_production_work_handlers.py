@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from sastsimi.contracts.work import SubjectType, WorkType
+from sastsimi.reporting.finding_normalization import FindingNormalizationService
 from sastsimi.reporting.work_handlers import (
     FindingNormalizeHandler,
+    ReporterDraftWorkflow,
+    ReporterInputResolver,
     ReporterWorkHandler,
 )
+from sastsimi.runtime.workflow_runner import WorkflowRunner
 from tests.unit.orchestration.test_production_llm_work_handlers import _context, _ref
 
 
@@ -40,9 +44,9 @@ async def test_finding_handler_terminally_commits_instead_of_only_staging() -> N
     service = SimpleNamespace(assemble=lambda **_kwargs: finding)
     publisher = _Publisher()
     handler = FindingNormalizeHandler(
-        service=service,
+        service=cast(FindingNormalizationService, service),
         records=SimpleNamespace(),
-        publisher=publisher,
+        publisher=cast(WorkflowRunner, publisher),
         identity_ref=_ref("role_identity", "verification-identity"),
     )
 
@@ -68,8 +72,10 @@ async def test_reporter_handler_fails_closed_without_terminal_publisher() -> Non
 
     workflow.create_draft = _draft
     handler = ReporterWorkHandler(
-        workflow=workflow,
-        resolve_inputs=lambda _context: (object(), object()),
+        workflow=cast(ReporterDraftWorkflow, workflow),
+        resolve_inputs=cast(
+            ReporterInputResolver, lambda _context: (object(), object())
+        ),
     )
 
     with pytest.raises(ValueError, match="REPORT_DRAFT_PUBLISHER_REQUIRED"):

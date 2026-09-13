@@ -2,6 +2,7 @@
 
 import json
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -10,7 +11,7 @@ from sastsimi.contracts.dynamic import (
     DynamicReproductionResult,
     DynamicReproductionState,
 )
-from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
 from sastsimi.contracts.work import (
     SubjectType,
     WorkExecutionState,
@@ -20,15 +21,21 @@ from sastsimi.contracts.work import (
 from sastsimi.orchestration.dynamic_verification_handoff import (
     DynamicParentResumeService,
 )
+from sastsimi.ports.dto import Record
+from sastsimi.ports.record_store import RecordStore
+from sastsimi.ports.runtime_query import RuntimeQueryPort
+from sastsimi.runtime.workflow_runner import WorkflowRunner
 from tests.contract.domain.canonical_fixtures import make
 from tests.unit.orchestration.test_production_llm_work_handlers import _context
 
 
 class _Records:
-    def __init__(self, records: tuple[object, ...]) -> None:
-        self.values = {reference(item): item for item in records}  # type: ignore[arg-type]
+    def __init__(self, records: tuple[Record, ...]) -> None:
+        self.values: dict[RecordRef, Record] = {
+            reference(item): item for item in records
+        }
 
-    def get_exact(self, ref: object) -> object:
+    def get_exact(self, ref: RecordRef) -> Record:
         return self.values[ref]
 
 
@@ -88,7 +95,16 @@ class _Runner:
         return object()
 
 
-def _chain(*, current_parent_generation: int = 1) -> tuple[object, ...]:
+def _chain(
+    *, current_parent_generation: int = 1
+) -> tuple[
+    WorkExecutionState,
+    WorkExecutionState,
+    WorkExecutionState,
+    DynamicReproductionState,
+    DynamicReproductionRequest,
+    DynamicReproductionResult,
+]:
     request = DynamicReproductionRequest.model_validate_json(
         json.dumps(make("DynamicReproductionRequest"))
     )
@@ -160,9 +176,9 @@ def test_successful_child_resumes_the_exact_same_generation_once() -> None:
     work = _WorkStore(parent, child)
     runner = _Runner(work)
     service = DynamicParentResumeService(
-        records=_Records((old_parent, child, request, result)),  # type: ignore[arg-type]
-        queries=_Queries(state),  # type: ignore[arg-type]
-        runner=runner,  # type: ignore[arg-type]
+        records=cast(RecordStore, _Records((old_parent, child, request, result))),
+        queries=cast(RuntimeQueryPort, _Queries(state)),
+        runner=cast(WorkflowRunner, runner),
         verification_identity_ref=StoredDataRef.model_validate(make("StoredDataRef")),
     )
 
@@ -183,9 +199,9 @@ def test_late_child_cannot_resume_a_newer_verification_generation() -> None:
     work = _WorkStore(parent, child)
     runner = _Runner(work)
     service = DynamicParentResumeService(
-        records=_Records((old_parent, child, request, result)),  # type: ignore[arg-type]
-        queries=_Queries(state),  # type: ignore[arg-type]
-        runner=runner,  # type: ignore[arg-type]
+        records=cast(RecordStore, _Records((old_parent, child, request, result))),
+        queries=cast(RuntimeQueryPort, _Queries(state)),
+        runner=cast(WorkflowRunner, runner),
         verification_identity_ref=StoredDataRef.model_validate(make("StoredDataRef")),
     )
 

@@ -29,7 +29,7 @@ class _Ids:
 
     def new[T: OpaqueId](self, kind: type[T]) -> T:
         self.value += 1
-        return kind(f"id-{self.value}")
+        return kind.model_validate(f"id-{self.value}")
 
 
 def _execution_ref() -> RunStoredDataRef:

@@ -6,7 +6,17 @@ from typing import Any, cast
 
 import pytest
 
-from sastsimi.contracts.capabilities import RuntimeCapabilityProfile
+from sastsimi.contracts.capabilities import (
+    CapabilityArchitecture,
+    CapabilityKind,
+    CapabilityLanguage,
+    CapabilityOperatingSystem,
+    CapabilityOperation,
+    RuntimeCapabilityProfile,
+    RuntimeCapabilitySelection,
+    StaticToolCapabilitySelection,
+)
+from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef, reference
 from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.orchestration.production_onboarding import ProductionProvisioningManifest
@@ -41,16 +51,37 @@ class _Configuration:
     ) -> RuntimeCapabilityProfile | StaticToolProfile:
         return self.records[ref]
 
+    def resolve_active_capability(
+        self,
+        *,
+        capability_kind: CapabilityKind,
+        language: CapabilityLanguage,
+        operation: CapabilityOperation,
+        operating_system: CapabilityOperatingSystem,
+        architecture: CapabilityArchitecture,
+    ) -> RuntimeCapabilitySelection:
+        raise AssertionError("pinned provisioning must not perform discovery")
+
+    def resolve_active_static_tool(
+        self,
+        *,
+        adapter_key: str,
+        language: CapabilityLanguage,
+        operating_system: CapabilityOperatingSystem,
+        architecture: CapabilityArchitecture,
+    ) -> StaticToolCapabilitySelection:
+        raise AssertionError("pinned provisioning must not perform discovery")
+
 
 def _run_ref(kind: str, index: int) -> StoredDataRef:
     marker = format(index, "x")[-1]
     return StoredDataRef(
-        stored_data_id=f"{kind}-{index}",
+        stored_data_id=StoredDataId(f"{kind}-{index}"),
         data_kind=kind,
         content_hash=marker * 64,
-        workspace_id="workspace",
-        commit_id="c" * 40,
-        record_id=f"{kind}-{index}",
+        workspace_id=WorkspaceId("workspace"),
+        commit_id=CommitId("c" * 40),
+        record_id=RecordId(f"{kind}-{index}"),
     )
 
 
@@ -155,7 +186,13 @@ def _manifest() -> tuple[
     for item in cast(list[dict[str, object]], payload["capabilities"]):
         item["profile_ref"] = refs[cast(str, item["slot"])].model_dump(mode="json")
     manifest = ProductionProvisioningManifest.model_validate_json(json.dumps(payload))
-    records = {refs["GIT_CLONE"]: git, refs["PYTHON_RUNTIME"]: python, refs["AST"]: ast}
+    records: dict[
+        HostConfigurationRef, RuntimeCapabilityProfile | StaticToolProfile
+    ] = {
+        refs["GIT_CLONE"]: git,
+        refs["PYTHON_RUNTIME"]: python,
+        refs["AST"]: ast,
+    }
     artifacts = {
         item.content_sha256: f"{item.slot}-data".encode()
         for item in manifest.artifacts
@@ -170,7 +207,7 @@ def _manifest() -> tuple[
 def test_exact_provisioning_resolves_only_current_approved_inputs() -> None:
     manifest, records, artifacts = _manifest()
     resolver = ExactProductionProvisioningResolver(
-        configuration=cast(object, _Configuration(records)),  # type: ignore[arg-type]
+        configuration=_Configuration(records),
         evidence=artifacts.__getitem__,
     )
 
@@ -205,7 +242,7 @@ def test_exact_provisioning_rejects_stale_capability_substitution() -> None:
         and record.capability_kind == "PYTHON_RUNTIME"
     )
     resolver = ExactProductionProvisioningResolver(
-        configuration=cast(object, _Configuration(records)),  # type: ignore[arg-type]
+        configuration=_Configuration(records),
         evidence=artifacts.__getitem__,
     )
 

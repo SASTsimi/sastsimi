@@ -197,10 +197,14 @@ def test_production_status_is_separate_from_demo_results(
 def test_production_unavailable_prints_only_the_safe_reason_code(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    async def unavailable(_request: object) -> RunOutcome:
-        raise analyze_command.ProductionAnalyzeUnavailable(
-            "PRODUCTION_PROVIDER_APPROVAL_INCOMPLETE"
-        )
+    class _UnavailableEntrypoint:
+        async def __call__(
+            self, request: analyze_command.ProductionAnalyzeRequest
+        ) -> RunOutcome:
+            del request
+            raise analyze_command.ProductionAnalyzeUnavailable(
+                "PRODUCTION_PROVIDER_APPROVAL_INCOMPLETE"
+            )
 
     assert (
         main(
@@ -217,7 +221,7 @@ def test_production_unavailable_prints_only_the_safe_reason_code(
                 "--format",
                 "json",
             ],
-            production_analyze=unavailable,
+            production_analyze=_UnavailableEntrypoint(),
         )
         == 4
     )

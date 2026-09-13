@@ -7,7 +7,13 @@ import pytest
 from sastsimi.config.production_profile import ProductionBudgetSettings
 from sastsimi.contracts.actions import ActionRequest, ActionType, RequesterRole
 from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
-from sastsimi.contracts.budget import WORK_OPERATIONS, Purpose
+from sastsimi.contracts.budget import (
+    WORK_OPERATIONS,
+    DynamicReproductionLifecycleProfile,
+    Purpose,
+    VerificationBudgetProfile,
+    WorkBudgetProfile,
+)
 from sastsimi.contracts.ids import (
     ActionId,
     AnalysisId,
@@ -15,7 +21,9 @@ from sastsimi.contracts.ids import (
     CommitId,
     LogicalRecordId,
     OpaqueId,
+    ProgramId,
     RecordId,
+    StoredDataId,
     WorkId,
     WorkspaceId,
 )
@@ -50,28 +58,32 @@ class _Ids:
 
     def new[T: OpaqueId](self, kind: type[T]) -> T:
         self.index += 1
-        return kind(f"operator-{kind.__name__.lower()}-{self.index}")
+        return kind.model_validate(f"operator-{kind.__name__.lower()}-{self.index}")
 
 
 class _Publisher:
     def __init__(self) -> None:
-        self.work = []
-        self.verification = []
-        self.dynamic = []
+        self.work: list[WorkBudgetProfile] = []
+        self.verification: list[VerificationBudgetProfile] = []
+        self.dynamic: list[DynamicReproductionLifecycleProfile] = []
 
-    def register_work_budget(self, record: object) -> StoredDataRef:
+    def register_work_budget(self, record: WorkBudgetProfile) -> StoredDataRef:
         self.work.append(record)
         ref = reference(record)
         assert isinstance(ref, StoredDataRef)
         return ref
 
-    def register_verification_budget(self, record: object) -> StoredDataRef:
+    def register_verification_budget(
+        self, record: VerificationBudgetProfile
+    ) -> StoredDataRef:
         self.verification.append(record)
         ref = reference(record)
         assert isinstance(ref, StoredDataRef)
         return ref
 
-    def register_dynamic_lifecycle(self, record: object) -> StoredDataRef:
+    def register_dynamic_lifecycle(
+        self, record: DynamicReproductionLifecycleProfile
+    ) -> StoredDataRef:
         self.dynamic.append(record)
         ref = reference(record)
         assert isinstance(ref, StoredDataRef)
@@ -117,7 +129,7 @@ def _request(commit: str = "a" * 40) -> AnalysisStartRequest:
     return AnalysisStartRequest(
         repository_ref="https://example.invalid/project.git",
         requested_git_ref=commit,
-        program_id="program-one",
+        program_id=ProgramId("program-one"),
         purpose=Purpose.PRODUCTION,
     )
 
@@ -127,35 +139,35 @@ def _workspace_ready_state(catalog: ProductionOperatorProfiles) -> AnalysisRunSt
     assert isinstance(execution_ref, RunStoredDataRef)
     return AnalysisRunState(
         meta=RunMeta(
-            record_id="state-ready",
-            logical_record_id="state",
+            record_id=RecordId("state-ready"),
+            logical_record_id=LogicalRecordId("state"),
             record_type="analysis_run_state",
             schema_version="1.0.0",
             revision_number=2,
-            previous_record_id="state-started",
+            previous_record_id=RecordId("state-started"),
             created_at=NOW,
             analysis_id=_scope().analysis_id,
         ),
         purpose=Purpose.PRODUCTION,
         eval_config_refs=(),
         analysis_input_ref=RunStoredDataRef(
-            stored_data_id="input",
+            stored_data_id=StoredDataId("input"),
             data_kind="analysis_run_input",
             content_hash="d" * 64,
             analysis_id=_scope().analysis_id,
-            record_id="input",
+            record_id=RecordId("input"),
         ),
-        program_id="program-one",
+        program_id=ProgramId("program-one"),
         execution_budget_profile_ref=execution_ref,
         budget_binding_ref=None,
         workspace_id=_scope().workspace_id,
         commit_id=_scope().commit_id,
         workspace_ref=RunStoredDataRef(
-            stored_data_id="workspace",
+            stored_data_id=StoredDataId("workspace"),
             data_kind="code_workspace",
             content_hash="e" * 64,
             analysis_id=_scope().analysis_id,
-            record_id="workspace",
+            record_id=RecordId("workspace"),
         ),
         run_policy_state_ref=None,
         status="RUNNING",
@@ -231,21 +243,21 @@ def test_multi_output_approval_is_exact_and_exists_only_inside_its_context() -> 
     identity = catalog.identity_ref(RequesterRole.STATIC_ANALYSIS)
     attempt_id = AttemptId("attempt-one")
     transition_ref = StoredDataRef(
-        stored_data_id="transition",
+        stored_data_id=StoredDataId("transition"),
         data_kind="state_transition",
         content_hash="f" * 64,
         workspace_id=_scope().workspace_id,
         commit_id=_scope().commit_id,
-        record_id="transition",
+        record_id=RecordId("transition"),
     )
     work = WorkExecutionState(
         meta=RecordMeta(
-            record_id="work-one",
-            logical_record_id="work-one",
+            record_id=RecordId("work-one"),
+            logical_record_id=LogicalRecordId("work-one"),
             record_type="work_execution_state",
             schema_version="1.0.0",
             revision_number=2,
-            previous_record_id="work-pending",
+            previous_record_id=RecordId("work-pending"),
             created_at=NOW,
             analysis_id=_scope().analysis_id,
             workspace_id=_scope().workspace_id,
@@ -281,20 +293,20 @@ def test_multi_output_approval_is_exact_and_exists_only_inside_its_context() -> 
     assert isinstance(work_ref, StoredDataRef)
     outputs = (
         StoredDataRef(
-            stored_data_id="result-one",
+            stored_data_id=StoredDataId("result-one"),
             data_kind="tool_run_result",
             content_hash="b" * 64,
             workspace_id=_scope().workspace_id,
             commit_id=_scope().commit_id,
-            record_id="result-one",
+            record_id=RecordId("result-one"),
         ),
         StoredDataRef(
-            stored_data_id="result-two",
+            stored_data_id=StoredDataId("result-two"),
             data_kind="rule_execution_record",
             content_hash="c" * 64,
             workspace_id=_scope().workspace_id,
             commit_id=_scope().commit_id,
-            record_id="result-two",
+            record_id=RecordId("result-two"),
         ),
     )
     action = ActionRequest(

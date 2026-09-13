@@ -4,7 +4,7 @@ import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -12,13 +12,15 @@ from sastsimi.agents.dynamic_reproduction import DynamicAgentInvocation
 from sastsimi.agents.verification import VerificationAgentOutcome
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.hypothesis import VulnerabilityHypothesis
+from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.llm import (
     LLMInvocationLog,
     LLMInvocationRequest,
     LLMInvocationResult,
+    LLMRole,
 )
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
 from sastsimi.contracts.static import StaticFactBundle
 from sastsimi.contracts.verification import (
     PlaybookApplication,
@@ -30,31 +32,47 @@ from sastsimi.contracts.work import (
     AttemptStatus,
     AttemptTrigger,
     SubjectType,
+    TransitionCommit,
     WorkAttempt,
     WorkExecutionState,
     WorkStatus,
     WorkType,
 )
 from sastsimi.orchestration.production_llm_work_handlers import (
+    DynamicVerificationPort,
     EvidenceBranchWorkHandler,
+    HypothesesCommittedPort,
     HypothesisProposalWorkHandler,
+    NonDynamicCompletionPort,
     ProductionDynamicStageCallResolver,
     VerificationWorkHandler,
 )
-from sastsimi.ports.dto import WorkContext, WorkHandlerResult
+from sastsimi.ports.dto import (
+    Record,
+    TransitionCommitRequest,
+    WorkContext,
+    WorkHandlerResult,
+)
 from sastsimi.ports.llm_invocation import PersistedLLMInvocation
-from sastsimi.verification.debate_service import DebateIncompleteError
+from sastsimi.ports.verification_assembly import VerificationGenerationInputs
+from sastsimi.runtime.workflow_runner import WorkflowRunner
+from sastsimi.verification.debate_service import (
+    AuthorizedLLMCall,
+    DebateIncompleteError,
+    DebateService,
+)
+from sastsimi.verification.service import VerificationService
 from tests.contract.domain.canonical_fixtures import make
 
 
 def _ref(kind: str, name: str) -> StoredDataRef:
     return StoredDataRef(
-        stored_data_id=name,
+        stored_data_id=StoredDataId(name),
         data_kind=kind,
         content_hash=hashlib.sha256(name.encode()).hexdigest(),
-        workspace_id="ws1",
-        commit_id="c1",
-        record_id=f"{name}-record",
+        workspace_id=WorkspaceId("ws1"),
+        commit_id=CommitId("c1"),
+        record_id=RecordId(f"{name}-record"),
     )
 
 
@@ -152,37 +170,58 @@ def _context(
 
 
 class _Records:
-    def __init__(self, values: dict[StoredDataRef, object]) -> None:
+    def __init__(self, values: dict[StoredDataRef, Record]) -> None:
         self.values = values
 
-    def get_exact(self, ref: object) -> object:
-        return self.values[ref]  # type: ignore[index]
+    def get_exact(self, ref: RecordRef) -> Record:
+        if not isinstance(ref, StoredDataRef):
+            raise LookupError(ref)
+        return self.values[ref]
+
+    def is_revision_descendant(
+        self, earlier_ref: RecordRef, later_ref: RecordRef
+    ) -> bool:
+        return earlier_ref == later_ref
+
+    def stage_record(self, record: Record) -> RecordRef:
+        ref = reference(record)
+        if not isinstance(ref, StoredDataRef):
+            raise AssertionError("test record must be code-scoped")
+        self.values[ref] = record
+        return ref
+
+    def commit_transition(
+        self, request: TransitionCommitRequest
+    ) -> TransitionCommit:
+        raise AssertionError(request)
 
 
 class _Calls:
     def __init__(self) -> None:
-        self.requests: list[tuple[str, str, tuple[StoredDataRef, ...]]] = []
-        self.settled: list[object] = []
+        self.requests: list[tuple[LLMRole, str, tuple[StoredDataRef, ...]]] = []
+        self.settled: list[tuple[AuthorizedLLMCall, PersistedLLMInvocation]] = []
         self.sequence = 0
 
     def resolve(
         self,
         *,
         work: WorkExecutionState,
-        role: str,
+        role: LLMRole,
         task_kind: str,
         source_refs: tuple[StoredDataRef, ...],
-    ) -> Any:
+    ) -> AuthorizedLLMCall:
         self.sequence += 1
         self.requests.append((role, task_kind, source_refs))
-        return SimpleNamespace(
+        return AuthorizedLLMCall(
             work=work,
             decision_ref=_ref("action_decision", f"allow-{self.sequence}"),
             reservation_ref=_ref("budget_reservation", f"reserve-{self.sequence}"),
             call_spec_ref=_ref("llm_call_spec", f"spec-{self.sequence}"),
         )
 
-    def settle(self, call: object, invocation: object) -> None:
+    def settle(
+        self, call: AuthorizedLLMCall, invocation: PersistedLLMInvocation
+    ) -> None:
         self.settled.append((call, invocation))
 
 
@@ -236,7 +275,7 @@ def test_dynamic_stage_resolver_uses_exact_stage_inputs_and_settles() -> None:
             agent_role="DYNAMIC_REPRODUCTION",
         )
     )
-    resolver.settle(authorization, invocation)  # type: ignore[arg-type]
+    resolver.settle(authorization, cast(PersistedLLMInvocation, invocation))
 
     assert calls.requests == [
         ("DYNAMIC_REPRODUCTION", "PLAN_REPRODUCTION", source_refs)
@@ -261,7 +300,7 @@ def test_dynamic_stage_resolver_rejects_unknown_settlement() -> None:
     )
 
     with pytest.raises(ValueError, match="DYNAMIC_LLM_SETTLEMENT_MISMATCH"):
-        resolver.settle(authorization, invocation)  # type: ignore[arg-type]
+        resolver.settle(authorization, cast(PersistedLLMInvocation, invocation))
 
 
 def _persisted_invocation(
@@ -437,9 +476,13 @@ class _VerificationRunner:
         self.events.append(("enqueue", work_type))
         parent_ref = reference(self.parent)
         assert isinstance(parent_ref, StoredDataRef)
+        public_inputs = tuple(
+            ref for ref in self.parent.input_refs if isinstance(ref, StoredDataRef)
+        )
+        assert len(public_inputs) == len(self.parent.input_refs)
         running = _context(
             WorkType(work_type),
-            self.parent.input_refs,
+            public_inputs,
             hypothesis_id="h1",
             subject_type=SubjectType.HYPOTHESIS,
             subject_id="h1",
@@ -465,7 +508,7 @@ class _VerificationRunner:
         self, work: WorkExecutionState, *args: object, **kwargs: object
     ) -> tuple[StoredDataRef, ...]:
         assert work == self.parent
-        (record,) = args[2]
+        (record,) = cast(tuple[Record], args[2])
         record_ref = reference(record)
         assert isinstance(record_ref, StoredDataRef)
         self.records.values[record_ref] = record
@@ -509,11 +552,13 @@ class _Debate:
 class _Verification:
     def __init__(self, records: _Records) -> None:
         self.records = records
-        self.generations: list[object] = []
+        self.generations: list[VerificationGenerationInputs] = []
         self.invocation = _persisted_invocation(records, "initial")
 
     async def assess_initial_with_invocation(self, **kwargs: object) -> object:
-        self.generations.append(kwargs["generation"])
+        self.generations.append(
+            cast(VerificationGenerationInputs, kwargs["generation"])
+        )
         assessment = VerificationInitialAssessment.model_construct(
             **(
                 make("VerificationInitialAssessment")
@@ -585,12 +630,16 @@ async def test_hypothesis_handler_uses_exact_bundle_and_settles_real_call() -> N
     context = _context(WorkType.HYPOTHESIS_PROPOSAL, (bundle_ref,))
     calls = _Calls()
     committed: list[tuple[StoredDataRef, ...]] = []
+
+    def commit_hypotheses(proposal_refs: tuple[StoredDataRef, ...]) -> None:
+        committed.append(proposal_refs)
+
     handler = HypothesisProposalWorkHandler(
         records=_Records({bundle_ref: bundle}),
         workflow=_HypothesisWorkflow(proposal_ref),
         calls=calls,
         orchestration_identity_ref=_ref("role_identity", "orchestrator"),
-        hypotheses_committed=committed.append,
+        hypotheses_committed=commit_hypotheses,
     )
 
     result = await handler.execute(context)
@@ -616,7 +665,9 @@ async def test_hypothesis_handler_rejects_exact_ref_mismatch_before_llm_call() -
         workflow=_HypothesisWorkflow(_ref("hypothesis_proposal", "proposal")),
         calls=calls,
         orchestration_identity_ref=_ref("role_identity", "orchestrator"),
-        hypotheses_committed=lambda _refs: None,
+        hypotheses_committed=cast(
+            HypothesesCommittedPort, lambda _proposal_refs: None
+        ),
     )
 
     with pytest.raises(ValueError, match="HYPOTHESIS_STATIC_CLOSURE_MISMATCH"):
@@ -661,7 +712,7 @@ async def test_evidence_handler_executes_one_claimed_branch_without_waiting() ->
     handler = EvidenceBranchWorkHandler(
         role="PRO",
         records=_Records({parent_ref: parent}),
-        debate=_Debate(),
+        debate=cast(DebateService, _Debate()),
         calls=calls,
         evidence_committed=lambda parent, output: joined.append((parent, output)),
     )
@@ -683,16 +734,22 @@ async def test_verification_handler_runs_parent_owned_debate_before_synthesis() 
     non_dynamic = _NonDynamic(context.work, records)
     calls = _Calls()
     scope = _ref("budget_profile_binding", "scope")
+
+    def budget_scope(analysis_id: str) -> StoredDataRef:
+        if analysis_id != "a1":
+            raise LookupError(analysis_id)
+        return scope
+
     handler = VerificationWorkHandler(
         records=records,
-        runner=runner,  # type: ignore[arg-type]
-        verification=verification,  # type: ignore[arg-type]
-        debate=debate,  # type: ignore[arg-type]
-        non_dynamic=non_dynamic,  # type: ignore[arg-type]
-        dynamic=_NoDynamic(),  # type: ignore[arg-type]
+        runner=cast(WorkflowRunner, runner),
+        verification=cast(VerificationService, verification),
+        debate=cast(DebateService, debate),
+        non_dynamic=cast(NonDynamicCompletionPort, non_dynamic),
+        dynamic=cast(DynamicVerificationPort, _NoDynamic()),
         calls=calls,
         verification_identity_ref=_ref("role_identity", "verification"),
-        budget_scope=lambda analysis_id: scope if analysis_id == "a1" else None,
+        budget_scope=budget_scope,
     )
 
     result = await handler.execute(context)
@@ -708,8 +765,8 @@ async def test_verification_handler_runs_parent_owned_debate_before_synthesis() 
     debate_request = debate.requests[0]
     assert debate_request["verification_work"] == context.work
     assert debate_request["public_input_refs"] == parent_inputs
-    pro_call = debate_request["pro_call"]
-    con_call = debate_request["con_call"]
+    pro_call = cast(AuthorizedLLMCall, debate_request["pro_call"])
+    con_call = cast(AuthorizedLLMCall, debate_request["con_call"])
     assert pro_call.work.parent_work_ref == reference(context.work)
     assert con_call.work.parent_work_ref == reference(context.work)
     assert pro_call.work.work_id != con_call.work.work_id
@@ -765,11 +822,13 @@ async def test_resumed_verification_reuses_prior_evidence_without_new_debate() -
     calls = _Calls()
     handler = VerificationWorkHandler(
         records=records,
-        runner=runner,  # type: ignore[arg-type]
-        verification=_Verification(records),  # type: ignore[arg-type]
-        debate=debate,  # type: ignore[arg-type]
-        non_dynamic=_NonDynamic(context.work, records),  # type: ignore[arg-type]
-        dynamic=dynamic,  # type: ignore[arg-type]
+        runner=cast(WorkflowRunner, runner),
+        verification=cast(VerificationService, _Verification(records)),
+        debate=cast(DebateService, debate),
+        non_dynamic=cast(
+            NonDynamicCompletionPort, _NonDynamic(context.work, records)
+        ),
+        dynamic=cast(DynamicVerificationPort, dynamic),
         calls=calls,
         verification_identity_ref=_ref("role_identity", "verification"),
         budget_scope=lambda _analysis_id: _ref("budget_profile_binding", "scope"),
@@ -794,11 +853,13 @@ async def test_verification_handler_branch_failure_never_reaches_a_verdict() -> 
     calls = _Calls()
     handler = VerificationWorkHandler(
         records=records,
-        runner=runner,  # type: ignore[arg-type]
-        verification=verification,  # type: ignore[arg-type]
-        debate=debate,  # type: ignore[arg-type]
-        non_dynamic=_NonDynamic(context.work, records),  # type: ignore[arg-type]
-        dynamic=_NoDynamic(),  # type: ignore[arg-type]
+        runner=cast(WorkflowRunner, runner),
+        verification=cast(VerificationService, verification),
+        debate=cast(DebateService, debate),
+        non_dynamic=cast(
+            NonDynamicCompletionPort, _NonDynamic(context.work, records)
+        ),
+        dynamic=cast(DynamicVerificationPort, _NoDynamic()),
         calls=calls,
         verification_identity_ref=_ref("role_identity", "verification"),
         budget_scope=lambda _analysis_id: _ref("budget_profile_binding", "scope"),
@@ -840,11 +901,13 @@ async def test_verification_handler_requires_exact_static_parent_input() -> None
     debate = _Debate(records)
     handler = VerificationWorkHandler(
         records=records,
-        runner=runner,  # type: ignore[arg-type]
-        verification=_Verification(records),  # type: ignore[arg-type]
-        debate=debate,  # type: ignore[arg-type]
-        non_dynamic=_NonDynamic(bad_context.work, records),  # type: ignore[arg-type]
-        dynamic=_NoDynamic(),  # type: ignore[arg-type]
+        runner=cast(WorkflowRunner, runner),
+        verification=cast(VerificationService, _Verification(records)),
+        debate=cast(DebateService, debate),
+        non_dynamic=cast(
+            NonDynamicCompletionPort, _NonDynamic(bad_context.work, records)
+        ),
+        dynamic=cast(DynamicVerificationPort, _NoDynamic()),
         calls=_Calls(),
         verification_identity_ref=_ref("role_identity", "verification"),
         budget_scope=lambda _analysis_id: _ref("budget_profile_binding", "scope"),
