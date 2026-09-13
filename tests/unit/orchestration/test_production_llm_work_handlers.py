@@ -557,13 +557,15 @@ def test_candidate_stage_rejects_invalid_code_or_current_attempt_before_call(
             update={"reproduction_plan_ref": plan_ref}
         )
         environment_ref = cast(StoredDataRef, reference(environment))
-        request = records.values[request_ref]
-        response = records.values[response_ref]
+        stored_request = records.values[request_ref]
+        stored_response = records.values[response_ref]
+        assert isinstance(stored_request, DynamicReproductionRequest)
+        assert isinstance(stored_response, CodeContextResponse)
         records.values = {
-            request_ref: request,
+            request_ref: stored_request,
             plan_ref: plan,
             environment_ref: environment,
-            response_ref: response,
+            response_ref: stored_response,
         }
     else:
         original_environment = records.values[environment_ref]
@@ -576,14 +578,17 @@ def test_candidate_stage_rejects_invalid_code_or_current_attempt_before_call(
             }
         )
         environment_ref = cast(StoredDataRef, reference(environment))
-        request = records.values[request_ref]
-        plan = records.values[plan_ref]
-        response = records.values[response_ref]
+        stored_request = records.values[request_ref]
+        stored_plan = records.values[plan_ref]
+        stored_response = records.values[response_ref]
+        assert isinstance(stored_request, DynamicReproductionRequest)
+        assert isinstance(stored_plan, ReproductionPlan)
+        assert isinstance(stored_response, CodeContextResponse)
         records.values = {
-            request_ref: request,
-            plan_ref: plan,
+            request_ref: stored_request,
+            plan_ref: stored_plan,
             environment_ref: environment,
-            response_ref: response,
+            response_ref: stored_response,
         }
     calls = _Calls()
     resolver = ProductionDynamicStageCallResolver(
