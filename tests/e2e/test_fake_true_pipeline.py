@@ -92,6 +92,8 @@ def test_true_pipeline_closes_exact_report_without_submission(tmp_path: Path) ->
     (report,) = pipeline.reports()
     assert isinstance(report, ReportDraft)
     source = SQLiteCurrentReportSource(tmp_path)
+    (listed_report,) = source.list_current(str(result.meta.analysis_id))
+    assert listed_report.finding_id == str(report.finding_ref.record_id)
     current_report = source.get_current(str(report.finding_ref.record_id))
     markdown = ReportMarkdownService(tmp_path, source).show(current_report.finding_id)
     assert current_report.poc.agent_log_ref == reference(current_report.agent_log)
