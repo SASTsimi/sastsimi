@@ -64,6 +64,7 @@ from sastsimi.ports.dto import ProcessReceipt, StaticToolObservation, StaticTool
 from sastsimi.ports.dynamic_sandbox import TrustedDockerTargetResolverPort
 from sastsimi.ports.llm_provider import LLMProviderAdapter
 from sastsimi.ports.scheduler import ExternalCancellationPort
+from sastsimi.ports.static_tool import ProductionStaticOutputQuotaPort
 from sastsimi.storage import models
 from sastsimi.storage.codec import REF_ADAPTER
 from sastsimi.storage.repositories import SQLiteRecordStore
@@ -98,6 +99,9 @@ class _CapabilityServiceBuilder(Protocol):
 class ProductionStaticRuntimeFactory:
     """Bind durable SQLite dispatch state and process receipt evidence."""
 
+    output_quota: ProductionStaticOutputQuotaPort | None = None
+    codeql_database_limit_bytes: int | None = None
+
     def __call__(
         self, context: ProductionInstallationContext
     ) -> ProductionStaticRuntimePorts:
@@ -107,6 +111,8 @@ class ProductionStaticRuntimeFactory:
             cancellation_observation=runtime.cancellation_observation,
             dispatch_state=runtime.dispatch_state,
             attempt_dispatch=runtime.attempt_dispatch,
+            output_quota=self.output_quota,
+            codeql_database_limit_bytes=self.codeql_database_limit_bytes,
         )
 
 
@@ -184,12 +190,17 @@ def build_production_bootstrap_assembler(
     *,
     repository_root: Path,
     docker_resolver_factory: DockerTargetResolverFactory | None = None,
+    static_output_quota: ProductionStaticOutputQuotaPort | None = None,
+    codeql_database_limit_bytes: int | None = None,
 ) -> ProductionBundleAssemblyPort:
     """Build the real default T08-T13 assembler used by ``sastsimi analyze``."""
 
     return build_default_production_bundle_assembler(
         repository_root=repository_root,
-        static_runtime_factory=ProductionStaticRuntimeFactory(),
+        static_runtime_factory=ProductionStaticRuntimeFactory(
+            output_quota=static_output_quota,
+            codeql_database_limit_bytes=codeql_database_limit_bytes,
+        ),
         dynamic_feature_factory=ProductionDynamicRuntimeFactory(
             docker_resolver_factory or _default_docker_resolver
         ),

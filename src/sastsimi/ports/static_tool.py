@@ -1,6 +1,6 @@
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from sastsimi.contracts.actions import ActionDecision, Decision
 from sastsimi.contracts.canonical_json import content_hash
@@ -95,6 +95,25 @@ class StaticOutputQuotaPort(Protocol):
         root: Path,
         limit_bytes: int,
     ) -> StaticOutputQuotaBinding: ...
+
+
+type StaticOutputPurpose = Literal["DATABASE", "EXECUTION", "PROBE"]
+
+
+class ProductionStaticOutputQuotaPort(StaticOutputQuotaPort, Protocol):
+    """Allocate attempt-scoped roots with a host-enforced write ceiling."""
+
+    def allocate(
+        self,
+        *,
+        purpose: StaticOutputPurpose,
+        action_id: str,
+        attempt_id: str,
+        profile_ref: StoredDataRef | HostConfigurationRef,
+        limit_bytes: int,
+    ) -> StaticOutputQuotaBinding: ...
+
+    def finalize(self, *, lease_id: str, outcome: str) -> None: ...
 
 
 class StaticExternalExecutionPort(Protocol):

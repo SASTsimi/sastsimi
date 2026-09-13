@@ -195,3 +195,26 @@ uv run sastsimi --data-dir <data-dir> onboarding status --profile <production-pr
 - PVD·R8 결과 또는 공식 정책 변경
 - capability revision, host 또는 provisioning slot 파일 변경
 - manifest나 승인 유효 기한 만료
+
+## 6. CodeQL의 호스트 quota 구성
+
+CodeQL은 실행 파일 설치만으로 승인할 수 없습니다. 호스트 통합 코드에서 기존
+`ProductionStaticOutputQuotaPort` 구현과 양수 `codeql_database_limit_bytes`를
+`build_production_capability_probe_service` 및
+`build_production_bootstrap_assembler`의 같은 이름 인자로 전달합니다. quota 구현의
+인자 이름은 두 함수 모두 `static_output_quota`입니다. 두 경로에는 같은 backend와
+DB 한도를 전달해야 합니다. `ProductionStaticRuntimeFactory`를 직접 구성할 때는
+`output_quota`와 `codeql_database_limit_bytes`를 사용합니다.
+
+probe는 별도 64 KiB `PROBE` lease에서 두 파일의 합산 한도 초과 쓰기가 실제로
+거부되는지 확인합니다. 파일을 비운 후에도 같은 거부 근거가 남아 있어야 합니다.
+이어 설정된 DB 한도의 `DATABASE` lease와 profile 출력 한도의 `EXECUTION` lease가
+독립된 경로 및 정확한 binding을 갖는지 확인하고, 승인 직전에 다시 검사합니다.
+각 실행에서도 기존 adapter가 실제 attempt의 quota binding을 검증합니다.
+
+이 구성 경로는 OS quota backend를 새로 제공하거나 설치하지 않습니다. backend는
+파일시스템 또는 컨테이너 경계에서 쓰기를 차단하고, 거부 기록을 지속적으로
+보존하며, `finalize`에서 probe lease 자원을 정리해야 합니다. 폴더 크기 측정이나
+`hard_enforced=True` 표시만으로는 probe를 통과할 수 없습니다. 기본 CLI에는 이
+backend가 연결되어 있지 않으므로 CodeQL probe는 `BLOCKED`이며, backend 없이
+CodeQL을 활성 도구에 넣으면 기본 assembler도 차단합니다.

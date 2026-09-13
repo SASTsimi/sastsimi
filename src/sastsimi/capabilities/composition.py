@@ -23,6 +23,7 @@ from sastsimi.contracts.capabilities import (
 from sastsimi.contracts.ids import CommitId, OpaqueId, WorkspaceId
 from sastsimi.contracts.refs import HostConfigurationRef
 from sastsimi.ports.dynamic_sandbox import TrustedDockerTarget
+from sastsimi.ports.static_tool import ProductionStaticOutputQuotaPort
 from sastsimi.storage.database import Database
 from sastsimi.storage.migrations import upgrade
 
@@ -95,7 +96,11 @@ class _NativeApprovalIdentity:
 
 
 class ProductionCapabilityProbeService:
-    """Narrow public facade; dependency injection exists only in the internal engine."""
+    """Public facade with an optional trusted host quota implementation.
+
+    The quota port is a composition dependency, never caller-supplied probe
+    results. Its actual filesystem enforcement is exercised before approval.
+    """
 
     def __init__(
         self,
@@ -104,12 +109,16 @@ class ProductionCapabilityProbeService:
         host_id: str,
         executable_paths: Mapping[str, Path],
         docker_host: str | None,
+        static_output_quota: ProductionStaticOutputQuotaPort | None = None,
+        codeql_database_limit_bytes: int | None = None,
     ) -> None:
         self.__engine = _build_production_engine(
             data_dir,
             host_id=host_id,
             executable_paths=executable_paths,
             docker_host=docker_host,
+            static_output_quota=static_output_quota,
+            codeql_database_limit_bytes=codeql_database_limit_bytes,
         )
 
     def probe(
@@ -171,6 +180,8 @@ def _build_production_engine(
     host_id: str,
     executable_paths: Mapping[str, Path],
     docker_host: str | None,
+    static_output_quota: ProductionStaticOutputQuotaPort | None = None,
+    codeql_database_limit_bytes: int | None = None,
 ) -> _CapabilityProbeEngine:
     if not host_id.strip():
         raise ValueError("CAPABILITY_HOST_REQUIRED")
@@ -237,6 +248,8 @@ def _build_production_engine(
         openai_probe=OpenAIResponsesProbe(),
         scratch_root=data_dir / "probe-scratch",
         docker_build_capability_probe=docker_boundary_probe,
+        static_output_quota=static_output_quota,
+        codeql_database_limit_bytes=codeql_database_limit_bytes,
     )
 
 
@@ -246,14 +259,18 @@ def build_production_capability_probe_service(
     host_id: str,
     executable_paths: Mapping[str, Path],
     docker_host: str | None,
+    static_output_quota: ProductionStaticOutputQuotaPort | None = None,
+    codeql_database_limit_bytes: int | None = None,
 ) -> ProductionCapabilityProbeService:
-    """Build the non-injectable production probe/list/approve application API."""
+    """Build the production API; unconfigured CodeQL remains non-activatable."""
 
     return ProductionCapabilityProbeService(
         data_dir,
         host_id=host_id,
         executable_paths=executable_paths,
         docker_host=docker_host,
+        static_output_quota=static_output_quota,
+        codeql_database_limit_bytes=codeql_database_limit_bytes,
     )
 
 

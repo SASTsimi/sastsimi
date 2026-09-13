@@ -40,7 +40,9 @@ from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
 from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.dynamic_sandbox import TrustedDockerTarget
+from sastsimi.ports.static_tool import ProductionStaticOutputQuotaPort
 from sastsimi.runtime.configuration_registry import ConfigurationRegistry
+from sastsimi.static_analysis.quota_probe import prove_static_output_quota
 
 from .docker_build_boundary import DockerBuildBoundaryProbeResult
 from .models import CapabilityProbeReceipt, ProbeKind
@@ -100,6 +102,8 @@ class _CapabilityProbeEngine:
         openai_probe: OpenAIProbeTransport | None = None,
         scratch_root: Path,
         docker_build_capability_probe: DockerBuildCapabilityProbe,
+        static_output_quota: ProductionStaticOutputQuotaPort | None = None,
+        codeql_database_limit_bytes: int | None = None,
     ) -> None:
         if store.host_id != host_id or _SAFE_IDENTIFIER.fullmatch(host_id) is None:
             raise ValueError("PROBE_HOST_MISMATCH")
@@ -118,6 +122,8 @@ class _CapabilityProbeEngine:
         self._openai = openai_probe
         self._scratch_root = scratch_root
         self._docker_build_capability_probe = docker_build_capability_probe
+        self._static_output_quota = static_output_quota
+        self._codeql_database_limit_bytes = codeql_database_limit_bytes
 
     def probe(
         self,
@@ -244,7 +250,7 @@ class _CapabilityProbeEngine:
                                 == execution_target_hash
                             )
                         else:
-                            control_passed = False
+                            control_passed = self._probe_codeql_quota(version, digest)
                         digest_unchanged = sha256_file(executable) == observed_digest
                     except (OSError, ValueError, subprocess.SubprocessError):
                         control_passed = False
@@ -260,6 +266,10 @@ class _CapabilityProbeEngine:
                     elif kind == "OPENGREP" and control_passed and digest_unchanged:
                         status, activation_supported = "PASSED", True
                         summary = "OpenGrep binary probe passed"
+                    elif kind == "CODEQL" and control_passed and digest_unchanged:
+                        status, activation_supported = "PASSED", True
+                        controls = ("STATIC_WRITE_DENYING_QUOTA",)
+                        summary = "CodeQL binary and write-denying quota probe passed"
                     elif kind == "CODEQL":
                         summary = "CodeQL quota control probe is unavailable"
                     elif kind == "DOCKER" and docker_build_capability is None:
@@ -371,6 +381,23 @@ class _CapabilityProbeEngine:
         """List sanitized receipts for this exact host only."""
 
         return self._store.list()
+
+    def _probe_codeql_quota(self, version: str, digest: str) -> bool:
+        profile = self._profile(
+            "CODEQL",
+            profile_key="codeql",
+            subject_key="codeql",
+            version=version,
+            digest=digest,
+            evidence_ref=self._placeholder_evidence_ref(),
+        )
+        assert isinstance(profile, StaticToolProfile)
+        return prove_static_output_quota(
+            self._static_output_quota,
+            profile_ref=self._profile_ref(profile),
+            database_limit_bytes=self._codeql_database_limit_bytes,
+            output_limit_bytes=profile.max_attempt_output_bytes,
+        )
 
     def resolve_executable(self, profile_ref: HostConfigurationRef) -> Path:
         """Resolve a pinned ACTIVE ref to the same current executable digest."""
@@ -522,6 +549,10 @@ class _CapabilityProbeEngine:
             docker_build_capability=receipt.docker_build_capability,
             evidence_ref=self._placeholder_evidence_ref(),
         )
+        if receipt.kind == "CODEQL" and not self._probe_codeql_quota(
+            receipt.observed_version, receipt.observed_sha256
+        ):
+            raise ValueError("CAPABILITY_CODEQL_QUOTA_UNAVAILABLE")
         languages, operations = self._route(receipt.kind)
         controls = self._controls(receipt.kind, receipt.evidence_ref)
         approval = self._store.pending_approval(probe_id)
@@ -623,6 +654,7 @@ class _CapabilityProbeEngine:
         control = {
             "GIT": "SAFE_REPOSITORY_LOADER",
             "DOCKER": "SANDBOX_OUTER_BOUNDARY",
+            "CODEQL": "STATIC_WRITE_DENYING_QUOTA",
         }.get(kind)
         if control is None:
             return ()

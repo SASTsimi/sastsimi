@@ -28,7 +28,11 @@ from sastsimi.ports.dto import (
     StaticToolRequest,
     TrackedFile,
 )
-from sastsimi.ports.static_tool import StaticOutputQuotaPort, StaticProcessAdapter
+from sastsimi.ports.static_tool import (
+    ProductionStaticOutputQuotaPort as ProductionStaticOutputQuotaPort,
+)
+from sastsimi.ports.static_tool import StaticOutputPurpose as StaticOutputPurpose
+from sastsimi.ports.static_tool import StaticProcessAdapter
 from sastsimi.ports.workspace import WorkspaceLocatorPort
 from sastsimi.static_analysis.ast_adapter import PythonAstProcessAdapter
 from sastsimi.static_analysis.codeql_adapter import (
@@ -52,23 +56,6 @@ _JAVASCRIPT_SUFFIXES = frozenset(
 )
 
 type CodeQLLanguage = Literal["python", "javascript-typescript"]
-type StaticOutputPurpose = Literal["DATABASE", "EXECUTION", "PROBE"]
-
-
-class ProductionStaticOutputQuotaPort(StaticOutputQuotaPort, Protocol):
-    """Allocate attempt-scoped roots with a host-enforced write ceiling."""
-
-    def allocate(
-        self,
-        *,
-        purpose: StaticOutputPurpose,
-        action_id: str,
-        attempt_id: str,
-        profile_ref: StoredDataRef | HostConfigurationRef,
-        limit_bytes: int,
-    ) -> StaticOutputQuotaBinding: ...
-
-    def finalize(self, *, lease_id: str, outcome: str) -> None: ...
 
 
 class _Cancelable(Protocol):

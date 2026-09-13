@@ -25,10 +25,15 @@ from sastsimi.capabilities.store import (
 from sastsimi.config.secrets import SecretReference
 from sastsimi.contracts.capabilities import DockerBuildCapability
 from sastsimi.contracts.ids import CommitId, WorkspaceId
+from sastsimi.orchestration.production_static_adapters import (
+    ProductionStaticOutputQuotaPort,
+    StaticOutputPurpose,
+)
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.storage.database import Database
 from sastsimi.storage.migrations import upgrade
 from tests.integration.runtime_support import TestClock, TestIds
+from tests.integration.static_quota_support import TestQuota
 
 
 class FakeCommands:
@@ -198,6 +203,7 @@ def _service(
     docker_build_capability: DockerBuildCapability | None = (
         _VERIFIED_DOCKER_BUILD_CAPABILITY
     ),
+    quota: ProductionStaticOutputQuotaPort | None = None,
 ) -> tuple[_CapabilityProbeEngine, RuntimeServices, _SQLiteCapabilityProbeStore]:
     binaries = tmp_path / "bin"
     binaries.mkdir(parents=True, exist_ok=True)
@@ -239,8 +245,76 @@ def _service(
         approval_identity=lambda: "taehyeon-git",
         scratch_root=tmp_path / "scratch",
         docker_build_capability_probe=lambda: docker_build_capability,
+        static_output_quota=quota,
+        codeql_database_limit_bytes=131072 if quota is not None else None,
     )
     return service, runtime, store
+
+
+def test_codeql_can_be_approved_only_after_write_denial_and_sticky_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quota = TestQuota(tmp_path / "quota", monkeypatch)
+    service, runtime, _store = _service(tmp_path, available={"codeql"}, quota=quota)
+    receipt = service.probe("CODEQL")
+    assert receipt.status == "PASSED"
+    ref = service.approve(
+        receipt.probe_id, expected_target_hash=receipt.approval_target_hash or ""
+    )
+    profile = runtime.configuration.resolve_pinned_active_profile(ref)
+    assert profile.status == "ACTIVE"
+    assert service.resolve_executable(ref).name == "codeql.exe"
+
+
+@pytest.mark.parametrize(("enforce", "sticky"), [(False, True), (True, False)])
+def test_codeql_rejects_claimed_quota_without_real_sticky_denial(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    enforce: bool,
+    sticky: bool,
+) -> None:
+    quota = TestQuota(tmp_path / "quota", monkeypatch, enforce=enforce, sticky=sticky)
+    service, _runtime, _store = _service(tmp_path, available={"codeql"}, quota=quota)
+    receipt = service.probe("CODEQL")
+    assert receipt.status == "BLOCKED"
+    with pytest.raises(ValueError, match="PROBE_NOT_ACTIVATABLE"):
+        service.approve(receipt.probe_id, expected_target_hash="0" * 64)
+
+
+def test_codeql_rechecks_quota_before_publishing_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quota = TestQuota(tmp_path / "quota", monkeypatch)
+    service, _runtime, _store = _service(tmp_path, available={"codeql"}, quota=quota)
+    receipt = service.probe("CODEQL")
+    assert receipt.status == "PASSED"
+    quota.enforce = False
+    with pytest.raises(ValueError, match="CAPABILITY_CODEQL_QUOTA_UNAVAILABLE"):
+        service.approve(
+            receipt.probe_id, expected_target_hash=receipt.approval_target_hash or ""
+        )
+
+
+@pytest.mark.parametrize("purpose", ["DATABASE", "EXECUTION"])
+def test_codeql_quota_probe_requires_database_and_execution_enforcement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    purpose: StaticOutputPurpose,
+) -> None:
+    quota = TestQuota(tmp_path / "quota", monkeypatch, unbounded_purpose=purpose)
+    service, _runtime, _store = _service(tmp_path, available={"codeql"}, quota=quota)
+    assert service.probe("CODEQL").status == "BLOCKED"
+
+
+def test_codeql_quota_probe_rejects_breach_reset_after_bytes_are_freed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quota = TestQuota(tmp_path / "quota", monkeypatch, reset_when_empty=True)
+    service, _runtime, _store = _service(tmp_path, available={"codeql"}, quota=quota)
+    assert service.probe("CODEQL").status == "BLOCKED"
 
 
 def test_real_probe_receipts_require_exact_human_approval_before_active(
@@ -441,7 +515,7 @@ def test_blocked_or_incomplete_probe_cannot_be_forged_active(
         )
 
 
-def test_public_production_facade_has_no_dependency_injection_or_caller_identity() -> (
+def test_public_facade_accepts_only_trusted_quota_configuration_not_probe_results() -> (
     None
 ):
     build_parameters = inspect.signature(
@@ -452,6 +526,8 @@ def test_public_production_facade_has_no_dependency_injection_or_caller_identity
         "host_id",
         "executable_paths",
         "docker_host",
+        "static_output_quota",
+        "codeql_database_limit_bytes",
     }
 
     assert "command_runner" not in build_parameters
@@ -462,6 +538,8 @@ def test_public_production_facade_has_no_dependency_injection_or_caller_identity
         "host_id",
         "executable_paths",
         "docker_host",
+        "static_output_quota",
+        "codeql_database_limit_bytes",
     }
     assert (
         "approved_by"
