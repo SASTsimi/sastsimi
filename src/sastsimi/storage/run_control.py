@@ -9,12 +9,8 @@ from typing import TYPE_CHECKING
 from sqlalchemy import Connection, insert, select, update
 
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
-from sastsimi.contracts.work import (
-    AttemptStatus,
-    WorkAttempt,
-    WorkExecutionState,
-    WorkStatus,
-)
+from sastsimi.contracts.refs import BudgetScopeRef
+from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
 from sastsimi.ports.scheduler import (
@@ -25,11 +21,10 @@ from sastsimi.ports.scheduler import (
 )
 
 from . import models
-from .codec import encode
 from .database import Database
-from .records import next_meta
 
 if TYPE_CHECKING:
+    from .transition_service import TransitionService
     from .work_service import WorkService
 
 _SAFE_REASON = re.compile(r"[A-Z0-9_]{1,64}\Z")
@@ -58,13 +53,20 @@ class RunControlStore:
         *,
         works: WorkService | None = None,
         ids: IdGenerator | None = None,
+        transitions: TransitionService | None = None,
+        cancellation_identity_ref: BudgetScopeRef | None = None,
     ) -> None:
-        if (works is None) != (ids is None):
+        configured = (works, ids, transitions, cancellation_identity_ref)
+        if any(value is None for value in configured) and any(
+            value is not None for value in configured
+        ):
             raise ValueError("RUN_CONTROL_RECONCILIATION_CONFIGURATION_INVALID")
         self._database = database
         self._clock = clock
         self._works = works
         self._ids = ids
+        self._transitions = transitions
+        self._cancellation_identity_ref = cancellation_identity_ref
 
     def request_cancel(self, analysis_id: str, reason: str) -> None:
         if not analysis_id or _SAFE_REASON.fullmatch(reason) is None:
@@ -141,7 +143,13 @@ class RunControlStore:
         analysis_id: str,
         observations: tuple[CancellationObservation, ...],
     ) -> None:
-        if not analysis_id or self._works is None or self._ids is None:
+        if (
+            not analysis_id
+            or self._works is None
+            or self._ids is None
+            or self._transitions is None
+            or self._cancellation_identity_ref is None
+        ):
             raise ValueError("RUN_CONTROL_RECONCILIATION_NOT_CONFIGURED")
         if len({str(item.target.work.work_id) for item in observations}) != len(
             observations
@@ -166,62 +174,41 @@ class RunControlStore:
                 for item, supplied in zip(persisted, observations, strict=True)
             ):
                 raise ValueError("CANCELLATION_OBSERVATION_NOT_DURABLE")
-
-            planned: list[
-                tuple[CancellationTarget, WorkExecutionState, WorkAttempt]
-            ] = []
             for observation in observations:
                 self._validate_observation(observation)
-                if observation.status == "UNKNOWN":
-                    continue
+            if any(observation.status == "UNKNOWN" for observation in observations):
+                return
+
+            work_rows = (
+                connection.execute(
+                    select(models.work_states)
+                    .where(models.work_states.c.analysis_id == analysis_id)
+                    .order_by(models.work_states.c.work_id)
+                )
+                .mappings()
+                .all()
+            )
+            work_ids = tuple(row["work_id"] for row in work_rows)
+            if work_ids and connection.execute(
+                select(models.transition_commits.c.transition_commit_id).where(
+                    models.transition_commits.c.work_id.in_(work_ids),
+                    models.transition_commits.c.state == "PREPARED",
+                )
+            ).first():
+                raise ValueError("CANCELLATION_PREPARED_RECOVERY_REQUIRED")
+
+            dispatches = []
+            for observation in observations:
                 target = observation.target
-                work_row = (
-                    connection.execute(
-                        select(models.work_states).where(
-                            models.work_states.c.analysis_id == analysis_id,
-                            models.work_states.c.work_id == str(target.work.work_id),
-                        )
-                    )
-                    .mappings()
-                    .one()
-                )
-                attempt_row = (
-                    connection.execute(
-                        select(models.work_attempts).where(
-                            models.work_attempts.c.work_id == str(target.work.work_id),
-                            models.work_attempts.c.attempt_id
-                            == str(target.attempt.attempt_id),
-                        )
-                    )
-                    .mappings()
-                    .one()
-                )
-                current_work = WorkExecutionState.model_validate_json(
-                    work_row["payload"]
-                )
-                current_attempt = WorkAttempt.model_validate_json(
-                    attempt_row["payload"]
-                )
                 issued = target.issued_action_decision_ref
-                if (
-                    current_work != target.work
-                    or current_attempt != target.attempt
-                    or current_work.status != "RUNNING"
-                    or current_attempt.status != "RUNNING"
-                    or issued is None
-                    or work_row["active_attempt_id"]
-                    != str(current_attempt.attempt_id)
-                    or work_row["worker_id"] is None
-                    or work_row["lease_expires_at"] is None
-                ):
-                    raise ValueError("CANCELLATION_TARGET_NOT_CURRENT")
+                assert issued is not None
                 dispatch = (
                     connection.execute(
                         select(models.external_dispatches).where(
                             models.external_dispatches.c.work_id
-                            == str(current_work.work_id),
+                            == str(target.work.work_id),
                             models.external_dispatches.c.attempt_id
-                            == str(current_attempt.attempt_id),
+                            == str(target.attempt.attempt_id),
                             models.external_dispatches.c.decision_ref
                             == canonical_bytes(issued).decode(),
                             models.external_dispatches.c.dispatched_at.is_not(None),
@@ -234,74 +221,40 @@ class RunControlStore:
                 )
                 if dispatch is None:
                     raise ValueError("CANCELLATION_DISPATCH_NOT_CURRENT")
-                now = self._clock.now()
-                cancelled_work = WorkExecutionState.model_validate(
-                    current_work.model_dump()
-                    | {
-                        "meta": next_meta(current_work.meta, self._clock, self._ids),
-                        "status": WorkStatus.CANCELLED,
-                        "state_version": current_work.state_version + 1,
-                        "active_attempt_id": None,
-                        "waiting_for": (),
-                        "stop_reason": "CANCELLATION_REQUESTED",
-                        "finished_at": now,
-                    }
-                )
-                cancelled_attempt = WorkAttempt.model_validate(
-                    current_attempt.model_dump()
-                    | {
-                        "meta": next_meta(
-                            current_attempt.meta, self._clock, self._ids
-                        ),
-                        "status": AttemptStatus.CANCELLED,
-                        "finished_at": now,
-                    }
-                )
-                planned.append((target, cancelled_work, cancelled_attempt))
+                dispatches.append((target, issued))
 
-            for target, cancelled_work, cancelled_attempt in planned:
-                previous = target.work
-                self._works.records.publish(
-                    connection,
-                    self._works.records.stage(connection, cancelled_attempt),
-                )
-                attempt_result = connection.execute(
-                    update(models.work_attempts)
-                    .where(
-                        models.work_attempts.c.attempt_id
-                        == str(cancelled_attempt.attempt_id),
-                        models.work_attempts.c.status == "RUNNING",
-                        models.work_attempts.c.payload == encode(target.attempt),
+            nonterminal = []
+            for row in work_rows:
+                work = WorkExecutionState.model_validate_json(row["payload"])
+                if (
+                    str(work.meta.analysis_id) != analysis_id
+                    or str(work.work_id) != row["work_id"]
+                    or work.status.value != row["status"]
+                    or work.state_version != row["state_version"]
+                    or (
+                        str(work.active_attempt_id)
+                        if work.active_attempt_id is not None
+                        else None
                     )
-                    .values(
-                        status=cancelled_attempt.status.value,
-                        payload=encode(cancelled_attempt),
-                    )
+                    != row["active_attempt_id"]
+                ):
+                    raise ValueError("CANCELLATION_WORK_STATE_NOT_CURRENT")
+                if work.status in {"PENDING", "READY", "RUNNING", "BLOCKED"}:
+                    nonterminal.append(work)
+
+            for work in nonterminal:
+                self._transitions.cancel_in_transaction(
+                    connection, work, self._cancellation_identity_ref
                 )
-                if attempt_result.rowcount != 1:
-                    raise ValueError("CANCELLATION_ATTEMPT_CAS_FAILED")
-                self._works.save(connection, previous, cancelled_work)
-                lease_result = connection.execute(
-                    update(models.work_states)
-                    .where(
-                        models.work_states.c.work_id == str(cancelled_work.work_id),
-                        models.work_states.c.status == "CANCELLED",
-                        models.work_states.c.state_version
-                        == cancelled_work.state_version,
-                    )
-                    .values(worker_id=None, lease_expires_at=None)
-                )
-                if lease_result.rowcount != 1:
-                    raise ValueError("CANCELLATION_WORK_CAS_FAILED")
-                issued = target.issued_action_decision_ref
-                assert issued is not None
+
+            for target, issued in dispatches:
                 dispatch_result = connection.execute(
                     update(models.external_dispatches)
                     .where(
                         models.external_dispatches.c.work_id
-                        == str(cancelled_work.work_id),
+                        == str(target.work.work_id),
                         models.external_dispatches.c.attempt_id
-                        == str(cancelled_attempt.attempt_id),
+                        == str(target.attempt.attempt_id),
                         models.external_dispatches.c.decision_ref
                         == canonical_bytes(issued).decode(),
                         models.external_dispatches.c.dispatched_at.is_not(None),
@@ -341,7 +294,7 @@ class RunControlStore:
             )
             work_ids = tuple(row["work_id"] for row in work_rows)
             if any(
-                row["status"] in {"PENDING", "READY", "RUNNING"}
+                row["status"] in {"PENDING", "READY", "RUNNING", "BLOCKED"}
                 or row["active_attempt_id"] is not None
                 or row["worker_id"] is not None
                 or row["lease_expires_at"] is not None

@@ -144,8 +144,12 @@ class ConcreteProductionApplicationFactory:
         from sastsimi.orchestration.result_aggregation import ResultAggregationService
         from sastsimi.orchestration.run_initialization import RunInitializationService
         from sastsimi.runtime.cancellation_service import CancellationService
+        from sastsimi.storage.artifact_store import LocalArtifactStore
         from sastsimi.storage.database import Database
         from sastsimi.storage.run_control import RunControlStore
+        from sastsimi.storage.transition_service import (
+            TransitionService as SQLiteTransitionService,
+        )
         from sastsimi.storage.work_dispatch import WorkDispatchStore
         from sastsimi.storage.work_service import WorkService as SQLiteWorkService
 
@@ -237,11 +241,17 @@ class ConcreteProductionApplicationFactory:
         )
         _require_installed_services(installation)
 
+        storage_works = cast(SQLiteWorkService, runtime.work.store)
         controls = RunControlStore(
             Database(RuntimePaths(data_dir).database),
             clock,
-            works=cast(SQLiteWorkService, runtime.work.store),
+            works=storage_works,
             ids=ids,
+            transitions=SQLiteTransitionService(
+                storage_works,
+                cast(LocalArtifactStore, runtime.unit_of_work.artifacts),
+            ),
+            cancellation_identity_ref=identities[RequesterRole.ORCHESTRATION],
         )
         cancellation = CancellationService(
             controls,
