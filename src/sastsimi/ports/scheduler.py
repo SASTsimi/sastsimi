@@ -150,6 +150,10 @@ class RunControlPort(Protocol):
 
 
 class ExternalCancellationPort(Protocol):
+    async def prepare(
+        self, targets: tuple[CancellationTarget, ...]
+    ) -> tuple[CancellationTarget, ...]: ...
+
     async def cancel(self, target: CancellationTarget) -> CancellationObservation: ...
 
 

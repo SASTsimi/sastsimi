@@ -168,7 +168,9 @@ class RunControlStore:
                 for item, expected in zip(observations, current, strict=True)
             ):
                 raise ValueError("CANCELLATION_TARGET_NOT_CURRENT")
-            persisted = self._observations(connection, current)
+            persisted = self._observations(
+                connection, tuple(item.target for item in observations)
+            )
             if any(
                 item is None or item != supplied
                 for item, supplied in zip(persisted, observations, strict=True)
@@ -176,8 +178,11 @@ class RunControlStore:
                 raise ValueError("CANCELLATION_OBSERVATION_NOT_DURABLE")
             for observation in observations:
                 self._validate_observation(observation)
-            if any(observation.status == "UNKNOWN" for observation in observations):
-                return
+            uncertain_work_ids = {
+                str(observation.target.work.work_id)
+                for observation in observations
+                if observation.status == "UNKNOWN"
+            }
 
             work_rows = (
                 connection.execute(
@@ -189,16 +194,21 @@ class RunControlStore:
                 .all()
             )
             work_ids = tuple(row["work_id"] for row in work_rows)
-            if work_ids and connection.execute(
-                select(models.transition_commits.c.transition_commit_id).where(
-                    models.transition_commits.c.work_id.in_(work_ids),
-                    models.transition_commits.c.state == "PREPARED",
-                )
-            ).first():
+            if (
+                work_ids
+                and connection.execute(
+                    select(models.transition_commits.c.transition_commit_id).where(
+                        models.transition_commits.c.work_id.in_(work_ids),
+                        models.transition_commits.c.state == "PREPARED",
+                    )
+                ).first()
+            ):
                 raise ValueError("CANCELLATION_PREPARED_RECOVERY_REQUIRED")
 
             dispatches = []
             for observation in observations:
+                if observation.status == "UNKNOWN":
+                    continue
                 target = observation.target
                 issued = target.issued_action_decision_ref
                 assert issued is not None
@@ -239,7 +249,16 @@ class RunControlStore:
                     != row["active_attempt_id"]
                 ):
                     raise ValueError("CANCELLATION_WORK_STATE_NOT_CURRENT")
-                if work.status in {"PENDING", "READY", "RUNNING", "BLOCKED"}:
+                if (
+                    work.status
+                    in {
+                        "PENDING",
+                        "READY",
+                        "RUNNING",
+                        "BLOCKED",
+                    }
+                    and str(work.work_id) not in uncertain_work_ids
+                ):
                     nonterminal.append(work)
 
             for work in nonterminal:
@@ -521,9 +540,7 @@ def _resources(target: CancellationTarget) -> tuple[_ObservationResource, ...]:
     raise ValueError("CANCELLATION_TARGET_KIND_MISMATCH")
 
 
-def _observation_key(
-    target: CancellationTarget, resource: _ObservationResource
-) -> str:
+def _observation_key(target: CancellationTarget, resource: _ObservationResource) -> str:
     return content_hash(
         [
             "cancellation-observation-v1",

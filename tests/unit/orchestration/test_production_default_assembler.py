@@ -274,7 +274,13 @@ def test_default_assembler_composes_non_r7_features_and_exact_refs(
     policy = cast(PolicyProductionFeature, SimpleNamespace())
     calls = cast(Any, SimpleNamespace(calls=object()))
     dynamic = cast(DynamicProductionFeature, SimpleNamespace())
-    cancellation = cast(Any, SimpleNamespace(cancel=lambda _target: None))
+    cancellation = cast(
+        Any,
+        SimpleNamespace(
+            prepare=lambda targets: targets,
+            cancel=lambda _target: None,
+        ),
+    )
     installed = cast(Any, object())
     captured: dict[str, object] = {}
 

@@ -74,6 +74,11 @@ class _Readiness:
 
 
 class _Cancellation:
+    async def prepare(
+        self, targets: tuple[CancellationTarget, ...]
+    ) -> tuple[CancellationTarget, ...]:
+        return targets
+
     async def cancel(self, target: CancellationTarget) -> CancellationObservation:
         raise AssertionError(f"nothing may be cancelled during composition: {target}")
 

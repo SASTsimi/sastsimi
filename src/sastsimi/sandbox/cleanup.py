@@ -85,6 +85,12 @@ class OwnedResourceRegistry:
             meta=meta,
         )
 
+    def fresh_snapshot(self, *, meta: RecordMeta) -> OwnedResourceSnapshot:
+        """Reload a durable journal before producing cancellation inventory."""
+        if self._journal_path is None:
+            return self.snapshot(meta=meta)
+        return type(self)(journal_path=self._journal_path).snapshot(meta=meta)
+
     def reserve_container(
         self,
         *,

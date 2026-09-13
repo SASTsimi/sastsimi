@@ -22,6 +22,8 @@ from sastsimi.sandbox.cleanup import CleanupDockerPort, OwnedResourceRegistry
 
 
 class AttemptCancellationPort(Protocol):
+    def validate_cancellation(self, attempt_id: str) -> None: ...
+
     async def cancel(self, attempt_id: str) -> CancellationResult: ...
 
 
@@ -52,6 +54,12 @@ class ProductionStaticCancellation:
 
     def __init__(self, adapter: AttemptCancellationPort) -> None:
         self._adapter = adapter
+
+    async def prepare(self, target: CancellationTarget) -> CancellationTarget:
+        if target.target_kind != "STATIC":
+            raise ValueError("CANCELLATION_TARGET_KIND_MISMATCH")
+        self._adapter.validate_cancellation(str(target.attempt.attempt_id))
+        return target
 
     async def cancel(self, target: CancellationTarget) -> CancellationObservation:
         if target.target_kind != "STATIC":
@@ -116,49 +124,51 @@ class ProductionSandboxCancellation:
         meta = target.attempt.meta
         if not isinstance(meta, RecordMeta):
             raise ValueError("CANCELLATION_SANDBOX_SCOPE_MISMATCH")
-        snapshot = self._resources.snapshot(meta=meta)
-        resources = tuple(
-            SandboxCancellationResource(
-                resource_kind=item.resource_kind,
-                resource_id=item.resource_id,
-                resource_ref=item.ref,
-                resource_tag=item.resource_tag,
-                labels=tuple(sorted(item.labels.items())),
-                lookup_by_name=item.lookup_by_name,
-                preservation_reason=item.preservation_reason,
+        snapshot = self._resources.fresh_snapshot(meta=meta)
+        resources = (
+            tuple(
+                SandboxCancellationResource(
+                    resource_kind=item.resource_kind,
+                    resource_id=item.resource_id,
+                    resource_ref=item.ref,
+                    resource_tag=item.resource_tag,
+                    labels=tuple(sorted(item.labels.items())),
+                    lookup_by_name=item.lookup_by_name,
+                    preservation_reason=item.preservation_reason,
+                )
+                for item in snapshot.resources
             )
-            for item in snapshot.resources
-        ) + tuple(
-            SandboxCancellationResource(
-                resource_kind="CONTAINER_INTENT",
-                resource_id=item.container_name,
-                resource_ref=None,
-                resource_tag=None,
-                labels=tuple(sorted(item.labels.items())),
-                lookup_by_name=True,
-                preservation_reason=None,
+            + tuple(
+                SandboxCancellationResource(
+                    resource_kind="CONTAINER_INTENT",
+                    resource_id=item.container_name,
+                    resource_ref=None,
+                    resource_tag=None,
+                    labels=tuple(sorted(item.labels.items())),
+                    lookup_by_name=True,
+                    preservation_reason=None,
+                )
+                for item in snapshot.container_intents
             )
-            for item in snapshot.container_intents
-        ) + tuple(
-            SandboxCancellationResource(
-                resource_kind="IMAGE_INTENT",
-                resource_id=item.image_tag,
-                resource_ref=None,
-                resource_tag=item.image_tag,
-                labels=tuple(sorted(item.labels.items())),
-                lookup_by_name=False,
-                preservation_reason=None,
+            + tuple(
+                SandboxCancellationResource(
+                    resource_kind="IMAGE_INTENT",
+                    resource_id=item.image_tag,
+                    resource_ref=None,
+                    resource_tag=item.image_tag,
+                    labels=tuple(sorted(item.labels.items())),
+                    lookup_by_name=False,
+                    preservation_reason=None,
+                )
+                for item in snapshot.image_intents
             )
-            for item in snapshot.image_intents
         )
         if not resources:
             raise ValueError("CANCELLATION_SANDBOX_RESOURCE_MISSING")
         return replace(
             target,
             sandbox_resource_refs=tuple(
-                item.resource_ref
-                for item in resources
-                if item.resource_ref is not None
+                item.resource_ref for item in resources if item.resource_ref is not None
             ),
             sandbox_resources=resources,
             sandbox_inventory_fingerprint=snapshot.fingerprint,
@@ -217,9 +227,7 @@ class ProductionSandboxCancellation:
                 return CancellationResourceObservation(resource, "STOPPED", None)
             if resource.resource_tag is None:
                 return _unknown_resource(resource)
-            image_presence = await self._docker.inspect_image_tag(
-                resource.resource_tag
-            )
+            image_presence = await self._docker.inspect_image_tag(resource.resource_tag)
             if image_presence.status == "ABSENT":
                 return CancellationResourceObservation(resource, "ABSENT", None)
             if image_presence.status != "PRESENT" or image_presence.state is None:

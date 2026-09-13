@@ -197,6 +197,11 @@ class _ExactStaticCancellation:
         self.status = status
         self.calls = 0
 
+    async def prepare(
+        self, targets: tuple[CancellationTarget, ...]
+    ) -> tuple[CancellationTarget, ...]:
+        return targets
+
     async def cancel(self, target: CancellationTarget) -> CancellationObservation:
         self.calls += 1
         return CancellationObservation(
@@ -207,13 +212,16 @@ class _ExactStaticCancellation:
 
 
 class _NoReplayCancellation:
+    async def prepare(
+        self, targets: tuple[CancellationTarget, ...]
+    ) -> tuple[CancellationTarget, ...]:
+        return targets
+
     async def cancel(self, target: CancellationTarget) -> CancellationObservation:
         raise AssertionError(f"durable observation replayed externally: {target}")
 
 
-def _durable_controls(
-    harness: Harness, runtime: RuntimeServices
-) -> RunControlStore:
+def _durable_controls(harness: Harness, runtime: RuntimeServices) -> RunControlStore:
     works = runtime.work.store
     assert isinstance(works, StorageWorkService)
     artifacts = runtime.unit_of_work.artifacts
@@ -230,6 +238,24 @@ def _durable_controls(
         ids=harness.ids,
         transitions=TransitionService(works, artifacts),
         cancellation_identity_ref=profile.approval_ref,
+    )
+
+
+def _ready_sibling(
+    harness: Harness, runtime: RuntimeServices, source: WorkExecutionState
+) -> WorkExecutionState:
+    state = runtime.budget_registry.current_state("a1")
+    profile = harness.records.get_exact(state.execution_budget_profile_ref)
+    assert isinstance(profile, ExecutionBudgetProfile)
+    assert profile.approval_ref is not None
+    harness.evidence.identities[profile.approval_ref] = RequesterRole.ORCHESTRATION
+    return WorkflowRunner(runtime, harness.clock, harness.ids).enqueue(
+        runtime.work.registration_scope(str(source.work_id)),
+        profile.meta,
+        "WORKSPACE_PREP",
+        "ANALYSIS",
+        "a1",
+        profile.approval_ref,
     )
 
 
@@ -287,6 +313,38 @@ def test_owner_dead_replays_durable_stop_without_external_redispatch(
     assert control["quiescent_at"] is not None
 
 
+def test_complete_work_inventory_fails_before_external_cancellation(
+    tmp_path: Path,
+) -> None:
+    harness, runtime, context, _controls = _running_static_dispatch(tmp_path)
+    ready = _ready_sibling(harness, runtime, context.work)
+    with harness.database.write() as connection:
+        connection.execute(
+            models.work_states.update()
+            .where(models.work_states.c.work_id == str(ready.work_id))
+            .values(state_version=ready.state_version + 1)
+        )
+    controls = _durable_controls(harness, runtime)
+    adapter = _ExactStaticCancellation()
+
+    with pytest.raises(ValueError, match="CANCELLATION_WORK_STATE_NOT_CURRENT"):
+        asyncio.run(
+            CancellationService(controls, _dispatch(runtime), adapter).request(
+                "a1", "OPERATOR_REQUEST"
+            )
+        )
+
+    assert adapter.calls == 0
+    assert runtime.work.get(str(context.work.work_id)).status == "RUNNING"
+    with harness.database.engine.connect() as connection:
+        assert (
+            connection.execute(
+                select(func.count()).select_from(models.cancellation_observations)
+            ).scalar_one()
+            == 0
+        )
+
+
 def test_global_cancel_converges_mixed_nonterminal_work_with_authorized_commits(
     tmp_path: Path,
 ) -> None:
@@ -307,9 +365,7 @@ def test_global_cancel_converges_mixed_nonterminal_work_with_authorized_commits(
     profile = harness.records.get_exact(state.execution_budget_profile_ref)
     assert isinstance(profile, ExecutionBudgetProfile)
     assert profile.approval_ref is not None
-    blocked = runner.block(
-        context.work, profile.approval_ref, "WAITING_FOR_INPUT"
-    )
+    blocked = runner.block(context.work, profile.approval_ref, "WAITING_FOR_INPUT")
     pending = runner._register_pending(
         state.execution_budget_profile_ref,
         runner._pending_work(
@@ -326,21 +382,18 @@ def test_global_cancel_converges_mixed_nonterminal_work_with_authorized_commits(
         role="ORCHESTRATION",
     )
     before = {
-        str(item.work_id): item
-        for item in (blocked, ready[1], ready[2], pending)
+        str(item.work_id): item for item in (blocked, ready[1], ready[2], pending)
     }
     controls = _durable_controls(harness, runtime)
 
     observations = asyncio.run(
-        CancellationService(
-            controls, dispatch, _NoReplayCancellation()
-        ).request("a1", "OPERATOR_REQUEST")
+        CancellationService(controls, dispatch, _NoReplayCancellation()).request(
+            "a1", "OPERATOR_REQUEST"
+        )
     )
 
     assert observations == ()
-    cancelled = {
-        str(item.work_id): item for item in dispatch.work_for_run("a1")
-    }
+    cancelled = {str(item.work_id): item for item in dispatch.work_for_run("a1")}
     assert set(cancelled) == set(before)
     for work_id, prior in before.items():
         current = cancelled[work_id]
@@ -386,9 +439,7 @@ def test_prepared_transition_blocks_cancellation_reconcile(tmp_path: Path) -> No
             )
         )
 
-    with pytest.raises(
-        ValueError, match="CANCELLATION_PREPARED_RECOVERY_REQUIRED"
-    ):
+    with pytest.raises(ValueError, match="CANCELLATION_PREPARED_RECOVERY_REQUIRED"):
         controls.reconcile_cancellation("a1", ())
 
     assert runtime.work.get(str(ready.work_id)) == ready
@@ -482,12 +533,42 @@ def test_unknown_observation_is_durable_and_preserves_uncertain_budget(
             connection.execute(select(models.external_dispatches)).mappings().one()
         )
         control = connection.execute(select(models.run_controls)).mappings().one()
-        reservations = connection.execute(
-            select(models.budget_reservations.c.status)
-        ).scalars().all()
+        reservations = (
+            connection.execute(select(models.budget_reservations.c.status))
+            .scalars()
+            .all()
+        )
     assert dispatch["reconciled_at"] is None
     assert control["quiescent_at"] is None
     assert "RESERVED" in reservations
+
+
+def test_unknown_target_does_not_block_safe_nonexternal_sibling(
+    tmp_path: Path,
+) -> None:
+    harness, runtime, context, _controls = _running_static_dispatch(tmp_path)
+    sibling = _ready_sibling(harness, runtime, context.work)
+    controls = _durable_controls(harness, runtime)
+    adapter = _ExactStaticCancellation("UNKNOWN")
+
+    observations = asyncio.run(
+        CancellationService(controls, _dispatch(runtime), adapter).request(
+            "a1", "OPERATOR_REQUEST"
+        )
+    )
+
+    assert observations[0].status == "UNKNOWN"
+    assert runtime.work.get(str(context.work.work_id)).status == "RUNNING"
+    cancelled = runtime.work.get(str(sibling.work_id))
+    assert cancelled.status == "CANCELLED"
+    assert cancelled.last_transition_commit_ref is not None
+    with harness.database.engine.connect() as connection:
+        dispatch = (
+            connection.execute(select(models.external_dispatches)).mappings().one()
+        )
+        control = connection.execute(select(models.run_controls)).mappings().one()
+    assert dispatch["reconciled_at"] is None
+    assert control["quiescent_at"] is None
 
 
 def test_mark_quiescent_rejects_live_work(tmp_path: Path) -> None:

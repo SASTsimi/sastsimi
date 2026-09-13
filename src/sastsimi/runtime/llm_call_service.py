@@ -258,7 +258,7 @@ class LLMCallService:
         call_spec_ref: StoredDataRef,
     ) -> None:
         """Resolve the exact route and live dispatch without provider I/O."""
-        _spec, _profile, _limits, action = self._resolve_authorized_inputs(
+        spec, _profile, _limits, action = self._resolve_authorized_inputs(
             work, decision_ref, call_spec_ref
         )
         if work.active_attempt_id is None:
@@ -269,6 +269,7 @@ class LLMCallService:
             decision_ref,
             str(action.action_id),
         )
+        self._adapters.resolve(spec.provider_profile_ref, spec.model)
 
     def _resolve_authorized_inputs(
         self,

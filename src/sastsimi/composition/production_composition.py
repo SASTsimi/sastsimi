@@ -443,6 +443,7 @@ def _require_installed_services(installation: InstalledProductionServices) -> No
         )
         or not callable(getattr(installation.seeder, "ensure_initial", None))
         or not callable(getattr(installation.readiness, "require_ready", None))
+        or not callable(getattr(installation.external_cancellation, "prepare", None))
         or not callable(getattr(installation.external_cancellation, "cancel", None))
     ):
         raise ProductionCapabilityUnavailable(

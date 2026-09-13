@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Protocol
 
 from sastsimi.contracts.work import TERMINAL_WORK_STATUSES, WorkExecutionState
@@ -19,15 +20,21 @@ class RunWorkReader(Protocol):
     def work_for_run(self, analysis_id: str) -> tuple[WorkExecutionState, ...]: ...
 
 
+class ExactTargetCancellationPort(Protocol):
+    async def prepare(self, target: CancellationTarget) -> CancellationTarget: ...
+
+    async def cancel(self, target: CancellationTarget) -> CancellationObservation: ...
+
+
 class ExactCancellationRouter:
     """Route a store-derived target without accepting caller supplied IDs."""
 
     def __init__(
         self,
         *,
-        static: ExternalCancellationPort,
-        provider: ExternalCancellationPort,
-        sandbox: ExternalCancellationPort,
+        static: ExactTargetCancellationPort,
+        provider: ExactTargetCancellationPort,
+        sandbox: ExactTargetCancellationPort,
     ) -> None:
         self._adapters = {
             "STATIC": static,
@@ -42,11 +49,12 @@ class ExactCancellationRouter:
         prepared: list[CancellationTarget] = []
         for target in targets:
             adapter = self._adapters[target.target_kind]
-            prepare = getattr(adapter, "prepare", None)
-            value = await prepare(target) if callable(prepare) else target
+            value = await adapter.prepare(target)
             if not isinstance(value, CancellationTarget):
                 raise ValueError("CANCELLATION_PREPARED_TARGET_INVALID")
             _validate_target(value, str(value.work.meta.analysis_id))
+            if not _same_prepared_identity(target, value):
+                raise ValueError("CANCELLATION_PREPARED_TARGET_INVALID")
             prepared.append(value)
         return tuple(prepared)
 
@@ -99,17 +107,21 @@ class CancellationService:
         # one corrupt/foreign row must not cause a partial broad cancellation.
         for target in targets:
             _validate_target(target, analysis_id)
-        prepare = getattr(self._external, "prepare", None)
-        if callable(prepare):
-            prepared = await prepare(targets)
-            if prepared is not None:
-                if not isinstance(prepared, tuple) or not all(
-                    isinstance(item, CancellationTarget) for item in prepared
-                ):
-                    raise ValueError("CANCELLATION_PREPARED_TARGET_INVALID")
-                targets = prepared
-                for target in targets:
-                    _validate_target(target, analysis_id)
+        projected = targets
+        prepared = await self._external.prepare(projected)
+        if (
+            not isinstance(prepared, tuple)
+            or len(prepared) != len(projected)
+            or not all(isinstance(item, CancellationTarget) for item in prepared)
+            or any(
+                not _same_prepared_identity(target, item)
+                for target, item in zip(projected, prepared, strict=True)
+            )
+        ):
+            raise ValueError("CANCELLATION_PREPARED_TARGET_INVALID")
+        targets = prepared
+        for target in targets:
+            _validate_target(target, analysis_id)
         existing = self._controls.cancellation_observations(targets)
         if len(existing) != len(targets):
             raise ValueError("CANCELLATION_OBSERVATION_INVENTORY_MISMATCH")
@@ -173,6 +185,24 @@ def _validate_target(target: CancellationTarget, analysis_id: str) -> None:
         target.sandbox_inventory_fingerprint
     ):
         raise ValueError("CANCELLATION_TARGET_SCOPE_MISMATCH")
+
+
+def _same_prepared_identity(
+    projected: CancellationTarget, prepared: CancellationTarget
+) -> bool:
+    projected_identity = replace(
+        projected,
+        sandbox_resource_refs=(),
+        sandbox_resources=(),
+        sandbox_inventory_fingerprint=None,
+    )
+    prepared_identity = replace(
+        prepared,
+        sandbox_resource_refs=(),
+        sandbox_resources=(),
+        sandbox_inventory_fingerprint=None,
+    )
+    return projected_identity == prepared_identity
 
 
 __all__ = ["CancellationService", "ExactCancellationRouter", "RunWorkReader"]

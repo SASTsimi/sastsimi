@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import cast
 
@@ -254,6 +254,9 @@ class _Canceller:
         self.store = store
         self.targets: list[CancellationTarget] = []
 
+    async def prepare(self, target: CancellationTarget) -> CancellationTarget:
+        return target
+
     async def cancel(self, target: CancellationTarget) -> CancellationObservation:
         assert self.controls.cancel_requested(str(target.work.meta.analysis_id))
         self.controls.events.append("external")
@@ -289,6 +292,49 @@ def test_cancel_latches_before_exact_target_drain_and_cli_is_safe() -> None:
         "status": "CANCELLED",
         "cancel_requested": True,
     }
+
+
+def test_complete_router_preflight_finishes_before_any_external_cancel() -> None:
+    running = _work("RUNNING")
+    attempt = _attempt(running)
+    static_target = replace(
+        _target(running, attempt), target_kind="STATIC", call_spec_ref=None
+    )
+    provider_target = _target(running, attempt)
+    controls = _Controls((static_target, provider_target))
+    store = _SchedulerStore((running,))
+
+    class Adapter:
+        def __init__(self, *, reject: bool = False) -> None:
+            self.reject = reject
+            self.prepared = 0
+            self.cancelled = 0
+
+        async def prepare(self, target: CancellationTarget) -> CancellationTarget:
+            self.prepared += 1
+            if self.reject:
+                raise ValueError("CANCELLATION_ROUTE_NOT_CURRENT")
+            return target
+
+        async def cancel(self, target: CancellationTarget) -> CancellationObservation:
+            self.cancelled += 1
+            return CancellationObservation(target, "STOPPED", None)
+
+    static = Adapter()
+    provider = Adapter(reject=True)
+    router = ExactCancellationRouter(
+        static=static,
+        provider=provider,
+        sandbox=Adapter(),
+    )
+
+    with pytest.raises(ValueError, match="CANCELLATION_ROUTE_NOT_CURRENT"):
+        asyncio.run(
+            CancellationService(controls, store, router).request("a1", "USER_REQUEST")
+        )
+
+    assert static.prepared == provider.prepared == 1
+    assert static.cancelled == provider.cancelled == 0
 
 
 @pytest.mark.parametrize(

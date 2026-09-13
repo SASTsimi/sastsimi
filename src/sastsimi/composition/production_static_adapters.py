@@ -79,10 +79,22 @@ class StaticAdapterCancellationRouter:
         self._profiles = dict(profiles)
         self._dispatch_for_attempt = dispatch_for_attempt
 
+    def validate_cancellation(self, attempt_id: str) -> None:
+        self._resolve(attempt_id)
+
     async def cancel(self, attempt_id: str) -> CancellationResult:
+        try:
+            adapter, _profile = self._resolve(attempt_id)
+        except ValueError:
+            return CancellationResult(False, "STATIC_DISPATCH_NOT_ACTIVE")
+        return await adapter.cancel(attempt_id)
+
+    def _resolve(
+        self, attempt_id: str
+    ) -> tuple[StaticProcessAdapter, StaticToolProfile]:
         dispatch = self._dispatch_for_attempt(attempt_id)
         if dispatch is None or dispatch.state != "DISPATCHED":
-            return CancellationResult(False, "STATIC_DISPATCH_NOT_ACTIVE")
+            raise ValueError("STATIC_CANCELLATION_DISPATCH_NOT_ACTIVE")
         try:
             adapter = self._adapters[dispatch.adapter_key]
             profile = self._profiles[dispatch.adapter_key]
@@ -95,7 +107,7 @@ class StaticAdapterCancellationRouter:
             or dispatch.tool_profile_ref != reference(profile)
         ):
             raise ValueError("STATIC_CANCELLATION_ADAPTER_NOT_EXACT")
-        return await adapter.cancel(attempt_id)
+        return adapter, profile
 
 
 @dataclass(frozen=True, slots=True)

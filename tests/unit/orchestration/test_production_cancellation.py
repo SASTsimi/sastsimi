@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -122,9 +123,7 @@ async def test_provider_cancellation_uses_exact_profile_model_and_call_id() -> N
 
 
 class _Docker:
-    def __init__(
-        self, labels: dict[str, str], *, presence: str = "PRESENT"
-    ) -> None:
+    def __init__(self, labels: dict[str, str], *, presence: str = "PRESENT") -> None:
         self.labels = labels
         self.presence = presence
         self.removed: list[tuple[str, ...]] = []
@@ -269,6 +268,35 @@ async def test_sandbox_cancellation_observes_exact_absent_container() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sandbox_prepare_reloads_resource_journal(
+    tmp_path: Path,
+) -> None:
+    data = fixture()
+    target = _sandbox_target()
+    assert isinstance(target.attempt.meta, RecordMeta)
+    journal = tmp_path / "owned-resources.json"
+    stale = OwnedResourceRegistry(journal_path=journal)
+    labels = ReproductionSetupAutomation._container_labels(target.attempt.meta)
+    writer = OwnedResourceRegistry(journal_path=journal)
+    writer.register_container(
+        container_id="container-written-after-composition",
+        labels=labels,
+        meta=target.attempt.meta,
+    )
+    service = ProductionSandboxCancellation(
+        records=data.records,
+        docker=_Docker(dict(labels), presence="ABSENT"),
+        resources=stale,
+    )
+
+    prepared = await service.prepare(target)
+
+    assert tuple(item.resource_id for item in prepared.sandbox_resources) == (
+        "container-written-after-composition",
+    )
+
+
+@pytest.mark.asyncio
 async def test_sandbox_label_mismatch_is_unknown_and_never_removed() -> None:
     data = fixture()
     target = _sandbox_target()
@@ -308,9 +336,7 @@ async def test_sandbox_snapshot_includes_intents_and_preserves_reusable_image() 
     container_name = DockerAdapter.runtime_container_name(container_labels)
     image_tag = DockerAdapter.runtime_image_tag(image_labels)
     preserved_tag = DockerAdapter.runtime_image_tag(preserved_labels)
-    resources.reserve_container(
-        container_name=container_name, labels=container_labels
-    )
+    resources.reserve_container(container_name=container_name, labels=container_labels)
     resources.reserve_image(image_tag=image_tag, labels=image_labels)
     resources.register_image(
         image_digest="sha256:" + "a" * 64,

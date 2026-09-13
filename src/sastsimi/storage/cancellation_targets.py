@@ -33,6 +33,8 @@ _PROVIDER_ACTIONS = frozenset(
 _STATIC_ACTIONS = frozenset(
     {ActionType.READ_CODE, ActionType.RUN_TOOL, ActionType.FETCH_POLICY}
 )
+
+
 class CancellationTargetStore:
     """Never discovers host resources; only follows exact durable references."""
 
@@ -52,11 +54,9 @@ class CancellationTargetStore:
         ):
             if _connection is None:
                 connection.exec_driver_sql("BEGIN")
+            inventory = self._work_inventory(connection, analysis_id)
             rows = connection.execute(
-                select(
-                    models.external_dispatches,
-                    models.work_states.c.payload.label("work_payload"),
-                )
+                select(models.external_dispatches)
                 .join(
                     models.work_states,
                     models.work_states.c.work_id
@@ -64,7 +64,6 @@ class CancellationTargetStore:
                 )
                 .where(
                     models.work_states.c.analysis_id == analysis_id,
-                    models.work_states.c.status == "RUNNING",
                     models.external_dispatches.c.dispatched_at.is_not(None),
                     models.external_dispatches.c.returned_at.is_(None),
                     models.external_dispatches.c.reconciled_at.is_(None),
@@ -75,31 +74,17 @@ class CancellationTargetStore:
                 )
             ).mappings()
             for row in rows:
-                work = WorkExecutionState.model_validate_json(row["work_payload"])
+                current = inventory.get(row["work_id"])
+                if current is None:
+                    raise ValueError("CANCELLATION_TARGET_SCOPE_MISMATCH")
+                work, attempt = current
                 if (
-                    str(work.meta.analysis_id) != analysis_id
-                    or row["work_id"] != str(work.work_id)
+                    work.status != "RUNNING"
+                    or attempt is None
                     or row["attempt_id"] != str(work.active_attempt_id)
                     or row["dispatched_at"] is None
                     or row["returned_at"] is not None
                     or row["reconciled_at"] is not None
-                ):
-                    raise ValueError("CANCELLATION_TARGET_SCOPE_MISMATCH")
-                attempt_payload = connection.execute(
-                    select(models.work_attempts.c.payload).where(
-                        models.work_attempts.c.attempt_id == row["attempt_id"],
-                        models.work_attempts.c.work_id == row["work_id"],
-                        models.work_attempts.c.status == "RUNNING",
-                    )
-                ).scalar_one_or_none()
-                if attempt_payload is None:
-                    raise ValueError("CANCELLATION_TARGET_SCOPE_MISMATCH")
-                attempt = WorkAttempt.model_validate_json(attempt_payload)
-                if (
-                    str(attempt.meta.analysis_id) != analysis_id
-                    or str(attempt.work_id) != row["work_id"]
-                    or attempt.input_hash != work.input_hash
-                    or attempt.attempt_id != work.active_attempt_id
                 ):
                     raise ValueError("CANCELLATION_TARGET_SCOPE_MISMATCH")
                 issued_ref = REF_ADAPTER.validate_json(row["decision_ref"])
@@ -160,6 +145,77 @@ class CancellationTargetStore:
         return tuple(targets)
 
     @staticmethod
+    def _work_inventory(
+        connection: Connection, analysis_id: str
+    ) -> dict[str, tuple[WorkExecutionState, WorkAttempt | None]]:
+        """Validate the complete run projection in the target read snapshot."""
+        inventory: dict[str, tuple[WorkExecutionState, WorkAttempt | None]] = {}
+        rows = (
+            connection.execute(
+                select(models.work_states)
+                .where(models.work_states.c.analysis_id == analysis_id)
+                .order_by(models.work_states.c.work_id)
+            )
+            .mappings()
+            .all()
+        )
+        for row in rows:
+            work = WorkExecutionState.model_validate_json(row["payload"])
+            active_id = (
+                str(work.active_attempt_id)
+                if work.active_attempt_id is not None
+                else None
+            )
+            if (
+                str(work.meta.analysis_id) != analysis_id
+                or str(work.work_id) != row["work_id"]
+                or work.status.value != row["status"]
+                or work.state_version != row["state_version"]
+                or active_id != row["active_attempt_id"]
+                or row["work_id"] in inventory
+            ):
+                raise ValueError("CANCELLATION_WORK_STATE_NOT_CURRENT")
+            attempt: WorkAttempt | None = None
+            if work.status == "RUNNING":
+                if row["worker_id"] is None or row["lease_expires_at"] is None:
+                    raise ValueError("CANCELLATION_WORK_STATE_NOT_CURRENT")
+                attempt_row = (
+                    connection.execute(
+                        select(models.work_attempts).where(
+                            models.work_attempts.c.work_id == row["work_id"],
+                            models.work_attempts.c.attempt_id == active_id,
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if attempt_row is None:
+                    raise ValueError("CANCELLATION_WORK_STATE_NOT_CURRENT")
+                attempt = WorkAttempt.model_validate_json(attempt_row["payload"])
+                if (
+                    attempt_row["status"] != "RUNNING"
+                    or attempt.status != "RUNNING"
+                    or str(attempt.meta.analysis_id) != analysis_id
+                    or str(attempt.work_id) != row["work_id"]
+                    or str(attempt.attempt_id) != active_id
+                    or attempt.input_hash != work.input_hash
+                ):
+                    raise ValueError("CANCELLATION_WORK_STATE_NOT_CURRENT")
+            elif (
+                row["worker_id"] is not None
+                or row["lease_expires_at"] is not None
+                or connection.execute(
+                    select(models.work_attempts.c.attempt_id).where(
+                        models.work_attempts.c.work_id == row["work_id"],
+                        models.work_attempts.c.status == "RUNNING",
+                    )
+                ).first()
+            ):
+                raise ValueError("CANCELLATION_WORK_STATE_NOT_CURRENT")
+            inventory[row["work_id"]] = (work, attempt)
+        return inventory
+
+    @staticmethod
     def _target_kind(action_type: ActionType) -> CancellationTargetKind | None:
         if action_type in _PROVIDER_ACTIONS:
             return "PROVIDER"
@@ -188,5 +244,6 @@ class CancellationTargetStore:
         if content_hash(record) != ref.content_hash:
             raise ValueError("HASH_MISMATCH")
         return record
+
 
 __all__ = ["CancellationTargetStore"]
