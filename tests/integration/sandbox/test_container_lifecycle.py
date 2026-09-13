@@ -345,9 +345,7 @@ def _dependency_bundle(
     dependency_hash: str | None = None,
 ) -> DependencyBundle:
     archive = _dependency_archive(files)
-    archive_ref = artifacts.commit(
-        artifacts.stage_bytes(archive, "application/x-tar")
-    )
+    archive_ref = artifacts.commit(artifacts.stage_bytes(archive, "application/x-tar"))
     request_ref = reference(request)
     profile_ref = reference(profile)
     assert isinstance(request_ref, StoredDataRef)
@@ -1407,9 +1405,7 @@ async def test_approved_python_wheel_bundle_is_baked_for_offline_install(
         dockerfile = archive.extractfile(source.dockerfile_path)
         assert dockerfile is not None
         dockerfile_bytes = dockerfile.read()
-    assert (
-        ".sastsimi/dependencies/python/demo-1.0.0-py3-none-any.whl" in names
-    )
+    assert ".sastsimi/dependencies/python/demo-1.0.0-py3-none-any.whl" in names
     assert b"python -m pip install --no-index" in dockerfile_bytes
     assert b"--find-links=/opt/sastsimi-dependencies/python" in dockerfile_bytes
 
@@ -1470,9 +1466,7 @@ async def test_approved_npm_cache_bundle_is_baked_for_offline_install(
         dockerfile = archive.extractfile(source.dockerfile_path)
         assert dockerfile is not None
         dockerfile_bytes = dockerfile.read()
-    assert (
-        ".sastsimi/dependencies/npm/_cacache/content-v2/sha512/aa/item" in names
-    )
+    assert ".sastsimi/dependencies/npm/_cacache/content-v2/sha512/aa/item" in names
     assert b"npm ci --offline" in dockerfile_bytes
     assert b"--cache /opt/sastsimi-dependencies/npm" in dockerfile_bytes
     assert b"--ignore-scripts" in dockerfile_bytes
