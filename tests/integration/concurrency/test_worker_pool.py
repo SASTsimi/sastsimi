@@ -17,6 +17,7 @@ from sastsimi.contracts.work import (
     WorkType,
 )
 from sastsimi.ports.dto import WorkContext, WorkHandlerResult
+from sastsimi.ports.scheduler import CancellationObservation, CancellationTarget
 from sastsimi.runtime.handler_registry import HandlerRegistry
 from sastsimi.runtime.work_service import WorkService
 from sastsimi.runtime.worker_pool import WorkerPool
@@ -54,9 +55,27 @@ class _RunControl:
         assert analysis_id == "analysis-1"
         self.quiescent = True
 
-    def cancellation_targets(self, analysis_id: str) -> tuple[()]:
+    def cancellation_targets(self, analysis_id: str) -> tuple[CancellationTarget, ...]:
         assert analysis_id == "analysis-1"
         return ()
+
+    def cancellation_observations(
+        self, targets: tuple[CancellationTarget, ...]
+    ) -> tuple[CancellationObservation | None, ...]:
+        return tuple(None for _target in targets)
+
+    def record_cancellation_observation(
+        self, observation: CancellationObservation
+    ) -> None:
+        del observation
+
+    def reconcile_cancellation(
+        self,
+        analysis_id: str,
+        observations: tuple[CancellationObservation, ...],
+    ) -> None:
+        assert analysis_id == "analysis-1"
+        del observations
 
 
 def _work(work_id: str, work_type: WorkType) -> WorkExecutionState:

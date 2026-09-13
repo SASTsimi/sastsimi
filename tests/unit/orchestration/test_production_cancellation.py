@@ -335,13 +335,14 @@ async def test_sandbox_prepare_waits_for_started_creation_to_register(
         )
     controls = RunControlStore(harness.database, harness.clock)
     target = _sandbox_target()
-    assert isinstance(target.attempt.meta, RecordMeta)
+    target_meta = target.attempt.meta
+    assert isinstance(target_meta, RecordMeta)
     journal = tmp_path / "owned-resources.json"
     writer = OwnedResourceRegistry(
         journal_path=journal,
         mutation_admission=controls.admit_resource_mutation,
     )
-    labels = ReproductionSetupAutomation._container_labels(target.attempt.meta)
+    labels = ReproductionSetupAutomation._container_labels(target_meta)
     name = DockerAdapter.runtime_container_name(labels)
     creation_started = asyncio.Event()
     allow_registration = asyncio.Event()
@@ -354,7 +355,7 @@ async def test_sandbox_prepare_waits_for_started_creation_to_register(
             writer.register_reserved_container(
                 container_name=name,
                 container_id="container-created-before-cancel",
-                meta=target.attempt.meta,
+                meta=target_meta,
             )
 
     creator = asyncio.create_task(create_resource())
@@ -410,11 +411,13 @@ async def test_sandbox_parallel_targets_get_exact_attempt_inventories(
         (first, "parallel-container-1"),
         (second, "parallel-container-2"),
     ):
-        labels = ReproductionSetupAutomation._container_labels(target.attempt.meta)
+        target_meta = target.attempt.meta
+        assert isinstance(target_meta, RecordMeta)
+        labels = ReproductionSetupAutomation._container_labels(target_meta)
         writer.register_container(
             container_id=container_id,
             labels=labels,
-            meta=target.attempt.meta,
+            meta=target_meta,
         )
     service = ProductionSandboxCancellation(
         records=fixture().records,
@@ -560,11 +563,13 @@ async def test_sandbox_inventory_rejects_missing_parallel_target_scope(
         (first, "parallel-container-1"),
         (second, "parallel-container-2"),
     ):
-        labels = ReproductionSetupAutomation._container_labels(target.attempt.meta)
+        target_meta = target.attempt.meta
+        assert isinstance(target_meta, RecordMeta)
+        labels = ReproductionSetupAutomation._container_labels(target_meta)
         writer.register_container(
             container_id=container_id,
             labels=labels,
-            meta=target.attempt.meta,
+            meta=target_meta,
         )
     service = ProductionSandboxCancellation(
         records=fixture().records,

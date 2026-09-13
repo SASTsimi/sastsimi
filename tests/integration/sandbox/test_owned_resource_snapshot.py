@@ -217,11 +217,15 @@ def test_invalid_root_or_unrequested_attempt_is_handled_without_scope_mixing(
         )
         assert all(
             entry.labels[f"sastsimi.{label}"] != "foreign"
-            for entry in (
-                *snapshot.resources,
-                *snapshot.container_intents,
-                *snapshot.image_intents,
-            )
+            for entry in snapshot.resources
+        )
+        assert all(
+            entry.labels[f"sastsimi.{label}"] != "foreign"
+            for entry in snapshot.container_intents
+        )
+        assert all(
+            entry.labels[f"sastsimi.{label}"] != "foreign"
+            for entry in snapshot.image_intents
         )
         return
     with pytest.raises(ValueError):
