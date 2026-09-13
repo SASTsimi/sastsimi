@@ -375,6 +375,10 @@ def main(
         return int(ExitCode.CAPABILITY_UNSUPPORTED)
     except report_command.ReportCommandError:
         code = ExitCode.REPORT_UNAVAILABLE
+    except result_command.ResultIncomplete:
+        code = ExitCode.RESULT_INCOMPLETE
+    except result_command.ResultIntegrityError:
+        code = ExitCode.INTEGRITY_ERROR
     except Exception:
         trace_id = "trace-" + str(uuid4())
         logger = bootstrap.build_diagnostic_logger(sys.stderr, "ERROR")

@@ -51,7 +51,8 @@ class _Application:
         )
 
     def result(self, analysis_id: str) -> AnalysisRunResult:
-        raise ValueError(f"not terminal: {analysis_id}")
+        del analysis_id
+        raise ValueError("RESULT_NOT_TERMINAL")
 
 
 def test_production_analyze_passes_only_explicit_exact_inputs(
@@ -291,3 +292,40 @@ def test_production_results_without_available_query_fails_closed(
     output = capsys.readouterr()
     assert output.out == ""
     assert "CAPABILITY_UNSUPPORTED" in output.err
+
+
+def test_production_results_nonterminal_uses_incomplete_exit_code(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert (
+        main(
+            ["results", "analysis-1", "--format", "json"],
+            production_query=_Application(),
+        )
+        == 8
+    )
+
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert json.loads(output.err)["code"] == "RESULT_INCOMPLETE"
+
+
+def test_production_results_reference_mismatch_uses_integrity_exit_code(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _MismatchedApplication(_Application):
+        def result(self, analysis_id: str) -> AnalysisRunResult:
+            del analysis_id
+            raise ValueError("ANALYSIS_RESULT_EXACT_REF_MISMATCH")
+
+    assert (
+        main(
+            ["results", "analysis-1", "--format", "json"],
+            production_query=_MismatchedApplication(),
+        )
+        == 9
+    )
+
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert json.loads(output.err)["code"] == "INTEGRITY_ERROR"

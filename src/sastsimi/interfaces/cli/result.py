@@ -7,6 +7,14 @@ from typing import Literal, Protocol
 from sastsimi.contracts.evaluation import AnalysisRunResult
 
 
+class ResultIncomplete(RuntimeError):
+    """The requested run has no exact terminal result yet."""
+
+
+class ResultIntegrityError(RuntimeError):
+    """The stored result does not match its exact run reference."""
+
+
 class ResultApplicationPort(Protocol):
     def result(self, analysis_id: str) -> AnalysisRunResult: ...
 
@@ -17,7 +25,15 @@ def run(
     *,
     output_format: Literal["json", "summary"] = "summary",
 ) -> dict[str, object]:
-    result = application.result(analysis_id)
+    try:
+        result = application.result(analysis_id)
+    except ValueError as error:
+        reason = str(error)
+        if reason == "RESULT_NOT_TERMINAL":
+            raise ResultIncomplete from None
+        if reason == "ANALYSIS_RESULT_EXACT_REF_MISMATCH":
+            raise ResultIntegrityError from None
+        raise
     return project(result, output_format=output_format)
 
 
@@ -52,4 +68,4 @@ def project(
     return base
 
 
-__all__ = ["project", "run"]
+__all__ = ["ResultIncomplete", "ResultIntegrityError", "project", "run"]

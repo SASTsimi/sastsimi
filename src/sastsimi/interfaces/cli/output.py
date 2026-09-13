@@ -31,6 +31,14 @@ def emit_result(
         ExitCode.REPORT_UNAVAILABLE: (
             "Report is unavailable; it may be missing, stale, or unsafe to display."
         ),
+        ExitCode.RUN_FAILED: "The analysis stopped with an unrecoverable failure.",
+        ExitCode.RUN_CANCELLED: "The analysis was cancelled.",
+        ExitCode.RESULT_INCOMPLETE: (
+            "The analysis is not terminal; use status before requesting results."
+        ),
+        ExitCode.INTEGRITY_ERROR: (
+            "Stored state failed an exact-reference or recovery integrity check."
+        ),
         ExitCode.INTERNAL_ERROR: (
             "Unexpected internal error; retain the diagnostic trace ID."
         ),
