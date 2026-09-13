@@ -142,7 +142,6 @@ def _trusted_docker_target() -> tuple[TrustedDockerTarget, _E2EDockerResolver]:
         build_backend="LEGACY_LIMITED",
         enforced_build_limits=frozenset({"CPU", "MEMORY", "PID", "DISK"}),
         external_build_disk_limit_bytes=64 * 1024 * 1024,
-        external_build_storage_identity_hash="a" * 64,
     )
     return target, _E2EDockerResolver(target)
 
@@ -755,6 +754,16 @@ async def test_supported_fixture_produces_validated_poc(tmp_path: Path) -> None:
     fixture = Path(__file__).parents[1] / "fixtures" / "sandbox" / "sql_injection"
     workspace = tmp_path / "runtime-workspace"
     shutil.copytree(fixture, workspace)
+    # This path verifies a source-baked production context. Keep the shared
+    # legacy fixture mount-only so unrelated lifecycle tests do not silently
+    # gain Dockerfile COPY authority.
+    (workspace / "Dockerfile").write_text(
+        "FROM python:3.12-slim\n\n"
+        "WORKDIR /workspace\n"
+        "COPY --chown=65532:65532 app.py /workspace/app.py\n"
+        "USER 65532:65532\n",
+        encoding="utf-8",
+    )
     repository_profile = _repository_profile(
         {
             path.relative_to(workspace).as_posix(): path.read_bytes()

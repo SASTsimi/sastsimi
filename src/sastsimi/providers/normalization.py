@@ -26,9 +26,38 @@ _FAILURES: dict[InvocationStatus, str] = {
     "FAILED": "FAILED: OpenAI API request failed",
 }
 
+_CODEX_FAILURES: dict[InvocationStatus, str] = {
+    "AUTH_REQUIRED": "AUTH_REQUIRED: Codex ChatGPT login is required",
+    "TIMED_OUT": "TIMED_OUT: Codex subscription request exceeded its deadline",
+    "RATE_LIMITED": "RATE_LIMITED: Codex subscription usage limit was reached",
+    "INVALID_OUTPUT": "INVALID_OUTPUT: Codex returned invalid structured output",
+    "CANCELLED": "CANCELLED: Codex subscription request was cancelled",
+    "FAILED": "FAILED: Codex subscription request failed",
+    "SUCCEEDED": "FAILED: Codex subscription result status was inconsistent",
+}
+
 
 def failure(status: InvocationStatus) -> NormalizedFailure:
     return NormalizedFailure(status, _FAILURES[status])
+
+
+def codex_failure(status: InvocationStatus) -> NormalizedFailure:
+    if status == "SUCCEEDED":
+        return NormalizedFailure("FAILED", _CODEX_FAILURES[status])
+    return NormalizedFailure(status, _CODEX_FAILURES[status])
+
+
+def normalize_codex_exception(error: BaseException) -> NormalizedFailure:
+    """Classify local Codex boundary failures without copying exception text."""
+    if isinstance(error, ProviderInvalidOutputError):
+        return codex_failure("INVALID_OUTPUT")
+    if isinstance(error, ProviderInputMismatchError):
+        return NormalizedFailure(
+            "FAILED", "FAILED: authorized Codex request inputs did not match"
+        )
+    if isinstance(error, TimeoutError):
+        return codex_failure("TIMED_OUT")
+    return codex_failure("FAILED")
 
 
 def normalize_exception(error: BaseException) -> NormalizedFailure:
@@ -70,7 +99,9 @@ def normalize_response_failure(
 
 __all__ = [
     "NormalizedFailure",
+    "codex_failure",
     "failure",
+    "normalize_codex_exception",
     "normalize_exception",
     "normalize_response_failure",
 ]

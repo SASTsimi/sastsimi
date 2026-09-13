@@ -448,9 +448,6 @@ class _CapabilityProbeEngine:
             build_backend=boundary.build_backend,
             enforced_build_limits=frozenset(boundary.enforced_build_limits),
             external_build_disk_limit_bytes=boundary.external_build_disk_limit_bytes,
-            external_build_storage_identity_hash=(
-                boundary.external_build_storage_identity_hash
-            ),
         )
 
     def require_current(self, target: TrustedDockerTarget) -> None:
