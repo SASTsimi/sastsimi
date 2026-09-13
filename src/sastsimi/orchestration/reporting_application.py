@@ -32,6 +32,12 @@ class ReportingAnalysisApplication:
         self._application = application
         self._reports = reports
 
+    @property
+    def application(self) -> AnalysisApplicationPort:
+        """Expose the scope-owned application for composition diagnostics only."""
+
+        return self._application
+
     async def run(self, request: AnalysisStartRequest) -> RunOutcome:
         outcome = await self._application.run(request)
         self._export_if_terminal(outcome)

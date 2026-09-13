@@ -39,6 +39,7 @@ from sastsimi.orchestration.production_composition import (
     ProductionInstallationContext,
     ResolvedProductionCapabilities,
 )
+from sastsimi.orchestration.reporting_application import ReportingAnalysisApplication
 from sastsimi.orchestration.run_initialization import PostWorkspaceSeederPort
 from sastsimi.orchestration.run_scope_plan import PlannedRunScope
 from sastsimi.ports.dto import WorkContext, WorkHandlerResult
@@ -368,12 +369,14 @@ def test_factory_builds_sqlite_foundation_and_complete_handler_application() -> 
             scope=_scope(),
         )
 
-        assert isinstance(application, ProductionApplication)
-        assert application.scope == _scope()
+        assert isinstance(application, ReportingAnalysisApplication)
+        core = application.application
+        assert isinstance(core, ProductionApplication)
+        assert core.scope == _scope()
         assert capabilities.resolve_calls == 1
         assert capabilities.install_calls == 1
         assert capabilities.readiness.calls == 1
-        assert tuple(application.handlers.resolve(kind) for kind in WorkType)
+        assert tuple(core.handlers.resolve(kind) for kind in WorkType)
 
 
 def test_factory_without_exact_capability_resolver_fails_before_creating_state(

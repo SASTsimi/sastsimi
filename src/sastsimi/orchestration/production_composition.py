@@ -329,7 +329,7 @@ class ConcreteProductionApplicationFactory:
             clock=clock,
             metadata=_ResultMetadata(clock, ids),
         )
-        return build_production_application(
+        application = build_production_application(
             request=request,
             scope=scope,
             profile=profile,
@@ -343,6 +343,19 @@ class ConcreteProductionApplicationFactory:
             resumer=scheduler_store,
             clock=clock,
             readiness=installation.readiness,
+        )
+        # Markdown is a terminal production artifact, not a test-only CLI
+        # convenience.  The decorator exports every exact-current, redaction-
+        # approved ReportDraft only after the run has reached terminal closure.
+        from sastsimi.orchestration.reporting_application import (
+            ReportingAnalysisApplication,
+        )
+        from sastsimi.reporting.markdown_export import ReportMarkdownService
+        from sastsimi.storage.report_export import SQLiteCurrentReportSource
+
+        return ReportingAnalysisApplication(
+            application,
+            ReportMarkdownService(data_dir, SQLiteCurrentReportSource(data_dir)),
         )
 
 
