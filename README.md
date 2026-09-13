@@ -28,7 +28,7 @@ PRODUCTION_E2E_NOT_YET_PROVEN
 - Architecture v5는 R1~R8 역할 검토와 전체 문서 추적 검토를 거쳐 **구현 기준 설계**로 승인되었습니다.
 - `DESIGN_APPROVED`는 문서의 역할·흐름·계약을 구현 기준으로 확정했다는 뜻이며, 실행 코드나 보안 성능을 검증했다는 뜻이 아닙니다.
 - 공통 계약·저장·복구·정적 분석·Provider·동적 재현·Gate·보고서 구성요소는 순차 구현 중입니다.
-- 이 문서 branch를 만든 시점의 `main`에서 `analyze`는 아직 Fake 시나리오 전용입니다. 실제 저장소 분석 CLI, 운영 capability/onboarding 연결과 전체 production orchestration은 관련 구현 PR 병합 및 출시 검증 전까지 사용할 수 없습니다.
+- 실제 저장소 분석 CLI는 `analyze --repo --commit --profile`이며, Fake 시나리오는 `demo` 아래에 분리됩니다. 다만 CLI가 보인다는 사실만으로 출시 검증이 끝난 것은 아닙니다. capability/onboarding이 `READY`이고 Fake 없는 전체 production E2E를 통과한 release만 실제 분석에 사용합니다.
 - 최종 완료 조건은 실제 저장소를 입력해 Fake Adapter 없이 clone, 정적 분석, LLM 검증, 필요한 Docker 재현, Gate, Finding, ReportDraft와 Markdown 보고서까지 완주하는 것입니다.
 - 자동 분석 결과를 외부에 제출하거나 공개하지 않습니다. 최종 공개 여부는 사람이 결정합니다.
 

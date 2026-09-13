@@ -19,7 +19,7 @@
 
 ### `analyze --help`에 `--repo`가 없음
 
-현재 설치본은 Fake 전용입니다. `analyze --scenario` 결과를 운영 결과로 사용하지 말고 production CLI가 포함된 release를 설치합니다.
+현재 설치본은 production 분석 CLI가 포함되지 않은 이전 개발본입니다. Fake는 `demo analyze` 아래의 시연 결과일 뿐 운영 결과가 아니므로, production CLI가 포함된 release를 설치합니다.
 
 ### `capability` 또는 `onboarding` 명령이 없음
 
@@ -68,7 +68,7 @@ OpenAI probe가 `PASSED`여도 현재 `activation_supported=false`인 것은 정
 
 ### Codex 회원 로그인
 
-`codex login status`로 공식 client 상태를 확인할 수 있지만, 현재 adapter는 `EXPERIMENTAL`이며 production 자동 활성화가 금지되어 있습니다. 브라우저 cookie 복사나 `support_status` 수동 변경으로 우회하지 않습니다.
+`codex login status`로 공식 client 상태를 확인할 수 있습니다. 그러나 로그인은 인증 확인일 뿐 Provider 검증·격리 시험·R8 평가·사람 승인을 대신하지 않습니다. 브라우저 cookie 복사나 `support_status` 수동 변경으로 우회하지 않습니다.
 
 ## 5. onboarding이 READY가 아닙니다
 

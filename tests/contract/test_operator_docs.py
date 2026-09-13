@@ -30,6 +30,9 @@ def test_operator_path_is_linked_and_separates_production_from_demo() -> None:
     assert "reports <analysis_id>" in usage
     assert "report export <finding_id> --format markdown" in usage
     assert "demo analyze --scenario TRUE" in usage
+    assert "analyze --scenario TRUE" not in usage.replace(
+        "demo analyze --scenario TRUE", ""
+    )
     assert "Fake로 자동 대체하지 않습니다" in usage
     assert "Fake 없는 live E2E" in usage
     assert "PRODUCTION_E2E_NOT_YET_PROVEN" in readme
@@ -45,8 +48,10 @@ def test_operator_docs_never_embed_a_credential_or_claim_preflight_is_active() -
     assert "설치나 `--version` 성공만으로" in installation
     assert "activation_supported=false" in installation
     assert "activation_supported=false" in provider
-    assert "EXPERIMENTAL" in provider
-    assert "production 자동 활성화가 금지" in provider
+    assert "codex login" in provider
+    assert "codex login status" in provider
+    assert "공식 Codex CLI adapter는 구현되어" in provider
+    assert "`SUPPORTED`가 되기 전에는 production route에 선택되지 않습니다" in provider
 
 
 def test_source_cli_and_onboarding_contract_are_documented() -> None:
@@ -65,6 +70,7 @@ def test_source_cli_and_onboarding_contract_are_documented() -> None:
     assert "ProductionOnboardingManifest" in combined
     assert "ProductionProvisioningManifest" in combined
     assert "PVDObservation" in combined
+    assert "onboarding init --profile" in combined
     for field in (
         "provisioning_manifest_sha256",
         "policy_artifact_sha256",
@@ -85,6 +91,7 @@ def test_production_profile_example_is_complete_and_contains_no_secret() -> None
 
     assert path.is_file()
     assert "sk-" not in raw
+    assert profile["allow_local_repository"] is False
     assert profile["providers"] == [
         {
             "provider_profile_key": "approved-openai-profile",

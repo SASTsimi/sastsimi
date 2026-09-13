@@ -9,9 +9,9 @@ uv run sastsimi --help
 uv run sastsimi analyze --help
 ```
 
-production 분석이 가능한 설치본은 `analyze`에 `--repo`, `--commit`, `--profile`을 모두 필수 입력으로 표시합니다. `analyze --scenario`만 보이면 현재 설치본은 Fake 전용이므로 실제 저장소에 사용하지 않습니다.
+production 분석이 가능한 설치본은 `analyze`에 `--repo`, `--commit`, `--profile`을 모두 필수 입력으로 표시합니다. Fake 시나리오는 `demo analyze` 아래에만 있어야 하며 실제 저장소 분석과 섞이지 않습니다.
 
-이 문서 branch를 만든 시점의 `main`에서 `analyze`는 아직 Fake 전용입니다. 아래 production 명령은 T14 orchestration, T16 capability/onboarding과 필요한 선행 구현이 모두 병합된 설치본에서만 사용할 수 있습니다. 현재 전체 Fake 없는 live E2E는 아직 출시 완료로 증명되지 않았습니다.
+아래 production 명령은 T14 orchestration, T16 capability/onboarding과 필요한 선행 구현이 모두 포함된 release에서 사용합니다. 명령이 보이더라도 Fake 없는 live E2E 출시 증거가 없으면 연구·검증 환경 밖에서 운영 완료로 간주하지 않습니다.
 
 ## 2. 실행 준비 순서
 
@@ -22,7 +22,7 @@ production 분석이 가능한 설치본은 `analyze`에 `--repo`, `--commit`, `
 5. `onboarding requirements` → `prepare` → `status` 순서로 profile이 현재도 `READY`인지 확인합니다.
 6. 정확한 저장소와 commit으로 `analyze`를 실행합니다.
 
-OpenAI 인증 smoke가 성공해도 Provider onboarding은 생략할 수 없습니다. CodeQL과 Codex 회원제는 현재 자동 production 활성화가 불가능합니다.
+OpenAI 인증 smoke가 성공해도 Provider onboarding은 생략할 수 없습니다. CodeQL과 Codex 회원제도 설치·로그인만으로 활성화하지 않으며, 해당 exact 실행 파일·환경·모델에 대한 검증 근거와 사람 승인이 필요합니다.
 
 ## 3. 분석 입력을 준비합니다
 
@@ -32,6 +32,8 @@ OpenAI 인증 smoke가 성공해도 Provider onboarding은 생략할 수 없습�
 - 소문자 40자리 또는 64자리의 정확한 commit SHA
 - secret이 없는 production profile TOML
 - 같은 `data-dir`에 저장된 현재 capability와 onboarding 승인 기록
+
+원격 `https` 저장소가 기본입니다. 로컬 Git 경로를 사용하려면 production profile에서 `allow_local_repository = true`를 명시적으로 설정하고, 그 경로가 승인된 분석 입력인지 먼저 확인합니다. 기본 예시는 안전하게 `false`입니다.
 
 현재 로컬 저장소의 commit은 다음처럼 확인할 수 있습니다.
 
@@ -133,14 +135,7 @@ ReportDraft와 Markdown은 사람이 검토할 내부 결과입니다. HTML·PDF
 
 ## 8. Fake 시나리오는 따로 사용합니다
 
-현재 `main`의 Fake 전용 설치본은 다음 기존 명령만 제공합니다.
-
-```text
-uv run sastsimi --data-dir <demo-data-dir> analyze --scenario TRUE --format json
-uv run sastsimi --data-dir <demo-data-dir> results --format json
-```
-
-T14 production CLI가 포함된 설치본에서는 Fake가 다음과 같이 `demo` 아래로 이동합니다.
+Fake는 다음과 같이 `demo` 아래에서만 실행합니다.
 
 ```text
 uv run sastsimi --data-dir <demo-data-dir> demo analyze --scenario TRUE --format json

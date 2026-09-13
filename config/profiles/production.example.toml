@@ -6,6 +6,8 @@ schema_version = 1
 program_id = "replace-with-approved-program-id"
 host_id = "replace-with-approved-host-id"
 workspace_root = "/var/lib/sastsimi/workspaces"
+# 로컬 Git 경로를 승인한 경우에만 true로 바꾸세요. 원격 https 입력은 false로 둡니다.
+allow_local_repository = false
 taxonomy_version = "replace-with-approved-cwe-version"
 
 [worker]

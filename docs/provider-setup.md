@@ -32,7 +32,7 @@ uv run sastsimi --data-dir <data-dir> capability probe OPENAI_API --model <model
 
 이 probe는 인증과 구조화 출력만 확인합니다. 현재 구현은 성공해도 `activation_supported=false`이며, 이 결과만으로 `ProviderProfile.support_status=SUPPORTED`를 만들 수 없습니다. production 활성화에는 아래 onboarding의 PVD-01~PVD-15, 현재 약관 확인, R8 평가, 사람 승인과 Prompt 승인이 모두 필요합니다.
 
-## 3. Codex 회원 로그인 — EXPERIMENTAL
+## 3. Codex 회원 로그인 — 공식 client 경로, 별도 승인 필요
 
 Codex 회원 로그인은 공식 Codex CLI 경로만 허용합니다. 브라우저 cookie를 읽거나 browser profile을 복사해 연결하지 않습니다. 공식 인증 안내는 [Codex 인증 문서](https://developers.openai.com/codex/auth/)를 참고하세요.
 
@@ -41,7 +41,7 @@ codex login
 codex login status
 ```
 
-현재 저장소에는 공식 Codex CLI를 감싸는 adapter와 격리 경계 시험이 있습니다. 그러나 이 경로의 `support_status`는 `EXPERIMENTAL`이며 production 자동 활성화가 금지되어 있습니다. 로그인 성공이나 adapter 존재만으로 실제 분석 route에 선택할 수 없습니다.
+공식 Codex CLI adapter는 구현되어 있으며 `CODEX_OFFICIAL_CLIENT_V1` 구현으로 연결합니다. 다만 로그인 성공이나 adapter 존재만으로 운영 지원이 확정되지는 않습니다. exact 실행 파일·client version·model·격리 환경의 검증 근거를 연결한 `ProviderProfile`이 사람 승인 후 `SUPPORTED`가 되기 전에는 production route에 선택되지 않습니다.
 
 다음 증거를 별도 승인 환경에서 모두 확보하기 전에는 Codex 회원제를 production profile 예시에 넣지 않습니다.
 
@@ -56,7 +56,13 @@ codex login status
 
 onboarding 명령은 “시험을 대신 수행해 PASS를 만들어 주는 명령”이 아닙니다. 외부에서 실제로 수집하고 사람이 승인한 근거를 가져와, 현재 profile·Provider·model·Prompt와 정확히 같은지 다시 확인합니다.
 
-먼저 필요한 항목을 조회합니다.
+먼저 secret 없는 준비 계획을 만들고 필요한 항목을 조회합니다. `init`은 실행할 probe와 검토 항목을 적은 계획만 만들며 어떤 항목도 승인하지 않습니다.
+
+```text
+uv run sastsimi --data-dir <data-dir> onboarding init --profile <production-profile.toml> --output-dir <onboarding-work-dir> --format json
+```
+
+같은 `output-dir`의 기존 계획을 덮어쓰지 않습니다. 이어서 현재 profile과 Prompt hash에 필요한 항목을 조회합니다.
 
 ```text
 uv run sastsimi --data-dir <data-dir> onboarding requirements --profile <production-profile.toml> --format json
@@ -107,7 +113,7 @@ uv run sastsimi --data-dir <data-dir> onboarding status --profile <production-pr
 ## 6. 현재 지원 상태 확인
 
 - OpenAI API adapter: 구현되어 있으나 exact full PVD·평가·사람 승인·onboarding을 통과한 profile만 production 후보입니다.
-- Codex 회원 로그인 adapter: `EXPERIMENTAL`, production 자동 활성화 불가입니다.
+- Codex 회원 로그인 adapter: 공식 client 경로가 구현되어 있습니다. 현재 환경에서 검증되지 않은 후보는 실행 가능한 profile로 만들지 않으며, exact PVD·격리·R8 평가·사람 승인을 통과해 `SUPPORTED`가 된 profile만 production에서 사용합니다.
 - Anthropic API·Claude Code 회원 로그인: 계약 이름만으로 지원을 주장하지 않습니다. 현재 production adapter와 검증 증거가 없으면 사용할 수 없습니다.
 - Fake Provider: 테스트·시연 전용이며 production fallback이 아닙니다.
 

@@ -23,11 +23,7 @@ uv run sastsimi analyze --help
 
 ## 2. 기본 실행 환경
 
-첫 지원 범위는 다음과 같습니다.
-
-- Windows 11 또는 Windows Server 2022, x86-64, 64-bit CPython 3.12
-- Ubuntu 24.04, x86-64, 64-bit CPython 3.12
-- Python package 요구 범위: `>=3.12,<3.13`
+필수 Python 범위는 `>=3.12,<3.13`입니다. 운영체제와 CPU 조합은 이름만으로 지원을 가정하지 않고, 실제 실행 host에서 capability probe와 onboarding을 통과한 조합만 사용합니다.
 
 Docker 동적 재현은 Linux container와 승인된 Docker 경계가 추가로 필요합니다. 운영체제와 Python 검사가 성공해도 Docker가 자동 허용되지는 않습니다.
 
@@ -83,7 +79,7 @@ Python AST parser는 CPython 3.12 안에 포함되어 있습니다. 별도 parse
 
 ### OpenGrep
 
-[OpenGrep 공식 설치 안내](https://github.com/OpenGrep/OpenGrep/blob/main/INSTALL.md)를 따라 설치하고, 안내에 나온 OpenGrep CLI 실행 파일이 `PATH`에서 동작하는지 확인합니다.
+[OpenGrep 공식 설치 안내](https://github.com/OpenGrep/OpenGrep/blob/main/README.md)를 따라 설치하고, 안내에 나온 OpenGrep CLI 실행 파일이 `PATH`에서 동작하는지 `--version` 옵션으로 확인합니다.
 
 운영 활성화에는 version 확인뿐 아니라 Python·JavaScript 시험 파일에 승인된 규칙을 실제 실행한 probe가 필요합니다.
 
