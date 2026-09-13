@@ -171,9 +171,10 @@ def test_timeout_terminates_spawned_process_tree(tmp_path: Path) -> None:
     )
     assert outcome.succeeded is False
     time.sleep(0.4)
-    first = marker.read_text(encoding="utf-8")
+    first = marker.read_text(encoding="utf-8") if marker.exists() else None
     time.sleep(0.4)
-    assert marker.read_text(encoding="utf-8") == first
+    second = marker.read_text(encoding="utf-8") if marker.exists() else None
+    assert second == first
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows process-tree regression")

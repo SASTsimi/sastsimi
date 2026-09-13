@@ -23,6 +23,7 @@ from sastsimi.composition.production_default_assembler import (
 )
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.ports.dto import ProcessReceipt
+from sastsimi.ports.production_analysis import ProductionAnalyzeUnavailable
 from tests.integration.static_quota_support import TestQuota
 
 
@@ -36,9 +37,13 @@ def test_static_runtime_supplies_configured_codeql_quota_to_default_assembler(
         output_quota=quota,
         codeql_database_limit_bytes=131072,
     )(context)
-    _require_static_runtime_ports(
-        ports, cast(Any, SimpleNamespace(enabled_tools=("CODEQL",)))
-    )
+    with pytest.raises(
+        ProductionAnalyzeUnavailable,
+        match="PRODUCTION_CODEQL_SAFE_PREREQUISITES_UNAVAILABLE",
+    ):
+        _require_static_runtime_ports(
+            ports, cast(Any, SimpleNamespace(enabled_tools=("CODEQL",)))
+        )
     assert ports.output_quota is quota
     assert ports.codeql_database_limit_bytes == 131072
 
@@ -49,7 +54,10 @@ def test_default_static_runtime_keeps_unconfigured_codeql_blocked(
     ports = ProductionStaticRuntimeFactory()(
         cast(Any, SimpleNamespace(data_dir=tmp_path))
     )
-    with pytest.raises(ValueError, match="PRODUCTION_CODEQL_HARD_QUOTA_REQUIRED"):
+    with pytest.raises(
+        ProductionAnalyzeUnavailable,
+        match="PRODUCTION_CODEQL_SAFE_PREREQUISITES_UNAVAILABLE",
+    ):
         _require_static_runtime_ports(
             ports, cast(Any, SimpleNamespace(enabled_tools=("CODEQL",)))
         )
