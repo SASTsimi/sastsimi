@@ -13,6 +13,7 @@ from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef
 from sastsimi.ports.dto import WorkspaceStoragePolicy
 from sastsimi.static_analysis.workspace_storage import (
     FixtureQuotaWorkspaceStorage,
+    ProductionWorkspaceStorage,
     WorkspaceQuotaExceeded,
     decode_workspace_storage_policy,
 )
@@ -198,3 +199,64 @@ def test_checkout_entry_count_includes_directories_and_links_without_following(
     link("linked-three")
     with pytest.raises(WorkspaceQuotaExceeded, match="FILE_COUNT"):
         storage.enforce(lease)
+
+
+def test_production_lease_survives_restart_with_exact_identity(tmp_path: Path) -> None:
+    raw = policy_bytes(max_git_bytes=100, max_checkout_bytes=100, min_free_bytes=1)
+    ref = policy_ref(raw)
+    policy = decode_workspace_storage_policy(ref, raw, "analysis")
+    root = tmp_path / "production-workspaces"
+    storage = ProductionWorkspaceStorage(
+        root,
+        capacity_bytes=1_000,
+        backend_key="approved-quota-backend",
+        enforcement_evidence="approved-evidence-sha256",
+    )
+    lease = storage.allocate(
+        attempt_id="attempt",
+        workspace_id="workspace",
+        policy_ref=ref,
+        policy=policy,
+    )
+    (lease.root / "app.py").write_text("print('ok')", encoding="utf-8")
+
+    restarted = ProductionWorkspaceStorage(
+        root,
+        capacity_bytes=1_000,
+        backend_key="approved-quota-backend",
+        enforcement_evidence="approved-evidence-sha256",
+    )
+
+    assert restarted.resolve(lease.lease_id) == lease
+    assert restarted.enforce(lease).checkout_bytes == 11
+
+
+def test_production_restart_rejects_wrong_backend_and_forged_lease(
+    tmp_path: Path,
+) -> None:
+    raw = policy_bytes(max_git_bytes=100, max_checkout_bytes=100, min_free_bytes=1)
+    ref = policy_ref(raw)
+    root = tmp_path / "production-workspaces"
+    storage = ProductionWorkspaceStorage(
+        root,
+        capacity_bytes=1_000,
+        backend_key="approved-quota-backend",
+        enforcement_evidence="approved-evidence-sha256",
+    )
+    lease = storage.allocate(
+        attempt_id="attempt",
+        workspace_id="workspace",
+        policy_ref=ref,
+        policy=decode_workspace_storage_policy(ref, raw, "analysis"),
+    )
+
+    changed_backend = ProductionWorkspaceStorage(
+        root,
+        capacity_bytes=1_000,
+        backend_key="different-backend",
+        enforcement_evidence="different-evidence",
+    )
+    with pytest.raises(ValueError, match="WORKSPACE_LEASE_INVALID"):
+        changed_backend.resolve(lease.lease_id)
+    with pytest.raises(ValueError, match="WORKSPACE_LEASE_INVALID"):
+        storage.enforce(replace(lease, workspace_id="other"))
