@@ -188,7 +188,7 @@ def _provisioning_payload(profile: ProductionProfile) -> dict[str, object]:
             capability("GIT_CLONE", 1, "runtime_capability_profile"),
             capability("GIT_CHECKOUT", 2, "runtime_capability_profile"),
             capability("PYTHON_RUNTIME", 3, "runtime_capability_profile"),
-            capability("AST_PYTHON", 4, "static_tool_profile"),
+            capability("AST", 4, "static_tool_profile"),
         ],
         "artifacts": [
             {"slot": slot, "content_sha256": _sha(f"{slot}-data".encode())}

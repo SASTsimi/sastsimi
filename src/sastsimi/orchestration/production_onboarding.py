@@ -133,11 +133,9 @@ class ProvisioningCapability(ContractModel):
         "GIT_CLONE",
         "GIT_CHECKOUT",
         "PYTHON_RUNTIME",
-        "AST_PYTHON",
-        "CODEQL_PYTHON",
-        "CODEQL_JAVASCRIPT",
-        "OPENGREP_PYTHON",
-        "OPENGREP_JAVASCRIPT",
+        "AST",
+        "CODEQL",
+        "OPENGREP",
         "DOCKER",
     ]
     profile_ref: HostConfigurationRef
@@ -183,7 +181,7 @@ class ProductionProvisioningManifest(ContractModel):
             "GIT_CLONE",
             "GIT_CHECKOUT",
             "PYTHON_RUNTIME",
-            "AST_PYTHON",
+            "AST",
         }
         required_artifacts = {
             "WORKSPACE_STORAGE",
@@ -195,11 +193,9 @@ class ProductionProvisioningManifest(ContractModel):
             "PROMPT_ROUTES",
         }
         static_slots = {
-            "AST_PYTHON",
-            "CODEQL_PYTHON",
-            "CODEQL_JAVASCRIPT",
-            "OPENGREP_PYTHON",
-            "OPENGREP_JAVASCRIPT",
+            "AST",
+            "CODEQL",
+            "OPENGREP",
         }
         if (
             self.created_at >= self.expires_at
