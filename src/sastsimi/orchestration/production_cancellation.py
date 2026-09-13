@@ -61,6 +61,11 @@ class ProductionStaticCancellation:
         self._adapter.validate_cancellation(str(target.attempt.attempt_id))
         return target
 
+    def validate_inventory(
+        self, analysis_id: str, targets: tuple[CancellationTarget, ...]
+    ) -> None:
+        del analysis_id, targets
+
     async def cancel(self, target: CancellationTarget) -> CancellationObservation:
         if target.target_kind != "STATIC":
             raise ValueError("CANCELLATION_TARGET_KIND_MISMATCH")
@@ -82,6 +87,11 @@ class ProductionProviderCancellation:
             call_spec_ref=call_spec_ref,
         )
         return target
+
+    def validate_inventory(
+        self, analysis_id: str, targets: tuple[CancellationTarget, ...]
+    ) -> None:
+        del analysis_id, targets
 
     async def cancel(self, target: CancellationTarget) -> CancellationObservation:
         decision_ref, call_spec_ref = self._inputs(target)
@@ -125,7 +135,62 @@ class ProductionSandboxCancellation:
         if not isinstance(meta, RecordMeta):
             raise ValueError("CANCELLATION_SANDBOX_SCOPE_MISMATCH")
         snapshot = self._resources.fresh_snapshot(meta=meta)
-        resources = (
+        resources = self._cancellation_resources(snapshot)
+        if not resources:
+            raise ValueError("CANCELLATION_SANDBOX_RESOURCE_MISSING")
+        return replace(
+            target,
+            sandbox_resource_refs=tuple(
+                item.resource_ref for item in resources if item.resource_ref is not None
+            ),
+            sandbox_resources=resources,
+            sandbox_inventory_fingerprint=snapshot.fingerprint,
+        )
+
+    def validate_inventory(
+        self,
+        analysis_id: str,
+        targets: tuple[CancellationTarget, ...],
+    ) -> None:
+        """Fresh-load and prove every journal entry is in the prepared snapshot."""
+
+        sandbox_targets = tuple(
+            target for target in targets if target.target_kind == "SANDBOX"
+        )
+        metas: list[RecordMeta] = []
+        for target in sandbox_targets:
+            if not isinstance(target.attempt.meta, RecordMeta):
+                raise ValueError("CANCELLATION_SANDBOX_SCOPE_MISMATCH")
+            metas.append(target.attempt.meta)
+        snapshot = self._resources.fresh_cancellation_snapshot(
+            analysis_id=analysis_id,
+            metas=tuple(metas),
+        )
+        if snapshot is None:
+            if sandbox_targets:
+                raise ValueError("CANCELLATION_SANDBOX_INVENTORY_CHANGED")
+            return
+        current = self._cancellation_resources(snapshot)
+        if not sandbox_targets or any(
+            target.sandbox_inventory_fingerprint != snapshot.fingerprint
+            or target.sandbox_resources != current
+            or target.sandbox_resource_refs
+            != tuple(
+                item.resource_ref for item in current if item.resource_ref is not None
+            )
+            for target in sandbox_targets
+        ):
+            raise ValueError("CANCELLATION_SANDBOX_INVENTORY_CHANGED")
+
+    @staticmethod
+    def _cancellation_resources(
+        snapshot: object,
+    ) -> tuple[SandboxCancellationResource, ...]:
+        from sastsimi.sandbox.resource_snapshot import OwnedResourceSnapshot
+
+        if not isinstance(snapshot, OwnedResourceSnapshot):
+            raise ValueError("CANCELLATION_SANDBOX_INVENTORY_INVALID")
+        return (
             tuple(
                 SandboxCancellationResource(
                     resource_kind=item.resource_kind,
@@ -162,16 +227,6 @@ class ProductionSandboxCancellation:
                 )
                 for item in snapshot.image_intents
             )
-        )
-        if not resources:
-            raise ValueError("CANCELLATION_SANDBOX_RESOURCE_MISSING")
-        return replace(
-            target,
-            sandbox_resource_refs=tuple(
-                item.resource_ref for item in resources if item.resource_ref is not None
-            ),
-            sandbox_resources=resources,
-            sandbox_inventory_fingerprint=snapshot.fingerprint,
         )
 
     async def cancel(self, target: CancellationTarget) -> CancellationObservation:

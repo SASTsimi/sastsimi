@@ -257,6 +257,11 @@ class _Canceller:
     async def prepare(self, target: CancellationTarget) -> CancellationTarget:
         return target
 
+    def validate_inventory(
+        self, analysis_id: str, targets: tuple[CancellationTarget, ...]
+    ) -> None:
+        del analysis_id, targets
+
     async def cancel(self, target: CancellationTarget) -> CancellationObservation:
         assert self.controls.cancel_requested(str(target.work.meta.analysis_id))
         self.controls.events.append("external")
@@ -315,6 +320,11 @@ def test_complete_router_preflight_finishes_before_any_external_cancel() -> None
             if self.reject:
                 raise ValueError("CANCELLATION_ROUTE_NOT_CURRENT")
             return target
+
+        def validate_inventory(
+            self, analysis_id: str, targets: tuple[CancellationTarget, ...]
+        ) -> None:
+            del analysis_id, targets
 
         async def cancel(self, target: CancellationTarget) -> CancellationObservation:
             self.cancelled += 1

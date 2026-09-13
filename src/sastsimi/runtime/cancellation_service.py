@@ -23,6 +23,10 @@ class RunWorkReader(Protocol):
 class ExactTargetCancellationPort(Protocol):
     async def prepare(self, target: CancellationTarget) -> CancellationTarget: ...
 
+    def validate_inventory(
+        self, analysis_id: str, targets: tuple[CancellationTarget, ...]
+    ) -> None: ...
+
     async def cancel(self, target: CancellationTarget) -> CancellationObservation: ...
 
 
@@ -41,6 +45,7 @@ class ExactCancellationRouter:
             "PROVIDER": provider,
             "SANDBOX": sandbox,
         }
+        self._sandbox = sandbox
 
     async def prepare(
         self, targets: tuple[CancellationTarget, ...]
@@ -57,6 +62,11 @@ class ExactCancellationRouter:
                 raise ValueError("CANCELLATION_PREPARED_TARGET_INVALID")
             prepared.append(value)
         return tuple(prepared)
+
+    def validate_inventory(
+        self, analysis_id: str, targets: tuple[CancellationTarget, ...]
+    ) -> None:
+        self._sandbox.validate_inventory(analysis_id, targets)
 
     async def cancel(self, target: CancellationTarget) -> CancellationObservation:
         _validate_target(target, str(target.work.meta.analysis_id))
@@ -122,6 +132,7 @@ class CancellationService:
         targets = prepared
         for target in targets:
             _validate_target(target, analysis_id)
+        self._external.validate_inventory(analysis_id, targets)
         existing = self._controls.cancellation_observations(targets)
         if len(existing) != len(targets):
             raise ValueError("CANCELLATION_OBSERVATION_INVENTORY_MISMATCH")
@@ -147,13 +158,16 @@ class CancellationService:
                 observed = CancellationObservation(
                     target, "UNKNOWN", "CANCELLATION_ADAPTER_INVALID"
                 )
+            self._external.validate_inventory(analysis_id, targets)
             self._controls.record_cancellation_observation(observed)
             observations.append(observed)
+        self._external.validate_inventory(analysis_id, targets)
         self._controls.reconcile_cancellation(analysis_id, tuple(observations))
         if all(item.status != "UNKNOWN" for item in observations) and all(
             item.status in TERMINAL_WORK_STATUSES
             for item in self._works.work_for_run(analysis_id)
         ):
+            self._external.validate_inventory(analysis_id, targets)
             self._controls.mark_quiescent(analysis_id)
         return tuple(observations)
 

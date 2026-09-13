@@ -308,8 +308,10 @@ class _DefaultProductionBundleAssembler:
                     provider_prompt.adapters,
                     dynamic.feature,
                 )
-                if not callable(getattr(cancellation, "prepare", None)) or not callable(
-                    getattr(cancellation, "cancel", None)
+                if (
+                    not callable(getattr(cancellation, "prepare", None))
+                    or not callable(getattr(cancellation, "validate_inventory", None))
+                    or not callable(getattr(cancellation, "cancel", None))
                 ):
                     raise ValueError("PRODUCTION_CANCELLATION_INVALID")
                 inputs = ProductionFeatureInputs(

@@ -297,6 +297,65 @@ async def test_sandbox_prepare_reloads_resource_journal(
 
 
 @pytest.mark.asyncio
+async def test_sandbox_current_inventory_rejects_growth_after_prepare(
+    tmp_path: Path,
+) -> None:
+    data = fixture()
+    target = _sandbox_target()
+    assert isinstance(target.attempt.meta, RecordMeta)
+    journal = tmp_path / "owned-resources.json"
+    labels = ReproductionSetupAutomation._container_labels(target.attempt.meta)
+    writer = OwnedResourceRegistry(journal_path=journal)
+    writer.register_container(
+        container_id="initial-container",
+        labels=labels,
+        meta=target.attempt.meta,
+    )
+    service = ProductionSandboxCancellation(
+        records=data.records,
+        docker=_Docker(dict(labels), presence="ABSENT"),
+        resources=OwnedResourceRegistry(journal_path=journal),
+    )
+    prepared = await service.prepare(target)
+
+    OwnedResourceRegistry(journal_path=journal).register_container(
+        container_id="late-container",
+        labels=labels,
+        meta=target.attempt.meta,
+    )
+
+    with pytest.raises(ValueError, match="CANCELLATION_SANDBOX_INVENTORY_CHANGED"):
+        service.validate_inventory("analysis-1", (prepared,))
+
+    retried = await service.prepare(target)
+    service.validate_inventory("analysis-1", (retried,))
+    assert {item.resource_id for item in retried.sandbox_resources} == {
+        "initial-container",
+        "late-container",
+    }
+
+
+def test_sandbox_current_inventory_rejects_targetless_leftover(tmp_path: Path) -> None:
+    data = fixture()
+    target = _sandbox_target()
+    assert isinstance(target.attempt.meta, RecordMeta)
+    journal = tmp_path / "owned-resources.json"
+    labels = ReproductionSetupAutomation._container_labels(target.attempt.meta)
+    OwnedResourceRegistry(journal_path=journal).reserve_container(
+        container_name="leftover-container",
+        labels=labels,
+    )
+    service = ProductionSandboxCancellation(
+        records=data.records,
+        docker=_Docker(dict(labels), presence="ABSENT"),
+        resources=OwnedResourceRegistry(journal_path=journal),
+    )
+
+    with pytest.raises(ValueError, match="CANCELLATION_SANDBOX_INVENTORY_INCOMPLETE"):
+        service.validate_inventory("analysis-1", ())
+
+
+@pytest.mark.asyncio
 async def test_sandbox_label_mismatch_is_unknown_and_never_removed() -> None:
     data = fixture()
     target = _sandbox_target()

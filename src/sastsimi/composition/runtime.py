@@ -1268,6 +1268,8 @@ def build_t11_services(
     from sastsimi.sandbox.recipe_store import EnvironmentRecipeStore
     from sastsimi.sandbox.session_manager import ReproductionSessionManager
     from sastsimi.sandbox.setup_automation import ReproductionSetupAutomation
+    from sastsimi.storage.repositories import SQLiteRecordStore
+    from sastsimi.storage.run_control import RunControlStore
     from sastsimi.verification.completion import VerificationCompletionCoordinator
     from sastsimi.verification.production_llm_work_handlers import (
         ProductionDynamicStageCallResolver,
@@ -1275,7 +1277,12 @@ def build_t11_services(
 
     artifacts = runtime.unit_of_work.artifacts
     docker = DockerAdapter.from_profile(docker_profile_ref, docker_target_resolver)
-    resources = OwnedResourceRegistry(journal_path=resource_journal_path)
+    record_store = cast(SQLiteRecordStore, runtime.unit_of_work.records)
+    controls = RunControlStore(record_store.database, clock)
+    resources = OwnedResourceRegistry(
+        journal_path=resource_journal_path,
+        mutation_admission=controls.admit_resource_mutation,
+    )
     setup = ReproductionSetupAutomation(
         docker=docker,
         recipes=EnvironmentRecipeStore(artifacts=artifacts),

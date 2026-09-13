@@ -154,6 +154,10 @@ class ExternalCancellationPort(Protocol):
         self, targets: tuple[CancellationTarget, ...]
     ) -> tuple[CancellationTarget, ...]: ...
 
+    def validate_inventory(
+        self, analysis_id: str, targets: tuple[CancellationTarget, ...]
+    ) -> None: ...
+
     async def cancel(self, target: CancellationTarget) -> CancellationObservation: ...
 
 

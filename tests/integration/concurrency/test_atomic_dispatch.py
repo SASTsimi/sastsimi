@@ -202,6 +202,11 @@ class _ExactStaticCancellation:
     ) -> tuple[CancellationTarget, ...]:
         return targets
 
+    def validate_inventory(
+        self, analysis_id: str, targets: tuple[CancellationTarget, ...]
+    ) -> None:
+        del analysis_id, targets
+
     async def cancel(self, target: CancellationTarget) -> CancellationObservation:
         self.calls += 1
         return CancellationObservation(
@@ -216,6 +221,11 @@ class _NoReplayCancellation:
         self, targets: tuple[CancellationTarget, ...]
     ) -> tuple[CancellationTarget, ...]:
         return targets
+
+    def validate_inventory(
+        self, analysis_id: str, targets: tuple[CancellationTarget, ...]
+    ) -> None:
+        del analysis_id, targets
 
     async def cancel(self, target: CancellationTarget) -> CancellationObservation:
         raise AssertionError(f"durable observation replayed externally: {target}")

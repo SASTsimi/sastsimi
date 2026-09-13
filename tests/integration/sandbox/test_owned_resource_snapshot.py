@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 import pytest
+from sqlalchemy import insert
 
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.sandbox import cleanup as cleanup_module
 from sastsimi.sandbox.cleanup import OwnedResourceRegistry
 from sastsimi.sandbox.docker_adapter import DockerAdapter
 from sastsimi.sandbox.setup_automation import ReproductionSetupAutomation
+from sastsimi.storage import models
+from sastsimi.storage.run_control import RunControlStore
+from tests.integration.runtime_support import Harness
 from tests.integration.sandbox.test_container_lifecycle import _meta
 
 
@@ -40,6 +46,88 @@ def _inventory(path: Path | None) -> tuple[OwnedResourceRegistry, StoredDataRef]
         preservation_reason="REUSABLE_BASELINE",
     )
     return registry, ref
+
+
+def test_resource_publication_precedes_serialized_cancellation_latch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = Harness(tmp_path)
+    with harness.database.write() as connection:
+        connection.execute(
+            insert(models.analysis_runs).values(analysis_id="analysis-1", payload="{}")
+        )
+    controls = RunControlStore(harness.database, harness.clock)
+    journal = tmp_path / "owned.json"
+    registry = OwnedResourceRegistry(
+        journal_path=journal,
+        mutation_admission=controls.admit_resource_mutation,
+    )
+    meta = _meta("sandbox_environment", "serialized-before-latch")
+    labels = ReproductionSetupAutomation._container_labels(meta)
+    name = DockerAdapter.runtime_container_name(labels)
+    persisted = Event()
+    release = Event()
+    latch_started = Event()
+    real_persist = registry._persist
+
+    def paused_persist() -> None:
+        real_persist()
+        persisted.set()
+        assert release.wait(5)
+
+    def request_cancel() -> None:
+        latch_started.set()
+        controls.request_cancel("analysis-1", "OWNER_DEAD")
+
+    monkeypatch.setattr(registry, "_persist", paused_persist)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        mutation = pool.submit(
+            registry.reserve_container, container_name=name, labels=labels
+        )
+        assert persisted.wait(5)
+        latch = pool.submit(request_cancel)
+        assert latch_started.wait(5)
+        assert not controls.cancel_requested("analysis-1")
+        release.set()
+        mutation.result(timeout=5)
+        latch.result(timeout=5)
+
+    assert controls.cancel_requested("analysis-1")
+    assert OwnedResourceRegistry(journal_path=journal).pending_resource_ids() == (name,)
+
+
+def test_latched_run_rejects_resource_publication_without_journal_mutation(
+    tmp_path: Path,
+) -> None:
+    harness = Harness(tmp_path)
+    with harness.database.write() as connection:
+        connection.execute(
+            insert(models.analysis_runs).values(analysis_id="analysis-1", payload="{}")
+        )
+    controls = RunControlStore(harness.database, harness.clock)
+    controls.request_cancel("analysis-1", "OWNER_DEAD")
+    journal = tmp_path / "owned.json"
+    registry = OwnedResourceRegistry(
+        journal_path=journal,
+        mutation_admission=controls.admit_resource_mutation,
+    )
+    meta = _meta("sandbox_environment", "rejected-after-latch")
+    labels = ReproductionSetupAutomation._container_labels(meta)
+
+    with pytest.raises(ValueError, match="RUN_CANCELLED"):
+        registry.reserve_container(
+            container_name=DockerAdapter.runtime_container_name(labels),
+            labels=labels,
+        )
+    with pytest.raises(ValueError, match="RUN_CANCELLED"):
+        registry.register_container(
+            container_id="late-container",
+            labels=labels,
+            meta=meta,
+        )
+
+    assert not journal.exists()
+    assert registry.pending_resource_ids() == ()
 
 
 def test_complete_inventory_is_stable_detached_and_read_only(

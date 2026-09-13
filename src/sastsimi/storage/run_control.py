@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -67,6 +69,17 @@ class RunControlStore:
         self._ids = ids
         self._transitions = transitions
         self._cancellation_identity_ref = cancellation_identity_ref
+
+    @contextmanager
+    def admit_resource_mutation(self, analysis_id: str) -> Iterator[None]:
+        """Serialize resource publication with the durable cancellation latch."""
+
+        if not analysis_id:
+            raise ValueError("RUN_CONTROL_INPUT_INVALID")
+        with self._database.write() as connection:
+            if cancel_latched(connection, analysis_id):
+                raise ValueError("RUN_CANCELLED")
+            yield
 
     def request_cancel(self, analysis_id: str, reason: str) -> None:
         if not analysis_id or _SAFE_REASON.fullmatch(reason) is None:

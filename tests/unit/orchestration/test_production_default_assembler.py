@@ -259,9 +259,15 @@ def _static_ports() -> ProductionStaticRuntimePorts:
     )
 
 
-@pytest.mark.parametrize("codeql_unavailable", [False, True])
+@pytest.mark.parametrize(
+    ("codeql_unavailable", "missing_validator"),
+    [(False, False), (True, False), (False, True)],
+)
 def test_default_assembler_composes_non_r7_features_and_exact_refs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, codeql_unavailable: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    codeql_unavailable: bool,
+    missing_validator: bool,
 ) -> None:
     from sastsimi.composition import production_default_assembler as module
 
@@ -279,6 +285,11 @@ def test_default_assembler_composes_non_r7_features_and_exact_refs(
         SimpleNamespace(
             prepare=lambda targets: targets,
             cancel=lambda _target: None,
+            **(
+                {}
+                if missing_validator
+                else {"validate_inventory": lambda _analysis_id, _targets: None}
+            ),
         ),
     )
     installed = cast(Any, object())
@@ -361,6 +372,14 @@ def test_default_assembler_composes_non_r7_features_and_exact_refs(
         ):
             assembly.install(cast(Any, install_context))
         assert "t08" not in captured
+        assert "feature_inputs" not in captured
+        return
+    if missing_validator:
+        with pytest.raises(
+            ProductionCapabilityUnavailable,
+            match="PRODUCTION_DEFAULT_INSTALLATION_INVALID",
+        ):
+            assembly.install(cast(Any, install_context))
         assert "feature_inputs" not in captured
         return
     assert assembly.install(cast(Any, install_context)) is installed
