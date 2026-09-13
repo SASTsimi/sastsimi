@@ -3,13 +3,26 @@
 from collections.abc import Callable
 from typing import cast
 
-from sqlalchemy import Connection, insert, select, update
+from sqlalchemy import Connection, delete, insert, select, update
 
 from sastsimi.contracts.budget import (
     DynamicReproductionLifecycleProfile,
     ProfileStatus,
     VerificationBudgetProfile,
     WorkBudgetProfile,
+)
+from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.capabilities import (
+    CapabilityApprovalEvidence,
+    CapabilityArchitecture,
+    CapabilityKind,
+    CapabilityLanguage,
+    CapabilityOperatingSystem,
+    CapabilityOperation,
+    RuntimeCapabilityProfile,
+    RuntimeCapabilitySelection,
+    StaticToolCapabilitySelection,
+    capability_target_hash,
 )
 from sastsimi.contracts.dynamic import SandboxProfile
 from sastsimi.contracts.evaluation import (
@@ -22,6 +35,7 @@ from sastsimi.contracts.llm import (
     ClientExecutionProfile,
     ExecutionLimits,
     LLMCallSpec,
+    LLMInvocationRequest,
     LLMRetryPolicy,
     LLMToolPolicy,
     OutputSchemaSpec,
@@ -33,11 +47,14 @@ from sastsimi.contracts.llm import (
     ProviderValidationEvidence,
     SemanticValidatorSpec,
 )
-from sastsimi.contracts.prompt_projection import (
-    project_prompt_value,
-    render_prompt_bytes,
+from sastsimi.contracts.prompt_projection import project_prompt_value
+from sastsimi.contracts.prompt_redaction import (
+    redact_projected_json,
+    render_provider_prompt,
 )
-from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.records import RecordMeta
+from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
+from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.dto import CapabilityProbeResult, Record
@@ -48,12 +65,572 @@ from .repositories import SQLiteRecordStore
 
 
 class ConfigurationRegistry:
-    def __init__(self, records: SQLiteRecordStore, artifacts: ArtifactStore) -> None:
+    def __init__(
+        self,
+        records: SQLiteRecordStore,
+        artifacts: ArtifactStore,
+        capability_host_id: str | None = None,
+    ) -> None:
         self.records = records
         self.artifacts = artifacts
+        self.capability_host_id = capability_host_id
+
+    def _require_capability_host(self, record_host_id: str | None = None) -> str:
+        if self.capability_host_id is None:
+            raise ValueError("CAPABILITY_HOST_NOT_BOUND")
+        if record_host_id is not None and record_host_id != self.capability_host_id:
+            raise ValueError("CAPABILITY_HOST_MISMATCH")
+        return self.capability_host_id
+
+    def register_capability_approval(
+        self, record: CapabilityApprovalEvidence
+    ) -> HostConfigurationRef:
+        """Publish immutable R8 probe evidence plus the human decision."""
+
+        record = CapabilityApprovalEvidence.model_validate(record)
+        self._require_capability_host(record.host_id)
+        if not self.records.evidence.capability_approval_authorized(record):
+            raise ValueError("CAPABILITY_APPROVAL_REQUIRED")
+        evidence_refs = record.probe_evidence_refs + tuple(
+            item.evidence_ref for item in record.security_control_evidence
+        )
+        for evidence_ref in evidence_refs:
+            if evidence_ref.record_id is None:
+                try:
+                    with self.artifacts.open_verified(evidence_ref) as stream:
+                        stream.read()
+                except (LookupError, OSError, ValueError) as error:
+                    raise ValueError("CAPABILITY_PROBE_EVIDENCE_MISSING") from error
+            else:
+                with self.records.database.engine.connect() as connection:
+                    evidence_record = self.records.resolve(connection, evidence_ref)
+                evidence_meta = evidence_record.meta
+                if (
+                    not isinstance(evidence_meta, RecordMeta)
+                    or evidence_meta.analysis_id != record.meta.analysis_id
+                    or evidence_meta.workspace_id != record.meta.workspace_id
+                    or evidence_meta.commit_id != record.meta.commit_id
+                ):
+                    raise ValueError("CAPABILITY_PROBE_EVIDENCE_SCOPE_MISMATCH")
+        ref = reference(record)
+        if not isinstance(ref, HostConfigurationRef):
+            raise ValueError("CAPABILITY_SCOPE_MISMATCH")
+        with self.records.database.write() as connection:
+            staged = self.records.stage(connection, record)
+            assert staged == ref
+            self.records.publish(connection, ref)
+            self._point(connection, record)
+            if not self.records.evidence.capability_approval_authorized(record):
+                raise ValueError("CAPABILITY_APPROVAL_REQUIRED")
+        return ref
+
+    @staticmethod
+    def _language_matches(
+        supported: tuple[CapabilityLanguage, ...], requested: CapabilityLanguage
+    ) -> bool:
+        return requested in supported or "ANY" in supported
+
+    @staticmethod
+    def _language_routes_overlap(
+        left: tuple[CapabilityLanguage, ...],
+        right: tuple[CapabilityLanguage, ...],
+    ) -> bool:
+        return "ANY" in left or "ANY" in right or bool(set(left) & set(right))
+
+    @staticmethod
+    def _current_records(
+        connection: Connection, kind: str
+    ) -> tuple[tuple[str, str], ...]:
+        rows = connection.execute(
+            select(
+                models.current_records.c.logical_record_id,
+                models.records.c.payload,
+            )
+            .select_from(
+                models.current_records.join(
+                    models.records,
+                    models.current_records.c.record_id == models.records.c.record_id,
+                )
+            )
+            .where(models.records.c.kind == kind)
+        ).all()
+        return tuple((str(row.logical_record_id), str(row.payload)) for row in rows)
+
+    def _require_capability_evidence(
+        self,
+        connection: Connection,
+        profile: RuntimeCapabilityProfile | StaticToolProfile,
+    ) -> CapabilityApprovalEvidence:
+        capability_ref = profile.capability_evidence_ref
+        if capability_ref is None:
+            raise ValueError("CAPABILITY_EVIDENCE_REQUIRED")
+        try:
+            evidence = self.records.resolve(connection, capability_ref)
+        except (LookupError, ValueError) as error:
+            raise ValueError("CAPABILITY_EVIDENCE_REQUIRED") from error
+        if not isinstance(evidence, CapabilityApprovalEvidence):
+            raise ValueError("CAPABILITY_EVIDENCE_REQUIRED")
+        current = (
+            connection.execute(
+                select(models.current_records.c.record_id).where(
+                    models.current_records.c.logical_record_id
+                    == str(evidence.meta.logical_record_id)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if current != str(evidence.meta.record_id):
+            raise ValueError("CAPABILITY_EVIDENCE_NOT_CURRENT")
+        self._require_capability_host(evidence.host_id)
+        if evidence.host_id != profile.host_id:
+            raise ValueError("CAPABILITY_HOST_MISMATCH")
+        if (
+            evidence.meta.analysis_id != profile.meta.analysis_id
+            or evidence.meta.workspace_id != profile.meta.workspace_id
+            or evidence.meta.commit_id != profile.meta.commit_id
+            or not self.records.evidence.capability_approval_authorized(evidence)
+        ):
+            raise ValueError("CAPABILITY_APPROVAL_REQUIRED")
+        if evidence.approval_target_hash != capability_target_hash(profile):
+            raise ValueError("CAPABILITY_APPROVAL_TARGET_MISMATCH")
+        expected_decision = "ACTIVATE" if profile.status == "ACTIVE" else "RETIRE"
+        if evidence.decision != expected_decision:
+            raise ValueError("CAPABILITY_APPROVAL_DECISION_MISMATCH")
+        if profile.status == "ACTIVE" and evidence.probe_status != "PASSED":
+            raise ValueError("CAPABILITY_ACTIVATION_PROBE_NOT_PASSED")
+        return evidence
+
+    @staticmethod
+    def _runtime_identity_matches(
+        profile: RuntimeCapabilityProfile, evidence: CapabilityApprovalEvidence
+    ) -> bool:
+        return (
+            profile.profile_key,
+            profile.capability_kind,
+            profile.subject_key,
+            profile.expected_version,
+            profile.subject_sha256,
+            profile.operating_system,
+            profile.architecture,
+            profile.languages,
+            profile.operations,
+        ) == (
+            evidence.profile_key,
+            evidence.capability_kind,
+            evidence.subject_key,
+            evidence.observed_version,
+            evidence.observed_sha256,
+            evidence.operating_system,
+            evidence.architecture,
+            evidence.languages,
+            evidence.operations,
+        )
+
+    def _require_runtime_retirement_predecessor(
+        self, connection: Connection, record: RuntimeCapabilityProfile
+    ) -> None:
+        if record.status != "RETIRED":
+            return
+        candidates = tuple(
+            RuntimeCapabilityProfile.model_validate_json(payload)
+            for logical_id, payload in self._current_records(
+                connection, RuntimeCapabilityProfile.KIND
+            )
+            if logical_id == str(record.meta.logical_record_id)
+        )
+        if len(candidates) != 1:
+            raise ValueError("CAPABILITY_RETIREMENT_PREDECESSOR_MISSING")
+        current = candidates[0]
+        immutable = (
+            "host_id",
+            "profile_key",
+            "capability_kind",
+            "subject_key",
+            "expected_version",
+            "subject_sha256",
+            "operating_system",
+            "architecture",
+            "languages",
+            "operations",
+        )
+        if (
+            current.status != "ACTIVE"
+            or record.meta.previous_record_id != current.meta.record_id
+            or any(getattr(current, key) != getattr(record, key) for key in immutable)
+        ):
+            raise ValueError("CAPABILITY_RETIREMENT_IDENTITY_MISMATCH")
+
+    def register_runtime_capability(
+        self, record: RuntimeCapabilityProfile
+    ) -> HostConfigurationRef:
+        """Activate or retire one exact non-static production capability."""
+
+        record = RuntimeCapabilityProfile.model_validate(record)
+        self._require_capability_host(record.host_id)
+        ref = reference(record)
+        if not isinstance(ref, HostConfigurationRef):
+            raise ValueError("CAPABILITY_SCOPE_MISMATCH")
+        with self.records.database.write() as connection:
+            self._require_runtime_retirement_predecessor(connection, record)
+            evidence = self._require_capability_evidence(connection, record)
+            if not self._runtime_identity_matches(record, evidence):
+                raise ValueError("CAPABILITY_EVIDENCE_IDENTITY_MISMATCH")
+            if record.status == "ACTIVE":
+                for logical_id, payload in self._current_records(
+                    connection, RuntimeCapabilityProfile.KIND
+                ):
+                    current = RuntimeCapabilityProfile.model_validate_json(payload)
+                    if logical_id == str(record.meta.logical_record_id) or (
+                        current.status != "ACTIVE" or current.host_id != record.host_id
+                    ):
+                        continue
+                    if (
+                        current.capability_kind == record.capability_kind
+                        and current.operating_system == record.operating_system
+                        and current.architecture == record.architecture
+                        and self._language_routes_overlap(
+                            current.languages, record.languages
+                        )
+                        and bool(set(current.operations) & set(record.operations))
+                    ):
+                        raise ValueError("CAPABILITY_ACTIVE_ROUTE_CONFLICT")
+            staged = self.records.stage(connection, record)
+            assert staged == ref
+            self.records.publish(connection, ref)
+            self._point(connection, record)
+            self._require_capability_evidence(connection, record)
+        return ref
+
+    def get_runtime_capability(
+        self, profile_ref: HostConfigurationRef
+    ) -> RuntimeCapabilityProfile:
+        """Read one exact historical revision; this does not authorize execution."""
+
+        self._require_capability_host(profile_ref.host_id)
+        if profile_ref.data_kind != RuntimeCapabilityProfile.KIND:
+            raise ValueError("CAPABILITY_PROFILE_REFERENCE_MISMATCH")
+        with self.records.database.engine.connect() as connection:
+            record = self.records.resolve(connection, profile_ref)
+        if not isinstance(record, RuntimeCapabilityProfile):
+            raise ValueError("CAPABILITY_PROFILE_REFERENCE_MISMATCH")
+        return record
+
+    def resolve_pinned_active_profile(
+        self, profile_ref: HostConfigurationRef
+    ) -> RuntimeCapabilityProfile | StaticToolProfile:
+        """Revalidate one exact scheduled host profile without route reselection."""
+
+        self._require_capability_host(profile_ref.host_id)
+        with self.records.database.engine.connect() as connection:
+            try:
+                record = self.records.resolve(connection, profile_ref)
+            except (LookupError, ValueError) as error:
+                raise ValueError("CAPABILITY_PROFILE_REFERENCE_MISMATCH") from error
+            if not isinstance(record, (RuntimeCapabilityProfile, StaticToolProfile)):
+                raise ValueError("CAPABILITY_PROFILE_REFERENCE_MISMATCH")
+            if record.host_id != profile_ref.host_id:
+                raise ValueError("CAPABILITY_HOST_MISMATCH")
+            current = connection.execute(
+                select(models.current_records.c.record_id).where(
+                    models.current_records.c.logical_record_id
+                    == str(record.meta.logical_record_id)
+                )
+            ).scalar_one_or_none()
+            if current != str(record.meta.record_id):
+                raise ValueError("CAPABILITY_PROFILE_NOT_CURRENT")
+            evidence = self._require_capability_evidence(connection, record)
+            if isinstance(record, RuntimeCapabilityProfile):
+                if record.status != "ACTIVE":
+                    raise ValueError("CAPABILITY_PROFILE_NOT_ACTIVE")
+                if not self._runtime_identity_matches(record, evidence):
+                    raise ValueError("CAPABILITY_EVIDENCE_IDENTITY_MISMATCH")
+            else:
+                if record.purpose != "PRODUCTION" or record.status != "ACTIVE":
+                    raise ValueError("CAPABILITY_PROFILE_NOT_ACTIVE")
+                if not self._static_identity_matches(record, evidence):
+                    raise ValueError("CAPABILITY_EVIDENCE_IDENTITY_MISMATCH")
+        return record
+
+    def resolve_active_capability(
+        self,
+        *,
+        capability_kind: CapabilityKind,
+        language: CapabilityLanguage,
+        operation: CapabilityOperation,
+        operating_system: CapabilityOperatingSystem,
+        architecture: CapabilityArchitecture,
+    ) -> RuntimeCapabilitySelection:
+        """Resolve one trusted current ACTIVE route and return its exact ref."""
+
+        if not operating_system.strip() or not architecture.strip():
+            raise ValueError("CAPABILITY_ROUTE_INCOMPLETE")
+        host_id = self._require_capability_host()
+        matches: list[RuntimeCapabilityProfile] = []
+        with self.records.database.engine.connect() as connection:
+            for _, payload in self._current_records(
+                connection, RuntimeCapabilityProfile.KIND
+            ):
+                profile = RuntimeCapabilityProfile.model_validate_json(payload)
+                if (
+                    profile.status == "ACTIVE"
+                    and profile.host_id == host_id
+                    and profile.capability_kind == capability_kind
+                    and profile.operating_system == operating_system
+                    and profile.architecture == architecture
+                    and self._language_matches(profile.languages, language)
+                    and operation in profile.operations
+                ):
+                    evidence = self._require_capability_evidence(connection, profile)
+                    if not self._runtime_identity_matches(profile, evidence):
+                        raise ValueError("CAPABILITY_EVIDENCE_IDENTITY_MISMATCH")
+                    matches.append(profile)
+        if not matches:
+            raise LookupError("CAPABILITY_ROUTE_NOT_ACTIVE")
+        if len(matches) != 1:
+            raise ValueError("CAPABILITY_ACTIVE_ROUTE_CONFLICT")
+        profile = matches[0]
+        profile_ref = reference(profile)
+        assert isinstance(profile_ref, HostConfigurationRef)
+        return RuntimeCapabilitySelection(profile_ref=profile_ref, profile=profile)
+
+    @staticmethod
+    def _static_identity_matches(
+        profile: StaticToolProfile, evidence: CapabilityApprovalEvidence
+    ) -> bool:
+        kind = {
+            "PYTHON_AST": "AST",
+            "CODEQL": "CODEQL",
+            "OPENGREP": "OPENGREP",
+        }[profile.adapter_key]
+        operation = "PARSE" if profile.adapter_key == "PYTHON_AST" else "ANALYZE"
+        return (
+            evidence.profile_key == profile.profile_key
+            and evidence.capability_kind == kind
+            and evidence.subject_key == profile.executable_key
+            and evidence.observed_version == profile.expected_version
+            and evidence.observed_sha256 == profile.executable_sha256
+            and operation in evidence.operations
+        )
+
+    def register_production_static_tool_profile(
+        self, record: StaticToolProfile
+    ) -> HostConfigurationRef:
+        """Publish an exact production static profile after trusted activation."""
+
+        record = StaticToolProfile.model_validate(record)
+        self._require_capability_host(record.host_id)
+        if record.purpose != "PRODUCTION" or record.status not in {
+            "ACTIVE",
+            "RETIRED",
+        }:
+            raise ValueError("STATIC_TOOL_PRODUCTION_PROFILE_INVALID")
+        ref = reference(record)
+        if not isinstance(ref, HostConfigurationRef):
+            raise ValueError("CAPABILITY_SCOPE_MISMATCH")
+        with self.records.database.write() as connection:
+            self._require_static_retirement_predecessor(connection, record)
+            evidence = self._require_capability_evidence(connection, record)
+            if not self._static_identity_matches(record, evidence):
+                raise ValueError("CAPABILITY_EVIDENCE_IDENTITY_MISMATCH")
+            if record.status == "ACTIVE":
+                for logical_id, payload in self._current_records(
+                    connection, StaticToolProfile.KIND
+                ):
+                    current = StaticToolProfile.model_validate_json(payload)
+                    if logical_id == str(record.meta.logical_record_id) or (
+                        current.status != "ACTIVE" or current.host_id != record.host_id
+                    ):
+                        continue
+                    current_evidence = self._require_capability_evidence(
+                        connection, current
+                    )
+                    if (
+                        current.adapter_key == record.adapter_key
+                        and current_evidence.operating_system
+                        == evidence.operating_system
+                        and current_evidence.architecture == evidence.architecture
+                        and self._language_routes_overlap(
+                            current_evidence.languages, evidence.languages
+                        )
+                    ):
+                        raise ValueError("STATIC_TOOL_ACTIVE_ROUTE_CONFLICT")
+            staged = self.records.stage(connection, record)
+            assert staged == ref
+            self.records.publish(connection, ref)
+            self._point(connection, record)
+            self._require_capability_evidence(connection, record)
+        return ref
+
+    def _require_static_retirement_predecessor(
+        self, connection: Connection, record: StaticToolProfile
+    ) -> None:
+        if record.status != "RETIRED":
+            return
+        candidates = tuple(
+            StaticToolProfile.model_validate_json(payload)
+            for logical_id, payload in self._current_records(
+                connection, StaticToolProfile.KIND
+            )
+            if logical_id == str(record.meta.logical_record_id)
+        )
+        if len(candidates) != 1:
+            raise ValueError("STATIC_TOOL_RETIREMENT_PREDECESSOR_MISSING")
+        current = candidates[0]
+        immutable = (
+            "host_id",
+            "profile_key",
+            "purpose",
+            "adapter_key",
+            "tool_name",
+            "tool_kind",
+            "executable_key",
+            "executable_sha256",
+            "expected_version",
+            "probe_timeout_ms",
+            "run_timeout_ms",
+            "stdout_limit_bytes",
+            "stderr_limit_bytes",
+            "max_attempt_output_bytes",
+            "max_output_file_bytes",
+            "max_artifact_read_bytes",
+        )
+        if (
+            current.status != "ACTIVE"
+            or record.meta.previous_record_id != current.meta.record_id
+            or any(getattr(current, key) != getattr(record, key) for key in immutable)
+        ):
+            raise ValueError("STATIC_TOOL_RETIREMENT_IDENTITY_MISMATCH")
+
+    def resolve_production_static_tool_profile(
+        self, profile_ref: HostConfigurationRef
+    ) -> StaticToolProfile:
+        """Resolve one exact current production profile for execution."""
+
+        record = self.get_production_static_tool_profile(profile_ref)
+        with self.records.database.engine.connect() as connection:
+            current = (
+                connection.execute(
+                    select(models.current_records.c.record_id).where(
+                        models.current_records.c.logical_record_id
+                        == str(record.meta.logical_record_id)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if current != str(record.meta.record_id):
+                raise ValueError("STALE_CONFIGURATION_REVISION")
+            evidence = self._require_capability_evidence(connection, record)
+            if not self._static_identity_matches(record, evidence):
+                raise ValueError("CAPABILITY_EVIDENCE_IDENTITY_MISMATCH")
+        if record.purpose != "PRODUCTION" or record.status != "ACTIVE":
+            raise ValueError("STATIC_TOOL_PROFILE_NOT_EXECUTABLE")
+        return record
+
+    def get_production_static_tool_profile(
+        self, profile_ref: HostConfigurationRef
+    ) -> StaticToolProfile:
+        """Read one exact historical revision; this does not authorize execution."""
+
+        self._require_capability_host(profile_ref.host_id)
+        if profile_ref.data_kind != StaticToolProfile.KIND:
+            raise ValueError("STATIC_TOOL_PROFILE_REFERENCE_MISMATCH")
+        with self.records.database.engine.connect() as connection:
+            record = self.records.resolve(connection, profile_ref)
+            if not isinstance(record, StaticToolProfile):
+                raise ValueError("STATIC_TOOL_PROFILE_REFERENCE_MISMATCH")
+        return record
+
+    def resolve_active_static_tool(
+        self,
+        *,
+        adapter_key: str,
+        language: CapabilityLanguage,
+        operating_system: CapabilityOperatingSystem,
+        architecture: CapabilityArchitecture,
+    ) -> StaticToolCapabilitySelection:
+        """Select one current production static profile from trusted evidence."""
+
+        if not operating_system.strip() or not architecture.strip():
+            raise ValueError("CAPABILITY_ROUTE_INCOMPLETE")
+        host_id = self._require_capability_host()
+        matches: list[tuple[StaticToolProfile, CapabilityApprovalEvidence]] = []
+        with self.records.database.engine.connect() as connection:
+            for _, payload in self._current_records(connection, StaticToolProfile.KIND):
+                profile = StaticToolProfile.model_validate_json(payload)
+                if (
+                    profile.status != "ACTIVE"
+                    or profile.host_id != host_id
+                    or profile.adapter_key != adapter_key
+                ):
+                    continue
+                evidence = self._require_capability_evidence(connection, profile)
+                if (
+                    not self._static_identity_matches(profile, evidence)
+                    or evidence.operating_system != operating_system
+                    or evidence.architecture != architecture
+                    or not self._language_matches(evidence.languages, language)
+                ):
+                    continue
+                matches.append((profile, evidence))
+        if not matches:
+            raise LookupError("STATIC_TOOL_ROUTE_NOT_ACTIVE")
+        if len(matches) != 1:
+            raise ValueError("STATIC_TOOL_ACTIVE_ROUTE_CONFLICT")
+        profile, evidence = matches[0]
+        profile_ref = reference(profile)
+        assert isinstance(profile_ref, HostConfigurationRef)
+        return StaticToolCapabilitySelection(
+            profile_ref=profile_ref, profile=profile, evidence=evidence
+        )
+
+    def register_static_tool_profile(self, record: StaticToolProfile) -> StoredDataRef:
+        record = StaticToolProfile.model_validate(record)
+        if record.status != "APPROVED" or record.purpose not in {
+            "FIXTURE",
+            "EVALUATION",
+        }:
+            raise ValueError("STATIC_TOOL_PROFILE_NOT_EXECUTABLE")
+        return self._publish(
+            record, self.records.evidence.static_tool_configuration_approved
+        )
+
+    def resolve_static_tool_profile(
+        self, profile_ref: StoredDataRef
+    ) -> StaticToolProfile:
+        if profile_ref.data_kind != StaticToolProfile.KIND:
+            raise ValueError("STATIC_TOOL_PROFILE_REFERENCE_MISMATCH")
+        with self.records.database.engine.connect() as connection:
+            record = self.records.resolve(connection, profile_ref)
+            if not isinstance(record, StaticToolProfile):
+                raise ValueError("STATIC_TOOL_PROFILE_REFERENCE_MISMATCH")
+            current = (
+                connection.execute(
+                    select(models.current_records).where(
+                        models.current_records.c.logical_record_id
+                        == str(record.meta.logical_record_id)
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if current is None or current["record_id"] != str(record.meta.record_id):
+            raise ValueError("STALE_CONFIGURATION_REVISION")
+        if record.status != "APPROVED" or record.purpose not in {
+            "FIXTURE",
+            "EVALUATION",
+        }:
+            raise ValueError("STATIC_TOOL_PROFILE_NOT_EXECUTABLE")
+        if not self.records.evidence.static_tool_configuration_approved(record):
+            raise ValueError("CONFIGURATION_APPROVAL_REQUIRED")
+        return record
 
     def _publish[T: Record](
-        self, record: T, approved: Callable[[T], bool]
+        self,
+        record: T,
+        approved: Callable[[T], bool],
+        bind: Callable[[Connection, T], None] | None = None,
     ) -> StoredDataRef:
         if not approved(record):
             raise ValueError("CONFIGURATION_APPROVAL_REQUIRED")
@@ -70,6 +647,13 @@ class ConfigurationRegistry:
             assert staged == ref
             self.records.publish(connection, ref)
             self._point(connection, record)
+            if bind is not None:
+                bind(connection, record)
+            # Prompt configuration has no persisted human-approval reference in
+            # the frozen contract. Re-check the injected authority immediately
+            # before commit so an observed revocation rolls back every write.
+            if not approved(record):
+                raise ValueError("CONFIGURATION_APPROVAL_REQUIRED")
         return ref
 
     def _point(self, connection: Connection, record: Record) -> None:
@@ -113,6 +697,88 @@ class ConfigurationRegistry:
         )
         if changed.rowcount != 1:
             raise ValueError("STALE_CONFIGURATION_REVISION")
+
+    @staticmethod
+    def require_current_selection(
+        connection: Connection,
+        entry: PromptRegistryEntry,
+        provider: ProviderProfile,
+    ) -> None:
+        """Fail closed unless both exact LLM selections remain current."""
+        active_entry = (
+            connection.execute(
+                select(models.prompt_active_entries).where(
+                    models.prompt_active_entries.c.agent_role == entry.agent_role,
+                    models.prompt_active_entries.c.task_kind == entry.task_kind,
+                    models.prompt_active_entries.c.purpose == entry.purpose,
+                )
+            )
+            .mappings()
+            .first()
+        )
+        current_provider_record_id = connection.execute(
+            select(models.current_records.c.record_id).where(
+                models.current_records.c.logical_record_id
+                == str(provider.meta.logical_record_id)
+            )
+        ).scalar_one_or_none()
+        current_entry_record_id = connection.execute(
+            select(models.current_records.c.record_id).where(
+                models.current_records.c.logical_record_id
+                == str(entry.meta.logical_record_id)
+            )
+        ).scalar_one_or_none()
+        if (
+            entry.status != "ACTIVE"
+            or provider.support_status != "SUPPORTED"
+            or active_entry is None
+            or active_entry["logical_record_id"] != str(entry.meta.logical_record_id)
+            or active_entry["record_id"] != str(entry.meta.record_id)
+            or current_entry_record_id != str(entry.meta.record_id)
+            or current_provider_record_id != str(provider.meta.record_id)
+        ):
+            raise ValueError("LLM_CONTEXT_CONFIGURATION_NOT_CURRENT")
+
+    def require_current(self, request: LLMInvocationRequest) -> None:
+        """Recheck the exact prompt/profile selection immediately before I/O."""
+        with self.records.database.engine.connect() as connection:
+            spec = self.records.resolve(connection, request.call_spec_ref)
+            if (
+                not isinstance(spec, LLMCallSpec)
+                or request.prompt_registry_entry_ref != spec.prompt_registry_entry_ref
+                or request.provider_profile_ref != spec.provider_profile_ref
+            ):
+                raise ValueError("LLM_CONTEXT_CONFIGURATION_NOT_CURRENT")
+            entry = self.records.resolve(connection, spec.prompt_registry_entry_ref)
+            provider = self.records.resolve(connection, spec.provider_profile_ref)
+            if not isinstance(entry, PromptRegistryEntry) or not isinstance(
+                provider, ProviderProfile
+            ):
+                raise ValueError("LLM_CONTEXT_CONFIGURATION_NOT_CURRENT")
+            self.require_current_selection(connection, entry, provider)
+
+    def _publish_invocation_record[T: Record](
+        self,
+        record: T,
+        bind: Callable[[Connection, T], None],
+    ) -> StoredDataRef:
+        """Publish an immutable attempt-owned record without a current pointer."""
+        if (
+            getattr(record.meta, "attempt_id", None) is None
+            or record.meta.revision_number != 1
+            or record.meta.previous_record_id is not None
+        ):
+            raise ValueError("LLM_INVOCATION_CONFIGURATION_SCOPE_MISMATCH")
+        ref = reference(record)
+        if not isinstance(ref, StoredDataRef):
+            raise ValueError("LLM_INVOCATION_CONFIGURATION_SCOPE_MISMATCH")
+        with self.records.database.write() as connection:
+            staged = self.records.stage(connection, record)
+            if staged != ref:
+                raise ValueError("LLM_INVOCATION_CONFIGURATION_SCOPE_MISMATCH")
+            self.records.publish(connection, ref)
+            bind(connection, record)
+        return ref
 
     def register_work_budget(self, record: WorkBudgetProfile) -> StoredDataRef:
         record = WorkBudgetProfile.model_validate(record)
@@ -182,7 +848,42 @@ class ConfigurationRegistry:
         ):
             raise ValueError("PROVIDER_VALIDATION_INCOMPLETE")
         approved = self.records.evidence.llm_configuration_approved
-        return self._publish(record, approved)
+        return self._publish(record, approved, self._bind_provider_validation)
+
+    def _bind_provider_validation(
+        self, connection: Connection, record: ProviderValidationEvidence
+    ) -> None:
+        for test in record.tests:
+            for evidence_ref in test.evidence_refs:
+                self._require_exact_evidence(connection, record, evidence_ref)
+
+    def _require_exact_evidence(
+        self,
+        connection: Connection,
+        owner: Record,
+        evidence_ref: StoredDataRef,
+    ) -> Record | None:
+        if evidence_ref.workspace_id != getattr(
+            owner.meta, "workspace_id", None
+        ) or evidence_ref.commit_id != getattr(owner.meta, "commit_id", None):
+            raise ValueError("PROVIDER_CONFIGURATION_CLOSURE_MISMATCH")
+        if evidence_ref.record_id is None:
+            try:
+                with self.artifacts.open_verified(evidence_ref) as evidence:
+                    evidence.read()
+            except (LookupError, OSError, ValueError) as error:
+                raise ValueError("PROVIDER_CONFIGURATION_CLOSURE_MISMATCH") from error
+            return None
+        try:
+            evidence_record = self.records.resolve(connection, evidence_ref)
+        except (LookupError, ValueError) as error:
+            raise ValueError("PROVIDER_CONFIGURATION_CLOSURE_MISMATCH") from error
+        if any(
+            getattr(evidence_record.meta, name, None) != getattr(owner.meta, name, None)
+            for name in ("analysis_id", "workspace_id", "commit_id")
+        ):
+            raise ValueError("PROVIDER_CONFIGURATION_CLOSURE_MISMATCH")
+        return evidence_record
 
     def derive_provider_capabilities(
         self, record: ProviderValidationEvidence
@@ -268,7 +969,34 @@ class ConfigurationRegistry:
                 for capability, test_id in capability_tests.items()
             ):
                 raise ValueError("PROVIDER_CONFIGURATION_CLOSURE_MISMATCH")
-        if record.support_status != "SUPPORTED":
+            if record.client_execution_profile_ref is not None:
+                try:
+                    client = self.records.resolve(
+                        connection, record.client_execution_profile_ref
+                    )
+                except (LookupError, ValueError) as error:
+                    raise ValueError(
+                        "PROVIDER_CONFIGURATION_CLOSURE_MISMATCH"
+                    ) from error
+                if not isinstance(client, ClientExecutionProfile):
+                    raise ValueError("PROVIDER_CONFIGURATION_CLOSURE_MISMATCH")
+                client_validation = self._require_exact_evidence(
+                    connection, client, client.verification_evidence_ref
+                )
+                if (
+                    not isinstance(client_validation, ProviderValidationEvidence)
+                    or client.verification_evidence_ref
+                    != record.validation_evidence_ref
+                    or not any(
+                        test.test_id == "PVD-13" and test.result == "PASS"
+                        for test in client_validation.tests
+                    )
+                ):
+                    raise ValueError("PROVIDER_CONFIGURATION_CLOSURE_MISMATCH")
+        # ``codex exec --json`` does not currently expose a provider-reported
+        # model identity.  A requested model therefore cannot satisfy PVD-02,
+        # even when an external probe incorrectly labels that test PASS.
+        if record.product == "CODEX" or record.support_status != "SUPPORTED":
             raise ValueError("PROVIDER_CONFIGURATION_NOT_SUPPORTED")
         approved = self.records.evidence.llm_configuration_approved
         return self._publish(record, approved)
@@ -290,7 +1018,22 @@ class ConfigurationRegistry:
     def register_client_execution(
         self, record: ClientExecutionProfile
     ) -> StoredDataRef:
-        return self._llm_leaf(ClientExecutionProfile.model_validate(record))
+        record = ClientExecutionProfile.model_validate(record)
+        approved = self.records.evidence.llm_configuration_approved
+        return self._publish(record, approved, self._bind_client_execution)
+
+    def _bind_client_execution(
+        self, connection: Connection, record: ClientExecutionProfile
+    ) -> None:
+        self._require_exact_evidence(connection, record, record.network_policy_ref)
+        validation = self._require_exact_evidence(
+            connection, record, record.verification_evidence_ref
+        )
+        if not isinstance(validation, ProviderValidationEvidence) or not any(
+            test.test_id == "PVD-13" and test.result == "PASS"
+            for test in validation.tests
+        ):
+            raise ValueError("PROVIDER_CONFIGURATION_CLOSURE_MISMATCH")
 
     def register_execution_limits(self, record: ExecutionLimits) -> StoredDataRef:
         return self._llm_leaf(ExecutionLimits.model_validate(record))
@@ -323,8 +1066,6 @@ class ConfigurationRegistry:
 
     def register_prompt_entry(self, record: PromptRegistryEntry) -> StoredDataRef:
         record = PromptRegistryEntry.model_validate(record)
-        if record.status == "RETIRED":
-            raise ValueError("PROMPT_CONFIGURATION_RETIRED")
         refs = (
             *record.provider_profile_refs,
             record.output_schema_ref,
@@ -361,7 +1102,166 @@ class ConfigurationRegistry:
             if record.purpose == "PRODUCTION" and record.status == "ACTIVE":
                 self._validate_production_activation(connection, record)
         approved = self.records.evidence.llm_configuration_approved
-        return self._publish(record, approved)
+        return self._publish(record, approved, self._bind_active_prompt)
+
+    def _bind_active_prompt(
+        self, connection: Connection, record: PromptRegistryEntry
+    ) -> None:
+        """Atomically select the one ACTIVE entry for a role/task/purpose."""
+        self._require_prompt_selection_identity(connection, record)
+        if record.status == "DRAFT":
+            return
+        if record.purpose == "PRODUCTION" and record.status == "ACTIVE":
+            # Re-check R8 evidence and its exact evaluation target while this
+            # publication holds the SQLite write lock. The earlier read is only
+            # a fast rejection and must not be the authority boundary.
+            self._validate_production_activation(connection, record)
+        table = models.prompt_active_entries
+        key = (
+            table.c.agent_role == record.agent_role,
+            table.c.task_kind == record.task_kind,
+            table.c.purpose == record.purpose,
+        )
+        current = connection.execute(select(table).where(*key)).mappings().first()
+        logical_id = str(record.meta.logical_record_id)
+        record_id = str(record.meta.record_id)
+        logical_active = (
+            connection.execute(
+                select(table).where(table.c.logical_record_id == logical_id)
+            )
+            .mappings()
+            .first()
+        )
+        if logical_active is not None and any(
+            logical_active[name] != value
+            for name, value in (
+                ("agent_role", record.agent_role),
+                ("task_kind", record.task_kind),
+                ("purpose", record.purpose),
+            )
+        ):
+            raise ValueError("PROMPT_REGISTRY_SELECTION_MISMATCH")
+        if record.status == "RETIRED":
+            previous_record_id = record.meta.previous_record_id
+            if previous_record_id is None:
+                raise ValueError("PROMPT_REGISTRY_RETIREMENT_MISMATCH")
+            previous_ref_raw = connection.execute(
+                select(models.records.c.ref).where(
+                    models.records.c.record_id == str(previous_record_id)
+                )
+            ).scalar_one_or_none()
+            if previous_ref_raw is None:
+                raise ValueError("PROMPT_REGISTRY_RETIREMENT_MISMATCH")
+            from .codec import REF_ADAPTER
+
+            previous = self.records.resolve(
+                connection, REF_ADAPTER.validate_json(previous_ref_raw)
+            )
+            if (
+                not isinstance(previous, PromptRegistryEntry)
+                or previous.status != "ACTIVE"
+                or previous.meta.logical_record_id != record.meta.logical_record_id
+                or self._prompt_semantics(previous) != self._prompt_semantics(record)
+            ):
+                raise ValueError("PROMPT_REGISTRY_RETIREMENT_MISMATCH")
+            if current is None:
+                return
+            if current["logical_record_id"] != logical_id or current[
+                "record_id"
+            ] != str(previous_record_id):
+                raise ValueError("PROMPT_REGISTRY_RETIREMENT_MISMATCH")
+            removed = connection.execute(
+                delete(table).where(
+                    *key,
+                    table.c.logical_record_id == logical_id,
+                    table.c.record_id == current["record_id"],
+                    table.c.state_version == current["state_version"],
+                )
+            )
+            if removed.rowcount != 1:
+                raise ValueError("PROMPT_REGISTRY_RETIREMENT_MISMATCH")
+            return
+        if current is None:
+            connection.execute(
+                insert(table).values(
+                    agent_role=record.agent_role,
+                    task_kind=record.task_kind,
+                    purpose=record.purpose,
+                    logical_record_id=logical_id,
+                    record_id=record_id,
+                    state_version=1,
+                )
+            )
+            return
+        if current["record_id"] == record_id:
+            if current["logical_record_id"] != logical_id:
+                raise ValueError("PROMPT_REGISTRY_ACTIVE_CONFLICT")
+            return
+        if current["logical_record_id"] != logical_id:
+            raise ValueError("PROMPT_REGISTRY_ACTIVE_CONFLICT")
+        changed = connection.execute(
+            update(table)
+            .where(
+                *key,
+                table.c.logical_record_id == logical_id,
+                table.c.record_id == current["record_id"],
+                table.c.state_version == current["state_version"],
+            )
+            .values(
+                record_id=record_id,
+                state_version=current["state_version"] + 1,
+            )
+        )
+        if changed.rowcount != 1:
+            raise ValueError("PROMPT_REGISTRY_ACTIVE_CONFLICT")
+
+    def _require_prompt_selection_identity(
+        self, connection: Connection, record: PromptRegistryEntry
+    ) -> None:
+        previous_record_id = record.meta.previous_record_id
+        if previous_record_id is None:
+            return
+        previous_ref_raw = connection.execute(
+            select(models.records.c.ref).where(
+                models.records.c.record_id == str(previous_record_id)
+            )
+        ).scalar_one_or_none()
+        if previous_ref_raw is None:
+            raise ValueError("PROMPT_REGISTRY_SELECTION_MISMATCH")
+        from .codec import REF_ADAPTER
+
+        previous = self.records.resolve(
+            connection, REF_ADAPTER.validate_json(previous_ref_raw)
+        )
+        if not isinstance(previous, PromptRegistryEntry) or any(
+            getattr(previous, name) != getattr(record, name)
+            for name in ("agent_role", "task_kind", "purpose")
+        ):
+            raise ValueError("PROMPT_REGISTRY_SELECTION_MISMATCH")
+
+    @staticmethod
+    def _require_active_prompt_binding(
+        connection: Connection, record: PromptRegistryEntry
+    ) -> None:
+        table = models.prompt_active_entries
+        active = (
+            connection.execute(
+                select(table).where(
+                    table.c.agent_role == record.agent_role,
+                    table.c.task_kind == record.task_kind,
+                    table.c.purpose == record.purpose,
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if (
+            record.status != "ACTIVE"
+            or active is None
+            or active["logical_record_id"] != str(record.meta.logical_record_id)
+            or active["record_id"] != str(record.meta.record_id)
+        ):
+            raise ValueError("PROMPT_REGISTRY_NOT_CURRENT")
 
     @staticmethod
     def _prompt_semantics(record: PromptRegistryEntry) -> tuple[object, ...]:
@@ -454,6 +1354,7 @@ class ConfigurationRegistry:
             or config.session_policy != record.session_policy
         ):
             raise ValueError("QUALITY_EVIDENCE_MISMATCH")
+        self._require_active_prompt_binding(connection, target)
 
     def register_prompt_payload(self, record: PromptPayload) -> StoredDataRef:
         record = PromptPayload.model_validate(record)
@@ -476,9 +1377,11 @@ class ConfigurationRegistry:
                 )
             ):
                 raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
+            self._require_active_prompt_binding(connection, entry)
             slots = {slot.slot: slot for slot in entry.input_slots}
             seen: dict[str, int] = {}
             projections: list[tuple[str, bytes]] = []
+            source_refs: set[bytes] = set()
             for binding in record.context_bindings:
                 slot = slots.get(str(binding.slot))
                 if slot is None or any(
@@ -488,14 +1391,18 @@ class ConfigurationRegistry:
                     raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
                 seen[str(binding.slot)] = seen.get(str(binding.slot), 0) + 1
                 source_ref = binding.source_ref
+                source_key = canonical_bytes(source_ref)
+                if source_key in source_refs:
+                    raise ValueError("PROMPT_CONTEXT_DUPLICATE")
+                source_refs.add(source_key)
                 if source_ref.record_id is None:
                     with self.artifacts.open_verified(source_ref) as source:
                         source_value: object = source.read().decode("utf-8")
                 else:
                     source_value = self.records.resolve(connection, source_ref)
-                expected_projection = project_prompt_value(
-                    source_value, binding.field_paths
-                )
+                expected_projection = redact_projected_json(
+                    project_prompt_value(source_value, binding.field_paths)
+                ).data
                 with self.artifacts.open_verified(
                     binding.projected_data_ref
                 ) as projected:
@@ -513,14 +1420,21 @@ class ConfigurationRegistry:
                 if count < bounds[0] or (bounds[1] is not None and count > bounds[1]):
                     raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
             with self.artifacts.open_verified(record.template_ref) as template:
-                expected_render = render_prompt_bytes(
+                expected_render = render_provider_prompt(
                     template.read(), tuple(projections)
                 )
             with self.artifacts.open_verified(record.rendered_prompt_ref) as rendered:
                 if rendered.read() != expected_render:
                     raise ValueError("PROMPT_RENDER_MISMATCH")
-        approved = self.records.evidence.llm_configuration_approved
-        return self._publish(record, approved)
+        return self._publish_invocation_record(record, self._bind_prompt_payload)
+
+    def _bind_prompt_payload(
+        self, connection: Connection, record: PromptPayload
+    ) -> None:
+        entry = self.records.resolve(connection, record.registry_entry_ref)
+        if not isinstance(entry, PromptRegistryEntry):
+            raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
+        self._require_active_prompt_binding(connection, entry)
 
     def register_call_spec(self, record: LLMCallSpec) -> StoredDataRef:
         record = LLMCallSpec.model_validate(record)
@@ -563,6 +1477,7 @@ class ConfigurationRegistry:
                 or not isinstance(limits, ExecutionLimits)
             ):
                 raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
+            self._require_active_prompt_binding(connection, entry)
             exact_pairs = (
                 (record.agent_role, entry.agent_role),
                 (record.task_kind, entry.task_kind),
@@ -591,12 +1506,29 @@ class ConfigurationRegistry:
             payload_context = tuple(
                 binding.source_ref for binding in payload.context_bindings
             )
-            if any(left != right for left, right in exact_pairs) or (
-                record.context_refs != payload_context
+            if (
+                any(left != right for left, right in exact_pairs)
+                or (record.context_refs != payload_context)
+                or any(
+                    getattr(record.meta, name, None)
+                    != getattr(payload.meta, name, None)
+                    for name in (
+                        "analysis_id",
+                        "workspace_id",
+                        "commit_id",
+                        "hypothesis_id",
+                        "attempt_id",
+                    )
+                )
             ):
                 raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
-        approved = self.records.evidence.llm_configuration_approved
-        return self._publish(record, approved)
+        return self._publish_invocation_record(record, self._bind_call_spec)
+
+    def _bind_call_spec(self, connection: Connection, record: LLMCallSpec) -> None:
+        entry = self.records.resolve(connection, record.prompt_registry_entry_ref)
+        if not isinstance(entry, PromptRegistryEntry):
+            raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
+        self._require_active_prompt_binding(connection, entry)
 
     def register_evaluation_config(self, record: EvaluationRunConfig) -> StoredDataRef:
         record = EvaluationRunConfig.model_validate(record)

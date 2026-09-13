@@ -359,6 +359,9 @@ def safe_command_value(value: str) -> str:
 
 SafeCommandValue = Annotated[NonEmptyStr, AfterValidator(safe_command_value)]
 
+POC_RUNTIME_PATH = "/tmp/sastsimi-poc-candidate"
+POC_EXECUTABLE = "/bin/sh"
+
 
 class SandboxCommandInput(ContractModel):
     executable: SafeCommandValue
@@ -387,6 +390,15 @@ class SandboxCommandInput(ContractModel):
         if self.stdin_ref is not None:
             safe_diagnostic(self.stdin_ref.stored_data_id.root)
         return self
+
+
+def is_poc_execution_command(command: SandboxCommandInput) -> bool:
+    """Only this argv shape makes the candidate bytes the executed shell script."""
+    return (
+        command.executable == POC_EXECUTABLE
+        and bool(command.arguments)
+        and command.arguments[0] == POC_RUNTIME_PATH
+    )
 
 
 class SandboxCommandRecord(DynamicRecord, SandboxCommandInput):
@@ -464,6 +476,7 @@ class AgentLogEvent(ContractModel):
     input_refs: tuple[StoredDataRef, ...]
     output_refs: tuple[StoredDataRef, ...]
     exit_code: int | None
+    timed_out: bool | None
     safe_message: SafeDiagnostic | None
     occurred_at: AwareDatetime
 
@@ -480,20 +493,36 @@ class AgentLogEvent(ContractModel):
             if reference is not None:
                 require_record_ref(reference, kind)
         command = self.event_type in {"COMMAND_STARTED", "COMMAND_FINISHED"}
-        if any(
-            (value is not None) != command
-            for value in (
-                self.tool_request_ref,
-                self.command_ref,
-                self.command_digest,
-                self.redaction_status,
+        poc_execution = self.event_type in {
+            "POC_EXECUTION_STARTED",
+            "POC_EXECUTION_FINISHED",
+        }
+        execution_finished = self.event_type in {
+            "COMMAND_FINISHED",
+            "POC_EXECUTION_FINISHED",
+        }
+        command_values = (
+            self.tool_request_ref,
+            self.command_ref,
+            self.command_digest,
+            self.redaction_status,
+        )
+        if (
+            (command and any(value is None for value in command_values))
+            or (
+                not command
+                and not poc_execution
+                and any(value is not None for value in command_values)
             )
+            or (poc_execution and len({value is None for value in command_values}) != 1)
         ):
             raise ValueError("COMMAND_EVENT_PROVENANCE")
-        if command and (
+        if (command or poc_execution) and (
             self.environment_ref is None or self.environment_recipe_ref is None
         ):
             raise ValueError("COMMAND_ENVIRONMENT_REQUIRED")
+        if execution_finished != (self.timed_out is not None):
+            raise ValueError("COMMAND_TIMEOUT_STATUS_REQUIRED")
         return self
 
 
@@ -533,6 +562,10 @@ class AgentLog(DynamicRecord):
                     ):
                         if getattr(start, name) != getattr(event, name):
                             raise ValueError("LOG_ACTION_PROVENANCE_MISMATCH")
+                    if key[0] == "POC_EXECUTION" and (
+                        start.input_refs != event.input_refs
+                    ):
+                        raise ValueError("LOG_ACTION_PROVENANCE_MISMATCH")
         return self
 
 
@@ -703,8 +736,16 @@ class DynamicReproductionResult(DynamicRecord):
         if not self.agent_invoked and self.agent_conclusion_ref is not None:
             raise ValueError("UNINVOKED_CONCLUSION_FORBIDDEN")
         if self.action_decision_ref is None:
+            pre_boundary_categories = {
+                "PLAN",
+                "AGENT",
+                "TIMEOUT",
+                "RESOURCE_LIMIT",
+                "RETRY_LIMIT",
+                "INTERNAL",
+            }
             if (
-                self.failure_category != "PLAN"
+                self.failure_category not in pre_boundary_categories
                 or self.agent_invoked
                 or any(
                     ref is not None
@@ -924,6 +965,19 @@ def validate_dynamic_closure(
         for event in log.events
     ):
         raise ValueError("CANDIDATE_LOG_REQUIRED")
+    environments = (*attempt_environments, *((environment,) if environment else ()))
+    recipes = (*attempt_recipes, *((recipe,) if recipe else ()))
+    validate_command_log(
+        log,
+        request,
+        plan,
+        command_records,
+        tool_requests,
+        environments,
+        recipes,
+        require_completion=result.status in {"SUCCEEDED", "PARTIAL"}
+        or bool(result.hypothesis_evidence_refs),
+    )
     if poc is not None:
         if candidate is None:
             raise ValueError("POC_CANDIDATE_REQUIRED")
@@ -952,23 +1006,18 @@ def validate_dynamic_closure(
         ]
         if len(executions) != 1 or not poc.evidence_refs:
             raise ValueError("POC_EXECUTION_REQUIRED")
-        validate_execution_support(result, poc, executions[0], resolved_evidence or {})
+        validate_execution_support(
+            result,
+            poc,
+            candidate,
+            executions[0],
+            log,
+            command_records,
+            resolved_evidence or {},
+        )
     if cleanup is not None and cleanup.status != result.cleanup_status:
         raise ValueError("CLEANUP_STATUS_MISMATCH")
-    environments = (*attempt_environments, *((environment,) if environment else ()))
-    recipes = (*attempt_recipes, *((recipe,) if recipe else ()))
     validate_cleanup_coverage(result, log, cleanup, environments, attempt_resource_refs)
-    validate_command_log(
-        log,
-        request,
-        plan,
-        command_records,
-        tool_requests,
-        environments,
-        recipes,
-        require_completion=result.status in {"SUCCEEDED", "PARTIAL"}
-        or bool(result.hypothesis_evidence_refs),
-    )
 
 
 def validate_boundary_binding(
@@ -987,7 +1036,8 @@ def validate_boundary_binding(
     ):
         raise ValueError("SANDBOX_POLICY_DECISION_MISMATCH")
     if not any(
-        event.event_type in {"SESSION_STARTED", "POLICY_BLOCKED"}
+        event.event_type
+        in {"SESSION_STARTED", "SANDBOX_RECREATE_REQUESTED", "POLICY_BLOCKED"}
         and result.policy_decision_ref in event.input_refs
         for event in log.events
     ):
@@ -1191,7 +1241,10 @@ def validate_command_closure(
 def validate_execution_support(
     result: DynamicReproductionResult,
     poc: PoCBundle,
+    candidate: PoCCandidate,
     execution: AgentLogEvent,
+    log: AgentLog,
+    command_records: tuple[SandboxCommandRecord, ...],
     resolved: Mapping[StoredDataRef, DomainRecord],
 ) -> None:
     if (execution.environment_ref, execution.environment_recipe_ref) != (
@@ -1199,6 +1252,41 @@ def validate_execution_support(
         result.environment_recipe_ref,
     ):
         raise ValueError("POC_EXECUTION_ENVIRONMENT_MISMATCH")
+    try:
+        if execution.poc_candidate_ref is None:
+            raise ValueError("POC_CANDIDATE_CONTENT_MISMATCH")
+        exact(execution.poc_candidate_ref, candidate, result.meta)
+    except ValueError as error:
+        raise ValueError("POC_CANDIDATE_CONTENT_MISMATCH") from error
+    if execution.input_refs != (candidate.content_ref,):
+        raise ValueError("POC_CANDIDATE_CONTENT_MISMATCH")
+    commands = [
+        event
+        for event in log.events
+        if event.event_type == "COMMAND_FINISHED"
+        and event.action_id == execution.action_id
+        and event.command_ref == execution.command_ref
+        and event.tool_request_ref == execution.tool_request_ref
+        and event.command_digest == execution.command_digest
+        and event.redaction_status == execution.redaction_status
+        and event.environment_ref == execution.environment_ref
+        and event.environment_recipe_ref == execution.environment_recipe_ref
+        and event.poc_candidate_ref == execution.poc_candidate_ref
+    ]
+    records = [
+        record
+        for record in command_records
+        if execution.command_ref is not None
+        and record.meta.record_id == execution.command_ref.record_id
+    ]
+    if (
+        execution.timed_out is not False
+        or any(command.timed_out is not False for command in commands)
+        or len(commands) != 1
+        or len(records) != 1
+        or not is_poc_execution_command(records[0])
+    ):
+        raise ValueError("POC_EXECUTION_COMMAND_MISMATCH")
     outputs = set(execution.output_refs)
     if not outputs:
         raise ValueError("POC_EXECUTION_EVIDENCE_MISMATCH")

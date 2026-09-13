@@ -62,7 +62,7 @@ def test_domain_pointer_corruption_fails_closed(
         assert isinstance(candidate, CodeWorkspace)
         data = candidate.model_dump(mode="json")
         data["meta"].update(
-            record_id="unjournaled", revision_number=2, previous_record_id="result"
+            record_id="unjournaled", revision_number=3, previous_record_id="result"
         )
         h.publish(CodeWorkspace.model_validate_json(json.dumps(data)))
     query = {
@@ -72,7 +72,7 @@ def test_domain_pointer_corruption_fails_closed(
         "version": "UPDATE current_records SET state_version=99 "
         "WHERE logical_record_id='result'",
         "unjournaled": "UPDATE current_records SET record_id='unjournaled', "
-        "state_version=2 WHERE logical_record_id='result'",
+        "state_version=3 WHERE logical_record_id='result'",
         "missing-work": (
             "DELETE FROM current_records WHERE logical_record_id='reserve-work'"
         ),

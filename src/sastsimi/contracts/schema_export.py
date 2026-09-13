@@ -21,6 +21,7 @@ from .budget import (
     WorkBudgetLimit,
     WorkBudgetProfile,
 )
+from .capabilities import CapabilityApprovalEvidence, RuntimeCapabilityProfile
 from .chaining import PrimitiveIndexState
 from .dynamic import DynamicReproductionState, SandboxProfile
 from .evaluation import EvaluationRunConfig
@@ -43,10 +44,15 @@ from .llm import (
     SemanticValidatorSpec,
 )
 from .records import PolicyCacheMeta, RecordMeta, RunMeta
-from .refs import PolicyCacheRef, RunStoredDataRef, StoredDataRef
-from .reporting import FindingIndexState
+from .refs import HostConfigurationRef, PolicyCacheRef, RunStoredDataRef, StoredDataRef
+from .reporting import FindingIndexState, ReportProcessState
 from .result_registry import RESULT_REGISTRY
-from .static import CodeContextRequest
+from .static import (
+    CodeContextRequest,
+    RepositoryExecutionSelection,
+    RepositoryProfile,
+    StaticToolProfile,
+)
 from .verification import PlaybookApplication, PlaybookPolicy, VerificationPlaybook
 from .work import StateTransition, TransitionCommit, WorkAttempt, WorkExecutionState
 
@@ -57,6 +63,7 @@ CORE_SCHEMAS: Mapping[str, type[BaseModel]] = MappingProxyType(
         "policy_cache_meta": PolicyCacheMeta,
         "run_stored_data_ref": RunStoredDataRef,
         "stored_data_ref": StoredDataRef,
+        "host_configuration_ref": HostConfigurationRef,
         "policy_cache_ref": PolicyCacheRef,
         "work_execution_state": WorkExecutionState,
         "work_attempt": WorkAttempt,
@@ -67,11 +74,17 @@ CORE_SCHEMAS: Mapping[str, type[BaseModel]] = MappingProxyType(
         "action_decision": ActionDecision,
         "sandbox_profile": SandboxProfile,
         "code_context_request": CodeContextRequest,
+        "static_tool_profile": StaticToolProfile,
+        "repository_profile": RepositoryProfile,
+        "repository_execution_selection": RepositoryExecutionSelection,
+        "tool_capability_evidence": CapabilityApprovalEvidence,
+        "runtime_capability_profile": RuntimeCapabilityProfile,
         "vulnerability_hypothesis": VulnerabilityHypothesis,
         "playbook_application": PlaybookApplication,
         "dynamic_reproduction_state": DynamicReproductionState,
         "primitive_index_state": PrimitiveIndexState,
         "finding_index_state": FindingIndexState,
+        "report_process_state": ReportProcessState,
         "provider_validation_evidence": ProviderValidationEvidence,
         "client_execution_profile": ClientExecutionProfile,
         "provider_profile": ProviderProfile,

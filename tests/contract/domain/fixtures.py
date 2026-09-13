@@ -112,6 +112,7 @@ def proposal() -> dict[str, Any]:
         meta=meta("hypothesis_proposal", attempt=None),
         proposal_state="HYPOTHESIS_ONLY",
         assertion_mode="NON_FINAL",
+        statement="Untrusted input may reach the sink",
         origin="INITIAL",
         vulnerability_type_candidates=[],
         target_entities=[],
@@ -293,6 +294,7 @@ def event() -> dict[str, Any]:
         input_refs=[],
         output_refs=[],
         exit_code=None,
+        timed_out=None,
         safe_message="Setup unavailable",
         occurred_at="2026-09-08T00:00:00Z",
     )

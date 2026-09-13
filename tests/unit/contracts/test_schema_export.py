@@ -10,6 +10,7 @@ EXPECTED_KINDS = {
     "policy_cache_meta",
     "run_stored_data_ref",
     "stored_data_ref",
+    "host_configuration_ref",
     "policy_cache_ref",
     "work_execution_state",
     "work_attempt",
@@ -25,6 +26,7 @@ EXPECTED_KINDS = {
     "dynamic_reproduction_state",
     "primitive_index_state",
     "finding_index_state",
+    "report_process_state",
     "provider_validation_evidence",
     "client_execution_profile",
     "provider_profile",
@@ -53,6 +55,9 @@ EXPECTED_KINDS = {
     "budget_ledger_entry",
     "budget_remaining",
     "evaluation_run_config",
+    "static_tool_profile",
+    "tool_capability_evidence",
+    "runtime_capability_profile",
 }
 
 

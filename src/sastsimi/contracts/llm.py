@@ -344,6 +344,10 @@ class LLMCallSpec(LLMRecord):
             self.session_policy != "NEW" or self.parent_session_ref is not None
         ):
             raise ValueError("EVIDENCE_NEW_SESSION_REQUIRED")
+        if (self.session_policy == "NEW" and self.parent_session_ref is not None) or (
+            self.session_policy == "RESUME" and self.parent_session_ref is None
+        ):
+            raise ValueError("LLM_SESSION_REFERENCE_MISMATCH")
         return self
 
 

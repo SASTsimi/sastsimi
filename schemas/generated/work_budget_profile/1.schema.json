@@ -53,6 +53,7 @@
     "OperationKind": {
       "enum": [
         "WORKSPACE_PREP",
+        "REPOSITORY_PROFILE",
         "STATIC_TOOL",
         "STATIC_NORMALIZE",
         "POLICY_COLLECT",
@@ -274,6 +275,7 @@
     "WorkType": {
       "enum": [
         "WORKSPACE_PREP",
+        "REPOSITORY_PROFILE",
         "STATIC_TOOL",
         "STATIC_NORMALIZE",
         "HYPOTHESIS_PROPOSAL",

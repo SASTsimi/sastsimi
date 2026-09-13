@@ -8,6 +8,7 @@ from sastsimi.contracts.budget import BudgetProfileBinding
 from sastsimi.contracts.dynamic import (
     DynamicReproductionRequest,
     DynamicReproductionResult,
+    EnvironmentRecipe,
     EnvironmentRequirements,
     PoCBundle,
     ReproductionPlan,
@@ -182,6 +183,29 @@ def check_stage(
             ):
                 raise ValueError("STALE_RESULT: current run lifecycle required")
             records.resolve(connection, binding.dynamic_lifecycle_profile_ref)
+            if action.image_digest is not None:
+                recipe_refs = [
+                    ref
+                    for ref in action.input_refs
+                    if ref.data_kind == "environment_recipe"
+                ]
+                recipe = resolved(
+                    records,
+                    connection,
+                    recipe_refs[0] if len(recipe_refs) == 1 else None,
+                    EnvironmentRecipe,
+                )
+                if (
+                    recipe.request_ref != requests[0]
+                    or recipe.environment_requirements_ref != reference(requirements)
+                    or recipe.meta.attempt_id != work.active_attempt_id
+                    or recipe.meta.hypothesis_id
+                    != getattr(work.meta, "hypothesis_id", None)
+                    or recipe.built_image_digest != action.image_digest
+                ):
+                    raise ValueError(
+                        "STALE_RESULT: sandbox image/recipe binding mismatch"
+                    )
             # run_policy_state_ref is deliberately audit-only for local Sandbox.
     if action.action_type == ActionType.REQUEST_DYNAMIC_REPRO:
         process = current_process(records, connection, work)

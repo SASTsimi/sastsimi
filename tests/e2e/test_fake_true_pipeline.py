@@ -42,6 +42,8 @@ from sastsimi.contracts.verification import VerificationInitialAssessment
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.interfaces.cli.main import main
 from sastsimi.ports.dto import Record
+from sastsimi.reporting.markdown_export import ReportMarkdownService
+from sastsimi.storage.report_export import SQLiteCurrentReportSource
 
 
 def test_final_true_without_current_validated_poc_is_rejected(
@@ -77,8 +79,24 @@ def test_true_pipeline_closes_exact_report_without_submission(tmp_path: Path) ->
     assert pipeline.runtime is not None
     (report,) = pipeline.reports()
     assert isinstance(report, ReportDraft)
+    source = SQLiteCurrentReportSource(tmp_path)
+    current_report = source.get_current(str(report.finding_ref.record_id))
+    markdown = ReportMarkdownService(tmp_path, source).show(current_report.finding_id)
+    assert current_report.poc.agent_log_ref == reference(current_report.agent_log)
+    assert current_report.execution_command.action_id == (
+        current_report.poc.execution_action_id
+    )
+    assert f"AgentLog ref: `{current_report.poc.agent_log_ref.record_id}`" in markdown
+    assert "### 실제 실행 방법" in markdown
     published = pipeline.runtime.queries.published_records("fake-analysis")
     published_by_ref = {reference(item): item for item in published}
+    report_decision = published_by_ref[report.action_decision_ref]
+    assert isinstance(report_decision, ActionDecision)
+    report_action = published_by_ref[report_decision.action_ref]
+    assert isinstance(report_action, ActionRequest)
+    assert report_decision.use_status == "USED"
+    assert report_action.action_type == "CREATE_REPORT_DRAFT"
+    assert report_action.requested_by == RequesterRole.VERIFICATION
     actions = tuple(item for item in published if isinstance(item, ActionRequest))
     action_counts = Counter(action.action_type.value for action in actions)
     assert action_counts["RUN_TOOL"] == 2
@@ -170,7 +188,14 @@ def test_true_pipeline_closes_exact_report_without_submission(tmp_path: Path) ->
     for log in logs:
         assert log.parsed_output_ref is not None
         assert log.exposed_response_ref is not None
-        output = published_by_ref[log.parsed_output_ref]
+        if log.parsed_output_ref.record_id is None:
+            assert log.parsed_output_ref == log.exposed_response_ref
+            with pipeline.runtime.unit_of_work.artifacts.open_verified(
+                log.parsed_output_ref
+            ) as stream:
+                parsed_output = stream.read()
+        else:
+            parsed_output = canonical_bytes(published_by_ref[log.parsed_output_ref])
         spec = published_by_ref[log.call_spec_ref]
         assert isinstance(spec, LLMCallSpec)
         request = next(
@@ -183,10 +208,30 @@ def test_true_pipeline_closes_exact_report_without_submission(tmp_path: Path) ->
         assert isinstance(decision, ActionDecision)
         action = published_by_ref[decision.action_ref]
         assert isinstance(action, ActionRequest)
-        assert action.input_refs == spec.context_refs == request.context_refs
         assert action.llm_call_spec_ref == log.call_spec_ref
         payload = published_by_ref[log.prompt_payload_ref]
         assert isinstance(payload, PromptPayload)
+        assert action.input_refs == (
+            log.call_spec_ref,
+            spec.prompt_registry_entry_ref,
+            spec.prompt_template_ref,
+            spec.prompt_payload_ref,
+            spec.provider_profile_ref,
+            spec.execution_limits_ref,
+            spec.retry_policy_ref,
+            spec.tool_policy_ref,
+            spec.redaction_policy_ref,
+            spec.output_schema_ref,
+            spec.semantic_validator_ref,
+            payload.rendered_prompt_ref,
+            *(binding.source_ref for binding in payload.context_bindings),
+            *(binding.projected_data_ref for binding in payload.context_bindings),
+        )
+        assert (
+            spec.context_refs
+            == request.context_refs
+            == tuple(binding.source_ref for binding in payload.context_bindings)
+        )
         entry = published_by_ref[spec.prompt_registry_entry_ref]
         assert isinstance(entry, PromptRegistryEntry)
         assert entry.status == "ACTIVE" and entry.purpose == "PRODUCTION"
@@ -223,7 +268,7 @@ def test_true_pipeline_closes_exact_report_without_submission(tmp_path: Path) ->
         with pipeline.runtime.unit_of_work.artifacts.open_verified(
             log.exposed_response_ref
         ) as stream:
-            assert stream.read() == canonical_bytes(output)
+            assert stream.read() == parsed_output
     synthesis = next(
         log
         for log in logs

@@ -21,6 +21,7 @@ from sastsimi.contracts.llm import (
 from sastsimi.contracts.records import RecordMeta, RecordMetadata, RunMeta
 from sastsimi.contracts.refs import (
     BudgetScopeRef,
+    HostConfigurationRef,
     RecordRef,
     RunStoredDataRef,
     StoredDataRef,
@@ -31,7 +32,6 @@ from sastsimi.contracts.work import TransitionCommit
 from sastsimi.ports import (
     ApprovedSandboxCommand,
     ArtifactStore,
-    BoundaryRecord,
     BudgetCommitRequest,
     BudgetLedgerPort,
     BudgetReleaseRequest,
@@ -55,6 +55,7 @@ from sastsimi.ports import (
     StagedArtifact,
     StaticToolAdapter,
     StaticToolRequest,
+    ToolCapabilityResult,
     ToolRunResult,
     TransitionCommitRequest,
     UnitOfWork,
@@ -96,6 +97,33 @@ class FakeRecords:
                 )
                 return record
         raise LookupError(ref.record_id)
+
+    def is_revision_descendant(
+        self, earlier_ref: RecordRef, later_ref: RecordRef
+    ) -> bool:
+        earlier = self.get_exact(earlier_ref)
+        current = self.get_exact(later_ref)
+        if (
+            type(earlier.meta) is not type(current.meta)
+            or earlier.meta.logical_record_id != current.meta.logical_record_id
+            or earlier.meta.record_type != current.meta.record_type
+            or current.meta.revision_number < earlier.meta.revision_number
+        ):
+            return False
+        by_record_id = {record.meta.record_id: record for _, record in self.entries}
+        visited = set()
+        while current.meta.record_id != earlier.meta.record_id:
+            if (
+                current.meta.record_id in visited
+                or current.meta.previous_record_id is None
+            ):
+                return False
+            visited.add(current.meta.record_id)
+            predecessor = by_record_id.get(current.meta.previous_record_id)
+            if predecessor is None:
+                return False
+            current = predecessor
+        return True
 
     def stage_record(self, record: Record) -> RecordRef:
         raise NotImplementedError
@@ -177,14 +205,72 @@ class FakePolicy:
 
 
 class FakeStatic:
-    async def probe(self, profile_ref: StoredDataRef) -> BoundaryRecord:
-        return BoundaryRecord(ref=profile_ref)
+    async def probe(
+        self, profile_ref: StoredDataRef | HostConfigurationRef
+    ) -> ToolCapabilityResult:
+        return ToolCapabilityResult(
+            ref=profile_ref,
+            available=False,
+            tool_name="AST",
+            tool_kind="STRUCTURE",
+            executable_key="fake",
+            observed_executable_sha256=None,
+            observed_version=None,
+            expected_version="fake",
+            reason_code="FAKE",
+        )
 
     async def run(self, request: StaticToolRequest) -> ToolRunResult:
         raise NotImplementedError
 
     async def cancel(self, attempt_id: str) -> CancellationResult:
         return CancellationResult(cancelled=True, reason=None)
+
+
+def test_static_transport_and_lower_process_seams_are_frozen() -> None:
+    from dataclasses import fields
+
+    from sastsimi.ports.dto import (
+        CanonicalRepositorySource,
+        ProcessResult,
+        ProcessSpec,
+        StaticCapabilityObservation,
+        StaticOutputQuotaBinding,
+        StaticToolObservation,
+        StaticToolRequest,
+        ToolCapabilityResult,
+        WorkspaceStorageLease,
+        WorkspaceStoragePolicy,
+    )
+    from sastsimi.ports.static_tool import StaticOutputQuotaPort, StaticProcessAdapter
+    from sastsimi.ports.workspace import WorkspaceStoragePort
+
+    assert [field.name for field in fields(StaticToolRequest)] == [
+        "action",
+        "workspace",
+        "tool_profile_ref",
+        "analysis_config_ref",
+        "rule_catalog_ref",
+        "repository_profile_ref",
+        "execution_selection_ref",
+    ]
+    for transport in (
+        CanonicalRepositorySource,
+        ProcessSpec,
+        ProcessResult,
+        StaticCapabilityObservation,
+        StaticOutputQuotaBinding,
+        ToolCapabilityResult,
+        StaticToolObservation,
+        WorkspaceStoragePolicy,
+        WorkspaceStorageLease,
+    ):
+        assert "meta" not in {field.name for field in fields(transport)}
+    quota_fields = {field.name for field in fields(StaticOutputQuotaBinding)}
+    assert {"limit_breached", "breach_evidence"} <= quota_fields
+    assert StaticProcessAdapter is not None
+    assert StaticOutputQuotaPort is not None
+    assert WorkspaceStoragePort is not None
 
 
 class FakeSandbox:

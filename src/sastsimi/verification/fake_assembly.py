@@ -131,6 +131,7 @@ def build_verification_result(
                 proposal_id="fake-material-child",
                 proposal_state="HYPOTHESIS_ONLY",
                 assertion_mode="NON_FINAL",
+                statement="A separate sink may be reachable",
                 origin="VERIFICATION",
                 vulnerability_type_candidates=(),
                 target_entities=(),

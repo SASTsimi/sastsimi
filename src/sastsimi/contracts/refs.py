@@ -23,6 +23,20 @@ class StoredDataRef(ContractModel):
     record_id: RecordId | None
 
 
+class HostConfigurationRef(ContractModel):
+    """Exact host configuration revision reusable across repository analyses."""
+
+    stored_data_id: StoredDataId
+    data_kind: NonEmptyStr
+    content_hash: Sha256
+    configuration_scope: Literal["HOST"] = "HOST"
+    host_id: NonEmptyStr
+    publication_analysis_id: AnalysisId
+    publication_workspace_id: WorkspaceId
+    publication_commit_id: CommitId
+    record_id: RecordId
+
+
 class PolicyCacheRef(ContractModel):
     stored_data_id: StoredDataId
     data_kind: Literal["policy_cache_record"]
@@ -32,8 +46,11 @@ class PolicyCacheRef(ContractModel):
     schema_version: SchemaVersion
 
 
-type RecordRef = RunStoredDataRef | StoredDataRef | PolicyCacheRef
+type RecordRef = (
+    RunStoredDataRef | StoredDataRef | HostConfigurationRef | PolicyCacheRef
+)
 type BudgetScopeRef = RunStoredDataRef | StoredDataRef
+type CheckedConfigurationRef = BudgetScopeRef | HostConfigurationRef
 
 
 class ReferencedRecord(Protocol):
@@ -50,6 +67,17 @@ def reference(record: ReferencedRecord) -> RecordRef:
         record_id=record.meta.record_id,
     )
     meta = record.meta
+    host_id = getattr(record, "host_id", None)
+    if isinstance(meta, RecordMeta) and host_id is not None:
+        return HostConfigurationRef.model_validate(
+            common
+            | dict(
+                host_id=host_id,
+                publication_analysis_id=meta.analysis_id,
+                publication_workspace_id=meta.workspace_id,
+                publication_commit_id=meta.commit_id,
+            )
+        )
     if isinstance(meta, RecordMeta):
         return StoredDataRef.model_validate(
             common | dict(workspace_id=meta.workspace_id, commit_id=meta.commit_id)
@@ -72,7 +100,10 @@ def require_record_ref(ref: RecordRef, data_kind: str | None = None) -> None:
 
 def validate_ref_scope(ref: RecordRef, meta: RecordMetadata) -> None:
     """Local scope only. StoredDataRef analysis must be checked after resolving."""
-    if isinstance(ref, PolicyCacheRef):
+    if isinstance(ref, HostConfigurationRef):
+        if isinstance(meta, PolicyCacheMeta):
+            raise ValueError("Policy cache cannot carry host configuration metadata")
+    elif isinstance(ref, PolicyCacheRef):
         if isinstance(meta, PolicyCacheMeta) and ref.program_id != meta.program_id:
             raise ValueError("Policy program mismatch")
     elif isinstance(ref, StoredDataRef):
@@ -95,6 +126,18 @@ def validate_exact_ref(
     analysis_id: AnalysisId | None = None,
 ) -> None:
     require_record_ref(ref, meta.record_type)
+    if isinstance(ref, HostConfigurationRef):
+        if not isinstance(meta, RecordMeta) or (
+            ref.publication_analysis_id,
+            ref.publication_workspace_id,
+            ref.publication_commit_id,
+        ) != (meta.analysis_id, meta.workspace_id, meta.commit_id):
+            raise ValueError("Host configuration publication scope mismatch")
+        if ref.record_id != meta.record_id or ref.content_hash != expected_content_hash:
+            raise ValueError(
+                "RECORD_REVISION_MISMATCH: record_id/content_hash mismatch"
+            )
+        return
     if isinstance(meta, PolicyCacheMeta):
         if (
             not isinstance(ref, PolicyCacheRef)

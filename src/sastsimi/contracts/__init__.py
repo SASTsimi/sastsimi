@@ -1,5 +1,6 @@
 """Public Architecture v5 common and domain contracts."""
 
+from ._domain import same_scope as same_scope
 from .actions import REQUIRED_CHECKS as REQUIRED_CHECKS
 from .actions import ActionCheck as ActionCheck
 from .actions import ActionDecision as ActionDecision
@@ -49,6 +50,20 @@ from .canonical_json import CANONICAL_JSON_VERSION as CANONICAL_JSON_VERSION
 from .canonical_json import SetListPolicy as SetListPolicy
 from .canonical_json import canonical_bytes as canonical_bytes
 from .canonical_json import content_hash as content_hash
+from .capabilities import CapabilityApprovalEvidence as CapabilityApprovalEvidence
+from .capabilities import CapabilityArchitecture as CapabilityArchitecture
+from .capabilities import CapabilityControlEvidence as CapabilityControlEvidence
+from .capabilities import CapabilityKind as CapabilityKind
+from .capabilities import CapabilityLanguage as CapabilityLanguage
+from .capabilities import CapabilityOperatingSystem as CapabilityOperatingSystem
+from .capabilities import CapabilityOperation as CapabilityOperation
+from .capabilities import CapabilitySecurityControl as CapabilitySecurityControl
+from .capabilities import RuntimeCapabilityProfile as RuntimeCapabilityProfile
+from .capabilities import RuntimeCapabilitySelection as RuntimeCapabilitySelection
+from .capabilities import (
+    StaticToolCapabilitySelection as StaticToolCapabilitySelection,
+)
+from .capabilities import capability_target_hash as capability_target_hash
 from .chaining import ChainingResult as ChainingResult
 from .chaining import LineageExclusion as LineageExclusion
 from .chaining import NoMatchReason as NoMatchReason
@@ -132,6 +147,8 @@ from .records import RevisionMeta as RevisionMeta
 from .records import RunMeta as RunMeta
 from .records import validate_revision as validate_revision
 from .refs import BudgetScopeRef as BudgetScopeRef
+from .refs import CheckedConfigurationRef as CheckedConfigurationRef
+from .refs import HostConfigurationRef as HostConfigurationRef
 from .refs import PolicyCacheRef as PolicyCacheRef
 from .refs import RecordRef as RecordRef
 from .refs import RunStoredDataRef as RunStoredDataRef
@@ -143,7 +160,11 @@ from .refs import validate_ref_scope as validate_ref_scope
 from .reporting import Finding as Finding
 from .reporting import FindingConditionSource as FindingConditionSource
 from .reporting import FindingIndexState as FindingIndexState
+from .reporting import ReportContent as ReportContent
 from .reporting import ReportDraft as ReportDraft
+from .reporting import ReportProcessState as ReportProcessState
+from .reporting import parse_validated_report_content as parse_validated_report_content
+from .reporting import validate_report_content as validate_report_content
 from .result_registry import RESULT_REGISTRY as RESULT_REGISTRY
 from .result_registry import ResultBinding as ResultBinding
 from .result_registry import validate_result_owner as validate_result_owner
@@ -162,6 +183,9 @@ from .static import CodeSymbol as CodeSymbol
 from .static import CodeWorkspace as CodeWorkspace
 from .static import ContextRetrievalLimits as ContextRetrievalLimits
 from .static import DataGap as DataGap
+from .static import RepositoryExecutionSelection as RepositoryExecutionSelection
+from .static import RepositoryProfile as RepositoryProfile
+from .static import RepositorySelectedTool as RepositorySelectedTool
 from .static import Restriction as Restriction
 from .static import RuleExecutionItem as RuleExecutionItem
 from .static import RuleExecutionRecord as RuleExecutionRecord

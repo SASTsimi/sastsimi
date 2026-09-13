@@ -1,3 +1,4 @@
+import re
 from collections.abc import Mapping
 from enum import StrEnum
 from types import MappingProxyType
@@ -8,8 +9,16 @@ from pydantic import AwareDatetime, field_validator, model_validator
 from .base import ContractModel, NonEmptyStr, NonNegativeInt, PositiveInt
 from .ids import ActionId, DecisionId, ErrorId
 from .records import RecordMeta, validate_revision
-from .refs import BudgetScopeRef, RecordRef, StoredDataRef, require_record_ref
+from .refs import (
+    BudgetScopeRef,
+    CheckedConfigurationRef,
+    RecordRef,
+    StoredDataRef,
+    require_record_ref,
+)
 from .work import ScopedRecord
+
+_IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class ActionType(StrEnum):
@@ -415,6 +424,25 @@ class ActionRequest(ScopedRecord):
                     "RUN_SANDBOX requires one environment_requirements input"
                 )
             require_record_ref(requirements[0])
+            recipe_sources = [
+                ref for ref in self.input_refs if ref.data_kind == "recipe_source"
+            ]
+            recipes = [
+                ref for ref in self.input_refs if ref.data_kind == "environment_recipe"
+            ]
+            if self.image_digest is None:
+                if len(recipe_sources) != 1 or recipes:
+                    raise ValueError(
+                        "RUN_SANDBOX build phase requires one exact recipe_source"
+                    )
+            elif (
+                _IMAGE_DIGEST.fullmatch(self.image_digest) is None
+                or len(recipes) != 1
+                or recipe_sources
+            ):
+                raise ValueError(
+                    "RUN_SANDBOX run phase requires sha256 image and one exact recipe"
+                )
             if self.run_policy_state_ref in self.input_refs:
                 raise ValueError("run_policy_state_ref is audit-only, not input_refs")
         return self
@@ -492,7 +520,7 @@ class ActionDecision(ScopedRecord):
     required_checks: tuple[CheckType, ...]
     check_results: tuple[ActionCheck, ...]
     checked_state_version: PositiveInt | None
-    checked_config_refs: tuple[BudgetScopeRef, ...]
+    checked_config_refs: tuple[CheckedConfigurationRef, ...]
     valid_until: AwareDatetime | None
     error_ids: tuple[ErrorId, ...]
     use_status: UseStatus

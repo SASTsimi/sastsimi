@@ -34,7 +34,7 @@ from sastsimi.contracts.hypothesis import (
 from sastsimi.contracts.ids import ActionId, LogicalRecordId, RecordId
 from sastsimi.contracts.policy import RunPolicyState
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, RunStoredDataRef
-from sastsimi.contracts.reporting import FindingIndexState
+from sastsimi.contracts.reporting import FindingIndexState, ReportProcessState
 from sastsimi.contracts.static import AnalysisError, CodeWorkspace, DataGap
 from sastsimi.contracts.work import (
     TERMINAL_WORK_STATUSES,
@@ -226,6 +226,13 @@ class AnalysisFinalizationService:
         for field, kinds in RUN_INVENTORY_KINDS.items():
             refs = [ref for kind in sorted(kinds) for ref in by_kind.get(kind, ())]
             expected[field] = tuple(dict.fromkeys(refs))
+        expected["report_draft_refs"] = tuple(
+            item.report_draft_ref
+            for item in current
+            if isinstance(item, ReportProcessState)
+            and item.status == "DRAFTED"
+            and item.report_draft_ref is not None
+        )
         policy = next(
             (item for item in current if isinstance(item, RunPolicyState)), None
         )

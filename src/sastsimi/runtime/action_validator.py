@@ -1,5 +1,7 @@
 """Trusted runtime authorization API; checks and claims commit in the port."""
 
+from typing import Protocol, cast
+
 from sastsimi.contracts.actions import ActionDecision, ActionRequest
 from sastsimi.contracts.llm import (
     LLMInvocationLog,
@@ -11,7 +13,30 @@ from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.runtime_store import ActionAuthorizationPort
 
 
+class _DispatchInspectionPort(Protocol):
+    def require_unresolved_dispatch(
+        self,
+        work_id: str,
+        attempt_id: str,
+        decision_ref: RecordRef,
+        action_id: str,
+    ) -> None: ...
+
+
 class RuntimeValidator:
+    def require_unresolved_dispatch(
+        self,
+        work_id: str,
+        attempt_id: str,
+        decision_ref: RecordRef,
+        action_id: str,
+    ) -> None:
+        if not hasattr(self.authorization, "require_unresolved_dispatch"):
+            raise ValueError("DISPATCH_INSPECTION_UNAVAILABLE")
+        cast(_DispatchInspectionPort, self.authorization).require_unresolved_dispatch(
+            work_id, attempt_id, decision_ref, action_id
+        )
+
     def mark_dispatched(
         self,
         decision_ref: RecordRef,

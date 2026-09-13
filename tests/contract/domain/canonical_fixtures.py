@@ -3,6 +3,8 @@
 import re
 from typing import Any
 
+from sastsimi.contracts.canonical_json import content_hash
+
 from .fixtures import (
     bundle,
     dynamic_failure,
@@ -54,11 +56,29 @@ REF_KINDS = {
     "sandbox_profile_ref": "sandbox_profile",
     "collection_result_ref": "policy_collection_result",
     "finding_ref": "finding",
+    "workspace_ref": "code_workspace",
+    "repository_profile_ref": "repository_profile",
+    "git_clone_profile_ref": "runtime_capability_profile",
+    "git_checkout_profile_ref": "runtime_capability_profile",
 }
 
 
 def kind_name(name: str) -> str:
     return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
+def host_ref(kind: str) -> dict[str, Any]:
+    return dict(
+        stored_data_id=f"{kind}-s1",
+        data_kind=kind,
+        record_id=f"{kind}-r1",
+        content_hash="a" * 64,
+        configuration_scope="HOST",
+        host_id="host1",
+        publication_analysis_id="a1",
+        publication_workspace_id="ws1",
+        publication_commit_id="c1",
+    )
 
 
 def make(name: str, kind: str | None = None) -> dict[str, Any]:
@@ -108,6 +128,8 @@ def make(name: str, kind: str | None = None) -> dict[str, Any]:
             value[field] = None
         elif spec.startswith("["):
             value[field] = []
+        elif spec == "HostConfigurationRef":
+            value[field] = host_ref(REF_KINDS.get(field, field.removesuffix("_ref")))
         elif "StoredDataRef" in spec:
             value[field] = ref(REF_KINDS.get(field, field.removesuffix("_ref")))
             if spec.startswith("RunStoredDataRef"):
@@ -124,6 +146,8 @@ def make(name: str, kind: str | None = None) -> dict[str, Any]:
             value[field] = False
         elif spec == "map":
             value[field] = {}
+        elif spec == "sha256":
+            value[field] = "a" * 64
         elif spec == "string":
             value[field] = "a" * 64 if field.endswith(("digest", "hash")) else field
         elif spec in BLOCKS:
@@ -138,6 +162,15 @@ def make(name: str, kind: str | None = None) -> dict[str, Any]:
         value["program_id"] = "program1"
     if name == "CodeWorkspace":
         value.update(analysis_id="a1", commit_id=None)
+    if name == "RepositoryProfile":
+        value["manifest_hash"] = content_hash(tuple(value["tracked_files"]))
+    if name == "RepositoryExecutionSelection":
+        value.update(
+            status="FAILED",
+            selected_tools=[],
+            gaps=[],
+            errors=[make("AnalysisError")],
+        )
     if name == "CodeContextResponse":
         value.update(returned_fragment_count=0, returned_bytes=0)
     if name == "DynamicReproductionToolRequest":

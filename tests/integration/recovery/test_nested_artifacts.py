@@ -26,6 +26,7 @@ def test_recovery_preserves_and_verifies_nested_raw_artifact_provenance(
     )
     h.publish(record)
     report = RecoveryService(transitions).recover()
-    assert report.checked_artifacts == 2
+    # PREPARING, READY and the nested raw input are all retained provenance.
+    assert report.checked_artifacts == 3
     assert report.quarantined_artifacts == 0
     assert transitions.artifacts.open_verified(artifact).read() == b"raw evidence"

@@ -17,7 +17,8 @@ def test_startup_verifies_every_artifact_and_quarantines_unreferenced_files(
     )
     recovery = RecoveryService(transitions)
     report = recovery.recover()
-    assert report.checked_artifacts == 1
+    # Both append-only workspace revisions remain referenced and verifiable.
+    assert report.checked_artifacts == 2
     assert report.quarantined_artifacts == 1
     assert not transitions.artifacts.path_for(orphan.content_hash).exists()
     path = transitions.artifacts.path_for(request.commit.output_refs[0].content_hash)

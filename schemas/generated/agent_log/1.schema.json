@@ -166,6 +166,17 @@
           "title": "Sequence",
           "type": "integer"
         },
+        "timed_out": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Timed Out"
+        },
         "tool_request_ref": {
           "anyOf": [
             {
@@ -193,6 +204,7 @@
         "input_refs",
         "output_refs",
         "exit_code",
+        "timed_out",
         "safe_message",
         "occurred_at"
       ],

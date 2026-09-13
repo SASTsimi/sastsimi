@@ -1,6 +1,6 @@
 """Runtime work API; the injected port owns each atomic state change."""
 
-from sastsimi.contracts.refs import RecordRef
+from sastsimi.contracts.refs import BudgetScopeRef, RecordRef
 from sastsimi.contracts.work import StateTransition, WorkExecutionState
 from sastsimi.ports.runtime_store import WorkStatePort
 
@@ -11,6 +11,9 @@ class WorkService:
 
     def get(self, work_id: str) -> WorkExecutionState:
         return self.store.get(work_id)
+
+    def registration_scope(self, work_id: str) -> BudgetScopeRef:
+        return self.store.registration_scope(work_id)
 
     def register(
         self,

@@ -91,3 +91,121 @@ def test_code_location_rejects_non_git_paths(path: str) -> None:
 
     with pytest.raises(ValidationError):
         wire(CodeLocation, location() | {"file_path": path})
+
+
+def static_tool_profile(**changes: Any) -> dict[str, Any]:
+    value: dict[str, Any] = {
+        "meta": meta("static_tool_profile", attempt=None),
+        "profile_key": "python-ast-fixture",
+        "purpose": "FIXTURE",
+        "status": "APPROVED",
+        "adapter_key": "PYTHON_AST",
+        "tool_name": "AST",
+        "tool_kind": "STRUCTURE",
+        "executable_key": "trusted-python",
+        "executable_sha256": "a" * 64,
+        "expected_version": "3.12.0",
+        "capability_evidence_ref": None,
+        "probe_timeout_ms": 1_000,
+        "run_timeout_ms": 30_000,
+        "stdout_limit_bytes": 1_024,
+        "stderr_limit_bytes": 1_024,
+        "max_attempt_output_bytes": 4_096,
+        "max_output_file_bytes": 2_048,
+        "max_artifact_read_bytes": 2_048,
+    }
+    return value | changes
+
+
+@pytest.mark.parametrize(
+    ("adapter_key", "tool_name", "tool_kind"),
+    [
+        ("PYTHON_AST", "AST", "STRUCTURE"),
+        ("CODEQL", "CODEQL", "RULE_BASED"),
+        ("OPENGREP", "OPENGREP", "RULE_BASED"),
+    ],
+)
+def test_static_tool_profile_accepts_only_closed_adapter_tuple(
+    adapter_key: str, tool_name: str, tool_kind: str
+) -> None:
+    from sastsimi.contracts.static import StaticToolProfile
+
+    wire(
+        StaticToolProfile,
+        static_tool_profile(
+            adapter_key=adapter_key,
+            tool_name=tool_name,
+            tool_kind=tool_kind,
+        ),
+    )
+    with pytest.raises(ValidationError, match="STATIC_TOOL_PROFILE_TUPLE_MISMATCH"):
+        wire(
+            StaticToolProfile,
+            static_tool_profile(
+                adapter_key=adapter_key,
+                tool_name="AST" if tool_name != "AST" else "CODEQL",
+                tool_kind=tool_kind,
+            ),
+        )
+
+
+def test_static_tool_profile_enforces_scope_status_and_limits() -> None:
+    from sastsimi.contracts.static import StaticToolProfile
+
+    active = static_tool_profile(
+        purpose="PRODUCTION",
+        status="ACTIVE",
+        host_id="host-a",
+        capability_evidence_ref={
+            "stored_data_id": "tool_capability_evidence-id",
+            "data_kind": "tool_capability_evidence",
+            "content_hash": "a" * 64,
+            "configuration_scope": "HOST",
+            "host_id": "host-a",
+            "publication_analysis_id": "a1",
+            "publication_workspace_id": "ws1",
+            "publication_commit_id": "c1",
+            "record_id": "tool_capability_evidence-record",
+        },
+    )
+    wire(StaticToolProfile, active)
+    invalid = (
+        {"meta": meta("static_tool_profile")},
+        {"purpose": "PRODUCTION", "status": "ACTIVE"},
+        {
+            "purpose": "FIXTURE",
+            "status": "ACTIVE",
+            "capability_evidence_ref": ref("tool_capability_evidence"),
+        },
+        {"purpose": "PRODUCTION", "status": "APPROVED"},
+        {"probe_timeout_ms": 0},
+        {"executable_sha256": "not-a-digest"},
+        {"expected_version": ""},
+    )
+    for patch in invalid:
+        with pytest.raises(ValidationError):
+            wire(StaticToolProfile, static_tool_profile(**patch))
+
+
+def test_host_capability_evidence_reference_kind_is_exact() -> None:
+    from sastsimi.contracts.static import StaticToolProfile
+
+    active = static_tool_profile(
+        purpose="PRODUCTION",
+        status="ACTIVE",
+        host_id="host-a",
+        capability_evidence_ref={
+            "stored_data_id": "wrong-kind-id",
+            "data_kind": "runtime_capability_profile",
+            "content_hash": "a" * 64,
+            "configuration_scope": "HOST",
+            "host_id": "host-a",
+            "publication_analysis_id": "a1",
+            "publication_workspace_id": "ws1",
+            "publication_commit_id": "c1",
+            "record_id": "wrong-kind-record",
+        },
+    )
+
+    with pytest.raises(ValidationError, match="REFERENCE_KIND_MISMATCH"):
+        wire(StaticToolProfile, active)

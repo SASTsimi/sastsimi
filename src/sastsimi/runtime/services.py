@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 
+from sastsimi.ports.chaining import ChainingLineagePort
 from sastsimi.ports.unit_of_work import UnitOfWork
 
 from .action_validator import RuntimeValidator
@@ -14,6 +15,8 @@ from .context_binding import ContextBindingService
 from .dynamic_registration import DynamicRegistrationService
 from .external_call_service import ExternalCallService
 from .intermediate_publication import IntermediatePublicationService
+from .llm_call_service import LLMCallService
+from .policy_runtime import PolicyRuntimeService
 from .queries import RuntimeQueries
 from .recovery_service import RecoveryService
 from .transition_service import TransitionService
@@ -39,3 +42,6 @@ class RuntimeServices:
     dynamic_registration: DynamicRegistrationService
     configuration: ConfigurationRegistry
     finalization: AnalysisFinalizationService
+    llm_calls: LLMCallService
+    policy: PolicyRuntimeService
+    chaining_lineage: ChainingLineagePort | None

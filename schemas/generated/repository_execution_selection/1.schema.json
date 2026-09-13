@@ -1,0 +1,629 @@
+{
+  "$defs": {
+    "AnalysisError": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "code": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Code",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "error_id": {
+          "$ref": "#/$defs/ErrorId"
+        },
+        "related_record_ids": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Related Record Ids",
+          "type": "array"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "safe_message": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Safe Message",
+          "type": "string"
+        },
+        "stage": {
+          "enum": [
+            "INPUT",
+            "REPOSITORY",
+            "STATIC_ANALYSIS",
+            "CONTEXT",
+            "ORCHESTRATION",
+            "AGENT",
+            "PROVIDER",
+            "SANDBOX",
+            "POLICY",
+            "GATE",
+            "REPORT",
+            "STATE",
+            "STORAGE",
+            "RECOVERY",
+            "AUTHORITY"
+          ],
+          "title": "Stage",
+          "type": "string"
+        },
+        "work_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "error_id",
+        "stage",
+        "code",
+        "safe_message",
+        "retryable",
+        "work_id",
+        "attempt_id",
+        "related_record_ids",
+        "created_at"
+      ],
+      "title": "AnalysisError",
+      "type": "object"
+    },
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "AttemptId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AttemptId",
+      "type": "string"
+    },
+    "CodeLocation": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "end_column": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "End Column"
+        },
+        "end_line": {
+          "minimum": 1,
+          "title": "End Line",
+          "type": "integer"
+        },
+        "file_path": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "File Path",
+          "type": "string"
+        },
+        "start_column": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Start Column"
+        },
+        "start_line": {
+          "minimum": 1,
+          "title": "Start Line",
+          "type": "integer"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "commit_id",
+        "file_path",
+        "start_line",
+        "start_column",
+        "end_line",
+        "end_column"
+      ],
+      "title": "CodeLocation",
+      "type": "object"
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "DataGap": {
+      "additionalProperties": false,
+      "properties": {
+        "affected_languages": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Affected Languages",
+          "type": "array"
+        },
+        "affected_locations": {
+          "items": {
+            "$ref": "#/$defs/CodeLocation"
+          },
+          "title": "Affected Locations",
+          "type": "array"
+        },
+        "affected_paths": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Affected Paths",
+          "type": "array"
+        },
+        "code": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Code",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "description": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Description",
+          "type": "string"
+        },
+        "gap_id": {
+          "$ref": "#/$defs/GapId"
+        },
+        "reason": {
+          "enum": [
+            "MISSING",
+            "FAILED",
+            "TRUNCATED",
+            "UNSUPPORTED",
+            "BLOCKED",
+            "TIMEOUT"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "related_record_ids": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Related Record Ids",
+          "type": "array"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "stage": {
+          "enum": [
+            "REPOSITORY",
+            "STATIC_ANALYSIS",
+            "CONTEXT",
+            "DYNAMIC",
+            "POLICY"
+          ],
+          "title": "Stage",
+          "type": "string"
+        }
+      },
+      "required": [
+        "gap_id",
+        "stage",
+        "code",
+        "reason",
+        "description",
+        "affected_paths",
+        "affected_languages",
+        "affected_locations",
+        "retryable",
+        "related_record_ids",
+        "created_at"
+      ],
+      "title": "DataGap",
+      "type": "object"
+    },
+    "ErrorId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "ErrorId",
+      "type": "string"
+    },
+    "GapId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "GapId",
+      "type": "string"
+    },
+    "HostConfigurationRef": {
+      "additionalProperties": false,
+      "description": "Exact host configuration revision reusable across repository analyses.",
+      "properties": {
+        "configuration_scope": {
+          "const": "HOST",
+          "default": "HOST",
+          "title": "Configuration Scope",
+          "type": "string"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "host_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Host Id",
+          "type": "string"
+        },
+        "publication_analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "publication_commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "publication_workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "host_id",
+        "publication_analysis_id",
+        "publication_workspace_id",
+        "publication_commit_id",
+        "record_id"
+      ],
+      "title": "HostConfigurationRef",
+      "type": "object"
+    },
+    "HypothesisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "HypothesisId",
+      "type": "string"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RecordMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hypothesis_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HypothesisId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "attempt_id"
+      ],
+      "title": "RecordMeta",
+      "type": "object"
+    },
+    "RepositorySelectedTool": {
+      "additionalProperties": false,
+      "description": "One exact production static-tool revision selected for child work.",
+      "properties": {
+        "adapter_key": {
+          "enum": [
+            "PYTHON_AST",
+            "CODEQL",
+            "OPENGREP"
+          ],
+          "title": "Adapter Key",
+          "type": "string"
+        },
+        "languages": {
+          "items": {
+            "enum": [
+              "PYTHON",
+              "JAVASCRIPT"
+            ],
+            "type": "string"
+          },
+          "title": "Languages",
+          "type": "array"
+        },
+        "operation": {
+          "enum": [
+            "PARSE",
+            "ANALYZE"
+          ],
+          "title": "Operation",
+          "type": "string"
+        },
+        "tool_profile_ref": {
+          "$ref": "#/$defs/HostConfigurationRef"
+        }
+      },
+      "required": [
+        "adapter_key",
+        "operation",
+        "tool_profile_ref",
+        "languages"
+      ],
+      "title": "RepositorySelectedTool",
+      "type": "object"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
+    "WorkId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkId",
+      "type": "string"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Durable exact capability closure for one repository profile attempt.",
+  "properties": {
+    "errors": {
+      "items": {
+        "$ref": "#/$defs/AnalysisError"
+      },
+      "title": "Errors",
+      "type": "array"
+    },
+    "gaps": {
+      "items": {
+        "$ref": "#/$defs/DataGap"
+      },
+      "title": "Gaps",
+      "type": "array"
+    },
+    "git_checkout_profile_ref": {
+      "$ref": "#/$defs/HostConfigurationRef"
+    },
+    "git_clone_profile_ref": {
+      "$ref": "#/$defs/HostConfigurationRef"
+    },
+    "languages": {
+      "items": {
+        "enum": [
+          "PYTHON",
+          "JAVASCRIPT"
+        ],
+        "type": "string"
+      },
+      "title": "Languages",
+      "type": "array"
+    },
+    "meta": {
+      "$ref": "#/$defs/RecordMeta"
+    },
+    "repository_profile_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "selected_tools": {
+      "items": {
+        "$ref": "#/$defs/RepositorySelectedTool"
+      },
+      "title": "Selected Tools",
+      "type": "array"
+    },
+    "status": {
+      "enum": [
+        "READY",
+        "BLOCKED",
+        "FAILED"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "meta",
+    "repository_profile_ref",
+    "git_clone_profile_ref",
+    "git_checkout_profile_ref",
+    "languages",
+    "selected_tools",
+    "gaps",
+    "errors",
+    "status"
+  ],
+  "title": "RepositoryExecutionSelection",
+  "type": "object"
+}

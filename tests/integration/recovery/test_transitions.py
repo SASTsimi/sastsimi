@@ -37,10 +37,53 @@ def completion(
     running = attempts.start(
         transition, attempt, reservation, "worker", NOW + timedelta(seconds=30)
     )
+    artifacts = LocalArtifactStore(
+        tmp_path / "artifacts", WorkspaceId("w1"), CommitId("c1")
+    )
+    service = TransitionService(works, artifacts)
+    preparing = CodeWorkspace.model_validate_json(
+        json.dumps(
+            dict(
+                meta=metadata("code_workspace", "workspace-preparing")
+                | {"logical_record_id": "result"},
+                workspace_id="w1",
+                analysis_id="a1",
+                repository_url="https://example.invalid/fixture",
+                commit_id=None,
+                status="PREPARING",
+            )
+        )
+    )
+    preparing_ref = h.records.stage_record(preparing)
+    prepare_decision = authorization(
+        h,
+        ActionType.SAVE_RESULT,
+        "prepare-workspace",
+        reference(running),
+        running.state_version,
+        result_kind="code_workspace",
+        candidate_result_ref=preparing_ref.model_dump(mode="json"),
+        requested_by="REPOSITORY_LOADER",
+    )
+    from sastsimi.storage.intermediate_publication import (
+        IntermediatePublicationService,
+    )
+
+    assert IntermediatePublicationService(service).publish(
+        str(running.work_id), prepare_decision, (preparing,)
+    ) == (preparing_ref,)
     output = CodeWorkspace.model_validate_json(
         json.dumps(
             dict(
-                meta=metadata("code_workspace", "result"),
+                meta=metadata(
+                    "code_workspace",
+                    "result",
+                )
+                | {
+                    "logical_record_id": str(preparing.meta.logical_record_id),
+                    "revision_number": 2,
+                    "previous_record_id": str(preparing.meta.record_id),
+                },
                 workspace_id="w1",
                 analysis_id="a1",
                 repository_url="https://example.invalid/fixture",
@@ -108,12 +151,9 @@ def completion(
             )
         )
     )
-    artifacts = LocalArtifactStore(
-        tmp_path / "artifacts", WorkspaceId("w1"), CommitId("c1")
-    )
     return (
         h,
-        TransitionService(works, artifacts),
+        service,
         TransitionCommitRequest(change, commit, (output,)),
     )
 

@@ -112,6 +112,41 @@ def test_evidence_call_spec_requires_new_independent_session(role: str) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "session_policy,parent_session_ref",
+    (("NEW", "unexpected-parent"), ("RESUME", None)),
+)
+def test_call_spec_requires_exact_parent_session_shape(
+    session_policy: str, parent_session_ref: str | None
+) -> None:
+    from sastsimi.contracts.llm import LLMCallSpec
+
+    data = make("LLMCallSpec", "llm_call_spec") | dict(
+        agent_role="HYPOTHESIS",
+        session_policy=session_policy,
+        parent_session_ref=parent_session_ref,
+    )
+    with pytest.raises(ValueError, match="LLM_SESSION_REFERENCE_MISMATCH"):
+        LLMCallSpec.model_validate_json(json.dumps(data))
+
+
+@pytest.mark.parametrize(
+    "session_policy,parent_session_ref",
+    (("RESUME", "exact-parent"), ("AUTO", None), ("AUTO", "exact-parent")),
+)
+def test_call_spec_preserves_valid_resume_and_auto_session_shapes(
+    session_policy: str, parent_session_ref: str | None
+) -> None:
+    from sastsimi.contracts.llm import LLMCallSpec
+
+    data = make("LLMCallSpec", "llm_call_spec") | dict(
+        agent_role="HYPOTHESIS",
+        session_policy=session_policy,
+        parent_session_ref=parent_session_ref,
+    )
+    LLMCallSpec.model_validate_json(json.dumps(data))
+
+
 def test_production_prompt_requires_quality_evidence_and_allowed_slots() -> None:
     from sastsimi.contracts.llm import PromptRegistryEntry
 

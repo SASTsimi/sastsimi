@@ -5,15 +5,19 @@ from collections.abc import Callable
 from sqlalchemy import insert, select
 
 from sastsimi.contracts.actions import ActionType
+from sastsimi.contracts.analysis import AnalysisRunState
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.refs import RecordRef
+from sastsimi.contracts.static import CodeWorkspace
 from sastsimi.contracts.work import WorkAttempt
 from sastsimi.ports.dto import Record
 
 from . import models
-from .codec import encode
+from .codec import encode, reference
 from .intermediate_policy import validate_intermediate_owner
 from .output_closures import read_outputs
+from .records import next_meta
+from .run_states import get_run, save_run
 from .transition_service import TransitionService
 
 
@@ -93,7 +97,11 @@ class IntermediatePublicationService:
                     )
                 ):
                     raise ValueError("OUTPUT_SCOPE_MISMATCH")
-                if getattr(record.meta, "attempt_id", None) != work.active_attempt_id:
+                if (
+                    not isinstance(record, CodeWorkspace)
+                    and getattr(record.meta, "attempt_id", None)
+                    != work.active_attempt_id
+                ):
                     raise ValueError("ATTEMPT_NOT_ACTIVE")
                 current_id = connection.execute(
                     select(models.current_records.c.record_id).where(
@@ -113,6 +121,27 @@ class IntermediatePublicationService:
             for ref in refs:
                 records.publish(connection, ref)
                 self.transitions.publish_pointer(connection, ref)
+            for record in outputs:
+                if isinstance(record, CodeWorkspace):
+                    if record.status != "PREPARING":
+                        raise ValueError("WORKSPACE_LIFECYCLE_INVALID")
+                    state = get_run(connection, str(record.analysis_id))
+                    if state.workspace_ref is not None or state.commit_id is not None:
+                        raise ValueError("WORKSPACE_LIFECYCLE_INVALID")
+                    updated = AnalysisRunState.model_validate(
+                        state.model_dump()
+                        | {
+                            "meta": next_meta(
+                                state.meta,
+                                self.transitions.works.clock,
+                                self.transitions.works.ids,
+                            ),
+                            "workspace_ref": reference(record),
+                            "workspace_id": record.workspace_id,
+                            "commit_id": None,
+                        }
+                    )
+                    save_run(records, connection, updated, state)
             for digest in digests:
                 if not connection.execute(
                     select(models.artifacts.c.content_hash).where(
