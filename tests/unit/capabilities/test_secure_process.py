@@ -40,6 +40,29 @@ def test_executable_registry_rejects_user_writable_direct_path(tmp_path: Path) -
         ProductionExecutableRegistry({"tool": executable}, forbidden_roots=())
 
 
+def test_executable_registry_accepts_exact_running_interpreter_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "python"
+    executable.write_bytes(b"python")
+    original_is_symlink = Path.is_symlink
+    monkeypatch.setattr(sys, "executable", str(executable))
+    monkeypatch.setattr(
+        Path,
+        "is_symlink",
+        lambda path: path == executable or original_is_symlink(path),
+    )
+
+    registry = ProductionExecutableRegistry(
+        {"python": executable},
+        forbidden_roots=(tmp_path,),
+        in_process_keys=frozenset({"python"}),
+    )
+
+    assert registry.resolve("python") == executable.resolve(strict=True)
+
+
 def test_probe_process_receives_only_minimal_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

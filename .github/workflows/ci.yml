@@ -39,6 +39,7 @@ jobs:
             'tests/integration/static_analysis',
             'tests/integration/providers',
             'tests/integration/policy',
+            'tests/integration/capabilities',
             'tests/capability',
             'tests/integration/budget',
             'tests/integration/chaining',
@@ -147,7 +148,7 @@ jobs:
             paths: tests/contract
             optional_paths: ''
           - name: integration-analysis
-            paths: tests/integration/static_analysis tests/integration/providers tests/integration/policy
+            paths: tests/integration/static_analysis tests/integration/providers tests/integration/policy tests/integration/capabilities
             optional_paths: tests/capability
           - name: integration-workflow
             paths: tests/integration/budget tests/integration/chaining tests/integration/reporting tests/integration/verification

@@ -331,16 +331,6 @@ class ProductionExecutableRegistry:
         try:
             if not path.is_absolute():
                 raise ValueError
-            current = path
-            while True:
-                metadata = current.lstat()
-                if current.is_symlink() or (
-                    getattr(metadata, "st_file_attributes", 0) & _WINDOWS_REPARSE_POINT
-                ):
-                    raise ValueError
-                if current.parent == current:
-                    break
-                current = current.parent
             resolved = path.resolve(strict=True)
             if not resolved.is_file():
                 raise ValueError
@@ -348,6 +338,17 @@ class ProductionExecutableRegistry:
                 if resolved != Path(sys.executable).resolve(strict=True):
                     raise ValueError
             else:
+                current = path
+                while True:
+                    metadata = current.lstat()
+                    if current.is_symlink() or (
+                        getattr(metadata, "st_file_attributes", 0)
+                        & _WINDOWS_REPARSE_POINT
+                    ):
+                        raise ValueError
+                    if current.parent == current:
+                        break
+                    current = current.parent
                 for root in self._forbidden_roots:
                     try:
                         resolved.relative_to(root)
