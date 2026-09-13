@@ -13,7 +13,12 @@ from sastsimi.config.production_profile import ProductionProfile
 from sastsimi.interfaces.cli import onboarding as onboarding_command
 from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.main import main
-from sastsimi.interfaces.cli.onboarding import run_prepare, run_requirements, run_status
+from sastsimi.interfaces.cli.onboarding import (
+    run_init,
+    run_prepare,
+    run_requirements,
+    run_status,
+)
 from sastsimi.orchestration.production_capabilities import production_profile_hash
 from sastsimi.orchestration.production_onboarding import (
     ProductionOnboardingManifest,
@@ -104,6 +109,100 @@ def test_requirements_lists_exact_pvd_and_prompt_work_without_claiming_ready() -
     assert isinstance(routes, list)
     assert len(routes) == len(REQUIRED_PRODUCTION_PROMPT_ROUTES)
     assert all(item["template_sha256"] for item in routes)
+
+
+def test_init_writes_pending_operator_plan_with_real_probe_commands(
+    work_dir: Path,
+) -> None:
+    profile = _production_profile()
+    output_dir = work_dir / "operator-plan"
+
+    result = run_init(
+        output_dir,
+        profile=profile,
+        repository_root=Path.cwd(),
+    )
+
+    assert result.code == ExitCode.OK
+    assert result.data["status"] == "PREPARATION_REQUIRED"
+    plan_path = Path(str(result.data["plan_path"]))
+    assert plan_path == output_dir / "onboarding-plan.json"
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    assert plan["profile_hash"] == production_profile_hash(profile)
+    assert plan["status"] == "PREPARATION_REQUIRED"
+    assert {item["kind"] for item in plan["capability_probes"]} == {
+        "CODEQL",
+        "DOCKER",
+        "GIT",
+        "OPENAI_API",
+        "OPENGREP",
+        "PYTHON_AST",
+    }
+    openai = next(
+        item for item in plan["capability_probes"] if item["kind"] == "OPENAI_API"
+    )
+    assert openai["argv"][-4:] == [
+        "--model",
+        "gpt-test",
+        "--credential-ref",
+        "env:OPENAI_API_KEY",
+    ]
+    assert all(item["status"] == "NOT_RUN" for item in plan["capability_probes"])
+    assert all(item["result"] == "PENDING" for item in plan["pvd_checks"])
+    assert all(item["decision"] == "PENDING" for item in plan["route_reviews"])
+    assert '"PASS"' not in plan_path.read_text(encoding="utf-8")
+    assert not (output_dir / "production-onboarding.json").exists()
+
+
+def test_init_refuses_to_overwrite_an_existing_operator_plan(work_dir: Path) -> None:
+    output_dir = work_dir / "operator-plan"
+    output_dir.mkdir()
+    plan_path = output_dir / "onboarding-plan.json"
+    plan_path.write_text("operator-owned", encoding="utf-8")
+
+    result = run_init(
+        output_dir,
+        profile=_production_profile(),
+        repository_root=Path.cwd(),
+    )
+
+    assert result.code == ExitCode.CONFIG_ERROR
+    assert result.data == {
+        "reason_code": "ONBOARDING_PLAN_ALREADY_EXISTS",
+        "status": "BLOCKED",
+    }
+    assert plan_path.read_text(encoding="utf-8") == "operator-owned"
+
+
+def test_main_exposes_onboarding_init_without_marking_capabilities_ready(
+    work_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    profile = _production_profile()
+    output_dir = work_dir / "operator-plan"
+    monkeypatch.setattr(
+        "sastsimi.interfaces.cli.main.load_production_profile",
+        lambda _path: profile,
+    )
+
+    assert main(
+        [
+            "onboarding",
+            "init",
+            "--profile",
+            "production.toml",
+            "--output-dir",
+            str(output_dir),
+            "--format",
+            "json",
+        ]
+    ) == int(ExitCode.OK)
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["command"] == "onboarding init"
+    assert output["data"]["status"] == "PREPARATION_REQUIRED"
+    assert (output_dir / "onboarding-plan.json").is_file()
 
 
 def test_main_exposes_explicit_onboarding_status_command(
