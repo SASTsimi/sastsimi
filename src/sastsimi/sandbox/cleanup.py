@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
-from collections.abc import Callable, Mapping
-from contextlib import AbstractContextManager, nullcontext
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import BinaryIO, Literal, Protocol, cast
 from uuid import uuid4
 
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -48,6 +50,7 @@ from .resource_snapshot import (
 )
 
 _CLEANUP_TIMEOUT_SECONDS = 10.0
+_FENCE_POLL_SECONDS = 0.01
 
 
 class CleanupDockerPort(Protocol):
@@ -76,6 +79,15 @@ class OwnedResourceRegistry:
         self._image_intents: dict[str, ImageOwnershipIntent] = {}
         self._journal_path = journal_path
         self._mutation_admission = mutation_admission
+        self._active_creation_scope: ContextVar[tuple[str, ...] | None] = ContextVar(
+            f"owned_resource_creation_scope_{id(self)}", default=None
+        )
+        self._memory_creation_lock = asyncio.Lock()
+        self._creation_lock_path = (
+            journal_path.with_name(f".{journal_path.name}.creation.lock")
+            if journal_path is not None
+            else None
+        )
         self._load()
 
     def snapshot(self, *, meta: RecordMeta) -> OwnedResourceSnapshot:
@@ -85,10 +97,23 @@ class OwnedResourceRegistry:
         the registry to observe a journal updated by another process.
         """
 
+        scope = _record_scope(meta)
         return snapshot_inventory(
-            resources=tuple(self._resources.values()),
-            container_intents=tuple(self._intents.values()),
-            image_intents=tuple(self._image_intents.values()),
+            resources=tuple(
+                item
+                for item in self._resources.values()
+                if ownership_scope(item.labels) == scope
+            ),
+            container_intents=tuple(
+                item
+                for item in self._intents.values()
+                if ownership_scope(item.labels) == scope
+            ),
+            image_intents=tuple(
+                item
+                for item in self._image_intents.values()
+                if ownership_scope(item.labels) == scope
+            ),
             meta=meta,
         )
 
@@ -98,13 +123,61 @@ class OwnedResourceRegistry:
             return self.snapshot(meta=meta)
         return type(self)(journal_path=self._journal_path).snapshot(meta=meta)
 
-    def fresh_cancellation_snapshot(
+    async def fresh_snapshot_after_creations(
+        self, *, meta: RecordMeta
+    ) -> OwnedResourceSnapshot:
+        """Wait for a started Docker creation before reading its exact scope."""
+
+        async with self._hold_creation_fence():
+            return self.fresh_snapshot(meta=meta)
+
+    @asynccontextmanager
+    async def creation_fence(self, labels: Mapping[str, str]) -> AsyncIterator[None]:
+        """Fence reserve -> external create/build -> register against cancellation."""
+
+        scope = ownership_scope(labels)
+        if self._active_creation_scope.get() is not None:
+            raise ValueError("SANDBOX_CREATION_FENCE_NESTED")
+        async with self._hold_creation_fence():
+            # This short admission is atomic with the durable latch.  Once it
+            # succeeds, cancellation waits on the fence while the exact
+            # intent becomes either a registered resource or a reconciled
+            # absence.  Nested registry writes use the captured exact scope.
+            with self._admit(labels):
+                pass
+            token = self._active_creation_scope.set(scope)
+            try:
+                yield
+            finally:
+                self._active_creation_scope.reset(token)
+
+    @asynccontextmanager
+    async def _hold_creation_fence(self) -> AsyncIterator[None]:
+        path = self._creation_lock_path
+        if path is None:
+            async with self._memory_creation_lock:
+                yield
+            return
+        handle = _open_creation_lock(path)
+        locked = False
+        try:
+            while not locked:
+                locked = _try_creation_lock(handle)
+                if not locked:
+                    await asyncio.sleep(_FENCE_POLL_SECONDS)
+            yield
+        finally:
+            if locked:
+                _unlock_creation_lock(handle)
+            handle.close()
+
+    def fresh_cancellation_snapshots(
         self,
         *,
         analysis_id: str,
         metas: tuple[RecordMeta, ...],
-    ) -> OwnedResourceSnapshot | None:
-        """Prove one journal is exactly covered by prepared attempt inventories."""
+    ) -> tuple[OwnedResourceSnapshot, ...]:
+        """Partition one analysis journal into exact prepared-attempt snapshots."""
 
         if not analysis_id:
             raise ValueError("CANCELLATION_SANDBOX_SCOPE_MISMATCH")
@@ -120,19 +193,13 @@ class OwnedResourceRegistry:
             *current._intents.values(),
             *current._image_intents.values(),
         )
-        if not entries:
-            if not metas:
-                return None
-            return current.snapshot(meta=metas[0])
-        (journal_scope,) = {ownership_scope(entry.labels) for entry in entries}
-        if journal_scope[0] != analysis_id:
+        journal_scopes = {ownership_scope(entry.labels) for entry in entries}
+        if any(scope[0] != analysis_id for scope in journal_scopes):
             raise ValueError("CANCELLATION_SANDBOX_FOREIGN_SCOPE")
         expected_scopes = {_record_scope(meta) for meta in metas}
-        if journal_scope not in expected_scopes:
+        if len(expected_scopes) != len(metas) or journal_scopes != expected_scopes:
             raise ValueError("CANCELLATION_SANDBOX_INVENTORY_INCOMPLETE")
-        if expected_scopes != {journal_scope}:
-            raise ValueError("CANCELLATION_SANDBOX_INVENTORY_INCOMPLETE")
-        return current.snapshot(meta=metas[0])
+        return tuple(current.snapshot(meta=meta) for meta in metas)
 
     def reserve_container(
         self,
@@ -313,10 +380,13 @@ class OwnedResourceRegistry:
             return ref
 
     def _admit(self, labels: Mapping[str, str]) -> AbstractContextManager[None]:
-        if self._mutation_admission is None:
+        active_scope = self._active_creation_scope.get()
+        if active_scope is None and self._mutation_admission is None:
             return nullcontext()
-        analysis_id = ownership_scope(labels)[0]
-        return self._mutation_admission(analysis_id)
+        scope = ownership_scope(labels)
+        if active_scope == scope or self._mutation_admission is None:
+            return nullcontext()
+        return self._mutation_admission(scope[0])
 
     def forget_image_intent(self, image_tag: str) -> None:
         if self._image_intents.pop(image_tag, None) is not None:
@@ -777,8 +847,8 @@ class OwnedResourceRegistry:
                 *self._intents.values(),
                 *self._image_intents.values(),
             )
-            scopes = {ownership_scope(entry.labels) for entry in entries}
-            if len(scopes) > 1:
+            roots = {ownership_scope(entry.labels)[:3] for entry in entries}
+            if len(roots) > 1:
                 raise ValueError("SANDBOX_RESOURCE_SCOPE_MISMATCH")
         except (
             KeyError,
@@ -877,3 +947,52 @@ def _record_scope(meta: RecordMeta) -> tuple[str, ...]:
         str(meta.hypothesis_id),
         str(meta.attempt_id),
     )
+
+
+def _open_creation_lock(path: Path) -> BinaryIO:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    handle = os.fdopen(descriptor, "r+b", buffering=0)
+    if os.fstat(descriptor).st_size == 0:
+        handle.write(b"\0")
+        os.fsync(descriptor)
+    handle.seek(0)
+    return handle
+
+
+def _try_creation_lock(handle: BinaryIO) -> bool:
+    handle.seek(0)
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(  # type: ignore[attr-defined]
+                handle.fileno(),
+                fcntl.LOCK_EX | fcntl.LOCK_NB,  # type: ignore[attr-defined]
+            )
+    except OSError as error:
+        if error.errno in {errno.EACCES, errno.EAGAIN} or getattr(
+            error, "winerror", None
+        ) in {33, 36}:
+            return False
+        raise
+    return True
+
+
+def _unlock_creation_lock(handle: BinaryIO) -> None:
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(  # type: ignore[attr-defined]
+            handle.fileno(),
+            fcntl.LOCK_UN,  # type: ignore[attr-defined]
+        )

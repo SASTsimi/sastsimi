@@ -134,7 +134,7 @@ class ProductionSandboxCancellation:
         meta = target.attempt.meta
         if not isinstance(meta, RecordMeta):
             raise ValueError("CANCELLATION_SANDBOX_SCOPE_MISMATCH")
-        snapshot = self._resources.fresh_snapshot(meta=meta)
+        snapshot = await self._resources.fresh_snapshot_after_creations(meta=meta)
         resources = self._cancellation_resources(snapshot)
         if not resources:
             raise ValueError("CANCELLATION_SANDBOX_RESOURCE_MISSING")
@@ -162,25 +162,23 @@ class ProductionSandboxCancellation:
             if not isinstance(target.attempt.meta, RecordMeta):
                 raise ValueError("CANCELLATION_SANDBOX_SCOPE_MISMATCH")
             metas.append(target.attempt.meta)
-        snapshot = self._resources.fresh_cancellation_snapshot(
+        snapshots = self._resources.fresh_cancellation_snapshots(
             analysis_id=analysis_id,
             metas=tuple(metas),
         )
-        if snapshot is None:
-            if sandbox_targets:
+        for target, snapshot in zip(sandbox_targets, snapshots, strict=True):
+            current = self._cancellation_resources(snapshot)
+            if (
+                target.sandbox_inventory_fingerprint != snapshot.fingerprint
+                or target.sandbox_resources != current
+                or target.sandbox_resource_refs
+                != tuple(
+                    item.resource_ref
+                    for item in current
+                    if item.resource_ref is not None
+                )
+            ):
                 raise ValueError("CANCELLATION_SANDBOX_INVENTORY_CHANGED")
-            return
-        current = self._cancellation_resources(snapshot)
-        if not sandbox_targets or any(
-            target.sandbox_inventory_fingerprint != snapshot.fingerprint
-            or target.sandbox_resources != current
-            or target.sandbox_resource_refs
-            != tuple(
-                item.resource_ref for item in current if item.resource_ref is not None
-            )
-            for target in sandbox_targets
-        ):
-            raise ValueError("CANCELLATION_SANDBOX_INVENTORY_CHANGED")
 
     @staticmethod
     def _cancellation_resources(

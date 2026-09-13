@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from sqlalchemy import insert
 
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RecordRef, RunStoredDataRef, StoredDataRef
@@ -22,11 +25,14 @@ from sastsimi.ports.dto import CancellationResult
 from sastsimi.ports.scheduler import CancellationTarget
 from sastsimi.sandbox.cleanup import OwnedResourceRegistry
 from sastsimi.sandbox.docker_adapter import (
+    DockerAdapter,
     DockerContainerPresence,
     DockerImageState,
     DockerImageTagPresence,
 )
 from sastsimi.sandbox.setup_automation import ReproductionSetupAutomation
+from sastsimi.storage import models
+from sastsimi.storage.run_control import RunControlStore
 from tests.e2e.test_dynamic_reproduction import _work as _dynamic_work_fixture
 from tests.integration.cli.test_run_control import (
     _attempt as _run_control_attempt,
@@ -34,6 +40,7 @@ from tests.integration.cli.test_run_control import (
 from tests.integration.cli.test_run_control import _run_ref as _run_control_ref
 from tests.integration.cli.test_run_control import _work as _run_control_work
 from tests.integration.providers.test_llm_call_service import fixture
+from tests.integration.runtime_support import Harness
 from tests.integration.sandbox.test_container_lifecycle import _meta as _sandbox_meta
 from tests.integration.sandbox.test_container_lifecycle import _ref as _sandbox_ref
 
@@ -209,6 +216,25 @@ def _sandbox_target() -> CancellationTarget:
     )
 
 
+def _sandbox_target_for(
+    *, hypothesis_id: str, attempt_id: str, suffix: str
+) -> CancellationTarget:
+    target = _sandbox_target()
+    assert isinstance(target.attempt.meta, RecordMeta)
+    meta = target.attempt.meta.model_copy(
+        update={
+            "record_id": f"dynamic-attempt-record-{suffix}",
+            "logical_record_id": f"dynamic-attempt-record-{suffix}",
+            "hypothesis_id": hypothesis_id,
+            "attempt_id": attempt_id,
+        }
+    )
+    return replace(
+        target,
+        attempt=target.attempt.model_copy(update={"meta": meta}),
+    )
+
+
 @pytest.mark.asyncio
 async def test_sandbox_cancellation_rejects_container_from_another_attempt() -> None:
     data = fixture()
@@ -235,7 +261,7 @@ async def test_sandbox_cancellation_rejects_container_from_another_attempt() -> 
         records=data.records, docker=docker, resources=resources
     )
 
-    with pytest.raises(ValueError, match="SANDBOX_RESOURCE_SCOPE_MISMATCH"):
+    with pytest.raises(ValueError, match="CANCELLATION_SANDBOX_RESOURCE_MISSING"):
         await service.cancel(target)
 
     assert docker.removed == []
@@ -294,6 +320,153 @@ async def test_sandbox_prepare_reloads_resource_journal(
     assert tuple(item.resource_id for item in prepared.sandbox_resources) == (
         "container-written-after-composition",
     )
+
+
+@pytest.mark.asyncio
+async def test_sandbox_prepare_waits_for_started_creation_to_register(
+    tmp_path: Path,
+) -> None:
+    """Removing the wait may accept an ABSENT intent before Docker creation ends."""
+
+    harness = Harness(tmp_path)
+    with harness.database.write() as connection:
+        connection.execute(
+            insert(models.analysis_runs).values(analysis_id="analysis-1", payload="{}")
+        )
+    controls = RunControlStore(harness.database, harness.clock)
+    target = _sandbox_target()
+    assert isinstance(target.attempt.meta, RecordMeta)
+    journal = tmp_path / "owned-resources.json"
+    writer = OwnedResourceRegistry(
+        journal_path=journal,
+        mutation_admission=controls.admit_resource_mutation,
+    )
+    labels = ReproductionSetupAutomation._container_labels(target.attempt.meta)
+    name = DockerAdapter.runtime_container_name(labels)
+    creation_started = asyncio.Event()
+    allow_registration = asyncio.Event()
+
+    async def create_resource() -> None:
+        async with writer.creation_fence(labels):
+            writer.reserve_container(container_name=name, labels=labels)
+            creation_started.set()
+            await allow_registration.wait()
+            writer.register_reserved_container(
+                container_name=name,
+                container_id="container-created-before-cancel",
+                meta=target.attempt.meta,
+            )
+
+    creator = asyncio.create_task(create_resource())
+    started = asyncio.create_task(creation_started.wait())
+    completed, _pending = await asyncio.wait(
+        {creator, started}, return_when=asyncio.FIRST_COMPLETED
+    )
+    if creator in completed:
+        started.cancel()
+        await asyncio.gather(started, return_exceptions=True)
+        await creator
+    assert started in completed
+    await started
+    controls.request_cancel("analysis-1", "OWNER_DEAD")
+    service = ProductionSandboxCancellation(
+        records=fixture().records,
+        docker=_Docker(dict(labels), presence="ABSENT"),
+        resources=OwnedResourceRegistry(journal_path=journal),
+    )
+    preparing = asyncio.create_task(service.prepare(target))
+    await asyncio.sleep(0)
+    assert not preparing.done()
+
+    allow_registration.set()
+    await creator
+    prepared = await preparing
+
+    assert tuple(item.resource_kind for item in prepared.sandbox_resources) == (
+        "CONTAINER",
+    )
+    assert tuple(item.resource_id for item in prepared.sandbox_resources) == (
+        "container-created-before-cancel",
+    )
+
+
+@pytest.mark.asyncio
+async def test_sandbox_parallel_targets_get_exact_attempt_inventories(
+    tmp_path: Path,
+) -> None:
+    """Treating the analysis journal as one attempt breaks parallel hypotheses."""
+
+    first = _sandbox_target_for(
+        hypothesis_id="hypothesis-1", attempt_id="dynamic-attempt-1", suffix="one"
+    )
+    second = _sandbox_target_for(
+        hypothesis_id="hypothesis-2", attempt_id="dynamic-attempt-2", suffix="two"
+    )
+    assert isinstance(first.attempt.meta, RecordMeta)
+    assert isinstance(second.attempt.meta, RecordMeta)
+    journal = tmp_path / "owned-resources.json"
+    writer = OwnedResourceRegistry(journal_path=journal)
+    for target, container_id in (
+        (first, "parallel-container-1"),
+        (second, "parallel-container-2"),
+    ):
+        labels = ReproductionSetupAutomation._container_labels(target.attempt.meta)
+        writer.register_container(
+            container_id=container_id,
+            labels=labels,
+            meta=target.attempt.meta,
+        )
+    service = ProductionSandboxCancellation(
+        records=fixture().records,
+        docker=_Docker({}, presence="ABSENT"),
+        resources=OwnedResourceRegistry(journal_path=journal),
+    )
+
+    prepared = (await service.prepare(first), await service.prepare(second))
+    service.validate_inventory("analysis-1", prepared)
+
+    assert tuple(
+        tuple(item.resource_id for item in target.sandbox_resources)
+        for target in prepared
+    ) == (("parallel-container-1",), ("parallel-container-2",))
+
+
+@pytest.mark.asyncio
+async def test_sandbox_inventory_rejects_missing_parallel_target_scope(
+    tmp_path: Path,
+) -> None:
+    """Dropping one active attempt from the target set must remain fail-closed."""
+
+    first = _sandbox_target_for(
+        hypothesis_id="hypothesis-1", attempt_id="dynamic-attempt-1", suffix="one"
+    )
+    second = _sandbox_target_for(
+        hypothesis_id="hypothesis-2", attempt_id="dynamic-attempt-2", suffix="two"
+    )
+    assert isinstance(first.attempt.meta, RecordMeta)
+    assert isinstance(second.attempt.meta, RecordMeta)
+    journal = tmp_path / "owned-resources.json"
+    writer = OwnedResourceRegistry(journal_path=journal)
+    for target, container_id in (
+        (first, "parallel-container-1"),
+        (second, "parallel-container-2"),
+    ):
+        labels = ReproductionSetupAutomation._container_labels(target.attempt.meta)
+        writer.register_container(
+            container_id=container_id,
+            labels=labels,
+            meta=target.attempt.meta,
+        )
+    service = ProductionSandboxCancellation(
+        records=fixture().records,
+        docker=_Docker({}, presence="ABSENT"),
+        resources=OwnedResourceRegistry(journal_path=journal),
+    )
+
+    prepared_first = await service.prepare(first)
+
+    with pytest.raises(ValueError, match="CANCELLATION_SANDBOX_INVENTORY_INCOMPLETE"):
+        service.validate_inventory("analysis-1", (prepared_first,))
 
 
 @pytest.mark.asyncio

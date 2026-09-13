@@ -194,7 +194,7 @@ def test_complete_inventory_is_stable_detached_and_read_only(
     ],
 )
 @pytest.mark.parametrize("missing", [False, True])
-def test_any_foreign_or_missing_label_rejects_entire_inventory(
+def test_invalid_root_or_unrequested_attempt_is_handled_without_scope_mixing(
     tmp_path: Path, entry_list: str, label: str, missing: bool
 ) -> None:
     journal = tmp_path / "owned.json"
@@ -205,7 +205,25 @@ def test_any_foreign_or_missing_label_rejects_entire_inventory(
         del labels[f"sastsimi.{label}"]
     else:
         labels[f"sastsimi.{label}"] = "foreign"
+        if entry_list == "image_intents" and label in {
+            "hypothesis-id",
+            "attempt-id",
+        }:
+            value[entry_list][0]["image_tag"] = DockerAdapter.runtime_image_tag(labels)
     journal.write_text(json.dumps(value), encoding="utf-8")
+    if not missing and label in {"hypothesis-id", "attempt-id"}:
+        snapshot = OwnedResourceRegistry(journal_path=journal).snapshot(
+            meta=_meta("sandbox_environment", "snapshot")
+        )
+        assert all(
+            entry.labels[f"sastsimi.{label}"] != "foreign"
+            for entry in (
+                *snapshot.resources,
+                *snapshot.container_intents,
+                *snapshot.image_intents,
+            )
+        )
+        return
     with pytest.raises(ValueError):
         OwnedResourceRegistry(journal_path=journal).snapshot(
             meta=_meta("sandbox_environment", "snapshot")

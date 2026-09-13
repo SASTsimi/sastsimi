@@ -177,50 +177,51 @@ class ReproductionSetupAutomation:
         spec = self._validate_build(approval, source, request, requirements, meta)
         labels = self._image_labels(meta)
         image_tag = DockerAdapter.runtime_image_tag(labels)
-        self._resources.reserve_image(image_tag=image_tag, labels=labels)
-        try:
-            async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
-                preparation = await self._resources.prepare_image_intent(
-                    docker=self._docker,
-                    image_tag=image_tag,
-                )
-            if preparation != "READY":
-                self._resources.forget_image_intent(image_tag)
-                raise DockerOperationError("DOCKER_IMAGE_TAG_OWNERSHIP_CONFLICT")
-            recipe = await self._recipes.build(
-                docker=self._docker,
-                source=source,
-                labels=labels,
-                build_spec=spec,
-                build_timeout_ms=spec.requested_execution_ms,
-            )
-        except BaseException as failure:
+        async with self._resources.creation_fence(labels):
+            self._resources.reserve_image(image_tag=image_tag, labels=labels)
             try:
                 async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
-                    status = await self._resources.reconcile_image_intent(
+                    preparation = await self._resources.prepare_image_intent(
                         docker=self._docker,
                         image_tag=image_tag,
                     )
-                if status == "UNKNOWN":
+                if preparation != "READY":
+                    self._resources.forget_image_intent(image_tag)
+                    raise DockerOperationError("DOCKER_IMAGE_TAG_OWNERSHIP_CONFLICT")
+                recipe = await self._recipes.build(
+                    docker=self._docker,
+                    source=source,
+                    labels=labels,
+                    build_spec=spec,
+                    build_timeout_ms=spec.requested_execution_ms,
+                )
+            except BaseException as failure:
+                try:
+                    async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
+                        status = await self._resources.reconcile_image_intent(
+                            docker=self._docker,
+                            image_tag=image_tag,
+                        )
+                    if status == "UNKNOWN":
+                        failure.add_note("DOCKER_BUILD_RECONCILIATION_REQUIRED")
+                except BaseException:
                     failure.add_note("DOCKER_BUILD_RECONCILIATION_REQUIRED")
-            except BaseException:
-                failure.add_note("DOCKER_BUILD_RECONCILIATION_REQUIRED")
-            raise
-        if recipe.build_disposition == "BUILT":
-            image_ref = self._resources.register_reserved_image(
-                image_digest=recipe.built_image_digest,
-                image_tag=image_tag,
-                meta=meta,
-                preservation_reason="REUSABLE_BASELINE",
-            )
-        else:
-            self._resources.forget_image_intent(image_tag)
-            preserved_ref = self._resources.preserved_image_ref(
-                recipe.built_image_digest
-            )
-            if preserved_ref is None:
-                raise ValueError("REUSABLE_BASELINE_OWNERSHIP_REQUIRED")
-            image_ref = preserved_ref
+                raise
+            if recipe.build_disposition == "BUILT":
+                image_ref = self._resources.register_reserved_image(
+                    image_digest=recipe.built_image_digest,
+                    image_tag=image_tag,
+                    meta=meta,
+                    preservation_reason="REUSABLE_BASELINE",
+                )
+            else:
+                self._resources.forget_image_intent(image_tag)
+                preserved_ref = self._resources.preserved_image_ref(
+                    recipe.built_image_digest
+                )
+                if preserved_ref is None:
+                    raise ValueError("REUSABLE_BASELINE_OWNERSHIP_REQUIRED")
+                image_ref = preserved_ref
         self._recipe_resources[canonical_bytes(self._exact_ref(recipe))] = (image_ref,)
         return recipe
 
@@ -380,52 +381,53 @@ class ReproductionSetupAutomation:
         if spec is None:
             raise ValueError("SANDBOX_APPROVAL_REQUIRED")
         container_name = DockerAdapter.runtime_container_name(labels)
-        self._resources.reserve_container(
-            container_name=container_name,
-            labels=labels,
-        )
-        try:
-            container_id = await self._docker.create(spec, labels)
-        except BaseException as failure:
-            status = "UNKNOWN"
+        async with self._resources.creation_fence(labels):
+            self._resources.reserve_container(
+                container_name=container_name,
+                labels=labels,
+            )
             try:
-                async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
-                    status = await self._resources.reconcile_intent(
-                        docker=self._docker,
+                container_id = await self._docker.create(spec, labels)
+            except BaseException as failure:
+                status = "UNKNOWN"
+                try:
+                    async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
+                        status = await self._resources.reconcile_intent(
+                            docker=self._docker,
+                            container_name=container_name,
+                        )
+                except BaseException:
+                    failure.add_note("DOCKER_CONTAINER_RECONCILIATION_REQUIRED")
+                if status == "UNKNOWN":
+                    resource_ref = self._resources.register_reserved_container(
                         container_name=container_name,
-                    )
-            except BaseException:
-                failure.add_note("DOCKER_CONTAINER_RECONCILIATION_REQUIRED")
-            if status == "UNKNOWN":
-                resource_ref = self._resources.register_reserved_container(
-                    container_name=container_name,
-                    container_id=container_name,
-                    meta=meta,
-                    reconcile_required=True,
-                    lookup_by_name=True,
-                )
-                failed = PreparedSandbox(
-                    recipe,
-                    self._failed_environment(
-                        request=request,
-                        requirements=requirements,
-                        plan=plan,
-                        recipe=recipe,
                         container_id=container_name,
-                        reason=reason,
-                        previous_environment_ref=previous_environment_ref,
-                        resource_ref=resource_ref,
                         meta=meta,
-                    ),
-                    (resource_ref,),
-                )
-                raise SandboxSetupCleanupError(failed) from failure
-            raise
-        resource_ref = self._resources.register_reserved_container(
-            container_name=container_name,
-            container_id=container_id,
-            meta=meta,
-        )
+                        reconcile_required=True,
+                        lookup_by_name=True,
+                    )
+                    failed = PreparedSandbox(
+                        recipe,
+                        self._failed_environment(
+                            request=request,
+                            requirements=requirements,
+                            plan=plan,
+                            recipe=recipe,
+                            container_id=container_name,
+                            reason=reason,
+                            previous_environment_ref=previous_environment_ref,
+                            resource_ref=resource_ref,
+                            meta=meta,
+                        ),
+                        (resource_ref,),
+                    )
+                    raise SandboxSetupCleanupError(failed) from failure
+                raise
+            resource_ref = self._resources.register_reserved_container(
+                container_name=container_name,
+                container_id=container_id,
+                meta=meta,
+            )
         try:
             await self._docker.verify_created_mounts(container_id, spec)
             await self._docker.start(container_id)
