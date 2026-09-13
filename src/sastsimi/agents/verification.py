@@ -18,6 +18,7 @@ from sastsimi.contracts.dynamic import (
     DynamicReproductionRequest,
     DynamicReproductionResult,
     DynamicReproductionToolRequest,
+    EnvironmentNeed,
     EnvironmentRecipe,
     EnvironmentRequirements,
     PoCBundle,
@@ -26,6 +27,7 @@ from sastsimi.contracts.dynamic import (
     SandboxCommandRecord,
     SandboxEnvironment,
     SandboxPolicyDecision,
+    SandboxProfile,
     validate_dynamic_closure,
 )
 from sastsimi.contracts.hypothesis import HypothesisProposal, VulnerabilityHypothesis
@@ -137,6 +139,29 @@ class _InitialContent(ContractModel):
     rationale: NonEmptyStr
     evidence_refs: tuple[StoredDataRef, ...]
     unresolved_conditions: tuple[NonEmptyStr, ...]
+
+
+class _DynamicEnvironmentNeedContent(ContractModel):
+    kind: Literal[
+        "APP_ROLE",
+        "AUTH",
+        "DATA",
+        "DATABASE",
+        "SERVICE",
+        "FIXTURE",
+        "MOCK",
+        "VERSION",
+        "HEALTH_CHECK",
+    ]
+    description: NonEmptyStr
+    required: bool
+
+
+class _DynamicRequestContent(ContractModel):
+    """Content-only request proposal; runtime supplies authority and references."""
+
+    goal: NonEmptyStr
+    environment_needs: tuple[_DynamicEnvironmentNeedContent, ...]
 
 
 class _FalsificationContent(ContractModel):
@@ -263,6 +288,80 @@ class VerificationAgent:
         )
         self._stage_exact(assessment)
         return VerificationAgentOutcome(assessment, invocation)
+
+    async def create_dynamic_request_with_invocation(
+        self,
+        *,
+        generation: VerificationGenerationInputs,
+        assessment_ref: StoredDataRef,
+        verification_assignment_ref: StoredDataRef,
+        sandbox_profile_ref: StoredDataRef,
+        call: VerificationCallRefs,
+    ) -> VerificationAgentOutcome[DynamicReproductionRequest]:
+        """Create content through the LLM and bind all authority fields in runtime."""
+        work, hypothesis, _proposal, application, pro, con = self._generation_records(
+            generation, generation.pro_ref, generation.con_ref
+        )
+        assessment = self._exact(assessment_ref, VerificationInitialAssessment)
+        self._require_assessment_closure(
+            assessment, generation, hypothesis, application, pro, con
+        )
+        if assessment.next_step == "FINALIZE_WITHOUT_DYNAMIC":
+            raise ValueError("DYNAMIC_OUTPUT_NOT_EXPECTED")
+        self._exact(sandbox_profile_ref, SandboxProfile)
+        invocation = await self._llm_calls.invoke(
+            work=work,
+            decision_ref=call.decision_ref,
+            reservation_ref=call.reservation_ref,
+            call_spec_ref=call.call_spec_ref,
+        )
+        required_context = (
+            *self._initial_context(generation, generation.pro_ref, generation.con_ref),
+            assessment_ref,
+            sandbox_profile_ref,
+        )
+        payload = self._successful_payload(
+            invocation,
+            work=work,
+            call=call,
+            task_kind="CREATE_DYNAMIC_REQUEST",
+            required_context=required_context,
+        )
+        content = _DynamicRequestContent.model_validate_json(canonical_bytes(payload))
+        meta = self._trusted_meta(work, "dynamic_reproduction_request")
+        if assessment.proposed_verdict not in {"TRUE", "HOLD"}:
+            raise ValueError("DYNAMIC_PURPOSE_MISMATCH")
+        request = DynamicReproductionRequest(
+            meta=meta,
+            verification_assignment_ref=verification_assignment_ref,
+            verification_generation=generation.generation,
+            hypothesis_ref=generation.hypothesis_ref,
+            purpose=assessment.next_step,
+            initial_verdict=cast(Literal["TRUE", "HOLD"], assessment.proposed_verdict),
+            goal=content.goal,
+            environment_needs=tuple(
+                EnvironmentNeed(
+                    need_id=self._draft_id(),
+                    kind=need.kind,
+                    description=need.description,
+                    required=need.required,
+                    source_refs=(assessment_ref,),
+                )
+                for need in content.environment_needs
+            ),
+            sandbox_profile_ref=sandbox_profile_ref,
+            code_refs=tuple(
+                ref
+                for ref in invocation.request.context_refs
+                if ref.data_kind == "code_context_response"
+            ),
+            static_evidence_refs=(generation.evidence_ref,),
+            pro_evidence_ref=generation.pro_ref,
+            con_evidence_ref=generation.con_ref,
+            created_at=meta.created_at,
+        )
+        self._stage_exact(request)
+        return VerificationAgentOutcome(request, invocation)
 
     async def finalize_without_dynamic(
         self,

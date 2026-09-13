@@ -7,6 +7,7 @@ from typing import cast
 
 from pydantic import BaseModel
 
+from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.llm import (
     ExecutionLimits,
@@ -18,7 +19,10 @@ from sastsimi.contracts.llm import (
     ProviderProfile,
 )
 from sastsimi.contracts.prompt_projection import project_prompt_value
-from sastsimi.contracts.prompt_redaction import assert_safe_provider_text
+from sastsimi.contracts.prompt_redaction import (
+    assert_safe_provider_text,
+    redact_untrusted_text,
+)
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.ports.artifact_store import ArtifactStore
@@ -44,6 +48,14 @@ class ArtifactPromptSource:
     value: BaseModel
 
 
+class _RedactedArtifactBinding(ContractModel):
+    """Prompt-only view; this is not a durable domain contract."""
+
+    source_ref: StoredDataRef
+    content_hash: str
+    redacted_body: str
+
+
 def _stored_ref(value: BaseModel) -> StoredDataRef:
     exact = reference(cast(Record, value))
     if not isinstance(exact, StoredDataRef):
@@ -58,6 +70,30 @@ class PromptBuilder:
     def read_artifact(self, ref: StoredDataRef) -> bytes:
         with self.artifacts.open_verified(ref) as stream:
             return stream.read()
+
+    def bind_artifact(self, slot: str, ref: StoredDataRef) -> ArtifactPromptSource:
+        """Resolve one exact artifact and expose only its redacted text body."""
+
+        if (
+            ref.record_id is not None
+            or ref.data_kind != "artifact"
+            or str(ref.stored_data_id) != ref.content_hash
+        ):
+            raise ValueError("PROMPT_SOURCE_REFERENCE_MISMATCH")
+        try:
+            raw = self.read_artifact(ref)
+            redacted = redact_untrusted_text(raw).data.decode("utf-8")
+        except (OSError, UnicodeDecodeError, ValueError) as error:
+            raise ValueError("PROMPT_SOURCE_REFERENCE_MISMATCH") from error
+        return ArtifactPromptSource(
+            slot,
+            ref,
+            _RedactedArtifactBinding(
+                source_ref=ref,
+                content_hash=ref.content_hash,
+                redacted_body=redacted,
+            ),
+        )
 
     def _commit(self, data: bytes, media_type: str) -> StoredDataRef:
         return self.artifacts.commit(self.artifacts.stage_bytes(data, media_type))
@@ -151,7 +187,8 @@ class PromptBuilder:
         ):
             raise ValueError("PROMPT_SOURCE_REFERENCE_MISMATCH")
         raw = self.read_artifact(ref)
-        assert_safe_provider_text(raw)
+        redacted = redact_untrusted_text(raw).data
+        assert_safe_provider_text(redacted)
         wrapped_ref = getattr(source.value, "source_ref", None)
         wrapped_hash = getattr(source.value, "content_hash", None)
         redacted_body = getattr(source.value, "redacted_body", None)
@@ -159,7 +196,7 @@ class PromptBuilder:
             wrapped_ref != ref
             or wrapped_hash != ref.content_hash
             or not isinstance(redacted_body, str)
-            or redacted_body.encode("utf-8") != raw
+            or redacted_body.encode("utf-8") != redacted
         ):
             raise ValueError("PROMPT_ARTIFACT_PROJECTION_MISMATCH")
 

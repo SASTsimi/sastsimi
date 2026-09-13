@@ -21,10 +21,51 @@ class AnalysisStartRequest(ContractModel):
     purpose: Purpose
 
 
+class AnalysisRunInput(ScopedRecord):
+    """Immutable, credential-free input pinned to one allocated analysis run.
+
+    The five optional restart fields retain legacy read compatibility. Production
+    composition supplies all five; inspection rejects legacy rows. Their absent
+    values alone are omitted from canonical JSON to preserve legacy exact hashes.
+    """
+
+    meta: RunMeta
+    repository_ref: NonEmptyStr
+    requested_git_ref: NonEmptyStr
+    program_id: ProgramId
+    purpose: Purpose
+    workspace_id: WorkspaceId | None = None
+    commit_id: CommitId | None = None
+    production_profile_ref: RunStoredDataRef | None = None
+    production_onboarding_ref: RunStoredDataRef | None = None
+    production_authority_catalog_ref: RunStoredDataRef | None = None
+
+    @classmethod
+    def canonical_omitted_null_fields(cls) -> frozenset[str]:
+        if cls is not AnalysisRunInput:
+            return frozenset()
+        return frozenset(
+            {
+                "workspace_id",
+                "commit_id",
+                "production_profile_ref",
+                "production_onboarding_ref",
+                "production_authority_catalog_ref",
+            }
+        )
+
+    @model_validator(mode="after")
+    def input_shape(self) -> Self:
+        if isinstance(self.meta, RecordMeta):
+            raise ValueError("AnalysisRunInput requires RunMeta")
+        return self
+
+
 class AnalysisRunState(ScopedRecord):
     meta: RunMeta
     purpose: Purpose
     eval_config_refs: tuple[BudgetScopeRef, ...]
+    analysis_input_ref: RunStoredDataRef
     program_id: ProgramId
     execution_budget_profile_ref: RunStoredDataRef
     budget_binding_ref: StoredDataRef | None
@@ -42,6 +83,7 @@ class AnalysisRunState(ScopedRecord):
     def state_shape(self) -> Self:
         if isinstance(self.meta, RecordMeta):
             raise ValueError("AnalysisRunState requires RunMeta")
+        require_record_ref(self.analysis_input_ref, "analysis_run_input")
         if bool(self.eval_config_refs) != (self.purpose == Purpose.EVALUATION):
             raise ValueError("Only EVALUATION requires exact evaluation configuration")
         if (self.status == "RUNNING") != (self.analysis_result_ref is None):

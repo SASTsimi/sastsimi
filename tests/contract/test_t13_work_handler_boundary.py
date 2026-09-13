@@ -41,7 +41,7 @@ def _context(work_type: str) -> WorkContext:
 
 @pytest.mark.parametrize("work_type", ["CHAINING", "HYPOTHESIS_PROPOSAL"])
 def test_handler_boundary_accepts_only_claimed_current_context(work_type: str) -> None:
-    from sastsimi.chaining.work_handlers import require_claimed_context
+    from sastsimi.runtime.claimed_context import require_claimed_context
 
     context = _context(work_type)
 

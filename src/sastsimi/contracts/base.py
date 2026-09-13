@@ -25,6 +25,11 @@ class ContractModel(BaseModel):
     )
 
     @classmethod
+    def canonical_omitted_null_fields(cls) -> frozenset[str]:
+        """No nullable field is omitted without an exact legacy model contract."""
+        return frozenset()
+
+    @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
         super().__pydantic_init_subclass__(**kwargs)
         if any(

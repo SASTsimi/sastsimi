@@ -24,9 +24,11 @@ from sastsimi.contracts.refs import (
     HostConfigurationRef,
     StoredDataRef,
     reference,
-    require_record_ref,
 )
-from sastsimi.contracts.static import StaticToolProfile
+from sastsimi.contracts.static import (
+    StaticToolProfile,
+    is_runnable_static_tool_profile,
+)
 from sastsimi.ports.dto import (
     CancellationResult,
     CandidateError,
@@ -46,7 +48,10 @@ from sastsimi.ports.dto import (
     StaticToolRequest,
     TrackedFile,
 )
-from sastsimi.ports.static_tool import StaticOutputQuotaPort
+from sastsimi.ports.static_tool import (
+    StaticOutputQuotaPort,
+    validate_static_material_ref,
+)
 from sastsimi.static_analysis.normalizer import StaticRawReplayInput
 
 
@@ -147,8 +152,14 @@ class CodeQLExecutionInputs:
         rule_ids = tuple(item.rule_id for item in self.rule_catalog)
         tracked = tuple(item.git_path for item in self.tracked_files)
         try:
-            require_record_ref(self.analysis_config_ref, "analysis_config")
-            require_record_ref(self.rule_catalog_ref, "rule_catalog")
+            validate_static_material_ref(
+                self.analysis_config_ref,
+                legacy_data_kind="analysis_config",
+            )
+            validate_static_material_ref(
+                self.rule_catalog_ref,
+                legacy_data_kind="rule_catalog",
+            )
         except ValueError as error:
             raise ValueError("CODEQL_INPUT_CLOSURE_INVALID") from error
         if (
@@ -934,8 +945,7 @@ def replay_codeql_raw(
     authorized = tuple(replay.authorized_paths)
     if (
         execution is None
-        or profile.status != "APPROVED"
-        or profile.purpose not in {"FIXTURE", "EVALUATION"}
+        or not is_runnable_static_tool_profile(profile)
         or (profile.adapter_key, profile.tool_name, profile.tool_kind)
         != ("CODEQL", "CODEQL", "RULE_BASED")
         or (result.tool_name, result.tool_version, result.tool_kind)
@@ -1026,8 +1036,7 @@ class CodeQLProcessAdapter:
 
     def _profile_error(self, profile: StaticToolProfile) -> str | None:
         if (
-            profile.status != "APPROVED"
-            or profile.purpose not in {"FIXTURE", "EVALUATION"}
+            not is_runnable_static_tool_profile(profile)
             or profile.adapter_key != "CODEQL"
             or profile.tool_name != "CODEQL"
             or profile.tool_kind != "RULE_BASED"

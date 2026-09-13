@@ -1,0 +1,256 @@
+{
+  "$defs": {
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "BudgetScopeRef": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RunStoredDataRef"
+        },
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        }
+      ]
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ProductionRoleIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "identity_ref": {
+          "$ref": "#/$defs/BudgetScopeRef"
+        },
+        "role": {
+          "$ref": "#/$defs/RequesterRole"
+        }
+      },
+      "required": [
+        "role",
+        "identity_ref"
+      ],
+      "title": "ProductionRoleIdentity",
+      "type": "object"
+    },
+    "ProgramId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "ProgramId",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RequesterRole": {
+      "enum": [
+        "ORCHESTRATION",
+        "HYPOTHESIS",
+        "PRO",
+        "CON",
+        "VERIFICATION",
+        "CWE_LABELING",
+        "CHAINING",
+        "TECHNICAL_GATE",
+        "RULE_SCOPE_GATE",
+        "REPORTER",
+        "REPOSITORY_LOADER",
+        "CONTEXT_RETRIEVAL_SERVICE",
+        "STATIC_ANALYSIS",
+        "POLICY_COLLECTOR",
+        "POLICY_PARSER",
+        "PRIMITIVE_ADMISSION_RUNTIME",
+        "DYNAMIC_REPRODUCTION",
+        "REPRODUCTION_SETUP_AUTOMATION",
+        "SANDBOX_CONTROLLER",
+        "REPRODUCTION_SESSION_MANAGER",
+        "BUDGET_RUNTIME",
+        "R8_EVALUATION_RUNTIME",
+        "RECOVERY"
+      ],
+      "title": "RequesterRole",
+      "type": "string"
+    },
+    "RunStoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "analysis_id",
+        "record_id"
+      ],
+      "title": "RunStoredDataRef",
+      "type": "object"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "analysis_id": {
+      "$ref": "#/$defs/AnalysisId"
+    },
+    "artifact_scope": {
+      "const": "ANALYSIS_OPERATOR_AUTHORITY",
+      "title": "Artifact Scope",
+      "type": "string"
+    },
+    "commit_id": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "dynamic_lifecycle_profile_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "execution_budget_profile_ref": {
+      "$ref": "#/$defs/RunStoredDataRef"
+    },
+    "production_onboarding_ref": {
+      "$ref": "#/$defs/RunStoredDataRef"
+    },
+    "production_profile_ref": {
+      "$ref": "#/$defs/RunStoredDataRef"
+    },
+    "program_id": {
+      "$ref": "#/$defs/ProgramId"
+    },
+    "purpose": {
+      "const": "PRODUCTION",
+      "title": "Purpose",
+      "type": "string"
+    },
+    "role_identities": {
+      "items": {
+        "$ref": "#/$defs/ProductionRoleIdentity"
+      },
+      "title": "Role Identities",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "verification_budget_profile_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "work_budget_profile_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "workspace_id": {
+      "$ref": "#/$defs/WorkspaceId"
+    }
+  },
+  "required": [
+    "schema_version",
+    "artifact_scope",
+    "analysis_id",
+    "workspace_id",
+    "commit_id",
+    "program_id",
+    "purpose",
+    "production_profile_ref",
+    "production_onboarding_ref",
+    "execution_budget_profile_ref",
+    "work_budget_profile_ref",
+    "verification_budget_profile_ref",
+    "dynamic_lifecycle_profile_ref",
+    "role_identities"
+  ],
+  "title": "ProductionAuthorityCatalog",
+  "type": "object"
+}

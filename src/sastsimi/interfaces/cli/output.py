@@ -14,6 +14,7 @@ def emit_result(
     trace_id: str | None = None,
     command: str = "doctor",
     revision: str | None = None,
+    reason_code: str | None = None,
 ) -> None:
     messages = {
         ExitCode.OK: (
@@ -30,6 +31,14 @@ def emit_result(
         ExitCode.REPORT_UNAVAILABLE: (
             "Report is unavailable; it may be missing, stale, or unsafe to display."
         ),
+        ExitCode.RUN_FAILED: "The analysis stopped with an unrecoverable failure.",
+        ExitCode.RUN_CANCELLED: "The analysis was cancelled.",
+        ExitCode.RESULT_INCOMPLETE: (
+            "The analysis is not terminal; use status before requesting results."
+        ),
+        ExitCode.INTEGRITY_ERROR: (
+            "Stored state failed an exact-reference or recovery integrity check."
+        ),
         ExitCode.INTERNAL_ERROR: (
             "Unexpected internal error; retain the diagnostic trace ID."
         ),
@@ -44,6 +53,8 @@ def emit_result(
         data["revision"] = revision
     if trace_id is not None:
         data["trace_id"] = trace_id
+    if reason_code is not None:
+        data["reason_code"] = reason_code
     if output_format == "json":
         envelope = {
             "schema_version": 1,
@@ -57,6 +68,7 @@ def emit_result(
         stream.write(
             str(data["message"])
             + (f" Revision: {revision}" if revision else "")
+            + (f" Reason: {reason_code}" if reason_code else "")
             + (f" Trace: {trace_id}" if trace_id else "")
             + "\n"
         )

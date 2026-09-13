@@ -14,9 +14,9 @@ def test_start_rejects_unresolved_or_ambiguous_program(
             return tuple(ProgramId(value) for value in matches)
 
     with pytest.raises(ValueError, match="INPUT_ERROR"):
-        AnalysisStartService(Resolver()).validate(
+        AnalysisStartService(Resolver(), lambda value: value).validate(
             repository_ref="fixture-repository",
-            requested_git_ref="fixture-commit",
+            requested_git_ref="a" * 40,
             program_id="program",
             purpose="PRODUCTION",
         )
@@ -29,15 +29,52 @@ def test_start_preserves_explicit_single_program_and_git_ref() -> None:
         def resolve(self, program_id: ProgramId) -> tuple[ProgramId, ...]:
             return (program_id,)
 
-    request = AnalysisStartService(Resolver()).validate(
+    request = AnalysisStartService(Resolver(), lambda value: value).validate(
         repository_ref="fixture-repository",
-        requested_git_ref="fixture-commit",
+        requested_git_ref="A" * 40,
         program_id="program",
         purpose="PRODUCTION",
     )
     assert request.model_dump(mode="json") == dict(
         repository_ref="fixture-repository",
-        requested_git_ref="fixture-commit",
+        requested_git_ref="a" * 40,
         program_id="program",
         purpose="PRODUCTION",
     )
+
+
+@pytest.mark.parametrize("commit", ["main", "", "g" * 40, "a" * 39, "a" * 65])
+def test_start_rejects_non_exact_commit(commit: str) -> None:
+    from sastsimi.runtime.analysis_start import AnalysisStartService
+
+    class Resolver:
+        def resolve(self, program_id: ProgramId) -> tuple[ProgramId, ...]:
+            return (program_id,)
+
+    with pytest.raises(ValueError, match="INPUT_ERROR"):
+        AnalysisStartService(Resolver(), lambda value: value).validate(
+            repository_ref="fixture-repository",
+            requested_git_ref=commit,
+            program_id="program",
+            purpose="PRODUCTION",
+        )
+
+
+def test_start_persists_only_the_normalized_repository_identity() -> None:
+    from sastsimi.runtime.analysis_start import AnalysisStartService
+
+    class Resolver:
+        def resolve(self, program_id: ProgramId) -> tuple[ProgramId, ...]:
+            return (program_id,)
+
+    request = AnalysisStartService(
+        Resolver(),
+        lambda _value: "https://example.invalid/team/repository.git",
+    ).validate(
+        repository_ref="sensitive-or-noncanonical-input",
+        requested_git_ref="a" * 40,
+        program_id="program",
+        purpose="PRODUCTION",
+    )
+
+    assert request.repository_ref == "https://example.invalid/team/repository.git"

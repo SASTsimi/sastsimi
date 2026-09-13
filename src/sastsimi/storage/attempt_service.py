@@ -1,8 +1,9 @@
 """SQLite adapter: Work/attempt/lease claims share one CAS transaction."""
 
+from contextlib import nullcontext
 from datetime import datetime
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import Connection, insert, select, update
 
 from sastsimi.contracts.actions import ActionType
 from sastsimi.contracts.refs import RecordRef
@@ -19,6 +20,7 @@ from sastsimi.storage.codec import encode
 
 from .dispatches import reject_uncertain
 from .records import next_meta
+from .run_control import reject_cancelled
 from .work_service import WorkService
 
 
@@ -33,6 +35,8 @@ class AttemptService:
         reservation_ref: RecordRef,
         worker_id: str,
         lease_expires_at: datetime,
+        *,
+        _connection: Connection | None = None,
     ) -> WorkExecutionState:
         service = self.works
         if (
@@ -47,8 +51,13 @@ class AttemptService:
             )
         if not worker_id or lease_expires_at <= service.clock.now():
             raise ValueError("Invalid worker lease")
-        with service.records.database.write() as connection:
+        with (
+            service.records.database.write()
+            if _connection is None
+            else nullcontext(_connection) as connection
+        ):
             previous = service.get(str(transition.work_id), connection)
+            reject_cancelled(connection, str(previous.meta.analysis_id))
             reject_uncertain(connection, str(previous.work_id))
             validate_transition_context(transition, previous)
             if (

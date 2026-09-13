@@ -2,7 +2,7 @@
 
 SASTSIMI는 정적 분석 도구가 모은 코드 정보를 LLM이 검토하고, 필요하면 격리된 환경에서 재현한 뒤, 사람이 최종 판단하는 보안 분석 연구 프로젝트입니다.
 
-이 저장소는 실행 프로그램을 배포하는 곳이 아닙니다. 팀이 실제 구현을 시작하기 전에 전체 흐름, 역할, 파트 사이의 입출력 약속과 안전 규칙을 함께 검토하는 공간입니다.
+이 저장소에는 승인된 Architecture v5 설계와 이를 옮긴 실행 코드가 함께 있습니다. 구현은 진행 중이며, 실제 저장소를 Fake Adapter 없이 clone부터 Markdown 보고서까지 완주한 출시 증거는 아직 확정되지 않았습니다.
 
 ## 30초 요약
 
@@ -11,20 +11,25 @@ SASTSIMI는 정적 분석 도구가 모은 코드 정보를 LLM이 검토하고,
 - Docker sandbox(다른 시스템과 격리된 실행 환경)는 동적 근거가 필요하거나 final `TRUE`를 PoC로 확인할 때 사용합니다. validated PoC가 없는 결과는 final `TRUE`가 될 수 없습니다.
 - Gate(다음 단계로 보내도 되는지 확인하는 검토 단계)는 근거와 공식 정책을 확인합니다.
 - Reporter의 `ReportDraft`가 마지막 Agent 산출물입니다. 결과 저장 뒤 자동화가 끝나며 외부 공개 여부는 사람이 결정합니다.
-- **설계 검토는 완료**됐으며 실행 코드는 아직 없습니다.
+- **설계 검토는 완료**됐고 실행 코드를 단계별로 구현 중입니다.
 
 모르는 용어는 [쉬운 용어집](./docs/GLOSSARY.md), 각 파일의 목적은 [전체 문서 지도](./docs/DOCUMENT_GUIDE.md)에서 확인할 수 있습니다.
+
+실행 준비 중인 사용자는 [설치와 실행 환경 준비](./docs/installation.md) → [Provider 인증과 운영 활성화](./docs/provider-setup.md) → [저장소 분석 실행 안내](./docs/usage.md) → [오류와 안전한 대응](./docs/troubleshooting.md) 순서로 읽으세요. 소스 설치 명령은 저장소 루트에서 `uv run sastsimi`로 실행합니다. 현재 설치본의 `uv run sastsimi analyze --help`에 `--repo`, `--commit`, `--profile`이 모두 없으면 Fake 전용 개발 상태이며 실제 저장소 분석에 사용하면 안 됩니다.
 
 ## 현재 단계
 
 ```text
 DESIGN_APPROVED
-NOT_IMPLEMENTED
+IMPLEMENTATION_IN_PROGRESS
+PRODUCTION_E2E_NOT_YET_PROVEN
 ```
 
 - Architecture v5는 R1~R8 역할 검토와 전체 문서 추적 검토를 거쳐 **구현 기준 설계**로 승인되었습니다.
 - `DESIGN_APPROVED`는 문서의 역할·흐름·계약을 구현 기준으로 확정했다는 뜻이며, 실행 코드나 보안 성능을 검증했다는 뜻이 아닙니다.
-- 실제 Provider 연결, 평가, Docker 보안 시험과 전체 실행은 아직 `NOT_IMPLEMENTED`입니다.
+- 공통 계약·저장·복구·정적 분석·Provider·동적 재현·Gate·보고서 구성요소는 순차 구현 중입니다.
+- 실제 저장소 분석 CLI는 `analyze --repo --commit --profile`이며, Fake 시나리오는 `demo` 아래에 분리됩니다. 다만 CLI가 보인다는 사실만으로 출시 검증이 끝난 것은 아닙니다. capability/onboarding이 `READY`이고 Fake 없는 전체 production E2E를 통과한 release만 실제 분석에 사용합니다.
+- 최종 완료 조건은 실제 저장소를 입력해 Fake Adapter 없이 clone, 정적 분석, LLM 검증, 필요한 Docker 재현, Gate, Finding, ReportDraft와 Markdown 보고서까지 완주하는 것입니다.
 - 자동 분석 결과를 외부에 제출하거나 공개하지 않습니다. 최종 공개 여부는 사람이 결정합니다.
 
 ## 현재 목표

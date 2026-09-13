@@ -63,7 +63,19 @@ def test_final_true_without_current_validated_poc_is_rejected(
     with pytest.raises(LookupError, match="ANALYSIS_RESULT_NOT_FOUND"):
         pipeline.results()
     assert load_fake_progress(tmp_path)["status"] == "RUNNING"
-    assert main(["--data-dir", str(tmp_path), "results", "--format", "json"]) == 0
+    assert (
+        main(
+            [
+                "--data-dir",
+                str(tmp_path),
+                "demo",
+                "results",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
     assert json.loads(capsys.readouterr().out)["data"]["status"] == "RUNNING"
     assert pipeline.reports() == ()
 

@@ -1,0 +1,343 @@
+"""Compose fail-closed cancellation adapters for exact production targets."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from typing import Protocol
+
+from sastsimi.contracts.records import RecordMeta
+from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.ports.dto import CancellationResult
+from sastsimi.ports.record_store import RecordStore
+from sastsimi.ports.scheduler import (
+    CancellationObservation,
+    CancellationResourceObservation,
+    CancellationStatus,
+    CancellationTarget,
+    SandboxCancellationResource,
+)
+from sastsimi.runtime.cancellation_service import ExactCancellationRouter
+from sastsimi.sandbox.cleanup import CleanupDockerPort, OwnedResourceRegistry
+
+
+class AttemptCancellationPort(Protocol):
+    def validate_cancellation(self, attempt_id: str) -> None: ...
+
+    async def cancel(self, attempt_id: str) -> CancellationResult: ...
+
+
+class ProviderCancellationPort(Protocol):
+    def validate_cancellation(
+        self,
+        *,
+        work: WorkExecutionState,
+        decision_ref: StoredDataRef,
+        call_spec_ref: StoredDataRef,
+    ) -> None: ...
+
+    async def cancel(
+        self,
+        *,
+        work: WorkExecutionState,
+        decision_ref: StoredDataRef,
+        call_spec_ref: StoredDataRef,
+    ) -> CancellationResult: ...
+
+
+class SandboxCancellationDockerPort(CleanupDockerPort, Protocol):
+    pass
+
+
+class ProductionStaticCancellation:
+    """Cancel only the attempt fixed by the durable cancellation target."""
+
+    def __init__(self, adapter: AttemptCancellationPort) -> None:
+        self._adapter = adapter
+
+    async def prepare(self, target: CancellationTarget) -> CancellationTarget:
+        if target.target_kind != "STATIC":
+            raise ValueError("CANCELLATION_TARGET_KIND_MISMATCH")
+        self._adapter.validate_cancellation(str(target.attempt.attempt_id))
+        return target
+
+    def validate_inventory(
+        self, analysis_id: str, targets: tuple[CancellationTarget, ...]
+    ) -> None:
+        del analysis_id, targets
+
+    async def cancel(self, target: CancellationTarget) -> CancellationObservation:
+        if target.target_kind != "STATIC":
+            raise ValueError("CANCELLATION_TARGET_KIND_MISMATCH")
+        result = await self._adapter.cancel(str(target.attempt.attempt_id))
+        return _observation(target, result, "STATIC_CANCELLATION_UNRESOLVED")
+
+
+class ProductionProviderCancellation:
+    """Cancel through the authorized LLM service, never a raw adapter."""
+
+    def __init__(self, calls: ProviderCancellationPort) -> None:
+        self._calls = calls
+
+    async def prepare(self, target: CancellationTarget) -> CancellationTarget:
+        decision_ref, call_spec_ref = self._inputs(target)
+        self._calls.validate_cancellation(
+            work=target.work,
+            decision_ref=decision_ref,
+            call_spec_ref=call_spec_ref,
+        )
+        return target
+
+    def validate_inventory(
+        self, analysis_id: str, targets: tuple[CancellationTarget, ...]
+    ) -> None:
+        del analysis_id, targets
+
+    async def cancel(self, target: CancellationTarget) -> CancellationObservation:
+        decision_ref, call_spec_ref = self._inputs(target)
+        result = await self._calls.cancel(
+            work=target.work,
+            decision_ref=decision_ref,
+            call_spec_ref=call_spec_ref,
+        )
+        return _observation(target, result, "PROVIDER_CANCELLATION_UNRESOLVED")
+
+    @staticmethod
+    def _inputs(target: CancellationTarget) -> tuple[StoredDataRef, StoredDataRef]:
+        issued = target.issued_action_decision_ref
+        if (
+            target.target_kind != "PROVIDER"
+            or not isinstance(issued, StoredDataRef)
+            or target.call_spec_ref is None
+        ):
+            raise ValueError("CANCELLATION_PROVIDER_NOT_EXACT")
+        return issued, target.call_spec_ref
+
+
+class ProductionSandboxCancellation:
+    """Observe only the complete immutable exact-attempt resource snapshot."""
+
+    def __init__(
+        self,
+        *,
+        records: RecordStore,
+        docker: SandboxCancellationDockerPort,
+        resources: OwnedResourceRegistry,
+    ) -> None:
+        self._records = records
+        self._docker = docker
+        self._resources = resources
+
+    async def prepare(self, target: CancellationTarget) -> CancellationTarget:
+        if target.target_kind != "SANDBOX":
+            raise ValueError("CANCELLATION_TARGET_KIND_MISMATCH")
+        meta = target.attempt.meta
+        if not isinstance(meta, RecordMeta):
+            raise ValueError("CANCELLATION_SANDBOX_SCOPE_MISMATCH")
+        snapshot = await self._resources.fresh_snapshot_after_creations(meta=meta)
+        resources = self._cancellation_resources(snapshot)
+        if not resources:
+            raise ValueError("CANCELLATION_SANDBOX_RESOURCE_MISSING")
+        return replace(
+            target,
+            sandbox_resource_refs=tuple(
+                item.resource_ref for item in resources if item.resource_ref is not None
+            ),
+            sandbox_resources=resources,
+            sandbox_inventory_fingerprint=snapshot.fingerprint,
+        )
+
+    def validate_inventory(
+        self,
+        analysis_id: str,
+        targets: tuple[CancellationTarget, ...],
+    ) -> None:
+        """Fresh-load and prove every journal entry is in the prepared snapshot."""
+
+        sandbox_targets = tuple(
+            target for target in targets if target.target_kind == "SANDBOX"
+        )
+        metas: list[RecordMeta] = []
+        for target in sandbox_targets:
+            if not isinstance(target.attempt.meta, RecordMeta):
+                raise ValueError("CANCELLATION_SANDBOX_SCOPE_MISMATCH")
+            metas.append(target.attempt.meta)
+        snapshots = self._resources.fresh_cancellation_snapshots(
+            analysis_id=analysis_id,
+            metas=tuple(metas),
+        )
+        for target, snapshot in zip(sandbox_targets, snapshots, strict=True):
+            current = self._cancellation_resources(snapshot)
+            if (
+                target.sandbox_inventory_fingerprint != snapshot.fingerprint
+                or target.sandbox_resources != current
+                or target.sandbox_resource_refs
+                != tuple(
+                    item.resource_ref
+                    for item in current
+                    if item.resource_ref is not None
+                )
+            ):
+                raise ValueError("CANCELLATION_SANDBOX_INVENTORY_CHANGED")
+
+    @staticmethod
+    def _cancellation_resources(
+        snapshot: object,
+    ) -> tuple[SandboxCancellationResource, ...]:
+        from sastsimi.sandbox.resource_snapshot import OwnedResourceSnapshot
+
+        if not isinstance(snapshot, OwnedResourceSnapshot):
+            raise ValueError("CANCELLATION_SANDBOX_INVENTORY_INVALID")
+        return (
+            tuple(
+                SandboxCancellationResource(
+                    resource_kind=item.resource_kind,
+                    resource_id=item.resource_id,
+                    resource_ref=item.ref,
+                    resource_tag=item.resource_tag,
+                    labels=tuple(sorted(item.labels.items())),
+                    lookup_by_name=item.lookup_by_name,
+                    preservation_reason=item.preservation_reason,
+                )
+                for item in snapshot.resources
+            )
+            + tuple(
+                SandboxCancellationResource(
+                    resource_kind="CONTAINER_INTENT",
+                    resource_id=item.container_name,
+                    resource_ref=None,
+                    resource_tag=None,
+                    labels=tuple(sorted(item.labels.items())),
+                    lookup_by_name=True,
+                    preservation_reason=None,
+                )
+                for item in snapshot.container_intents
+            )
+            + tuple(
+                SandboxCancellationResource(
+                    resource_kind="IMAGE_INTENT",
+                    resource_id=item.image_tag,
+                    resource_ref=None,
+                    resource_tag=item.image_tag,
+                    labels=tuple(sorted(item.labels.items())),
+                    lookup_by_name=False,
+                    preservation_reason=None,
+                )
+                for item in snapshot.image_intents
+            )
+        )
+
+    async def cancel(self, target: CancellationTarget) -> CancellationObservation:
+        if target.target_kind != "SANDBOX":
+            raise ValueError("CANCELLATION_TARGET_KIND_MISMATCH")
+        if not target.sandbox_resources or target.sandbox_inventory_fingerprint is None:
+            target = await self.prepare(target)
+        observations: list[CancellationResourceObservation] = []
+        for resource in target.sandbox_resources:
+            observations.append(await self._cancel_resource(resource))
+        values = tuple(observations)
+        status: CancellationStatus
+        reason: str | None
+        if any(item.status == "UNKNOWN" for item in values):
+            status, reason = "UNKNOWN", "SANDBOX_RESOURCE_UNKNOWN"
+        elif any(item.status == "STOPPED" for item in values):
+            status, reason = "STOPPED", None
+        elif any(item.status == "ABSENT" for item in values):
+            status, reason = "ABSENT", None
+        else:
+            status, reason = "PRESERVED", "REUSABLE_BASELINE"
+        return CancellationObservation(target, status, reason, values)
+
+    async def _cancel_resource(
+        self, resource: SandboxCancellationResource
+    ) -> CancellationResourceObservation:
+        if resource.preservation_reason == "REUSABLE_BASELINE":
+            return CancellationResourceObservation(
+                resource, "PRESERVED", "REUSABLE_BASELINE"
+            )
+        labels = dict(resource.labels)
+        try:
+            if resource.resource_kind in {"CONTAINER", "CONTAINER_INTENT"}:
+                container_presence = await self._docker.inspect_container_presence(
+                    resource.resource_id,
+                    by_name=resource.lookup_by_name,
+                )
+                if container_presence.status == "ABSENT":
+                    return CancellationResourceObservation(resource, "ABSENT", None)
+                if (
+                    container_presence.status != "PRESENT"
+                    or container_presence.state is None
+                ):
+                    return _unknown_resource(resource)
+                state = container_presence.state
+                if dict(state.labels) != labels or (
+                    resource.resource_kind == "CONTAINER"
+                    and not resource.lookup_by_name
+                    and state.container_id != resource.resource_id
+                ):
+                    return _unknown_resource(resource)
+                await self._docker.remove((state.container_id,))
+                return CancellationResourceObservation(resource, "STOPPED", None)
+            if resource.resource_tag is None:
+                return _unknown_resource(resource)
+            image_presence = await self._docker.inspect_image_tag(resource.resource_tag)
+            if image_presence.status == "ABSENT":
+                return CancellationResourceObservation(resource, "ABSENT", None)
+            if image_presence.status != "PRESENT" or image_presence.state is None:
+                return _unknown_resource(resource)
+            if dict(image_presence.state.labels) != labels or (
+                resource.resource_kind == "IMAGE"
+                and image_presence.state.image_digest != resource.resource_id
+            ):
+                return _unknown_resource(resource)
+            await self._docker.remove_image_tags((resource.resource_tag,))
+            return CancellationResourceObservation(resource, "STOPPED", None)
+        except (OSError, RuntimeError, ValueError):
+            return _unknown_resource(resource)
+
+
+def build_production_cancellation_router(
+    *,
+    records: RecordStore,
+    static: AttemptCancellationPort,
+    provider_calls: ProviderCancellationPort,
+    docker: SandboxCancellationDockerPort,
+    resources: OwnedResourceRegistry,
+) -> ExactCancellationRouter:
+    """Compose all production cancellation targets without a fallback adapter."""
+
+    return ExactCancellationRouter(
+        static=ProductionStaticCancellation(static),
+        provider=ProductionProviderCancellation(provider_calls),
+        sandbox=ProductionSandboxCancellation(
+            records=records, docker=docker, resources=resources
+        ),
+    )
+
+
+def _observation(
+    target: CancellationTarget, result: CancellationResult, unresolved: str
+) -> CancellationObservation:
+    return CancellationObservation(
+        target=target,
+        status="STOPPED" if result.cancelled else "UNKNOWN",
+        reason_code=None if result.cancelled else unresolved,
+    )
+
+
+def _unknown_resource(
+    resource: SandboxCancellationResource,
+) -> CancellationResourceObservation:
+    return CancellationResourceObservation(
+        resource, "UNKNOWN", "SANDBOX_RESOURCE_UNKNOWN"
+    )
+
+
+__all__ = [
+    "ProductionProviderCancellation",
+    "ProviderCancellationPort",
+    "ProductionSandboxCancellation",
+    "ProductionStaticCancellation",
+    "SandboxCancellationDockerPort",
+    "build_production_cancellation_router",
+]

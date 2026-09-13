@@ -187,6 +187,42 @@ def test_static_tool_profile_enforces_scope_status_and_limits() -> None:
             wire(StaticToolProfile, static_tool_profile(**patch))
 
 
+def test_static_tool_profile_execution_accepts_only_declared_purpose() -> None:
+    from sastsimi.contracts.static import (
+        StaticToolProfile,
+        is_runnable_static_tool_profile,
+    )
+
+    approved_fixture = wire(StaticToolProfile, static_tool_profile())
+    active_production = wire(
+        StaticToolProfile,
+        static_tool_profile(
+            purpose="PRODUCTION",
+            status="ACTIVE",
+            host_id="host-a",
+            capability_evidence_ref={
+                "stored_data_id": "tool-capability-id",
+                "data_kind": "tool_capability_evidence",
+                "content_hash": "a" * 64,
+                "configuration_scope": "HOST",
+                "host_id": "host-a",
+                "publication_analysis_id": "a1",
+                "publication_workspace_id": "ws1",
+                "publication_commit_id": "c1",
+                "record_id": "tool-capability-record",
+            },
+        ),
+    )
+    draft = wire(
+        StaticToolProfile,
+        static_tool_profile(purpose="PRODUCTION", status="DRAFT"),
+    )
+
+    assert is_runnable_static_tool_profile(approved_fixture)
+    assert is_runnable_static_tool_profile(active_production)
+    assert not is_runnable_static_tool_profile(draft)
+
+
 def test_host_capability_evidence_reference_kind_is_exact() -> None:
     from sastsimi.contracts.static import StaticToolProfile
 

@@ -2,7 +2,7 @@
 
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractContextManager, nullcontext
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sastsimi.contracts.actions import ActionRequest
@@ -43,9 +43,11 @@ from sastsimi.ports.dto import (
     BudgetReservationRequest,
     Record,
     TransitionCommitRequest,
+    WorkContext,
 )
 from sastsimi.ports.id_generator import IdGenerator
 from sastsimi.ports.policy_runtime import PolicyPreparation
+from sastsimi.ports.scheduler import SchedulerStorePort
 
 from .services import RuntimeServices
 
@@ -62,9 +64,11 @@ class WorkflowRunner:
         clock: Clock,
         ids: IdGenerator,
         output_approval: OutputApproval | None = None,
+        scheduler_store: SchedulerStorePort | None = None,
     ) -> None:
         self.runtime, self.clock, self.ids = runtime, clock, ids
         self._output_approval = output_approval
+        self._scheduler_store = scheduler_store
 
     def metadata(
         self,
@@ -269,7 +273,13 @@ class WorkflowRunner:
         )
         self.runtime.budget.release(BudgetReleaseRequest(released))
 
-    def account(self, reservation: BudgetReservation, actual: BudgetUnits) -> None:
+    def account(
+        self,
+        reservation: BudgetReservation,
+        actual: BudgetUnits,
+        *,
+        usage_refs: tuple[BudgetScopeRef, ...] = (),
+    ) -> None:
         records = self.runtime.unit_of_work.records
         remaining = self.runtime.budget.remaining(
             reservation.budget_binding_ref, str(reservation.meta.analysis_id)
@@ -284,7 +294,7 @@ class WorkflowRunner:
                     action_ref=reservation.action_ref,
                     work_ref=reservation.work_ref,
                     actual_units=actual,
-                    usage_refs=(),
+                    usage_refs=usage_refs,
                     sequence=remaining.as_of_sequence + 1,
                     committed_at=self.clock.now(),
                 )
@@ -393,6 +403,48 @@ class WorkflowRunner:
             role=role,
         )
 
+    def ensure_enqueue(
+        self,
+        scope: BudgetScopeRef,
+        metadata: RecordMetadata,
+        work_type: str,
+        subject_type: str,
+        subject_id: str,
+        identity: BudgetScopeRef,
+        *,
+        stable_key: str,
+        role: str = "ORCHESTRATION",
+        generation: int = 1,
+        inputs: tuple[RecordRef, ...] = (),
+        parent: RecordRef | None = None,
+        trigger_primitive_ref: RecordRef | None = None,
+    ) -> WorkExecutionState:
+        """Converge repeated registration of one phase-root work item."""
+
+        if not stable_key:
+            raise ValueError("STABLE_WORK_KEY_REQUIRED")
+        candidate = self._pending_work(
+            metadata,
+            work_type,
+            subject_type,
+            subject_id,
+            generation=generation,
+            inputs=inputs,
+            parent=parent,
+            trigger_primitive_ref=trigger_primitive_ref,
+            stable_key=stable_key,
+        )
+        registered = self._register_pending(scope, candidate, identity, role=role)
+        if registered.status != "PENDING":
+            return registered
+        try:
+            return self.enqueue_registered(registered, scope, identity, role=role)
+        except ValueError as error:
+            current = self.runtime.work.get(str(registered.work_id))
+            if current.status == "PENDING":
+                raise error
+            return current
+
     def begin_policy(
         self,
         scope: BudgetScopeRef,
@@ -470,11 +522,16 @@ class WorkflowRunner:
         inputs: tuple[RecordRef, ...],
         parent: RecordRef | None,
         trigger_primitive_ref: RecordRef | None,
+        stable_key: str | None = None,
     ) -> WorkExecutionState:
         metadata_analysis_id = getattr(metadata, "analysis_id", None)
         if subject_type == "ANALYSIS" and subject_id != str(metadata_analysis_id):
             raise ValueError("ANALYSIS_SCOPE_MISMATCH")
-        work_id = self.ids.new(WorkId)
+        work_id = (
+            WorkId("stable-" + content_hash(stable_key)[:32])
+            if stable_key is not None
+            else self.ids.new(WorkId)
+        )
         candidate = WorkExecutionState.model_validate_json(
             canonical_bytes(
                 dict(
@@ -491,7 +548,11 @@ class WorkflowRunner:
                     last_transition_commit_ref=None,
                     active_attempt_id=None,
                     input_hash=content_hash(inputs),
-                    dedupe_key=content_hash([work_id, inputs]),
+                    dedupe_key=content_hash(
+                        [stable_key, inputs]
+                        if stable_key is not None
+                        else [work_id, inputs]
+                    ),
                     trigger_primitive_ref=trigger_primitive_ref,
                     input_refs=inputs,
                     output_refs=(),
@@ -536,11 +597,18 @@ class WorkflowRunner:
         records = self.runtime.unit_of_work.records
         request = self.action(candidate, identity, role, "REGISTER_WORK")
         reservation = self.reserve(candidate, scope, request, self.units(work_count=1))
-        registered = self.runtime.work.register(
-            candidate,
-            self.authorize(candidate, request, reservation),
-            records.stage_record(reservation),
-        )
+        try:
+            registered = self.runtime.work.register(
+                candidate,
+                self.authorize(candidate, request, reservation),
+                records.stage_record(reservation),
+            )
+        except Exception:
+            self._release_reservation(reservation)
+            raise
+        if registered != candidate:
+            self._release_reservation(reservation)
+            return registered
         self.account(reservation, reservation.requested_units)
         return registered
 
@@ -567,6 +635,25 @@ class WorkflowRunner:
                 self.authorize(registered, ready_action),
                 "READY",
             )
+        )
+
+    def claim_ready(
+        self,
+        analysis_id: str,
+        work_id: str,
+        expected_state_version: int,
+        worker_id: str,
+        lease_expires_at: datetime,
+    ) -> WorkContext | None:
+        """Delegate one production claim to the atomic scheduler store."""
+        if self._scheduler_store is None:
+            raise ValueError("SCHEDULER_STORE_REQUIRED")
+        return self._scheduler_store.try_claim_ready(
+            analysis_id,
+            work_id,
+            expected_state_version,
+            worker_id,
+            lease_expires_at,
         )
 
     def activate(

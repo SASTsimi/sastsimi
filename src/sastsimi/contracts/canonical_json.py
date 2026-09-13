@@ -30,7 +30,13 @@ def _normalize(
         if isinstance(value, OpaqueId):
             return _normalize(value.root, policy, path, reject_hash)
         # Reading fields avoids custom JSON serializers coercing forbidden floats.
-        value = {name: getattr(value, name) for name in type(value).model_fields}
+        fields = {name: getattr(value, name) for name in type(value).model_fields}
+        # The exact legacy model owns this compatibility declaration. Keeping
+        # concrete record imports out of serialization avoids reference cycles.
+        for name in type(value).canonical_omitted_null_fields():
+            if fields[name] is None:
+                del fields[name]
+        value = fields
     if isinstance(value, Enum):
         return _normalize(value.value, policy, path, reject_hash)
     if isinstance(value, datetime):

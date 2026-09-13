@@ -10,6 +10,7 @@ from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef
 from sastsimi.contracts.work import (
     StateTransition,
+    WorkAttempt,
     WorkExecutionState,
     WorkStatus,
     validate_parent_work,
@@ -25,6 +26,7 @@ from .action_validator import RuntimeValidator
 from .current_inputs import check_current_input
 from .dynamic_state import advance_dynamic_work
 from .records import next_meta
+from .run_control import reject_cancelled
 from .verification_state import advance_verification_work
 
 
@@ -55,6 +57,51 @@ class WorkService:
             )
         ).scalar_one()
         return WorkExecutionState.model_validate_json(payload)
+
+    def ready_work(
+        self, analysis_id: str, limit: int
+    ) -> tuple[WorkExecutionState, ...]:
+        if not analysis_id or limit < 0:
+            raise ValueError("SCHEDULER_QUERY_INVALID")
+        if limit == 0:
+            return ()
+        with self.records.database.engine.connect() as connection:
+            payloads = connection.execute(
+                select(models.work_states.c.payload)
+                .where(
+                    models.work_states.c.analysis_id == analysis_id,
+                    models.work_states.c.status == "READY",
+                )
+                .order_by(models.work_states.c.work_id)
+                .limit(limit)
+            ).scalars()
+            return tuple(
+                WorkExecutionState.model_validate_json(item) for item in payloads
+            )
+
+    def work_for_run(self, analysis_id: str) -> tuple[WorkExecutionState, ...]:
+        if not analysis_id:
+            raise ValueError("SCHEDULER_QUERY_INVALID")
+        with self.records.database.engine.connect() as connection:
+            payloads = connection.execute(
+                select(models.work_states.c.payload)
+                .where(models.work_states.c.analysis_id == analysis_id)
+                .order_by(models.work_states.c.work_id)
+            ).scalars()
+            return tuple(
+                WorkExecutionState.model_validate_json(item) for item in payloads
+            )
+
+    def attempts_for_work(self, work_id: str) -> tuple[WorkAttempt, ...]:
+        if not work_id:
+            raise ValueError("SCHEDULER_QUERY_INVALID")
+        with self.records.database.engine.connect() as connection:
+            payloads = connection.execute(
+                select(models.work_attempts.c.payload)
+                .where(models.work_attempts.c.work_id == work_id)
+                .order_by(models.work_attempts.c.attempt_number)
+            ).scalars()
+            return tuple(WorkAttempt.model_validate_json(item) for item in payloads)
 
     def registration_scope(self, work_id: str) -> BudgetScopeRef:
         with self.records.database.engine.connect() as connection:
@@ -103,6 +150,7 @@ class WorkService:
             if _connection is None
             else nullcontext(_connection) as connection
         ):
+            reject_cancelled(connection, str(work.meta.analysis_id))
             old = connection.execute(
                 select(models.work_states.c.payload).where(
                     models.work_states.c.registration_key == key
@@ -217,6 +265,7 @@ class WorkService:
     def make_ready(self, transition: StateTransition) -> WorkExecutionState:
         with self.records.database.write() as connection:
             previous = self.get(str(transition.work_id), connection)
+            reject_cancelled(connection, str(previous.meta.analysis_id))
             validate_transition_context(transition, previous)
             if transition.to_status.value != "READY" or previous.status not in {
                 WorkStatus.PENDING,

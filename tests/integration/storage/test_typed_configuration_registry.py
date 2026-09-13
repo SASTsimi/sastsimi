@@ -383,8 +383,9 @@ def test_typed_registries_require_family_evidence_and_exact_closure(
         | {"client_execution_profile_ref": reference(subscription_client)}
     )
     h.evidence.llm_configuration_approvals.add(content_hash(subscription_profile))
-    with pytest.raises(ValueError, match="PROVIDER_CONFIGURATION_NOT_SUPPORTED"):
-        configs.register_provider_profile(subscription_profile, subscription_probe)
+    assert configs.register_provider_profile(
+        subscription_profile, subscription_probe
+    ) == reference(subscription_profile)
 
     all_na = validation.model_copy(
         update={
@@ -709,6 +710,9 @@ def test_llm_selection_requires_the_exact_current_active_prompt_revision() -> No
     with engine.begin() as connection:
         connection.execute(
             insert(models.prompt_active_entries).values(
+                analysis_id=str(entry.meta.analysis_id),
+                workspace_id=str(entry.meta.workspace_id),
+                commit_id=str(entry.meta.commit_id),
                 agent_role=entry.agent_role,
                 task_kind=entry.task_kind,
                 purpose=entry.purpose,

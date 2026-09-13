@@ -18,9 +18,10 @@ from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.chaining import ChainingResult
 from sastsimi.contracts.hypothesis import VerificationAssignment
+from sastsimi.contracts.ids import ActionId, TransitionCommitId, TransitionId
 from sastsimi.contracts.policy import PolicyCacheRecord, RunPolicyState
 from sastsimi.contracts.records import RecordMeta, validate_revision
-from sastsimi.contracts.refs import RecordRef, StoredDataRef
+from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef
 from sastsimi.contracts.reporting import ReportDraft
 from sastsimi.contracts.result_registry import validate_result_owner
 from sastsimi.contracts.static import (
@@ -32,8 +33,10 @@ from sastsimi.contracts.static import (
 from sastsimi.contracts.work import (
     AttemptStatus,
     CommitState,
+    CommitTargetStatus,
     StateTransition,
     TransitionCommit,
+    TransitionTargetStatus,
     WaitingFor,
     WorkAttempt,
     WorkExecutionState,
@@ -61,9 +64,10 @@ from .primitive_projection import (
     primitive_index_projection,
     validate_primitive_outputs,
 )
-from .records import next_meta
+from .records import fresh_meta, next_meta
 from .report_projection import report_creation_decision, validate_report_output
 from .report_state import report_process_projection
+from .run_control import cancel_latched
 from .run_projections import run_policy_projection
 from .run_states import get_run, save_run
 from .verification_projection import verification_projection
@@ -261,6 +265,227 @@ class TransitionService:
         self.works, self.artifacts = works, artifacts
         self.checkpoint = checkpoint or (lambda name: None)
         self.chaining_lineage = chaining_lineage
+
+    def cancel_in_transaction(
+        self,
+        connection: Connection,
+        work: WorkExecutionState,
+        identity_ref: BudgetScopeRef,
+    ) -> WorkExecutionState:
+        """Authorize and commit one CANCEL_WORK journal in the caller's CAS."""
+        if work.status in {"SUCCEEDED", "PARTIAL", "FAILED", "CANCELLED"}:
+            return work
+        records = self.works.records
+        now = self.works.clock.now()
+        meta_fields: dict[str, object] = {}
+        if isinstance(work.meta, RecordMeta):
+            meta_fields["attempt_id"] = work.active_attempt_id
+        action = ActionRequest.model_validate(
+            {
+                "meta": fresh_meta(
+                    work.meta,
+                    "action_request",
+                    self.works.clock,
+                    self.works.ids,
+                    **meta_fields,
+                ),
+                "action_id": self.works.ids.new(ActionId),
+                "requested_by": RequesterRole.ORCHESTRATION,
+                "requester_identity_ref": identity_ref,
+                "action_type": ActionType.CANCEL_WORK,
+                "work_ref": reference(work),
+                "expected_state_version": work.state_version,
+                "expected_verification_generation": None,
+                "generation_restart_reason": None,
+                "generation_restart_basis_refs": (),
+                "input_refs": work.input_refs,
+                "dynamic_request_ref": None,
+                "reproduction_plan_ref": None,
+                "result_kind": None,
+                "candidate_result_ref": None,
+                "llm_call_spec_ref": None,
+                "tool_name": None,
+                "file_paths": (),
+                "provider_profile_ref": None,
+                "session_mode": None,
+                "sandbox_profile_ref": None,
+                "resource_profile_ref": None,
+                "run_policy_state_ref": None,
+                "image_digest": None,
+                "network_targets": (),
+                "resource_limits": None,
+                "reason": "CANCELLATION_REQUESTED",
+                "requested_at": now,
+            }
+        )
+        from .authorization import authorize
+
+        decision = authorize(
+            self.works.validator,
+            action,
+            work,
+            None,
+            _connection=connection,
+        )
+        if decision.decision != Decision.ALLOW:
+            raise ValueError("CANCELLATION_AUTHORITY_DENIED")
+        decision_ref = reference(decision)
+        transition = StateTransition.model_validate(
+            {
+                "meta": fresh_meta(
+                    work.meta,
+                    "state_transition",
+                    self.works.clock,
+                    self.works.ids,
+                    **meta_fields,
+                ),
+                "transition_id": self.works.ids.new(TransitionId),
+                "work_id": work.work_id,
+                "action_decision_ref": decision_ref,
+                "from_status": work.status,
+                "to_status": TransitionTargetStatus.CANCELLED,
+                "expected_state_version": work.state_version,
+                "new_state_version": work.state_version + 1,
+                "attempt_id": work.active_attempt_id,
+                "cause": "CANCELLATION_REQUESTED",
+                "output_refs": work.output_refs,
+                "gap_ids": work.gap_ids,
+                "error_ids": work.error_ids,
+                "dedupe_key": content_hash(
+                    [work.work_id, work.state_version, "CANCELLED"]
+                ),
+                "created_at": now,
+            }
+        )
+        validate_transition_context(transition, work)
+        transition_ref = records.stage(connection, transition)
+        records.publish(connection, transition_ref)
+        prepared = TransitionCommit.model_validate(
+            {
+                "meta": fresh_meta(
+                    work.meta,
+                    "transition_commit",
+                    self.works.clock,
+                    self.works.ids,
+                    **meta_fields,
+                ),
+                "transition_commit_id": self.works.ids.new(TransitionCommitId),
+                "work_id": work.work_id,
+                "transition_ref": transition_ref,
+                "expected_state_version": work.state_version,
+                "target_state_version": work.state_version + 1,
+                "attempt_id": work.active_attempt_id,
+                "target_status": CommitTargetStatus.CANCELLED,
+                "output_refs": work.output_refs,
+                "gap_ids": work.gap_ids,
+                "error_ids": work.error_ids,
+                "state": CommitState.PREPARED,
+                "prepared_at": now,
+                "committed_at": None,
+                "abort_reason": None,
+            }
+        )
+        validate_commit_transition(prepared, transition)
+        prepared_ref = records.stage(connection, prepared)
+        records.publish(connection, prepared_ref)
+        wire = {
+            "transition": transition_ref,
+            "commit": prepared_ref,
+            "records": (),
+        }
+        binding = content_hash([transition, prepared, ()])
+        connection.execute(
+            insert(models.transition_commits).values(
+                transition_commit_id=str(prepared.transition_commit_id),
+                work_id=str(work.work_id),
+                expected_state_version=work.state_version,
+                candidate_binding=binding,
+                state="PREPARED",
+                payload=encode(prepared),
+                request=canonical_bytes(wire).decode(),
+            )
+        )
+        self.works.validator.claim(
+            connection, decision_ref, ActionType.CANCEL_WORK, work
+        )
+        committed = TransitionCommit.model_validate(
+            prepared.model_dump()
+            | {
+                "meta": next_meta(prepared.meta, self.works.clock, self.works.ids),
+                "state": CommitState.COMMITTED,
+                "committed_at": now,
+            }
+        )
+        committed_ref = records.stage(connection, committed)
+        records.publish(connection, committed_ref)
+        commit_result = connection.execute(
+            update(models.transition_commits)
+            .where(
+                models.transition_commits.c.transition_commit_id
+                == str(committed.transition_commit_id),
+                models.transition_commits.c.state == "PREPARED",
+            )
+            .values(state="COMMITTED", payload=encode(committed))
+        )
+        if commit_result.rowcount != 1:
+            raise ValueError("CANCELLATION_TRANSITION_CAS_FAILED")
+        cancelled = WorkExecutionState.model_validate(
+            work.model_dump()
+            | {
+                "meta": next_meta(work.meta, self.works.clock, self.works.ids),
+                "status": WorkStatus.CANCELLED,
+                "state_version": work.state_version + 1,
+                "active_attempt_id": None,
+                "last_transition_ref": transition_ref,
+                "last_transition_commit_ref": committed_ref,
+                "waiting_for": (),
+                "stop_reason": "CANCELLATION_REQUESTED",
+                "finished_at": now,
+            }
+        )
+        if work.active_attempt_id is not None:
+            payload = connection.execute(
+                select(models.work_attempts.c.payload).where(
+                    models.work_attempts.c.attempt_id == str(work.active_attempt_id),
+                    models.work_attempts.c.status == "RUNNING",
+                )
+            ).scalar_one()
+            prior_attempt = WorkAttempt.model_validate_json(payload)
+            ended = WorkAttempt.model_validate(
+                prior_attempt.model_dump()
+                | {
+                    "meta": next_meta(
+                        prior_attempt.meta, self.works.clock, self.works.ids
+                    ),
+                    "status": AttemptStatus.CANCELLED,
+                    "finished_at": now,
+                }
+            )
+            records.publish(connection, records.stage(connection, ended))
+            attempt_result = connection.execute(
+                update(models.work_attempts)
+                .where(
+                    models.work_attempts.c.attempt_id == str(ended.attempt_id),
+                    models.work_attempts.c.status == "RUNNING",
+                    models.work_attempts.c.payload == encode(prior_attempt),
+                )
+                .values(status=ended.status.value, payload=encode(ended))
+            )
+            if attempt_result.rowcount != 1:
+                raise ValueError("CANCELLATION_ATTEMPT_CAS_FAILED")
+        self.works.save(connection, work, cancelled)
+        lease_result = connection.execute(
+            update(models.work_states)
+            .where(
+                models.work_states.c.work_id == str(work.work_id),
+                models.work_states.c.status == "CANCELLED",
+                models.work_states.c.state_version == cancelled.state_version,
+            )
+            .values(worker_id=None, lease_expires_at=None)
+        )
+        if lease_result.rowcount != 1:
+            raise ValueError("CANCELLATION_WORK_CAS_FAILED")
+        return cancelled
 
     def commit(self, request: TransitionCommitRequest) -> TransitionCommit:
         validate_commit_transition(request.commit, request.transition)
@@ -462,6 +687,18 @@ class TransitionService:
         )
         return work
 
+    @staticmethod
+    def _reject_latched_result(
+        connection: Connection,
+        request: TransitionCommitRequest,
+        work: WorkExecutionState,
+    ) -> None:
+        if (
+            cancel_latched(connection, str(work.meta.analysis_id))
+            and request.commit.target_status.value != "CANCELLED"
+        ):
+            raise ValueError("RUN_CANCELLED")
+
     def finish(self, request: TransitionCommitRequest) -> TransitionCommit:
         records = self.works.records
         with records.database.write() as connection:
@@ -476,6 +713,7 @@ class TransitionService:
         self.checkpoint("rename")
         with records.database.write() as connection:
             previous = self.check(connection, request)
+            self._reject_latched_result(connection, request, previous)
             claimed = self.works.validator.claim(
                 connection,
                 request.transition.action_decision_ref,

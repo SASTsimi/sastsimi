@@ -250,6 +250,27 @@ class LLMCallService:
         adapter = self._adapters.resolve(spec.provider_profile_ref, spec.model)
         return await adapter.cancel(str(spec.llm_call_id))
 
+    def validate_cancellation(
+        self,
+        *,
+        work: WorkExecutionState,
+        decision_ref: StoredDataRef,
+        call_spec_ref: StoredDataRef,
+    ) -> None:
+        """Resolve the exact route and live dispatch without provider I/O."""
+        spec, _profile, _limits, action = self._resolve_authorized_inputs(
+            work, decision_ref, call_spec_ref
+        )
+        if work.active_attempt_id is None:
+            raise ValueError("ATTEMPT_NOT_ACTIVE")
+        self._validator.require_unresolved_dispatch(
+            str(work.work_id),
+            str(work.active_attempt_id),
+            decision_ref,
+            str(action.action_id),
+        )
+        self._adapters.resolve(spec.provider_profile_ref, spec.model)
+
     def _resolve_authorized_inputs(
         self,
         work: WorkExecutionState,

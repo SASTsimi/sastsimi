@@ -11,6 +11,7 @@ from sastsimi.agents.verification import (
     VerificationCallRefs,
 )
 from sastsimi.contracts.actions import RequesterRole
+from sastsimi.contracts.dynamic import DynamicReproductionRequest
 from sastsimi.contracts.gates import TechnicalEvidenceReview
 from sastsimi.contracts.hypothesis import (
     HypothesisProcessState,
@@ -144,6 +145,26 @@ class VerificationService:
             generation=generation,
             pro_ref=pro_ref,
             con_ref=con_ref,
+            call=call,
+        )
+
+    async def create_dynamic_request_with_invocation(
+        self,
+        *,
+        generation: VerificationGenerationInputs,
+        assessment_ref: StoredDataRef,
+        verification_assignment_ref: StoredDataRef,
+        sandbox_profile_ref: StoredDataRef,
+        call: VerificationCallRefs,
+    ) -> VerificationAgentOutcome[DynamicReproductionRequest]:
+        """Return the exact CREATE_DYNAMIC_REQUEST invocation and trusted request."""
+        if self._trusted_agent is None:
+            raise RuntimeError("TRUSTED_VERIFICATION_AGENT_NOT_CONFIGURED")
+        return await self._trusted_agent.create_dynamic_request_with_invocation(
+            generation=generation,
+            assessment_ref=assessment_ref,
+            verification_assignment_ref=verification_assignment_ref,
+            sandbox_profile_ref=sandbox_profile_ref,
             call=call,
         )
 

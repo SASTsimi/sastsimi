@@ -584,6 +584,58 @@ def test_tool_selection_runs_verified_intersection_when_optional_codeql_is_missi
     assert selection.errors == ()
 
 
+@pytest.mark.parametrize("stale_revision", [False, True])
+def test_production_selection_does_not_add_unapproved_active_codeql(
+    tmp_path: Path,
+    stale_revision: bool,
+) -> None:
+    repository = _build(
+        tmp_path,
+        (
+            _write(tmp_path, "app.py", b"print('ok')\n"),
+            _write(tmp_path, "requirements.txt", b""),
+            _write(tmp_path, "Dockerfile", b"FROM python:3.12-slim\n"),
+        ),
+    )
+    registry = _Resolver()
+    approved = {
+        key: registry.selections[(key, "PYTHON")].profile_ref
+        for key in ("PYTHON_AST", "OPENGREP")
+    }
+    if stale_revision:
+        approved["OPENGREP"] = approved["OPENGREP"].model_copy(
+            update={"content_hash": "f" * 64}
+        )
+    selector = RepositoryExecutionSelector(
+        cast(ProductionCapabilityResolverPort, registry),
+        operating_system="windows",
+        architecture="x86_64",
+        approved_static_profiles=approved,
+    )
+    selection = selector.select(
+        repository,
+        meta=_selection_meta(),
+        repository_profile_ref=cast(StoredDataRef, reference(repository)),
+        git_clone_profile_ref=registry.git_ref,
+        git_checkout_profile_ref=registry.git_ref,
+    )
+    if stale_revision:
+        assert selection.status == "FAILED"
+        assert selection.selected_tools == ()
+        assert [error.code for error in selection.errors] == [
+            "CAPABILITY_REGISTRY_MISMATCH"
+        ]
+        return
+    assert selection.status == "READY"
+    assert {
+        item.adapter_key: item.tool_profile_ref for item in selection.selected_tools
+    } == approved
+    assert [gap.code for gap in selection.gaps] == [
+        "NO_ACTIVE_STATIC_CAPABILITY:CODEQL:PYTHON"
+    ]
+    assert selection.errors == ()
+
+
 def test_tool_selection_blocks_when_no_sast_capability_is_active(
     tmp_path: Path,
 ) -> None:

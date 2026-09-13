@@ -36,3 +36,16 @@ def export(data_dir: Path, finding_id: str) -> Path:
         return service(data_dir).export(finding_id)
     except ValueError as error:
         raise ReportCommandError from error
+
+
+def safe_export_reference(data_dir: Path, exported: Path) -> str:
+    """Return a data-root-relative report path without disclosing its host path."""
+
+    try:
+        root = data_dir.resolve(strict=True)
+        relative = exported.resolve(strict=True).relative_to(root)
+    except (OSError, ValueError):
+        raise ReportCommandError from None
+    if not relative.parts or relative.parts[0] != "reports":
+        raise ReportCommandError
+    return relative.as_posix()

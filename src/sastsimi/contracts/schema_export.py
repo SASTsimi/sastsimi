@@ -43,6 +43,8 @@ from .llm import (
     ProviderValidationEvidence,
     SemanticValidatorSpec,
 )
+from .policy import OfficialPolicySourceConfig, PolicyFreshnessCriterion
+from .production_authority import ProductionAuthorityCatalog
 from .records import PolicyCacheMeta, RecordMeta, RunMeta
 from .refs import HostConfigurationRef, PolicyCacheRef, RunStoredDataRef, StoredDataRef
 from .reporting import FindingIndexState, ReportProcessState
@@ -59,6 +61,7 @@ from .work import StateTransition, TransitionCommit, WorkAttempt, WorkExecutionS
 CORE_SCHEMAS: Mapping[str, type[BaseModel]] = MappingProxyType(
     {
         "run_meta": RunMeta,
+        "production_authority_catalog": ProductionAuthorityCatalog,
         "record_meta": RecordMeta,
         "policy_cache_meta": PolicyCacheMeta,
         "run_stored_data_ref": RunStoredDataRef,
@@ -102,6 +105,8 @@ CORE_SCHEMAS: Mapping[str, type[BaseModel]] = MappingProxyType(
         "llm_invocation_result": LLMInvocationResult,
         "llm_invocation_log": LLMInvocationLog,
         "evaluation_run_config": EvaluationRunConfig,
+        "official_policy_source_config": OfficialPolicySourceConfig,
+        "policy_freshness_criterion": PolicyFreshnessCriterion,
         "playbook_policy": PlaybookPolicy,
         "verification_playbook": VerificationPlaybook,
         "execution_budget_profile": ExecutionBudgetProfile,

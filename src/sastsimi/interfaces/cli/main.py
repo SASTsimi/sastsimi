@@ -1,18 +1,26 @@
 """Both executable entry points use main(argv) -> int."""
 
 import argparse
+import asyncio
+import re
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import NoReturn
+from typing import NoReturn, cast
 from uuid import uuid4
 
 from sastsimi import bootstrap
+from sastsimi.config.production_profile import load_production_profile
 from sastsimi.interfaces.cli import analyze as analyze_command
+from sastsimi.interfaces.cli import cancel as cancel_command
 from sastsimi.interfaces.cli import capability as capability_command
 from sastsimi.interfaces.cli import commands
+from sastsimi.interfaces.cli import demo as demo_command
+from sastsimi.interfaces.cli import onboarding as onboarding_command
 from sastsimi.interfaces.cli import report as report_command
 from sastsimi.interfaces.cli import reports as reports_command
-from sastsimi.interfaces.cli import results as results_command
+from sastsimi.interfaces.cli import result as result_command
+from sastsimi.interfaces.cli import status as status_command
 from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.output import emit_data, emit_result
 
@@ -27,7 +35,18 @@ class _Parser(argparse.ArgumentParser):
         raise _InputError
 
 
-def main(argv: list[str] | None = None) -> int:
+def _exact_commit(value: str) -> str:
+    if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value) is None:
+        raise argparse.ArgumentTypeError("exact commit required")
+    return value
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    production_analyze: analyze_command.ProductionAnalyzeEntrypoint | None = None,
+    production_query: analyze_command.ProductionQueryEntrypoint | None = None,
+) -> int:
     output_format = "text"
     command_name = "doctor"
     parser = _Parser(prog="sastsimi", allow_abbrev=False)
@@ -56,15 +75,44 @@ def main(argv: list[str] | None = None) -> int:
     downgrade_parser.add_argument("revision")
     downgrade_parser.add_argument("--format", choices=["text", "json"])
     analyze_parser = subparsers.add_parser(
-        "analyze", help="run the deterministic fake analysis", allow_abbrev=False
+        "analyze", help="run a production repository analysis", allow_abbrev=False
     )
-    analyze_parser.add_argument(
+    analyze_parser.add_argument("--repo", required=True)
+    analyze_parser.add_argument("--commit", required=True, type=_exact_commit)
+    analyze_parser.add_argument("--profile", required=True, type=Path)
+    analyze_parser.add_argument("--format", choices=["text", "json"])
+    demo_parser = subparsers.add_parser(
+        "demo", help="run deterministic local scenarios", allow_abbrev=False
+    )
+    demo_commands = demo_parser.add_subparsers(dest="demo_command", required=True)
+    demo_analyze = demo_commands.add_parser("analyze", allow_abbrev=False)
+    demo_analyze.add_argument(
         "--scenario", choices=["TRUE", "FALSE", "HOLD", "REVISE", "CHAINING"]
     )
-    analyze_parser.add_argument("--format", choices=["text", "json"])
-    results_parser = subparsers.add_parser(
-        "results", help="read fake analysis progress/result", allow_abbrev=False
+    demo_analyze.add_argument("--format", choices=["text", "json"])
+    demo_results = demo_commands.add_parser("results", allow_abbrev=False)
+    demo_results.add_argument("--format", choices=["text", "json"])
+    status_parser = subparsers.add_parser(
+        "status", help="read production analysis progress", allow_abbrev=False
     )
+    status_parser.add_argument("analysis_id")
+    status_parser.add_argument("--format", choices=["text", "json"])
+    cancel_parser = subparsers.add_parser(
+        "cancel", help="durably request analysis cancellation", allow_abbrev=False
+    )
+    cancel_parser.add_argument("analysis_id")
+    cancel_parser.add_argument("--format", choices=["text", "json"])
+    resume_parser = subparsers.add_parser(
+        "resume",
+        help="validate pinned restart input (dispatch unavailable)",
+        allow_abbrev=False,
+    )
+    resume_parser.add_argument("analysis_id")
+    resume_parser.add_argument("--format", choices=["text", "json"])
+    results_parser = subparsers.add_parser(
+        "results", help="read one terminal production result", allow_abbrev=False
+    )
+    results_parser.add_argument("analysis_id")
     results_parser.add_argument("--format", choices=["text", "json"])
     reports_parser = subparsers.add_parser(
         "reports", help="list current human-review reports", allow_abbrev=False
@@ -82,6 +130,37 @@ def main(argv: list[str] | None = None) -> int:
     report_export.add_argument(
         "--format", dest="export_format", choices=["markdown"], required=True
     )
+    onboarding_parser = subparsers.add_parser(
+        "onboarding",
+        help="record and verify production provider/prompt approvals",
+        allow_abbrev=False,
+    )
+    onboarding_commands = onboarding_parser.add_subparsers(
+        dest="onboarding_command", required=True
+    )
+    onboarding_init = onboarding_commands.add_parser(
+        "init",
+        help="write a pending probe and approval plan without granting approval",
+        allow_abbrev=False,
+    )
+    onboarding_init.add_argument("--profile", type=Path, required=True)
+    onboarding_init.add_argument("--output-dir", type=Path, required=True)
+    onboarding_init.add_argument("--format", choices=["text", "json"])
+    onboarding_requirements = onboarding_commands.add_parser(
+        "requirements", allow_abbrev=False
+    )
+    onboarding_requirements.add_argument("--profile", type=Path, required=True)
+    onboarding_requirements.add_argument("--format", choices=["text", "json"])
+    onboarding_prepare = onboarding_commands.add_parser("prepare", allow_abbrev=False)
+    onboarding_prepare.add_argument("--profile", type=Path, required=True)
+    onboarding_prepare.add_argument("--manifest", type=Path, required=True)
+    onboarding_prepare.add_argument(
+        "--evidence", type=Path, action="append", default=[]
+    )
+    onboarding_prepare.add_argument("--format", choices=["text", "json"])
+    onboarding_status = onboarding_commands.add_parser("status", allow_abbrev=False)
+    onboarding_status.add_argument("--profile", type=Path, required=True)
+    onboarding_status.add_argument("--format", choices=["text", "json"])
     capability_parser = subparsers.add_parser(
         "capability",
         help="probe and approve production capabilities",
@@ -138,12 +217,82 @@ def main(argv: list[str] | None = None) -> int:
             return int(ExitCode.OK)
         if args.command == "analyze":
             command_name = "analyze"
-            data = analyze_command.run(config.data_dir, args.scenario or "TRUE")
+            if production_analyze is None:
+                production_analyze = cast(
+                    analyze_command.ProductionAnalyzeEntrypoint,
+                    bootstrap.build_production_analyze(),
+                )
+            request = analyze_command.ProductionAnalyzeRequest(
+                data_dir=config.data_dir,
+                repository=args.repo,
+                commit=args.commit,
+                profile=args.profile,
+            )
+            analyze_result = asyncio.run(
+                analyze_command.run(production_analyze, request)
+            )
+            emit_data(
+                output_format,
+                sys.stdout if analyze_result.code == ExitCode.OK else sys.stderr,
+                command=command_name,
+                data=analyze_result.data,
+                code=analyze_result.code,
+            )
+            return int(analyze_result.code)
+        if args.command == "demo":
+            command_name = "demo " + args.demo_command
+            if args.demo_command == "analyze":
+                data = demo_command.analyze(config.data_dir, args.scenario or "TRUE")
+            else:
+                data = demo_command.results(config.data_dir)
+            emit_data(output_format, sys.stdout, command=command_name, data=data)
+            return int(ExitCode.OK)
+        if args.command == "resume":
+            command_name = "resume"
+            bootstrap.inspect_production_resume(config.data_dir, args.analysis_id)
+        if args.command == "cancel":
+            command_name = "cancel"
+            try:
+                view = bootstrap.request_production_cancel(
+                    config.data_dir, args.analysis_id
+                )
+            except ValueError:
+                emit_result(
+                    ExitCode.INTEGRITY_ERROR,
+                    output_format,
+                    sys.stderr,
+                    command=command_name,
+                )
+                return int(ExitCode.INTEGRITY_ERROR)
+            emit_data(
+                output_format,
+                sys.stdout,
+                command=command_name,
+                data=cancel_command.project(view),
+            )
+            return int(ExitCode.OK)
+        if args.command == "status":
+            command_name = "status"
+            if production_query is None:
+                production_query = cast(
+                    analyze_command.ProductionQueryEntrypoint,
+                    bootstrap.build_production_query(config.data_dir),
+                )
+            data = status_command.run(production_query, args.analysis_id)
             emit_data(output_format, sys.stdout, command=command_name, data=data)
             return int(ExitCode.OK)
         if args.command == "results":
             command_name = "results"
-            data = results_command.run(config.data_dir)
+            if production_query is None:
+                production_query = cast(
+                    analyze_command.ProductionQueryEntrypoint,
+                    bootstrap.build_production_query(config.data_dir),
+                )
+            data = result_command.run(
+                production_query,
+                args.analysis_id,
+                output_format="json" if output_format == "json" else "summary",
+            )
             emit_data(output_format, sys.stdout, command=command_name, data=data)
             return int(ExitCode.OK)
         if args.command == "reports":
@@ -161,9 +310,51 @@ def main(argv: list[str] | None = None) -> int:
                     output_format,
                     sys.stdout,
                     command=command_name,
-                    data={"finding_id": args.finding_id, "path": str(path)},
+                    data={
+                        "finding_id": args.finding_id,
+                        "path": report_command.safe_export_reference(
+                            config.data_dir, path
+                        ),
+                    },
                 )
             return int(ExitCode.OK)
+        if args.command == "onboarding":
+            command_name = "onboarding " + args.onboarding_command
+            profile = load_production_profile(args.profile)
+            repository_root = bootstrap.builtin_resource_root()
+            if args.onboarding_command == "init":
+                onboarding_result = onboarding_command.run_init(
+                    args.output_dir,
+                    profile=profile,
+                    repository_root=repository_root,
+                )
+            elif args.onboarding_command == "requirements":
+                onboarding_result = onboarding_command.run_requirements(
+                    profile, repository_root=repository_root
+                )
+            elif args.onboarding_command == "prepare":
+                onboarding_result = onboarding_command.run_prepare(
+                    config.data_dir,
+                    profile=profile,
+                    manifest_path=args.manifest,
+                    evidence_paths=tuple(args.evidence),
+                    repository_root=repository_root,
+                    clock=lambda: datetime.now(UTC),
+                )
+            else:
+                onboarding_result = onboarding_command.run_status(
+                    config.data_dir,
+                    profile=profile,
+                    repository_root=repository_root,
+                    clock=lambda: datetime.now(UTC),
+                )
+            emit_data(
+                output_format,
+                sys.stdout,
+                command=command_name,
+                data=onboarding_result.data,
+            )
+            return int(onboarding_result.code)
         if args.command == "capability":
             command_name = "capability " + args.capability_command
             if args.capability_command == "probe":
@@ -210,8 +401,24 @@ def main(argv: list[str] | None = None) -> int:
         code = ExitCode.CONFIG_ERROR
     except bootstrap.MigrationRequired:
         code = ExitCode.CONFIG_ERROR
+    except (
+        analyze_command.ProductionAnalyzeUnavailable,
+        bootstrap.ProductionResumeUnavailable,
+    ) as error:
+        emit_result(
+            ExitCode.CAPABILITY_UNSUPPORTED,
+            output_format,
+            sys.stderr,
+            command=command_name,
+            reason_code=error.reason_code,
+        )
+        return int(ExitCode.CAPABILITY_UNSUPPORTED)
     except report_command.ReportCommandError:
         code = ExitCode.REPORT_UNAVAILABLE
+    except result_command.ResultIncomplete:
+        code = ExitCode.RESULT_INCOMPLETE
+    except result_command.ResultIntegrityError:
+        code = ExitCode.INTEGRITY_ERROR
     except Exception:
         trace_id = "trace-" + str(uuid4())
         logger = bootstrap.build_diagnostic_logger(sys.stderr, "ERROR")

@@ -1,6 +1,6 @@
 # SASTSIMI 설계 문서 안내
 
-이 폴더에는 승인된 Architecture v5 구현 기준 설계와 팀 검토 기록이 들어 있습니다. 실행 코드는 아직 구현되지 않았습니다.
+이 폴더에는 승인된 Architecture v5 구현 기준 설계, 팀 검토 기록과 운영 안내가 들어 있습니다. 실행 코드는 구현 중이며 실제 저장소의 production 전체 완주 검증은 아직 끝나지 않았습니다.
 
 ## 처음이라면 여기부터 읽으세요
 
@@ -9,6 +9,11 @@
 3. [역할과 담당자](./governance/OWNERSHIP.md) — 누가 어떤 영역과 Issue를 맡는지 보여 줍니다.
 4. [실제 Issue 현황](./review/ISSUE_TRACKER.md) — GitHub Issue, 담당자와 진행 상태를 보여 줍니다.
 5. [Architecture v5 설계 입구](./architecture-v5/README.md) — 전체 기술 흐름과 번호 문서를 안내합니다.
+6. [설치와 실행 환경 준비](./installation.md) — 실제 실행에 필요한 프로그램과 capability 확인 방법을 안내합니다.
+7. [Provider 인증과 운영 활성화](./provider-setup.md) — OpenAI API key와 공식 Codex 회원 로그인 경로를 안전하게 연결하고, 운영 승인 조건을 구분합니다.
+8. [Onboarding 근거 작성 안내](./onboarding-evidence.md) — PVD와 두 manifest의 실제 필드와 READY 확인 순서를 설명합니다.
+9. [저장소 분석 실행 안내](./usage.md) — 저장소 입력부터 Markdown 보고서 확인까지의 CLI 순서를 설명합니다.
+10. [오류와 안전한 대응](./troubleshooting.md) — 실행 실패를 취약점 판정과 섞지 않고 해결합니다.
 
 ## 역할별 빠른 탐색 경로
 
@@ -28,6 +33,7 @@
 ## 현재 상태
 
 - `DESIGN_APPROVED`: 역할별 검토와 전체 문서 추적 검토를 거쳐 구현 기준 설계로 승인되었습니다.
-- `NOT_IMPLEMENTED`: 실행 코드는 아직 구현되지 않았습니다.
+- `IMPLEMENTATION_IN_PROGRESS`: 계약과 개별 실행 모듈은 구현 중입니다.
+- `PRODUCTION_E2E_NOT_YET_PROVEN`: Fake Adapter 없이 실제 저장소 clone부터 Markdown 보고서까지 완주한 출시 증거는 아직 없습니다.
 
 GitHub Issue와 PR에서 결정한 내용은 관련 번호 문서와 [설계 결정 기록](./review/decisions/README.md)에 반영되어야 실제 기준으로 인정됩니다.

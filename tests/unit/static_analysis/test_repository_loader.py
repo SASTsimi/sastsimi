@@ -266,7 +266,10 @@ class FreeReserveCrossingRunner(QuotaCrossingRunner):
         self.specs.append(spec)
         self.storage.crossed = True
         try:
-            await asyncio.wait_for(self._cancelled.wait(), timeout=0.1)
+            # A loaded Windows xdist worker may not schedule the quota monitor
+            # within 100 ms.  Keep the fake process alive long enough to test
+            # cancellation rather than scheduler timing.
+            await asyncio.wait_for(self._cancelled.wait(), timeout=1.0)
         except TimeoutError:
             self.natural_finished = True
         return result(spec, outcome="CANCELLED" if self.cancelled else "SUCCEEDED")

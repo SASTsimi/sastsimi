@@ -10,3 +10,9 @@ class DynamicRegistrationPort(Protocol):
     def register(
         self, work_id: str, decision_ref: RecordRef, reservation_ref: RecordRef
     ) -> WorkExecutionState: ...
+
+    def register_and_park(
+        self, work_id: str, decision_ref: RecordRef, reservation_ref: RecordRef
+    ) -> WorkExecutionState:
+        """Atomically expose one child as READY and park its Verification parent."""
+        ...

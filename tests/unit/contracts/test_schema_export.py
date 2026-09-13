@@ -51,6 +51,7 @@ EXPECTED_KINDS = {
     "verification_budget_profile",
     "dynamic_reproduction_lifecycle_profile",
     "budget_profile_binding",
+    "production_authority_catalog",
     "budget_units",
     "budget_reservation",
     "budget_ledger_entry",
@@ -59,6 +60,8 @@ EXPECTED_KINDS = {
     "static_tool_profile",
     "tool_capability_evidence",
     "runtime_capability_profile",
+    "official_policy_source_config",
+    "policy_freshness_criterion",
 }
 
 

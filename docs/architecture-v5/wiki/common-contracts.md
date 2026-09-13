@@ -169,7 +169,7 @@ Technical Gate는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 
 
 어느 exact template과 자료로 결과를 만들었는지 연결되지 않거나 다른 역할·작업의 자료가 섞이면 LLM을 호출하지 않습니다. 호출 뒤 형식이나 의미 검사를 통과하지 못한 응답도 역할 결과로 저장하지 않습니다.
 
-R7의 환경·계획 task는 Dockerfile, README, package manifest와 lockfile을 조회한 `CodeContextResponse`와 실제 redacted `code_fragment` 내용을 함께 받습니다. reference만 전달하거나 읽지 못한 내용을 추측하지 않습니다. 실행 task만 Sandbox 내부 Runtime tool policy를 사용하고, requirements·plan·PoC candidate 작성과 최종 해석 task에는 provider command/file/web tool을 허용하지 않습니다. Session Manager는 R7 conclusion의 outcome·evidence·linkage·limitations를 새로 판단하거나 바꾸지 않고 실제 log와의 일치만 검사합니다.
+R7의 환경·계획 task는 Dockerfile, README, package manifest와 lockfile을 조회한 `CodeContextResponse`와 실제 redacted `code_fragment` 내용을 함께 받습니다. PoC candidate 작성 task도 R6 request가 지정한 exact `CodeContextResponse`와 그 안의 실제 코드 artifact를 받습니다. Runtime은 같은 analysis·workspace·commit·hypothesis인지, plan·environment가 현재 R7 attempt인지, artifact digest가 맞는지 먼저 확인합니다. 검증된 코드의 민감정보를 제거한 본문만 prompt에 넣고 원래 exact reference는 호출 기록에 남깁니다. reference만 전달하거나 읽지 못한 내용을 추측하지 않으며, 불일치·attempt 혼합·저장소 읽기 실패는 provider 호출 전에 막습니다. 실행 task만 Sandbox 내부 Runtime tool policy를 사용하고, requirements·plan·PoC candidate 작성과 최종 해석 task에는 provider command/file/web tool을 허용하지 않습니다. Session Manager는 R7 conclusion의 outcome·evidence·linkage·limitations를 새로 판단하거나 바꾸지 않고 실제 log와의 일치만 검사합니다.
 
 평가 실행은 시작할 때 평가 장면, 지표·한도, corpus·사람 정답·채점 방식, provider·model·session의 정확한 설정 수정본을 `AnalysisRunState.eval_config_refs`에 고정합니다. 종료 결과의 `AnalysisRunResult.eval_config_refs`는 이 전체 집합과 정확히 같아야 하며 `PRODUCTION`에서는 둘 다 빈 목록입니다. 두 평가 결과는 이 목록이 exact reference 기준으로 같을 때만 직접 비교합니다. 이 목록은 평가 출처 확인용이며 Gate·Primitive·Reporter 입력이 아닙니다.
 

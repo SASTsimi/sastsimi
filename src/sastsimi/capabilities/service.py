@@ -40,6 +40,7 @@ from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
 from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.dynamic_sandbox import TrustedDockerTarget
+from sastsimi.ports.static_tool import ProductionStaticOutputQuotaPort
 from sastsimi.runtime.configuration_registry import ConfigurationRegistry
 
 from .docker_build_boundary import DockerBuildBoundaryProbeResult
@@ -100,6 +101,8 @@ class _CapabilityProbeEngine:
         openai_probe: OpenAIProbeTransport | None = None,
         scratch_root: Path,
         docker_build_capability_probe: DockerBuildCapabilityProbe,
+        static_output_quota: ProductionStaticOutputQuotaPort | None = None,
+        codeql_database_limit_bytes: int | None = None,
     ) -> None:
         if store.host_id != host_id or _SAFE_IDENTIFIER.fullmatch(host_id) is None:
             raise ValueError("PROBE_HOST_MISMATCH")
@@ -118,6 +121,8 @@ class _CapabilityProbeEngine:
         self._openai = openai_probe
         self._scratch_root = scratch_root
         self._docker_build_capability_probe = docker_build_capability_probe
+        self._static_output_quota = static_output_quota
+        self._codeql_database_limit_bytes = codeql_database_limit_bytes
 
     def probe(
         self,
@@ -156,7 +161,14 @@ class _CapabilityProbeEngine:
                 profile_key, subject_key = "python-ast", "python"
                 status, activation_supported = "PASSED", True
                 summary = "Python AST parse probe passed"
-        elif kind in {"GIT", "OPENGREP", "DOCKER", "CODEQL"}:
+        elif kind == "CODEQL":
+            # Production has neither a trusted prebuilt DB binding nor an
+            # approved quota backend. A supplied protocol object cannot enable it.
+            summary = (
+                "CodeQL production prebuilt database and hard quota binding "
+                "are unavailable"
+            )
+        elif kind in {"GIT", "OPENGREP", "DOCKER"}:
             name = {
                 "GIT": "git",
                 "OPENGREP": "opengrep",
@@ -222,7 +234,7 @@ class _CapabilityProbeEngine:
                             ) and self._probe_git_operations(executable)
                         elif kind == "OPENGREP":
                             control_passed = self._probe_opengrep_analyze(executable)
-                        elif kind == "DOCKER":
+                        else:
                             self._scratch_root.mkdir(parents=True, exist_ok=True)
                             execution_target_hash = self._docker_target_hash(executable)
                             boundary_result = self._docker_build_boundary_result()
@@ -243,8 +255,6 @@ class _CapabilityProbeEngine:
                                 and self._docker_target_hash(executable)
                                 == execution_target_hash
                             )
-                        else:
-                            control_passed = False
                         digest_unchanged = sha256_file(executable) == observed_digest
                     except (OSError, ValueError, subprocess.SubprocessError):
                         control_passed = False
@@ -260,8 +270,6 @@ class _CapabilityProbeEngine:
                     elif kind == "OPENGREP" and control_passed and digest_unchanged:
                         status, activation_supported = "PASSED", True
                         summary = "OpenGrep binary probe passed"
-                    elif kind == "CODEQL":
-                        summary = "CodeQL quota control probe is unavailable"
                     elif kind == "DOCKER" and docker_build_capability is None:
                         summary = (
                             boundary_result.safe_summary
@@ -474,6 +482,8 @@ class _CapabilityProbeEngine:
         """Publish ACTIVE only after a human confirms the exact probed target."""
 
         receipt = self._store.get(probe_id)
+        if receipt.kind == "CODEQL":
+            raise ValueError("PROBE_NOT_ACTIVATABLE")
         if receipt.approved_profile_ref is not None:
             self._registry.resolve_pinned_active_profile(receipt.approved_profile_ref)
             return receipt.approved_profile_ref
@@ -623,6 +633,7 @@ class _CapabilityProbeEngine:
         control = {
             "GIT": "SAFE_REPOSITORY_LOADER",
             "DOCKER": "SANDBOX_OUTER_BOUNDARY",
+            "CODEQL": "STATIC_WRITE_DENYING_QUOTA",
         }.get(kind)
         if control is None:
             return ()

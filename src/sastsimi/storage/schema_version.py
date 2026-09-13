@@ -1,6 +1,6 @@
 """Shared migration identity without a database/migration import cycle."""
 
-HEAD = "0005_chaining_matches"
+HEAD = "0008_cancellation_observations"
 
 
 class MigrationRequired(ValueError):

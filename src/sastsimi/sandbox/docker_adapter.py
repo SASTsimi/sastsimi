@@ -18,6 +18,7 @@ from typing import Literal
 from sastsimi.contracts.dynamic import POC_RUNTIME_PATH
 from sastsimi.contracts.prompt_redaction import redact_untrusted_text
 from sastsimi.contracts.refs import HostConfigurationRef
+from sastsimi.ports.docker_state import DockerContainerState as DockerContainerState
 from sastsimi.ports.dynamic_sandbox import (
     SandboxRunSpec,
     TrustedDockerTarget,
@@ -61,20 +62,6 @@ class DockerCommandOutcome:
     stdout: bytes
     stderr: bytes
     timed_out: bool
-
-
-@dataclass(frozen=True, slots=True)
-class DockerContainerState:
-    container_id: str
-    image_digest: str
-    user: str
-    network_mode: str
-    privileged: bool
-    read_only_rootfs: bool
-    running: bool
-    exit_code: int
-    health_status: str | None
-    labels: Mapping[str, str]
 
 
 @dataclass(frozen=True, slots=True)

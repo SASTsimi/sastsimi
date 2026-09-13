@@ -319,17 +319,20 @@ def _selection(
 
 
 @pytest.mark.asyncio
-async def test_real_python_and_javascript_repositories_reach_tool_selection(
-    tmp_path: Path,
-) -> None:
-    git = shutil.which("git")
-    if git is None:
-        pytest.skip("Git is not installed")
-    git_executable = Path(git)
-    resolver, git_ref = _active_registry(tmp_path / "capabilities")
-    cases = (
-        (
-            "python",
+@pytest.mark.parametrize(
+    (
+        "name",
+        "tracked",
+        "untracked",
+        "languages",
+        "frameworks",
+        "config_kinds",
+        "execution_hints",
+        "adapters",
+    ),
+    (
+        pytest.param(
+            "python-without-dockerfile",
             {
                 "src/app.py": "from fastapi import FastAPI\n",
                 "requirements.txt": "fastapi>=0.100\n",
@@ -337,49 +340,82 @@ async def test_real_python_and_javascript_repositories_reach_tool_selection(
                     '[project]\nname="fixture"\ndependencies=["fastapi"]\n'
                     '[project.scripts]\nstart="src.app:main"\n'
                 ),
-                "Dockerfile": "FROM python:3.12-slim\n",
             },
-            {"package.json": '{"dependencies":{"express":"*"}}'},
+            {
+                "Dockerfile": "FROM python:3.12-slim\n",
+                "package.json": '{"dependencies":{"express":"*"}}',
+            },
             ("PYTHON",),
-            ("DOCKERFILE", "PYPROJECT", "REQUIREMENTS"),
+            ("FASTAPI",),
+            ("PYPROJECT", "REQUIREMENTS"),
+            (("pyproject.toml", "PYTHON_SCRIPT", "start"),),
             ("CODEQL", "OPENGREP", "PYTHON_AST"),
+            id="python-without-dockerfile",
         ),
-        (
-            "javascript",
+        pytest.param(
+            "javascript-with-dockerfile",
             {
                 "src/server.js": "export const server = true;\n",
                 "package.json": (
                     '{"dependencies":{"express":"^5.0.0"},'
                     '"scripts":{"start":"node src/server.js"}}'
                 ),
+                "Dockerfile": "FROM node:22-alpine\n",
             },
             {"requirements.txt": "flask\n"},
             ("JAVASCRIPT",),
-            ("PACKAGE_JSON",),
+            ("EXPRESS",),
+            ("DOCKERFILE", "PACKAGE_JSON"),
+            (
+                ("Dockerfile", "DOCKERFILE", "dockerfile"),
+                ("package.json", "PACKAGE_SCRIPT", "start"),
+            ),
             ("CODEQL", "OPENGREP"),
+            id="javascript-with-dockerfile",
         ),
+    ),
+)
+async def test_real_repository_reaches_expected_tool_selection(
+    tmp_path: Path,
+    name: str,
+    tracked: dict[str, str],
+    untracked: dict[str, str],
+    languages: tuple[str, ...],
+    frameworks: tuple[str, ...],
+    config_kinds: tuple[str, ...],
+    execution_hints: tuple[tuple[str, str, str], ...],
+    adapters: tuple[str, ...],
+) -> None:
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("Git is not installed")
+    git_executable = Path(git)
+    resolver, git_ref = _active_registry(tmp_path / "capabilities")
+    source, commit_id = _source_repository(
+        tmp_path / name / "source", tracked=tracked, untracked=untracked
     )
-    for name, tracked, untracked, languages, config_kinds, adapters in cases:
-        source, commit_id = _source_repository(
-            tmp_path / name / "source", tracked=tracked, untracked=untracked
-        )
-        preparation = await _prepare(
-            tmp_path / name / "analysis", source, commit_id, git_executable
-        )
-        assert preparation.status == "READY", preparation.errors
-        assert preparation.resolved_commit_id == commit_id
-        assert preparation.root is not None
-        assert _git(preparation.root, "rev-parse", "HEAD") == commit_id
-        assert _git(preparation.root, "branch", "--show-current") == ""
-        profile = _profile(preparation)
-        assert profile.status == "READY"
-        assert tuple(item.name for item in profile.languages) == languages
-        assert tuple(item.kind for item in profile.config_files) == config_kinds
-        assert {item.git_path for item in profile.tracked_files} == set(tracked)
-        assert not ({item.git_path for item in profile.tracked_files} & set(untracked))
-        selection = _selection(profile, resolver, git_ref)
-        assert selection.status == "READY"
-        assert tuple(item.adapter_key for item in selection.selected_tools) == adapters
+    preparation = await _prepare(
+        tmp_path / name / "analysis", source, commit_id, git_executable
+    )
+    assert preparation.status == "READY", preparation.errors
+    assert preparation.resolved_commit_id == commit_id
+    assert preparation.root is not None
+    assert _git(preparation.root, "rev-parse", "HEAD") == commit_id
+    assert _git(preparation.root, "branch", "--show-current") == ""
+    profile = _profile(preparation)
+    assert profile.status == "READY"
+    assert tuple(item.name for item in profile.languages) == languages
+    assert tuple(item.name for item in profile.frameworks) == frameworks
+    assert tuple(item.kind for item in profile.config_files) == config_kinds
+    assert (
+        tuple((item.path, item.kind, item.name) for item in profile.execution_hints)
+        == execution_hints
+    )
+    assert {item.git_path for item in profile.tracked_files} == set(tracked)
+    assert not ({item.git_path for item in profile.tracked_files} & set(untracked))
+    selection = _selection(profile, resolver, git_ref)
+    assert selection.status == "READY"
+    assert tuple(item.adapter_key for item in selection.selected_tools) == adapters
 
 
 @pytest.mark.asyncio
@@ -417,7 +453,7 @@ async def test_unconfirmed_repository_is_blocked_without_a_false_verdict(
     assert not hasattr(selection, "verdict")
 
 
-def test_unapproved_or_failed_probe_cannot_activate_a_production_capability(
+def test_failed_package_probe_cannot_activate_or_create_a_false_verdict(
     tmp_path: Path,
 ) -> None:
     runtime, evidence, raw_ref = _runtime(tmp_path)
@@ -437,6 +473,7 @@ def test_unapproved_or_failed_probe_cannot_activate_a_production_capability(
             "safe_summary": "The exact capability probe failed.",
         }
     )
+    assert not hasattr(rejected, "verdict")
     evidence.capability_approvals.add(content_hash(rejected))
     rejected_ref = runtime.configuration.register_capability_approval(rejected)
     with pytest.raises(ValueError, match="CAPABILITY_APPROVAL_DECISION_MISMATCH"):
