@@ -24,6 +24,7 @@ from sastsimi.contracts.base import ContractModel, NonEmptyStr, Sha256
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.llm import Environment, LLMRole, Product
 from sastsimi.contracts.prompt_redaction import assert_safe_provider_text
+from sastsimi.contracts.refs import HostConfigurationRef
 from sastsimi.orchestration.production_capabilities import (
     ProfileBackedProductionCapabilityBundle,
     production_profile_hash,
@@ -125,15 +126,115 @@ class RouteOnboardingApproval(ContractModel):
     approved_at: AwareDatetime
 
 
+class ProvisioningCapability(ContractModel):
+    """One exact host capability revision selected for a production slot."""
+
+    slot: Literal[
+        "GIT_CLONE",
+        "GIT_CHECKOUT",
+        "PYTHON_RUNTIME",
+        "AST_PYTHON",
+        "CODEQL_PYTHON",
+        "CODEQL_JAVASCRIPT",
+        "OPENGREP_PYTHON",
+        "OPENGREP_JAVASCRIPT",
+        "DOCKER",
+    ]
+    profile_ref: HostConfigurationRef
+
+
+class ProvisioningArtifact(ContractModel):
+    """Content-addressed operator input; its bytes are never inferred."""
+
+    slot: Literal[
+        "WORKSPACE_STORAGE",
+        "STATIC_ANALYSIS",
+        "VERIFICATION_PLAYBOOKS",
+        "SANDBOX_PROFILE",
+        "POLICY_CATALOG",
+        "PROVIDER_CONFIGURATION",
+        "PROMPT_ROUTES",
+    ]
+    content_sha256: Sha256
+
+
+class ProductionProvisioningManifest(ContractModel):
+    """Exact, credential-free inputs required to construct one run bundle.
+
+    The approval receipt deliberately names immutable host revisions and
+    content-addressed configuration artifacts.  A provisioner must resolve and
+    revalidate every item; absence is not permission to select a default.
+    """
+
+    schema_version: Literal[1]
+    profile_hash: Sha256
+    host_id: NonEmptyStr
+    created_at: AwareDatetime
+    expires_at: AwareDatetime
+    approved_by: NonEmptyStr
+    capabilities: tuple[ProvisioningCapability, ...]
+    artifacts: tuple[ProvisioningArtifact, ...]
+
+    @model_validator(mode="after")
+    def exact_closure(self) -> Self:
+        capability_slots = tuple(item.slot for item in self.capabilities)
+        artifact_slots = tuple(item.slot for item in self.artifacts)
+        required_capabilities = {
+            "GIT_CLONE",
+            "GIT_CHECKOUT",
+            "PYTHON_RUNTIME",
+            "AST_PYTHON",
+        }
+        required_artifacts = {
+            "WORKSPACE_STORAGE",
+            "STATIC_ANALYSIS",
+            "VERIFICATION_PLAYBOOKS",
+            "SANDBOX_PROFILE",
+            "POLICY_CATALOG",
+            "PROVIDER_CONFIGURATION",
+            "PROMPT_ROUTES",
+        }
+        static_slots = {
+            "AST_PYTHON",
+            "CODEQL_PYTHON",
+            "CODEQL_JAVASCRIPT",
+            "OPENGREP_PYTHON",
+            "OPENGREP_JAVASCRIPT",
+        }
+        if (
+            self.created_at >= self.expires_at
+            or len(capability_slots) != len(set(capability_slots))
+            or len(artifact_slots) != len(set(artifact_slots))
+            or not required_capabilities <= set(capability_slots)
+            or set(artifact_slots) != required_artifacts
+            or any(
+                item.profile_ref.host_id != self.host_id
+                for item in self.capabilities
+            )
+            or any(
+                item.profile_ref.data_kind
+                != (
+                    "static_tool_profile"
+                    if item.slot in static_slots
+                    else "runtime_capability_profile"
+                )
+                for item in self.capabilities
+            )
+        ):
+            raise ValueError("PRODUCTION_PROVISIONING_APPROVAL_INVALID")
+        return self
+
+
 class ProductionOnboardingManifest(ContractModel):
     """Credential-free, immutable operator approval input for one profile."""
 
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     profile_hash: Sha256
     created_at: AwareDatetime
     expires_at: AwareDatetime
     approved_by: NonEmptyStr
     policy_artifact_sha256: Sha256
+    provisioning_manifest_sha256: Sha256 | None = None
     provider_approvals: tuple[ProviderOnboardingApproval, ...]
     route_approvals: tuple[RouteOnboardingApproval, ...]
 
@@ -153,6 +254,8 @@ class ProductionOnboardingManifest(ContractModel):
                 for item in self.route_approvals
             )
             or self.created_at >= self.expires_at
+            or (self.schema_version == 2)
+            != (self.provisioning_manifest_sha256 is not None)
         ):
             raise ValueError("PRODUCTION_ONBOARDING_APPROVAL_INVALID")
         return self
@@ -254,6 +357,7 @@ class AnalysisCapabilityProvisioner(Protocol):
         profile: ProductionProfile,
         scope: object,
         manifest: ProductionOnboardingManifest,
+        provisioning: ProductionProvisioningManifest,
         evidence: Callable[[str], bytes],
         installer: ProductionFeatureInstaller,
     ) -> ProfileBackedProductionCapabilityBundle: ...
@@ -374,12 +478,14 @@ class OnboardedProductionCapabilityBundleLoader:
     ) -> ProfileBackedProductionCapabilityBundle:
         store = self._store_for(data_dir)
         manifest = self.load_for_profile(profile, data_dir=data_dir)
+        provisioning = self._load_provisioning(store, manifest, profile)
         return self._provision(
             data_dir=data_dir,
             request=request,
             profile=profile,
             scope=scope,
             manifest=manifest,
+            provisioning=provisioning,
             evidence=store.require_evidence,
             installer=self._installer,
         )
@@ -419,6 +525,38 @@ class OnboardedProductionCapabilityBundleLoader:
             }
         )
 
+    def _load_provisioning(
+        self,
+        store: FilesystemProductionOnboardingStore,
+        manifest: ProductionOnboardingManifest,
+        profile: ProductionProfile,
+    ) -> ProductionProvisioningManifest:
+        digest = manifest.provisioning_manifest_sha256
+        if digest is None:
+            raise ProductionOnboardingUnavailable(
+                "PRODUCTION_PROVISIONING_APPROVAL_REQUIRED"
+            )
+        try:
+            payload = store.require_evidence(digest)
+            provisioning = ProductionProvisioningManifest.model_validate_json(payload)
+        except (ValueError, ProductionOnboardingUnavailable):
+            raise ProductionOnboardingUnavailable(
+                "PRODUCTION_PROVISIONING_APPROVAL_STALE"
+            ) from None
+        now = self._clock()
+        if (
+            provisioning.profile_hash != manifest.profile_hash
+            or provisioning.host_id != profile.host_id
+            or now >= provisioning.expires_at
+            or provisioning.approved_by != manifest.approved_by
+        ):
+            raise ProductionOnboardingUnavailable(
+                "PRODUCTION_PROVISIONING_APPROVAL_STALE"
+            )
+        for item in provisioning.artifacts:
+            store.require_evidence(item.content_sha256)
+        return provisioning
+
 
 def read_builtin_prompt(repository_root: Path, relative: Path) -> bytes:
     """Read one canonical prompt without following links outside the source tree."""
@@ -454,6 +592,9 @@ __all__ = [
     "PVDObservation",
     "ProductionOnboardingManifest",
     "ProductionOnboardingUnavailable",
+    "ProductionProvisioningManifest",
+    "ProvisioningArtifact",
+    "ProvisioningCapability",
     "ProviderOnboardingApproval",
     "RouteOnboardingApproval",
     "read_builtin_prompt",

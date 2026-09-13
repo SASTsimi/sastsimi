@@ -15,12 +15,14 @@ import pytest
 from sastsimi.config.production_profile import ProductionProfile
 from sastsimi.orchestration.production_capabilities import (
     ProfileBackedProductionCapabilityBundle,
+    production_profile_hash,
 )
 from sastsimi.orchestration.production_onboarding import (
     FilesystemProductionOnboardingStore,
     OnboardedProductionCapabilityBundleLoader,
     ProductionOnboardingManifest,
     ProductionOnboardingUnavailable,
+    ProductionProvisioningManifest,
 )
 from sastsimi.prompts.production import REQUIRED_PRODUCTION_PROMPT_ROUTES
 from tests.integration.orchestration.test_production_composition import _profile
@@ -147,6 +149,67 @@ def _parse(payload: dict[str, object]) -> ProductionOnboardingManifest:
     return ProductionOnboardingManifest.model_validate_json(json.dumps(payload))
 
 
+def _provisioning_payload(profile: ProductionProfile) -> dict[str, object]:
+    now = datetime(2026, 9, 13, tzinfo=UTC)
+
+    def capability(slot: str, index: int, kind: str) -> dict[str, object]:
+        return {
+            "slot": slot,
+            "profile_ref": {
+                "stored_data_id": f"capability-{index}",
+                "data_kind": kind,
+                "content_hash": f"{index:x}" * 64,
+                "configuration_scope": "HOST",
+                "host_id": profile.host_id,
+                "publication_analysis_id": "capability-publication",
+                "publication_workspace_id": "capability-workspace",
+                "publication_commit_id": "capability-commit",
+                "record_id": f"capability-record-{index}",
+            },
+        }
+
+    artifacts = [
+        "WORKSPACE_STORAGE",
+        "STATIC_ANALYSIS",
+        "VERIFICATION_PLAYBOOKS",
+        "SANDBOX_PROFILE",
+        "POLICY_CATALOG",
+        "PROVIDER_CONFIGURATION",
+        "PROMPT_ROUTES",
+    ]
+    return {
+        "schema_version": 1,
+        "profile_hash": production_profile_hash(profile),
+        "host_id": profile.host_id,
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(days=30)).isoformat(),
+        "approved_by": "operator@example.invalid",
+        "capabilities": [
+            capability("GIT_CLONE", 1, "runtime_capability_profile"),
+            capability("GIT_CHECKOUT", 2, "runtime_capability_profile"),
+            capability("PYTHON_RUNTIME", 3, "runtime_capability_profile"),
+            capability("AST_PYTHON", 4, "static_tool_profile"),
+        ],
+        "artifacts": [
+            {"slot": slot, "content_sha256": _sha(f"{slot}-data".encode())}
+            for slot in artifacts
+        ],
+    }
+
+
+def _save_provisioning(
+    store: FilesystemProductionOnboardingStore, profile: ProductionProfile
+) -> str:
+    payload = _provisioning_payload(profile)
+    for item in cast(list[dict[str, str]], payload["artifacts"]):
+        data = f"{item['slot']}-data".encode()
+        assert store.put_evidence(data) == item["content_sha256"]
+    provisioning = ProductionProvisioningManifest.model_validate_json(
+        json.dumps(payload)
+    )
+    return store.put_evidence(provisioning.model_dump_json().encode())
+
+
 def test_onboarding_manifest_requires_full_pvd_and_current_terms_approval(
     data_dir: Path,
 ) -> None:
@@ -214,7 +277,11 @@ def test_loader_verifies_profile_prompts_and_injects_exact_installer(
     root = Path.cwd()
     profile = _production_profile()
     store = FilesystemProductionOnboardingStore(data_dir)
-    manifest = _save(store, _manifest_payload(root))
+    provisioning_digest = _save_provisioning(store, profile)
+    payload = _manifest_payload(root)
+    payload["schema_version"] = 2
+    payload["provisioning_manifest_sha256"] = provisioning_digest
+    manifest = _save(store, payload)
     calls: list[dict[str, object]] = []
     expected = cast(ProfileBackedProductionCapabilityBundle, SimpleNamespace())
 
@@ -247,7 +314,34 @@ def test_loader_verifies_profile_prompts_and_injects_exact_installer(
         is expected
     )
     assert calls[0]["manifest"] == manifest
+    assert isinstance(calls[0]["provisioning"], ProductionProvisioningManifest)
     assert calls[0]["installer"] is installer
+
+
+def test_provisioning_fails_closed_without_exact_manifest(data_dir: Path) -> None:
+    profile = _production_profile()
+    store = FilesystemProductionOnboardingStore(data_dir)
+    _save(store, _manifest_payload(Path.cwd()))
+    loader = OnboardedProductionCapabilityBundleLoader(
+        store=store,
+        repository_root=Path.cwd(),
+        clock=lambda: datetime(2026, 9, 14, tzinfo=UTC),
+        provision=lambda **_kwargs: cast(
+            ProfileBackedProductionCapabilityBundle, SimpleNamespace()
+        ),
+        installer=lambda _context: cast(Any, None),
+    )
+
+    with pytest.raises(
+        ProductionOnboardingUnavailable,
+        match="PRODUCTION_PROVISIONING_APPROVAL_REQUIRED",
+    ):
+        loader.provision(
+            data_dir=data_dir,
+            request=object(),
+            profile=profile,
+            scope=object(),
+        )
 
 
 def test_loader_blocks_modified_builtin_prompt(data_dir: Path) -> None:
