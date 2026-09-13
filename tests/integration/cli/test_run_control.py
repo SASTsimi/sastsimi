@@ -206,9 +206,7 @@ class _SchedulerStore:
         self, analysis_id: str, limit: int
     ) -> tuple[WorkExecutionState, ...]:
         return tuple(
-            item
-            for item in self.work_for_run(analysis_id)
-            if item.status == "READY"
+            item for item in self.work_for_run(analysis_id) if item.status == "READY"
         )[:limit]
 
     def try_claim_ready(
