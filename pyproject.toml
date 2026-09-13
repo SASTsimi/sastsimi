@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "sastsimi"
 version = "0.1.0"
 description = "Architecture v5 application foundation"
+readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "pydantic>=2.8,<3",
@@ -31,6 +32,15 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sastsimi"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"config/sastsimi.example.toml" = "sastsimi/resources/sastsimi.example.toml"
+"docs/installation.md" = "sastsimi/resources/docs/installation.md"
+"docs/configuration.md" = "sastsimi/resources/docs/configuration.md"
+"docs/usage.md" = "sastsimi/resources/docs/usage.md"
+"docs/external-tools.md" = "sastsimi/resources/docs/external-tools.md"
+"docs/troubleshooting.md" = "sastsimi/resources/docs/troubleshooting.md"
+"docs/architecture-to-code.md" = "sastsimi/resources/docs/architecture-to-code.md"
 
 [tool.ruff]
 target-version = "py312"
