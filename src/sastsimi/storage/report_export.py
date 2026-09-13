@@ -72,7 +72,7 @@ class SQLiteCurrentReportSource:
         reports: list[CurrentReport] = []
         for state in self._current("report_process_state", ReportProcessState):
             if (
-                state.meta.analysis_id != analysis_id
+                str(state.meta.analysis_id) != analysis_id
                 or state.status != "DRAFTED"
                 or state.report_draft_ref is None
             ):

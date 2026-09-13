@@ -14,6 +14,7 @@
 8. [Onboarding 근거 작성 안내](./onboarding-evidence.md) — PVD와 두 manifest의 실제 필드와 READY 확인 순서를 설명합니다.
 9. [저장소 분석 실행 안내](./usage.md) — 저장소 입력부터 Markdown 보고서 확인까지의 CLI 순서를 설명합니다.
 10. [오류와 안전한 대응](./troubleshooting.md) — 실행 실패를 취약점 판정과 섞지 않고 해결합니다.
+11. [설계와 코드 연결 지도](./architecture-to-code.md) — 각 설계 단계의 구현·시험 위치를 찾는 방법을 설명합니다.
 
 ## 역할별 빠른 탐색 경로
 

@@ -9,4 +9,4 @@
 - 원격 Sandbox와 분산 worker: host·secret·network·resource 경계를 새로 검증해야 합니다.
 - 자동 외부 제출·공개: 사람의 최종 권한 경계를 바꾸므로 현재 자동화 범위에 포함하지 않습니다.
 
-CodeQL quota control, production composition, Provider onboarding과 Fake 없는 clone→Markdown live E2E는 첫 production 출시를 막는 항목이므로 이 후속 목록으로 미루지 않습니다.
+CodeQL quota control, 실제 Provider·Prompt의 검증 및 승인 완료, Fake 없는 clone→Markdown live E2E는 첫 production 출시를 막는 항목이므로 이 후속 목록으로 미루지 않습니다. Production composition 자체는 구현됐지만 이 세 조건을 충족하기 전에는 production-ready로 간주하지 않습니다.

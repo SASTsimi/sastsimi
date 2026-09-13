@@ -36,6 +36,8 @@
 | [`docs/troubleshooting.md`](./troubleshooting.md) | capability·인증·정적 도구·Docker·보고서 오류를 verdict와 섞지 않고 처리하는 방법을 설명합니다. | 도구 사용자·운영 담당자 | 운영 안내 |
 | [`docs/release-follow-ups.md`](./release-follow-ups.md) | 첫 실행 버전에서 의도적으로 미룬 Medium/Low 확장 항목을 기록합니다. | PM·후속 구현 담당자 | 후속 목록 |
 | [`config/profiles/production.example.toml`](../config/profiles/production.example.toml) | secret 없이 production profile의 전체 필드와 역할별 LLM route를 작성하는 예시입니다. 값 자체는 승인 기록이 아닙니다. | 설치·Provider·운영 담당자 | 설정 예시 |
+| [`docs/architecture-to-code.md`](./architecture-to-code.md) | Architecture v5 단계와 구현 모듈·시험·public 연결 상태를 대응시킵니다. | 구현·검토 담당 | 구현 지도 |
+| [`scripts/wheel-smoke.ps1`](../scripts/wheel-smoke.ps1) | source tree 밖의 새 venv에 wheel만 설치해 공개 CLI 흐름을 점검합니다. | 배포·CI 담당 | 검증 도구 |
 
 ## 협업·승인 규칙
 
