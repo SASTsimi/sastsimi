@@ -11,8 +11,9 @@
 5. [Architecture v5 설계 입구](./architecture-v5/README.md) — 전체 기술 흐름과 번호 문서를 안내합니다.
 6. [설치와 실행 환경 준비](./installation.md) — 실제 실행에 필요한 프로그램과 capability 확인 방법을 안내합니다.
 7. [Provider 인증과 운영 활성화](./provider-setup.md) — API key와 실험적인 회원 로그인 경로를 안전하게 구분합니다.
-8. [저장소 분석 실행 안내](./usage.md) — 저장소 입력부터 Markdown 보고서 확인까지의 CLI 순서를 설명합니다.
-9. [오류와 안전한 대응](./troubleshooting.md) — 실행 실패를 취약점 판정과 섞지 않고 해결합니다.
+8. [Onboarding 근거 작성 안내](./onboarding-evidence.md) — PVD와 두 manifest의 실제 필드와 READY 확인 순서를 설명합니다.
+9. [저장소 분석 실행 안내](./usage.md) — 저장소 입력부터 Markdown 보고서 확인까지의 CLI 순서를 설명합니다.
+10. [오류와 안전한 대응](./troubleshooting.md) — 실행 실패를 취약점 판정과 섞지 않고 해결합니다.
 
 ## 역할별 빠른 탐색 경로
 

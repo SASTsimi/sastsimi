@@ -13,8 +13,8 @@
 현재 release가 어떤 명령을 제공하는지는 도움말로 확인합니다.
 
 ```text
-sastsimi --help
-sastsimi analyze --help
+uv run sastsimi --help
+uv run sastsimi analyze --help
 ```
 
 - `analyze`에 `--repo`, `--commit`, `--profile`이 없으면 그 설치본은 Fake 전용입니다.
@@ -47,6 +47,8 @@ uv sync --frozen
 uv sync --frozen --all-groups
 ```
 
+이후 이 문서와 운영 안내의 SASTSIMI 명령은 모두 저장소 루트에서 `uv run sastsimi`로 실행합니다. `uv run`은 방금 lock으로 설치한 실행 환경을 선택하므로 별도 가상 환경 활성화에 의존하지 않습니다.
+
 출시 wheel을 받은 사용자는 깨끗한 가상 환경에 그 wheel을 설치합니다.
 
 ```text
@@ -56,9 +58,9 @@ python -m pip install <검증된-sastsimi-wheel-경로>
 기본 상태 저장소를 준비합니다.
 
 ```text
-sastsimi doctor --format json
-sastsimi --data-dir <data-dir> db upgrade head
-sastsimi --data-dir <data-dir> db current --format json
+uv run sastsimi doctor --format json
+uv run sastsimi --data-dir <data-dir> db upgrade head
+uv run sastsimi --data-dir <data-dir> db current --format json
 ```
 
 `doctor`는 OS·CPU·Python만 읽어서 확인합니다. Git, 정적 분석 도구, Docker 또는 LLM을 승인하지 않습니다.
@@ -113,17 +115,17 @@ Docker probe는 CLI와 daemon 연결뿐 아니라 실제 image build, container 
 다음 명령은 설치본의 도움말에 `capability`가 있을 때만 사용할 수 있습니다. `--data-dir`과 선택적인 `--host-id`는 `capability` 앞에 둡니다.
 
 ```text
-sastsimi --data-dir <data-dir> capability probe GIT --format json
-sastsimi --data-dir <data-dir> capability probe PYTHON_AST --format json
-sastsimi --data-dir <data-dir> capability probe OPENGREP --format json
-sastsimi --data-dir <data-dir> capability probe DOCKER --docker-host <승인된-daemon-주소> --format json
-sastsimi --data-dir <data-dir> capability list --format json
+uv run sastsimi --data-dir <data-dir> capability probe GIT --format json
+uv run sastsimi --data-dir <data-dir> capability probe PYTHON_AST --format json
+uv run sastsimi --data-dir <data-dir> capability probe OPENGREP --format json
+uv run sastsimi --data-dir <data-dir> capability probe DOCKER --docker-host <승인된-daemon-주소> --format json
+uv run sastsimi --data-dir <data-dir> capability list --format json
 ```
 
 probe 출력이 `status=PASSED`, `activation_supported=true`이고 `approval_target_hash`가 있을 때만 사람이 같은 값을 확인해 승인합니다.
 
 ```text
-sastsimi --data-dir <data-dir> capability approve <probe_id> --target-hash <approval_target_hash> --format json
+uv run sastsimi --data-dir <data-dir> capability approve <probe_id> --target-hash <approval_target_hash> --format json
 ```
 
 Docker 승인에는 probe와 같은 `--docker-host`를 다시 지정합니다. probe 실패, hash 불일치 또는 `activation_supported=false`를 수동 파일 편집으로 바꾸지 않습니다.

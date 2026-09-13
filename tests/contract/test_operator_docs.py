@@ -49,6 +49,35 @@ def test_operator_docs_never_embed_a_credential_or_claim_preflight_is_active() -
     assert "production 자동 활성화가 금지" in provider
 
 
+def test_source_cli_and_onboarding_contract_are_documented() -> None:
+    operator_paths = (
+        "README.md",
+        "docs/installation.md",
+        "docs/provider-setup.md",
+        "docs/usage.md",
+        "docs/troubleshooting.md",
+        "docs/onboarding-evidence.md",
+    )
+    combined = "\n".join(_read(path) for path in operator_paths)
+
+    assert "\nsastsimi " not in combined
+    assert "uv run sastsimi analyze --help" in combined
+    assert "ProductionOnboardingManifest" in combined
+    assert "ProductionProvisioningManifest" in combined
+    assert "PVDObservation" in combined
+    for field in (
+        "provisioning_manifest_sha256",
+        "policy_artifact_sha256",
+        "provider_approvals",
+        "route_approvals",
+        "evidence_sha256",
+        "profile_ref",
+        "content_sha256",
+    ):
+        assert field in combined
+    assert "실제 값은 쓰지 않습니다" in combined
+
+
 def test_production_profile_example_is_complete_and_contains_no_secret() -> None:
     path = ROOT / "config/profiles/production.example.toml"
     raw = path.read_text(encoding="utf-8")

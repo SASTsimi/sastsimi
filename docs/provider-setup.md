@@ -27,7 +27,7 @@ credential_ref = { reference = "env:OPENAI_API_KEY" }
 capability 명령이 포함된 설치본에서는 작은 연결 시험을 실행할 수 있습니다.
 
 ```text
-sastsimi --data-dir <data-dir> capability probe OPENAI_API --model <model-id> --credential-ref env:OPENAI_API_KEY --format json
+uv run sastsimi --data-dir <data-dir> capability probe OPENAI_API --model <model-id> --credential-ref env:OPENAI_API_KEY --format json
 ```
 
 이 probe는 인증과 구조화 출력만 확인합니다. 현재 구현은 성공해도 `activation_supported=false`이며, 이 결과만으로 `ProviderProfile.support_status=SUPPORTED`를 만들 수 없습니다. production 활성화에는 아래 onboarding의 PVD-01~PVD-15, 현재 약관 확인, R8 평가, 사람 승인과 Prompt 승인이 모두 필요합니다.
@@ -59,7 +59,7 @@ onboarding 명령은 “시험을 대신 수행해 PASS를 만들어 주는 명�
 먼저 필요한 항목을 조회합니다.
 
 ```text
-sastsimi --data-dir <data-dir> onboarding requirements --profile <production-profile.toml> --format json
+uv run sastsimi --data-dir <data-dir> onboarding requirements --profile <production-profile.toml> --format json
 ```
 
 이 명령은 필요한 PVD 번호, Prompt route와 template hash를 보여 주고 `BLOCKED`로 끝납니다. 준비 완료를 뜻하지 않습니다.
@@ -73,18 +73,18 @@ sastsimi --data-dir <data-dir> onboarding requirements --profile <production-pro
 - 공식 정책 원문의 안전한 artifact와 SHA-256
 - 위 값을 묶은 secret 없는 `ProductionOnboardingManifest` JSON
 
-현재 CLI에는 이 근거를 자동으로 만들어 승인하는 명령이 없습니다. 값을 추측해 manifest를 작성하거나 다른 실행의 근거를 재사용하면 안 됩니다.
+현재 CLI에는 이 근거를 자동으로 만들어 승인하는 명령이 없습니다. 값을 추측해 manifest를 작성하거나 다른 실행의 근거를 재사용하면 안 됩니다. 필드 의미와 안전한 작성 순서는 [운영 onboarding manifest와 근거 작성 안내](./onboarding-evidence.md)를 따릅니다.
 
 준비한 manifest와 그 안에서 참조하는 모든 근거 파일을 가져옵니다. `--evidence`는 필요한 파일 수만큼 반복합니다.
 
 ```text
-sastsimi --data-dir <data-dir> onboarding prepare --profile <production-profile.toml> --manifest <approval-manifest.json> --evidence <evidence-1.json> --evidence <evidence-2.json> --format json
+uv run sastsimi --data-dir <data-dir> onboarding prepare --profile <production-profile.toml> --manifest <approval-manifest.json> --evidence <evidence-1.json> --evidence <evidence-2.json> --format json
 ```
 
 마지막으로 현재 시각에도 모든 승인이 유효한지 다시 확인합니다.
 
 ```text
-sastsimi --data-dir <data-dir> onboarding status --profile <production-profile.toml> --format json
+uv run sastsimi --data-dir <data-dir> onboarding status --profile <production-profile.toml> --format json
 ```
 
 `status=READY`일 때만 해당 profile로 분석을 요청할 수 있습니다. 파일 수정, Prompt 변경, model 변경, 유효 기한 만료 또는 근거 hash 변경이 있으면 다시 `BLOCKED`가 됩니다.

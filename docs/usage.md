@@ -5,8 +5,8 @@
 ## 1. 먼저 설치본의 기능을 확인합니다
 
 ```text
-sastsimi --help
-sastsimi analyze --help
+uv run sastsimi --help
+uv run sastsimi analyze --help
 ```
 
 production 분석이 가능한 설치본은 `analyze`에 `--repo`, `--commit`, `--profile`을 모두 필수 입력으로 표시합니다. `analyze --scenario`만 보이면 현재 설치본은 Fake 전용이므로 실제 저장소에 사용하지 않습니다.
@@ -46,7 +46,7 @@ branch, tag, 짧은 SHA, 대문자 SHA 또는 working tree의 미커밋 변경�
 전역 `--data-dir`은 하위 명령 앞에 둡니다.
 
 ```text
-sastsimi --data-dir <data-dir> analyze --repo <URL-or-local-path> --commit <exact-SHA> --profile <production-profile.toml> --format json
+uv run sastsimi --data-dir <data-dir> analyze --repo <URL-or-local-path> --commit <exact-SHA> --profile <production-profile.toml> --format json
 ```
 
 접수 출력의 `analysis_id`를 기록합니다. 같은 저장소·commit을 다시 실행해도 별도 분석은 새 `analysis_id`를 사용합니다.
@@ -78,7 +78,7 @@ production orchestration의 목표 흐름은 다음과 같습니다.
 ## 5. 진행 상태를 확인합니다
 
 ```text
-sastsimi --data-dir <data-dir> status <analysis_id> --format json
+uv run sastsimi --data-dir <data-dir> status <analysis_id> --format json
 ```
 
 주요 출력은 다음과 같습니다.
@@ -96,7 +96,7 @@ sastsimi --data-dir <data-dir> status <analysis_id> --format json
 분석이 terminal 상태가 된 뒤 실행합니다.
 
 ```text
-sastsimi --data-dir <data-dir> results <analysis_id> --format json
+uv run sastsimi --data-dir <data-dir> results <analysis_id> --format json
 ```
 
 결과에는 가설·판정·Gate·Finding·보고서 개수, 오류·gap 코드, 실행 시간과 exact 결과 식별자가 포함됩니다. 아직 끝나지 않았거나 exact 결과가 없으면 내용을 추측해 만들지 않고 오류로 종료합니다.
@@ -106,19 +106,19 @@ sastsimi --data-dir <data-dir> results <analysis_id> --format json
 분석별 보고서 목록을 확인합니다.
 
 ```text
-sastsimi --data-dir <data-dir> reports <analysis_id> --format json
+uv run sastsimi --data-dir <data-dir> reports <analysis_id> --format json
 ```
 
 목록의 `finding_id`로 터미널에서 읽습니다.
 
 ```text
-sastsimi --data-dir <data-dir> report show <finding_id>
+uv run sastsimi --data-dir <data-dir> report show <finding_id>
 ```
 
 Markdown 파일을 생성합니다.
 
 ```text
-sastsimi --data-dir <data-dir> report export <finding_id> --format markdown
+uv run sastsimi --data-dir <data-dir> report export <finding_id> --format markdown
 ```
 
 기본 위치는 다음과 같습니다.
@@ -136,15 +136,15 @@ ReportDraft와 Markdown은 사람이 검토할 내부 결과입니다. HTML·PDF
 현재 `main`의 Fake 전용 설치본은 다음 기존 명령만 제공합니다.
 
 ```text
-sastsimi --data-dir <demo-data-dir> analyze --scenario TRUE --format json
-sastsimi --data-dir <demo-data-dir> results --format json
+uv run sastsimi --data-dir <demo-data-dir> analyze --scenario TRUE --format json
+uv run sastsimi --data-dir <demo-data-dir> results --format json
 ```
 
 T14 production CLI가 포함된 설치본에서는 Fake가 다음과 같이 `demo` 아래로 이동합니다.
 
 ```text
-sastsimi --data-dir <demo-data-dir> demo analyze --scenario TRUE --format json
-sastsimi --data-dir <demo-data-dir> demo results --format json
+uv run sastsimi --data-dir <demo-data-dir> demo analyze --scenario TRUE --format json
+uv run sastsimi --data-dir <demo-data-dir> demo results --format json
 ```
 
 Fake 결과는 실제 clone, LLM, CodeQL·OpenGrep·Docker capability나 출시 완료의 증거가 아닙니다. production 준비가 실패했을 때 Fake로 자동 대체하지 않습니다.
