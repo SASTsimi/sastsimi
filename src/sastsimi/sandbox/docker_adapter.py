@@ -12,7 +12,7 @@ import tarfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from sastsimi.contracts.dynamic import POC_RUNTIME_PATH
@@ -531,7 +531,17 @@ class DockerAdapter:
         working_directory: str,
     ) -> DockerCommandOutcome:
         self._require_resource_id(container_id)
-        if not argv or timeout_ms <= 0 or working_directory != "/workspace":
+        workdir = PurePosixPath(working_directory)
+        if (
+            not argv
+            or timeout_ms <= 0
+            or len(working_directory) > 4_096
+            or not workdir.is_absolute()
+            or ".." in workdir.parts
+            or "\\" in working_directory
+            or any(char in working_directory for char in "\r\n\0")
+            or str(workdir) != working_directory
+        ):
             raise ValueError("DOCKER_EXEC_INPUT_INVALID")
         if any(not item or any(char in item for char in "\r\n\0") for item in argv):
             raise ValueError("DOCKER_EXEC_ARGV_INVALID")

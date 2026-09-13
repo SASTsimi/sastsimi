@@ -1341,6 +1341,41 @@ async def test_repository_profile_blocks_unignored_package_credentials(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "secret_path",
+    ("deploy/.aws/credentials", "tools/.docker/config.json"),
+)
+async def test_repository_profile_blocks_nested_credentials_before_docker(
+    tmp_path: Path,
+    secret_path: str,
+) -> None:
+    files = {
+        secret_path: b"do-not-send-to-docker\n",
+        "app.py": b"print('ready')\n",
+        "requirements.txt": b"",
+    }
+    for name, raw in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+    docker = FakeDockerAdapter()
+    request, requirements, _ = _dynamic_records()
+
+    with pytest.raises(ValueError, match="REPOSITORY_SECRET_FILE_DENIED"):
+        await _setup(docker, artifacts=_MemoryArtifacts()).preflight(
+            workspace_root=tmp_path,
+            repository_profile=_repository_profile(files),
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "nested-credential-source"),
+        )
+
+    assert docker.built == []
+    assert docker.built_contexts == []
+    assert docker.created == {}
+
+
+@pytest.mark.asyncio
 async def test_repository_profile_honors_simple_dockerignore_before_archiving(
     tmp_path: Path,
 ) -> None:
@@ -1482,7 +1517,7 @@ async def test_required_runtime_version_is_checked_inside_container() -> None:
         assert (container_id, argv, working_directory) == (
             "owned-container",
             ("python", "--version"),
-            "/workspace",
+            "/",
         )
         assert timeout_ms > 0
         return DockerCommandOutcome(0, b"Python 3.12.9\n", b"", False)
@@ -2744,6 +2779,39 @@ async def test_docker_exec_uses_exact_argv_and_working_directory(
             "poc.py",
         )
     ]
+
+    await adapter.execute(
+        "owned-container-id",
+        ("node", "--version"),
+        10_000,
+        working_directory="/app",
+    )
+    assert calls[-1][-5:] == (
+        "--workdir",
+        "/app",
+        "owned-container-id",
+        "node",
+        "--version",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "working_directory",
+    ("workspace", "/workspace/../secret", "/workspace\\secret", "/bad\0path"),
+)
+async def test_docker_exec_rejects_unsafe_working_directory(
+    working_directory: str,
+) -> None:
+    adapter = DockerAdapter()
+
+    with pytest.raises(ValueError, match="DOCKER_EXEC_INPUT_INVALID"):
+        await adapter.execute(
+            "owned-container-id",
+            ("python", "--version"),
+            10_000,
+            working_directory=working_directory,
+        )
 
 
 @pytest.mark.asyncio
