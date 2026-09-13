@@ -13,7 +13,7 @@
     "collection": { "record_id": "rec-collect-1", "status": "FOUND", "official_source_refs": [{ "record_id": "rec-official-source-1" }] },
     "policy": { "record_id": "rec-policy-1", "official_source": "program-operated policy", "source_refs": [{ "record_id": "rec-official-source-1" }], "policy_items": ["rule-accept-cwe22", "scope-repository", "restriction-local-only", "impact-file-read"] },
     "official_sources": [{ "record_id": "rec-official-source-1", "source_locator": "https://program.example/policy", "content_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" }],
-    "dynamic_request": { "record_id": "rec-request-2", "verification_generation": 2, "work_id": "work-dyn-2", "attempt_id": "attempt-dyn-2" },
+    "dynamic_request": { "record_id": "rec-request-2", "verification_generation": 2, "work_id": "work-ver-2", "attempt_id": "attempt-ver-2" },
     "sandbox_policy": { "record_id": "rec-sandbox-policy-2", "decision": "ALLOW", "request_ref": { "record_id": "rec-request-2" }, "verification_generation": 2, "work_id": "work-dyn-2", "attempt_id": "attempt-dyn-2" },
     "environment_recipe": { "record_id": "rec-recipe-2", "request_ref": { "record_id": "rec-request-2" }, "verification_generation": 2, "work_id": "work-dyn-2", "attempt_id": "attempt-dyn-2" },
     "environment": { "record_id": "rec-env-2", "request_ref": { "record_id": "rec-request-2" }, "environment_recipe_ref": { "record_id": "rec-recipe-2" }, "verification_generation": 2, "work_id": "work-dyn-2", "attempt_id": "attempt-dyn-2" },
