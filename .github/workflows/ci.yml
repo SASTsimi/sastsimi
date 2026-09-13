@@ -30,6 +30,53 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - name: Install frozen dependencies
         run: uv sync --frozen --all-groups
+      - name: Require every test file in exactly one shard
+        if: runner.os == 'Linux'
+        run: |
+          $shardPaths = @(
+            'tests/unit',
+            'tests/contract',
+            'tests/integration/static_analysis',
+            'tests/integration/providers',
+            'tests/integration/policy',
+            'tests/capability',
+            'tests/integration/budget',
+            'tests/integration/chaining',
+            'tests/integration/reporting',
+            'tests/integration/verification',
+            'tests/integration/concurrency',
+            'tests/integration/orchestration',
+            'tests/integration/storage',
+            'tests/integration/recovery',
+            'tests/integration/sandbox',
+            'tests/integration/test_cli.py',
+            'tests/integration/cli',
+            'tests/security_negative',
+            'tests/e2e'
+          )
+          $allTests = @(
+            Get-ChildItem tests -Recurse -File -Filter 'test_*.py' |
+              ForEach-Object { $_.FullName }
+          )
+          $assignedTests = @(
+            foreach ($path in $shardPaths) {
+              if (Test-Path -LiteralPath $path -PathType Leaf) {
+                (Get-Item -LiteralPath $path).FullName
+              } elseif (Test-Path -LiteralPath $path -PathType Container) {
+                Get-ChildItem -LiteralPath $path -Recurse -File -Filter 'test_*.py' |
+                  ForEach-Object { $_.FullName }
+              }
+            }
+          )
+          $missingTests = @($allTests | Where-Object { $_ -notin $assignedTests })
+          $duplicateTests = @(
+            $assignedTests | Group-Object | Where-Object { $_.Count -ne 1 }
+          )
+          if ($missingTests.Count -ne 0 -or $duplicateTests.Count -ne 0) {
+            $missing = $missingTests -join ', '
+            $duplicates = @($duplicateTests | ForEach-Object { $_.Name }) -join ', '
+            throw "Test shard coverage mismatch. Missing: [$missing]. Duplicates: [$duplicates]."
+          }
       - name: Format
         run: uv run ruff format --check .
       - name: Lint
@@ -95,20 +142,28 @@ jobs:
         shard:
           - name: unit
             paths: tests/unit
+            optional_paths: ''
           - name: contract
             paths: tests/contract
+            optional_paths: ''
           - name: integration-analysis
             paths: tests/integration/static_analysis tests/integration/providers tests/integration/policy
+            optional_paths: tests/capability
           - name: integration-workflow
             paths: tests/integration/budget tests/integration/chaining tests/integration/reporting tests/integration/verification
+            optional_paths: tests/integration/concurrency tests/integration/orchestration
           - name: integration-state
             paths: tests/integration/storage tests/integration/recovery
+            optional_paths: ''
           - name: integration-sandbox
             paths: tests/integration/sandbox tests/integration/test_cli.py
+            optional_paths: tests/integration/cli
           - name: security-negative
             paths: tests/security_negative
+            optional_paths: ''
           - name: e2e
             paths: tests/e2e
+            optional_paths: ''
     defaults:
       run:
         shell: pwsh
@@ -125,9 +180,16 @@ jobs:
         env:
           SHARD_NAME: ${{ matrix.shard.name }}
           TEST_PATHS: ${{ matrix.shard.paths }}
+          OPTIONAL_TEST_PATHS: ${{ matrix.shard.optional_paths }}
           TEST_OS: ${{ runner.os }}
         run: |
-          $pytestArguments = @($env:TEST_PATHS -split '\s+')
+          $pytestArguments = @($env:TEST_PATHS -split '\s+' | Where-Object { $_ })
+          $optionalPaths = @($env:OPTIONAL_TEST_PATHS -split '\s+' | Where-Object { $_ })
+          foreach ($path in $optionalPaths) {
+            if (Test-Path -LiteralPath $path) {
+              $pytestArguments += $path
+            }
+          }
           if ($env:TEST_OS -eq 'Linux' -and $env:SHARD_NAME -eq 'e2e') {
             $pytestArguments += '--ignore=tests/e2e/test_dynamic_reproduction.py'
           }
