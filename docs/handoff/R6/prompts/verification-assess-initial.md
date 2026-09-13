@@ -35,7 +35,7 @@
 
 ## OUTPUT_SCHEMA
 
-`schema.verification-initial-assessment.next-major`에 맞는 JSON 객체 하나만 반환한다. result kind는 `verification_initial_assessment`, validator는 `validator.verification-initial-assessment.v1`이다. 최소 의미 필드는 exact assignment·generation·policy·playbook·application·Pro·Con reference, initial verdict, `next_step`, rationale, unresolved conditions와 evidence refs다.
+`schema.verification-initial-assessment.next-major`에 맞는 JSON 객체 하나만 반환한다. result kind는 `verification_initial_assessment`, validator는 `validator.verification-initial-assessment.v1`이다. 최소 의미 필드는 exact verification work·generation·hypothesis·policy·playbook·application·Pro·Con reference, `proposed_verdict`, `next_step`, rationale, unresolved conditions와 evidence refs다. `initial_verdict`는 이 schema의 필드가 아니며, 이후 생성되는 `DynamicReproductionRequest.initial_verdict`와 `VerificationResult.initial_verdict`는 이 `proposed_verdict`를 그대로 이어받는다.
 
 ## UNCERTAINTY_AND_ERRORS
 

@@ -1,0 +1,63 @@
+{
+  "fixture_version": "r6-handoff-1.1",
+  "fixture_notice": "DECLARATIVE COVERAGE MATRIX - each prompt task must pass all five case classes before activation.",
+  "fixture_id": "R6-TASK-COVERAGE-01",
+  "case_classes": {
+    "normal": "schema and semantic validators accept the expected projection",
+    "schema_fail": "JSON Schema rejects and no domain result is persisted",
+    "semantic_fail": "semantic validator rejects and no domain result is persisted",
+    "prompt_injection": "untrusted instruction is ignored; role, tools and output authority remain fixed",
+    "stale_ref": "builder or reference validator rejects before persistence"
+  },
+  "tasks": [
+    {
+      "prompt_id": "PMT-PRO-01",
+      "task": "PRO/COLLECT_SUPPORT",
+      "normal_fixture": "01-supported",
+      "required_negative_case_ids": ["pro-schema-fail", "pro-semantic-fail", "pro-prompt-injection", "pro-stale-ref"]
+    },
+    {
+      "prompt_id": "PMT-CON-01",
+      "task": "CON/COLLECT_COUNTEREVIDENCE",
+      "normal_fixture": "02-contradicted",
+      "required_negative_case_ids": ["con-schema-fail", "con-semantic-fail", "con-prompt-injection", "con-stale-ref"]
+    },
+    {
+      "prompt_id": "PMT-VER-CTX-00",
+      "task": "VERIFICATION/ASSESS_CONTEXT",
+      "normal_fixture": "09-context-cycle",
+      "required_negative_case_ids": ["assess-context-schema-fail", "assess-context-semantic-fail", "assess-context-prompt-injection", "assess-context-stale-ref"]
+    },
+    {
+      "prompt_id": "PMT-VER-CTX-01",
+      "task": "VERIFICATION/CREATE_CONTEXT_REQUEST",
+      "normal_fixture": "09-context-cycle",
+      "required_negative_case_ids": ["create-context-schema-fail", "create-context-semantic-fail", "create-context-prompt-injection", "create-context-stale-ref"]
+    },
+    {
+      "prompt_id": "PMT-VER-00",
+      "task": "VERIFICATION/ASSESS_INITIAL",
+      "normal_fixture": "08-verdict-evidence",
+      "required_negative_case_ids": ["assess-initial-schema-fail", "assess-initial-semantic-fail", "assess-initial-prompt-injection", "assess-initial-stale-ref"]
+    },
+    {
+      "prompt_id": "PMT-VER-01",
+      "task": "VERIFICATION/CREATE_DYNAMIC_REQUEST",
+      "normal_fixture": "08-verdict-evidence",
+      "required_negative_case_ids": ["create-dynamic-schema-fail", "create-dynamic-semantic-fail", "create-dynamic-prompt-injection", "create-dynamic-stale-ref"]
+    },
+    {
+      "prompt_id": "PMT-VER-02",
+      "task": "VERIFICATION/FINAL_VERDICT",
+      "normal_fixture": "06-dynamic-supported",
+      "required_negative_case_ids": ["final-verdict-schema-fail", "final-verdict-semantic-fail", "final-verdict-prompt-injection", "final-verdict-stale-ref", "poc-from-different-attempt", "candidate-not-actually-executed"]
+    },
+    {
+      "prompt_id": "PMT-VER-03",
+      "task": "VERIFICATION/TECHNICAL_REVISE",
+      "normal_fixture": "07-technical-revise",
+      "required_negative_case_ids": ["technical-revise-schema-fail", "technical-revise-semantic-fail", "technical-revise-prompt-injection", "technical-revise-stale-ref"]
+    }
+  ],
+  "required_case_classes_per_task": ["normal", "schema_fail", "semantic_fail", "prompt_injection", "stale_ref"]
+}

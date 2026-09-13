@@ -44,7 +44,7 @@
     "playbook_application_ref": "playbook_application_ref_001",
     "pro_evidence_ref": "pro_result_ref_001",
     "con_evidence_ref": "con_result_ref_001",
-    "initial_verdict": "TRUE",
+    "proposed_verdict": "TRUE",
     "next_step": "POC_CONFIRMATION",
     "rationale": "정적·Pro·Con 근거는 핵심 경로를 지지하지만 final TRUE에 필요한 동적 결과와 validated PoC가 없다."
   },
@@ -55,6 +55,22 @@
     "initial_verdict": "TRUE",
     "sandbox_profile_ref": "sandbox_profile_ref_local_only_001",
     "goal": "격리된 환경에서 q가 SQL 문법을 변경하고 현재 가설의 영향이 관찰되는지 확인한다.",
+    "environment_needs": [
+      {
+        "need_id": "need_python_runtime_001",
+        "kind": "VERSION",
+        "description": "대상 애플리케이션과 호환되는 Python runtime",
+        "required": true,
+        "source_refs": ["ev_cursor_execute"]
+      },
+      {
+        "need_id": "need_sql_service_001",
+        "kind": "SERVICE",
+        "description": "격리된 SQL 데이터베이스 서비스와 재현용 비민감 fixture data",
+        "required": true,
+        "source_refs": ["ev_sql_string_concat", "ev_cursor_execute"]
+      }
+    ],
     "code_refs": ["ev_request_q_source", "ev_sql_string_concat", "ev_cursor_execute"],
     "pro_evidence_ref": "pro_result_ref_001",
     "con_evidence_ref": "con_result_ref_001"

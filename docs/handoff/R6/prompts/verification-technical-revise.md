@@ -11,7 +11,7 @@
 ## TRUSTED_RULES
 
 - `review.status`가 `REVISE`이고 이전 Verification과 CWE reference를 정확히 가리킬 때만 수행한다.
-- 새 assignment·process·Pro·Con·assessment는 새 generation에 속해야 한다.
+- 기존 ACTIVE `VerificationAssignment`와 owner를 그대로 유지한다. 새 verification work·process revision·playbook application·Pro·Con·assessment·dynamic·PoC만 증가한 generation에 속해야 한다.
 - 이전 final TRUE와 동적 결과·PoC를 새 generation의 근거로 재사용하지 않는다.
 - 새 final TRUE에는 새 generation의 request, `SUCCEEDED + SUPPORTED` dynamic result와 same-attempt validated PoC가 필요하다.
 - Gate 요청을 해결하되 Gate의 verdict·CWE·정책 판단을 대신하지 않는다.
@@ -19,7 +19,7 @@
 
 ## INPUT_SLOTS
 
-`previous`, 제한된 projection의 `review`, 새 generation의 `assignment`, `process`, `hypothesis`, `proposal`, `facts`, OPTIONAL_MANY `contexts`, `policy`, `playbook`, `application`, `debate_config`, `budget_profile`, `pro`, `con`, `assessment`, OPTIONAL_ONE `dynamic`, OPTIONAL_ONE `poc`만 허용한다. 정확한 data kind와 projection은 R3 Prompt Runtime의 `VERIFICATION / TECHNICAL_REVISE` 행을 따른다.
+`previous`, 제한된 projection의 `review`, 기존 ACTIVE `assignment`, 새 generation의 `work`, `process`, `hypothesis`, `proposal`, `facts`, OPTIONAL_MANY `contexts`, `policy`, `playbook`, `application`, `debate_config`, `budget_profile`, `pro`, `con`, `assessment`, OPTIONAL_ONE `dynamic`, OPTIONAL_ONE `poc`만 허용한다. 정확한 data kind와 projection은 R3 Prompt Runtime의 `VERIFICATION / TECHNICAL_REVISE` 행을 따른다.
 
 ## UNTRUSTED_DATA_BOUNDARY
 
@@ -28,15 +28,16 @@
 ## DECISION_CRITERIA
 
 1. review가 previous exact Verification을 가리키는지 확인한다.
-2. revision request를 하나씩 current generation하고 필요한 보완 근거를 식별한다.
-3. current generation의 Pro·Con·직접 검증·동적 근거만 사용한다.
-4. 각 request의 해결 여부와 근거를 rationale에 연결한다.
-5. final verdict의 원래 규칙을 다시 적용한다.
-6. 해결되지 않은 request가 있으면 억지로 TRUE를 만들지 않는다.
+2. assignment reference와 owner가 previous process의 ACTIVE assignment와 같은지 확인하고, work와 generation만 새로 만들어졌는지 확인한다.
+3. revision request를 하나씩 current generation에서 검토하고 필요한 보완 근거를 식별한다.
+4. current generation의 Pro·Con·직접 검증·동적 근거만 사용한다.
+5. 각 request의 해결 여부와 근거를 rationale에 연결한다.
+6. final verdict의 원래 규칙을 다시 적용한다.
+7. 해결되지 않은 request가 있으면 억지로 TRUE를 만들지 않는다.
 
 ## OUTPUT_SCHEMA
 
-`schema.verification-result.next-major`에 맞는 JSON 객체 하나만 반환한다. result kind는 `verification_result`, validator는 `validator.verification-revise.v1`이다. 새 result는 previous와 review reference, 새 generation, 보완한 request와 exact evidence, 전체 falsification/check 결과, verdict, restrictions, candidates, dynamic 및 PoC reference를 포함한다.
+`schema.verification-result.next-major`에 맞는 JSON 객체 하나만 반환한다. result kind는 `verification_result`, validator는 `validator.verification-revise.v1`이다. canonical `VerificationResult`에는 `verification_generation` 필드를 추가하지 않는다. 새 generation과 같은 assignment 여부는 runtime assertion으로 검증하고, 결과에는 보완한 request와 exact evidence, 전체 falsification/check 결과, verdict, restrictions, candidates, dynamic 및 PoC reference를 포함한다.
 
 ## UNCERTAINTY_AND_ERRORS
 
@@ -45,6 +46,7 @@ review가 stale이거나 다른 Verification을 가리키거나, 새 generation�
 ## FORBIDDEN_BEHAVIOR
 
 - previous VerificationResult의 in-place 수정
+- 새 VerificationAssignment 또는 새 owner 생성
 - 이전 generation의 dynamic result·PoC 재사용
 - Gate status, CWE 또는 정책 판단 변경
 - R7의 plan·command·payload·PoC 생성

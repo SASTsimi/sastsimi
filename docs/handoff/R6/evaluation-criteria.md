@@ -32,7 +32,21 @@ LLM의 설명 문장을 고정 문자열로 비교하지 않는다. JSON 구조,
 - `role=CON`, 모든 claim의 `source_role=CON`
 - named falsification 또는 실제 제한과 evidence의 관계가 명확함
 - 정보 부재·오류·timeout을 반증으로 사용하지 않음
+- 방어 로직이 있으면 같은 source·sink·권한 경계의 우회·alternate path를 확인하고 적용 범위를 기록함
+- 우회 경로가 있거나 확인되지 않았으면 일부 경로의 방어를 가설 전체의 반증으로 확대하지 않음
 - Pro output·session·call·tool result와 final verdict가 없음
+
+### `PMT-VER-CTX-00`
+
+- 가설 수신 직후 각 필수 check/question에 필요한 Context를 `SATISFIED | MISSING`으로 평가
+- 하나라도 필수 Context가 없으면 `NEEDS_MORE_CONTEXT`, 모두 실제 근거로 충족되면 `SUFFICIENT`
+- Context 부족·조회 오류를 verdict나 실행 상태로 변환하지 않음
+
+### `PMT-VER-CTX-01`
+
+- `NEEDS_MORE_CONTEXT`의 `MISSING` 요구사항만 최소 entity/location/relation으로 변환
+- relation은 canonical `CALLERS | CALLEES | DATA_FLOW_NEIGHBORS | AUTH_GUARDS | ROUTE_BINDINGS`만 사용
+- 모델이 `code_request_id`, `action_decision_ref`, limits 또는 runtime 상태를 만들지 않음
 
 ### `PMT-VER-00`
 
@@ -43,6 +57,7 @@ LLM의 설명 문장을 고정 문자열로 비교하지 않는다. JSON 구조,
 ### `PMT-VER-01`
 
 - assessment와 같은 purpose·generation·playbook application·evidence ref 사용
+- `request.initial_verdict == assessment.proposed_verdict`
 - goal과 environment capability는 있으나 plan·command·payload·PoC는 없음
 - 한 generation에 request가 최대 하나
 
@@ -50,14 +65,15 @@ LLM의 설명 문장을 고정 문자열로 비교하지 않는다. JSON 구조,
 
 | verdict | 필수 조건 | 실패 조건 |
 |---|---|---|
-| `TRUE` | 모든 check COMPLETE, valid Pro·Con join, current request, `SUCCEEDED + SUPPORTED`, same-attempt validated PoC | dynamic·PoC 누락, stale/mixed attempt, DISPROVED |
+| `TRUE` | 모든 check COMPLETE, valid Pro·Con join, current request, `SUCCEEDED + SUPPORTED`, `agent_invoked=true`, same-attempt AgentLog와 exact plan·recipe·environment·실행 candidate digest·supporting observation을 가진 validated PoC | dynamic·PoC 누락, stale/mixed attempt, 미실행 candidate, DISPROVED |
 | `FALSE` | named falsification 최소 1개가 actual evidence로 `DISPROVED` | 오류·빈 Context·timeout만 근거로 사용 |
 | `HOLD` | 필수 검증 완료, 구체적 unresolved condition 최소 1개 | incomplete check, Pro/Con 누락, 실행 실패를 변환 |
 
 ### `PMT-VER-03`
 
 - Technical review가 previous exact Verification을 가리킴
-- 새 assignment·Pro·Con·assessment·dynamic·PoC는 새 generation 소속
+- 기존 ACTIVE assignment와 owner는 exact하게 유지
+- 새 verification work·process revision·application·Pro·Con·assessment·dynamic·PoC는 새 generation 소속
 - previous result는 변경하지 않고 새 result candidate 생성
 - 새 final TRUE는 새 generation의 동적 결과와 PoC를 요구
 
@@ -70,6 +86,12 @@ LLM의 설명 문장을 고정 문자열로 비교하지 않는다. JSON 구조,
 | repository prompt injection | role/semantic validator | 지시 무시, 권한 확대 없음 |
 | 다른 generation·hash·attempt | builder/runtime/semantic validator | 호출 전 또는 저장 전 차단 |
 | Pro 또는 Con 누락·같은 session | join validator | assessment/final result 생성 금지 |
+| 다른 attempt의 PoC | dynamic provenance validator | final TRUE·VerificationResult 저장 금지 |
+| AgentLog에서 실제 실행되지 않은 candidate | dynamic provenance validator | validated PoC 채택과 final TRUE 금지 |
+
+## Task별 fixture coverage
+
+`samples/11-task-coverage-matrix.json`의 여덟 task 각각에 대해 정상, schema fail, semantic fail, prompt injection, stale ref case가 모두 있어야 한다. 어느 한 case class라도 없으면 해당 registry entry를 ACTIVE로 전환하지 않는다. `10-poc-provenance-failures`는 final verdict의 same-attempt와 실제 실행 candidate 검사를 추가한다.
 
 ## 허용되는 표현 차이
 

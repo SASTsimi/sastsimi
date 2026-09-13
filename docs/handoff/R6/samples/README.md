@@ -11,6 +11,10 @@
 | 05 | 전체 | schema·semantic·injection·stale·join 차단 |
 | 06 | Final Verdict | current dynamic + same-attempt PoC로 TRUE |
 | 07 | Technical Revise | 새 generation에서 REVISE 보완 |
+| 08 | Assess Initial, Create Dynamic Request | 정상 `VERDICT_EVIDENCE` routing |
+| 09 | Assess Context, Create Context Request | 필수 Context 부족과 최소 조회 내용 생성 |
+| 10 | Final Verdict | 다른 attempt PoC·미실행 candidate provenance 차단 |
+| 11 | 전체 8개 prompt | task별 정상·schema·semantic·injection·stale coverage matrix |
 
 검증 순서는 다음과 같다.
 
@@ -21,5 +25,6 @@
 5. role별 semantic validator 확인
 6. exact reference·generation·attempt·debate join 확인
 7. 금지 행동이 output에 포함되지 않았는지 확인
+8. `11-task-coverage-matrix.json`의 모든 task가 다섯 case class를 충족하는지 확인
 
 자연어 문장 전체 일치는 요구하지 않는다. `evaluation-criteria.md`의 enum·reference·근거·권한 조건을 비교한다.

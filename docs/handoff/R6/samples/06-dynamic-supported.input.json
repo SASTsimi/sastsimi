@@ -13,7 +13,7 @@
   "playbook_application_ref": "playbook_application_ref_006_g2",
   "assessment": {
     "assessment_ref": "assessment_ref_006_g2",
-    "initial_verdict": "TRUE",
+    "proposed_verdict": "TRUE",
     "next_step": "POC_CONFIRMATION"
   },
   "pro_result": {
@@ -37,17 +37,51 @@
   "dynamic_result": {
     "result_ref": "dynamic_result_ref_006_g2_a3",
     "request_ref": "dynamic_request_ref_006_g2",
-    "verification_generation": 2,
     "attempt_id": "attempt_dynamic_006_3",
     "status": "SUCCEEDED",
     "hypothesis_outcome": "SUPPORTED",
+    "agent_invoked": true,
+    "agent_log_ref": "agent_log_ref_006_g2_a3",
+    "reproduction_plan_ref": "reproduction_plan_ref_006_g2_a3",
+    "environment_recipe_ref": "environment_recipe_ref_006_g2_a3",
+    "environment_ref": "environment_ref_006_g2_a3",
+    "poc_candidate_ref": "poc_candidate_ref_006_g2_a3",
+    "observation_refs": ["observation_ref_006_g2_a3_supported"],
     "poc_ref": "poc_ref_006_g2_a3"
   },
   "poc": {
     "poc_ref": "poc_ref_006_g2_a3",
     "request_ref": "dynamic_request_ref_006_g2",
     "attempt_id": "attempt_dynamic_006_3",
-    "validated": true
+    "reproduction_plan_ref": "reproduction_plan_ref_006_g2_a3",
+    "environment_recipe_ref": "environment_recipe_ref_006_g2_a3",
+    "environment_ref": "environment_ref_006_g2_a3",
+    "agent_log_ref": "agent_log_ref_006_g2_a3",
+    "candidate_ref": "poc_candidate_ref_006_g2_a3",
+    "candidate_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "execution_action_id": "action_execute_006_3",
+    "evidence_refs": ["observation_ref_006_g2_a3_supported"],
+    "validated_at": "2026-09-12T10:00:00Z"
+  },
+  "agent_log": {
+    "agent_log_ref": "agent_log_ref_006_g2_a3",
+    "attempt_id": "attempt_dynamic_006_3",
+    "events": [
+      {
+        "event_type": "POC_EXECUTION_FINISHED",
+        "action_id": "action_execute_006_3",
+        "poc_candidate_ref": "poc_candidate_ref_006_g2_a3",
+        "exit_code": 0,
+        "output_refs": ["observation_ref_006_g2_a3_supported"]
+      }
+    ]
+  },
+  "poc_candidate": {
+    "candidate_ref": "poc_candidate_ref_006_g2_a3",
+    "request_ref": "dynamic_request_ref_006_g2",
+    "attempt_id": "attempt_dynamic_006_3",
+    "reproduction_plan_ref": "reproduction_plan_ref_006_g2_a3",
+    "content_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
   },
   "validation_results": [
     {

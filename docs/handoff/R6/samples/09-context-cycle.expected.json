@@ -1,0 +1,36 @@
+{
+  "fixture_version": "r6-handoff-1.1",
+  "fixture_notice": "SYNTHETIC EXPECTED PROJECTION - runtime wraps accepted content in canonical CodeContextRequest.",
+  "fixture_id": "R6-CONTEXT-CYCLE-01",
+  "expected_context_assessment": {
+    "result_kind": "verification_context_assessment",
+    "context_readiness": "NEEDS_MORE_CONTEXT",
+    "requirements": [
+      {
+        "requirement_id": "ctx_req_owner_guard_009",
+        "status": "MISSING",
+        "validation_ids": ["vc_owner_guard_009"],
+        "falsification_question_ids": ["fq_owner_guard_009"],
+        "evidence_refs": ["ev_service_call_009"]
+      }
+    ]
+  },
+  "expected_context_request_content": {
+    "result_kind": "code_context_request_content",
+    "requested_entities": ["symbol_document_get_009"],
+    "requested_locations": ["location_document_get_call_009"],
+    "relation_query": ["CALLEES", "AUTH_GUARDS", "ROUTE_BINDINGS"],
+    "reason": "vc_owner_guard_009와 fq_owner_guard_009를 위해 document lookup의 ownership guard와 alternate route 적용 범위를 조회한다."
+  },
+  "runtime_assertions": {
+    "runtime_supplies_code_request_id": true,
+    "runtime_supplies_action_decision_ref": true,
+    "runtime_supplies_context_retrieval_limits": true,
+    "canonical_output_after_runtime_wrap": "CodeContextRequest"
+  },
+  "must_not_output": [
+    "모델이 만든 code_request_id 또는 action_decision_ref",
+    "허용 범위를 넘는 저장소 전체 조회",
+    "Context 부족을 FALSE 또는 HOLD로 변환"
+  ]
+}

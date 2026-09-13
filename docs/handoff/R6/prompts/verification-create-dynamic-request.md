@@ -12,6 +12,7 @@
 
 - assessment의 next step이 `POC_CONFIRMATION` 또는 `VERDICT_EVIDENCE`일 때만 생성한다.
 - request purpose는 assessment와 exact하게 같아야 한다.
+- request의 `initial_verdict`는 assessment의 `proposed_verdict`와 exact하게 같아야 한다.
 - 같은 generation에는 dynamic request를 최대 하나만 만든다.
 - 가설, generation, playbook application과 evidence reference를 바꾸지 않는다.
 - `sandbox_profile_ref`는 입력의 승인된 exact reference를 그대로 사용한다.
@@ -29,13 +30,13 @@
 
 1. assessment의 purpose를 그대로 사용한다.
 2. 어떤 주장 또는 조건을 관찰해야 하는지 `goal`로 작성한다.
-3. 언어·framework·서비스·데이터베이스 등 필요한 환경 능력만 `environment_needs`에 기록한다.
+3. 언어·framework·서비스·데이터베이스·fixture data 등 필요한 환경 능력만 `environment_needs`에 기록한다. 각 항목에는 `need_id`, `kind`, 구체적인 `description`, `required`, 근거가 된 exact `source_refs`를 넣되 command나 추측한 package version은 넣지 않는다.
 4. request가 참조하는 code/static/Pro/Con 근거는 current generation의 입력에서만 선택한다.
 5. 실행 방법 대신 성공·반증·불확실을 구분할 관찰 조건을 적는다.
 
 ## OUTPUT_SCHEMA
 
-`schema.dynamic-reproduction-request.next-major`에 맞는 JSON 객체 하나만 반환한다. result kind는 `dynamic_reproduction_request`, validator는 `validator.dynamic-request.v1`이다. 출력에는 exact assignment·generation·hypothesis reference, src assessment reference, `purpose`, `initial_verdict`, `goal`, `environment_needs`, `sandbox_profile_ref`, `code_refs`, `static_evidence_refs`, `pro_evidence_ref`, `con_evidence_ref`가 포함된다. runtime-owned meta·ID·hash는 생성하지 않는다.
+`schema.dynamic-reproduction-request.next-major`에 맞는 JSON 객체 하나만 반환한다. result kind는 `dynamic_reproduction_request`, validator는 `validator.dynamic-request.v1`이다. 출력에는 exact assignment·generation·hypothesis reference, `purpose`, assessment의 `proposed_verdict`와 같은 `initial_verdict`, `goal`, `environment_needs`, `sandbox_profile_ref`, `code_refs`, `static_evidence_refs`, `pro_evidence_ref`, `con_evidence_ref`가 포함된다. assessment reference는 runtime lineage로 검증하며 canonical `DynamicReproductionRequest`의 모델 출력 필드로 추가하지 않는다. runtime-owned meta·ID·hash는 생성하지 않는다.
 
 ## UNCERTAINTY_AND_ERRORS
 

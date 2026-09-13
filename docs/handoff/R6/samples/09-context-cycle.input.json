@@ -1,0 +1,30 @@
+{
+  "fixture_version": "r6-handoff-1.1",
+  "fixture_notice": "SYNTHETIC CONTEXT ROUTING FIXTURE - not a persisted runtime record.",
+  "fixture_id": "R6-CONTEXT-CYCLE-01",
+  "analysis_id": "ana_fixture_009",
+  "workspace_id": "ws_fixture_009",
+  "commit_id": "9999999999999999999999999999999999999999",
+  "hypothesis_id": "hyp_idor_009",
+  "verification_generation": 1,
+  "assignment_ref": "assignment_ref_009",
+  "playbook_ref": "playbook_ref_idor_001",
+  "playbook_application_ref": "playbook_application_ref_009",
+  "available_evidence_refs": ["ev_route_009", "ev_service_call_009"],
+  "available_entities": ["symbol_document_route_009", "symbol_document_get_009"],
+  "available_locations": ["location_document_route_009", "location_document_get_call_009"],
+  "missing_requirement": {
+    "requirement_id": "ctx_req_owner_guard_009",
+    "validation_ids": ["vc_owner_guard_009"],
+    "falsification_question_ids": ["fq_owner_guard_009"],
+    "reason": "callee body가 없어 ownership guard와 alternate route 적용 여부를 확인할 수 없다."
+  },
+  "context_request_policy": {
+    "allowed_relations": ["CALLEES", "AUTH_GUARDS", "ROUTE_BINDINGS"],
+    "max_depth": 2,
+    "max_fragments": 8,
+    "max_bytes": 32768,
+    "max_requests_per_hypothesis": 2,
+    "timeout_ms": 10000
+  }
+}

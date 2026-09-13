@@ -8,7 +8,7 @@ R6는 공개·제보 여부, CWE, Gate, Finding, 보고서, 동적 재현 계획
 
 ## 파일 위치
 
-- Prompt 6개: `prompts/`
+- Prompt 8개: `prompts/`
 - 정상·실패·보안 경계 fixture: `samples/`
 - 채점 기준: `evaluation-criteria.md`
 - 전체 목록과 사용법: `README.md`
@@ -17,12 +17,14 @@ R6는 공개·제보 여부, CWE, Gate, Finding, 보고서, 동적 재현 계획
 
 | 단계 | 주요 입력 | R6 출력 | 다음 소비자 |
 |---|---|---|---|
+| Context assessment | assignment, hypothesis, facts/context, playbook | `VerificationContextAssessment` routing output | R4 runtime routing |
+| Context request content | context assessment, target entity/location, policy | `CodeContextRequestContent` | R4 runtime이 canonical `CodeContextRequest`로 결합 후 Context Retrieval Service |
 | Pro | assignment, hypothesis, facts/context, playbook | `EvidenceAgentResult(PRO)` | Verification |
 | Con | Pro와 동일한 common input, 상대 결과 제외 | `EvidenceAgentResult(CON)` | Verification |
 | Initial assessment | current Pro·Con, facts/context, playbook | `VerificationInitialAssessment` | R4 runtime routing |
 | Dynamic request | assessment, current evidence, sandbox profile | `DynamicReproductionRequest` | R7 |
 | Final verdict | current evidence, optional current dynamic/PoC | `VerificationResult` | FALSE/HOLD 결과 또는 R5 CWE/Technical Gate |
-| Technical revise | previous result, Technical REVISE, 새 generation 전체 | 새 `VerificationResult` | R5 재검토 |
+| Technical revise | previous result, Technical REVISE, 기존 ACTIVE assignment와 새 generation 전체 | 새 `VerificationResult` | R5 재검토 |
 
 ## Pro·Con join 조건
 
@@ -54,6 +56,7 @@ R7이 생산하는 값:
 ## 판정 경계
 
 - final TRUE: current generation의 exact request, `SUCCEEDED + SUPPORTED` dynamic result와 same-attempt validated PoC 필수
+- Technical REVISE: ACTIVE assignment와 owner는 유지하고 verification work·process revision·application·Pro·Con·assessment·dynamic·PoC만 새 generation으로 생성
 - FALSE: named falsification의 필수 조건이 실제 evidence로 DISPROVED
 - HOLD: 필수 검증은 정상 완료했지만 중요한 조건이 부족·상충
 - BLOCKED/FAILED: Context·provider·budget·Sandbox 등 실행을 완료하지 못한 상태이며 verdict 아님

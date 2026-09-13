@@ -12,6 +12,7 @@
 
 - 운영 분석은 valid Pro·Con join을 요구한다.
 - final TRUE는 current generation의 exact DynamicReproductionRequest, `SUCCEEDED + SUPPORTED` 결과와 same-attempt validated `poc_ref`가 모두 있어야 한다.
+- final TRUE의 동적 결과는 `agent_invoked=true`이고 같은 attempt의 AgentLog를 가리켜야 한다. PoC는 동일 request·plan·environment recipe·environment·candidate·실행 action을 exact하게 가리키며, 실행된 candidate digest와 supporting observation을 검증한 `validated_at`을 가져야 한다.
 - FALSE는 가설의 필수 조건을 묻는 named falsification이 실제 evidence로 `DISPROVED`된 경우에만 허용한다.
 - HOLD는 필수 검증을 정상 완료했지만 중요한 조건이 부족하거나 상충할 때만 허용한다.
 - 오류·timeout·권한·예산·Sandbox 실패는 FALSE 또는 HOLD의 근거가 아니다.
@@ -28,7 +29,7 @@
 
 ## DECISION_CRITERIA
 
-- `TRUE`: exploit path와 필수 조건을 evidence로 확인했고 모든 check가 COMPLETE이며 DISPROVED가 없고, valid Pro·Con join과 current same-attempt dynamic SUPPORTED + validated PoC가 있다.
+- `TRUE`: exploit path와 필수 조건을 evidence로 확인했고 모든 check가 COMPLETE이며 DISPROVED가 없고, valid Pro·Con join과 current same-attempt dynamic `SUCCEEDED + SUPPORTED`, `agent_invoked=true`, exact AgentLog·candidate digest·supporting observation provenance를 가진 validated PoC가 있다.
 - `FALSE`: 최소 한 named falsification이 actual evidence로 DISPROVED됐으며 rationale이 question ID와 evidence를 연결한다.
 - `HOLD`: 모든 필수 검증과 Pro·Con은 완료됐고 구체적인 unresolved condition이 하나 이상 남아 있다.
 
@@ -47,6 +48,7 @@ supporting/counter evidence, restriction, bypass·alternate path, primitive cand
 - validated PoC 없는 final TRUE
 - 오류나 누락만으로 FALSE/HOLD 생성
 - 다른 generation·attempt·workspace·commit의 근거 혼합
+- 다른 attempt의 PoC 또는 실제 실행되지 않은 candidate를 검증된 PoC로 채택
 - R7의 plan·command·payload·PoC 생성
 - CWE, Gate 결과, Finding 또는 ReportDraft 생성
 - 검증되지 않은 별도 공격 경로를 current verdict의 근거로 병합
