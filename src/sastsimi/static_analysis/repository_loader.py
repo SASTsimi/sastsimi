@@ -856,13 +856,18 @@ class RepositoryLoader:
     ) -> ProcessResult:
         process = asyncio.create_task(runner.run(spec))
         try:
+            # Give the process task one scheduling turn to materialize its first
+            # observable workspace changes, then enforce quota immediately.
+            # A timed sleep here can let a fast or heavily scheduled process
+            # finish before an over-quota checkout is cancelled.
+            await asyncio.sleep(0)
             while not process.done():
-                await asyncio.sleep(0.005)
                 try:
                     self._quota(lease, policy)
                 except ValueError:
                     await runner.cancel(spec.attempt_id)
                     return await process
+                await asyncio.sleep(0.005)
             return await process
         finally:
             if not process.done():
