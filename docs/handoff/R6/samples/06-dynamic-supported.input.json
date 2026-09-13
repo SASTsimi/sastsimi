@@ -58,8 +58,10 @@
     "environment_ref": "environment_ref_006_g2_a3",
     "agent_log_ref": "agent_log_ref_006_g2_a3",
     "candidate_ref": "poc_candidate_ref_006_g2_a3",
+    "candidate_revision": 1,
     "candidate_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     "execution_action_id": "action_execute_006_3",
+    "execution_command_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     "evidence_refs": ["observation_ref_006_g2_a3_supported"],
     "validated_at": "2026-09-12T10:00:00Z"
   },
@@ -71,6 +73,9 @@
         "event_type": "POC_EXECUTION_FINISHED",
         "action_id": "action_execute_006_3",
         "poc_candidate_ref": "poc_candidate_ref_006_g2_a3",
+        "candidate_revision": 1,
+        "content_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "command_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
         "exit_code": 0,
         "output_refs": ["observation_ref_006_g2_a3_supported"]
       }
@@ -81,6 +86,7 @@
     "request_ref": "dynamic_request_ref_006_g2",
     "attempt_id": "attempt_dynamic_006_3",
     "reproduction_plan_ref": "reproduction_plan_ref_006_g2_a3",
+    "revision": 1,
     "content_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
   },
   "validation_results": [

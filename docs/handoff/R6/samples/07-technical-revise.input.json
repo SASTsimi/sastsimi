@@ -46,8 +46,10 @@
     "environment_recipe_ref": "environment_recipe_ref_007_g2_a2",
     "environment_ref": "environment_ref_007_g2_a2",
     "poc_candidate_ref": "poc_candidate_ref_007_g2_a2",
+    "candidate_revision": 1,
     "candidate_digest": "7777777777777777777777777777777777777777777777777777777777777777",
     "execution_action_id": "action_execute_007_2",
+    "execution_command_digest": "8888888888888888888888888888888888888888888888888888888888888888",
     "supporting_observation_refs": ["observation_ref_007_g2_a2_supported"],
     "agent_log": {
       "events": [
@@ -55,6 +57,9 @@
           "event_type": "POC_EXECUTION_FINISHED",
           "action_id": "action_execute_007_2",
           "poc_candidate_ref": "poc_candidate_ref_007_g2_a2",
+          "candidate_revision": 1,
+          "content_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+          "command_digest": "8888888888888888888888888888888888888888888888888888888888888888",
           "exit_code": 0,
           "output_refs": ["observation_ref_007_g2_a2_supported"]
         }
@@ -62,6 +67,7 @@
     },
     "poc_candidate": {
       "candidate_ref": "poc_candidate_ref_007_g2_a2",
+      "revision": 1,
       "content_digest": "7777777777777777777777777777777777777777777777777777777777777777"
     },
     "poc_ref": "poc_ref_007_g2_a2",
