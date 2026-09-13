@@ -13,6 +13,7 @@ dependencies = [
   "alembic>=1.13,<2",
   "PyYAML>=6,<7",
   "platformdirs>=4,<5",
+  "openai>=2,<3",
 ]
 
 [project.scripts]
