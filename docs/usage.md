@@ -93,6 +93,25 @@ uv run sastsimi --data-dir <data-dir> status <analysis_id> --format json
 
 `BLOCKED`이면 `waiting_for`와 [문제 해결 안내](./troubleshooting.md)를 확인합니다. 원인을 고치지 않고 같은 명령을 반복해 결과를 덮어쓰지 않습니다.
 
+### 취소 요청과 재시작 입력 확인
+
+```text
+uv run sastsimi --data-dir <data-dir> cancel <analysis_id> --format json
+uv run sastsimi --data-dir <data-dir> resume <analysis_id> --format json
+```
+
+`cancel`은 run metadata를 읽기 전에 취소 요청을 영구 저장합니다. 실행 중인
+owner는 이 요청을 관찰합니다. `CANCELLING`은 외부 작업의 종료 확인을 의미하지
+않습니다. owner가 이미 종료된 경우 이 명령이 외부 resource 정리나 quiescence를
+대신 수행하지 않습니다. metadata 오류로 명령이 실패해도 저장된 취소 요청은 유지됩니다.
+
+현재 `resume`은 저장된 exact 입력·profile·승인·evidence와 작업 상태를 읽어서
+검사하는 단계까지만 제공됩니다. 검사에 성공해도
+`PRODUCTION_RESUME_DISPATCH_NOT_AVAILABLE`과 종료 코드 `4`를 반환합니다.
+새 attempt, Provider 또는 worker를 시작하지 않으며 복구 기록을 변경하지 않습니다.
+기존 run에 재시작 descriptor가 없으면 `PRODUCTION_DESCRIPTOR_REQUIRED`로 차단합니다.
+두 명령 모두 `--profile`로 저장된 설정을 교체할 수 없습니다.
+
 ## 6. 최종 결과를 확인합니다
 
 분석이 terminal 상태가 된 뒤 실행합니다.

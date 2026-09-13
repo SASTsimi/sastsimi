@@ -14,6 +14,7 @@ from sastsimi.contracts.analysis import AnalysisStartRequest
 from sastsimi.contracts.refs import (
     BudgetScopeRef,
     RecordRef,
+    RunStoredDataRef,
     StoredDataRef,
 )
 from sastsimi.contracts.work import WorkType
@@ -100,6 +101,8 @@ class ResolvedProductionCapabilities:
     handler_failure_recorder: HandlerFailureRecorder
     install: ProductionFeatureInstaller
     configuration_evidence: TrustedEvidencePort
+    production_profile_ref: RunStoredDataRef | None = None
+    production_onboarding_ref: RunStoredDataRef | None = None
 
 
 class ProductionCapabilityResolver(Protocol):

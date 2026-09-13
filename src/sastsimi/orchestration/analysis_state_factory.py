@@ -15,6 +15,7 @@ from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
 
 from .run_initialization import RunBootstrap
+from .run_scope_plan import PlannedRunScope
 
 
 class AnalysisStateFactory:
@@ -26,10 +27,16 @@ class AnalysisStateFactory:
         ids: IdGenerator,
         *,
         eval_config_refs: tuple[BudgetScopeRef, ...] = (),
+        scope: PlannedRunScope | None = None,
+        production_profile_ref: RunStoredDataRef | None = None,
+        production_onboarding_ref: RunStoredDataRef | None = None,
     ) -> None:
         self._clock = clock
         self._ids = ids
         self._eval_config_refs = eval_config_refs
+        self._scope = scope
+        self._production_profile_ref = production_profile_ref
+        self._production_onboarding_ref = production_onboarding_ref
 
     def _meta(self, kind: str, analysis_id: AnalysisId) -> RunMeta:
         record_id = self._ids.new(RecordId)
@@ -52,12 +59,26 @@ class AnalysisStateFactory:
         if bool(self._eval_config_refs) != (request.purpose == Purpose.EVALUATION):
             raise ValueError("ANALYSIS_EVALUATION_CONFIG_INVALID")
         analysis_id = execution_ref.analysis_id
+        if self._scope is not None and (
+            self._scope.analysis_id != analysis_id
+            or str(self._scope.commit_id) != request.requested_git_ref
+            or self._scope.repository_ref != request.repository_ref
+            or self._production_profile_ref is None
+            or self._production_onboarding_ref is None
+            or self._production_profile_ref.analysis_id != analysis_id
+            or self._production_onboarding_ref.analysis_id != analysis_id
+        ):
+            raise ValueError("PRODUCTION_DESCRIPTOR_SCOPE_MISMATCH")
         run_input = AnalysisRunInput(
             meta=self._meta("analysis_run_input", analysis_id),
             repository_ref=request.repository_ref,
             requested_git_ref=request.requested_git_ref,
             program_id=request.program_id,
             purpose=request.purpose,
+            workspace_id=self._scope.workspace_id if self._scope is not None else None,
+            commit_id=self._scope.commit_id if self._scope is not None else None,
+            production_profile_ref=self._production_profile_ref,
+            production_onboarding_ref=self._production_onboarding_ref,
         )
         input_ref = reference(run_input)
         if not isinstance(input_ref, RunStoredDataRef):

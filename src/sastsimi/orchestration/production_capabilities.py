@@ -106,6 +106,8 @@ class ProfileBackedProductionCapabilityBundle:
     configuration: ProductionCapabilityResolverPort
     configuration_evidence: TrustedEvidencePort
     install: ProductionFeatureInstaller
+    production_profile_ref: RunStoredDataRef | None = None
+    production_onboarding_ref: RunStoredDataRef | None = None
 
 
 class DurableHandlerFailureRecorder(HandlerFailureRecorder):
@@ -310,6 +312,8 @@ class ProfileBackedProductionCapabilityResolver:
             handler_failure_recorder=recorder,
             install=install,
             configuration_evidence=bundle.configuration_evidence,
+            production_profile_ref=bundle.production_profile_ref,
+            production_onboarding_ref=bundle.production_onboarding_ref,
         )
 
     @staticmethod

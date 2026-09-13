@@ -232,7 +232,13 @@ class ConcreteProductionApplicationFactory:
         )
         initializer = RunInitializationService(
             profiles=profiles,
-            state_factory=AnalysisStateFactory(clock, ids),
+            state_factory=AnalysisStateFactory(
+                clock,
+                ids,
+                scope=scope,
+                production_profile_ref=resolved.production_profile_ref,
+                production_onboarding_ref=resolved.production_onboarding_ref,
+            ),
             budgets=runtime.budget_registry,
             ready_work=runner,
             work_query=scheduler_store,

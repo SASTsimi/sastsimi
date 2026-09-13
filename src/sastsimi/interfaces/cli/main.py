@@ -102,6 +102,13 @@ def main(
     )
     cancel_parser.add_argument("analysis_id")
     cancel_parser.add_argument("--format", choices=["text", "json"])
+    resume_parser = subparsers.add_parser(
+        "resume",
+        help="validate pinned restart input (dispatch unavailable)",
+        allow_abbrev=False,
+    )
+    resume_parser.add_argument("analysis_id")
+    resume_parser.add_argument("--format", choices=["text", "json"])
     results_parser = subparsers.add_parser(
         "results", help="read one terminal production result", allow_abbrev=False
     )
@@ -240,6 +247,9 @@ def main(
                 data = demo_command.results(config.data_dir)
             emit_data(output_format, sys.stdout, command=command_name, data=data)
             return int(ExitCode.OK)
+        if args.command == "resume":
+            command_name = "resume"
+            bootstrap.inspect_production_resume(config.data_dir, args.analysis_id)
         if args.command == "cancel":
             command_name = "cancel"
             try:
@@ -391,7 +401,10 @@ def main(
         code = ExitCode.CONFIG_ERROR
     except bootstrap.MigrationRequired:
         code = ExitCode.CONFIG_ERROR
-    except analyze_command.ProductionAnalyzeUnavailable as error:
+    except (
+        analyze_command.ProductionAnalyzeUnavailable,
+        bootstrap.ProductionResumeUnavailable,
+    ) as error:
         emit_result(
             ExitCode.CAPABILITY_UNSUPPORTED,
             output_format,

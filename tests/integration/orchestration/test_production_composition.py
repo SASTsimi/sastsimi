@@ -174,6 +174,8 @@ class _Capabilities(ProductionCapabilityResolver):
             handler_failure_recorder=cast(HandlerFailureRecorder, _FailureRecorder()),
             install=self._install,
             configuration_evidence=UnprovenEvidence(),
+            production_profile_ref=policy,
+            production_onboarding_ref=policy,
         )
 
     def _install(
@@ -373,6 +375,17 @@ def test_factory_builds_sqlite_foundation_and_complete_handler_application() -> 
         assert capabilities.install_calls == 1
         assert capabilities.readiness.calls == 1
         assert tuple(core.handlers.resolve(kind) for kind in WorkType)
+        # This composition fixture intentionally lacks dispatch approvals. Input
+        # publication precedes that boundary and must still pin restart metadata.
+        with pytest.raises(ValueError, match="ACTION_DENIED"):
+            core.pipeline.start(_request())
+        run_input = core.runtime.budget_registry.current_input(
+            str(_scope().analysis_id)
+        )
+        assert run_input.workspace_id == _scope().workspace_id
+        assert run_input.commit_id == _scope().commit_id
+        assert run_input.production_profile_ref is not None
+        assert run_input.production_onboarding_ref is not None
 
 
 def test_factory_without_exact_capability_resolver_fails_before_creating_state() -> (

@@ -325,6 +325,17 @@ class FilesystemAnalysisCapabilityProvisioner:
                 if item.slot in {"GIT_CLONE", "GIT_CHECKOUT"}
             )
         )
+        from sastsimi.orchestration.production_descriptor import (
+            persist_production_descriptor,
+        )
+
+        profile_ref, onboarding_ref = persist_production_descriptor(
+            artifacts=artifacts,
+            analysis_id=scope.analysis_id,
+            profile=profile,
+            manifest=manifest,
+            evidence=evidence,
+        )
         return ProfileBackedProductionCapabilityBundle(
             profile_hash=manifest.profile_hash,
             data_dir=data_dir.resolve(),
@@ -342,6 +353,8 @@ class FilesystemAnalysisCapabilityProvisioner:
             configuration=configuration,
             configuration_evidence=trusted,
             install=assembly.install,
+            production_profile_ref=profile_ref,
+            production_onboarding_ref=onboarding_ref,
         )
 
     @staticmethod
