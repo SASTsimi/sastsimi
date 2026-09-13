@@ -36,17 +36,6 @@
 | [`docs/troubleshooting.md`](./troubleshooting.md) | capability·인증·정적 도구·Docker·보고서 오류를 verdict와 섞지 않고 처리하는 방법을 설명합니다. | 도구 사용자·운영 담당자 | 운영 안내 |
 | [`docs/release-follow-ups.md`](./release-follow-ups.md) | 첫 실행 버전에서 의도적으로 미룬 Medium/Low 확장 항목을 기록합니다. | PM·후속 구현 담당자 | 후속 목록 |
 | [`config/profiles/production.example.toml`](../config/profiles/production.example.toml) | secret 없이 production profile의 전체 필드와 역할별 LLM route를 작성하는 예시입니다. 값 자체는 승인 기록이 아닙니다. | 설치·Provider·운영 담당자 | 설정 예시 |
-
-## 설치와 실행
-
-| 파일 | 쉽게 말하면 | 주로 읽는 사람 | 구분 |
-|---|---|---|---|
-| [`docs/installation.md`](./installation.md) | 지원 환경, 개발 설치와 wheel 설치 순서를 설명합니다. | 설치하는 팀원 | 운영 안내 |
-| [`docs/configuration.md`](./configuration.md) | 설정 우선순위, data directory와 OpenAI API·Codex 구독 인증 경계를 설명합니다. | 운영·LLM 연동 담당 | 운영 안내 |
-| [`config/sastsimi.example.toml`](../config/sastsimi.example.toml) | 비밀정보 없이 사용할 수 있는 최소 설정 예제입니다. | 설치·운영 담당 | 예제 설정 |
-| [`docs/external-tools.md`](./external-tools.md) | Git·OpenGrep·CodeQL·Docker와 OpenAI API capability를 확인·승인하는 방법을 설명합니다. | 정적분석·동적재현·LLM 담당 | 운영 안내 |
-| [`docs/usage.md`](./usage.md) | DB 준비, 분석, 상태·결과 조회와 Markdown 보고서 export 명령을 설명합니다. | CLI 사용자 | 운영 안내 |
-| [`docs/troubleshooting.md`](./troubleshooting.md) | 설치·DB·분석·보고서·외부 도구 실패 때 확인할 내용을 설명합니다. | 모든 사용자 | 운영 안내 |
 | [`docs/architecture-to-code.md`](./architecture-to-code.md) | Architecture v5 단계와 구현 모듈·시험·public 연결 상태를 대응시킵니다. | 구현·검토 담당 | 구현 지도 |
 | [`scripts/wheel-smoke.ps1`](../scripts/wheel-smoke.ps1) | source tree 밖의 새 venv에 wheel만 설치해 공개 CLI 흐름을 점검합니다. | 배포·CI 담당 | 검증 도구 |
 

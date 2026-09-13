@@ -33,15 +33,6 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/sastsimi"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"config/sastsimi.example.toml" = "sastsimi/resources/sastsimi.example.toml"
-"docs/installation.md" = "sastsimi/resources/docs/installation.md"
-"docs/configuration.md" = "sastsimi/resources/docs/configuration.md"
-"docs/usage.md" = "sastsimi/resources/docs/usage.md"
-"docs/external-tools.md" = "sastsimi/resources/docs/external-tools.md"
-"docs/troubleshooting.md" = "sastsimi/resources/docs/troubleshooting.md"
-"docs/architecture-to-code.md" = "sastsimi/resources/docs/architecture-to-code.md"
-
 [tool.ruff]
 target-version = "py312"
 line-length = 88

@@ -6,17 +6,17 @@
 | 설계 단계 | 현재 코드 위치 | 핵심 검증 위치 | public 상태 |
 |---|---|---|---|
 | 설정·runtime path | `src/sastsimi/config/` | `tests/unit/config/`, `tests/integration/test_cli.py` | CLI 연결됨 |
-| 저장소 입력·profile | `src/sastsimi/static_analysis/repository_loader.py`, `repository_profile.py` | `tests/unit/static_analysis/`, `tests/integration/static_analysis/` | 내부 구현; 현재 fake analyze와 분리 |
+| 저장소 입력·profile | `src/sastsimi/static_analysis/repository_loader.py`, `repository_profile.py` | `tests/unit/static_analysis/`, `tests/integration/static_analysis/` | production `analyze` 연결; 승인 profile 필요 |
 | AST·CodeQL·OpenGrep | `src/sastsimi/static_analysis/` | `tests/contract/test_static_tool_real_adapter_conformance.py`, `tests/integration/static_analysis/` | capability별 승인 필요 |
-| LLM provider·prompt | `src/sastsimi/providers/`, `src/sastsimi/prompts/` | `tests/integration/providers/`, `tests/contract/prompts/` | 내부 구현; fake analyze는 fake provider 사용 |
-| Hypothesis·Orchestration | `src/sastsimi/orchestration/`, `src/sastsimi/runtime/` | `tests/integration/orchestration/` | 내부 구현 |
-| Pro·Con·Verification | `src/sastsimi/verification/` | `tests/integration/verification/` | 내부 구현 |
+| LLM provider·prompt | `src/sastsimi/providers/`, `src/sastsimi/prompts/` | `tests/integration/providers/`, `tests/contract/prompts/` | production route 연결; exact 승인 필요 |
+| Hypothesis·Orchestration | `src/sastsimi/orchestration/`, `src/sastsimi/runtime/` | `tests/integration/orchestration/` | production 작업 그래프 연결 |
+| Pro·Con·Verification | `src/sastsimi/verification/` | `tests/integration/verification/` | production 작업 그래프 연결 |
 | 동적 재현·PoC | `src/sastsimi/reproduction/`, `src/sastsimi/sandbox/` | `tests/integration/sandbox/`, `tests/e2e/test_dynamic_reproduction.py` | Docker 경계 승인 필요 |
-| CWE·Technical Gate·Rule Scope Gate | `src/sastsimi/reporting/` | `tests/integration/reporting/`, `tests/contract/domain/` | fake TRUE 경로 연결됨 |
-| Chaining | `src/sastsimi/chaining/` | `tests/integration/chaining/` | fake CHAINING 경로 연결됨 |
+| CWE·Technical Gate·Rule Scope Gate | `src/sastsimi/reporting/` | `tests/integration/reporting/`, `tests/contract/domain/` | production 보고 작업 그래프 연결 |
+| Chaining | `src/sastsimi/chaining/` | `tests/integration/chaining/` | production handoff 연결 |
 | Finding·ReportDraft·Markdown | `src/sastsimi/reporting/`, `src/sastsimi/storage/report_export.py` | `tests/unit/reporting/`, `tests/e2e/test_fake_true_pipeline.py` | CLI 조회·export 연결됨 |
 | 상태·복구·권한 | `src/sastsimi/runtime/`, `src/sastsimi/storage/` | `tests/integration/recovery/`, `tests/security_negative/` | 단계별 연결됨 |
-| 운영 CLI | `src/sastsimi/interfaces/cli/` | `tests/unit/interfaces/`, `tests/integration/cli/` | 현재 fake analyze와 조회 명령 공개 |
+| 운영 CLI | `src/sastsimi/interfaces/cli/` | `tests/unit/interfaces/`, `tests/integration/cli/` | production `analyze`와 Fake `demo` 분리 |
 
 ## 구현 상태를 판단하는 기준
 
@@ -29,4 +29,3 @@
 
 설계 의미는 [Architecture v5](./architecture-v5/README.md), 사용 방법은
 [CLI 안내](./usage.md), 미지원 경계는 [README](../README.md)를 우선 확인합니다.
-

@@ -14,7 +14,7 @@
 
 ## 2. OpenAI Responses API
 
-OpenAI API key는 코드나 profile에 넣지 않고 실행 환경의 secret으로 주입합니다. 공식 OpenAI 문서도 SDK가 환경변수에서 key를 읽는 방법을 안내합니다. [OpenAI API quickstart](https://platform.openai.com/docs/quickstart/make-your-first-api-request)를 참고하세요.
+OpenAI API key는 코드나 profile에 넣지 않고 실행 환경의 secret으로 주입합니다. 공식 OpenAI 문서도 SDK가 환경변수에서 key를 읽는 방법을 안내합니다. [OpenAI API quickstart](https://developers.openai.com/api/docs/quickstart)를 참고하세요.
 
 profile에는 실제 값이 아니라 변수 이름만 적습니다.
 
@@ -34,7 +34,7 @@ uv run sastsimi --data-dir <data-dir> capability probe OPENAI_API --model <model
 
 ## 3. Codex 회원 로그인 — 공식 client 경로, 별도 승인 필요
 
-Codex 회원 로그인은 공식 Codex CLI 경로만 허용합니다. 브라우저 cookie를 읽거나 browser profile을 복사해 연결하지 않습니다. 공식 인증 안내는 [Codex 인증 문서](https://developers.openai.com/codex/auth/)를 참고하세요.
+Codex 회원 로그인은 공식 Codex CLI 경로만 허용합니다. 브라우저 cookie를 읽거나 browser profile을 복사해 연결하지 않습니다. 공식 인증 안내는 [Codex 인증 문서](https://developers.openai.com/codex/auth)를 참고하세요.
 
 ```text
 codex login

@@ -80,8 +80,19 @@ Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
 Push-Location $requestedRoot
 try {
     $help = (Invoke-Native $cli '--help') -join "`n"
-    if ($help -notmatch 'doctor' -or $help -notmatch 'reports') {
-        throw 'Installed wheel does not expose the required public CLI'
+    foreach ($command in @(
+        'doctor', 'analyze', 'demo', 'status', 'results', 'reports', 'report',
+        'onboarding', 'capability'
+    )) {
+        if ($help -notmatch "\b$command\b") {
+            throw "Installed wheel does not expose required command: $command"
+        }
+    }
+    $analyzeHelp = (Invoke-Native $cli 'analyze' '--help') -join "`n"
+    foreach ($option in @('--repo', '--commit', '--profile')) {
+        if ($analyzeHelp -notmatch [regex]::Escape($option)) {
+            throw "Installed wheel production analyze is missing: $option"
+        }
     }
 
     $doctor = Invoke-JsonCli $cli @('doctor', '--format', 'json')
@@ -99,24 +110,13 @@ try {
         throw 'Database migration smoke failed'
     }
 
-    if ($help -match '\bdemo\b') {
-        $analysis = Invoke-JsonCli $cli @(
-            '--data-dir', $data, 'demo', 'analyze', '--scenario', 'TRUE',
-            '--format', 'json'
-        )
-        $result = Invoke-JsonCli $cli @(
-            '--data-dir', $data, 'demo', 'results', '--format', 'json'
-        )
-    }
-    else {
-        $analysis = Invoke-JsonCli $cli @(
-            '--data-dir', $data, 'analyze', '--scenario', 'TRUE', '--format',
-            'json'
-        )
-        $result = Invoke-JsonCli $cli @(
-            '--data-dir', $data, 'results', '--format', 'json'
-        )
-    }
+    $analysis = Invoke-JsonCli $cli @(
+        '--data-dir', $data, 'demo', 'analyze', '--scenario', 'TRUE',
+        '--format', 'json'
+    )
+    $result = Invoke-JsonCli $cli @(
+        '--data-dir', $data, 'demo', 'results', '--format', 'json'
+    )
     if ($analysis.status -ne 'ok' -or $result.status -ne 'ok') {
         throw 'Deterministic analysis smoke failed'
     }

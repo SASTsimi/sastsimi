@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 
 
-def test_wheel_contains_readme_and_operator_resources(tmp_path: Path) -> None:
+def test_wheel_contains_runtime_resources(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     output = tmp_path / "dist"
     subprocess.run(
@@ -37,16 +37,9 @@ def test_wheel_contains_readme_and_operator_resources(tmp_path: Path) -> None:
         metadata = archive.read(metadata_name).decode("utf-8")
 
     required = {
-        "sastsimi/resources/sastsimi.example.toml",
-        "sastsimi/resources/docs/installation.md",
-        "sastsimi/resources/docs/configuration.md",
-        "sastsimi/resources/docs/usage.md",
-        "sastsimi/resources/docs/external-tools.md",
-        "sastsimi/resources/docs/troubleshooting.md",
-        "sastsimi/resources/docs/architecture-to-code.md",
         "sastsimi/prompts/registry.py",
         "sastsimi/prompts/templates/verification/final-verdict/1.0.0.md",
-        "sastsimi/storage/alembic/versions/0005_chaining_matches.py",
+        "sastsimi/storage/alembic/versions/0008_cancellation_observations.py",
     }
     assert required <= names
     assert "Description-Content-Type: text/markdown" in metadata
@@ -58,11 +51,11 @@ def test_operator_examples_do_not_embed_secrets_or_local_absolute_paths() -> Non
     root = Path(__file__).resolve().parents[2]
     paths = (
         root / "README.md",
-        root / "config" / "sastsimi.example.toml",
+        root / "config" / "profiles" / "production.example.toml",
         root / "docs" / "installation.md",
-        root / "docs" / "configuration.md",
+        root / "docs" / "provider-setup.md",
         root / "docs" / "usage.md",
-        root / "docs" / "external-tools.md",
+        root / "docs" / "onboarding-evidence.md",
         root / "docs" / "troubleshooting.md",
         root / "docs" / "architecture-to-code.md",
         root / "scripts" / "wheel-smoke.ps1",
@@ -84,3 +77,34 @@ def test_operator_examples_do_not_embed_secrets_or_local_absolute_paths() -> Non
         if marker in path.read_text(encoding="utf-8")
     ]
     assert not violations, "\n".join(violations)
+
+
+def test_readme_first_screen_contains_the_real_operator_path() -> None:
+    root = Path(__file__).resolve().parents[2]
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    first_screen = readme.split("## 전체 분석 흐름", maxsplit=1)[0]
+
+    for required in (
+        "Python 3.12",
+        "uv sync --frozen",
+        "OPENAI_API_KEY",
+        "codex login",
+        "CodeQL",
+        "OpenGrep",
+        "Docker",
+        "analyze --repo <URL-or-local-path>",
+        "status <analysis_id>",
+        "results <analysis_id>",
+        "reports <analysis_id>",
+        "report export <finding_id> --format markdown",
+        "docs/troubleshooting.md",
+    ):
+        assert required in first_screen
+
+
+def test_operator_docs_link_official_openai_authentication() -> None:
+    root = Path(__file__).resolve().parents[2]
+    provider = (root / "docs" / "provider-setup.md").read_text(encoding="utf-8")
+
+    assert "https://developers.openai.com/api/docs/quickstart" in provider
+    assert "https://developers.openai.com/codex/auth" in provider
