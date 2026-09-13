@@ -165,7 +165,10 @@ foreach ($file in $currentOperationalMarkdownFiles) {
 
 foreach ($file in $markdownFiles) {
     $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
-    if ($text.Contains('opengrep')) {
+    # Official URLs use the lowercase GitHub organization/repository spelling.
+    # Exclude URL targets while keeping prose and code spellings canonical.
+    $textWithoutExternalUrls = [regex]::Replace($text, 'https?://[^\s)>]+', '')
+    if ($textWithoutExternalUrls.Contains('opengrep')) {
         Add-Failure "non-canonical OpenGrep product spelling: $($file.FullName)"
     }
 }

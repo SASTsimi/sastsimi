@@ -79,7 +79,7 @@ Python AST parser는 CPython 3.12 안에 포함되어 있습니다. 별도 parse
 
 ### OpenGrep
 
-[OpenGrep 공식 설치 안내](https://github.com/OpenGrep/OpenGrep/blob/main/README.md)를 따라 설치하고, 안내에 나온 OpenGrep CLI 실행 파일이 `PATH`에서 동작하는지 `--version` 옵션으로 확인합니다.
+[OpenGrep 공식 설치 안내](https://github.com/opengrep/opengrep/blob/main/INSTALL.md)를 따라 설치합니다. Linux·macOS는 안내된 `install.sh`, Windows는 `install.ps1` 경로를 사용하고, 설치 후 OpenGrep CLI 실행 파일이 `PATH`에서 동작하는지 `--version` 옵션으로 확인합니다.
 
 운영 활성화에는 version 확인뿐 아니라 Python·JavaScript 시험 파일에 승인된 규칙을 실제 실행한 probe가 필요합니다.
 
@@ -97,7 +97,7 @@ codeql resolve packs
 
 ### Docker
 
-[Docker Engine 공식 설치 안내](https://docs.docker.com/engine/install/) 또는 승인된 Windows Docker 환경 설치 안내를 따릅니다.
+[Docker Engine 공식 설치 안내](https://docs.docker.com/engine/install/)를 따릅니다. Windows에서는 [Docker Desktop Windows 설치 안내](https://docs.docker.com/desktop/setup/install/windows-install/)도 함께 확인합니다.
 
 ```text
 docker version
