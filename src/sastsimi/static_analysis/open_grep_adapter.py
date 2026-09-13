@@ -21,7 +21,10 @@ from typing import Literal, Protocol, cast
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference, require_record_ref
-from sastsimi.contracts.static import StaticToolProfile
+from sastsimi.contracts.static import (
+    StaticToolProfile,
+    is_runnable_static_tool_profile,
+)
 from sastsimi.ports.dto import (
     CancellationResult,
     CandidateError,
@@ -605,8 +608,7 @@ def replay_opengrep_raw(
     authorized = tuple(replay.authorized_paths)
     if (
         execution is None
-        or profile.status != "APPROVED"
-        or profile.purpose not in {"FIXTURE", "EVALUATION"}
+        or not is_runnable_static_tool_profile(profile)
         or (profile.adapter_key, profile.tool_name, profile.tool_kind)
         != ("OPENGREP", "OPENGREP", "RULE_BASED")
         or (result.tool_name, result.tool_version, result.tool_kind)
@@ -795,8 +797,7 @@ class OpenGrepProcessAdapter:
 
     def _profile_error(self, profile: StaticToolProfile) -> str | None:
         if (
-            profile.status != "APPROVED"
-            or profile.purpose not in {"FIXTURE", "EVALUATION"}
+            not is_runnable_static_tool_profile(profile)
             or (profile.adapter_key, profile.tool_name, profile.tool_kind)
             != ("OPENGREP", "OPENGREP", "RULE_BASED")
             or profile.executable_key != self.executable_key

@@ -26,7 +26,10 @@ from sastsimi.contracts.refs import (
     reference,
     require_record_ref,
 )
-from sastsimi.contracts.static import StaticToolProfile
+from sastsimi.contracts.static import (
+    StaticToolProfile,
+    is_runnable_static_tool_profile,
+)
 from sastsimi.ports.dto import (
     CancellationResult,
     CandidateError,
@@ -934,8 +937,7 @@ def replay_codeql_raw(
     authorized = tuple(replay.authorized_paths)
     if (
         execution is None
-        or profile.status != "APPROVED"
-        or profile.purpose not in {"FIXTURE", "EVALUATION"}
+        or not is_runnable_static_tool_profile(profile)
         or (profile.adapter_key, profile.tool_name, profile.tool_kind)
         != ("CODEQL", "CODEQL", "RULE_BASED")
         or (result.tool_name, result.tool_version, result.tool_kind)
@@ -1026,8 +1028,7 @@ class CodeQLProcessAdapter:
 
     def _profile_error(self, profile: StaticToolProfile) -> str | None:
         if (
-            profile.status != "APPROVED"
-            or profile.purpose not in {"FIXTURE", "EVALUATION"}
+            not is_runnable_static_tool_profile(profile)
             or profile.adapter_key != "CODEQL"
             or profile.tool_name != "CODEQL"
             or profile.tool_kind != "RULE_BASED"

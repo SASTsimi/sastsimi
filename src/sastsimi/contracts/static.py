@@ -104,6 +104,16 @@ class StaticToolProfile(DomainRecord):
         return self
 
 
+def is_runnable_static_tool_profile(profile: StaticToolProfile) -> bool:
+    """Return whether this immutable profile may execute in its declared purpose."""
+
+    return (profile.status, profile.purpose) in {
+        ("APPROVED", "FIXTURE"),
+        ("APPROVED", "EVALUATION"),
+        ("ACTIVE", "PRODUCTION"),
+    }
+
+
 class CodeWorkspace(ContractModel):
     meta: RunMeta
     workspace_id: WorkspaceId
