@@ -191,21 +191,24 @@ async def test_probe_executes_all_fifteen_checks_and_replaces_prefilled_evidence
     for test in result.evidence.tests:
         with artifacts.open_verified(test.evidence_refs[0]) as stream:
             receipt = json.loads(stream.read())
-        assert receipt["candidate_identity_sha256"] == hashlib.sha256(
-            canonical_bytes(
-                {
-                    "auth_mode": "API_KEY",
-                    "client_name": "openai-python",
-                    "client_version": "2.54.0",
-                    "environment": "PRIVATE_CI",
-                    "model": "configured-openai-model",
-                    "product": "OPENAI_API",
-                    "profile_key": "openai-primary",
-                    "provider": "OPENAI",
-                    "transport": "RESPONSES_API",
-                }
-            )
-        ).hexdigest()
+        assert (
+            receipt["candidate_identity_sha256"]
+            == hashlib.sha256(
+                canonical_bytes(
+                    {
+                        "auth_mode": "API_KEY",
+                        "client_name": "openai-python",
+                        "client_version": "2.54.0",
+                        "environment": "PRIVATE_CI",
+                        "model": "configured-openai-model",
+                        "product": "OPENAI_API",
+                        "profile_key": "openai-primary",
+                        "provider": "OPENAI",
+                        "transport": "RESPONSES_API",
+                    }
+                )
+            ).hexdigest()
+        )
         assert receipt["test_id"] == test.test_id
         assert receipt["result"] == test.result
         assert receipt["observation"]["executed"] is True

@@ -6,23 +6,40 @@ from pathlib import Path
 import pytest
 
 from sastsimi.contracts.actions import RequesterRole
+from sastsimi.contracts.budget import BudgetProfileBinding
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.dynamic import (
     AgentLog,
     DynamicReproductionRequest,
     DynamicReproductionResult,
+    DynamicReproductionState,
 )
-from sastsimi.contracts.work import WorkStatus
+from sastsimi.contracts.refs import RecordRef, StoredDataRef
+from sastsimi.contracts.work import WorkExecutionState, WorkStatus
 from sastsimi.orchestration.dynamic_verification_handoff import (
     DynamicParentResumeService,
 )
 from sastsimi.ports.dto import WorkContext, WorkHandlerResult
+from sastsimi.runtime.services import RuntimeServices
+from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.storage.codec import reference
 from tests.contract.domain.canonical_fixtures import make
+from tests.integration.runtime_support import Harness
 from tests.integration.storage.verification_support import prepared_verification
 
 
-def _authorized_dynamic_request(tmp_path: Path):
+def _authorized_dynamic_request(
+    tmp_path: Path,
+) -> tuple[
+    Harness,
+    RuntimeServices,
+    WorkflowRunner,
+    WorkExecutionState,
+    StoredDataRef,
+    DynamicReproductionRequest,
+    RecordRef,
+    RecordRef,
+]:
     h, runtime, runner, work, registered, owner, hypothesis, bundle = (
         prepared_verification(tmp_path)
     )
@@ -96,6 +113,7 @@ def test_production_handoff_atomically_parks_parent_and_readies_child(
     assert child.status == "READY"
     assert child.input_refs == (reference(request),)
     (state,) = runtime.queries.current_records("a1", "dynamic_reproduction_state")
+    assert isinstance(state, DynamicReproductionState)
     assert state.dynamic_work_ref == reference(child)
 
     # A replay returns the exact same child and cannot create another work.
@@ -108,7 +126,7 @@ def test_production_handoff_atomically_parks_parent_and_readies_child(
     children = tuple(
         item
         for item in runtime.queries.current_records("a1", "work_execution_state")
-        if item.work_type == "DYNAMIC_REPRO"
+        if isinstance(item, WorkExecutionState) and item.work_type == "DYNAMIC_REPRO"
     )
     assert children == (child,)
     # WorkerPool's post-handler observation accepts the parked parent instead
@@ -129,8 +147,11 @@ def test_failed_dynamic_child_keeps_parent_blocked_without_a_verdict(
         str(parent.work_id), decision, reservation_ref
     )
     scope = runtime.budget_registry.current_state("a1").budget_binding_ref
+    assert scope is not None
     child = runner.activate(child, scope, owner, role="VERIFICATION")
-    identity = h.records.get_exact(scope).dynamic_lifecycle_profile_ref
+    binding = h.records.get_exact(scope)
+    assert isinstance(binding, BudgetProfileBinding)
+    identity = binding.dynamic_lifecycle_profile_ref
     h.evidence.identities[identity] = RequesterRole.REPRODUCTION_SESSION_MANAGER
     log = AgentLog.model_validate_json(
         canonical_bytes(

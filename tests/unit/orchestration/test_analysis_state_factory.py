@@ -4,7 +4,13 @@ import pytest
 
 from sastsimi.contracts.analysis import AnalysisStartRequest
 from sastsimi.contracts.budget import Purpose
-from sastsimi.contracts.ids import AnalysisId, OpaqueId
+from sastsimi.contracts.ids import (
+    AnalysisId,
+    OpaqueId,
+    ProgramId,
+    RecordId,
+    StoredDataId,
+)
 from sastsimi.contracts.refs import RunStoredDataRef, reference
 from sastsimi.orchestration.analysis_state_factory import AnalysisStateFactory
 
@@ -28,11 +34,11 @@ class _Ids:
 
 def _execution_ref() -> RunStoredDataRef:
     return RunStoredDataRef(
-        stored_data_id="execution",
+        stored_data_id=StoredDataId("execution"),
         data_kind="execution_budget_profile",
         content_hash="a" * 64,
-        analysis_id="published-for-run",
-        record_id="execution-record",
+        analysis_id=AnalysisId("published-for-run"),
+        record_id=RecordId("execution-record"),
     )
 
 
@@ -41,7 +47,7 @@ def test_factory_pins_one_exact_credential_free_input_to_initial_state() -> None
         AnalysisStartRequest(
             repository_ref="https://example.invalid/team/repository.git",
             requested_git_ref="a" * 40,
-            program_id="program-a",
+            program_id=ProgramId("program-a"),
             purpose=Purpose.PRODUCTION,
         ),
         _execution_ref(),
@@ -61,7 +67,7 @@ def test_factory_rejects_evaluation_without_exact_config_refs() -> None:
             AnalysisStartRequest(
                 repository_ref="https://example.invalid/team/repository.git",
                 requested_git_ref="a" * 40,
-                program_id="program-a",
+                program_id=ProgramId("program-a"),
                 purpose=Purpose.EVALUATION,
             ),
             _execution_ref(),
