@@ -48,7 +48,7 @@ if TYPE_CHECKING:
         HypothesisProposalHandler,
         PrimitiveUpdateHandler,
     )
-    from sastsimi.contracts.dynamic import DynamicReproductionRequest
+    from sastsimi.contracts.dynamic import DependencyBundle, DynamicReproductionRequest
     from sastsimi.contracts.evaluation import AnalysisRunResult
     from sastsimi.contracts.hypothesis import HypothesisProcessState
     from sastsimi.contracts.reporting import ReportDraft
@@ -75,6 +75,7 @@ if TYPE_CHECKING:
     )
     from sastsimi.ports.context import ContextLineageReaderPort
     from sastsimi.ports.dto import StaticRuleMapping, WorkHandlerResult
+    from sastsimi.ports.dynamic_sandbox import TrustedDockerTargetResolverPort
     from sastsimi.ports.static_tool import StaticProcessAdapter
     from sastsimi.ports.work_handler import WorkHandler
     from sastsimi.ports.workspace import WorkspaceLocatorPort
@@ -94,12 +95,10 @@ if TYPE_CHECKING:
         ReporterWorkHandler,
     )
     from sastsimi.reproduction.production import (
-        DynamicSandboxAuthorizationLifecyclePort,
         DynamicSandboxAuthorizationResolver,
     )
     from sastsimi.reproduction.service import (
         DynamicStageAuthorizations,
-        DynamicStageCallResolver,
     )
     from sastsimi.runtime.chaining_reconciliation import (
         ChainingReconciliationService,
@@ -1277,13 +1276,12 @@ def build_t11_services(
     commit_id: CommitId,
     role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
     sandbox_authorization: DynamicSandboxAuthorizationResolver,
-    sandbox_authorization_lifecycle: DynamicSandboxAuthorizationLifecyclePort
-    | None = None,
     verification: VerificationService,
     repository_profile: RepositoryProfile,
     resource_journal_path: Path,
-    docker_executable: str = "docker",
-    dynamic_call_resolver: DynamicStageCallResolver | None = None,
+    docker_profile_ref: HostConfigurationRef,
+    docker_target_resolver: TrustedDockerTargetResolverPort,
+    dependency_bundle: DependencyBundle | None = None,
 ) -> T11Services:
     """Build the real local-Docker T11 slice after trusted config resolution."""
 
@@ -1311,7 +1309,7 @@ def build_t11_services(
     from sastsimi.verification.completion import VerificationCompletionCoordinator
 
     artifacts = runtime.unit_of_work.artifacts
-    docker = DockerAdapter(docker_executable)
+    docker = DockerAdapter.from_profile(docker_profile_ref, docker_target_resolver)
     resources = OwnedResourceRegistry(journal_path=resource_journal_path)
     setup = ReproductionSetupAutomation(
         docker=docker,
@@ -1358,12 +1356,12 @@ def build_t11_services(
             ids=ids,
             sink=sink,
             authorization=sandbox_authorization,
-            authorization_lifecycle=sandbox_authorization_lifecycle,
             repository_profile=repository_profile,
+            dependency_bundle=dependency_bundle,
         )
 
     production = ProductionDynamicExecutor(
-        cast(DynamicAgentPort, agent), workflow_factory, dynamic_call_resolver
+        cast(DynamicAgentPort, agent), workflow_factory
     )
     return T11Services(
         execute_dynamic=_dynamic_executor(production),

@@ -3,7 +3,7 @@ import json
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
-from typing import Any, TypedDict, cast
+from typing import Any, cast
 
 import pytest
 
@@ -36,20 +36,6 @@ from sastsimi.sandbox.controller import (
 from sastsimi.sandbox.recipe_store import PreparedRecipeSource
 
 NOW = datetime(2026, 9, 11, tzinfo=UTC)
-
-
-class BoundaryArguments(TypedDict):
-    spec: SandboxRunSpec
-    recipe: EnvironmentRecipe
-    action: ActionRequest
-    action_decision_ref: StoredDataRef
-    request: DynamicReproductionRequest
-    plan: ReproductionPlan
-    sandbox_profile: SandboxProfile
-    lifecycle_profile: DynamicReproductionLifecycleProfile
-    run_policy_state_ref: StoredDataRef
-    required_context_refs: tuple[StoredDataRef, ...]
-    meta: RecordMeta
 
 
 def _meta(
@@ -96,7 +82,7 @@ def _wire[T](model: type[T], value: dict[str, Any]) -> T:
 class BoundaryContext:
     controller: SandboxController
     spec: SandboxRunSpec
-    arguments: BoundaryArguments
+    arguments: dict[str, object]
     other_workspace: Path
     records: dict[str, Any]
 
@@ -254,6 +240,7 @@ def _context(tmp_path: Path) -> BoundaryContext:
             "built_image_digest": image_digest,
             "baseline_recipe_ref": None,
             "build_disposition": "BUILT",
+            "source_manifest": None,
             "created_at": NOW.isoformat(),
         },
     )
@@ -426,7 +413,7 @@ def _replace_action(
     context: BoundaryContext,
     *,
     input_refs: tuple[StoredDataRef, ...],
-) -> BoundaryArguments:
+) -> dict[str, object]:
     current_action = context.arguments["action"]
     current_decision_ref = context.arguments["action_decision_ref"]
     assert isinstance(current_action, ActionRequest)
@@ -438,10 +425,10 @@ def _replace_action(
     decision_ref = reference(decision)
     assert isinstance(decision_ref, StoredDataRef)
     context.records[str(decision_ref.record_id)] = decision
-    arguments = context.arguments.copy()
-    arguments["action"] = action
-    arguments["action_decision_ref"] = decision_ref
-    return arguments
+    return context.arguments | {
+        "action": action,
+        "action_decision_ref": decision_ref,
+    }
 
 
 def test_build_phase_binds_exact_source_before_docker_access(tmp_path: Path) -> None:
@@ -487,19 +474,15 @@ def test_build_phase_binds_exact_source_before_docker_access(tmp_path: Path) -> 
     build_decision_ref = reference(build_decision)
     assert isinstance(build_decision_ref, StoredDataRef)
     context.records[str(build_decision_ref.record_id)] = build_decision
-    outcome = context.controller.evaluate_build(
-        spec=replace(context.spec, image_digest=None),
-        source=source,
-        action=build_action,
-        action_decision_ref=build_decision_ref,
-        request=context.arguments["request"],
-        plan=context.arguments["plan"],
-        sandbox_profile=context.arguments["sandbox_profile"],
-        lifecycle_profile=context.arguments["lifecycle_profile"],
-        run_policy_state_ref=context.arguments["run_policy_state_ref"],
-        required_context_refs=context.arguments["required_context_refs"],
-        meta=context.arguments["meta"],
-    )
+    arguments = context.arguments | {
+        "spec": replace(context.spec, image_digest=None),
+        "source": source,
+        "action": build_action,
+        "action_decision_ref": build_decision_ref,
+    }
+    arguments.pop("recipe")
+
+    outcome = context.controller.evaluate_build(**arguments)  # type: ignore[arg-type]
 
     assert outcome.decision.decision == "ALLOW", outcome.decision.reason_codes
     assert outcome.approved_source == source
@@ -560,10 +543,10 @@ def _forbidden_spec(context: BoundaryContext, case: str) -> SandboxRunSpec:
 def test_baked_repository_source_uses_no_host_mount(tmp_path: Path) -> None:
     context = _context(tmp_path)
     spec = replace(context.spec, mounts=(), source_baked=True)
-    arguments = context.arguments.copy()
-    arguments["spec"] = spec
 
-    outcome = context.controller.evaluate(**arguments)
+    outcome = cast(Any, context.controller.evaluate)(
+        **(context.arguments | {"spec": spec})
+    )
 
     assert outcome.decision.decision == "ALLOW", outcome.decision.reason_codes
 
@@ -578,7 +561,7 @@ def test_production_boundary_rejects_legacy_workspace_mount(tmp_path: Path) -> N
         record_resolver=lambda ref: context.records[str(ref.record_id)],
         require_baked_source=True,
     )
-    outcome = controller.evaluate(**context.arguments)
+    outcome = controller.evaluate(**context.arguments)  # type: ignore[arg-type]
 
     assert outcome.decision.decision == "DENY"
     assert "HOST_MOUNT_DENIED" in outcome.decision.reason_codes
@@ -587,10 +570,10 @@ def test_production_boundary_rejects_legacy_workspace_mount(tmp_path: Path) -> N
 def test_baked_repository_source_rejects_even_workspace_mount(tmp_path: Path) -> None:
     context = _context(tmp_path)
     spec = replace(context.spec, source_baked=True)
-    arguments = context.arguments.copy()
-    arguments["spec"] = spec
 
-    outcome = context.controller.evaluate(**arguments)
+    outcome = cast(Any, context.controller.evaluate)(
+        **(context.arguments | {"spec": spec})
+    )
 
     assert outcome.decision.decision == "DENY"
     assert "HOST_MOUNT_DENIED" in outcome.decision.reason_codes
@@ -621,10 +604,9 @@ def test_forbidden_boundary_is_denied_before_adapter(
     tmp_path: Path, case: str, reason_code: str
 ) -> None:
     context = _context(tmp_path)
-    arguments = context.arguments.copy()
-    arguments["spec"] = _forbidden_spec(context, case)
+    arguments = context.arguments | {"spec": _forbidden_spec(context, case)}
 
-    outcome = context.controller.evaluate(**arguments)
+    outcome = context.controller.evaluate(**arguments)  # type: ignore[arg-type]
 
     assert outcome.decision.decision == "DENY"
     assert outcome.approved_spec is None
@@ -635,7 +617,7 @@ def test_forbidden_boundary_is_denied_before_adapter(
 def test_local_non_root_default_deny_spec_is_approved(tmp_path: Path) -> None:
     context = _context(tmp_path)
 
-    outcome = context.controller.evaluate(**context.arguments)
+    outcome = context.controller.evaluate(**context.arguments)  # type: ignore[arg-type]
 
     assert outcome.decision.decision == "ALLOW", outcome.decision.reason_codes
     assert outcome.decision.reason_codes == ("LOCAL_BOUNDARY_OK",)
@@ -669,7 +651,7 @@ def test_exact_plan_environment_requirements_must_be_in_action_inputs(
         ),
     )
 
-    outcome = context.controller.evaluate(**arguments)
+    outcome = context.controller.evaluate(**arguments)  # type: ignore[arg-type]
 
     assert outcome.decision.decision == "DENY"
     assert "STALE_RESULT" in outcome.decision.reason_codes
@@ -690,10 +672,9 @@ def test_required_phase_context_must_appear_exactly_once(
     arguments = _replace_action(
         context,
         input_refs=(*input_refs, *((context_ref,) * context_ref_count)),
-    )
-    arguments["required_context_refs"] = (context_ref,)
+    ) | {"required_context_refs": (context_ref,)}
 
-    outcome = context.controller.evaluate(**arguments)
+    outcome = context.controller.evaluate(**arguments)  # type: ignore[arg-type]
 
     assert outcome.decision.decision == "DENY"
     assert "STALE_RESULT" in outcome.decision.reason_codes
@@ -713,10 +694,9 @@ def test_required_phase_context_is_recorded_as_checked_boundary(
     arguments = _replace_action(
         context,
         input_refs=(*input_refs, *context_refs),
-    )
-    arguments["required_context_refs"] = context_refs
+    ) | {"required_context_refs": context_refs}
 
-    outcome = context.controller.evaluate(**arguments)
+    outcome = context.controller.evaluate(**arguments)  # type: ignore[arg-type]
 
     assert outcome.decision.decision == "ALLOW", outcome.decision.reason_codes
     assert all(ref in outcome.decision.checked_boundary_refs for ref in context_refs)

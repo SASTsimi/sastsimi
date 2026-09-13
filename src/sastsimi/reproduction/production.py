@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Literal, Protocol, cast
 
 from sastsimi.contracts.actions import ActionRequest, RequesterRole
@@ -15,6 +17,7 @@ from sastsimi.contracts.dynamic import (
     AgentLog,
     AgentLogEvent,
     CleanupResult,
+    DependencyBundle,
     DynamicReproductionConclusion,
     DynamicReproductionRequest,
     DynamicReproductionToolRequest,
@@ -52,7 +55,6 @@ from sastsimi.ports.reproduction_session import (
     DynamicFinalizationInput,
     ReproductionSessionPort,
 )
-from sastsimi.ports.runtime_store import ActionAuthorizationPort
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 
 from .service import (
@@ -61,7 +63,6 @@ from .service import (
     DynamicReproductionWorkflowService,
     DynamicSandboxSession,
     DynamicStageAuthorizations,
-    DynamicStageCallResolver,
     DynamicWorkflowFailure,
 )
 
@@ -76,7 +77,6 @@ class DynamicSandboxAuthorization:
     lifecycle_profile: DynamicReproductionLifecycleProfile
     run_policy_state_ref: StoredDataRef
     run_spec: SandboxRunSpec
-    reservation_ref: StoredDataRef | None = None
 
 
 type DynamicSandboxAuthorizationResolver = Callable[
@@ -92,102 +92,6 @@ type DynamicSandboxAuthorizationResolver = Callable[
     ],
     DynamicSandboxAuthorization,
 ]
-
-
-class DynamicSandboxAuthorizationClaimPort(Protocol):
-    """One claimed external decision that is not dispatched until policy ALLOW."""
-
-    @property
-    def authorization(self) -> DynamicSandboxAuthorization: ...
-
-    async def dispatch(self) -> None: ...
-
-    async def returned(self) -> None: ...
-
-
-class DynamicSandboxAuthorizationLifecyclePort(Protocol):
-    """Claim exact runtime authority before Sandbox policy evaluation."""
-
-    async def claim(
-        self,
-        work: WorkExecutionState,
-        authorization: DynamicSandboxAuthorization,
-    ) -> DynamicSandboxAuthorizationClaimPort: ...
-
-
-@dataclass(slots=True)
-class _RuntimeDynamicSandboxAuthorizationClaim:
-    _authorization: DynamicSandboxAuthorization
-    _runtime: ActionAuthorizationPort
-    _dispatched: bool = False
-    _returned: bool = False
-
-    @property
-    def authorization(self) -> DynamicSandboxAuthorization:
-        return self._authorization
-
-    async def dispatch(self) -> None:
-        if self._dispatched or self._returned:
-            raise ValueError("DYNAMIC_SANDBOX_DISPATCH_STATE_INVALID")
-        self._runtime.mark_dispatched(
-            self._authorization.action_decision_ref,
-            None,
-            str(self._authorization.action.action_id),
-        )
-        self._dispatched = True
-
-    async def returned(self) -> None:
-        if not self._dispatched or self._returned:
-            raise ValueError("DYNAMIC_SANDBOX_DISPATCH_STATE_INVALID")
-        self._runtime.mark_returned(self._authorization.action_decision_ref)
-        self._returned = True
-
-
-@dataclass(frozen=True, slots=True)
-class RuntimeDynamicSandboxAuthorizationLifecycle:
-    """Bridge a Sandbox decision to the runtime external-dispatch lifecycle."""
-
-    runtime: ActionAuthorizationPort
-
-    async def claim(
-        self,
-        work: WorkExecutionState,
-        authorization: DynamicSandboxAuthorization,
-    ) -> DynamicSandboxAuthorizationClaimPort:
-        reservation_ref = authorization.reservation_ref
-        if reservation_ref is None:
-            raise ValueError("DYNAMIC_SANDBOX_RESERVATION_REQUIRED")
-        if (
-            work.status != "RUNNING"
-            or work.active_attempt_id is None
-            or reservation_ref.data_kind != "budget_reservation"
-            or authorization.action_decision_ref.data_kind != "action_decision"
-        ):
-            raise ValueError("DYNAMIC_SANDBOX_AUTHORIZATION_NOT_CURRENT")
-        claimed = self.runtime.claim_external(
-            str(work.work_id),
-            authorization.action_decision_ref,
-            reservation_ref,
-        )
-        if not isinstance(claimed, StoredDataRef):
-            raise ValueError("DYNAMIC_SANDBOX_AUTHORIZATION_NOT_CURRENT")
-        return _RuntimeDynamicSandboxAuthorizationClaim(
-            replace(authorization, action_decision_ref=claimed),
-            self.runtime,
-        )
-
-
-@dataclass(slots=True)
-class _PreclaimedDynamicSandboxAuthorization:
-    """Compatibility path for tests that already provide one USED decision."""
-
-    authorization: DynamicSandboxAuthorization
-
-    async def dispatch(self) -> None:
-        return None
-
-    async def returned(self) -> None:
-        return None
 
 
 class DynamicRecordSink(Protocol):
@@ -295,8 +199,8 @@ class ProductionDynamicWorkflow:
         ids: IdGenerator,
         sink: DynamicRecordSink,
         authorization: DynamicSandboxAuthorizationResolver,
-        authorization_lifecycle: DynamicSandboxAuthorizationLifecyclePort | None = None,
         repository_profile: RepositoryProfile | None = None,
+        dependency_bundle: DependencyBundle | None = None,
     ) -> None:
         self._work = work
         self._controller = controller
@@ -308,15 +212,14 @@ class ProductionDynamicWorkflow:
         self._ids = ids
         self._sink = sink
         self._authorization = authorization
-        self._authorization_lifecycle = authorization_lifecycle
         self._repository_profile = repository_profile
+        self._dependency_bundle = dependency_bundle
         self._records: dict[str, Record] = {}
         self._prepared: PreparedSandbox | None = None
         self._policy: SandboxPolicyDecision | None = None
         self._log: AgentLog | None = None
         self._cleanup: CleanupResult | None = None
         self._binding: DynamicSandboxAuthorization | None = None
-        self._active_authorization: DynamicSandboxAuthorizationClaimPort | None = None
         self._agent_action_id: ActionId | None = None
         self._environments: list[SandboxEnvironment] = []
         self._recipes: list[EnvironmentRecipe] = []
@@ -325,6 +228,7 @@ class ProductionDynamicWorkflow:
         self._observations: list[StoredDataRef] = []
         self._resource_groups: list[tuple[StoredDataRef, ...]] = []
         self._selected_poc: _MaterializedPoC | None = None
+        self._current_recipe: EnvironmentRecipe | None = None
         self._started_at = clock.now()
 
     def publish(
@@ -361,13 +265,41 @@ class ProductionDynamicWorkflow:
         plan_ref: StoredDataRef,
     ) -> DynamicSandboxSession:
         self._require_work(work, request, request_ref)
-        source = await self._setup.preflight(
-            workspace_root=self._controller.workspace_root,
-            request=request,
-            requirements=requirements,
-            meta=self._meta("environment_recipe"),
-            repository_profile=self._repository_profile,
-        )
+        try:
+            if self._dependency_bundle is None:
+                source = await self._setup.preflight(
+                    workspace_root=self._controller.workspace_root,
+                    request=request,
+                    requirements=requirements,
+                    meta=self._meta("environment_recipe"),
+                    repository_profile=self._repository_profile,
+                )
+            else:
+                source = await self._setup.preflight(
+                    workspace_root=self._controller.workspace_root,
+                    request=request,
+                    requirements=requirements,
+                    meta=self._meta("environment_recipe"),
+                    repository_profile=self._repository_profile,
+                    dependency_bundle=self._dependency_bundle,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            reason = _safe_error(error)
+            if reason.startswith("DEPENDENCY_"):
+                raise DynamicOperationalError(
+                    "BLOCKED" if "CONFIRMATION_REQUIRED" in reason else "FAILED",
+                    "DEPENDENCY",
+                    reason,
+                ) from error
+            if "CONFIRMATION_REQUIRED" in reason:
+                raise DynamicOperationalError(
+                    "BLOCKED", "EXTERNAL_CONFIGURATION", reason
+                ) from error
+            raise DynamicOperationalError(
+                "FAILED", "ENVIRONMENT_SETUP", reason
+            ) from error
         repository_context_refs = (
             (source.repository_profile_ref,)
             if source.repository_profile_ref is not None
@@ -384,8 +316,6 @@ class ProductionDynamicWorkflow:
             None,
             source_context_refs,
         )
-        build_claim = await self._claim_authorization(build_binding)
-        build_binding = build_claim.authorization
         build_outcome = self._controller.evaluate_build(
             spec=build_binding.run_spec,
             source=source,
@@ -429,7 +359,6 @@ class ProductionDynamicWorkflow:
                 policy_ref=build_policy_ref,
                 log_ref=self._log_ref(),
             )
-        await build_claim.dispatch()
         try:
             recipe = await self._setup.build(
                 approval=build_outcome,
@@ -438,50 +367,75 @@ class ProductionDynamicWorkflow:
                 requirements=requirements,
                 meta=self._meta("environment_recipe"),
             )
+        except asyncio.CancelledError:
+            self._start_log(
+                request_ref,
+                policy_ref=build_policy_ref,
+                agent_started=False,
+            )
+            await self._cleanup_owned_resources()
+            raise
         except Exception as error:
             raise DynamicOperationalError(
                 "FAILED", "ENVIRONMENT_SETUP", _safe_error(error)
             ) from error
-        await build_claim.returned()
-        recipe_ref = self._publish(
-            recipe,
-            RequesterRole.REPRODUCTION_SETUP_AUTOMATION,
-            (*self._work_inputs(), source.recipe_source_ref, *source.source_refs),
-        )
-        run_binding = self._authorization(
-            work,
-            request,
-            requirements,
-            plan,
-            "RUN",
-            recipe_ref,
-            recipe.built_image_digest,
-            (
-                build_policy_ref,
-                build_binding.action_decision_ref,
-                *source_context_refs,
-            ),
-        )
-        run_claim = await self._claim_authorization(run_binding)
-        run_binding = run_claim.authorization
-        self._binding = run_binding
-        outcome = self._controller.evaluate(
-            spec=run_binding.run_spec,
-            recipe=recipe,
-            action=run_binding.action,
-            action_decision_ref=run_binding.action_decision_ref,
-            request=request,
-            plan=plan,
-            sandbox_profile=run_binding.sandbox_profile,
-            lifecycle_profile=run_binding.lifecycle_profile,
-            run_policy_state_ref=run_binding.run_policy_state_ref,
-            required_context_refs=(
-                build_policy_ref,
-                build_binding.action_decision_ref,
-                *source_context_refs,
-            ),
-            meta=self._meta("sandbox_policy_decision"),
-        )
+        self._remember_recipe(recipe)
+        try:
+            recipe_ref = self._publish(
+                recipe,
+                RequesterRole.REPRODUCTION_SETUP_AUTOMATION,
+                (*self._work_inputs(), source.recipe_source_ref, *source.source_refs),
+            )
+            run_binding = self._authorization(
+                work,
+                request,
+                requirements,
+                plan,
+                "RUN",
+                recipe_ref,
+                recipe.built_image_digest,
+                (
+                    build_policy_ref,
+                    build_binding.action_decision_ref,
+                    *source_context_refs,
+                ),
+            )
+            self._binding = run_binding
+            outcome = self._controller.evaluate(
+                spec=run_binding.run_spec,
+                recipe=recipe,
+                action=run_binding.action,
+                action_decision_ref=run_binding.action_decision_ref,
+                request=request,
+                plan=plan,
+                sandbox_profile=run_binding.sandbox_profile,
+                lifecycle_profile=run_binding.lifecycle_profile,
+                run_policy_state_ref=run_binding.run_policy_state_ref,
+                required_context_refs=(
+                    build_policy_ref,
+                    build_binding.action_decision_ref,
+                    *source_context_refs,
+                ),
+                meta=self._meta("sandbox_policy_decision"),
+            )
+        except asyncio.CancelledError:
+            self._start_log(
+                request_ref,
+                policy_ref=build_policy_ref,
+                agent_started=False,
+            )
+            await self._cleanup_owned_resources()
+            raise
+        except Exception as error:
+            self._start_log(
+                request_ref,
+                policy_ref=build_policy_ref,
+                agent_started=False,
+            )
+            await self._cleanup_owned_resources()
+            raise DynamicOperationalError(
+                "FAILED", "ENVIRONMENT_SETUP", _safe_error(error)
+            ) from error
         self._policy = outcome.decision
         policy_ref = self._publish(
             outcome.decision,
@@ -510,11 +464,11 @@ class ProductionDynamicWorkflow:
                 input_refs=(policy_ref,),
                 safe_message="Sandbox boundary denied the built image",
             )
+            await self._cleanup_owned_resources()
             return DynamicSandboxSession.blocked(
                 policy_ref=policy_ref,
                 log_ref=self._log_ref(),
             )
-        await run_claim.dispatch()
         try:
             prepared = await self._setup.create(
                 approval=outcome,
@@ -529,11 +483,14 @@ class ProductionDynamicWorkflow:
             raise DynamicOperationalError(
                 "FAILED", "ENVIRONMENT_SETUP", reason
             ) from error
+        except asyncio.CancelledError:
+            await self._cleanup_owned_resources()
+            raise
         except Exception as error:
+            await self._cleanup_owned_resources()
             raise DynamicOperationalError(
                 "FAILED", "ENVIRONMENT_SETUP", _safe_error(error)
             ) from error
-        self._active_authorization = run_claim
         await self._remember_prepared(prepared)
         return self._session(policy_ref)
 
@@ -570,8 +527,6 @@ class ProductionDynamicWorkflow:
                 prepared.recipe.built_image_digest,
                 (tool_ref, _exact_ref(prepared.environment)),
             )
-            recreate_claim = await self._claim_authorization(recreate_binding)
-            recreate_binding = recreate_claim.authorization
             recreate_outcome = self._controller.evaluate(
                 spec=recreate_binding.run_spec,
                 recipe=prepared.recipe,
@@ -608,7 +563,7 @@ class ProductionDynamicWorkflow:
                     "POLICY_BLOCKED",
                     "Sandbox recreation boundary denied the request",
                 )
-            await recreate_claim.dispatch()
+            self._binding = recreate_binding
             self._policy = recreate_outcome.decision
             self._append_event(
                 "SANDBOX_RECREATE_REQUESTED",
@@ -634,10 +589,6 @@ class ProductionDynamicWorkflow:
                 raise DynamicOperationalError(
                     "FAILED", "ENVIRONMENT_SETUP", _safe_error(error)
                 ) from error
-            if self._active_authorization is not None:
-                await self._active_authorization.returned()
-            self._active_authorization = recreate_claim
-            self._binding = recreate_binding
             await self._remember_prepared(prepared)
             self._selected_poc = None
             self._append_event(
@@ -691,16 +642,25 @@ class ProductionDynamicWorkflow:
         return self._session(self._policy_ref())
 
     async def cleanup(self, session: DynamicSandboxSession) -> DynamicSandboxSession:
-        if not session.allowed or self._cleanup is not None:
+        if self._cleanup is not None or not self._prepared_resources():
             return session
-        prepared = self._require_prepared()
+        await self._cleanup_owned_resources()
+        return self._session(self._policy_ref()) if session.allowed else session
+
+    async def _cleanup_owned_resources(self) -> None:
+        if self._cleanup is not None:
+            return
+        prepared = self._prepared
+        recipe = self._current_recipe
         action_id = self._ids.new(ActionId)
         self._append_event(
             "CLEANUP_STARTED",
             "REPRODUCTION_SETUP_AUTOMATION",
             action_id=action_id,
-            environment_ref=_exact_ref(prepared.environment),
-            environment_recipe_ref=_exact_ref(prepared.recipe),
+            environment_ref=(
+                _exact_ref(prepared.environment) if prepared is not None else None
+            ),
+            environment_recipe_ref=(_exact_ref(recipe) if recipe is not None else None),
         )
         try:
             cleanup = await self._setup.cleanup(
@@ -711,9 +671,6 @@ class ProductionDynamicWorkflow:
                 ),
                 meta=self._meta("cleanup_result"),
             )
-            if self._active_authorization is not None:
-                await self._active_authorization.returned()
-                self._active_authorization = None
         except Exception as error:
             cleanup = CleanupResult(
                 meta=self._meta("cleanup_result"),
@@ -741,19 +698,13 @@ class ProductionDynamicWorkflow:
             "CLEANUP_FINISHED",
             "REPRODUCTION_SETUP_AUTOMATION",
             action_id=action_id,
-            environment_ref=_exact_ref(prepared.environment),
-            environment_recipe_ref=_exact_ref(prepared.recipe),
+            environment_ref=(
+                _exact_ref(prepared.environment) if prepared is not None else None
+            ),
+            environment_recipe_ref=(_exact_ref(recipe) if recipe is not None else None),
             output_refs=(cleanup_ref,),
             safe_message=cleanup.status,
         )
-        return self._session(self._policy_ref())
-
-    async def _claim_authorization(
-        self, authorization: DynamicSandboxAuthorization
-    ) -> DynamicSandboxAuthorizationClaimPort:
-        if self._authorization_lifecycle is None:
-            return _PreclaimedDynamicSandboxAuthorization(authorization)
-        return await self._authorization_lifecycle.claim(self._work, authorization)
 
     def finalize(
         self,
@@ -792,7 +743,7 @@ class ProductionDynamicWorkflow:
                 requirements=requirements,
                 plan=plan,
                 policy=self._policy,
-                recipe=self._require_prepared().recipe,
+                recipe=self._current_recipe,
                 environment=self._require_prepared().environment,
                 candidate=candidate,
                 conclusion=conclusion,
@@ -859,7 +810,7 @@ class ProductionDynamicWorkflow:
                 ),
                 plan=self._typed_record("reproduction_plan", ReproductionPlan),
                 policy=self._policy,
-                recipe=self._prepared.recipe if self._prepared else None,
+                recipe=self._current_recipe,
                 environment=self._prepared.environment if self._prepared else None,
                 candidate=self._typed_record("poc_candidate", PoCCandidate),
                 conclusion=None,
@@ -1154,7 +1105,10 @@ class ProductionDynamicWorkflow:
 
     async def _remember_prepared(self, prepared: PreparedSandbox) -> None:
         self._prepared = prepared
-        self._recipes.append(prepared.recipe)
+        if self._current_recipe is None:
+            self._remember_recipe(prepared.recipe)
+        elif _exact_ref(self._current_recipe) != _exact_ref(prepared.recipe):
+            raise ValueError("ENVIRONMENT_RECIPE_REFERENCE_MISMATCH")
         self._environments.append(prepared.environment)
         self._resource_groups.append(prepared.resource_refs)
         try:
@@ -1187,6 +1141,14 @@ class ProductionDynamicWorkflow:
         if self._cleanup is None:
             raise ValueError("SANDBOX_CLEANUP_RESULT_REQUIRED")
         return self._cleanup.failure_reason or "Sandbox setup failed; cleanup succeeded"
+
+    def _remember_recipe(self, recipe: EnvironmentRecipe) -> None:
+        refs = self._setup.recipe_resource_refs(recipe)
+        if not refs:
+            raise ValueError("RECIPE_RESOURCE_OWNERSHIP_REQUIRED")
+        self._current_recipe = recipe
+        self._recipes.append(recipe)
+        self._resource_groups.append(refs)
 
     async def _cleanup_after_publication_failure(self) -> None:
         try:
@@ -1365,7 +1327,6 @@ class ProductionDynamicExecutor:
 
     agent: DynamicAgentPort
     workflow_factory: Callable[[WorkExecutionState], ProductionDynamicWorkflow]
-    call_resolver: DynamicStageCallResolver | None = None
 
     async def __call__(
         self,
@@ -1373,12 +1334,11 @@ class ProductionDynamicExecutor:
         work: WorkExecutionState,
         request: DynamicReproductionRequest,
         request_ref: StoredDataRef,
-        authorizations: DynamicStageAuthorizations | None,
+        authorizations: DynamicStageAuthorizations,
     ) -> WorkHandlerResult:
         service = DynamicReproductionWorkflowService(
             agent=self.agent,
             workflow=self.workflow_factory(work),
-            call_resolver=self.call_resolver,
         )
         return await service.execute(
             work=work,
@@ -1389,6 +1349,12 @@ class ProductionDynamicExecutor:
 
 
 def _safe_error(error: Exception) -> str:
+    code = getattr(error, "code", None)
+    if isinstance(code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{2,127}", code):
+        return code
+    message = str(error)
+    if re.fullmatch(r"[A-Z][A-Z0-9_]{2,127}(?::[A-Z_,]+)?", message):
+        return message
     return type(error).__name__
 
 
@@ -1402,11 +1368,8 @@ def _exact_ref(record: Record) -> StoredDataRef:
 __all__ = [
     "DynamicRecordSink",
     "DynamicSandboxAuthorization",
-    "DynamicSandboxAuthorizationClaimPort",
-    "DynamicSandboxAuthorizationLifecyclePort",
     "DynamicSandboxAuthorizationResolver",
     "ProductionDynamicExecutor",
     "ProductionDynamicWorkflow",
-    "RuntimeDynamicSandboxAuthorizationLifecycle",
     "RuntimeDynamicRecordSink",
 ]

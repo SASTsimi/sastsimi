@@ -10,6 +10,7 @@ from sastsimi.contracts.actions import ActionRequest
 from sastsimi.contracts.budget import DynamicReproductionLifecycleProfile
 from sastsimi.contracts.dynamic import (
     CleanupResult,
+    DependencyBundle,
     DynamicReproductionRequest,
     EnvironmentRecipe,
     EnvironmentRecipeSourceManifest,
@@ -20,10 +21,36 @@ from sastsimi.contracts.dynamic import (
     SandboxProfile,
 )
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
 from sastsimi.contracts.static import RepositoryProfile
 
 type RecreateReason = Literal["STATE_CHANGED", "CONFIG_CHANGED", "STATE_UNCERTAIN"]
+type DockerBuildLimit = Literal["CPU", "MEMORY", "PID", "DISK"]
+type DockerBuildBackend = Literal["LEGACY_LIMITED"]
+
+
+@dataclass(frozen=True, slots=True)
+class TrustedDockerTarget:
+    """Resolver-owned, exact local Docker execution target."""
+
+    profile_ref: HostConfigurationRef
+    executable: Path
+    subject_key: str
+    subject_sha256: str
+    daemon_target: str
+    build_backend: DockerBuildBackend
+    enforced_build_limits: frozenset[DockerBuildLimit]
+    external_build_disk_limit_bytes: int
+
+
+class TrustedDockerTargetResolverPort(Protocol):
+    """T16B seam for resolving and revalidating the current ACTIVE profile."""
+
+    def resolve_current(
+        self, profile_ref: HostConfigurationRef
+    ) -> TrustedDockerTarget: ...
+
+    def require_current(self, target: TrustedDockerTarget) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -91,6 +118,9 @@ class PreparedRecipeSourceView(Protocol):
 
     @property
     def repository_profile_ref(self) -> StoredDataRef | None: ...
+
+    @property
+    def dependency_bundle_ref(self) -> StoredDataRef | None: ...
 
     @property
     def dockerfile_origin(self) -> Literal["REPOSITORY", "GENERATED"]: ...
@@ -197,6 +227,7 @@ class ReproductionSetupPort(Protocol):
         requirements: EnvironmentRequirements,
         meta: RecordMeta,
         repository_profile: RepositoryProfile | None = None,
+        dependency_bundle: DependencyBundle | None = None,
     ) -> PreparedRecipeSourceView: ...
 
     async def build(
@@ -208,6 +239,10 @@ class ReproductionSetupPort(Protocol):
         requirements: EnvironmentRequirements,
         meta: RecordMeta,
     ) -> EnvironmentRecipe: ...
+
+    def recipe_resource_refs(
+        self, recipe: EnvironmentRecipe
+    ) -> tuple[StoredDataRef, ...]: ...
 
     async def create(
         self,
@@ -271,4 +306,6 @@ __all__ = [
     "SandboxMount",
     "SandboxRunSpec",
     "SandboxSetupCleanupError",
+    "TrustedDockerTarget",
+    "TrustedDockerTargetResolverPort",
 ]

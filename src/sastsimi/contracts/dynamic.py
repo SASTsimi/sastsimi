@@ -22,6 +22,8 @@ from .ids import ActionId
 from .records import validate_revision
 from .refs import StoredDataRef, require_record_ref
 
+_VERSION_TOKEN = re.compile(r"(?<![0-9])([0-9]+(?:\.[0-9]+){0,3})(?![0-9])")
+
 
 class DynamicReproductionState(DomainRecord):
     """Current generation projection, owned by Reproduction Session Manager."""
@@ -182,6 +184,72 @@ class EnvironmentRequirements(DynamicRecord):
         return self
 
 
+type DependencyEcosystem = Literal["PYTHON_WHEELS", "NPM_CACHE"]
+
+
+def dependency_bundle_target_hash(
+    *,
+    request_ref: StoredDataRef,
+    ecosystem: DependencyEcosystem,
+    repository_profile_ref: StoredDataRef,
+    dependency_input_hash: str,
+    archive_ref: StoredDataRef,
+    archive_digest: str,
+) -> str:
+    """Hash the complete immutable input a human approves for one attempt."""
+
+    return content_hash(
+        (
+            request_ref,
+            ecosystem,
+            repository_profile_ref,
+            dependency_input_hash,
+            archive_ref,
+            archive_digest,
+            "TAR",
+        )
+    )
+
+
+class DependencyBundle(DynamicRecord):
+    """Human-approved offline dependency archive bound to one exact attempt."""
+
+    KIND = "dependency_bundle"
+    repository_profile_ref: StoredDataRef
+    ecosystem: DependencyEcosystem
+    dependency_input_hash: Sha256
+    archive_ref: StoredDataRef
+    archive_digest: Sha256
+    archive_format: Literal["TAR"]
+    approval_target_hash: Sha256
+    approved_by: NonEmptyStr
+    approved_by_role: Literal["HUMAN"]
+    approved_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def exact_approved_archive(self) -> Self:
+        require_record_ref(self.repository_profile_ref, "repository_profile")
+        if (
+            self.archive_ref.data_kind != "artifact"
+            or self.archive_ref.record_id is not None
+            or self.archive_ref.content_hash != self.archive_digest
+        ):
+            raise ValueError("DEPENDENCY_BUNDLE_ARTIFACT_INVALID")
+        if self.approved_at < self.meta.created_at:
+            raise ValueError("DEPENDENCY_BUNDLE_APPROVAL_PRECEDES_RECORD")
+        expected = dependency_bundle_target_hash(
+            request_ref=self.request_ref,
+            ecosystem=self.ecosystem,
+            repository_profile_ref=self.repository_profile_ref,
+            dependency_input_hash=self.dependency_input_hash,
+            archive_ref=self.archive_ref,
+            archive_digest=self.archive_digest,
+        )
+        if self.approval_target_hash != expected:
+            raise ValueError("DEPENDENCY_BUNDLE_APPROVAL_TARGET_MISMATCH")
+        return self
+
+
 class ReproductionPlan(DynamicRecord):
     KIND = "reproduction_plan"
     purpose: DynamicPurpose
@@ -218,6 +286,7 @@ class EnvironmentRecipeSourceManifest(ContractModel):
     dockerfile_origin: Literal["REPOSITORY", "GENERATED"]
     dockerfile_digest: Sha256
     context_digest: Sha256
+    dependency_bundle_ref: StoredDataRef | None = None
 
     @model_validator(mode="after")
     def exact_sources(self) -> Self:
@@ -240,6 +309,16 @@ class EnvironmentRecipeSourceManifest(ContractModel):
             for ref in (self.dockerfile_ref, self.build_context_ref)
         ):
             raise ValueError("RECIPE_SOURCE_MANIFEST_SCOPE_MISMATCH")
+        if self.dependency_bundle_ref is not None:
+            require_record_ref(self.dependency_bundle_ref, "dependency_bundle")
+            if (
+                self.dependency_bundle_ref.workspace_id,
+                self.dependency_bundle_ref.commit_id,
+            ) != (
+                self.repository_profile_ref.workspace_id,
+                self.repository_profile_ref.commit_id,
+            ):
+                raise ValueError("RECIPE_SOURCE_MANIFEST_SCOPE_MISMATCH")
         return self
 
 
@@ -252,7 +331,7 @@ class EnvironmentRecipe(DynamicRecord):
     built_image_digest: NonEmptyStr
     baseline_recipe_ref: StoredDataRef | None
     build_disposition: Literal["BUILT", "REUSED"]
-    source_manifest: EnvironmentRecipeSourceManifest | None = None
+    source_manifest: EnvironmentRecipeSourceManifest | None
     created_at: AwareDatetime
 
     @model_validator(mode="after")
@@ -789,6 +868,9 @@ class DynamicReproductionResult(DynamicRecord):
         if self.action_decision_ref is None:
             pre_boundary_categories = {
                 "PLAN",
+                "EXTERNAL_CONFIGURATION",
+                "ENVIRONMENT_SETUP",
+                "DEPENDENCY",
                 "AGENT",
                 "TIMEOUT",
                 "RESOURCE_LIMIT",
@@ -899,9 +981,27 @@ def validate_environment(
             and check.status == "MATCH"
             and check.actual is not None
         ):
-            if check.actual not in (item.expected, *item.alternatives):
+            allowed_versions = tuple(
+                match.group(1)
+                for value in (item.expected, *item.alternatives)
+                if value is not None
+                for match in (_VERSION_TOKEN.search(value),)
+                if match is not None
+            )
+            if not any(
+                check.actual == value or check.actual.startswith(value + ".")
+                for value in allowed_versions
+            ):
                 raise ValueError("ENVIRONMENT_VERSION_MISMATCH")
-            if check.actual != item.expected and not check.difference:
+            expected_match = (
+                _VERSION_TOKEN.search(item.expected)
+                if item.expected is not None
+                else None
+            )
+            expected_version = (
+                expected_match.group(1) if expected_match is not None else None
+            )
+            if check.actual != expected_version and not check.difference:
                 raise ValueError("ENVIRONMENT_DIFFERENCE_REQUIRED")
 
 
