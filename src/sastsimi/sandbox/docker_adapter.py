@@ -64,8 +64,6 @@ class DockerCommandOutcome:
     timed_out: bool
 
 
-
-
 @dataclass(frozen=True, slots=True)
 class DockerImageState:
     image_digest: str

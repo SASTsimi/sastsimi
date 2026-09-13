@@ -48,3 +48,7 @@ from sastsimi.composition.runtime import diagnostic_event as diagnostic_event
 from sastsimi.composition.runtime import install_t13_services as install_t13_services
 from sastsimi.composition.runtime import load_fake_progress as load_fake_progress
 from sastsimi.composition.runtime import upgrade_database as upgrade_database
+
+# Compatibility alias for existing integration callers. New code should use
+# ``build_real_static_slice`` from this facade.
+_build_real_static_slice = build_real_static_slice
