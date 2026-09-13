@@ -33,11 +33,15 @@ def test_scheduler_transport_dtos_are_small_and_immutable() -> None:
         "action_decision_ref",
         "call_spec_ref",
         "sandbox_resource_refs",
+        "issued_action_decision_ref",
+        "sandbox_resources",
+        "sandbox_inventory_fingerprint",
     ]
     assert [item.name for item in fields(CancellationObservation)] == [
         "target",
         "status",
         "reason_code",
+        "resource_observations",
     ]
 
     outcome = RunOutcome("analysis-1", "BLOCKED", None)
