@@ -112,9 +112,7 @@ class _LazyDockerTargetResolver:
         self._lock = Lock()
         self._resolver: TrustedDockerTargetResolverPort | None = None
 
-    def resolve_current(
-        self, profile_ref: HostConfigurationRef
-    ) -> TrustedDockerTarget:
+    def resolve_current(self, profile_ref: HostConfigurationRef) -> TrustedDockerTarget:
         return self._delegate().resolve_current(profile_ref)
 
     def require_current(self, target: TrustedDockerTarget) -> None:

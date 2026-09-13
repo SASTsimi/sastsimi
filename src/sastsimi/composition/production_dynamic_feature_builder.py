@@ -110,9 +110,7 @@ class _LazyDockerCancellation:
         with self._lock:
             adapter = self._adapter
             if adapter is None:
-                adapter = DockerAdapter.from_profile(
-                    self._profile_ref, self._resolver
-                )
+                adapter = DockerAdapter.from_profile(self._profile_ref, self._resolver)
                 self._adapter = adapter
             return adapter
 
@@ -389,9 +387,7 @@ def build_production_dynamic_feature(
         docker_readiness=readiness,
         authorization=context.runtime.validator,
     )
-    docker_adapter = _LazyDockerCancellation(
-        docker_profile_ref, docker_target_resolver
-    )
+    docker_adapter = _LazyDockerCancellation(docker_profile_ref, docker_target_resolver)
     feature = DynamicProductionFeature(
         sandbox_authorization=resolver,
         sandbox_profile=lambda work: _profile_ref_for_work(
