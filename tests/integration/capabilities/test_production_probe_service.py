@@ -371,6 +371,29 @@ def test_real_probe_receipts_require_exact_human_approval_before_active(
     assert "stderr" not in payloads.lower()
 
 
+def test_python_ast_approval_accepts_exact_running_interpreter_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    interpreter = tmp_path / "python-real"
+    interpreter.write_bytes(Path(sys.executable).resolve(strict=True).read_bytes())
+    alias = tmp_path / "python"
+    try:
+        alias.symlink_to(interpreter)
+    except OSError:
+        pytest.skip("symbolic links are unavailable on this host")
+    monkeypatch.setattr(sys, "executable", str(alias))
+    service, _runtime, _store = _service(tmp_path, available=set())
+
+    receipt = service.probe("PYTHON_AST")
+    profile_ref = service.approve(
+        receipt.probe_id,
+        expected_target_hash=receipt.approval_target_hash or "",
+    )
+
+    assert service.resolve_executable(profile_ref) == interpreter.resolve(strict=True)
+
+
 @pytest.mark.parametrize(
     ("kind", "available", "docker_daemon", "openai_passed"),
     [

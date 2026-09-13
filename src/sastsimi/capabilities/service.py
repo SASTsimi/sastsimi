@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Callable, Mapping
@@ -392,9 +393,17 @@ class _CapabilityProbeEngine:
         if executable is None:
             raise ValueError("CAPABILITY_EXECUTABLE_UNAVAILABLE")
         try:
-            if executable.is_symlink():
+            allow_running_interpreter = (
+                isinstance(profile, StaticToolProfile)
+                and profile.adapter_key == "PYTHON_AST"
+            )
+            if executable.is_symlink() and not allow_running_interpreter:
                 raise ValueError
             resolved = executable.resolve(strict=True)
+            if allow_running_interpreter and resolved != Path(sys.executable).resolve(
+                strict=True
+            ):
+                raise ValueError
             if not resolved.is_file() or sha256_file(resolved) != expected_digest:
                 raise ValueError
         except (OSError, ValueError) as error:
@@ -486,9 +495,14 @@ class _CapabilityProbeEngine:
         if executable is None:
             raise ValueError("CAPABILITY_EXECUTABLE_UNAVAILABLE")
         try:
-            if executable.is_symlink():
+            allow_running_interpreter = receipt.kind == "PYTHON_AST"
+            if executable.is_symlink() and not allow_running_interpreter:
                 raise ValueError
             resolved = executable.resolve(strict=True)
+            if allow_running_interpreter and resolved != Path(sys.executable).resolve(
+                strict=True
+            ):
+                raise ValueError
             if sha256_file(resolved) != receipt.observed_sha256:
                 raise ValueError
         except (OSError, ValueError) as error:
