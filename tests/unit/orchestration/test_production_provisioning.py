@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -19,12 +21,31 @@ from sastsimi.contracts.capabilities import (
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef, reference
 from sastsimi.contracts.static import StaticToolProfile
+from sastsimi.contracts.verification import PlaybookPolicy
+from sastsimi.orchestration.production_composition import (
+    ProductionCapabilityUnavailable,
+)
+from sastsimi.orchestration.production_filesystem_provisioner import (
+    ExactProvisioningTrustedEvidence,
+    FilesystemAnalysisCapabilityProvisioner,
+    ProductionBundleAssemblyContext,
+    ProductionBundleAssemblyRegistry,
+    ProductionImplementationSet,
+)
 from sastsimi.orchestration.production_onboarding import ProductionProvisioningManifest
 from sastsimi.orchestration.production_provisioning import (
     ExactProductionProvisioningResolver,
     ExactProvisioningArtifactMaterializer,
+    ProvisioningRecordEnvelopeMaterializer,
+    ProvisioningRecordTemplateRef,
     ProvisioningTemplateMaterializer,
 )
+from sastsimi.storage.artifact_store import LocalArtifactStore
+from sastsimi.storage.configuration_registry import ConfigurationRegistry
+from sastsimi.storage.database import Database
+from sastsimi.storage.migrations import upgrade
+from sastsimi.storage.queries import RuntimeQueries
+from sastsimi.storage.repositories import SQLiteRecordStore
 from tests.integration.storage.test_production_capability_registry import (
     _runtime_profile,
 )
@@ -84,6 +105,211 @@ def _run_ref(kind: str, index: int) -> StoredDataRef:
         commit_id=CommitId("c" * 40),
         record_id=RecordId(f"{kind}-{index}"),
     )
+
+
+def _record_envelope(
+    key: str,
+    kind: str,
+    payload: dict[str, object],
+    *,
+    logical_key: str | None = None,
+    previous_template_key: str | None = None,
+    revision_number: int = 1,
+) -> tuple[ProvisioningRecordTemplateRef, bytes]:
+    raw = json.dumps(
+        {
+            "schema_version": 1,
+            "template_key": key,
+            "data_kind": kind,
+            "logical_key": logical_key or key,
+            "record_schema_version": "1.0.0",
+            "revision_number": revision_number,
+            "previous_template_key": previous_template_key,
+            "created_at": "2026-09-13T00:00:00Z",
+            "payload": payload,
+        }
+    ).encode()
+    return (
+        ProvisioningRecordTemplateRef(
+            template_key=key,
+            data_kind=kind,
+            content_sha256=hashlib.sha256(raw).hexdigest(),
+        ),
+        raw,
+    )
+
+
+def test_record_envelopes_materialize_symbolic_refs_topologically() -> None:
+    playbook_ref, playbook_raw = _record_envelope(
+        "common-playbook",
+        "verification_playbook",
+        {
+            "scope": "COMMON",
+            "vulnerability_type": None,
+            "prerequisites": [],
+            "source_checks": ["identify source"],
+            "sink_checks": ["identify sink"],
+            "path_checks": ["trace path"],
+            "defense_checks": ["check defense"],
+            "falsification_question_templates": [
+                {"template_key": "reachable", "question": "Can input reach sink?"}
+            ],
+            "static_evidence_requirements": ["exact location"],
+            "dynamic_evidence_requirements": [],
+            "restriction_checks": ["record restrictions"],
+            "hold_conditions": ["missing path evidence"],
+        },
+    )
+    policy_ref, policy_raw = _record_envelope(
+        "playbook-policy",
+        "playbook_policy",
+        {
+            "common_playbook_ref": {"$record_template_ref": "common-playbook"},
+            "type_playbooks": [],
+            "approved_by": "operator",
+            "approved_at": "2026-09-13T00:00:00Z",
+        },
+    )
+
+    result = ProvisioningRecordEnvelopeMaterializer.materialize(
+        templates=(policy_ref, playbook_ref),
+        payloads={
+            policy_ref.content_sha256: policy_raw,
+            playbook_ref.content_sha256: playbook_raw,
+        },
+        evidence_refs={},
+        analysis_id="analysis",
+        workspace_id="workspace",
+        commit_id="c" * 40,
+    )
+
+    assert tuple(result) == ("common-playbook", "playbook-policy")
+    policy = result["playbook-policy"]
+    assert isinstance(policy, PlaybookPolicy)
+    assert policy.common_playbook_ref == reference(result["common-playbook"])
+
+
+def test_record_envelopes_reject_missing_or_cyclic_symbolic_refs() -> None:
+    missing_ref, missing_raw = _record_envelope(
+        "playbook-policy",
+        "playbook_policy",
+        {
+            "common_playbook_ref": {"$record_template_ref": "missing"},
+            "type_playbooks": [],
+            "approved_by": "operator",
+            "approved_at": "2026-09-13T00:00:00Z",
+        },
+    )
+    with pytest.raises(
+        ValueError, match="PRODUCTION_RECORD_TEMPLATE_REFERENCE_MISSING"
+    ):
+        ProvisioningRecordEnvelopeMaterializer.materialize(
+            templates=(missing_ref,),
+            payloads={missing_ref.content_sha256: missing_raw},
+            evidence_refs={},
+            analysis_id="analysis",
+            workspace_id="workspace",
+            commit_id="c" * 40,
+        )
+
+    left_ref, left_raw = _record_envelope(
+        "left",
+        "verification_playbook",
+        {"cycle": {"$record_template_ref": "right"}},
+    )
+    right_ref, right_raw = _record_envelope(
+        "right",
+        "verification_playbook",
+        {"cycle": {"$record_template_ref": "left"}},
+    )
+    with pytest.raises(ValueError, match="PRODUCTION_RECORD_TEMPLATE_CYCLE"):
+        ProvisioningRecordEnvelopeMaterializer.materialize(
+            templates=(left_ref, right_ref),
+            payloads={
+                left_ref.content_sha256: left_raw,
+                right_ref.content_sha256: right_raw,
+            },
+            evidence_refs={},
+            analysis_id="analysis",
+            workspace_id="workspace",
+            commit_id="c" * 40,
+        )
+
+
+def test_materialized_records_publish_current_in_real_sqlite(tmp_path: Path) -> None:
+    playbook_ref, playbook_raw = _record_envelope(
+        "common-playbook",
+        "verification_playbook",
+        {
+            "scope": "COMMON",
+            "vulnerability_type": None,
+            "prerequisites": [],
+            "source_checks": ["source"],
+            "sink_checks": ["sink"],
+            "path_checks": ["path"],
+            "defense_checks": ["defense"],
+            "falsification_question_templates": [],
+            "static_evidence_requirements": ["location"],
+            "dynamic_evidence_requirements": [],
+            "restriction_checks": ["restriction"],
+            "hold_conditions": ["missing evidence"],
+        },
+    )
+    policy_ref, policy_raw = _record_envelope(
+        "playbook-policy",
+        "playbook_policy",
+        {
+            "common_playbook_ref": {"$record_template_ref": "common-playbook"},
+            "type_playbooks": [],
+            "approved_by": "operator",
+            "approved_at": "2026-09-13T00:00:00Z",
+        },
+    )
+    materialized = ProvisioningRecordEnvelopeMaterializer.materialize(
+        templates=(policy_ref, playbook_ref),
+        payloads={
+            policy_ref.content_sha256: policy_raw,
+            playbook_ref.content_sha256: playbook_raw,
+        },
+        evidence_refs={},
+        analysis_id="analysis",
+        workspace_id="workspace",
+        commit_id="c" * 40,
+    )
+    database = Database(tmp_path / "provisioning.sqlite3")
+    upgrade(database)
+    artifacts = LocalArtifactStore(
+        tmp_path / "artifacts", WorkspaceId("workspace"), CommitId("c" * 40)
+    )
+    records = SQLiteRecordStore(
+        database, ExactProvisioningTrustedEvidence(materialized)
+    )
+    configuration = ConfigurationRegistry(records, artifacts, "host-a")
+
+    FilesystemAnalysisCapabilityProvisioner._publish_records(
+        materialized, records, configuration
+    )
+    FilesystemAnalysisCapabilityProvisioner._publish_records(
+        materialized, records, configuration
+    )
+
+    queries = RuntimeQueries(records)
+    assert len(queries.current_records("analysis", "verification_playbook")) == 1
+    assert len(queries.current_records("analysis", "playbook_policy")) == 1
+
+
+def test_empty_feature_registry_fails_for_exact_unsupported_set() -> None:
+    key = ProductionImplementationSet((), (), "policy", "auth", "setup", ())
+    context = cast(
+        ProductionBundleAssemblyContext,
+        SimpleNamespace(implementation_set=key),
+    )
+
+    with pytest.raises(
+        ProductionCapabilityUnavailable,
+        match="PRODUCTION_FEATURE_SET_UNSUPPORTED",
+    ):
+        ProductionBundleAssemblyRegistry()(context)
 
 
 def _artifact_documents() -> tuple[dict[str, bytes], str]:

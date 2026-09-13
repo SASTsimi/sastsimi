@@ -29,7 +29,6 @@ from sastsimi.orchestration.production_capabilities import (
     ProfileBackedProductionCapabilityBundle,
     production_profile_hash,
 )
-from sastsimi.orchestration.production_composition import ProductionFeatureInstaller
 from sastsimi.prompts.production import REQUIRED_PRODUCTION_PROMPT_ROUTES
 
 _PVD_IDS = frozenset(f"PVD-{index:02d}" for index in range(1, 16))
@@ -363,7 +362,6 @@ class AnalysisCapabilityProvisioner(Protocol):
         manifest: ProductionOnboardingManifest,
         provisioning: ProductionProvisioningManifest,
         evidence: Callable[[str], bytes],
-        installer: ProductionFeatureInstaller,
     ) -> ProfileBackedProductionCapabilityBundle: ...
 
 
@@ -377,13 +375,11 @@ class OnboardedProductionCapabilityBundleLoader:
         repository_root: Path,
         clock: Callable[[], datetime],
         provision: AnalysisCapabilityProvisioner,
-        installer: ProductionFeatureInstaller,
     ) -> None:
         self._store = store
         self._repository_root = repository_root.resolve()
         self._clock = clock
         self._provision = provision
-        self._installer = installer
 
     def load_for_profile(
         self, profile: ProductionProfile, *, data_dir: Path | None = None
@@ -491,7 +487,6 @@ class OnboardedProductionCapabilityBundleLoader:
             manifest=manifest,
             provisioning=provisioning,
             evidence=store.require_evidence,
-            installer=self._installer,
         )
 
     __call__ = provision

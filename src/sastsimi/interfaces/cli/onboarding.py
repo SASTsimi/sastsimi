@@ -7,7 +7,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
 
 from sastsimi.config.production_profile import ProductionProfile
 from sastsimi.interfaces.cli.exit_codes import ExitCode
@@ -131,7 +130,6 @@ def _validator(
         repository_root=repository_root,
         clock=clock,
         provision=unreachable_provision,
-        installer=lambda _context: cast(Any, None),
     )
 
 

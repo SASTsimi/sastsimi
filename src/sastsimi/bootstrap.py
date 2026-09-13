@@ -783,42 +783,27 @@ def build_production_analyze(capability_bundle_loader: object | None = None) -> 
     from sastsimi.config.production_profile import load_production_profile
     from sastsimi.orchestration.production_capabilities import (
         ProductionCapabilityBundleLoader,
-        ProfileBackedProductionCapabilityBundle,
         ProfileBackedProductionCapabilityResolver,
     )
     from sastsimi.orchestration.production_composition import (
         ConcreteProductionApplicationFactory,
-        InstalledProductionServices,
-        ProductionCapabilityUnavailable,
-        ProductionInstallationContext,
     )
     from sastsimi.orchestration.production_entrypoint import ProductionAnalyzeService
+    from sastsimi.orchestration.production_filesystem_provisioner import (
+        FilesystemAnalysisCapabilityProvisioner,
+        ProductionBundleAssemblyRegistry,
+    )
     from sastsimi.orchestration.production_onboarding import (
         OnboardedProductionCapabilityBundleLoader,
     )
     from sastsimi.runtime.system_support import UUIDIds
 
     if capability_bundle_loader is None:
-
-        def unavailable_provision(
-            **_values: object,
-        ) -> ProfileBackedProductionCapabilityBundle:
-            raise ProductionCapabilityUnavailable(
-                "PRODUCTION_CAPABILITY_PROVISIONER_NOT_INSTALLED"
-            )
-
-        def unavailable_install(
-            _context: ProductionInstallationContext,
-        ) -> InstalledProductionServices:
-            raise ProductionCapabilityUnavailable(
-                "PRODUCTION_CAPABILITY_PROVISIONER_NOT_INSTALLED"
-            )
-
+        feature_assemblies = ProductionBundleAssemblyRegistry()
         capability_bundle_loader = OnboardedProductionCapabilityBundleLoader(
             repository_root=Path(__file__).resolve().parents[2],
             clock=lambda: datetime.now(UTC),
-            provision=unavailable_provision,
-            installer=unavailable_install,
+            provision=FilesystemAnalysisCapabilityProvisioner(feature_assemblies),
         )
 
     capability_resolver = ProfileBackedProductionCapabilityResolver(

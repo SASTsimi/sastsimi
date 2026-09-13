@@ -5,15 +5,28 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import PurePosixPath
-from typing import ClassVar, Literal, Self, cast
+from typing import Any, ClassVar, Literal, Self, cast
 
-from pydantic import model_validator
+from pydantic import JsonValue, model_validator
 
 from sastsimi.contracts.base import ContractModel, NonEmptyStr, Sha256
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.capabilities import RuntimeCapabilityProfile
 from sastsimi.contracts.dynamic import SandboxProfile
-from sastsimi.contracts.evaluation import EvaluationRecommendation
+from sastsimi.contracts.evaluation import (
+    EvaluationRecommendation,
+    EvaluationRunConfig,
+    EvaluationRunResult,
+)
+from sastsimi.contracts.ids import (
+    AnalysisId,
+    CommitId,
+    LogicalRecordId,
+    RecordId,
+    WorkspaceId,
+)
 from sastsimi.contracts.llm import (
     ClientExecutionProfile,
     ExecutionLimits,
@@ -27,7 +40,12 @@ from sastsimi.contracts.llm import (
     SemanticValidatorSpec,
 )
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef, reference
+from sastsimi.contracts.refs import (
+    HostConfigurationRef,
+    RunStoredDataRef,
+    StoredDataRef,
+    reference,
+)
 from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.ports.capability_registry import ProductionCapabilityResolverPort
@@ -63,6 +81,243 @@ class ProvisioningRecordTemplateRef(ContractModel):
     template_key: NonEmptyStr
     data_kind: NonEmptyStr
     content_sha256: Sha256
+
+
+class ProvisioningRecordEnvelope(ContractModel):
+    """Approved record body with symbolic, never guessed, dependencies."""
+
+    schema_version: Literal[1]
+    template_key: NonEmptyStr
+    data_kind: NonEmptyStr
+    logical_key: NonEmptyStr
+    record_schema_version: NonEmptyStr
+    revision_number: int
+    previous_template_key: NonEmptyStr | None
+    created_at: datetime
+    payload: dict[str, JsonValue]
+
+    @model_validator(mode="after")
+    def revision_shape(self) -> Self:
+        if (
+            self.revision_number < 1
+            or (self.revision_number == 1) != (self.previous_template_key is None)
+            or "meta" in self.payload
+        ):
+            raise ValueError("PRODUCTION_RECORD_TEMPLATE_REVISION_INVALID")
+        return self
+
+
+class ProvisioningRecordEnvelopeMaterializer:
+    """Resolve approved symbolic records in dependency order for one run."""
+
+    _RECORD_MARKER = "$record_template_ref"
+    _EVIDENCE_MARKER = "$evidence_ref"
+    _RUN_EVIDENCE_MARKER = "$run_evidence_ref"
+
+    @classmethod
+    def materialize(
+        cls,
+        *,
+        templates: tuple[ProvisioningRecordTemplateRef, ...],
+        payloads: Mapping[str, bytes],
+        evidence_refs: Mapping[str, StoredDataRef],
+        run_evidence_refs: Mapping[str, RunStoredDataRef] | None = None,
+        analysis_id: str,
+        workspace_id: str,
+        commit_id: str,
+    ) -> Mapping[str, Record]:
+        by_key = {item.template_key: item for item in templates}
+        if len(by_key) != len(templates):
+            raise ValueError("PRODUCTION_RECORD_TEMPLATE_KEY_DUPLICATED")
+        envelopes: dict[str, ProvisioningRecordEnvelope] = {}
+        for item in templates:
+            try:
+                raw = payloads[item.content_sha256]
+            except KeyError:
+                raise ValueError("PRODUCTION_RECORD_TEMPLATE_MISSING") from None
+            if hashlib.sha256(raw).hexdigest() != item.content_sha256:
+                raise ValueError("PRODUCTION_RECORD_TEMPLATE_STALE")
+            try:
+                envelope = ProvisioningRecordEnvelope.model_validate_json(raw)
+            except ValueError:
+                raise ValueError("PRODUCTION_RECORD_TEMPLATE_INVALID") from None
+            if (
+                envelope.template_key != item.template_key
+                or envelope.data_kind != item.data_kind
+            ):
+                raise ValueError("PRODUCTION_RECORD_TEMPLATE_IDENTITY_MISMATCH")
+            if envelope.data_kind not in _PROVISIONED_RECORD_MODELS:
+                raise ValueError("PRODUCTION_RECORD_TEMPLATE_KIND_UNSUPPORTED")
+            envelopes[item.template_key] = envelope
+
+        dependencies = {
+            key: cls._dependencies(envelope) for key, envelope in envelopes.items()
+        }
+        for values in dependencies.values():
+            if not values <= set(envelopes):
+                raise ValueError("PRODUCTION_RECORD_TEMPLATE_REFERENCE_MISSING")
+
+        ordered: list[str] = []
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(key: str) -> None:
+            if key in visiting:
+                raise ValueError("PRODUCTION_RECORD_TEMPLATE_CYCLE")
+            if key in visited:
+                return
+            visiting.add(key)
+            for dependency in sorted(dependencies[key]):
+                visit(dependency)
+            visiting.remove(key)
+            visited.add(key)
+            ordered.append(key)
+
+        for item in templates:
+            visit(item.template_key)
+
+        built: dict[str, Record] = {}
+        run_refs = run_evidence_refs or {}
+        for key in ordered:
+            envelope = envelopes[key]
+            previous = (
+                None
+                if envelope.previous_template_key is None
+                else built[envelope.previous_template_key]
+            )
+            logical_id = LogicalRecordId(
+                cls._stable_id("logical", analysis_id, envelope.logical_key)
+            )
+            if previous is not None and (
+                previous.meta.logical_record_id != logical_id
+                or previous.meta.record_type != envelope.data_kind
+                or previous.meta.revision_number + 1 != envelope.revision_number
+            ):
+                raise ValueError("PRODUCTION_RECORD_TEMPLATE_REVISION_INVALID")
+            meta = RecordMeta(
+                record_id=RecordId(cls._stable_id("record", analysis_id, key)),
+                logical_record_id=logical_id,
+                record_type=envelope.data_kind,
+                schema_version=envelope.record_schema_version,
+                revision_number=envelope.revision_number,
+                previous_record_id=(
+                    None if previous is None else previous.meta.record_id
+                ),
+                created_at=envelope.created_at,
+                analysis_id=AnalysisId(analysis_id),
+                workspace_id=WorkspaceId(workspace_id),
+                commit_id=CommitId(commit_id),
+                hypothesis_id=None,
+                attempt_id=None,
+            )
+            payload = cls._resolve_value(
+                envelope.payload,
+                records=built,
+                evidence_refs=evidence_refs,
+                run_evidence_refs=run_refs,
+            )
+            if not isinstance(payload, dict):
+                raise ValueError("PRODUCTION_RECORD_TEMPLATE_INVALID")
+            try:
+                model = cast(Any, _PROVISIONED_RECORD_MODELS[envelope.data_kind])
+                built[key] = cast(
+                    Record,
+                    model.model_validate_json(
+                        canonical_bytes({"meta": meta, **payload})
+                    ),
+                )
+            except ValueError:
+                raise ValueError("PRODUCTION_RECORD_TEMPLATE_INVALID") from None
+        return built
+
+    @classmethod
+    def _dependencies(cls, envelope: ProvisioningRecordEnvelope) -> set[str]:
+        result: set[str] = set()
+        if envelope.previous_template_key is not None:
+            result.add(envelope.previous_template_key)
+
+        def walk(value: JsonValue) -> None:
+            if isinstance(value, dict):
+                marker = value.get(cls._RECORD_MARKER)
+                if marker is not None:
+                    if set(value) != {cls._RECORD_MARKER} or not isinstance(
+                        marker, str
+                    ):
+                        raise ValueError("PRODUCTION_RECORD_TEMPLATE_MARKER_INVALID")
+                    result.add(marker)
+                    return
+                if cls._EVIDENCE_MARKER in value or cls._RUN_EVIDENCE_MARKER in value:
+                    marker_keys = {
+                        key
+                        for key in (cls._EVIDENCE_MARKER, cls._RUN_EVIDENCE_MARKER)
+                        if key in value
+                    }
+                    if (
+                        len(marker_keys) != 1
+                        or len(value) != 1
+                        or not isinstance(value[next(iter(marker_keys))], str)
+                    ):
+                        raise ValueError("PRODUCTION_RECORD_TEMPLATE_MARKER_INVALID")
+                    return
+                for item in value.values():
+                    walk(item)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item)
+
+        walk(envelope.payload)
+        return result
+
+    @classmethod
+    def _resolve_value(
+        cls,
+        value: JsonValue,
+        *,
+        records: Mapping[str, Record],
+        evidence_refs: Mapping[str, StoredDataRef],
+        run_evidence_refs: Mapping[str, RunStoredDataRef],
+    ) -> object:
+        if isinstance(value, dict):
+            if set(value) == {cls._RECORD_MARKER}:
+                key = value[cls._RECORD_MARKER]
+                if not isinstance(key, str) or key not in records:
+                    raise ValueError("PRODUCTION_RECORD_TEMPLATE_REFERENCE_MISSING")
+                return reference(records[key]).model_dump(mode="json")
+            for marker, refs in (
+                (cls._EVIDENCE_MARKER, evidence_refs),
+                (cls._RUN_EVIDENCE_MARKER, run_evidence_refs),
+            ):
+                if set(value) == {marker}:
+                    digest = value[marker]
+                    if not isinstance(digest, str) or digest not in refs:
+                        raise ValueError("PRODUCTION_RECORD_EVIDENCE_REFERENCE_MISSING")
+                    return refs[digest].model_dump(mode="json")
+            return {
+                key: cls._resolve_value(
+                    item,
+                    records=records,
+                    evidence_refs=evidence_refs,
+                    run_evidence_refs=run_evidence_refs,
+                )
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [
+                cls._resolve_value(
+                    item,
+                    records=records,
+                    evidence_refs=evidence_refs,
+                    run_evidence_refs=run_evidence_refs,
+                )
+                for item in value
+            ]
+        return value
+
+    @staticmethod
+    def _stable_id(namespace: str, analysis_id: str, key: str) -> str:
+        return hashlib.sha256(
+            f"sastsimi:{namespace}:{analysis_id}:{key}".encode()
+        ).hexdigest()
 
 
 class StaticRouteProvisioning(ContractModel):
@@ -310,6 +565,8 @@ class PromptRoutesProvisioning(_ProvisioningArtifactDocument):
             "output_schema_spec",
             "semantic_validator_spec",
             "prompt_registry_entry",
+            "evaluation_run_config",
+            "evaluation_run_result",
             "evaluation_recommendation",
         }
     )
@@ -685,6 +942,8 @@ _PROVISIONED_RECORD_MODELS: Mapping[str, type[Record]] = cast(
         OutputSchemaSpec.KIND: OutputSchemaSpec,
         SemanticValidatorSpec.KIND: SemanticValidatorSpec,
         PromptRegistryEntry.KIND: PromptRegistryEntry,
+        EvaluationRunConfig.KIND: EvaluationRunConfig,
+        EvaluationRunResult.KIND: EvaluationRunResult,
         EvaluationRecommendation.KIND: EvaluationRecommendation,
     },
 )
@@ -755,7 +1014,12 @@ class ExactProvisioningArtifactMaterializer:
                     if isinstance(getattr(item, "meta", None), RecordMeta)
                     and item.meta.logical_record_id == meta.logical_record_id
                 )
-                if len(current) != 1 or reference(current[0]) != ref:
+                if len(current) != 1:
+                    raise ValueError("PRODUCTION_PROVISIONING_RECORD_STALE")
+                current_ref = reference(current[0])
+                if current_ref != ref and not self._records.is_revision_descendant(
+                    ref, current_ref
+                ):
                     raise ValueError("PRODUCTION_PROVISIONING_RECORD_STALE")
                 resolved_records[ref] = record
             for digest in document.evidence_sha256:
@@ -946,11 +1210,14 @@ __all__ = [
     "ExactProductionProvisioningResolver",
     "ExactProvisioningArtifactMaterializer",
     "MaterializedProvisioningArtifacts",
+    "ParsedProvisioningTemplate",
     "PolicyCatalogProvisioning",
     "PolicyCatalogProvisioningTemplate",
     "PromptRoutesProvisioning",
     "PromptRoutesProvisioningTemplate",
     "ProviderImplementationBinding",
+    "ProvisioningRecordEnvelope",
+    "ProvisioningRecordEnvelopeMaterializer",
     "ProvisioningRecordTemplateRef",
     "ProvisioningTemplateMaterializer",
     "ProviderConfigurationProvisioning",

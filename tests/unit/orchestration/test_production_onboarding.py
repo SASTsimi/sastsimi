@@ -244,7 +244,6 @@ def test_onboarding_manifest_requires_full_pvd_and_current_terms_approval(
         provision=lambda **_kwargs: cast(
             ProfileBackedProductionCapabilityBundle, SimpleNamespace()
         ),
-        installer=lambda _context: cast(Any, None),
     )
     with pytest.raises(
         ProductionOnboardingUnavailable, match="PROVIDER_TERMS_APPROVAL_STALE"
@@ -272,7 +271,7 @@ def test_onboarding_store_never_overwrites_a_different_approval(
         store.save(changed)
 
 
-def test_loader_verifies_profile_prompts_and_injects_exact_installer(
+def test_loader_verifies_profile_prompts_and_injects_exact_provisioning(
     data_dir: Path,
 ) -> None:
     root = Path.cwd()
@@ -286,9 +285,6 @@ def test_loader_verifies_profile_prompts_and_injects_exact_installer(
     calls: list[dict[str, object]] = []
     expected = cast(ProfileBackedProductionCapabilityBundle, SimpleNamespace())
 
-    def installer(_context: object) -> Any:
-        return None
-
     def provision(**values: object) -> ProfileBackedProductionCapabilityBundle:
         calls.append(values)
         return expected
@@ -298,7 +294,6 @@ def test_loader_verifies_profile_prompts_and_injects_exact_installer(
         repository_root=root,
         clock=lambda: datetime(2026, 9, 14, tzinfo=UTC),
         provision=provision,
-        installer=installer,
     )
 
     loaded = loader.load_for_profile(profile)
@@ -316,7 +311,7 @@ def test_loader_verifies_profile_prompts_and_injects_exact_installer(
     )
     assert calls[0]["manifest"] == manifest
     assert isinstance(calls[0]["provisioning"], ProductionProvisioningManifest)
-    assert calls[0]["installer"] is installer
+    assert "installer" not in calls[0]
 
 
 def test_provisioning_fails_closed_without_exact_manifest(data_dir: Path) -> None:
@@ -330,7 +325,6 @@ def test_provisioning_fails_closed_without_exact_manifest(data_dir: Path) -> Non
         provision=lambda **_kwargs: cast(
             ProfileBackedProductionCapabilityBundle, SimpleNamespace()
         ),
-        installer=lambda _context: cast(Any, None),
     )
 
     with pytest.raises(
@@ -363,7 +357,6 @@ def test_loader_blocks_modified_builtin_prompt(data_dir: Path) -> None:
         provision=lambda **_kwargs: cast(
             ProfileBackedProductionCapabilityBundle, SimpleNamespace()
         ),
-        installer=lambda _context: cast(Any, None),
     )
 
     with pytest.raises(
@@ -386,7 +379,6 @@ def test_loader_blocks_provider_identity_changed_after_pvd(data_dir: Path) -> No
         provision=lambda **_kwargs: cast(
             ProfileBackedProductionCapabilityBundle, SimpleNamespace()
         ),
-        installer=lambda _context: cast(Any, None),
     )
 
     with pytest.raises(
