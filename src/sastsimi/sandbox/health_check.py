@@ -143,7 +143,7 @@ class SandboxHealthChecker:
                 container_id,
                 (name, "--version"),
                 timeout_ms,
-                "/workspace",
+                "/",
             )
         except Exception:
             outcome = None

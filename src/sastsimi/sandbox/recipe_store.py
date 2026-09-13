@@ -748,15 +748,22 @@ class EnvironmentRecipeStore:
 
     @staticmethod
     def _looks_secret(path: str) -> bool:
-        name = PurePosixPath(path).name.casefold()
-        normalized = path.casefold()
+        pure = PurePosixPath(path.casefold())
+        name = pure.name
+        parts = pure.parts
         return (
             name == ".env"
             or name.startswith(".env.")
             or name in _SECRET_FILE_NAMES
             or PurePosixPath(name).suffix in {".key", ".p12", ".pem", ".pfx"}
-            or normalized == ".aws/credentials"
-            or normalized == ".docker/config.json"
+            or any(
+                parts[index : index + 2]
+                in {
+                    (".aws", "credentials"),
+                    (".docker", "config.json"),
+                }
+                for index in range(max(0, len(parts) - 1))
+            )
         )
 
     @staticmethod
