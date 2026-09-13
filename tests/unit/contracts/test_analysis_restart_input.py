@@ -84,3 +84,33 @@ def test_other_nullable_contract_fields_remain_in_canonical_bytes() -> None:
     }
     record = AnalysisRunInput.model_validate_json(json.dumps(_legacy()))
     assert json.loads(canonical_bytes(record))["meta"]["previous_record_id"] is None
+
+
+def test_only_exact_analysis_input_declares_legacy_null_omission() -> None:
+    from sastsimi.contracts.result_registry import RESULT_REGISTRY
+    from sastsimi.contracts.schema_export import CORE_SCHEMAS
+
+    expected = frozenset(
+        {
+            "workspace_id",
+            "commit_id",
+            "production_profile_ref",
+            "production_onboarding_ref",
+        }
+    )
+    models = {
+        *CORE_SCHEMAS.values(),
+        *(item.model for item in RESULT_REGISTRY.values()),
+    }
+    for model in models:
+        if issubclass(model, ContractModel):
+            assert model.canonical_omitted_null_fields() == (
+                expected if model is AnalysisRunInput else frozenset()
+            )
+
+    class DerivedInput(AnalysisRunInput):
+        pass
+
+    derived = DerivedInput.model_validate_json(json.dumps(_legacy()))
+    assert DerivedInput.canonical_omitted_null_fields() == frozenset()
+    assert all(json.loads(canonical_bytes(derived))[name] is None for name in expected)

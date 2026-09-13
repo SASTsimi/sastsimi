@@ -39,6 +39,19 @@ class AnalysisRunInput(ScopedRecord):
     production_profile_ref: RunStoredDataRef | None = None
     production_onboarding_ref: RunStoredDataRef | None = None
 
+    @classmethod
+    def canonical_omitted_null_fields(cls) -> frozenset[str]:
+        if cls is not AnalysisRunInput:
+            return frozenset()
+        return frozenset(
+            {
+                "workspace_id",
+                "commit_id",
+                "production_profile_ref",
+                "production_onboarding_ref",
+            }
+        )
+
     @model_validator(mode="after")
     def input_shape(self) -> Self:
         if isinstance(self.meta, RecordMeta):

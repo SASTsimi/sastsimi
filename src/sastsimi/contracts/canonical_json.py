@@ -31,19 +31,11 @@ def _normalize(
             return _normalize(value.root, policy, path, reject_hash)
         # Reading fields avoids custom JSON serializers coercing forbidden floats.
         fields = {name: getattr(value, name) for name in type(value).model_fields}
-        # This one additive contract preserves pre-descriptor immutable refs.
-        # No general omission policy: all other null contract fields stay hashed.
-        from .analysis import AnalysisRunInput
-
-        if type(value) is AnalysisRunInput:
-            for name in (
-                "workspace_id",
-                "commit_id",
-                "production_profile_ref",
-                "production_onboarding_ref",
-            ):
-                if fields[name] is None:
-                    del fields[name]
+        # The exact legacy model owns this compatibility declaration. Keeping
+        # concrete record imports out of serialization avoids reference cycles.
+        for name in type(value).canonical_omitted_null_fields():
+            if fields[name] is None:
+                del fields[name]
         value = fields
     if isinstance(value, Enum):
         return _normalize(value.value, policy, path, reject_hash)
