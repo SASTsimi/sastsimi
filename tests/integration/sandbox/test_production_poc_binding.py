@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TypedDict, cast
 
@@ -30,6 +31,7 @@ from sastsimi.reproduction.production import (
     DynamicRecordSink,
     DynamicSandboxAuthorization,
     ProductionDynamicWorkflow,
+    _safe_error,
 )
 from sastsimi.reproduction.service import DynamicOperationalError, DynamicSandboxSession
 from sastsimi.sandbox.controller import (
@@ -37,7 +39,7 @@ from sastsimi.sandbox.controller import (
     SandboxController,
     SandboxRunSpec,
 )
-from sastsimi.sandbox.docker_adapter import DockerCommandOutcome
+from sastsimi.sandbox.docker_adapter import DockerCommandOutcome, DockerOperationError
 from sastsimi.sandbox.session_manager import ReproductionSessionManager
 from sastsimi.sandbox.setup_automation import (
     DockerLifecyclePort,
@@ -187,6 +189,18 @@ class _RecreateSetup:
 
     async def recreate(self, **_: object) -> PreparedSandbox:
         return self.prepared
+
+
+@dataclass
+class _ConfirmationRequiredSetup:
+    async def preflight(self, **_: object) -> object:
+        raise ValueError("ENVIRONMENT_REQUIREMENT_CONFIRMATION_REQUIRED:DATABASE")
+
+
+@dataclass
+class _DependencyRequiredSetup:
+    async def preflight(self, **_: object) -> object:
+        raise ValueError("DEPENDENCY_SUPPLY_CONFIRMATION_REQUIRED")
 
 
 def _selection_tool(chain: _Chain) -> DynamicReproductionToolRequest:
@@ -344,6 +358,73 @@ def _prepared_workflow() -> tuple[
         policy_ref=cast(StoredDataRef, reference(chain["policy"])),
     )
     return workflow, docker, chain, request_ref
+
+
+@pytest.mark.asyncio
+async def test_preflight_confirmation_is_blocked_without_a_verdict() -> None:
+    workflow, _, chain, request_ref = _prepared_workflow()
+    workflow._controller = cast(
+        SandboxController,
+        SimpleNamespace(workspace_root=Path.cwd()),
+    )
+    workflow._setup = cast(
+        ReproductionSetupAutomation,
+        _ConfirmationRequiredSetup(),
+    )
+
+    with pytest.raises(DynamicOperationalError) as raised:
+        await workflow.open_session(
+            work=workflow._work,
+            request=chain["request"],
+            request_ref=request_ref,
+            requirements=chain["requirements"],
+            requirements_ref=cast(StoredDataRef, reference(chain["requirements"])),
+            plan=chain["plan"],
+            plan_ref=cast(StoredDataRef, reference(chain["plan"])),
+        )
+
+    assert raised.value.failure.status == "BLOCKED"
+    assert raised.value.failure.failure_category == "EXTERNAL_CONFIGURATION"
+    assert raised.value.failure.hypothesis_outcome == "INCONCLUSIVE"
+    assert raised.value.failure.poc_ref is None
+
+
+@pytest.mark.asyncio
+async def test_missing_dependency_bundle_is_blocked_without_a_verdict() -> None:
+    workflow, _, chain, request_ref = _prepared_workflow()
+    workflow._controller = cast(
+        SandboxController,
+        SimpleNamespace(workspace_root=Path.cwd()),
+    )
+    workflow._setup = cast(
+        ReproductionSetupAutomation,
+        _DependencyRequiredSetup(),
+    )
+
+    with pytest.raises(DynamicOperationalError) as raised:
+        await workflow.open_session(
+            work=workflow._work,
+            request=chain["request"],
+            request_ref=request_ref,
+            requirements=chain["requirements"],
+            requirements_ref=cast(StoredDataRef, reference(chain["requirements"])),
+            plan=chain["plan"],
+            plan_ref=cast(StoredDataRef, reference(chain["plan"])),
+        )
+
+    assert raised.value.failure.status == "BLOCKED"
+    assert raised.value.failure.failure_category == "DEPENDENCY"
+    assert raised.value.failure.hypothesis_outcome == "INCONCLUSIVE"
+    assert raised.value.failure.poc_ref is None
+
+
+def test_safe_docker_failure_code_is_preserved_without_process_output() -> None:
+    error = DockerOperationError(
+        "DOCKER_BUILD_FAILED",
+        DockerCommandOutcome(1, b"", b"secret stderr", False),
+    )
+
+    assert _safe_error(error) == "DOCKER_BUILD_FAILED"
 
 
 @pytest.mark.asyncio

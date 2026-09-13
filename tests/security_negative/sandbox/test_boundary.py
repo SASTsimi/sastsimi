@@ -240,6 +240,7 @@ def _context(tmp_path: Path) -> BoundaryContext:
             "built_image_digest": image_digest,
             "baseline_recipe_ref": None,
             "build_disposition": "BUILT",
+            "source_manifest": None,
             "created_at": NOW.isoformat(),
         },
     )

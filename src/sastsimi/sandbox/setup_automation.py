@@ -12,6 +12,7 @@ from uuid import uuid4
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.dynamic import (
     CleanupResult,
+    DependencyBundle,
     DynamicReproductionRequest,
     EnvironmentCheck,
     EnvironmentRecipe,
@@ -54,6 +55,7 @@ from .recipe_store import (
 )
 
 _CLEANUP_TIMEOUT_SECONDS = 10.0
+_SUPPORTED_INITIAL_CHECKS = frozenset({"VERSION", "HEALTH_CHECK"})
 
 
 class DockerLifecyclePort(Protocol):
@@ -137,8 +139,20 @@ class ReproductionSetupAutomation:
         requirements: EnvironmentRequirements,
         meta: RecordMeta,
         repository_profile: RepositoryProfile | None = None,
+        dependency_bundle: DependencyBundle | None = None,
     ) -> PreparedRecipeSource:
         """Read and validate recipe files without touching Docker."""
+
+        unsupported = sorted(
+            {
+                item.kind
+                for item in requirements.items
+                if item.required and item.kind not in _SUPPORTED_INITIAL_CHECKS
+            }
+        )
+        if unsupported:
+            kinds = ",".join(unsupported)
+            raise ValueError(f"ENVIRONMENT_REQUIREMENT_CONFIRMATION_REQUIRED:{kinds}")
 
         return self._recipes.preflight(
             context=workspace_root,
@@ -146,6 +160,7 @@ class ReproductionSetupAutomation:
             requirements=requirements,
             meta=meta,
             repository_profile=repository_profile,
+            dependency_bundle=dependency_bundle,
         )
 
     async def build(
@@ -264,10 +279,11 @@ class ReproductionSetupAutomation:
         )
         recipe = previous.recipe
         evidence_ref = previous.resource_refs[0]
-        checks = self._health.requirement_checks(
+        checks = await self._health.requirement_checks(
             requirements=context.requirements,
             state=state,
             evidence_ref=evidence_ref,
+            execute=self._execute_health_check,
         )
         environment = self._environment(
             request=context.request,
@@ -436,10 +452,11 @@ class ReproductionSetupAutomation:
                 raise SandboxSetupCleanupError(failed) from cleanup_error
             self._resources.forget(resource_ref)
             raise
-        checks = self._health.requirement_checks(
+        checks = await self._health.requirement_checks(
             requirements=requirements,
             state=state,
             evidence_ref=resource_ref,
+            execute=self._execute_health_check,
         )
         environment = self._environment(
             request=request,
@@ -454,6 +471,20 @@ class ReproductionSetupAutomation:
             meta=meta,
         )
         return PreparedSandbox(recipe, environment, (resource_ref,))
+
+    async def _execute_health_check(
+        self,
+        container_id: str,
+        argv: tuple[str, ...],
+        timeout_ms: int,
+        working_directory: str,
+    ) -> DockerCommandOutcome:
+        return await self._docker.execute(
+            container_id,
+            argv,
+            timeout_ms,
+            working_directory=working_directory,
+        )
 
     @staticmethod
     def _failed_environment(

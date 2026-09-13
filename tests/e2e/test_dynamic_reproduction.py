@@ -94,6 +94,7 @@ from tests.integration.sandbox.test_container_lifecycle import (
     _dynamic_records,
     _meta,
     _ref,
+    _repository_profile,
 )
 
 _DOCKER_E2E_ENV = "SASTSIMI_REQUIRE_DOCKER_E2E"
@@ -169,6 +170,24 @@ class RecordingDockerAdapter(DockerAdapter):
         self.calls.append(("build", None))
         return await super().build(
             dockerfile,
+            labels,
+            spec=spec,
+            timeout_ms=timeout_ms,
+        )
+
+    async def build_context(
+        self,
+        context_archive: bytes,
+        dockerfile_path: str,
+        labels: Mapping[str, str],
+        *,
+        spec: SandboxRunSpec,
+        timeout_ms: int,
+    ) -> str:
+        self.calls.append(("build_context", dockerfile_path))
+        return await super().build_context(
+            context_archive,
+            dockerfile_path,
             labels,
             spec=spec,
             timeout_ms=timeout_ms,
@@ -348,17 +367,21 @@ def _work(request_ref: StoredDataRef) -> WorkExecutionState:
     )
 
 
-def _run_spec(workspace: Path) -> SandboxRunSpec:
+def _run_spec(workspace: Path, *, source_baked: bool = False) -> SandboxRunSpec:
     return SandboxRunSpec(
         workspace_root=workspace,
         image_digest=None,  # learned from the boundary-approved cold build
         user="65532:65532",
         mounts=(
-            SandboxMount(
-                source=workspace,
-                target=PurePosixPath("/workspace"),
-                read_only=True,
-            ),
+            ()
+            if source_baked
+            else (
+                SandboxMount(
+                    source=workspace,
+                    target=PurePosixPath("/workspace"),
+                    read_only=True,
+                ),
+            )
         ),
         network_mode="DEFAULT_DENY",
         network_targets=(),
@@ -372,15 +395,23 @@ def _run_spec(workspace: Path) -> SandboxRunSpec:
         disk_limit_bytes=64 * 1024 * 1024,
         pid_limit=64,
         requested_execution_ms=30_000,
+        source_baked=source_baked,
     )
 
 
 class SandboxAuthorizer:
     """Issue and claim exact BUILD/RUN approvals for the public workflow path."""
 
-    def __init__(self, workspace: Path, *, forbidden: bool = False) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        *,
+        forbidden: bool = False,
+        source_baked: bool = False,
+    ) -> None:
         self.workspace = workspace
         self.forbidden = forbidden
+        self.source_baked = source_baked
         global_meta = _meta("sandbox_profile", "sandbox-profile").model_copy(
             update={"hypothesis_id": None, "attempt_id": None}
         )
@@ -465,7 +496,10 @@ class SandboxAuthorizer:
         lifecycle_ref = cast(StoredDataRef, reference(self.lifecycle))
         policy_ref = cast(StoredDataRef, reference(self.policy))
         work_ref = cast(StoredDataRef, reference(work))
-        spec = replace(_run_spec(self.workspace), image_digest=image_digest)
+        spec = replace(
+            _run_spec(self.workspace, source_baked=self.source_baked),
+            image_digest=image_digest,
+        )
         if self.forbidden:
             spec = replace(
                 spec,
@@ -721,14 +755,22 @@ async def test_supported_fixture_produces_validated_poc(tmp_path: Path) -> None:
     fixture = Path(__file__).parents[1] / "fixtures" / "sandbox" / "sql_injection"
     workspace = tmp_path / "runtime-workspace"
     shutil.copytree(fixture, workspace)
-    authorizer = SandboxAuthorizer(workspace)
+    repository_profile = _repository_profile(
+        {
+            path.relative_to(workspace).as_posix(): path.read_bytes()
+            for path in workspace.rglob("*")
+            if path.is_file()
+        }
+    )
+    authorizer = SandboxAuthorizer(workspace, source_baked=True)
     request, requirements, plan = _records_for(authorizer)
     request_ref = cast(StoredDataRef, reference(request))
     work = _work(request_ref)
     docker = RecordingDockerAdapter()
+    artifacts = MemoryArtifacts()
     setup = ReproductionSetupAutomation(
         docker=docker,
-        recipes=EnvironmentRecipeStore(),
+        recipes=EnvironmentRecipeStore(artifacts=artifacts),
         health=SandboxHealthChecker(),
         resources=OwnedResourceRegistry(),
     )
@@ -737,8 +779,8 @@ async def test_supported_fixture_produces_validated_poc(tmp_path: Path) -> None:
         workspace_id="workspace-1",
         commit_id="commit-1",
         record_resolver=authorizer.resolve,
+        require_baked_source=True,
     )
-    artifacts = MemoryArtifacts()
     sink = MemorySink([], [])
     clock = TestClock()
     ids = TestIds()
@@ -753,6 +795,7 @@ async def test_supported_fixture_produces_validated_poc(tmp_path: Path) -> None:
         ids=ids,
         sink=cast(DynamicRecordSink, sink),
         authorization=authorizer.authorize,
+        repository_profile=repository_profile,
     )
     session: DynamicSandboxSession | None = None
     cleaned = False
@@ -773,15 +816,17 @@ async def test_supported_fixture_produces_validated_poc(tmp_path: Path) -> None:
         recipe = next(
             item for item in sink.published if isinstance(item, EnvironmentRecipe)
         )
+        assert recipe.source_manifest is not None
+        assert recipe.source_refs[0] == reference(repository_profile)
+        assert ("build_context", "Dockerfile") in docker.calls
         build_policy = next(
             item for item in sink.published if isinstance(item, SandboxPolicyDecision)
         )
         build_decision = authorizer.records["sandbox-build-decision"]
         assert isinstance(build_decision, ActionDecision)
-        assert authorizer.actions["RUN"].input_refs[-2:] == (
-            reference(build_policy),
-            reference(build_decision),
-        )
+        run_input_refs = authorizer.actions["RUN"].input_refs
+        assert reference(build_policy) in run_input_refs
+        assert reference(build_decision) in run_input_refs
         container_id = environment.container_instance_id
         inspect_code, inspect_bytes, inspect_error = await _docker(
             "inspect", container_id
@@ -815,7 +860,7 @@ async def test_supported_fixture_produces_validated_poc(tmp_path: Path) -> None:
         assert "nosuid" in tmpfs
         assert "nodev" in tmpfs
         assert "size=67108864" in tmpfs
-        assert inspected["Mounts"][0]["RW"] is False
+        assert inspected["Mounts"] == []
 
         candidate_bytes = b"""#!/bin/sh
 set -eu
@@ -966,14 +1011,22 @@ async def test_forbidden_request_is_blocked_before_docker(tmp_path: Path) -> Non
     fixture = Path(__file__).parents[1] / "fixtures" / "sandbox" / "sql_injection"
     workspace = tmp_path / "runtime-workspace"
     shutil.copytree(fixture, workspace)
+    repository_profile = _repository_profile(
+        {
+            path.relative_to(workspace).as_posix(): path.read_bytes()
+            for path in workspace.rglob("*")
+            if path.is_file()
+        }
+    )
     authorizer = SandboxAuthorizer(workspace, forbidden=True)
     request, requirements, plan = _records_for(authorizer)
     request_ref = cast(StoredDataRef, reference(request))
     work = _work(request_ref)
     docker = RecordingDockerAdapter()
+    artifacts = MemoryArtifacts()
     setup = ReproductionSetupAutomation(
         docker=docker,
-        recipes=EnvironmentRecipeStore(),
+        recipes=EnvironmentRecipeStore(artifacts=artifacts),
         health=SandboxHealthChecker(),
         resources=OwnedResourceRegistry(),
     )
@@ -983,7 +1036,6 @@ async def test_forbidden_request_is_blocked_before_docker(tmp_path: Path) -> Non
         commit_id="commit-1",
         record_resolver=authorizer.resolve,
     )
-    artifacts = MemoryArtifacts()
     sink = MemorySink([], [])
     clock = TestClock()
     ids = TestIds()
@@ -998,6 +1050,7 @@ async def test_forbidden_request_is_blocked_before_docker(tmp_path: Path) -> Non
         ids=ids,
         sink=cast(DynamicRecordSink, sink),
         authorization=authorizer.authorize,
+        repository_profile=repository_profile,
     )
 
     session = await workflow.open_session(

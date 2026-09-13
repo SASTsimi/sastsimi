@@ -10,6 +10,7 @@ from sastsimi.contracts.actions import ActionRequest
 from sastsimi.contracts.budget import DynamicReproductionLifecycleProfile
 from sastsimi.contracts.dynamic import (
     CleanupResult,
+    DependencyBundle,
     DynamicReproductionRequest,
     EnvironmentRecipe,
     EnvironmentRecipeSourceManifest,
@@ -25,7 +26,7 @@ from sastsimi.contracts.static import RepositoryProfile
 
 type RecreateReason = Literal["STATE_CHANGED", "CONFIG_CHANGED", "STATE_UNCERTAIN"]
 type DockerBuildLimit = Literal["CPU", "MEMORY", "PID", "DISK"]
-type DockerBuildBackend = Literal["BUILDX_RESOURCE", "LEGACY_LIMITED"]
+type DockerBuildBackend = Literal["LEGACY_LIMITED"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +119,9 @@ class PreparedRecipeSourceView(Protocol):
 
     @property
     def repository_profile_ref(self) -> StoredDataRef | None: ...
+
+    @property
+    def dependency_bundle_ref(self) -> StoredDataRef | None: ...
 
     @property
     def dockerfile_origin(self) -> Literal["REPOSITORY", "GENERATED"]: ...
@@ -224,6 +228,7 @@ class ReproductionSetupPort(Protocol):
         requirements: EnvironmentRequirements,
         meta: RecordMeta,
         repository_profile: RepositoryProfile | None = None,
+        dependency_bundle: DependencyBundle | None = None,
     ) -> PreparedRecipeSourceView: ...
 
     async def build(

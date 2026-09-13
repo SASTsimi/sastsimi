@@ -20,6 +20,7 @@ EXPECTED_KINDS = {
     "action_check",
     "action_decision",
     "sandbox_profile",
+    "dependency_bundle",
     "code_context_request",
     "vulnerability_hypothesis",
     "playbook_application",

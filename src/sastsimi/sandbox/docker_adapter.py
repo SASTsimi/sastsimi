@@ -12,7 +12,7 @@ import tarfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from sastsimi.contracts.dynamic import POC_RUNTIME_PATH
@@ -244,17 +244,6 @@ class DockerAdapter:
             or self._target.external_build_disk_limit_bytes > spec.disk_limit_bytes
         ):
             raise DockerOperationError("DOCKER_BUILD_DISK_LIMIT_UNVERIFIED")
-        if self._target.build_backend == "BUILDX_RESOURCE":
-            return (
-                "--resource",
-                "cpu-period=100000",
-                "--resource",
-                f"cpu-quota={spec.cpu_limit_millicores * 100}",
-                "--resource",
-                f"memory={spec.memory_limit_bytes}",
-                "--ulimit",
-                f"nproc={spec.pid_limit}:{spec.pid_limit}",
-            )
         if self._target.build_backend == "LEGACY_LIMITED":
             return (
                 "--cpu-period",
@@ -271,8 +260,6 @@ class DockerAdapter:
     def _build_command_prefix(self) -> tuple[str, ...]:
         if self._target is None:
             raise DockerOperationError("DOCKER_BUILD_LIMITS_UNVERIFIED")
-        if self._target.build_backend == "BUILDX_RESOURCE":
-            return ("buildx", "build")
         if self._target.build_backend == "LEGACY_LIMITED":
             return ("image", "build")
         raise DockerOperationError("DOCKER_BUILD_BACKEND_UNSUPPORTED")
@@ -280,8 +267,6 @@ class DockerAdapter:
     def _build_output_args(self) -> tuple[str, ...]:
         if self._target is None:
             raise DockerOperationError("DOCKER_BUILD_LIMITS_UNVERIFIED")
-        if self._target.build_backend == "BUILDX_RESOURCE":
-            return ("--load",)
         if self._target.build_backend == "LEGACY_LIMITED":
             return ()
         raise DockerOperationError("DOCKER_BUILD_BACKEND_UNSUPPORTED")
@@ -546,7 +531,17 @@ class DockerAdapter:
         working_directory: str,
     ) -> DockerCommandOutcome:
         self._require_resource_id(container_id)
-        if not argv or timeout_ms <= 0 or working_directory != "/workspace":
+        workdir = PurePosixPath(working_directory)
+        if (
+            not argv
+            or timeout_ms <= 0
+            or len(working_directory) > 4_096
+            or not workdir.is_absolute()
+            or ".." in workdir.parts
+            or "\\" in working_directory
+            or any(char in working_directory for char in "\r\n\0")
+            or str(workdir) != working_directory
+        ):
             raise ValueError("DOCKER_EXEC_INPUT_INVALID")
         if any(not item or any(char in item for char in "\r\n\0") for item in argv):
             raise ValueError("DOCKER_EXEC_ARGV_INVALID")
@@ -877,7 +872,7 @@ class DockerAdapter:
         if is_build and self._target is not None:
             if self._target.build_backend == "LEGACY_LIMITED":
                 environment["DOCKER_BUILDKIT"] = "0"
-            elif self._target.build_backend != "BUILDX_RESOURCE":
+            else:
                 raise DockerOperationError("DOCKER_BUILD_BACKEND_UNSUPPORTED")
         process = await asyncio.create_subprocess_exec(
             str(executable),
@@ -942,7 +937,7 @@ class DockerAdapter:
             or target.executable.stem.lower() != target.subject_key.lower()
             or not re.fullmatch(r"[0-9a-f]{64}", target.subject_sha256)
             or not DockerAdapter._local_daemon_target(target.daemon_target)
-            or target.build_backend not in {"BUILDX_RESOURCE", "LEGACY_LIMITED"}
+            or target.build_backend != "LEGACY_LIMITED"
             or target.external_build_disk_limit_bytes <= 0
             or not re.fullmatch(
                 r"[0-9a-f]{64}", target.external_build_storage_identity_hash

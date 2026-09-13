@@ -9,19 +9,21 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import cast
+from typing import Any, Literal, cast
 
 import pytest
 
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.dynamic import (
     POC_RUNTIME_PATH,
+    DependencyBundle,
     DynamicReproductionRequest,
     EnvironmentRecipe,
     EnvironmentRequirement,
     EnvironmentRequirements,
     ReproductionPlan,
     SandboxPolicyDecision,
+    dependency_bundle_target_hash,
 )
 from sastsimi.contracts.dynamic_resource import owned_container_resource_ref
 from sastsimi.contracts.ids import (
@@ -59,7 +61,11 @@ from sastsimi.sandbox.docker_adapter import (
     DockerOperationError,
 )
 from sastsimi.sandbox.health_check import SandboxHealthChecker
-from sastsimi.sandbox.recipe_store import EnvironmentRecipeStore, PreparedRecipeSource
+from sastsimi.sandbox.recipe_store import (
+    EnvironmentRecipeStore,
+    PreparedRecipeSource,
+    dependency_input_hash,
+)
 from sastsimi.sandbox.setup_automation import (
     PreparedSandbox,
     ReproductionSetupAutomation,
@@ -210,6 +216,7 @@ def _repository_profile(files: Mapping[str, bytes]) -> RepositoryProfile:
             "requirements.txt": "REQUIREMENTS",
             "pyproject.toml": "PYPROJECT",
             "package.json": "PACKAGE_JSON",
+            "package-lock.json": "PACKAGE_LOCK",
         }.get(name)
         if kind is not None:
             configs.append({"path": path, "kind": kind})
@@ -316,6 +323,59 @@ def _dynamic_records() -> tuple[
         requested_evidence=(),
     )
     return request, requirements, plan
+
+
+def _dependency_archive(files: Mapping[str, bytes]) -> bytes:
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w", format=tarfile.PAX_FORMAT) as archive:
+        for path, raw in sorted(files.items()):
+            info = tarfile.TarInfo(path)
+            info.mode = 0o644
+            info.size = len(raw)
+            archive.addfile(info, io.BytesIO(raw))
+    return stream.getvalue()
+
+
+def _dependency_bundle(
+    *,
+    artifacts: _MemoryArtifacts,
+    profile: RepositoryProfile,
+    request: DynamicReproductionRequest,
+    ecosystem: Literal["PYTHON_WHEELS", "NPM_CACHE"],
+    files: Mapping[str, bytes],
+    dependency_hash: str | None = None,
+) -> DependencyBundle:
+    archive = _dependency_archive(files)
+    archive_ref = artifacts.commit(artifacts.stage_bytes(archive, "application/x-tar"))
+    request_ref = reference(request)
+    profile_ref = reference(profile)
+    assert isinstance(request_ref, StoredDataRef)
+    assert isinstance(profile_ref, StoredDataRef)
+    input_hash = dependency_hash or dependency_input_hash(profile)
+    target_hash = dependency_bundle_target_hash(
+        request_ref=request_ref,
+        ecosystem=ecosystem,
+        repository_profile_ref=profile_ref,
+        dependency_input_hash=input_hash,
+        archive_ref=archive_ref,
+        archive_digest=archive_ref.content_hash,
+    )
+    return DependencyBundle.model_validate(
+        {
+            "meta": _meta("dependency_bundle", f"{ecosystem.lower()}-bundle"),
+            "request_ref": request_ref,
+            "repository_profile_ref": profile_ref,
+            "ecosystem": ecosystem,
+            "dependency_input_hash": input_hash,
+            "archive_ref": archive_ref,
+            "archive_digest": archive_ref.content_hash,
+            "archive_format": "TAR",
+            "approval_target_hash": target_hash,
+            "approved_by": "operator@example.invalid",
+            "approved_by_role": "HUMAN",
+            "approved_at": NOW,
+        }
+    )
 
 
 def _approval(
@@ -1008,6 +1068,26 @@ async def test_repository_profile_generates_python_build_context(
         (tmp_path / name).write_bytes(raw)
     profile = _repository_profile(files)
     request, requirements, _ = _dynamic_records()
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
+    requirements = requirements.model_copy(
+        update={
+            "items": (
+                EnvironmentRequirement(
+                    requirement_id="python-version",
+                    kind="VERSION",
+                    name="python",
+                    required=True,
+                    expected="3.12",
+                    expected_ref=None,
+                    alternatives=(),
+                    check_ref=None,
+                    secret_ref=None,
+                    source_refs=(request_ref,),
+                ),
+            )
+        }
+    )
     docker = FakeDockerAdapter()
     setup = _setup(docker, artifacts=_MemoryArtifacts())
 
@@ -1041,9 +1121,77 @@ async def test_repository_profile_generates_python_build_context(
     assert names == ("Dockerfile", "app.py", "requirements.txt")
     assert b"FROM python@" in dockerfile_bytes
     assert b"COPY . /workspace" in dockerfile_bytes
-    assert b'["python", "-m", "pip", "install"' in dockerfile_bytes
-    assert b'"-r", "requirements.txt"' in dockerfile_bytes
+    assert b"pip" not in dockerfile_bytes
     assert timeout_ms == 10_000
+
+
+@pytest.mark.asyncio
+async def test_generated_recipe_requires_an_explicit_runtime_version(
+    tmp_path: Path,
+) -> None:
+    files = {"app.py": b"pass\n", "requirements.txt": b""}
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    request, requirements, _ = _dynamic_records()
+
+    with pytest.raises(
+        ValueError,
+        match="ENVIRONMENT_VERSION_CONFIRMATION_REQUIRED",
+    ):
+        await _setup(FakeDockerAdapter(), artifacts=_MemoryArtifacts()).preflight(
+            workspace_root=tmp_path,
+            repository_profile=_repository_profile(files),
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "missing-runtime-version"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_unverifiable_required_environment_need_blocks_before_docker(
+    tmp_path: Path,
+) -> None:
+    files = {"app.py": b"pass\n", "requirements.txt": b""}
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    request, requirements, _ = _dynamic_records()
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
+    requirements = requirements.model_copy(
+        update={
+            "items": (
+                EnvironmentRequirement(
+                    requirement_id="database",
+                    kind="DATABASE",
+                    name="postgres",
+                    required=True,
+                    expected="ready",
+                    expected_ref=None,
+                    alternatives=(),
+                    check_ref=None,
+                    secret_ref=None,
+                    source_refs=(request_ref,),
+                ),
+            )
+        }
+    )
+    docker = FakeDockerAdapter()
+
+    with pytest.raises(
+        ValueError,
+        match="ENVIRONMENT_REQUIREMENT_CONFIRMATION_REQUIRED:DATABASE",
+    ):
+        await _setup(docker, artifacts=_MemoryArtifacts()).preflight(
+            workspace_root=tmp_path,
+            repository_profile=_repository_profile(files),
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "unverifiable-required-need"),
+        )
+
+    assert docker.built == []
+    assert docker.built_contexts == []
+    assert docker.created == {}
 
 
 @pytest.mark.asyncio
@@ -1094,12 +1242,32 @@ async def test_built_image_has_exact_attempt_owner_and_explicit_baseline_reason(
 async def test_persisted_recipe_can_rebuild_after_store_restart(tmp_path: Path) -> None:
     files = {
         "app.py": b"print('ready')\n",
-        "requirements.txt": b"requests==2.32.5\n",
+        "requirements.txt": b"",
     }
     for name, raw in files.items():
         (tmp_path / name).write_bytes(raw)
     artifacts = _MemoryArtifacts()
     request, requirements, _ = _dynamic_records()
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
+    requirements = requirements.model_copy(
+        update={
+            "items": (
+                EnvironmentRequirement(
+                    requirement_id="python-version",
+                    kind="VERSION",
+                    name="python",
+                    required=True,
+                    expected="3.12",
+                    expected_ref=None,
+                    alternatives=(),
+                    check_ref=None,
+                    secret_ref=None,
+                    source_refs=(request_ref,),
+                ),
+            )
+        }
+    )
     source = await _setup(FakeDockerAdapter(), artifacts=artifacts).preflight(
         workspace_root=tmp_path,
         repository_profile=_repository_profile(files),
@@ -1136,7 +1304,7 @@ async def test_persisted_recipe_can_rebuild_after_store_restart(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_repository_profile_generates_javascript_dependency_install(
+async def test_generated_recipe_blocks_unapproved_javascript_dependency_supply(
     tmp_path: Path,
 ) -> None:
     files = {
@@ -1147,16 +1315,227 @@ async def test_repository_profile_generates_javascript_dependency_install(
     for name, raw in files.items():
         (tmp_path / name).write_bytes(raw)
     request, requirements, _ = _dynamic_records()
-
-    source = await _setup(FakeDockerAdapter(), artifacts=_MemoryArtifacts()).preflight(
-        workspace_root=tmp_path,
-        repository_profile=_repository_profile(files),
-        request=request,
-        requirements=requirements,
-        meta=_meta("environment_recipe", "node-recipe-source"),
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
+    requirements = requirements.model_copy(
+        update={
+            "items": (
+                EnvironmentRequirement(
+                    requirement_id="node-version",
+                    kind="VERSION",
+                    name="node",
+                    required=True,
+                    expected="22",
+                    expected_ref=None,
+                    alternatives=(),
+                    check_ref=None,
+                    secret_ref=None,
+                    source_refs=(request_ref,),
+                ),
+            )
+        }
     )
 
-    assert b'["npm", "ci", "--ignore-scripts"]' in source.dockerfile
+    with pytest.raises(
+        ValueError,
+        match="DEPENDENCY_SUPPLY_CONFIRMATION_REQUIRED",
+    ):
+        await _setup(FakeDockerAdapter(), artifacts=_MemoryArtifacts()).preflight(
+            workspace_root=tmp_path,
+            repository_profile=_repository_profile(files),
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "node-recipe-source"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_approved_python_wheel_bundle_is_baked_for_offline_install(
+    tmp_path: Path,
+) -> None:
+    files = {
+        "app.py": b"import demo\n",
+        "requirements.txt": b"demo==1.0.0\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    profile = _repository_profile(files)
+    request, requirements, _ = _dynamic_records()
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
+    requirements = requirements.model_copy(
+        update={
+            "items": (
+                EnvironmentRequirement(
+                    requirement_id="python-version",
+                    kind="VERSION",
+                    name="python",
+                    required=True,
+                    expected="3.12",
+                    expected_ref=None,
+                    alternatives=(),
+                    check_ref=None,
+                    secret_ref=None,
+                    source_refs=(request_ref,),
+                ),
+            )
+        }
+    )
+    artifacts = _MemoryArtifacts()
+    bundle = _dependency_bundle(
+        artifacts=artifacts,
+        profile=profile,
+        request=request,
+        ecosystem="PYTHON_WHEELS",
+        files={"demo-1.0.0-py3-none-any.whl": b"immutable-wheel"},
+    )
+    source = await _setup(FakeDockerAdapter(), artifacts=artifacts).preflight(
+        workspace_root=tmp_path,
+        repository_profile=profile,
+        dependency_bundle=bundle,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "python-offline-source"),
+    )
+
+    assert source.source_manifest is not None
+    assert source.source_manifest.dependency_bundle_ref == reference(bundle)
+    assert source.context_archive is not None
+    with tarfile.open(fileobj=io.BytesIO(source.context_archive), mode="r:") as archive:
+        names = set(archive.getnames())
+        dockerfile = archive.extractfile(source.dockerfile_path)
+        assert dockerfile is not None
+        dockerfile_bytes = dockerfile.read()
+    assert ".sastsimi/dependencies/python/demo-1.0.0-py3-none-any.whl" in names
+    assert b"python -m pip install --no-index" in dockerfile_bytes
+    assert b"--find-links=/opt/sastsimi-dependencies/python" in dockerfile_bytes
+
+
+@pytest.mark.asyncio
+async def test_approved_npm_cache_bundle_is_baked_for_offline_install(
+    tmp_path: Path,
+) -> None:
+    files = {
+        "package.json": b'{"dependencies":{"demo":"1.0.0"}}\n',
+        "package-lock.json": b'{"lockfileVersion":3,"packages":{}}\n',
+        "server.js": b"require('demo')\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    profile = _repository_profile(files)
+    request, requirements, _ = _dynamic_records()
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
+    requirements = requirements.model_copy(
+        update={
+            "items": (
+                EnvironmentRequirement(
+                    requirement_id="node-version",
+                    kind="VERSION",
+                    name="node",
+                    required=True,
+                    expected="22",
+                    expected_ref=None,
+                    alternatives=(),
+                    check_ref=None,
+                    secret_ref=None,
+                    source_refs=(request_ref,),
+                ),
+            )
+        }
+    )
+    artifacts = _MemoryArtifacts()
+    bundle = _dependency_bundle(
+        artifacts=artifacts,
+        profile=profile,
+        request=request,
+        ecosystem="NPM_CACHE",
+        files={"_cacache/content-v2/sha512/aa/item": b"immutable-package"},
+    )
+    source = await _setup(FakeDockerAdapter(), artifacts=artifacts).preflight(
+        workspace_root=tmp_path,
+        repository_profile=profile,
+        dependency_bundle=bundle,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "npm-offline-source"),
+    )
+
+    assert source.context_archive is not None
+    with tarfile.open(fileobj=io.BytesIO(source.context_archive), mode="r:") as archive:
+        names = set(archive.getnames())
+        dockerfile = archive.extractfile(source.dockerfile_path)
+        assert dockerfile is not None
+        dockerfile_bytes = dockerfile.read()
+    assert ".sastsimi/dependencies/npm/_cacache/content-v2/sha512/aa/item" in names
+    assert b"npm ci --offline" in dockerfile_bytes
+    assert b"--cache /opt/sastsimi-dependencies/npm" in dockerfile_bytes
+    assert b"--ignore-scripts" in dockerfile_bytes
+
+
+@pytest.mark.asyncio
+async def test_dependency_bundle_input_mismatch_is_rejected_before_docker(
+    tmp_path: Path,
+) -> None:
+    files = {"app.py": b"import demo\n", "requirements.txt": b"demo==1\n"}
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    profile = _repository_profile(files)
+    request, requirements, _ = _dynamic_records()
+    artifacts = _MemoryArtifacts()
+    bundle = _dependency_bundle(
+        artifacts=artifacts,
+        profile=profile,
+        request=request,
+        ecosystem="PYTHON_WHEELS",
+        files={"demo-1-py3-none-any.whl": b"wheel"},
+        dependency_hash="f" * 64,
+    )
+    docker = FakeDockerAdapter()
+
+    with pytest.raises(ValueError, match="DEPENDENCY_BUNDLE_INPUT_MISMATCH"):
+        await _setup(docker, artifacts=artifacts).preflight(
+            workspace_root=tmp_path,
+            repository_profile=profile,
+            dependency_bundle=bundle,
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "mismatched-bundle-source"),
+        )
+
+    assert docker.built_contexts == []
+
+
+@pytest.mark.asyncio
+async def test_dependency_bundle_rejects_secret_paths_without_exposing_content(
+    tmp_path: Path,
+) -> None:
+    files = {"app.py": b"import demo\n", "requirements.txt": b"demo==1\n"}
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    profile = _repository_profile(files)
+    request, requirements, _ = _dynamic_records()
+    artifacts = _MemoryArtifacts()
+    bundle = _dependency_bundle(
+        artifacts=artifacts,
+        profile=profile,
+        request=request,
+        ecosystem="PYTHON_WHEELS",
+        files={".npmrc": b"token=must-not-appear"},
+    )
+
+    with pytest.raises(ValueError) as raised:
+        await _setup(FakeDockerAdapter(), artifacts=artifacts).preflight(
+            workspace_root=tmp_path,
+            repository_profile=profile,
+            dependency_bundle=bundle,
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "secret-bundle-source"),
+        )
+
+    assert str(raised.value) == "DEPENDENCY_BUNDLE_ARCHIVE_INVALID"
+    assert "must-not-appear" not in str(raised.value)
 
 
 @pytest.mark.asyncio
@@ -1212,6 +1591,41 @@ async def test_repository_profile_blocks_unignored_package_credentials(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "secret_path",
+    ("deploy/.aws/credentials", "tools/.docker/config.json"),
+)
+async def test_repository_profile_blocks_nested_credentials_before_docker(
+    tmp_path: Path,
+    secret_path: str,
+) -> None:
+    files = {
+        secret_path: b"do-not-send-to-docker\n",
+        "app.py": b"print('ready')\n",
+        "requirements.txt": b"",
+    }
+    for name, raw in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+    docker = FakeDockerAdapter()
+    request, requirements, _ = _dynamic_records()
+
+    with pytest.raises(ValueError, match="REPOSITORY_SECRET_FILE_DENIED"):
+        await _setup(docker, artifacts=_MemoryArtifacts()).preflight(
+            workspace_root=tmp_path,
+            repository_profile=_repository_profile(files),
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "nested-credential-source"),
+        )
+
+    assert docker.built == []
+    assert docker.built_contexts == []
+    assert docker.created == {}
+
+
+@pytest.mark.asyncio
 async def test_repository_profile_honors_simple_dockerignore_before_archiving(
     tmp_path: Path,
 ) -> None:
@@ -1261,7 +1675,8 @@ async def test_repository_profile_rejects_unsupported_dockerignore_negation(
         )
 
 
-def test_missing_declared_container_health_is_not_a_match() -> None:
+@pytest.mark.asyncio
+async def test_missing_declared_container_health_is_not_a_match() -> None:
     request, requirements, _ = _dynamic_records()
     request_ref = reference(request)
     assert isinstance(request_ref, StoredDataRef)
@@ -1297,7 +1712,7 @@ def test_missing_declared_container_health_is_not_a_match() -> None:
         labels={},
     )
 
-    checks = SandboxHealthChecker().requirement_checks(
+    checks = await SandboxHealthChecker().requirement_checks(
         requirements=requirements,
         state=state,
         evidence_ref=evidence_ref,
@@ -1305,6 +1720,67 @@ def test_missing_declared_container_health_is_not_a_match() -> None:
 
     assert checks[0].status == "NOT_CHECKED"
     assert checks[0].actual is None
+
+
+@pytest.mark.asyncio
+async def test_required_runtime_version_is_checked_inside_container() -> None:
+    request, requirements, _ = _dynamic_records()
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
+    requirements = requirements.model_copy(
+        update={
+            "items": (
+                EnvironmentRequirement(
+                    requirement_id="python-version",
+                    kind="VERSION",
+                    name="python",
+                    required=True,
+                    expected="3.12",
+                    expected_ref=None,
+                    alternatives=(),
+                    check_ref=None,
+                    secret_ref=None,
+                    source_refs=(request_ref,),
+                ),
+            )
+        }
+    )
+    state = DockerContainerState(
+        container_id="owned-container",
+        image_digest=IMAGE_DIGEST,
+        user="65532:65532",
+        network_mode="none",
+        privileged=False,
+        read_only_rootfs=True,
+        running=True,
+        exit_code=0,
+        health_status=None,
+        labels={},
+    )
+
+    async def execute(
+        container_id: str,
+        argv: tuple[str, ...],
+        timeout_ms: int,
+        working_directory: str,
+    ) -> DockerCommandOutcome:
+        assert (container_id, argv, working_directory) == (
+            "owned-container",
+            ("python", "--version"),
+            "/",
+        )
+        assert timeout_ms > 0
+        return DockerCommandOutcome(0, b"Python 3.12.9\n", b"", False)
+
+    checks = await SandboxHealthChecker().requirement_checks(
+        requirements=requirements,
+        state=state,
+        evidence_ref=_ref("sandbox_resource", "version-container"),
+        execute=execute,
+    )
+
+    assert checks[0].status == "MATCH"
+    assert checks[0].actual == "3.12.9"
 
 
 @pytest.mark.asyncio
@@ -2199,51 +2675,19 @@ async def test_docker_build_is_blocked_when_backend_cannot_enforce_every_limit(
 
 
 @pytest.mark.asyncio
-async def test_docker_buildx_uses_supported_resource_flags(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_unverified_buildx_backend_is_rejected(
     tmp_path: Path,
 ) -> None:
-    calls: list[tuple[str, ...]] = []
-
-    async def run(
-        argv: tuple[str, ...],
-        **_: object,
-    ) -> DockerCommandOutcome:
-        calls.append(argv)
-        return DockerCommandOutcome(0, (IMAGE_DIGEST + "\n").encode(), b"", False)
-
     adapter, resolver = _trusted_docker_adapter(tmp_path)
     assert adapter._target is not None
-    buildx_target = replace(adapter._target, build_backend="BUILDX_RESOURCE")
-    resolver.target = buildx_target
-    adapter = DockerAdapter(buildx_target, resolver)
-    monkeypatch.setattr(adapter, "_run", run)
-    request, _, _ = _dynamic_records()
-    spec = _approval(tmp_path, request).approved_spec
-    assert spec is not None
-
-    await adapter.build(
-        b"FROM scratch\nRUN true\n",
-        {
-            "sastsimi.owner": "reproduction-setup-automation",
-            "sastsimi.analysis-id": "analysis-1",
-            "sastsimi.workspace-id": "workspace-1",
-            "sastsimi.commit-id": "commit-1",
-            "sastsimi.hypothesis-id": "hypothesis-1",
-            "sastsimi.attempt-id": "dynamic-attempt-1",
-            "sastsimi.resource-kind": "image",
-            "sastsimi.resource-id": "image-runtime-1",
-        },
-        spec=spec,
-        timeout_ms=10_000,
+    buildx_target = replace(
+        adapter._target,
+        build_backend=cast(Any, "BUILDX_RESOURCE"),
     )
+    resolver.target = buildx_target
 
-    assert calls[0][:4] == ("buildx", "build", "--quiet", "--load")
-    assert ("--resource", "cpu-period=100000") == calls[0][
-        calls[0].index("--resource") : calls[0].index("--resource") + 2
-    ]
-    assert f"cpu-quota={spec.cpu_limit_millicores * 100}" in calls[0]
-    assert f"memory={spec.memory_limit_bytes}" in calls[0]
+    with pytest.raises(ValueError, match="DOCKER_TRUSTED_TARGET_INVALID"):
+        DockerAdapter(buildx_target, resolver)
 
 
 @pytest.mark.asyncio
@@ -2293,6 +2737,7 @@ async def test_docker_build_rejects_weaker_external_disk_boundary(
 async def test_cancelled_docker_build_reclaims_attempt_owned_image(
     monkeypatch: pytest.MonkeyPatch,
     with_context: bool,
+    tmp_path: Path,
 ) -> None:
     started = asyncio.Event()
     calls: list[tuple[str, ...]] = []
@@ -2331,28 +2776,7 @@ async def test_cancelled_docker_build_reclaims_attempt_owned_image(
         "sastsimi.resource-kind": "image",
         "sastsimi.resource-id": "image-runtime-1",
     }
-    profile_ref = HostConfigurationRef(
-        stored_data_id=StoredDataId("docker-profile-data"),
-        data_kind="runtime_capability_profile",
-        content_hash="b" * 64,
-        host_id="host-a",
-        publication_analysis_id=AnalysisId("capability-analysis"),
-        publication_workspace_id=WorkspaceId("capability-workspace"),
-        publication_commit_id=CommitId("capability-commit"),
-        record_id=RecordId("docker-profile-v1"),
-    )
-    target = TrustedDockerTarget(
-        profile_ref=profile_ref,
-        executable=Path("C:/trusted/docker.exe"),
-        subject_key="docker",
-        subject_sha256="c" * 64,
-        daemon_target="npipe:////./pipe/docker_engine",
-        build_backend="LEGACY_LIMITED",
-        enforced_build_limits=frozenset({"CPU", "MEMORY", "PID", "DISK"}),
-        external_build_disk_limit_bytes=64 * 1024 * 1024,
-        external_build_storage_identity_hash="a" * 64,
-    )
-    adapter = DockerAdapter(target, _TrustedDockerResolver(target))
+    adapter, _resolver = _trusted_docker_adapter(tmp_path)
     monkeypatch.setattr(adapter, "_run", run)
     request, _, _ = _dynamic_records()
     spec = _approval(Path.cwd(), request).approved_spec
@@ -2608,6 +3032,39 @@ async def test_docker_exec_uses_exact_argv_and_working_directory(
             "poc.py",
         )
     ]
+
+    await adapter.execute(
+        "owned-container-id",
+        ("node", "--version"),
+        10_000,
+        working_directory="/app",
+    )
+    assert calls[-1][-5:] == (
+        "--workdir",
+        "/app",
+        "owned-container-id",
+        "node",
+        "--version",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "working_directory",
+    ("workspace", "/workspace/../secret", "/workspace\\secret", "/bad\0path"),
+)
+async def test_docker_exec_rejects_unsafe_working_directory(
+    working_directory: str,
+) -> None:
+    adapter = DockerAdapter()
+
+    with pytest.raises(ValueError, match="DOCKER_EXEC_INPUT_INVALID"):
+        await adapter.execute(
+            "owned-container-id",
+            ("python", "--version"),
+            10_000,
+            working_directory=working_directory,
+        )
 
 
 @pytest.mark.asyncio
