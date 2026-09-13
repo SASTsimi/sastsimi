@@ -54,7 +54,8 @@ PVD-01부터 PVD-15까지 각각 결과가 필요합니다. API Provider의 PVD-
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "artifact_scope": "HOST_PROFILE_TEMPLATE",
   "profile_hash": "<onboarding-requirements가 출력한 64자리 hash>",
   "host_id": "<production profile의 host_id>",
   "created_at": "2026-09-13T00:00:00Z",
@@ -81,22 +82,44 @@ PVD-01부터 PVD-15까지 각각 결과가 필요합니다. API Provider의 PVD-
 필드 의미는 다음과 같습니다.
 
 - `profile_hash`: 현재 production TOML과 정확히 같은지 확인합니다.
+- `artifact_scope=HOST_PROFILE_TEMPLATE`: 아직 특정 분석에 묶이지 않은 host·profile용 승인 template 묶음임을 뜻합니다.
 - `host_id`: capability가 승인된 실행 host를 고정합니다.
 - `created_at`, `expires_at`, `approved_by`: 누가 어느 기간 사용을 승인했는지 기록합니다.
 - `capabilities`: registry에 이미 저장된 정확한 host capability revision을 가리킵니다. 기본적으로 Git clone·checkout, Python runtime, AST가 필요하며 실제 사용하는 CodeQL·OpenGrep·Docker만 추가합니다.
 - `artifacts`: 아래 일곱 설정 파일의 실제 byte hash입니다. 파일 이름이나 “최신 버전”이 아니라 hash가 같은 파일만 사용합니다.
 
-각 provisioning slot 파일은 공통으로 `schema_version=1`, 자기 `slot`, 같은 `profile_hash`, 실행 시 발급될 `analysis_id`, `workspace_id`, `commit_id`, 필요한 exact `record_refs`, 추가 근거의 `evidence_sha256`를 가집니다. 슬롯별 추가 필드는 다음과 같습니다.
+각 provisioning slot 파일도 분석 시작 전에 승인하는 template입니다. 공통으로 `schema_version=1`, `template_scope=HOST_PROFILE`, 자기 `slot`, 같은 `profile_hash`와 `host_id`, `record_templates`, 추가 근거의 `evidence_sha256`를 가집니다. `record_templates`의 각 항목은 `template_key`, `data_kind`, `content_sha256`로 승인할 record template의 정확한 내용을 가리킵니다.
+
+예를 들어 Verification 플레이북 slot은 다음 모양입니다. 꺾쇠 값과 hash는 실제 승인값으로 바꿉니다.
+
+```json
+{
+  "schema_version": 1,
+  "template_scope": "HOST_PROFILE",
+  "slot": "VERIFICATION_PLAYBOOKS",
+  "profile_hash": "<같은 profile hash>",
+  "host_id": "<같은 host_id>",
+  "record_templates": [
+    {"template_key": "<공통 플레이북 template key>", "data_kind": "verification_playbook", "content_sha256": "<record template sha256>"},
+    {"template_key": "<플레이북 정책 template key>", "data_kind": "playbook_policy", "content_sha256": "<record template sha256>"}
+  ],
+  "evidence_sha256": ["<위 record template들의 sha256>"]
+}
+```
+
+이 승인 파일에는 아직 존재하지 않는 `analysis_id`, `workspace_id`, `commit_id`나 실행별 `record_refs`를 넣지 않습니다. 분석 접수 후 runtime이 세 ID를 발급하고, 승인된 `record_templates`를 새 실행 범위에 materialize(실행별 record로 생성)한 뒤에만 실행별 slot 문서를 만듭니다. 따라서 다른 분석의 ID나 record를 승인 template에 미리 적어 재사용하지 않습니다.
+
+슬롯별 추가 필드는 다음과 같습니다.
 
 - `WORKSPACE_STORAGE`: `backend=SQLITE_RECORDS_AND_CAS`
 - `STATIC_ANALYSIS`: 실제 활성 도구를 담은 `enabled_tools`; `AST`는 필수
-- `VERIFICATION_PLAYBOOKS`: 하나 이상의 `verification_playbook`과 정확히 하나의 `playbook_policy` reference
-- `SANDBOX_PROFILE`: 정확히 하나의 `sandbox_profile` reference, `container_user`, `max_execute_turns`
+- `VERIFICATION_PLAYBOOKS`: 하나 이상의 `verification_playbook`과 정확히 하나의 `playbook_policy` record template
+- `SANDBOX_PROFILE`: 정확히 하나의 `sandbox_profile` record template, `container_user`, `max_execute_turns`
 - `POLICY_CATALOG`: `source_configuration_sha256`, `freshness_criterion_sha256`; 둘 다 `evidence_sha256`에도 포함
-- `PROVIDER_CONFIGURATION`: Provider마다 `provider_validation_evidence`와 `provider_profile` reference, 구독 client이면 필요한 `client_execution_profile`
-- `PROMPT_ROUTES`: Prompt 실행 계약과 `prompt_registry_entry`, `evaluation_recommendation` reference 및 `semantic_validator_keys`
+- `PROVIDER_CONFIGURATION`: Provider마다 `provider_validation_evidence`와 `provider_profile` record template, 구독 client이면 필요한 `client_execution_profile`, 승인된 adapter의 `provider_implementation_bindings`
+- `PROMPT_ROUTES`: Prompt 실행 계약과 `prompt_registry_entry`, `evaluation_recommendation` record template 및 `semantic_validator_bindings`
 
-이 일곱 파일은 빈 예시를 복사해 만드는 일반 설정이 아닙니다. 해당 analysis scope에 공통 계약 record를 먼저 발행한 trusted provisioning 단계가 exact reference를 넣어 생성해야 합니다. 임의 ID나 다른 analysis의 reference를 쓰면 production 구성 단계에서 차단됩니다.
+이 일곱 파일은 빈 예시를 복사해 만드는 일반 설정이 아닙니다. trusted provisioning 단계가 host·profile 범위에서 record template과 구현 binding을 검토해 승인해야 합니다. 분석이 시작되면 runtime이 승인된 template byte와 hash를 다시 검사하고, 새로 발급된 분석 범위에 exact record를 만든 뒤 실행별 reference를 연결합니다. template이 달라졌거나 임의 ID·다른 분석의 record를 끼우면 production 구성 단계에서 차단됩니다.
 
 ## 4. `ProductionOnboardingManifest`
 

@@ -1,6 +1,13 @@
 import tomllib
 from pathlib import Path
 
+from sastsimi.orchestration.production_onboarding import (
+    ProductionProvisioningManifest,
+)
+from sastsimi.orchestration.production_provisioning import (
+    VerificationPlaybooksProvisioningTemplate,
+)
+
 ROOT = Path(__file__).parents[2]
 
 
@@ -82,6 +89,40 @@ def test_source_cli_and_onboarding_contract_are_documented() -> None:
     ):
         assert field in combined
     assert "실제 값은 쓰지 않습니다" in combined
+
+
+def test_provisioning_examples_use_pre_run_host_profile_templates() -> None:
+    onboarding = _read("docs/onboarding-evidence.md")
+    provisioning = onboarding.split(
+        "## 3. `ProductionProvisioningManifest`", maxsplit=1
+    )[1].split("## 4. `ProductionOnboardingManifest`", maxsplit=1)[0]
+
+    assert '"schema_version": 2' in provisioning
+    assert '"artifact_scope": "HOST_PROFILE_TEMPLATE"' in provisioning
+    assert '"template_scope": "HOST_PROFILE"' in provisioning
+    assert '"record_templates"' in provisioning
+    assert '"analysis_id":' not in provisioning
+    assert '"workspace_id":' not in provisioning
+    assert '"commit_id":' not in provisioning
+    assert '"record_refs":' not in provisioning
+    assert "분석 접수 후 runtime이 세 ID를 발급" in provisioning
+
+    assert {"schema_version", "artifact_scope", "profile_hash", "host_id"} <= set(
+        ProductionProvisioningManifest.model_fields
+    )
+    assert {
+        "schema_version",
+        "template_scope",
+        "profile_hash",
+        "host_id",
+        "record_templates",
+    } <= set(VerificationPlaybooksProvisioningTemplate.model_fields)
+    assert not {
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "record_refs",
+    } & set(VerificationPlaybooksProvisioningTemplate.model_fields)
 
 
 def test_production_profile_example_is_complete_and_contains_no_secret() -> None:
