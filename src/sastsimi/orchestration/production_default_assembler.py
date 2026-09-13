@@ -125,6 +125,7 @@ class StaticRuntimeFactory(Protocol):
 class DynamicFeatureFactory(Protocol):
     def __call__(
         self,
+        assembly: ProductionBundleAssemblyContext,
         context: ProductionInstallationContext,
         static: T08ProductionFeature,
     ) -> BuiltProductionDynamicFeature: ...
@@ -135,9 +136,7 @@ class CancellationFactory(Protocol):
         self,
         context: ProductionInstallationContext,
         static: T08ProductionFeature,
-        provider_adapters: Mapping[
-            tuple[StoredDataRef, str], LLMProviderAdapter
-        ],
+        provider_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter],
         dynamic: DynamicProductionFeature,
     ) -> ExternalCancellationPort: ...
 
@@ -299,7 +298,7 @@ class _DefaultProductionBundleAssembler:
                     ),
                 )
                 policy = policy_factory(installation, calls.calls)
-                dynamic = self.dynamic_feature_factory(installation, t08)
+                dynamic = self.dynamic_feature_factory(context, installation, t08)
                 _require_dynamic_result(dynamic)
                 cancellation = self.cancellation_factory(
                     installation,
@@ -393,9 +392,7 @@ def _require_document_implementations(
         ),
     )
     if value != expected:
-        raise ProductionCapabilityUnavailable(
-            "PRODUCTION_IMPLEMENTATION_SET_MISMATCH"
-        )
+        raise ProductionCapabilityUnavailable("PRODUCTION_IMPLEMENTATION_SET_MISMATCH")
 
 
 def _resolve_playbooks(
@@ -481,8 +478,7 @@ class _ProductionInvocationMetadataFactory:
     ids: UUIDIds
 
     def __call__(
-        self,
-        source: RecordMeta, record_type: str, attempt_id: AttemptId | None
+        self, source: RecordMeta, record_type: str, attempt_id: AttemptId | None
     ) -> RecordMeta:
         record_id = self.ids.new(RecordId)
         return RecordMeta(
@@ -501,10 +497,7 @@ class _ProductionInvocationMetadataFactory:
         )
 
 
-
-def _metadata_factory(
-    clock: SystemClock, ids: UUIDIds
-) -> InvocationMetadataFactory:
+def _metadata_factory(clock: SystemClock, ids: UUIDIds) -> InvocationMetadataFactory:
     return _ProductionInvocationMetadataFactory(clock, ids)
 
 

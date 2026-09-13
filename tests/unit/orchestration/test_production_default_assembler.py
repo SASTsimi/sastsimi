@@ -297,23 +297,24 @@ def test_default_assembler_composes_non_r7_features_and_exact_refs(
     monkeypatch.setattr(
         module,
         "build_production_t08_feature",
-        lambda install_context, inputs: captured.setdefault(
-            "t08", (install_context, inputs)
-        )
-        and t08,
+        lambda install_context, inputs: (
+            captured.setdefault("t08", (install_context, inputs)) and t08
+        ),
     )
     monkeypatch.setattr(
         module,
         "ProductionFeatureInstaller",
-        lambda inputs: captured.setdefault("feature_inputs", inputs)
-        and (lambda install_context: installed),
+        lambda inputs: (
+            captured.setdefault("feature_inputs", inputs)
+            and (lambda install_context: installed)
+        ),
     )
 
     registry = build_default_production_bundle_registry(
         implementation_set=context.implementation_set,
         repository_root=Path.cwd(),
         static_runtime_factory=lambda _context: _static_ports(),
-        dynamic_feature_factory=lambda install_context, static: (
+        dynamic_feature_factory=lambda assembly, install_context, static: (
             BuiltProductionDynamicFeature(dynamic, (lambda: None,))
         ),
         cancellation_factory=lambda install_context, static, adapters, feature: (
@@ -328,13 +329,9 @@ def test_default_assembler_composes_non_r7_features_and_exact_refs(
         profile=context.profile,
         scope=context.scope,
         runner=object(),
-        runtime=SimpleNamespace(
-            unit_of_work=SimpleNamespace(records=context.records)
-        ),
+        runtime=SimpleNamespace(unit_of_work=SimpleNamespace(records=context.records)),
         approved_llm_routes=provider_prompt.approved_routes,
-        role_identity_refs={
-            role: cast(Any, object()) for role in RequesterRole
-        },
+        role_identity_refs={role: cast(Any, object()) for role in RequesterRole},
     )
 
     assert assembly.llm_adapters is provider_prompt.adapters
@@ -375,7 +372,9 @@ def test_default_assembler_rejects_unsupported_implementation_before_building(
     assembler = build_default_production_bundle_assembler(
         repository_root=Path.cwd(),
         static_runtime_factory=lambda _context: _static_ports(),
-        dynamic_feature_factory=lambda _context, _static: cast(Any, object()),
+        dynamic_feature_factory=lambda _assembly, _context, _static: cast(
+            Any, object()
+        ),
         cancellation_factory=lambda *_args: cast(Any, object()),
     )
 
@@ -402,7 +401,9 @@ def test_default_assembler_rejects_non_current_playbook_reference(
     assembler = build_default_production_bundle_assembler(
         repository_root=Path.cwd(),
         static_runtime_factory=lambda _context: _static_ports(),
-        dynamic_feature_factory=lambda _context, _static: cast(Any, object()),
+        dynamic_feature_factory=lambda _assembly, _context, _static: cast(
+            Any, object()
+        ),
         cancellation_factory=lambda *_args: cast(Any, object()),
     )
 
