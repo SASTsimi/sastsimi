@@ -80,6 +80,7 @@ from sastsimi.orchestration.static_external_runner import (
 )
 from sastsimi.ports.dto import StaticRuleMapping
 from sastsimi.ports.llm_provider import LLMProviderAdapter
+from sastsimi.ports.production_analysis import ProductionAnalyzeUnavailable
 from sastsimi.ports.scheduler import ExternalCancellationPort
 from sastsimi.providers.storage_io import InvocationMetadataFactory
 from sastsimi.runtime.system_support import SystemClock, UUIDIds
@@ -321,7 +322,7 @@ class _DefaultProductionBundleAssembler:
                     readiness_checks=dynamic.readiness_checks,
                 )
                 return ProductionFeatureInstaller(inputs)(installation)
-            except ProductionCapabilityUnavailable:
+            except (ProductionCapabilityUnavailable, ProductionAnalyzeUnavailable):
                 raise
             except Exception:
                 raise ProductionCapabilityUnavailable(
@@ -541,6 +542,10 @@ def _reserved_cost(context: ProductionInstallationContext) -> int:
 def _require_static_runtime_ports(
     ports: ProductionStaticRuntimePorts, static: StaticAnalysisProvisioning
 ) -> None:
+    if "CODEQL" in static.enabled_tools:
+        raise ProductionAnalyzeUnavailable(
+            "PRODUCTION_CODEQL_SAFE_PREREQUISITES_UNAVAILABLE"
+        )
     if any(
         not callable(value)
         for value in (
@@ -551,13 +556,6 @@ def _require_static_runtime_ports(
         )
     ):
         raise ValueError("PRODUCTION_STATIC_RUNTIME_INVALID")
-    if "CODEQL" in static.enabled_tools and (
-        ports.output_quota is None
-        or ports.codeql_database_limit_bytes is None
-        or isinstance(ports.codeql_database_limit_bytes, bool)
-        or ports.codeql_database_limit_bytes <= 0
-    ):
-        raise ValueError("PRODUCTION_CODEQL_HARD_QUOTA_REQUIRED")
 
 
 def _t08_inputs(

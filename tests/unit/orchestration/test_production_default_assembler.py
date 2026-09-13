@@ -49,6 +49,7 @@ from sastsimi.orchestration.production_provisioning import (
     VerificationPlaybooksProvisioning,
     WorkspaceStorageProvisioning,
 )
+from sastsimi.ports.production_analysis import ProductionAnalyzeUnavailable
 
 
 def _meta(kind: str, name: str) -> RecordMeta:
@@ -258,8 +259,9 @@ def _static_ports() -> ProductionStaticRuntimePorts:
     )
 
 
+@pytest.mark.parametrize("codeql_unavailable", [False, True])
 def test_default_assembler_composes_non_r7_features_and_exact_refs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, codeql_unavailable: bool
 ) -> None:
     from sastsimi.composition import production_default_assembler as module
 
@@ -275,6 +277,16 @@ def test_default_assembler_composes_non_r7_features_and_exact_refs(
     cancellation = cast(Any, SimpleNamespace(cancel=lambda _target: None))
     installed = cast(Any, object())
     captured: dict[str, object] = {}
+
+    def static_runtime_factory(context: object) -> ProductionStaticRuntimePorts:
+        if codeql_unavailable:
+            module._require_static_runtime_ports(
+                _static_ports(),
+                StaticAnalysisProvisioning.model_construct(
+                    enabled_tools=("AST", "CODEQL")
+                ),
+            )
+        return _static_ports()
 
     monkeypatch.setattr(
         module,
@@ -313,7 +325,7 @@ def test_default_assembler_composes_non_r7_features_and_exact_refs(
     registry = build_default_production_bundle_registry(
         implementation_set=context.implementation_set,
         repository_root=Path.cwd(),
-        static_runtime_factory=lambda _context: _static_ports(),
+        static_runtime_factory=static_runtime_factory,
         dynamic_feature_factory=lambda assembly, install_context, static: (
             BuiltProductionDynamicFeature(dynamic, (lambda: None,))
         ),
@@ -336,6 +348,15 @@ def test_default_assembler_composes_non_r7_features_and_exact_refs(
 
     assert assembly.llm_adapters is provider_prompt.adapters
     assert assembly.approved_llm_routes is provider_prompt.approved_routes
+    if codeql_unavailable:
+        with pytest.raises(
+            ProductionAnalyzeUnavailable,
+            match="PRODUCTION_CODEQL_SAFE_PREREQUISITES_UNAVAILABLE",
+        ):
+            assembly.install(cast(Any, install_context))
+        assert "t08" not in captured
+        assert "feature_inputs" not in captured
+        return
     assert assembly.install(cast(Any, install_context)) is installed
     feature_inputs = cast(Any, captured["feature_inputs"])
     assert feature_inputs.t08 is t08

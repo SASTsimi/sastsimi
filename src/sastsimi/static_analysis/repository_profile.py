@@ -7,6 +7,7 @@ import json
 import os
 import stat
 import tomllib
+from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
 from typing import Literal, cast
@@ -480,10 +481,14 @@ class RepositoryExecutionSelector:
         *,
         operating_system: CapabilityOperatingSystem,
         architecture: CapabilityArchitecture,
+        approved_static_profiles: Mapping[str, HostConfigurationRef] | None = None,
     ) -> None:
         self._resolver = resolver
         self._operating_system = operating_system
         self._architecture = architecture
+        self._approved_static_profiles = (
+            None if approved_static_profiles is None else dict(approved_static_profiles)
+        )
 
     @staticmethod
     def _stable_id(prefix: str, values: object) -> str:
@@ -571,6 +576,11 @@ class RepositoryExecutionSelector:
     def _resolve_static(
         self, adapter_key: str, language: CapabilityLanguage
     ) -> StaticToolCapabilitySelection:
+        if (
+            self._approved_static_profiles is not None
+            and adapter_key not in self._approved_static_profiles
+        ):
+            raise LookupError("STATIC_CAPABILITY_NOT_ENABLED")
         selected = self._resolver.resolve_active_static_tool(
             adapter_key=adapter_key,
             language=language,
@@ -580,6 +590,11 @@ class RepositoryExecutionSelector:
         selected = StaticToolCapabilitySelection.model_validate_json(
             selected.model_dump_json()
         )
+        if (
+            self._approved_static_profiles is not None
+            and selected.profile_ref != self._approved_static_profiles[adapter_key]
+        ):
+            raise ValueError("STATIC_CAPABILITY_APPROVED_REVISION_MISMATCH")
         try:
             pinned = self._resolver.resolve_pinned_active_profile(selected.profile_ref)
         except LookupError as error:

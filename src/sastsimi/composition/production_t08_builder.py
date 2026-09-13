@@ -73,6 +73,7 @@ from sastsimi.ports.dto import (
     WorkspaceStorageLease,
     WorkspaceStoragePolicy,
 )
+from sastsimi.ports.production_analysis import ProductionAnalyzeUnavailable
 from sastsimi.ports.workspace import WorkspaceStoragePort
 from sastsimi.static_analysis.ast_adapter import replay_python_ast_raw
 from sastsimi.static_analysis.codeql_adapter import replay_codeql_raw
@@ -427,6 +428,10 @@ def build_production_t08_feature(
 ) -> T08ProductionFeature:
     """Build all five T08 handlers from exact approved configuration only."""
 
+    if "CODEQL" in inputs.static.enabled_tools:
+        raise ProductionAnalyzeUnavailable(
+            "PRODUCTION_CODEQL_SAFE_PREREQUISITES_UNAVAILABLE"
+        )
     if (
         inputs.workspace_timeout_ms <= 0
         or inputs.repository_profile_timeout_ms <= 0
@@ -635,6 +640,10 @@ def build_production_t08_feature(
                 resolver,
                 operating_system=git_profile.operating_system,
                 architecture=git_profile.architecture,
+                approved_static_profiles={
+                    profile.adapter_key: inputs.static_profile_refs[tool]
+                    for tool, profile in profiles.items()
+                },
             ),
             locator,
         ),

@@ -4,6 +4,7 @@ import hashlib
 import os
 import shutil
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -74,6 +75,7 @@ from sastsimi.ports.dto import (
     StaticToolRequest,
 )
 from sastsimi.ports.id_generator import IdGenerator
+from sastsimi.ports.production_analysis import ProductionAnalyzeUnavailable
 from sastsimi.ports.scheduler import SchedulerStorePort
 from sastsimi.ports.static_tool import StaticProcessAdapter
 from sastsimi.runtime.services import RuntimeServices
@@ -390,6 +392,30 @@ def test_builder_installs_exact_five_stage_real_t08_graph(tmp_path: Path) -> Non
     assert isinstance(feature.context_retrieval, ContextRetrievalWorkHandler)
     assert isinstance(feature.seeder, StaticPostWorkspaceSeeder)
     assert isinstance(feature.repository_profile.handler, RepositoryProfileWorkHandler)
+
+
+def test_builder_rejects_required_codeql_before_custom_adapter_factory(
+    tmp_path: Path,
+) -> None:
+    git_name = shutil.which("git")
+    assert git_name is not None
+    git = Path(git_name).resolve(strict=True)
+    profile = production_profile()
+    git_profile = _git_profile(git)
+    ast_profile = _ast_profile(git)
+    inputs = _inputs(profile, git, git_profile, ast_profile)
+    inputs = replace(
+        inputs,
+        static=inputs.static.model_copy(update={"enabled_tools": ("AST", "CODEQL")}),
+    )
+    context = _context(tmp_path, profile, _Configuration({}))
+    before = set(tmp_path.rglob("*"))
+    with pytest.raises(
+        ProductionAnalyzeUnavailable,
+        match="PRODUCTION_CODEQL_SAFE_PREREQUISITES_UNAVAILABLE",
+    ):
+        build_production_t08_feature(context, inputs)
+    assert set(tmp_path.rglob("*")) == before
 
 
 def test_builder_rejects_stale_approved_evidence_before_install(tmp_path: Path) -> None:

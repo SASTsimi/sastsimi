@@ -96,10 +96,10 @@ class _NativeApprovalIdentity:
 
 
 class ProductionCapabilityProbeService:
-    """Public facade with an optional trusted host quota implementation.
+    """Public facade retaining the host quota composition arguments.
 
-    The quota port is a composition dependency, never caller-supplied probe
-    results. Its actual filesystem enforcement is exercised before approval.
+    CodeQL remains unavailable until a production prebuilt DB and approved
+    hard-quota binding exist. Supplying the quota arguments cannot activate it.
     """
 
     def __init__(

@@ -251,20 +251,30 @@ def _service(
     return service, runtime, store
 
 
-def test_codeql_can_be_approved_only_after_write_denial_and_sticky_proof(
+def test_codeql_test_quota_cannot_activate_production_without_prebuilt_binding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     quota = TestQuota(tmp_path / "quota", monkeypatch)
     service, runtime, _store = _service(tmp_path, available={"codeql"}, quota=quota)
     receipt = service.probe("CODEQL")
-    assert receipt.status == "PASSED"
-    ref = service.approve(
-        receipt.probe_id, expected_target_hash=receipt.approval_target_hash or ""
-    )
-    profile = runtime.configuration.resolve_pinned_active_profile(ref)
-    assert profile.status == "ACTIVE"
-    assert service.resolve_executable(ref).name == "codeql.exe"
+    assert receipt.status == "BLOCKED"
+    assert receipt.activation_supported is False
+    assert receipt.approved_profile_ref is None
+    with pytest.raises(ValueError, match="PROBE_NOT_ACTIVATABLE"):
+        service.approve(
+            receipt.probe_id, expected_target_hash=receipt.approval_target_hash or ""
+        )
+
+
+def test_codeql_unavailable_probe_never_starts_binary(tmp_path: Path) -> None:
+    service, _runtime, _store = _service(tmp_path, available={"codeql"})
+    commands = FakeCommands()
+    service._commands = commands
+    receipt = service.probe("CODEQL")
+    assert receipt.status == "BLOCKED"
+    assert receipt.activation_supported is False
+    assert commands.calls == []
 
 
 @pytest.mark.parametrize(("enforce", "sticky"), [(False, True), (True, False)])
@@ -282,16 +292,16 @@ def test_codeql_rejects_claimed_quota_without_real_sticky_denial(
         service.approve(receipt.probe_id, expected_target_hash="0" * 64)
 
 
-def test_codeql_rechecks_quota_before_publishing_active(
+def test_codeql_quota_changes_cannot_make_blocked_probe_activatable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     quota = TestQuota(tmp_path / "quota", monkeypatch)
     service, _runtime, _store = _service(tmp_path, available={"codeql"}, quota=quota)
     receipt = service.probe("CODEQL")
-    assert receipt.status == "PASSED"
+    assert receipt.status == "BLOCKED"
     quota.enforce = False
-    with pytest.raises(ValueError, match="CAPABILITY_CODEQL_QUOTA_UNAVAILABLE"):
+    with pytest.raises(ValueError, match="PROBE_NOT_ACTIVATABLE"):
         service.approve(
             receipt.probe_id, expected_target_hash=receipt.approval_target_hash or ""
         )
@@ -344,7 +354,10 @@ def test_real_probe_receipts_require_exact_human_approval_before_active(
         "BLOCKED",
     ]
     assert openai.activation_supported is False
-    assert codeql.safe_summary == "CodeQL quota control probe is unavailable"
+    assert (
+        "prebuilt database and hard quota binding are unavailable"
+        in codeql.safe_summary
+    )
     with pytest.raises(LookupError, match="CAPABILITY_ROUTE_NOT_ACTIVE"):
         runtime.configuration.resolve_active_capability(
             capability_kind="GIT",

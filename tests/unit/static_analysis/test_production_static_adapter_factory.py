@@ -40,7 +40,11 @@ from sastsimi.ports.dto import (
     StaticRuleMapping,
     TrackedFile,
 )
-from sastsimi.ports.static_tool import StaticProcessAdapter
+from sastsimi.ports.production_analysis import ProductionAnalyzeUnavailable
+from sastsimi.ports.static_tool import (
+    ProductionStaticOutputQuotaPort,
+    StaticProcessAdapter,
+)
 from sastsimi.ports.workspace import WorkspaceLocatorPort
 from sastsimi.static_analysis.ast_adapter import PythonAstProcessAdapter
 from tests.contract.domain.fixtures import meta
@@ -255,27 +259,19 @@ async def test_ast_adapter_is_built_from_current_manifest_at_execute_time(
     assert observation.analyzed_paths == ("app.py",)
 
 
-def test_codeql_database_create_is_no_build_and_exact_language(tmp_path: Path) -> None:
+def test_codeql_database_create_is_forbidden_on_the_host(tmp_path: Path) -> None:
     executable = tmp_path / "codeql"
     workspace = tmp_path / "workspace"
     database = tmp_path / "database"
 
-    argv = codeql_database_create_argv(
-        executable=executable,
-        database_root=database,
-        workspace_root=workspace,
-        language="python",
-    )
-
-    assert argv == (
-        str(executable),
-        "database",
-        "create",
-        str(database),
-        "--language=python",
-        "--build-mode=none",
-        f"--source-root={workspace}",
-    )
+    with pytest.raises(ProductionAnalyzeUnavailable):
+        codeql_database_create_argv(
+            executable=executable,
+            database_root=database,
+            workspace_root=workspace,
+            language="python",
+        )
+    assert not database.exists()
 
 
 def test_codeql_language_scope_never_guesses_a_mixed_request() -> None:
@@ -345,7 +341,10 @@ def test_opengrep_material_is_bound_to_exact_approved_evidence(
     assert materialized.read_bytes() == config
 
 
-def test_codeql_activation_requires_a_real_hard_quota_port(tmp_path: Path) -> None:
+@pytest.mark.parametrize("quota_supplied", [False, True])
+def test_codeql_activation_requires_production_prebuilt_and_quota_binding(
+    tmp_path: Path, quota_supplied: bool
+) -> None:
     executable = tmp_path / "codeql.exe"
     executable.write_bytes(b"trusted-codeql")
     workspace = tmp_path / "workspace"
@@ -399,10 +398,19 @@ def test_codeql_activation_requires_a_real_hard_quota_port(tmp_path: Path) -> No
         executables={"CODEQL": executable},
         python_ast_worker=executable,
         python_ast_worker_sha256=_digest(executable),
+        output_quota=(
+            cast(ProductionStaticOutputQuotaPort, object()) if quota_supplied else None
+        ),
+        codeql_database_limit_bytes=4096 if quota_supplied else None,
     )
 
-    with pytest.raises(ValueError, match="PRODUCTION_CODEQL_HARD_QUOTA_REQUIRED"):
+    with pytest.raises(
+        ProductionAnalyzeUnavailable,
+        match="PRODUCTION_CODEQL_SAFE_PREREQUISITES_UNAVAILABLE",
+    ):
         factory(context)
+    assert not (tmp_path / "static-execution").exists()
+    assert not (tmp_path / "static-material").exists()
 
 
 @pytest.mark.asyncio

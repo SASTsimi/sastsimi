@@ -196,25 +196,30 @@ uv run sastsimi --data-dir <data-dir> onboarding status --profile <production-pr
 - capability revision, host 또는 provisioning slot 파일 변경
 - manifest나 승인 유효 기한 만료
 
-## 6. CodeQL의 호스트 quota 구성
+## 6. CodeQL의 프로덕션 비활성화 경계
 
-CodeQL은 실행 파일 설치만으로 승인할 수 없습니다. 호스트 통합 코드에서 기존
-`ProductionStaticOutputQuotaPort` 구현과 양수 `codeql_database_limit_bytes`를
-`build_production_capability_probe_service` 및
-`build_production_bootstrap_assembler`의 같은 이름 인자로 전달합니다. quota 구현의
-인자 이름은 두 함수 모두 `static_output_quota`입니다. 두 경로에는 같은 backend와
-DB 한도를 전달해야 합니다. `ProductionStaticRuntimeFactory`를 직접 구성할 때는
-`output_quota`와 `codeql_database_limit_bytes`를 사용합니다.
+현재 프로덕션 CodeQL은 비활성화되어 있습니다. 승인된 외부 hard-quota backend와
+현재 workspace·commit에 정확히 결합된 사전 생성 DB를 연결하는 프로덕션 구현이
+없기 때문입니다. Windows 역시 동등한 backend가 제공되기 전까지 지원하지 않습니다.
+실행 파일 설치, version 출력, backend 이름이나 evidence 문자열, 테스트 quota 객체를
+전달하는 것만으로는 활성화할 수 없습니다. 기존 quota 인자를 전달해도 이 제한은
+해제되지 않습니다. CodeQL probe는 프로세스를 시작하지 않고 `BLOCKED`를 기록하며,
+이전의 승인 가능 probe receipt도 새로 활성화할 수 없습니다.
 
-probe는 별도 64 KiB `PROBE` lease에서 두 파일의 합산 한도 초과 쓰기가 실제로
-거부되는지 확인합니다. 파일을 비운 후에도 같은 거부 근거가 남아 있어야 합니다.
-이어 설정된 DB 한도의 `DATABASE` lease와 profile 출력 한도의 `EXECUTION` lease가
-독립된 경로 및 정확한 binding을 갖는지 확인하고, 승인 직전에 다시 검사합니다.
-각 실행에서도 기존 adapter가 실제 attempt의 quota binding을 검증합니다.
+운영자가 승인한 `STATIC_ANALYSIS.enabled_tools`는 실제 사용할 필수 도구 집합입니다.
+여기에 `CODEQL`이 있으면 analyze는 도구 실행 전에
+`PRODUCTION_CODEQL_SAFE_PREREQUISITES_UNAVAILABLE` 사유로 차단되어 exit 4를
+반환합니다. ToolRunResult나 StaticFactBundle에서 CodeQL 실행을 주장하거나
+FALSE/HOLD 판정을 만들지 않습니다.
 
-이 구성 경로는 OS quota backend를 새로 제공하거나 설치하지 않습니다. backend는
-파일시스템 또는 컨테이너 경계에서 쓰기를 차단하고, 거부 기록을 지속적으로
-보존하며, `finalize`에서 probe lease 자원을 정리해야 합니다. 폴더 크기 측정이나
-`hard_enforced=True` 표시만으로는 probe를 통과할 수 없습니다. 기본 CLI에는 이
-backend가 연결되어 있지 않으므로 CodeQL probe는 `BLOCKED`이며, backend 없이
-CodeQL을 활성 도구에 넣으면 기본 assembler도 차단합니다.
+CodeQL을 목록에서 제외한 승인 구성은 정확히 승인된 AST/OpenGrep revision만
+선택합니다. registry에 다른 CodeQL revision이 ACTIVE로 남아 있어도 임의로 추가하지
+않으며, 미선택 CodeQL은 `NO_ACTIVE_STATIC_CAPABILITY:CODEQL:<LANGUAGE>` gap으로
+남깁니다. Python은 AST와 적어도 하나의 SAST 도구가 필요하므로 AST만으로 SAST 분석
+완료를 주장하지 않습니다.
+
+호스트에서 `codeql database create`, autobuild, 빌드 도구, 패키지 설치 또는 repository
+실행 파일을 시작하는 경로는 제거되었습니다. 향후 활성화에는 immutable 사전 DB와
+query pack, 정확한 profile·action·attempt binding, OS/container의 쓰기 거부 한도 및
+sticky breach evidence를 함께 검증하는 별도 승인 구현이 필요합니다. 디렉터리 크기의
+사후 측정은 hard-quota backend를 대신할 수 없습니다.

@@ -42,7 +42,6 @@ from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.dynamic_sandbox import TrustedDockerTarget
 from sastsimi.ports.static_tool import ProductionStaticOutputQuotaPort
 from sastsimi.runtime.configuration_registry import ConfigurationRegistry
-from sastsimi.static_analysis.quota_probe import prove_static_output_quota
 
 from .docker_build_boundary import DockerBuildBoundaryProbeResult
 from .models import CapabilityProbeReceipt, ProbeKind
@@ -162,7 +161,14 @@ class _CapabilityProbeEngine:
                 profile_key, subject_key = "python-ast", "python"
                 status, activation_supported = "PASSED", True
                 summary = "Python AST parse probe passed"
-        elif kind in {"GIT", "OPENGREP", "DOCKER", "CODEQL"}:
+        elif kind == "CODEQL":
+            # Production has neither a trusted prebuilt DB binding nor an
+            # approved quota backend. A supplied protocol object cannot enable it.
+            summary = (
+                "CodeQL production prebuilt database and hard quota binding "
+                "are unavailable"
+            )
+        elif kind in {"GIT", "OPENGREP", "DOCKER"}:
             name = {
                 "GIT": "git",
                 "OPENGREP": "opengrep",
@@ -228,7 +234,7 @@ class _CapabilityProbeEngine:
                             ) and self._probe_git_operations(executable)
                         elif kind == "OPENGREP":
                             control_passed = self._probe_opengrep_analyze(executable)
-                        elif kind == "DOCKER":
+                        else:
                             self._scratch_root.mkdir(parents=True, exist_ok=True)
                             execution_target_hash = self._docker_target_hash(executable)
                             boundary_result = self._docker_build_boundary_result()
@@ -249,8 +255,6 @@ class _CapabilityProbeEngine:
                                 and self._docker_target_hash(executable)
                                 == execution_target_hash
                             )
-                        else:
-                            control_passed = self._probe_codeql_quota(version, digest)
                         digest_unchanged = sha256_file(executable) == observed_digest
                     except (OSError, ValueError, subprocess.SubprocessError):
                         control_passed = False
@@ -266,12 +270,6 @@ class _CapabilityProbeEngine:
                     elif kind == "OPENGREP" and control_passed and digest_unchanged:
                         status, activation_supported = "PASSED", True
                         summary = "OpenGrep binary probe passed"
-                    elif kind == "CODEQL" and control_passed and digest_unchanged:
-                        status, activation_supported = "PASSED", True
-                        controls = ("STATIC_WRITE_DENYING_QUOTA",)
-                        summary = "CodeQL binary and write-denying quota probe passed"
-                    elif kind == "CODEQL":
-                        summary = "CodeQL quota control probe is unavailable"
                     elif kind == "DOCKER" and docker_build_capability is None:
                         summary = (
                             boundary_result.safe_summary
@@ -382,23 +380,6 @@ class _CapabilityProbeEngine:
 
         return self._store.list()
 
-    def _probe_codeql_quota(self, version: str, digest: str) -> bool:
-        profile = self._profile(
-            "CODEQL",
-            profile_key="codeql",
-            subject_key="codeql",
-            version=version,
-            digest=digest,
-            evidence_ref=self._placeholder_evidence_ref(),
-        )
-        assert isinstance(profile, StaticToolProfile)
-        return prove_static_output_quota(
-            self._static_output_quota,
-            profile_ref=self._profile_ref(profile),
-            database_limit_bytes=self._codeql_database_limit_bytes,
-            output_limit_bytes=profile.max_attempt_output_bytes,
-        )
-
     def resolve_executable(self, profile_ref: HostConfigurationRef) -> Path:
         """Resolve a pinned ACTIVE ref to the same current executable digest."""
 
@@ -501,6 +482,8 @@ class _CapabilityProbeEngine:
         """Publish ACTIVE only after a human confirms the exact probed target."""
 
         receipt = self._store.get(probe_id)
+        if receipt.kind == "CODEQL":
+            raise ValueError("PROBE_NOT_ACTIVATABLE")
         if receipt.approved_profile_ref is not None:
             self._registry.resolve_pinned_active_profile(receipt.approved_profile_ref)
             return receipt.approved_profile_ref
@@ -549,10 +532,6 @@ class _CapabilityProbeEngine:
             docker_build_capability=receipt.docker_build_capability,
             evidence_ref=self._placeholder_evidence_ref(),
         )
-        if receipt.kind == "CODEQL" and not self._probe_codeql_quota(
-            receipt.observed_version, receipt.observed_sha256
-        ):
-            raise ValueError("CAPABILITY_CODEQL_QUOTA_UNAVAILABLE")
         languages, operations = self._route(receipt.kind)
         controls = self._controls(receipt.kind, receipt.evidence_ref)
         approval = self._store.pending_approval(probe_id)

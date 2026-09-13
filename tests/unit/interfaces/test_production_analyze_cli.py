@@ -2,19 +2,26 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from sastsimi import bootstrap
+from sastsimi.composition.production_default_assembler import (
+    ProductionStaticRuntimePorts,
+    _require_static_runtime_ports,
+)
 from sastsimi.contracts.evaluation import AnalysisRunResult
 from sastsimi.interfaces.cli import analyze as analyze_command
 from sastsimi.interfaces.cli.main import main
+from sastsimi.orchestration.production_provisioning import StaticAnalysisProvisioning
 from sastsimi.ports.scheduler import (
     AnalysisStatusView,
     RunDisposition,
     RunOutcome,
     WorkFailureView,
 )
+from sastsimi.ports.static_tool import ProductionStaticOutputQuotaPort
 
 
 class _Entrypoint:
@@ -27,6 +34,65 @@ class _Entrypoint:
     ) -> RunOutcome:
         self.calls.append(request)
         return RunOutcome("analysis-1", self.disposition, None)
+
+
+@pytest.mark.parametrize("quota_supplied", [False, True])
+def test_required_codeql_readiness_is_exit_four_without_a_verdict(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], quota_supplied: bool
+) -> None:
+    class RequiredCodeQL:
+        async def __call__(
+            self, request: analyze_command.ProductionAnalyzeRequest
+        ) -> RunOutcome:
+            ports = ProductionStaticRuntimePorts(
+                process_receipts=lambda _action, _attempt: None,
+                cancellation_observation=lambda _request, _profile: None,
+                dispatch_state=lambda _attempt: None,
+                attempt_dispatch=lambda _attempt: None,
+                output_quota=cast(ProductionStaticOutputQuotaPort, object())
+                if quota_supplied
+                else None,
+                codeql_database_limit_bytes=4096 if quota_supplied else None,
+            )
+            _require_static_runtime_ports(
+                ports,
+                StaticAnalysisProvisioning.model_construct(
+                    enabled_tools=("AST", "CODEQL")
+                ),
+            )
+            raise AssertionError(
+                "Unavailable CodeQL must stop before any tool work or result"
+            )
+
+    assert (
+        main(
+            [
+                "--data-dir",
+                str(tmp_path),
+                "analyze",
+                "--repo",
+                "repository",
+                "--commit",
+                "a" * 40,
+                "--profile",
+                "profile.toml",
+                "--format",
+                "json",
+            ],
+            production_analyze=RequiredCodeQL(),
+        )
+        == 4
+    )
+    output = capsys.readouterr()
+    assert output.out == ""
+    wire = json.loads(output.err)
+    assert wire["command"] == "analyze"
+    assert wire["code"] == "CAPABILITY_UNSUPPORTED"
+    assert (
+        wire["data"]["reason_code"]
+        == "PRODUCTION_CODEQL_SAFE_PREREQUISITES_UNAVAILABLE"
+    )
+    assert set(wire["data"]) == {"message", "reason_code"}
 
 
 class _Application:
