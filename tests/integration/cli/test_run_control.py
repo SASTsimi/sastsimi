@@ -5,10 +5,16 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import cast
 
 import pytest
 
+import sastsimi.interfaces.cli.cancel as cancel_command
+import sastsimi.interfaces.cli.result as result_command
+import sastsimi.interfaces.cli.resume as resume_command
+import sastsimi.interfaces.cli.run as run_command
+import sastsimi.interfaces.cli.status as status_command
 from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
 from sastsimi.contracts.evaluation import AnalysisRunResult
 from sastsimi.contracts.refs import (
@@ -18,11 +24,8 @@ from sastsimi.contracts.refs import (
     reference,
 )
 from sastsimi.contracts.work import WorkAttempt, WorkExecutionState
-from sastsimi.interfaces.cli import cancel as cancel_command
-from sastsimi.interfaces.cli import result as result_command
-from sastsimi.interfaces.cli import resume as resume_command
-from sastsimi.interfaces.cli import run as run_command
-from sastsimi.interfaces.cli import status as status_command
+from sastsimi.ports.dto import WorkContext
+from sastsimi.ports.runtime_store import RecoveryReport
 from sastsimi.ports.scheduler import (
     AnalysisStatusView,
     CancellationObservation,
@@ -199,6 +202,36 @@ class _SchedulerStore:
     def attempts_for_work(self, work_id: str) -> tuple[WorkAttempt, ...]:
         return self.attempts.get(work_id, ())
 
+    def ready_work(
+        self, analysis_id: str, limit: int
+    ) -> tuple[WorkExecutionState, ...]:
+        return tuple(
+            item
+            for item in self.work_for_run(analysis_id)
+            if item.status == "READY"
+        )[:limit]
+
+    def try_claim_ready(
+        self,
+        analysis_id: str,
+        work_id: str,
+        expected_state_version: int,
+        worker_id: str,
+        lease_expires_at: datetime,
+    ) -> WorkContext | None:
+        del analysis_id, work_id, expected_state_version, worker_id, lease_expires_at
+        raise AssertionError("unexpected ready claim")
+
+    def renew_lease(
+        self,
+        context: WorkContext,
+        worker_id: str,
+        lease_expires_at: datetime,
+        elapsed_ms: int,
+    ) -> WorkContext:
+        del context, worker_id, lease_expires_at, elapsed_ms
+        raise AssertionError("unexpected lease renewal")
+
 
 class _Canceller:
     def __init__(self, controls: _Controls, store: _SchedulerStore) -> None:
@@ -323,9 +356,9 @@ class _Recovery:
     def __init__(self) -> None:
         self.calls = 0
 
-    def recover(self) -> object:
+    def recover(self) -> RecoveryReport:
         self.calls += 1
-        return object()
+        return RecoveryReport(0, 0, 0)
 
 
 class _Lifecycle:
@@ -476,6 +509,7 @@ def test_production_run_resume_status_and_result_cli_projections() -> None:
         "cancel_requested": False,
         "waiting_for": ["AUTH"],
         "result_record_id": None,
+        "failures": [],
     }
     assert asyncio.run(resume_command.run(service, "a1"))["status"] == "BLOCKED"
     assert resumer.resumed == ["w1"]

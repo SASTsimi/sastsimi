@@ -10,16 +10,24 @@ from sqlalchemy import func, select
 
 from sastsimi.bootstrap import build_runtime
 from sastsimi.contracts.actions import ActionRequest, ActionType, RequesterRole
-from sastsimi.contracts.budget import BudgetReservation
+from sastsimi.contracts.budget import BudgetReservation, ExecutionBudgetProfile
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.evaluation import AnalysisRunResult
 from sastsimi.contracts.ids import AnalysisId, TransitionId
 from sastsimi.contracts.refs import reference
-from sastsimi.contracts.work import StateTransition, TransitionTargetStatus
+from sastsimi.contracts.work import (
+    StateTransition,
+    TransitionTargetStatus,
+    WorkAttempt,
+    WorkExecutionState,
+)
+from sastsimi.ports.dto import WorkContext
+from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.storage import models
 from sastsimi.storage.run_control import RunControlStore
 from sastsimi.storage.work_dispatch import WorkDispatchStore
+from sastsimi.storage.work_service import WorkService as StorageWorkService
 from tests.contract.domain.canonical_fixtures import make
 from tests.integration.runtime_support import NOW, Harness
 
@@ -30,7 +38,7 @@ def _ready_work(
     parallel: int = 1,
     count: int = 1,
     total_retries: int | None = None,
-):
+) -> tuple[Harness, RuntimeServices, tuple[WorkExecutionState, ...]]:
     harness = Harness(tmp_path)
     execution_updates = {"max_parallel_work": parallel}
     if total_retries is not None:
@@ -63,7 +71,7 @@ def _ready_work(
     return harness, runtime, ready
 
 
-def _analysis_result(runtime) -> AnalysisRunResult:
+def _analysis_result(runtime: RuntimeServices) -> AnalysisRunResult:
     from sastsimi.contracts.canonical_json import canonical_bytes
 
     value = make("AnalysisRunResult") | {
@@ -106,11 +114,17 @@ def _start_attempt_rows(harness: Harness) -> tuple[int, int, int]:
     return attempts, reservations, active
 
 
+def _dispatch(runtime: RuntimeServices) -> WorkDispatchStore:
+    works = runtime.work.store
+    assert isinstance(works, StorageWorkService)
+    return WorkDispatchStore(works)
+
+
 def test_ready_claim_publishes_one_exact_attempt_lease_and_work_revision(
     tmp_path: Path,
 ) -> None:
     harness, runtime, (ready,) = _ready_work(tmp_path)
-    dispatch = WorkDispatchStore(runtime.work.store)
+    dispatch = _dispatch(runtime)
     scheduler_runner = WorkflowRunner(
         runtime, harness.clock, harness.ids, scheduler_store=dispatch
     )
@@ -164,6 +178,7 @@ def test_ready_claim_publishes_one_exact_attempt_lease_and_work_revision(
 
     state = runtime.budget_registry.current_state("a1")
     profile = harness.records.get_exact(state.execution_budget_profile_ref)
+    assert isinstance(profile, ExecutionBudgetProfile)
     assert profile.approval_ref is not None
     harness.evidence.identities[profile.approval_ref] = RequesterRole.REPOSITORY_LOADER
     runner = WorkflowRunner(runtime, harness.clock, harness.ids)
@@ -201,7 +216,7 @@ def test_ready_claim_publishes_one_exact_attempt_lease_and_work_revision(
 
 def test_blocked_work_claim_records_resume_trigger(tmp_path: Path) -> None:
     harness, runtime, (ready,) = _ready_work(tmp_path)
-    dispatch = WorkDispatchStore(runtime.work.store)
+    dispatch = _dispatch(runtime)
     runner = WorkflowRunner(
         runtime, harness.clock, harness.ids, scheduler_store=dispatch
     )
@@ -215,6 +230,7 @@ def test_blocked_work_claim_records_resume_trigger(tmp_path: Path) -> None:
     assert context is not None
     state = runtime.budget_registry.current_state("a1")
     profile = harness.records.get_exact(state.execution_budget_profile_ref)
+    assert isinstance(profile, ExecutionBudgetProfile)
     assert profile.approval_ref is not None
     blocked = runner.block(context.work, profile.approval_ref, "WAITING_FOR_INPUT")
     action = runner.action(
@@ -265,8 +281,13 @@ def test_blocked_work_claim_records_resume_trigger(tmp_path: Path) -> None:
     assert resumed.attempt.input_hash == context.attempt.input_hash
 
 
-def _block_for_resume(harness, runtime, ready, worker_id: str):
-    dispatch = WorkDispatchStore(runtime.work.store)
+def _block_for_resume(
+    harness: Harness,
+    runtime: RuntimeServices,
+    ready: WorkExecutionState,
+    worker_id: str,
+) -> tuple[WorkDispatchStore, WorkExecutionState, WorkAttempt]:
+    dispatch = _dispatch(runtime)
     runner = WorkflowRunner(
         runtime, harness.clock, harness.ids, scheduler_store=dispatch
     )
@@ -280,6 +301,7 @@ def _block_for_resume(harness, runtime, ready, worker_id: str):
     assert context is not None
     state = runtime.budget_registry.current_state("a1")
     profile = harness.records.get_exact(state.execution_budget_profile_ref)
+    assert isinstance(profile, ExecutionBudgetProfile)
     assert profile.approval_ref is not None
     blocked = runner.block(context.work, profile.approval_ref, "WAITING_FOR_INPUT")
     attempts = dispatch.attempts_for_work(str(blocked.work_id))
@@ -348,7 +370,7 @@ def test_critical_claim_failure_is_atomic_and_leak_free(
     expected_claims: int,
 ) -> None:
     harness, runtime, ready = _ready_work(tmp_path, parallel=parallel, count=work_count)
-    dispatch = WorkDispatchStore(runtime.work.store)
+    dispatch = _dispatch(runtime)
     runner = WorkflowRunner(runtime, harness.clock, harness.ids)
     controls = RunControlStore(harness.database, harness.clock)
 
@@ -356,6 +378,7 @@ def test_critical_claim_failure_is_atomic_and_leak_free(
         controls.request_cancel("a1", "USER_REQUEST")
         state = runtime.budget_registry.current_state("a1")
         profile = harness.records.get_exact(state.execution_budget_profile_ref)
+        assert isinstance(profile, ExecutionBudgetProfile)
         assert profile.approval_ref is not None
         with pytest.raises(ValueError, match="RUN_CANCELLED"):
             runner.enqueue(
@@ -373,6 +396,7 @@ def test_critical_claim_failure_is_atomic_and_leak_free(
     if case == "ready":
         state = runtime.budget_registry.current_state("a1")
         profile = harness.records.get_exact(state.execution_budget_profile_ref)
+        assert isinstance(profile, ExecutionBudgetProfile)
         assert profile.approval_ref is not None
         pending = runner._register_pending(
             state.execution_budget_profile_ref,
@@ -412,6 +436,7 @@ def test_critical_claim_failure_is_atomic_and_leak_free(
         controls.request_cancel("a1", "USER_REQUEST")
         state = runtime.budget_registry.current_state("a1")
         profile = harness.records.get_exact(state.execution_budget_profile_ref)
+        assert isinstance(profile, ExecutionBudgetProfile)
         assert profile.approval_ref is not None
         with pytest.raises(ValueError, match="RUN_CANCELLED"):
             runner.block(context.work, profile.approval_ref, "WAITING")
@@ -439,7 +464,7 @@ def test_critical_claim_failure_is_atomic_and_leak_free(
 
     barrier = Barrier(2)
 
-    def claim(index: int):
+    def claim(index: int) -> WorkContext | None:
         work = ready[index if case == "capacity" else 0]
         version = work.state_version + (1 if case == "stale" else 0)
         barrier.wait()

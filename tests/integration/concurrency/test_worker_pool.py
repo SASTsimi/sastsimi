@@ -7,8 +7,10 @@ import pytest
 
 from sastsimi.contracts.ids import AnalysisId, AttemptId, WorkId
 from sastsimi.contracts.records import RunMeta
+from sastsimi.contracts.refs import BudgetScopeRef, RecordRef
 from sastsimi.contracts.work import (
     AttemptStatus,
+    StateTransition,
     WorkAttempt,
     WorkExecutionState,
     WorkStatus,
@@ -107,6 +109,22 @@ class _Scheduler:
 
     def attempts_for_work(self, work_id: str) -> tuple[WorkAttempt, ...]:
         return tuple(self.attempts[work_id])
+
+    def registration_scope(self, work_id: str) -> BudgetScopeRef:
+        raise AssertionError(f"unexpected registration scope lookup: {work_id}")
+
+    def register(
+        self,
+        work: WorkExecutionState,
+        decision_ref: RecordRef,
+        reservation_ref: RecordRef | None,
+    ) -> WorkExecutionState:
+        del work, decision_ref, reservation_ref
+        raise AssertionError("unexpected work registration")
+
+    def make_ready(self, transition: StateTransition) -> WorkExecutionState:
+        del transition
+        raise AssertionError("unexpected ready transition")
 
     def try_claim_ready(
         self,

@@ -27,6 +27,7 @@ from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
 from sastsimi.contracts.static import StaticFactBundle
 from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.ports.dto import Record
 from sastsimi.prompts.builder import PromptSource
 from sastsimi.prompts.production import (
     REQUIRED_PRODUCTION_PROMPT_ROUTES,
@@ -54,6 +55,9 @@ class _Clock:
     def now(self) -> datetime:
         return datetime(2026, 9, 13, tzinfo=UTC)
 
+    def monotonic_ms(self) -> int:
+        return 0
+
 
 def _key(ref: RecordRef) -> tuple[str, str]:
     return str(ref.record_id), ref.content_hash
@@ -61,15 +65,15 @@ def _key(ref: RecordRef) -> tuple[str, str]:
 
 class _Records:
     def __init__(self) -> None:
-        self.values: dict[tuple[str, str], object] = {}
+        self.values: dict[tuple[str, str], Record] = {}
 
-    def add(self, record: object) -> StoredDataRef:
-        exact = reference(record)  # type: ignore[arg-type]
+    def add(self, record: Record) -> StoredDataRef:
+        exact = reference(record)
         assert isinstance(exact, StoredDataRef)
         self.values[_key(exact)] = record
         return exact
 
-    def get_exact(self, ref: RecordRef) -> object:
+    def get_exact(self, ref: RecordRef) -> Record:
         try:
             return self.values[_key(ref)]
         except KeyError as error:
