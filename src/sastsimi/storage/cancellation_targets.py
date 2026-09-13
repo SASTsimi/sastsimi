@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import Connection, select
 
 from sastsimi.contracts.actions import ActionDecision, ActionRequest, ActionType
-from sastsimi.contracts.canonical_json import content_hash
+from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.refs import RecordRef, StoredDataRef
 from sastsimi.contracts.work import WorkAttempt, WorkExecutionState
 from sastsimi.ports.dto import Record
@@ -71,10 +71,15 @@ class CancellationTargetStore:
             ).mappings()
             for row in rows:
                 work = WorkExecutionState.model_validate_json(row["work_payload"])
-                if work.active_attempt_id is None or row["attempt_id"] != str(
-                    work.active_attempt_id
+                if (
+                    str(work.meta.analysis_id) != analysis_id
+                    or row["work_id"] != str(work.work_id)
+                    or row["attempt_id"] != str(work.active_attempt_id)
+                    or row["dispatched_at"] is None
+                    or row["returned_at"] is not None
+                    or row["reconciled_at"] is not None
                 ):
-                    continue
+                    raise ValueError("CANCELLATION_TARGET_SCOPE_MISMATCH")
                 attempt_payload = connection.execute(
                     select(models.work_attempts.c.payload).where(
                         models.work_attempts.c.attempt_id == row["attempt_id"],
@@ -83,38 +88,41 @@ class CancellationTargetStore:
                     )
                 ).scalar_one_or_none()
                 if attempt_payload is None:
-                    continue
+                    raise ValueError("CANCELLATION_TARGET_SCOPE_MISMATCH")
                 attempt = WorkAttempt.model_validate_json(attempt_payload)
                 if (
-                    attempt.input_hash != work.input_hash
+                    str(attempt.meta.analysis_id) != analysis_id
+                    or str(attempt.work_id) != row["work_id"]
+                    or attempt.input_hash != work.input_hash
                     or attempt.attempt_id != work.active_attempt_id
                 ):
-                    continue
+                    raise ValueError("CANCELLATION_TARGET_SCOPE_MISMATCH")
                 issued_ref = REF_ADAPTER.validate_json(row["decision_ref"])
                 issued = self._exact(connection, issued_ref)
                 if not isinstance(issued, ActionDecision):
-                    continue
+                    raise ValueError("CANCELLATION_TARGET_EXACT_REF_REQUIRED")
                 action = self._exact(connection, issued.action_ref)
                 if not isinstance(action, ActionRequest):
-                    continue
+                    raise ValueError("CANCELLATION_TARGET_EXACT_REF_REQUIRED")
                 used_payload = connection.execute(
                     select(models.action_decisions.c.payload).where(
                         models.action_decisions.c.action_id == str(action.action_id)
                     )
                 ).scalar_one_or_none()
                 if used_payload is None:
-                    continue
+                    raise ValueError("CANCELLATION_TARGET_EXACT_REF_REQUIRED")
                 used = ActionDecision.model_validate_json(used_payload)
                 if (
                     used.use_status != "USED"
                     or used.action_ref != reference(action)
+                    or str(action.action_id) != row["action_id"]
                     or action.work_ref != reference(work)
                     or action.expected_state_version != work.state_version
                 ):
-                    continue
+                    raise ValueError("CANCELLATION_TARGET_SCOPE_MISMATCH")
                 kind = self._target_kind(action.action_type)
                 if kind is None:
-                    continue
+                    raise ValueError("CANCELLATION_TARGET_KIND_MISMATCH")
                 if action.llm_call_spec_ref is not None:
                     self._exact(connection, action.llm_call_spec_ref)
                 resources = tuple(
@@ -142,6 +150,16 @@ class CancellationTargetStore:
                         sandbox_resource_refs=resources,
                     )
                 )
+        identities = {
+            (
+                item.target_kind,
+                canonical_bytes(item.action_request_ref),
+                str(item.attempt.attempt_id),
+            )
+            for item in targets
+        }
+        if len(identities) != len(targets):
+            raise ValueError("DUPLICATE_CANCELLATION_TARGET")
         return tuple(targets)
 
     @staticmethod

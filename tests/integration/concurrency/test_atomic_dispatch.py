@@ -126,6 +126,61 @@ def _run_state_ref(runtime: RuntimeServices) -> RunStoredDataRef:
     return ref
 
 
+def _running_static_dispatch(
+    tmp_path: Path,
+) -> tuple[Harness, RuntimeServices, WorkContext, RunControlStore]:
+    harness, runtime, (ready,) = _ready_work(tmp_path)
+    dispatch = _dispatch(runtime)
+    context = dispatch.try_claim_ready(
+        "a1",
+        str(ready.work_id),
+        ready.state_version,
+        "dead-worker",
+        NOW + timedelta(seconds=30),
+    )
+    assert context is not None
+    state = runtime.budget_registry.current_state("a1")
+    profile = harness.records.get_exact(state.execution_budget_profile_ref)
+    assert isinstance(profile, ExecutionBudgetProfile)
+    assert profile.approval_ref is not None
+    harness.evidence.identities[profile.approval_ref] = RequesterRole.REPOSITORY_LOADER
+    runner = WorkflowRunner(runtime, harness.clock, harness.ids)
+    scope = runtime.work.registration_scope(str(context.work.work_id))
+    action = runner.action(
+        context.work,
+        profile.approval_ref,
+        "REPOSITORY_LOADER",
+        "RUN_TOOL",
+        tool_name="repository-loader",
+        file_paths=("fixture.py",),
+    )
+    reservation = runner.reserve(
+        context.work, scope, action, runner.units(elapsed_ms=1, cost_minor_units=1)
+    )
+    decision = runner.authorize(context.work, action, reservation)
+    runtime.validator.claim_external(
+        str(context.work.work_id),
+        decision,
+        harness.records.stage_record(reservation),
+    )
+    runtime.validator.mark_dispatched(decision)
+    controls = RunControlStore(harness.database, harness.clock)
+    return harness, runtime, context, controls
+
+
+def test_cancellation_inventory_rejects_one_stale_dispatch_instead_of_filtering(
+    tmp_path: Path,
+) -> None:
+    harness, _runtime, _context, controls = _running_static_dispatch(tmp_path)
+    with harness.database.write() as connection:
+        connection.execute(
+            models.external_dispatches.update().values(attempt_id="foreign-attempt")
+        )
+
+    with pytest.raises(ValueError, match="CANCELLATION_TARGET_SCOPE_MISMATCH"):
+        controls.cancellation_targets("a1")
+
+
 def test_ready_claim_publishes_one_exact_attempt_lease_and_work_revision(
     tmp_path: Path,
 ) -> None:
