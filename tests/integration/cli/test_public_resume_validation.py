@@ -241,8 +241,14 @@ def test_exact_descriptor_survives_fresh_reader_without_current_onboarding(
     result = subprocess.run(
         [
             sys.executable,
-            "-m",
-            "sastsimi",
+            "-c",
+            "from datetime import UTC, datetime\n"
+            "from unittest.mock import patch\n"
+            "from sastsimi.runtime.system_support import SystemClock\n"
+            "from sastsimi.interfaces.cli.main import main\n"
+            "with patch.object(SystemClock, 'now', return_value="
+            "datetime(2026, 9, 14, tzinfo=UTC)):\n"
+            "    raise SystemExit(main())\n",
             "--data-dir",
             str(tmp_path),
             "resume",
