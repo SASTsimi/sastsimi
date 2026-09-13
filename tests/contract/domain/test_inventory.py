@@ -64,11 +64,31 @@ def canonical_fields() -> dict[str, dict[str, str]]:
 
 
 def test_result_field_names_and_required_nulls_match_canonical_blocks() -> None:
+    from sastsimi.contracts.analysis import AnalysisRunInput
     from sastsimi.contracts.result_registry import RESULT_REGISTRY
 
     blocks = canonical_fields()
     for kind, binding in RESULT_REGISTRY.items():
         assert set(binding.model.model_fields) == set(blocks[binding.schema_name]), kind
+        # Only this exact model's four additive restart fields can be absent
+        # when reading legacy rows. Nullable fields elsewhere remain required.
+        legacy_optional = (
+            {
+                "workspace_id",
+                "commit_id",
+                "production_profile_ref",
+                "production_onboarding_ref",
+            }
+            if binding.model is AnalysisRunInput
+            else set()
+        )
+        actual_optional = {
+            name
+            for name, field in binding.model.model_fields.items()
+            if not field.is_required()
+        }
+        assert actual_optional == legacy_optional, kind
         assert all(
-            field.is_required() for field in binding.model.model_fields.values()
+            binding.model.model_fields[name].default is None
+            for name in legacy_optional
         ), kind
