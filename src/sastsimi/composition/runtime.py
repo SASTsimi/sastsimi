@@ -908,7 +908,7 @@ def _build_runtime(
     if effective_chaining_lineage is None and bind_sqlite_chaining_lineage:
         effective_chaining_lineage = SQLiteChainingLineage(records)
     artifacts = LocalArtifactStore(paths.artifacts, workspace_id, commit_id)
-    registry = SQLiteRegistry(records, clock, ids)
+    registry = SQLiteRegistry(records, clock, ids, artifacts=artifacts)
     budget = SQLiteBudget(records, registry, clock, ids)
     configuration_store = SQLiteConfigurationRegistry(
         records, artifacts, capability_host_id

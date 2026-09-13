@@ -46,6 +46,7 @@ def inspect_production_resume(data_dir: Path, analysis_id: str) -> NoReturn:
         ProductionOnboardingUnavailable,
     )
     from sastsimi.storage.artifact_store import LocalArtifactStore
+    from sastsimi.storage.production_authority import ProductionAuthorityInspector
     from sastsimi.storage.repositories import SQLiteRecordStore
     from sastsimi.storage.run_states import get_run
 
@@ -64,12 +65,17 @@ def inspect_production_resume(data_dir: Path, analysis_id: str) -> NoReturn:
             database, SystemClock()
         ).cancel_requested(analysis_id):
             raise ValueError("RUN_NOT_RESUMABLE")
+        artifacts = LocalArtifactStore(RuntimePaths(data_dir).artifacts, None, None)
+        now = SystemClock().now()
         load_production_descriptor(
             state=state,
             records=records,
-            artifacts=LocalArtifactStore(RuntimePaths(data_dir).artifacts, None, None),
+            artifacts=artifacts,
             repository_root=builtin_resource_root(),
-            now=SystemClock().now(),
+            now=now,
+        )
+        ProductionAuthorityInspector(records, artifacts).inspect(
+            analysis_id, now=now, expected_state=state
         )
         _inspect_work_eligibility(database, analysis_id)
     except (ValueError, LookupError, OSError, ProductionOnboardingUnavailable) as error:

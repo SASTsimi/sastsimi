@@ -70,7 +70,7 @@ def test_result_field_names_and_required_nulls_match_canonical_blocks() -> None:
     blocks = canonical_fields()
     for kind, binding in RESULT_REGISTRY.items():
         assert set(binding.model.model_fields) == set(blocks[binding.schema_name]), kind
-        # Only this exact model's four additive restart fields can be absent
+        # Only this exact model's five additive restart fields can be absent
         # when reading legacy rows. Nullable fields elsewhere remain required.
         legacy_optional = (
             {
@@ -78,6 +78,7 @@ def test_result_field_names_and_required_nulls_match_canonical_blocks() -> None:
                 "commit_id",
                 "production_profile_ref",
                 "production_onboarding_ref",
+                "production_authority_catalog_ref",
             }
             if binding.model is AnalysisRunInput
             else set()

@@ -110,6 +110,12 @@ owner는 이 요청을 관찰합니다. `CANCELLING`은 외부 작업의 종료 
 `PRODUCTION_RESUME_DISPATCH_NOT_AVAILABLE`과 종료 코드 `4`를 반환합니다.
 새 attempt, Provider 또는 worker를 시작하지 않으며 복구 기록을 변경하지 않습니다.
 기존 run에 재시작 descriptor가 없으면 `PRODUCTION_DESCRIPTOR_REQUIRED`로 차단합니다.
+네 descriptor 필드만 있는 기존 입력도 bytes와 hash는 유지되지만, 새 authority
+catalog가 없으면 `PRODUCTION_AUTHORITY_CATALOG_REQUIRED`로 차단합니다.
+catalog는 새 실행의 정확한 예산 profile과 전체 역할 identity를 보존하며,
+아직 workspace READY 뒤의 full binding이 고정되지 않았다면
+`PRODUCTION_AUTHORITY_BINDING_NOT_PINNED`를 반환합니다. 현재 설정으로 보충하거나
+새 identity·binding을 만들어 기존 실행을 복구하지 않습니다.
 두 명령 모두 `--profile`로 저장된 설정을 교체할 수 없습니다.
 
 ## 6. 최종 결과를 확인합니다

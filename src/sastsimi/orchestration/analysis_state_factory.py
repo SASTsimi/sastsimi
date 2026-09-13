@@ -30,6 +30,7 @@ class AnalysisStateFactory:
         scope: PlannedRunScope | None = None,
         production_profile_ref: RunStoredDataRef | None = None,
         production_onboarding_ref: RunStoredDataRef | None = None,
+        production_authority_catalog_ref: RunStoredDataRef | None = None,
     ) -> None:
         self._clock = clock
         self._ids = ids
@@ -37,6 +38,7 @@ class AnalysisStateFactory:
         self._scope = scope
         self._production_profile_ref = production_profile_ref
         self._production_onboarding_ref = production_onboarding_ref
+        self._production_authority_catalog_ref = production_authority_catalog_ref
 
     def _meta(self, kind: str, analysis_id: AnalysisId) -> RunMeta:
         record_id = self._ids.new(RecordId)
@@ -65,8 +67,10 @@ class AnalysisStateFactory:
             or self._scope.repository_ref != request.repository_ref
             or self._production_profile_ref is None
             or self._production_onboarding_ref is None
+            or self._production_authority_catalog_ref is None
             or self._production_profile_ref.analysis_id != analysis_id
             or self._production_onboarding_ref.analysis_id != analysis_id
+            or self._production_authority_catalog_ref.analysis_id != analysis_id
         ):
             raise ValueError("PRODUCTION_DESCRIPTOR_SCOPE_MISMATCH")
         run_input = AnalysisRunInput(
@@ -79,6 +83,7 @@ class AnalysisStateFactory:
             commit_id=self._scope.commit_id if self._scope is not None else None,
             production_profile_ref=self._production_profile_ref,
             production_onboarding_ref=self._production_onboarding_ref,
+            production_authority_catalog_ref=self._production_authority_catalog_ref,
         )
         input_ref = reference(run_input)
         if not isinstance(input_ref, RunStoredDataRef):

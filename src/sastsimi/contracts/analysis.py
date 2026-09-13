@@ -24,8 +24,8 @@ class AnalysisStartRequest(ContractModel):
 class AnalysisRunInput(ScopedRecord):
     """Immutable, credential-free input pinned to one allocated analysis run.
 
-    The four optional restart fields retain legacy read compatibility. Production
-    composition supplies all four; inspection rejects legacy rows. Their absent
+    The five optional restart fields retain legacy read compatibility. Production
+    composition supplies all five; inspection rejects legacy rows. Their absent
     values alone are omitted from canonical JSON to preserve legacy exact hashes.
     """
 
@@ -38,6 +38,7 @@ class AnalysisRunInput(ScopedRecord):
     commit_id: CommitId | None = None
     production_profile_ref: RunStoredDataRef | None = None
     production_onboarding_ref: RunStoredDataRef | None = None
+    production_authority_catalog_ref: RunStoredDataRef | None = None
 
     @classmethod
     def canonical_omitted_null_fields(cls) -> frozenset[str]:
@@ -49,6 +50,7 @@ class AnalysisRunInput(ScopedRecord):
                 "commit_id",
                 "production_profile_ref",
                 "production_onboarding_ref",
+                "production_authority_catalog_ref",
             }
         )
 

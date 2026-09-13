@@ -32,6 +32,10 @@ from sastsimi.contracts.ids import (
     RecordId,
     StoredDataId,
 )
+from sastsimi.contracts.production_authority import (
+    ProductionAuthorityCatalog,
+    ProductionRoleIdentity,
+)
 from sastsimi.contracts.records import RecordMeta, RunMeta
 from sastsimi.contracts.refs import (
     BudgetScopeRef,
@@ -128,6 +132,29 @@ class ProductionOperatorProfiles(ActiveBudgetProfilesPort):
         ref = reference(self._role_profiles[role])
         assert isinstance(ref, StoredDataRef)
         return ref
+
+    def authority_catalog(
+        self, profile_ref: RunStoredDataRef, onboarding_ref: RunStoredDataRef
+    ) -> ProductionAuthorityCatalog:
+        return ProductionAuthorityCatalog(
+            schema_version="1",
+            artifact_scope="ANALYSIS_OPERATOR_AUTHORITY",
+            analysis_id=self.scope.analysis_id,
+            workspace_id=self.scope.workspace_id,
+            commit_id=self.scope.commit_id,
+            program_id=self.program_id,
+            purpose="PRODUCTION",
+            production_profile_ref=profile_ref,
+            production_onboarding_ref=onboarding_ref,
+            execution_budget_profile_ref=self.binding.execution_budget_profile_ref,
+            work_budget_profile_ref=self.binding.work_budget_profile_ref,
+            verification_budget_profile_ref=self.binding.verification_budget_profile_ref,
+            dynamic_lifecycle_profile_ref=self.binding.dynamic_lifecycle_profile_ref,
+            role_identities=tuple(
+                ProductionRoleIdentity(role=role, identity_ref=self.identity_ref(role))
+                for role in RequesterRole
+            ),
+        )
 
     def publish_code_profiles(self, publisher: BudgetConfigurationPublisher) -> None:
         """Publish the exact pre-approved code-scoped profiles before work starts."""

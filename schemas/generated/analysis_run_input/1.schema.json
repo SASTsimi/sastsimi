@@ -151,7 +151,7 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Immutable, credential-free input pinned to one allocated analysis run.\n\nThe four optional restart fields retain legacy read compatibility. Production\ncomposition supplies all four; inspection rejects legacy rows. Their absent\nvalues alone are omitted from canonical JSON to preserve legacy exact hashes.",
+  "description": "Immutable, credential-free input pinned to one allocated analysis run.\n\nThe five optional restart fields retain legacy read compatibility. Production\ncomposition supplies all five; inspection rejects legacy rows. Their absent\nvalues alone are omitted from canonical JSON to preserve legacy exact hashes.",
   "properties": {
     "commit_id": {
       "anyOf": [
@@ -166,6 +166,17 @@
     },
     "meta": {
       "$ref": "#/$defs/RunMeta"
+    },
+    "production_authority_catalog_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RunStoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "production_onboarding_ref": {
       "anyOf": [

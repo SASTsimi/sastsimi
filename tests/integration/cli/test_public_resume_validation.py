@@ -37,6 +37,9 @@ from tests.unit.orchestration.test_production_onboarding import (
         "terminal",
         "future",
         "provisioning-mismatch",
+        "catalog-missing",
+        "catalog-corrupt",
+        "binding-missing",
     ],
 )
 def test_exact_descriptor_survives_fresh_reader_without_current_onboarding(
@@ -112,10 +115,33 @@ def test_exact_descriptor_survives_fresh_reader_without_current_onboarding(
             }
         )
     )
-    execution = harness.execution()
+    from sastsimi.orchestration.production_operator_profiles import (
+        ProductionOperatorProfiles,
+        ProductionTrustedEvidence,
+    )
+    from sastsimi.storage.configuration_registry import ConfigurationRegistry
+    from tests.integration.storage.test_production_authority import _bind
+    from tests.unit.orchestration.test_production_operator_profiles import _Clock, _Ids
+
+    settings = profile.budget
     if fault == "budget":
-        execution = execution.model_copy(update={"max_total_retries": 0})
-    harness.evidence.approvals.add(content_hash(execution))
+        settings = settings.model_copy(update={"max_total_retries": 0})
+    profiles = ProductionOperatorProfiles(
+        scope=scope,
+        program_id=profile.program_id,
+        settings=settings,
+        clock=_Clock(),
+        ids=_Ids(),
+    )
+    harness.clock.wall_time = datetime(2026, 9, 13, tzinfo=UTC)
+    harness.records.evidence = ProductionTrustedEvidence(profiles)
+    profiles.publish_code_profiles(ConfigurationRegistry(harness.records, artifacts))
+    catalog = profiles.authority_catalog(profile_ref, onboarding_ref)
+    catalog_ref = artifacts.commit_run(
+        artifacts.stage_bytes(canonical_bytes(catalog), "application/json"),
+        scope.analysis_id,
+    )
+    execution = profiles.execution_profile
     execution_ref = reference(execution)
     assert isinstance(execution_ref, RunStoredDataRef)
     bootstrap = AnalysisStateFactory(
@@ -124,10 +150,24 @@ def test_exact_descriptor_survives_fresh_reader_without_current_onboarding(
         scope=scope,
         production_profile_ref=profile_ref,
         production_onboarding_ref=onboarding_ref,
+        production_authority_catalog_ref=catalog_ref,
     ).create(request, execution_ref)
-    BudgetProfileRegistry(harness.records, harness.clock, harness.ids).pin_execution(
-        execution, bootstrap.state, bootstrap.run_input
+    if fault == "catalog-missing":
+        from dataclasses import replace
+
+        legacy_input = bootstrap.run_input.model_copy(
+            update={"production_authority_catalog_ref": None}
+        )
+        bootstrap = replace(
+            bootstrap, run_input=legacy_input,
+            state=bootstrap.state.model_copy(
+                update={"analysis_input_ref": reference(legacy_input)}
+            ),
+        )
+    registry = BudgetProfileRegistry(
+        harness.records, harness.clock, harness.ids, artifacts=artifacts
     )
+    registry.pin_execution(execution, bootstrap.state, bootstrap.run_input)
     fresh = LocalArtifactStore(tmp_path / "artifacts", None, None)
     if fault == "corrupt-artifact":
         artifacts.path_for(profile_ref.content_hash).write_bytes(
@@ -169,16 +209,21 @@ def test_exact_descriptor_survives_fresh_reader_without_current_onboarding(
     assert not (tmp_path / "onboarding").exists()
     assert profile_ref.content_hash == content_hash(profile.model_dump(mode="json"))
     assert onboarding_ref.content_hash == content_hash(manifest)
+    if fault != "binding-missing":
+        _bind(harness, profiles, registry)
+    if fault == "catalog-corrupt":
+        artifacts.path_for(catalog_ref.content_hash).write_bytes(b"corrupt-catalog")
 
     # A valid restart descriptor can be inspected, but the public command must
     # still fail closed without changing records or activating execution.
     import subprocess
     import sys
 
-    from sqlalchemy import insert, select
+    from sqlalchemy import insert
 
     from sastsimi.storage import models
     from tests.integration.cli.test_run_control import _attempt, _work
+    from tests.integration.storage.test_production_authority import _rows
 
     blocked = _work("BLOCKED")
     previous = _attempt(blocked, status="FAILED")
@@ -234,10 +279,7 @@ def test_exact_descriptor_survives_fresh_reader_without_current_onboarding(
                 .values(payload=canonical_bytes(_run_state("CANCELLED")).decode())
             )
 
-    with harness.database.engine.connect() as connection:
-        before = connection.execute(select(models.records)).all()
-        dispatch_before = connection.execute(select(models.external_dispatches)).all()
-        attempts_before = connection.execute(select(models.work_attempts)).all()
+    before = _rows(harness)
     result = subprocess.run(
         [
             sys.executable,
@@ -246,8 +288,10 @@ def test_exact_descriptor_survives_fresh_reader_without_current_onboarding(
             "from unittest.mock import patch\n"
             "from sastsimi.runtime.system_support import SystemClock\n"
             "from sastsimi.interfaces.cli.main import main\n"
+            "from tests.integration.storage.authority_read_guard import "
+            "readonly_authority_guard\n"
             "with patch.object(SystemClock, 'now', return_value="
-            "datetime(2026, 9, 14, tzinfo=UTC)):\n"
+            "datetime(2026, 9, 14, tzinfo=UTC)), readonly_authority_guard():\n"
             "    raise SystemExit(main())\n",
             "--data-dir",
             str(tmp_path),
@@ -268,14 +312,11 @@ def test_exact_descriptor_survives_fresh_reader_without_current_onboarding(
         "unresolved": "PRODUCTION_RESUME_INPUT_INVALID",
         "cancelled": "RUN_NOT_RESUMABLE",
         "terminal": "RUN_NOT_RESUMABLE",
+        "catalog-missing": "PRODUCTION_AUTHORITY_CATALOG_REQUIRED",
+        "catalog-corrupt": "HASH_MISMATCH",
+        "binding-missing": "PRODUCTION_AUTHORITY_BINDING_NOT_PINNED",
     }.get(fault or "", "PRODUCTION_RESUME_DISPATCH_NOT_AVAILABLE")
-    with harness.database.engine.connect() as connection:
-        assert connection.execute(select(models.records)).all() == before
-        assert (
-            connection.execute(select(models.external_dispatches)).all()
-            == dispatch_before
-        )
-        assert connection.execute(select(models.work_attempts)).all() == attempts_before
+    assert _rows(harness) == before
 
 
 @pytest.mark.parametrize("case", ["legacy", "cross-run", "corrupt"])

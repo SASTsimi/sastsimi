@@ -14,21 +14,33 @@ from sastsimi.contracts.budget import (
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import BudgetScopeRef, RunStoredDataRef, StoredDataRef
 from sastsimi.contracts.static import CodeWorkspace
+from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
 from sastsimi.storage import models
 from sastsimi.storage.repositories import SQLiteRecordStore
 
 from .codec import reference
+from .production_authority import (
+    load_authority_catalog,
+    require_binding_catalog,
+    resolve_catalog_profiles,
+)
 from .records import next_meta
 from .run_states import get_run, save_run
 
 
 class BudgetProfileRegistry:
     def __init__(
-        self, records: SQLiteRecordStore, clock: Clock, ids: IdGenerator
+        self,
+        records: SQLiteRecordStore,
+        clock: Clock,
+        ids: IdGenerator,
+        *,
+        artifacts: ArtifactStore | None = None,
     ) -> None:
         self.records, self.clock, self.ids = records, clock, ids
+        self.artifacts = artifacts
 
     def current_state(self, analysis_id: str) -> AnalysisRunState:
         with self.records.database.engine.connect() as connection:
@@ -81,6 +93,28 @@ class BudgetProfileRegistry:
             ref = self.records.stage(connection, profile)
             assert isinstance(ref, RunStoredDataRef)
             self.records.publish(connection, ref)
+            if (
+                run_input is not None
+                and run_input.production_authority_catalog_ref is not None
+            ):
+                if self.artifacts is None:
+                    raise ValueError("PRODUCTION_AUTHORITY_ARTIFACT_STORE_REQUIRED")
+                catalog = load_authority_catalog(self.artifacts, run_input)
+                if catalog.execution_budget_profile_ref != ref:
+                    raise ValueError("PRODUCTION_AUTHORITY_EXECUTION_MISMATCH")
+                common_profiles = resolve_catalog_profiles(
+                    self.records, connection, catalog
+                )
+                if any(
+                    not self.records.evidence.budget_configuration_approved(item)
+                    for item in common_profiles
+                ):
+                    raise ValueError("PRODUCTION_AUTHORITY_CONFIGURATION_NOT_APPROVED")
+                if any(
+                    self.records.evidence.identity_role(item.identity_ref) != item.role
+                    for item in catalog.role_identities
+                ):
+                    raise ValueError("PRODUCTION_AUTHORITY_IDENTITY_NOT_APPROVED")
             if run_input is not None:
                 input_ref = self.records.stage(connection, run_input)
                 if input_ref != state.analysis_input_ref:
@@ -242,6 +276,16 @@ class BudgetProfileRegistry:
                     "STATE_VERSION_CONFLICT: workspace READY run state required"
                 )
             self.validate_binding(connection, binding)
+            run_input = self.records.resolve(connection, state.analysis_input_ref)
+            if (
+                isinstance(run_input, AnalysisRunInput)
+                and run_input.production_authority_catalog_ref is not None
+            ):
+                if self.artifacts is None:
+                    raise ValueError("PRODUCTION_AUTHORITY_ARTIFACT_STORE_REQUIRED")
+                require_binding_catalog(
+                    load_authority_catalog(self.artifacts, run_input), binding
+                )
             workspace = self.records.resolve(connection, workspace_ref)
             if (
                 not isinstance(workspace, CodeWorkspace)

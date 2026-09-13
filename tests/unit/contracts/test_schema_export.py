@@ -51,6 +51,7 @@ EXPECTED_KINDS = {
     "verification_budget_profile",
     "dynamic_reproduction_lifecycle_profile",
     "budget_profile_binding",
+    "production_authority_catalog",
     "budget_units",
     "budget_reservation",
     "budget_ledger_entry",

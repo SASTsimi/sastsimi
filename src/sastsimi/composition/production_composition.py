@@ -194,6 +194,19 @@ class ConcreteProductionApplicationFactory:
         )
         profiles.publish_code_profiles(runtime.configuration)
 
+        from sastsimi.contracts.canonical_json import canonical_bytes
+
+        profile_ref = resolved.production_profile_ref
+        onboarding_ref = resolved.production_onboarding_ref
+        if profile_ref is None or onboarding_ref is None:
+            raise ProductionCapabilityUnavailable("PRODUCTION_DESCRIPTOR_REQUIRED")
+        catalog = profiles.authority_catalog(profile_ref, onboarding_ref)
+        artifacts = runtime.unit_of_work.artifacts
+        catalog_ref = artifacts.commit_run(
+            artifacts.stage_bytes(canonical_bytes(catalog), "application/json"),
+            scope.analysis_id,
+        )
+
         scheduler_store = WorkDispatchStore(cast(SQLiteWorkService, runtime.work.store))
         runner = WorkflowRunner(
             runtime,
@@ -238,6 +251,7 @@ class ConcreteProductionApplicationFactory:
                 scope=scope,
                 production_profile_ref=resolved.production_profile_ref,
                 production_onboarding_ref=resolved.production_onboarding_ref,
+                production_authority_catalog_ref=catalog_ref,
             ),
             budgets=runtime.budget_registry,
             ready_work=runner,

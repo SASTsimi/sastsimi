@@ -27,6 +27,7 @@ def test_every_canonical_result_positive_python_wire_and_required_fields(
             "commit_id",
             "production_profile_ref",
             "production_onboarding_ref",
+            "production_authority_catalog_ref",
         }
         if binding.model is AnalysisRunInput
         else set()

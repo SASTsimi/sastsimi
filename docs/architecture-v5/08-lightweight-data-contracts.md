@@ -35,11 +35,13 @@ AnalysisRunInput:
   commit_id: string | null
   production_profile_ref: RunStoredDataRef | null
   production_onboarding_ref: RunStoredDataRef | null
+  production_authority_catalog_ref: RunStoredDataRef | null
 ```
 
 `AnalysisRunInput`의 `workspace_id`, `commit_id`, `production_profile_ref`,
-`production_onboarding_ref` 네 필드만 레거시 record 읽기 호환을 위해 생략 가능하며
-기본값은 `null`이다. 새 `PRODUCTION` 실행은 네 필드 모두 non-null로 고정해야 한다.
+`production_onboarding_ref`, `production_authority_catalog_ref` 다섯 필드만
+레거시 record 읽기 호환을 위해 생략 가능하며 기본값은 `null`이다.
+새 `PRODUCTION` 실행은 다섯 필드 모두 non-null로 고정해야 한다.
 `workspace_id`는 미리 할당한 작업공간 ID, `commit_id`는 요청한 exact commit이며
 checkout 완료의 증거는 아니다. 두 reference는 같은 `analysis_id`에 고정한
 credential-free canonical ProductionProfile과 승인된 onboarding manifest의 exact
@@ -47,10 +49,54 @@ run artifact를 가리킨다. provisioning manifest와 evidence는 승인 manife
 hash로 연결한다. 레거시 입력에 descriptor가 없으면 재시작 검사를 fail-closed로
 차단하며 현재 설정이나 새 identity로 보충하지 않는다.
 
-레거시 exact bytes와 hash를 보존하기 위해 위 네 필드의 `null` 값만
+레거시 exact bytes와 hash를 보존하기 위해 위 다섯 필드의 `null` 값만
 `AnalysisRunInput` canonical JSON에서 생략한다. non-null 값은 반드시 직렬화하고
 hash에 포함한다. 이 예외는 다른 record나 다른 nullable 필드에 적용하지 않으며,
 그 밖의 result 필드는 `null`을 허용하더라도 필드 자체가 필수라는 규칙을 유지한다.
+
+```yaml
+ProductionAuthorityCatalog:
+  schema_version: "1"
+  artifact_scope: ANALYSIS_OPERATOR_AUTHORITY
+  analysis_id: string
+  workspace_id: string
+  commit_id: string
+  program_id: string
+  purpose: PRODUCTION
+  production_profile_ref: RunStoredDataRef
+  production_onboarding_ref: RunStoredDataRef
+  execution_budget_profile_ref: RunStoredDataRef
+  work_budget_profile_ref: StoredDataRef
+  verification_budget_profile_ref: StoredDataRef
+  dynamic_lifecycle_profile_ref: StoredDataRef
+  role_identities: [ProductionRoleIdentity]
+
+ProductionRoleIdentity:
+  role: RequesterRole
+  identity_ref: RunStoredDataRef | StoredDataRef
+```
+
+이 catalog는 `RunMeta`나 record ID가 없는 immutable configuration artifact이며
+result registry에 등록하지 않는다. canonical bytes의 SHA-256이 artifact의 ID와
+hash다. 현재 `RequesterRole` 전체를 enum 순서로 정확히 한 번씩 기록하며,
+identity reference를 중복하지 않는다. REPOSITORY_LOADER는 execution profile을,
+나머지 역할은 같은 analysis·workspace·commit의 서로 다른 ACTIVE PRODUCTION
+WorkBudgetProfile을 가리킨다. 공통 work profile을 역할 identity로 재사용하지 않는다.
+role mapping은 이름·profile key·한도·action 이력에서 추론하지 않는다.
+
+artifact를 먼저 승격한 뒤, 그 ref를 입력·초기 상태·execution pin과 같은 SQLite
+초기화 transaction에서 연결한다. 연결되지 않은 artifact는 권한을 부여하지 않는다.
+state에는 catalog ref를 복제하지 않으며 immutable `analysis_input_ref`로만 접근한다.
+기존 네 descriptor 필드 입력도 exact bytes/hash를 유지하지만 catalog 없이는 검사에
+통과하지 않는다. catalog는 미래의 binding ref를 포함하지 않는다. workspace READY
+뒤 state에 고정하는 기존 full binding만 binding identity의 정본이며 그 네 constituent
+profile ref가 catalog와 일치해야 한다. binding 전 검사는 상태 변경 없이
+`PRODUCTION_AUTHORITY_BINDING_NOT_PINNED`로 종료한다.
+
+재시작 검사는 저장된 exact catalog·profile·승인·current pointer와 scope를 검증한다.
+ID·권한 객체·승인 decision·새 binding을 만들거나 credentials를 읽지 않는다.
+검사 snapshot은 실행 권한이 아니며 공개 resume은 성공한 검사 뒤에도 exit 4와
+`PRODUCTION_RESUME_DISPATCH_NOT_AVAILABLE`을 유지한다.
 
 `AnalysisStartRequest`는 내부 `program_id` 하나만 받는다. runtime은 `analysis_id`나 work를 만들기 전에 이 ID가 승인된 Program Catalog에서 정확히 하나의 사용 가능한 프로그램으로 해석되는지 확인한다. 없거나 알 수 없거나 둘 이상으로 해석되면 `INPUT_ERROR`로 요청을 거절하며 `AnalysisRunState`를 만들지 않는다. `program_namespace + external_program_id`는 Program Catalog 등록·조회 입력이며 `AnalysisStartRequest`의 대체 입력이 아니다. CLI나 UI가 외부 프로그램 키를 받더라도 먼저 catalog에서 내부 ID 하나로 해석한 뒤 이 요청을 만들어야 한다. 저장소 하나가 여러 프로그램에 연결돼 있으면 호출자가 하나를 선택하고 프로그램마다 별도 analysis run을 시작한다. runtime은 repository URL만 보고 프로그램을 임의 선택하거나 한 run에 여러 프로그램을 자동 결합하지 않는다.
 
@@ -321,7 +367,7 @@ ReportProcessState:
   elapsed_ms: integer
 ```
 
-`AnalysisStartRequest`가 검증되고 `analysis_id`가 발급되면 runtime은 저장소 입력, 요청 commit, 프로그램, 실행 목적을 credential-free `AnalysisRunInput`으로 한 번 저장한다. 새 `PRODUCTION` 실행은 미리 할당한 `workspace_id`, exact `commit_id`, `production_profile_ref`, `production_onboarding_ref`도 이때 함께 고정한다. `AnalysisRunState.analysis_input_ref`는 이 immutable run record의 exact revision을 가리키며 같은 `analysis_id`에서 바꾸지 않는다. `WORKSPACE_PREP` 입력도 이 reference를 포함해야 하므로 프로세스를 다시 시작한 뒤에도 동일 입력만 검사하고 checkout 전 실패도 원래 요청 기준으로 집계할 수 있다. descriptor 검증 성공은 재개 실행 권한이나 checkout 완료의 증거가 아니며, 실제 dispatch는 별도의 복구·현재 상태·권한·예산 검사를 통과해야 한다.
+`AnalysisStartRequest`가 검증되고 `analysis_id`가 발급되면 runtime은 저장소 입력, 요청 commit, 프로그램, 실행 목적을 credential-free `AnalysisRunInput`으로 한 번 저장한다. 새 `PRODUCTION` 실행은 미리 할당한 `workspace_id`, exact `commit_id`, `production_profile_ref`, `production_onboarding_ref`, `production_authority_catalog_ref`도 이때 함께 고정한다. `AnalysisRunState.analysis_input_ref`는 이 immutable run record의 exact revision을 가리키며 같은 `analysis_id`에서 바꾸지 않는다. `WORKSPACE_PREP` 입력도 이 reference를 포함해야 하므로 프로세스를 다시 시작한 뒤에도 동일 입력만 검사하고 checkout 전 실패도 원래 요청 기준으로 집계할 수 있다. descriptor 검증 성공은 재개 실행 권한이나 checkout 완료의 증거가 아니며, 실제 dispatch는 별도의 복구·현재 상태·권한·예산 검사를 통과해야 한다.
 
 `AnalysisRunState.program_id`는 검증된 `AnalysisStartRequest.program_id`와 같고 분석 요청을 승인된 Program Catalog의 정확히 한 프로그램과 연결한다. `program_id`가 없거나 승인된 catalog에서 하나로 해석되지 않으면 분석을 시작하지 않는다. 한 분석에는 프로그램 하나만 허용하고 시작 뒤에는 바꾸지 않는다. `execution_budget_profile_ref`는 `analysis_id` 발급 직후 trusted Budget Profile Registry가 같은 purpose의 승인 원본에서 run-local로 고정한 exact `ExecutionBudgetProfile(status=ACTIVE)`을 가리킨다. 이 reference가 없으면 `WORKSPACE_PREP`도 시작하지 않는다. `budget_binding_ref`는 workspace·commit 준비 전에는 `null`이고, `CodeWorkspace.status=READY` 뒤 full `BudgetProfileBinding(status=ACTIVE)`을 확정하면 그 exact revision을 가리킨다. full binding이 고정되기 전에는 `STATIC_TOOL | POLICY_FETCH`를 포함한 후속 work를 등록하지 않는다. `AnalysisRunState`는 처음에는 `workspace_id: null`, `commit_id: null`, `workspace_ref=null`일 수 있다. Repository Loader가 첫 `CodeWorkspace` revision을 저장하면 같은 atomic transition에서 `workspace_id`와 exact `workspace_ref`를 기록하고, checkout을 확인한 `READY` revision을 저장하면 그 revision으로 `workspace_ref`를 갱신하면서 `commit_id`를 기록한다. `workspace_id`와 실제 `commit_id`는 같은 분석에서 값이 생긴 뒤 바꾸지 않는다. 이후 cleanup이 `REMOVED` revision을 만들면 `workspace_ref`만 그 revision으로 갱신하고 ID 연결은 보존한다. `COMPLETE`와 `PARTIAL`은 두 ID가 모두 필요하고, clone·checkout 전 `FAILED | CANCELLED`는 둘 중 하나 또는 모두가 `null`일 수 있다. 코드 근거 record는 두 ID가 모두 있고 exact `workspace_ref`가 가리키는 `CodeWorkspace.status=READY`일 때만 만들 수 있다.
 
