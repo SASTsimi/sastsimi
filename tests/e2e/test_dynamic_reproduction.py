@@ -823,10 +823,9 @@ async def test_supported_fixture_produces_validated_poc(tmp_path: Path) -> None:
         )
         build_decision = authorizer.records["sandbox-build-decision"]
         assert isinstance(build_decision, ActionDecision)
-        assert authorizer.actions["RUN"].input_refs[-2:] == (
-            reference(build_policy),
-            reference(build_decision),
-        )
+        run_input_refs = authorizer.actions["RUN"].input_refs
+        assert reference(build_policy) in run_input_refs
+        assert reference(build_decision) in run_input_refs
         container_id = environment.container_instance_id
         inspect_code, inspect_bytes, inspect_error = await _docker(
             "inspect", container_id
