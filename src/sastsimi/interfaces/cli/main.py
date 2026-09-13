@@ -35,6 +35,14 @@ class _Parser(argparse.ArgumentParser):
         raise _InputError
 
 
+def _configure_standard_streams() -> None:
+    """Keep installed CLI output readable on Windows and redirected terminals."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="strict")
+
+
 def _exact_commit(value: str) -> str:
     if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value) is None:
         raise argparse.ArgumentTypeError("exact commit required")
@@ -47,6 +55,7 @@ def main(
     production_analyze: analyze_command.ProductionAnalyzeEntrypoint | None = None,
     production_query: analyze_command.ProductionQueryEntrypoint | None = None,
 ) -> int:
+    _configure_standard_streams()
     output_format = "text"
     command_name = "doctor"
     parser = _Parser(prog="sastsimi", allow_abbrev=False)

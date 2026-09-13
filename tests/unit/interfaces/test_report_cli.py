@@ -1,6 +1,8 @@
 """The public CLI exposes report list, show, and Markdown export commands."""
 
+import io
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -8,7 +10,29 @@ import pytest
 from sastsimi.interfaces.cli import report as report_command
 from sastsimi.interfaces.cli import reports as reports_command
 from sastsimi.interfaces.cli.exit_codes import ExitCode
-from sastsimi.interfaces.cli.main import main
+from sastsimi.interfaces.cli.main import _configure_standard_streams, main
+
+
+def test_cli_configures_real_standard_streams_for_utf8_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stdout_bytes = io.BytesIO()
+    stderr_bytes = io.BytesIO()
+    stdout = io.TextIOWrapper(stdout_bytes, encoding="cp1252", errors="strict")
+    stderr = io.TextIOWrapper(stderr_bytes, encoding="cp1252", errors="strict")
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+
+    _configure_standard_streams()
+    sys.stdout.write("취약점 보고서")
+    sys.stderr.write("실행 오류")
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+    assert stdout.encoding == "utf-8"
+    assert stderr.encoding == "utf-8"
+    assert stdout_bytes.getvalue() == "취약점 보고서".encode()
+    assert stderr_bytes.getvalue() == "실행 오류".encode()
 
 
 def test_report_show_and_export_cli(
