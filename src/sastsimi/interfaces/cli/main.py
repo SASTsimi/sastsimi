@@ -215,9 +215,17 @@ def main(
                 commit=args.commit,
                 profile=args.profile,
             )
-            data = asyncio.run(analyze_command.run(production_analyze, request))
-            emit_data(output_format, sys.stdout, command=command_name, data=data)
-            return int(ExitCode.OK)
+            analyze_result = asyncio.run(
+                analyze_command.run(production_analyze, request)
+            )
+            emit_data(
+                output_format,
+                sys.stdout if analyze_result.code == ExitCode.OK else sys.stderr,
+                command=command_name,
+                data=analyze_result.data,
+                code=analyze_result.code,
+            )
+            return int(analyze_result.code)
         if args.command == "demo":
             command_name = "demo " + args.demo_command
             if args.demo_command == "analyze":

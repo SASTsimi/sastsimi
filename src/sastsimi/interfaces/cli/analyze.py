@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Protocol
 
 from sastsimi.contracts.evaluation import AnalysisRunResult
+from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.run import project
 from sastsimi.ports.production_analysis import (
     ProductionAnalyzeUnavailable as ProductionAnalyzeUnavailable,
@@ -22,6 +23,14 @@ class ProductionAnalyzeRequest:
     repository: str
     commit: str
     profile: Path
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionAnalyzeCommandResult:
+    """Safe projection paired with the process exit code for this run."""
+
+    code: ExitCode
+    data: dict[str, object]
 
 
 class ProductionAnalyzeEntrypoint(Protocol):
@@ -41,14 +50,22 @@ class ProductionQueryEntrypoint(Protocol):
 async def run(
     entrypoint: ProductionAnalyzeEntrypoint | None,
     request: ProductionAnalyzeRequest,
-) -> dict[str, object]:
+) -> ProductionAnalyzeCommandResult:
     if entrypoint is None:
         raise ProductionAnalyzeUnavailable()
-    return project(await entrypoint(request))
+    outcome = await entrypoint(request)
+    exit_code = {
+        "TERMINAL": ExitCode.OK,
+        "BLOCKED": ExitCode.BLOCKED,
+        "FAILED": ExitCode.RUN_FAILED,
+        "CANCELLED": ExitCode.RUN_CANCELLED,
+    }[outcome.disposition]
+    return ProductionAnalyzeCommandResult(code=exit_code, data=project(outcome))
 
 
 __all__ = [
     "ProductionAnalyzeEntrypoint",
+    "ProductionAnalyzeCommandResult",
     "ProductionAnalyzeRequest",
     "ProductionAnalyzeUnavailable",
     "ProductionQueryEntrypoint",

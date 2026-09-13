@@ -9,18 +9,24 @@ from sastsimi import bootstrap
 from sastsimi.contracts.evaluation import AnalysisRunResult
 from sastsimi.interfaces.cli import analyze as analyze_command
 from sastsimi.interfaces.cli.main import main
-from sastsimi.ports.scheduler import AnalysisStatusView, RunOutcome, WorkFailureView
+from sastsimi.ports.scheduler import (
+    AnalysisStatusView,
+    RunDisposition,
+    RunOutcome,
+    WorkFailureView,
+)
 
 
 class _Entrypoint:
-    def __init__(self) -> None:
+    def __init__(self, disposition: RunDisposition = "BLOCKED") -> None:
         self.calls: list[analyze_command.ProductionAnalyzeRequest] = []
+        self.disposition = disposition
 
     async def __call__(
         self, request: analyze_command.ProductionAnalyzeRequest
     ) -> RunOutcome:
         self.calls.append(request)
-        return RunOutcome("analysis-1", "BLOCKED", None)
+        return RunOutcome("analysis-1", self.disposition, None)
 
 
 class _Application:
@@ -72,10 +78,10 @@ def test_production_analyze_passes_only_explicit_exact_inputs(
             ],
             production_analyze=entrypoint,
         )
-        == 0
+        == 5
     )
 
-    output = json.loads(capsys.readouterr().out)
+    output = json.loads(capsys.readouterr().err)
     assert output["data"] == {
         "analysis_id": "analysis-1",
         "status": "BLOCKED",
@@ -156,13 +162,55 @@ def test_production_analyze_builds_the_real_composition_not_fake(
                 "json",
             ]
         )
-        == 0
+        == 5
     )
 
     output = capsys.readouterr()
-    assert output.err == ""
-    assert json.loads(output.out)["data"]["analysis_id"] == "analysis-1"
+    assert output.out == ""
+    assert json.loads(output.err)["data"]["analysis_id"] == "analysis-1"
     assert entrypoint.calls[0].repository == "repository"
+
+
+@pytest.mark.parametrize(
+    ("disposition", "expected_exit_code"),
+    [
+        ("TERMINAL", 0),
+        ("BLOCKED", 5),
+        ("FAILED", 6),
+        ("CANCELLED", 7),
+    ],
+)
+def test_production_analyze_maps_run_disposition_to_process_exit_code(
+    disposition: RunDisposition,
+    expected_exit_code: int,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    entrypoint = _Entrypoint(disposition)
+
+    assert (
+        main(
+            [
+                "--data-dir",
+                str(tmp_path / "data"),
+                "analyze",
+                "--repo",
+                "repository",
+                "--commit",
+                "d" * 40,
+                "--profile",
+                "profile.toml",
+                "--format",
+                "json",
+            ],
+            production_analyze=entrypoint,
+        )
+        == expected_exit_code
+    )
+
+    captured = capsys.readouterr()
+    wire = captured.out if expected_exit_code == 0 else captured.err
+    assert json.loads(wire)["data"]["status"] == disposition
 
 
 def test_production_status_is_separate_from_demo_results(
