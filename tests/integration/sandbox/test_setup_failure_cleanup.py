@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
@@ -162,8 +163,10 @@ async def test_restart_reconciles_a_durable_pre_create_intent(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_reconcile_skips_live_resources_but_restart_marks_them_orphaned(
+@pytest.mark.parametrize("persisted_state", [False, True, None])
+async def test_restart_restores_reconcile_state_with_conservative_legacy_default(
     tmp_path: Path,
+    persisted_state: bool | None,
 ) -> None:
     request, _, _ = _dynamic_records()
     spec = _approval(tmp_path, request).approved_spec
@@ -184,9 +187,15 @@ async def test_reconcile_skips_live_resources_but_restart_marks_them_orphaned(
     assert await registry.reconcile_pending(docker=docker) == ()
     assert docker.removed == []
 
+    value = json.loads(journal.read_bytes())
+    if persisted_state is None:
+        del value["resources"][0]["reconcile_required"]
+    else:
+        value["resources"][0]["reconcile_required"] = persisted_state
+    journal.write_text(json.dumps(value), encoding="utf-8")
     restarted = OwnedResourceRegistry(journal_path=journal)
     assert await restarted.reconcile_pending(docker=docker) == ()
-    assert docker.removed == [container_id]
+    assert docker.removed == ([] if persisted_state is False else [container_id])
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,6 @@ import asyncio
 import json
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, cast
 from uuid import uuid4
@@ -32,32 +31,22 @@ from .docker_adapter import (
     DockerImageTagPresence,
 )
 from .recipe_store import fresh_record_meta
+from .resource_snapshot import (
+    ContainerOwnershipIntent as ContainerOwnershipIntent,
+)
+from .resource_snapshot import (
+    ImageOwnershipIntent as ImageOwnershipIntent,
+)
+from .resource_snapshot import (
+    OwnedResource as OwnedResource,
+)
+from .resource_snapshot import (
+    OwnedResourceSnapshot,
+    ownership_scope,
+    snapshot_inventory,
+)
 
 _CLEANUP_TIMEOUT_SECONDS = 10.0
-
-
-@dataclass(frozen=True, slots=True)
-class OwnedResource:
-    ref: StoredDataRef
-    resource_id: str
-    labels: Mapping[str, str]
-    resource_kind: Literal["CONTAINER", "IMAGE"] = "CONTAINER"
-    resource_tag: str | None = None
-    lookup_by_name: bool = False
-    preservation_reason: Literal["REUSABLE_BASELINE"] | None = None
-    reconcile_required: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class ContainerOwnershipIntent:
-    container_name: str
-    labels: Mapping[str, str]
-
-
-@dataclass(frozen=True, slots=True)
-class ImageOwnershipIntent:
-    image_tag: str
-    labels: Mapping[str, str]
 
 
 class CleanupDockerPort(Protocol):
@@ -81,6 +70,20 @@ class OwnedResourceRegistry:
         self._image_intents: dict[str, ImageOwnershipIntent] = {}
         self._journal_path = journal_path
         self._load()
+
+    def snapshot(self, *, meta: RecordMeta) -> OwnedResourceSnapshot:
+        """Read one complete validated attempt inventory without side effects.
+
+        This captures the registry state, not a live Docker observation. Reload
+        the registry to observe a journal updated by another process.
+        """
+
+        return snapshot_inventory(
+            resources=tuple(self._resources.values()),
+            container_intents=tuple(self._intents.values()),
+            image_intents=tuple(self._image_intents.values()),
+            meta=meta,
+        )
 
     def reserve_container(
         self,
@@ -548,8 +551,10 @@ class OwnedResourceRegistry:
         if path is None or not path.exists():
             return
         try:
-            value = json.loads(path.read_bytes())
+            value = json.loads(path.read_bytes(), object_pairs_hook=_unique_json_object)
             if not isinstance(value, dict):
+                raise TypeError
+            if set(value) - {"intents", "image_intents", "resources"}:
                 raise TypeError
             intents = value.get("intents")
             image_intents = value.get("image_intents", [])
@@ -563,6 +568,8 @@ class OwnedResourceRegistry:
             for item in intents:
                 if not isinstance(item, dict):
                     raise TypeError
+                if set(item) != {"container_name", "labels"}:
+                    raise TypeError
                 name = item["container_name"]
                 labels = item["labels"]
                 if (
@@ -574,9 +581,13 @@ class OwnedResourceRegistry:
                     )
                 ):
                     raise TypeError
+                if not name or name in self._intents:
+                    raise ValueError("DUPLICATE_SANDBOX_RESOURCE")
                 self._intents[name] = ContainerOwnershipIntent(name, labels)
             for item in image_intents:
                 if not isinstance(item, dict):
+                    raise TypeError
+                if set(item) != {"image_tag", "labels"}:
                     raise TypeError
                 image_tag = item["image_tag"]
                 labels = item["labels"]
@@ -590,9 +601,22 @@ class OwnedResourceRegistry:
                     or DockerAdapter.runtime_image_tag(labels) != image_tag
                 ):
                     raise TypeError
+                if image_tag in self._image_intents or image_tag in self._intents:
+                    raise ValueError("DUPLICATE_SANDBOX_RESOURCE")
                 self._image_intents[image_tag] = ImageOwnershipIntent(image_tag, labels)
             for item in resources:
                 if not isinstance(item, dict):
+                    raise TypeError
+                if set(item) - {
+                    "ref",
+                    "resource_id",
+                    "labels",
+                    "resource_kind",
+                    "resource_tag",
+                    "preservation_reason",
+                    "reconcile_required",
+                    "lookup_by_name",
+                }:
                     raise TypeError
                 ref = StoredDataRef.model_validate(item["ref"])
                 resource_id = item["resource_id"]
@@ -600,7 +624,11 @@ class OwnedResourceRegistry:
                 resource_kind = item.get("resource_kind", "CONTAINER")
                 resource_tag = item.get("resource_tag")
                 preservation_reason = item.get("preservation_reason")
-                reconcile_required = item.get("reconcile_required", False)
+                # Older journals omitted this field; retain conservative recovery
+                # only for those entries, never overwrite an explicit state.
+                reconcile_required = item.get(
+                    "reconcile_required", preservation_reason is None
+                )
                 lookup_by_name = item.get("lookup_by_name", False)
                 if (
                     not isinstance(resource_id, str)
@@ -617,8 +645,24 @@ class OwnedResourceRegistry:
                     or (
                         resource_kind == "CONTAINER" and preservation_reason is not None
                     )
+                    or (resource_kind == "CONTAINER" and resource_tag is not None)
                 ):
                     raise TypeError
+                if (
+                    canonical_bytes(ref) in self._resources
+                    or resource_id in self.pending_resource_ids()
+                    or (
+                        resource_tag is not None
+                        and (
+                            resource_tag in self.pending_resource_ids()
+                            or any(
+                                entry.resource_tag == resource_tag
+                                for entry in self._resources.values()
+                            )
+                        )
+                    )
+                ):
+                    raise ValueError("DUPLICATE_SANDBOX_RESOURCE")
                 self._resources[canonical_bytes(ref)] = OwnedResource(
                     ref=ref,
                     resource_id=resource_id,
@@ -630,8 +674,18 @@ class OwnedResourceRegistry:
                         Literal["REUSABLE_BASELINE"] | None,
                         preservation_reason,
                     ),
-                    reconcile_required=preservation_reason is None,
+                    reconcile_required=reconcile_required,
                 )
+            entries: tuple[
+                OwnedResource | ContainerOwnershipIntent | ImageOwnershipIntent, ...
+            ] = (
+                *self._resources.values(),
+                *self._intents.values(),
+                *self._image_intents.values(),
+            )
+            scopes = {ownership_scope(entry.labels) for entry in entries}
+            if len(scopes) > 1:
+                raise ValueError("SANDBOX_RESOURCE_SCOPE_MISMATCH")
         except (
             KeyError,
             OSError,
@@ -707,3 +761,12 @@ class OwnedResourceRegistry:
                 temporary.unlink()
             except FileNotFoundError:
                 pass
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("OWNED_RESOURCE_JOURNAL_INVALID")
+        result[key] = value
+    return result
