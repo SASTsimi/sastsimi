@@ -112,13 +112,14 @@ def snapshot_inventory(
         ):
             raise ValueError("SANDBOX_RESOURCE_STATE_INVALID")
         if resource.resource_kind == "CONTAINER":
+            expected_name = DockerAdapter.runtime_container_name(resource.labels)
             if (
                 resource.resource_tag is not None
                 or resource.preservation_reason is not None
-                or resource.labels.get("sastsimi.resource-kind", "container")
-                != "container"
             ):
                 raise ValueError("SANDBOX_RESOURCE_KIND_INVALID")
+            if resource.lookup_by_name and resource.resource_id != expected_name:
+                raise ValueError("SANDBOX_CONTAINER_IDENTITY_INVALID")
             expected_ref = owned_container_resource_ref(
                 container_id=resource.resource_id, meta=meta
             )
@@ -142,11 +143,10 @@ def snapshot_inventory(
         refs.add(key)
     for container_intent in container_intents:
         unique(container_intent.container_name)
-        if (
-            container_intent.labels.get("sastsimi.resource-kind", "container")
-            != "container"
+        if container_intent.container_name != DockerAdapter.runtime_container_name(
+            container_intent.labels
         ):
-            raise ValueError("SANDBOX_RESOURCE_KIND_INVALID")
+            raise ValueError("SANDBOX_CONTAINER_IDENTITY_INVALID")
     for image_intent in image_intents:
         unique(image_intent.image_tag)
         if image_intent.image_tag != DockerAdapter.runtime_image_tag(

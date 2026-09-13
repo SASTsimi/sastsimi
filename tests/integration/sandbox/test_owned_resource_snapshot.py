@@ -238,8 +238,17 @@ def test_state_change_invalidates_inventory_fingerprint(
     tmp_path: Path, state: str
 ) -> None:
     journal = tmp_path / "owned.json"
-    registry, _ = _inventory(journal)
+    registry, container_ref = _inventory(journal)
     meta = _meta("sandbox_environment", "snapshot")
+    if state == "lookup_by_name":
+        container = registry.exact(container_ref)
+        assert container is not None
+        registry.forget(container_ref)
+        registry.register_container(
+            container_id=DockerAdapter.runtime_container_name(container.labels),
+            labels=container.labels,
+            meta=meta,
+        )
     before = registry.snapshot(meta=meta)
     value = json.loads(journal.read_bytes())
     kind = "IMAGE" if state == "preservation_reason" else "CONTAINER"
@@ -273,3 +282,80 @@ def test_missing_current_scope_is_rejected_even_for_empty_registry(field: str) -
     meta = _meta("sandbox_environment", "snapshot").model_copy(update={field: None})
     with pytest.raises(ValueError):
         OwnedResourceRegistry().snapshot(meta=meta)
+
+
+@pytest.mark.parametrize("entry_kind", ["intent", "container-id", "container-name"])
+@pytest.mark.parametrize("persisted", [False, True])
+@pytest.mark.parametrize("missing", ["resource-kind", "resource-id", "both"])
+def test_container_snapshot_requires_complete_resource_labels(
+    tmp_path: Path, entry_kind: str, persisted: bool, missing: str
+) -> None:
+    meta = _meta("sandbox_environment", "snapshot")
+    labels = dict(ReproductionSetupAutomation._container_labels(meta))
+    name = DockerAdapter.runtime_container_name(labels)
+    if missing in {"resource-kind", "both"}:
+        del labels["sastsimi.resource-kind"]
+    if missing in {"resource-id", "both"}:
+        del labels["sastsimi.resource-id"]
+    journal = tmp_path / "owned.json"
+    registry = OwnedResourceRegistry(journal_path=journal if persisted else None)
+    if entry_kind == "intent":
+        registry.reserve_container(container_name=name, labels=labels)
+    else:
+        registry.register_container(
+            container_id=name if entry_kind == "container-name" else "container-1",
+            labels=labels,
+            meta=meta,
+            lookup_by_name=entry_kind == "container-name",
+        )
+    with pytest.raises(ValueError):
+        if persisted:
+            registry = OwnedResourceRegistry(journal_path=journal)
+        registry.snapshot(meta=meta)
+
+
+@pytest.mark.parametrize("entry_kind", ["intent", "container-name"])
+@pytest.mark.parametrize("persisted", [False, True])
+def test_container_name_must_match_exact_ownership_labels(
+    tmp_path: Path, entry_kind: str, persisted: bool
+) -> None:
+    meta = _meta("sandbox_environment", "snapshot")
+    labels = ReproductionSetupAutomation._container_labels(meta)
+    foreign_labels = dict(labels) | {"sastsimi.resource-id": "another-resource"}
+    foreign_name = DockerAdapter.runtime_container_name(foreign_labels)
+    journal = tmp_path / "owned.json"
+    registry = OwnedResourceRegistry(journal_path=journal if persisted else None)
+    if entry_kind == "intent":
+        registry.reserve_container(container_name=foreign_name, labels=labels)
+    else:
+        # The stored ref matches this name, isolating the missing label/name check.
+        registry.register_container(
+            container_id=foreign_name, labels=labels, meta=meta, lookup_by_name=True
+        )
+    with pytest.raises(ValueError):
+        if persisted:
+            registry = OwnedResourceRegistry(journal_path=journal)
+        registry.snapshot(meta=meta)
+
+
+@pytest.mark.parametrize("lookup_by_name", [False, True])
+def test_complete_container_identity_is_preserved_across_snapshot_reload(
+    tmp_path: Path, lookup_by_name: bool
+) -> None:
+    meta = _meta("sandbox_environment", "snapshot")
+    labels = ReproductionSetupAutomation._container_labels(meta)
+    identity = (
+        DockerAdapter.runtime_container_name(labels)
+        if lookup_by_name
+        else "container-1"
+    )
+    journal = tmp_path / "owned.json"
+    registry = OwnedResourceRegistry(journal_path=journal)
+    ref = registry.register_container(
+        container_id=identity, labels=labels, meta=meta, lookup_by_name=lookup_by_name
+    )
+    snapshot = registry.snapshot(meta=meta)
+    assert snapshot.resources[0].resource_id == identity
+    assert snapshot.resources[0].lookup_by_name is lookup_by_name
+    assert snapshot.resources[0].ref == ref
+    assert OwnedResourceRegistry(journal_path=journal).snapshot(meta=meta) == snapshot
