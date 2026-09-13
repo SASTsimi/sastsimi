@@ -189,8 +189,14 @@ def test_fresh_process_resolves_all_exact_roles_without_authority_construction(
 @pytest.mark.parametrize(
     "fault",
     [
-        "missing-record", "hash", "stale", "approval", "unbound", "state-pointer",
-        "execution-pin", "binding-pin",
+        "missing-record",
+        "hash",
+        "stale",
+        "approval",
+        "unbound",
+        "state-pointer",
+        "execution-pin",
+        "binding-pin",
     ],
 )
 def test_invalid_authority_fails_without_mutation(tmp_path: Path, fault: str) -> None:
@@ -242,8 +248,10 @@ def test_invalid_authority_fails_without_mutation(tmp_path: Path, fault: str) ->
                 update(models.budget_profiles)
                 .where(
                     models.budget_profiles.c.analysis_id == "analysis-one",
-                    models.budget_profiles.c.kind == (
-                        "execution_budget_profile" if fault == "execution-pin"
+                    models.budget_profiles.c.kind
+                    == (
+                        "execution_budget_profile"
+                        if fault == "execution-pin"
                         else "budget_profile_binding"
                     ),
                 )

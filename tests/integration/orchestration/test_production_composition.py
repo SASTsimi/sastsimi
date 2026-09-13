@@ -387,9 +387,12 @@ def test_factory_builds_sqlite_foundation_and_complete_handler_application() -> 
         assert run_input.production_profile_ref is not None
         assert run_input.production_onboarding_ref is not None
         assert run_input.production_authority_catalog_ref is not None
-        assert core.runtime.budget_registry.current_state(
-            str(_scope().analysis_id)
-        ).budget_binding_ref is None
+        assert (
+            core.runtime.budget_registry.current_state(
+                str(_scope().analysis_id)
+            ).budget_binding_ref
+            is None
+        )
 
 
 def test_factory_without_exact_capability_resolver_fails_before_creating_state() -> (

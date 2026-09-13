@@ -587,9 +587,12 @@ def test_symbol_exception_does_not_allow_a_concrete_service() -> None:
 
 def test_descriptor_may_import_only_the_profile_value_model() -> None:
     module = "sastsimi.orchestration.production_descriptor"
-    assert violations(
-        "from sastsimi.config.production_profile import ProductionProfile", module
-    ) == []
+    assert (
+        violations(
+            "from sastsimi.config.production_profile import ProductionProfile", module
+        )
+        == []
+    )
     assert violations(
         "from sastsimi.config.production_profile import load_production_profile", module
     )

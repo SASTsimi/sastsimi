@@ -159,7 +159,8 @@ def test_exact_descriptor_survives_fresh_reader_without_current_onboarding(
             update={"production_authority_catalog_ref": None}
         )
         bootstrap = replace(
-            bootstrap, run_input=legacy_input,
+            bootstrap,
+            run_input=legacy_input,
             state=bootstrap.state.model_copy(
                 update={"analysis_input_ref": reference(legacy_input)}
             ),
