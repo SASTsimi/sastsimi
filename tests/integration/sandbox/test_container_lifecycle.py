@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -2430,7 +2430,10 @@ async def test_unverified_buildx_backend_is_rejected(
 ) -> None:
     adapter, resolver = _trusted_docker_adapter(tmp_path)
     assert adapter._target is not None
-    buildx_target = replace(adapter._target, build_backend="BUILDX_RESOURCE")
+    buildx_target = replace(
+        adapter._target,
+        build_backend=cast(Any, "BUILDX_RESOURCE"),
+    )
     resolver.target = buildx_target
 
     with pytest.raises(ValueError, match="DOCKER_TRUSTED_TARGET_INVALID"):
