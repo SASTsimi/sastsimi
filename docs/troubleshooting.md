@@ -11,9 +11,13 @@
 - `3`: 설정 또는 database migration 오류
 - `4`: production 구성, capability 또는 인증 준비 부족
 - `5`: current 보고서를 찾거나 안전하게 내보낼 수 없음
+- `6`: 분석이 복구 불가능한 실패로 종료됨
+- `7`: 분석 취소가 확정됨
+- `8`: 분석이 아직 끝나지 않아 결과를 조회할 수 없음
+- `9`: 저장 상태나 exact reference 무결성 검사 실패
 - `10`: 예상하지 못한 내부 오류
 
-종료 코드 `3`, `4`, `5`, `10`은 취약점 `FALSE` 또는 `HOLD`가 아닙니다. 정적 도구, LLM, package 설치, Docker build, container, health check 또는 cleanup 실패도 가설을 반증하지 않습니다.
+종료 코드 `3`~`10`은 취약점 `FALSE` 또는 `HOLD`가 아닙니다. 정적 도구, LLM, package 설치, Docker build, container, health check 또는 cleanup 실패도 가설을 반증하지 않습니다.
 
 ## 2. 명령 자체가 보이지 않습니다
 
