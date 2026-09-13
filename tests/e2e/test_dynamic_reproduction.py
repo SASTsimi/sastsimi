@@ -366,17 +366,21 @@ def _work(request_ref: StoredDataRef) -> WorkExecutionState:
     )
 
 
-def _run_spec(workspace: Path) -> SandboxRunSpec:
+def _run_spec(workspace: Path, *, source_baked: bool = False) -> SandboxRunSpec:
     return SandboxRunSpec(
         workspace_root=workspace,
         image_digest=None,  # learned from the boundary-approved cold build
         user="65532:65532",
         mounts=(
-            SandboxMount(
-                source=workspace,
-                target=PurePosixPath("/workspace"),
-                read_only=True,
-            ),
+            ()
+            if source_baked
+            else (
+                SandboxMount(
+                    source=workspace,
+                    target=PurePosixPath("/workspace"),
+                    read_only=True,
+                ),
+            )
         ),
         network_mode="DEFAULT_DENY",
         network_targets=(),
@@ -390,15 +394,23 @@ def _run_spec(workspace: Path) -> SandboxRunSpec:
         disk_limit_bytes=64 * 1024 * 1024,
         pid_limit=64,
         requested_execution_ms=30_000,
+        source_baked=source_baked,
     )
 
 
 class SandboxAuthorizer:
     """Issue and claim exact BUILD/RUN approvals for the public workflow path."""
 
-    def __init__(self, workspace: Path, *, forbidden: bool = False) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        *,
+        forbidden: bool = False,
+        source_baked: bool = False,
+    ) -> None:
         self.workspace = workspace
         self.forbidden = forbidden
+        self.source_baked = source_baked
         global_meta = _meta("sandbox_profile", "sandbox-profile").model_copy(
             update={"hypothesis_id": None, "attempt_id": None}
         )
@@ -483,7 +495,10 @@ class SandboxAuthorizer:
         lifecycle_ref = cast(StoredDataRef, reference(self.lifecycle))
         policy_ref = cast(StoredDataRef, reference(self.policy))
         work_ref = cast(StoredDataRef, reference(work))
-        spec = replace(_run_spec(self.workspace), image_digest=image_digest)
+        spec = replace(
+            _run_spec(self.workspace, source_baked=self.source_baked),
+            image_digest=image_digest,
+        )
         if self.forbidden:
             spec = replace(
                 spec,
@@ -746,7 +761,7 @@ async def test_supported_fixture_produces_validated_poc(tmp_path: Path) -> None:
             if path.is_file()
         }
     )
-    authorizer = SandboxAuthorizer(workspace)
+    authorizer = SandboxAuthorizer(workspace, source_baked=True)
     request, requirements, plan = _records_for(authorizer)
     request_ref = cast(StoredDataRef, reference(request))
     work = _work(request_ref)
@@ -762,6 +777,7 @@ async def test_supported_fixture_produces_validated_poc(tmp_path: Path) -> None:
         workspace_id="workspace-1",
         commit_id="commit-1",
         record_resolver=authorizer.resolve,
+        require_baked_source=True,
     )
     artifacts = MemoryArtifacts()
     sink = MemorySink([], [])
@@ -844,7 +860,7 @@ async def test_supported_fixture_produces_validated_poc(tmp_path: Path) -> None:
         assert "nosuid" in tmpfs
         assert "nodev" in tmpfs
         assert "size=67108864" in tmpfs
-        assert inspected["Mounts"][0]["RW"] is False
+        assert inspected["Mounts"] == []
 
         candidate_bytes = b"""#!/bin/sh
 set -eu
