@@ -1,10 +1,10 @@
 """Public facade for the concrete application composition root."""
 
-from sastsimi.config.package_resources import (
-    builtin_package_root as builtin_resource_root,
-)
 from sastsimi.composition.production_entrypoint import (
     build_production_analyze as build_production_analyze,
+)
+from sastsimi.composition.production_entrypoint import (
+    builtin_resource_root as builtin_resource_root,
 )
 from sastsimi.composition.runtime import ConfigError as ConfigError
 from sastsimi.composition.runtime import (
@@ -44,6 +44,7 @@ from sastsimi.composition.runtime import build_t11_services as build_t11_service
 from sastsimi.composition.runtime import build_t12_services as build_t12_services
 from sastsimi.composition.runtime import build_t13_services as build_t13_services
 from sastsimi.composition.runtime import database_command as database_command
+from sastsimi.composition.runtime import diagnostic_event as diagnostic_event
 from sastsimi.composition.runtime import install_t13_services as install_t13_services
 from sastsimi.composition.runtime import load_fake_progress as load_fake_progress
 from sastsimi.composition.runtime import upgrade_database as upgrade_database

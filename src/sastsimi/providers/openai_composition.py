@@ -81,7 +81,8 @@ class OfficialOpenAIResponsesClientFactory(OpenAIResponsesClientFactory):
     ) -> AbstractAsyncContextManager[OpenAIResponsesClient]:
         if max_retries != 0 or not api_key or api_key != api_key.strip():
             raise ValueError("OPENAI_CLIENT_CONFIGURATION_INVALID")
-        return self._client_type(api_key=api_key, max_retries=0)
+        client = self._client_type(api_key=api_key, max_retries=0)
+        return cast(AbstractAsyncContextManager[OpenAIResponsesClient], client)
 
 
 class StoredProviderSessionStore:

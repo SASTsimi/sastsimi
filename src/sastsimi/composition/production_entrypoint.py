@@ -1,8 +1,15 @@
 """Wire the production command from approved capability bundles."""
 
+from pathlib import Path
 from typing import cast
 
 from sastsimi.config.package_resources import builtin_package_root
+
+
+def builtin_resource_root() -> Path:
+    """Return the installed package root that owns prompts and AST workers."""
+
+    return builtin_package_root()
 
 
 def build_production_analyze(capability_bundle_loader: object | None = None) -> object:
@@ -31,7 +38,7 @@ def build_production_analyze(capability_bundle_loader: object | None = None) -> 
     from sastsimi.runtime.system_support import UUIDIds
 
     if capability_bundle_loader is None:
-        repository_root = builtin_package_root()
+        repository_root = builtin_resource_root()
         feature_assembler = build_production_bootstrap_assembler(
             repository_root=repository_root
         )
