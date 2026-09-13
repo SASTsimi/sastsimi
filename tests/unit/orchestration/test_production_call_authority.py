@@ -65,9 +65,6 @@ from sastsimi.orchestration.production_call_authority import (
     ProductionPreparedCallAuthorizer,
     production_call_authority,
 )
-from sastsimi.orchestration.production_llm_work_handlers import (
-    ConfiguredProductionCallResolver,
-)
 from sastsimi.ports.dto import (
     BudgetCommitRequest,
     BudgetReservationRequest,
@@ -75,6 +72,7 @@ from sastsimi.ports.dto import (
     TransitionCommitRequest,
 )
 from sastsimi.ports.llm_invocation import PersistedLLMInvocation
+from sastsimi.prompts.production_calls import ConfiguredProductionCallResolver
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from tests.contract.domain.fixtures import bundle
 from tests.unit.prompts.test_production_configuration import (

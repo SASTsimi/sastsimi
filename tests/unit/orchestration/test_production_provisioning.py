@@ -8,6 +8,16 @@ from typing import Any, cast
 
 import pytest
 
+from sastsimi.composition.production_composition import (
+    ProductionCapabilityUnavailable,
+)
+from sastsimi.composition.production_filesystem_provisioner import (
+    ExactProvisioningTrustedEvidence,
+    FilesystemAnalysisCapabilityProvisioner,
+    ProductionBundleAssemblyContext,
+    ProductionBundleAssemblyRegistry,
+    ProductionImplementationSet,
+)
 from sastsimi.contracts.capabilities import (
     CapabilityArchitecture,
     CapabilityKind,
@@ -22,16 +32,6 @@ from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef, reference
 from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.contracts.verification import PlaybookPolicy
-from sastsimi.orchestration.production_composition import (
-    ProductionCapabilityUnavailable,
-)
-from sastsimi.orchestration.production_filesystem_provisioner import (
-    ExactProvisioningTrustedEvidence,
-    FilesystemAnalysisCapabilityProvisioner,
-    ProductionBundleAssemblyContext,
-    ProductionBundleAssemblyRegistry,
-    ProductionImplementationSet,
-)
 from sastsimi.orchestration.production_onboarding import ProductionProvisioningManifest
 from sastsimi.orchestration.production_provisioning import (
     ExactProductionProvisioningResolver,

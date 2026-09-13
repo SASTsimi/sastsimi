@@ -50,7 +50,7 @@ from sastsimi.orchestration.production_capabilities import (
     ProfileBackedProductionCapabilityResolver,
     production_profile_hash,
 )
-from sastsimi.orchestration.production_composition import (
+from sastsimi.orchestration.production_context import (
     InstalledProductionServices,
     ProductionCapabilityUnavailable,
     ProductionInstallationContext,

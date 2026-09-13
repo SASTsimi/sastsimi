@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Protocol, cast
+from typing import cast
 
-from sastsimi.bootstrap import build_real_static_slice
+from sastsimi.composition.production_feature_installer import T08ProductionFeature
+from sastsimi.composition.production_static_adapters import (
+    StaticAdapterCancellationRouter,
+    StaticAttemptDispatchReader,
+)
+from sastsimi.composition.runtime import build_real_static_slice
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.capabilities import RuntimeCapabilityProfile
 from sastsimi.contracts.refs import (
@@ -21,20 +26,19 @@ from sastsimi.contracts.refs import (
 )
 from sastsimi.contracts.static import CodeWorkspace, StaticToolProfile
 from sastsimi.orchestration.production_capabilities import production_profile_hash
-from sastsimi.orchestration.production_composition import ProductionInstallationContext
-from sastsimi.orchestration.production_feature_installer import T08ProductionFeature
+from sastsimi.orchestration.production_context import ProductionInstallationContext
 from sastsimi.orchestration.production_provisioning import (
     StaticAnalysisProvisioning,
-    StaticRouteProvisioning,
     WorkspaceStorageProvisioning,
-)
-from sastsimi.orchestration.production_static_adapters import (
-    StaticAdapterCancellationRouter,
-    StaticAttemptDispatchReader,
 )
 from sastsimi.orchestration.repository_profile_handler import (
     RepositoryProfileHandler,
     RepositoryProfileWorkHandler,
+)
+from sastsimi.orchestration.static_adapter_context import (
+    ApprovedStaticRuleClosure,
+    StaticAdapterBuildContext,
+    StaticAdapterFactory,
 )
 from sastsimi.orchestration.static_external_runner import (
     StaticCancellationObservationReader,
@@ -69,8 +73,7 @@ from sastsimi.ports.dto import (
     WorkspaceStorageLease,
     WorkspaceStoragePolicy,
 )
-from sastsimi.ports.static_tool import StaticProcessAdapter
-from sastsimi.ports.workspace import WorkspaceLocatorPort, WorkspaceStoragePort
+from sastsimi.ports.workspace import WorkspaceStoragePort
 from sastsimi.static_analysis.ast_adapter import replay_python_ast_raw
 from sastsimi.static_analysis.codeql_adapter import replay_codeql_raw
 from sastsimi.static_analysis.normalizer import DecoderKey, RawDecoder, decoder_key
@@ -96,60 +99,6 @@ from sastsimi.static_analysis.workspace_storage import (
 )
 
 _PROCESS_OUTPUT_LIMIT = 4 * 1024 * 1024
-
-
-@dataclass(frozen=True, slots=True)
-class ApprovedStaticRuleClosure:
-    """Typed interpretation explicitly approved with one rule-tool route."""
-
-    catalog_sha256: str
-    selection_sha256: str
-    mapping_sha256: str
-    catalog_rule_ids: tuple[str, ...]
-    selected_rule_ids: tuple[str, ...]
-    mappings: tuple[StaticRuleMapping, ...]
-
-    def validate_for(self, route: StaticRouteProvisioning) -> None:
-        mapping_ids = tuple(item.rule_id for item in self.mappings)
-        if (
-            route.tool == "AST"
-            or (
-                self.catalog_sha256,
-                self.selection_sha256,
-                self.mapping_sha256,
-            )
-            != (
-                route.rule_catalog_sha256,
-                route.rule_selection_sha256,
-                route.rule_mapping_sha256,
-            )
-            or not self.catalog_rule_ids
-            or len(self.catalog_rule_ids) != len(set(self.catalog_rule_ids))
-            or len(self.selected_rule_ids) != len(set(self.selected_rule_ids))
-            or not set(self.selected_rule_ids) <= set(self.catalog_rule_ids)
-            or set(mapping_ids) != set(self.catalog_rule_ids)
-            or len(mapping_ids) != len(set(mapping_ids))
-        ):
-            raise ValueError("PRODUCTION_STATIC_RULE_CLOSURE_INVALID")
-
-
-@dataclass(frozen=True, slots=True)
-class StaticAdapterBuildContext:
-    """Exact inputs a compiled-in real adapter factory may consume."""
-
-    data_dir: Path
-    workspace_locator: WorkspaceLocatorPort
-    tracked_files_for: Callable[[CodeWorkspace], tuple[TrackedFile, ...]]
-    routes: Mapping[str, StaticToolRoute]
-    profiles: Mapping[str, StaticToolProfile]
-    evidence: Mapping[str, bytes]
-    rule_closures: Mapping[str, ApprovedStaticRuleClosure]
-
-
-class StaticAdapterFactory(Protocol):
-    def __call__(
-        self, context: StaticAdapterBuildContext
-    ) -> Mapping[str, StaticProcessAdapter]: ...
 
 
 @dataclass(frozen=True, slots=True)

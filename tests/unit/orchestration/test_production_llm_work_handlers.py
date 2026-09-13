@@ -39,15 +39,7 @@ from sastsimi.contracts.work import (
     WorkStatus,
     WorkType,
 )
-from sastsimi.orchestration.production_llm_work_handlers import (
-    DynamicVerificationPort,
-    EvidenceBranchWorkHandler,
-    HypothesesCommittedPort,
-    HypothesisProposalWorkHandler,
-    NonDynamicCompletionPort,
-    ProductionDynamicStageCallResolver,
-    VerificationWorkHandler,
-)
+from sastsimi.ports.authorized_llm_call import AuthorizedLLMCall
 from sastsimi.ports.dto import (
     Record,
     TransitionCommitRequest,
@@ -57,10 +49,15 @@ from sastsimi.ports.dto import (
 from sastsimi.ports.llm_invocation import PersistedLLMInvocation
 from sastsimi.ports.verification_assembly import VerificationGenerationInputs
 from sastsimi.runtime.workflow_runner import WorkflowRunner
-from sastsimi.verification.debate_service import (
-    AuthorizedLLMCall,
-    DebateIncompleteError,
-    DebateService,
+from sastsimi.verification.debate_service import DebateIncompleteError, DebateService
+from sastsimi.verification.production_llm_work_handlers import (
+    DynamicVerificationPort,
+    EvidenceBranchWorkHandler,
+    HypothesesCommittedPort,
+    HypothesisProposalWorkHandler,
+    NonDynamicCompletionPort,
+    ProductionDynamicStageCallResolver,
+    VerificationWorkHandler,
 )
 from sastsimi.verification.service import VerificationService
 from tests.contract.domain.canonical_fixtures import make

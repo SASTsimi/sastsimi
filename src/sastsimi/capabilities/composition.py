@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Protocol, cast
 from uuid import uuid4
 
-from sastsimi.bootstrap import build_runtime
+from sastsimi.composition.runtime import build_runtime
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.config.secrets import SecretReference
 from sastsimi.contracts.capabilities import (

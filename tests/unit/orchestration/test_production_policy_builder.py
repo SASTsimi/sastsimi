@@ -7,6 +7,14 @@ from typing import cast
 
 import pytest
 
+from sastsimi.composition.production_composition import (
+    ProductionCapabilityUnavailable,
+)
+from sastsimi.composition.production_policy_builder import (
+    build_policy_catalog_entry,
+    policy_freshness_evidence_bytes,
+    policy_source_evidence_bytes,
+)
 from sastsimi.config.production_profile import PolicySource
 from sastsimi.contracts.ids import (
     AnalysisId,
@@ -22,14 +30,6 @@ from sastsimi.contracts.policy import (
 )
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
-from sastsimi.orchestration.production_composition import (
-    ProductionCapabilityUnavailable,
-)
-from sastsimi.orchestration.production_policy_builder import (
-    build_policy_catalog_entry,
-    policy_freshness_evidence_bytes,
-    policy_source_evidence_bytes,
-)
 from sastsimi.orchestration.production_provisioning import PolicyCatalogProvisioning
 from sastsimi.storage.artifact_store import LocalArtifactStore
 

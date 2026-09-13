@@ -17,6 +17,37 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 
+from sastsimi.composition.production_feature_installer import (
+    DynamicProductionFeature,
+    ProductionFeatureInputs,
+    ProductionFeatureInstaller,
+    ReadinessCheck,
+    T08ProductionFeature,
+)
+from sastsimi.composition.production_filesystem_provisioner import (
+    ProductionBundleAssembly,
+    ProductionBundleAssemblyContext,
+    ProductionBundleAssemblyPort,
+    ProductionBundleAssemblyRegistry,
+    ProductionImplementationSet,
+)
+from sastsimi.composition.production_policy_builder import (
+    build_production_policy_feature_factory,
+)
+from sastsimi.composition.production_provider_builder import (
+    build_production_call_feature,
+    build_production_provider_prompt_feature,
+)
+from sastsimi.composition.production_static_adapters import (
+    ProductionStaticAdapterFactory,
+    ProductionStaticOutputQuotaPort,
+    StaticAttemptDispatchReader,
+)
+from sastsimi.composition.production_t08_builder import (
+    ApprovedStaticRuleClosure,
+    ProductionT08Inputs,
+    build_production_t08_feature,
+)
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.ids import AttemptId, LogicalRecordId, RecordId
 from sastsimi.contracts.records import RecordMeta
@@ -27,31 +58,10 @@ from sastsimi.contracts.refs import (
     reference,
 )
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
-from sastsimi.orchestration.production_composition import (
+from sastsimi.orchestration.production_context import (
     InstalledProductionServices,
     ProductionCapabilityUnavailable,
     ProductionInstallationContext,
-)
-from sastsimi.orchestration.production_feature_installer import (
-    DynamicProductionFeature,
-    ProductionFeatureInputs,
-    ProductionFeatureInstaller,
-    ReadinessCheck,
-    T08ProductionFeature,
-)
-from sastsimi.orchestration.production_filesystem_provisioner import (
-    ProductionBundleAssembly,
-    ProductionBundleAssemblyContext,
-    ProductionBundleAssemblyPort,
-    ProductionBundleAssemblyRegistry,
-    ProductionImplementationSet,
-)
-from sastsimi.orchestration.production_policy_builder import (
-    build_production_policy_feature_factory,
-)
-from sastsimi.orchestration.production_provider_builder import (
-    build_production_call_feature,
-    build_production_provider_prompt_feature,
 )
 from sastsimi.orchestration.production_provisioning import (
     PolicyCatalogProvisioning,
@@ -61,16 +71,6 @@ from sastsimi.orchestration.production_provisioning import (
     StaticAnalysisProvisioning,
     VerificationPlaybooksProvisioning,
     WorkspaceStorageProvisioning,
-)
-from sastsimi.orchestration.production_static_adapters import (
-    ProductionStaticAdapterFactory,
-    ProductionStaticOutputQuotaPort,
-    StaticAttemptDispatchReader,
-)
-from sastsimi.orchestration.production_t08_builder import (
-    ApprovedStaticRuleClosure,
-    ProductionT08Inputs,
-    build_production_t08_feature,
 )
 from sastsimi.orchestration.static_external_runner import (
     StaticCancellationObservationReader,

@@ -9,6 +9,13 @@ from unittest.mock import patch
 
 import pytest
 
+from sastsimi.composition.production_dynamic_feature_builder import (
+    DockerCapabilityReadiness,
+    ProductionDynamicAuthorizationResolver,
+    build_current_repository_t11_resolver,
+    build_production_dynamic_feature,
+)
+from sastsimi.composition.production_feature_installer import DynamicProductionFeature
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.budget import (
     BudgetProfileBinding,
@@ -39,13 +46,6 @@ from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef, reference
 from sastsimi.contracts.static import RepositoryProfile
 from sastsimi.contracts.work import WorkExecutionState
-from sastsimi.orchestration.production_dynamic_feature_builder import (
-    DockerCapabilityReadiness,
-    ProductionDynamicAuthorizationResolver,
-    build_current_repository_t11_resolver,
-    build_production_dynamic_feature,
-)
-from sastsimi.orchestration.production_feature_installer import DynamicProductionFeature
 from sastsimi.orchestration.production_provisioning import (
     MaterializedProvisioningArtifacts,
     ResolvedProductionProvisioning,
@@ -532,7 +532,7 @@ def test_current_repository_resolver_builds_real_t11_with_exact_feature() -> Non
     expected = cast(Any, object())
 
     with patch(
-        "sastsimi.orchestration.production_dynamic_feature_builder.build_t11_services",
+        "sastsimi.composition.production_dynamic_feature_builder.build_t11_services",
         return_value=expected,
     ) as build:
         resolver = build_current_repository_t11_resolver(

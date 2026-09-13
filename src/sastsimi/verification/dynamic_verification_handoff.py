@@ -6,7 +6,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol, cast
 
-from sastsimi.chaining.work_handlers import require_claimed_context
 from sastsimi.contracts.dynamic import (
     DynamicReproductionRequest,
     DynamicReproductionResult,
@@ -37,21 +36,21 @@ from sastsimi.contracts.verification import (
     VerificationInitialAssessment,
 )
 from sastsimi.contracts.work import WorkExecutionState, WorkStatus, WorkType
+from sastsimi.ports.authorized_llm_call import AuthorizedLLMCall
 from sastsimi.ports.dto import WorkContext, WorkHandlerResult
 from sastsimi.ports.dynamic_registration import DynamicRegistrationPort
 from sastsimi.ports.llm_invocation import PersistedLLMInvocation
 from sastsimi.ports.record_store import RecordStore
 from sastsimi.ports.runtime_query import RuntimeQueryPort
 from sastsimi.ports.verification_assembly import VerificationGenerationInputs
+from sastsimi.runtime.claimed_context import require_claimed_context
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.verification.completion import VerificationCompletionCoordinator
-from sastsimi.verification.debate_service import AuthorizedLLMCall
-from sastsimi.verification.service import VerificationService
-
-from .production_llm_work_handlers import (
+from sastsimi.verification.production_llm_work_handlers import (
     ProductionCallPort,
     _verification_call_refs,
 )
+from sastsimi.verification.service import VerificationService
 
 type BudgetScopeResolver = Callable[[str], BudgetScopeRef]
 type SandboxProfileResolver = Callable[[WorkExecutionState], StoredDataRef]

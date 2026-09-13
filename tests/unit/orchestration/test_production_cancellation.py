@@ -17,9 +17,9 @@ from sastsimi.orchestration.production_cancellation import (
     ProductionProviderCancellation,
     ProductionSandboxCancellation,
 )
+from sastsimi.ports.docker_state import DockerContainerState
 from sastsimi.ports.dto import CancellationResult
 from sastsimi.ports.scheduler import CancellationTarget
-from sastsimi.sandbox.docker_adapter import DockerContainerState
 from tests.e2e.test_dynamic_reproduction import _work as _dynamic_work_fixture
 from tests.integration.cli.test_run_control import (
     _attempt as _run_control_attempt,

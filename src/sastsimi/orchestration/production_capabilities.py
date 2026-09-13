@@ -40,6 +40,13 @@ from sastsimi.contracts.refs import (
 from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.orchestration.production_context import (
+    InstalledProductionServices,
+    ProductionCapabilityUnavailable,
+    ProductionFeatureInstaller,
+    ProductionInstallationContext,
+    ResolvedProductionCapabilities,
+)
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.capability_registry import ProductionCapabilityResolverPort
 from sastsimi.ports.dto import WorkContext
@@ -53,13 +60,6 @@ from sastsimi.runtime.workflow_runner import WorkflowRunner
 from .production_call_authority import (
     AnalysisApprovedRoute,
     ExactAnalysisProductionRouteLookup,
-)
-from .production_composition import (
-    InstalledProductionServices,
-    ProductionCapabilityUnavailable,
-    ProductionFeatureInstaller,
-    ProductionInstallationContext,
-    ResolvedProductionCapabilities,
 )
 from .production_operator_profiles import ProductionTrustedEvidence
 from .run_scope_plan import PlannedRunScope

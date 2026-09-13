@@ -26,6 +26,11 @@ from sastsimi.contracts.llm import (
 )
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
+from sastsimi.orchestration.production_call_authority import (
+    AnalysisApprovedRoute,
+    ExactAnalysisProductionRouteLookup,
+    ProductionPreparedCallAuthorizer,
+)
 from sastsimi.orchestration.production_capabilities import production_profile_hash
 from sastsimi.orchestration.production_provisioning import (
     PromptRoutesProvisioning,
@@ -37,12 +42,11 @@ from sastsimi.ports.configuration_registry import ConfigurationRegistryPort
 from sastsimi.ports.dto import Record
 from sastsimi.ports.id_generator import IdGenerator
 from sastsimi.ports.llm_provider import LLMProviderAdapter
+from sastsimi.ports.production_prompt import ApprovedProductionRoute
 from sastsimi.ports.record_store import RecordStore
 from sastsimi.ports.runtime_query import RuntimeQueryPort
-from sastsimi.prompts.production import (
-    ApprovedProductionRoute,
-    ProductionLLMConfigurationService,
-)
+from sastsimi.prompts.production import ProductionLLMConfigurationService
+from sastsimi.prompts.production_calls import ConfiguredProductionCallResolver
 from sastsimi.prompts.validation import validate_output
 from sastsimi.providers.codex_subscription import (
     ApprovedCodexExecutable,
@@ -65,13 +69,6 @@ from sastsimi.providers.storage_io import (
 from sastsimi.reporting.content_validation import ReporterOutputSemanticValidator
 from sastsimi.runtime.prompt_registry import PromptRegistry
 from sastsimi.runtime.workflow_runner import WorkflowRunner
-
-from .production_call_authority import (
-    AnalysisApprovedRoute,
-    ExactAnalysisProductionRouteLookup,
-    ProductionPreparedCallAuthorizer,
-)
-from .production_llm_work_handlers import ConfiguredProductionCallResolver
 
 _ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{1,127}\Z")
 _SUPPORTED_IMPLEMENTATIONS = {
@@ -225,6 +222,7 @@ def build_production_adapter_feature(
                         "PRODUCTION_PROVIDER_CREDENTIAL_SOURCE_UNSUPPORTED"
                     )
                 adapter = openai_factory(
+                    validate_output=validate_output,
                     credential_ref=connection.credential_ref,
                     **common,
                 )

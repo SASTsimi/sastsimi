@@ -7,6 +7,15 @@ from typing import Any, cast
 
 import pytest
 
+from sastsimi.composition.production_provider_builder import (
+    CodexHostBindingEvidence,
+    ProductionProviderBuildUnavailable,
+    ProductionProviderPromptFeature,
+    _codex_host_binding,
+    build_production_adapter_feature,
+    build_production_call_feature,
+    build_production_provider_prompt_feature,
+)
 from sastsimi.config.production_profile import ProductionProfile
 from sastsimi.config.secrets import SecretReference
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -21,22 +30,11 @@ from sastsimi.orchestration.production_call_authority import (
     ProductionPreparedCallAuthorizer,
 )
 from sastsimi.orchestration.production_capabilities import production_profile_hash
-from sastsimi.orchestration.production_llm_work_handlers import (
-    ConfiguredProductionCallResolver,
-)
-from sastsimi.orchestration.production_provider_builder import (
-    CodexHostBindingEvidence,
-    ProductionProviderBuildUnavailable,
-    ProductionProviderPromptFeature,
-    _codex_host_binding,
-    build_production_adapter_feature,
-    build_production_call_feature,
-    build_production_provider_prompt_feature,
-)
 from sastsimi.orchestration.production_provisioning import (
     PromptRoutesProvisioning,
     ProviderConfigurationProvisioning,
 )
+from sastsimi.prompts.production_calls import ConfiguredProductionCallResolver
 from sastsimi.providers.codex_subscription import ApprovedCodexExecutionBinding
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import meta, ref

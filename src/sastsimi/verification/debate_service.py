@@ -31,6 +31,7 @@ from sastsimi.contracts.work import (
     WorkType,
     validate_parent_work,
 )
+from sastsimi.ports.authorized_llm_call import AuthorizedLLMCall as AuthorizedLLMCall
 from sastsimi.ports.fake_workflow import ProviderInvoker, ProviderProber
 from sastsimi.ports.llm_invocation import (
     InvocationMetadataFactory,
@@ -56,16 +57,6 @@ class FakeDebateResult:
     con: ConEvidenceResult
     pro_ref: StoredDataRef
     con_ref: StoredDataRef
-
-
-@dataclass(frozen=True)
-class AuthorizedLLMCall:
-    """One already-authorized call bound to a running evidence child work."""
-
-    work: WorkExecutionState
-    decision_ref: StoredDataRef
-    reservation_ref: RecordRef
-    call_spec_ref: StoredDataRef
 
 
 @dataclass(frozen=True)

@@ -7,6 +7,24 @@ from typing import Any, cast
 
 import pytest
 
+from sastsimi.composition.production_composition import (
+    ProductionCapabilityUnavailable,
+)
+from sastsimi.composition.production_default_assembler import (
+    BuiltProductionDynamicFeature,
+    ProductionStaticRuntimePorts,
+    build_default_production_bundle_assembler,
+    build_default_production_bundle_registry,
+)
+from sastsimi.composition.production_feature_installer import (
+    DynamicProductionFeature,
+    PolicyProductionFeature,
+    T08ProductionFeature,
+)
+from sastsimi.composition.production_filesystem_provisioner import (
+    ProductionBundleAssemblyContext,
+    ProductionImplementationSet,
+)
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.ids import (
     AnalysisId,
@@ -19,24 +37,6 @@ from sastsimi.contracts.ids import (
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef, reference
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
-from sastsimi.orchestration.production_composition import (
-    ProductionCapabilityUnavailable,
-)
-from sastsimi.orchestration.production_default_assembler import (
-    BuiltProductionDynamicFeature,
-    ProductionStaticRuntimePorts,
-    build_default_production_bundle_assembler,
-    build_default_production_bundle_registry,
-)
-from sastsimi.orchestration.production_feature_installer import (
-    DynamicProductionFeature,
-    PolicyProductionFeature,
-    T08ProductionFeature,
-)
-from sastsimi.orchestration.production_filesystem_provisioner import (
-    ProductionBundleAssemblyContext,
-    ProductionImplementationSet,
-)
 from sastsimi.orchestration.production_provisioning import (
     PolicyCatalogProvisioning,
     PromptRoutesProvisioning,
@@ -261,7 +261,7 @@ def _static_ports() -> ProductionStaticRuntimePorts:
 def test_default_assembler_composes_non_r7_features_and_exact_refs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from sastsimi.orchestration import production_default_assembler as module
+    from sastsimi.composition import production_default_assembler as module
 
     context = _assembly_context(tmp_path)
     provider_prompt = SimpleNamespace(

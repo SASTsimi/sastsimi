@@ -9,12 +9,12 @@ from sastsimi.contracts.dynamic import SandboxEnvironment
 from sastsimi.contracts.llm import LLMCallSpec
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.ports.docker_state import DockerContainerState
 from sastsimi.ports.dto import CancellationResult
 from sastsimi.ports.llm_provider import LLMProviderAdapter
 from sastsimi.ports.record_store import RecordStore
 from sastsimi.ports.scheduler import CancellationObservation, CancellationTarget
 from sastsimi.runtime.cancellation_service import ExactCancellationRouter
-from sastsimi.sandbox.docker_adapter import DockerContainerState
 
 
 class AttemptCancellationPort(Protocol):

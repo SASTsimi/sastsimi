@@ -9,7 +9,12 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import Literal
 
-from sastsimi.bootstrap import T11Services, build_t11_services
+from sastsimi.composition.production_feature_installer import (
+    CurrentRepositoryProfileT11Resolver,
+    DynamicProductionFeature,
+    ReadinessCheck,
+)
+from sastsimi.composition.runtime import T11Services, build_t11_services
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.budget import (
     BudgetProfileBinding,
@@ -32,6 +37,12 @@ from sastsimi.contracts.refs import (
 )
 from sastsimi.contracts.static import CodeWorkspace, RepositoryProfile
 from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.orchestration.production_context import ProductionInstallationContext
+from sastsimi.orchestration.production_provisioning import (
+    MaterializedProvisioningArtifacts,
+    ResolvedProductionProvisioning,
+    SandboxProfileProvisioning,
+)
 from sastsimi.ports.dto import Record
 from sastsimi.ports.dynamic_sandbox import (
     SandboxRunSpec,
@@ -45,18 +56,6 @@ from sastsimi.reproduction.production import DynamicSandboxAuthorization
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.sandbox.docker_adapter import DockerAdapter
 from sastsimi.verification.service import VerificationService
-
-from .production_composition import ProductionInstallationContext
-from .production_feature_installer import (
-    CurrentRepositoryProfileT11Resolver,
-    DynamicProductionFeature,
-    ReadinessCheck,
-)
-from .production_provisioning import (
-    MaterializedProvisioningArtifacts,
-    ResolvedProductionProvisioning,
-    SandboxProfileProvisioning,
-)
 
 _DOCKER_OPERATIONS = frozenset(
     {"IMAGE_BUILD", "CONTAINER_RUN", "HEALTH_CHECK", "CLEANUP"}

@@ -43,7 +43,7 @@ from sastsimi.static_analysis.open_grep_adapter import (
 from sastsimi.static_analysis.process import AttemptOutputBudget, SafeProcessRunner
 
 if TYPE_CHECKING:
-    from .production_t08_builder import StaticAdapterBuildContext
+    from sastsimi.orchestration.static_adapter_context import StaticAdapterBuildContext
 
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _PYTHON_SUFFIXES = frozenset({".py", ".pyi"})

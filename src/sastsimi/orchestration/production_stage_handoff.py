@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
-from sastsimi.bootstrap import T12Services
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.chaining import PrimitiveIndexState
@@ -35,13 +35,21 @@ from sastsimi.contracts.work import (
     WorkStatus,
     WorkType,
 )
-from sastsimi.orchestration.primitive_handoff import PrimitiveHandoffRefs
-from sastsimi.orchestration.production_composition import ProductionInstallationContext
+from sastsimi.orchestration.primitive_handoff import (
+    PrimitiveHandoffRefs,
+    PrimitiveUpdateHandoff,
+)
+from sastsimi.orchestration.production_context import ProductionInstallationContext
 from sastsimi.ports.dto import WorkContext, WorkHandlerResult
 from sastsimi.ports.work_handler import WorkHandler
 from sastsimi.reporting.rule_scope_gate_workflow import (
     expected_rule_scope_evidence,
 )
+
+
+class ReportingStageServices(Protocol):
+    @property
+    def primitive_handoff(self) -> PrimitiveUpdateHandoff: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,7 +71,7 @@ class ProductionStageRouter:
     """Create the next exact work only after the previous output is committed."""
 
     context: ProductionInstallationContext
-    t12: T12Services
+    t12: ReportingStageServices
 
     def after(self, work: WorkExecutionState) -> None:
         if work.status != WorkStatus.SUCCEEDED and not (

@@ -181,11 +181,11 @@ def test_default_builder_installs_a_non_empty_production_feature_assembler(
 ) -> None:
     """The shipped command must bind the real T08-T13 assembler by default."""
 
-    from sastsimi.orchestration import production_onboarding
-    from sastsimi.orchestration.production_filesystem_provisioner import (
+    from sastsimi.composition.production_filesystem_provisioner import (
         FilesystemAnalysisCapabilityProvisioner,
         ProductionBundleAssemblyRegistry,
     )
+    from sastsimi.orchestration import production_onboarding
 
     captured: dict[str, object] = {}
 

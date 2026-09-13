@@ -12,6 +12,7 @@ from sastsimi.contracts.ids import CommitId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.record_store import RecordStore
+from sastsimi.prompts.validation import validate_output
 from sastsimi.providers.base import CredentialUnavailableError
 from sastsimi.providers.openai_composition import (
     EnvironmentSecretResolver,
@@ -113,6 +114,7 @@ async def test_storage_backed_composition_keeps_provider_id_out_of_session_ref(
         semantic_validators={},
         metadata_factory=cast(Any, lambda *_args: None),
         clock=SystemClock(),
+        validate_output=validate_output,
     )
 
     assert isinstance(adapter.prompt_resolver, StoredPromptInputResolver)

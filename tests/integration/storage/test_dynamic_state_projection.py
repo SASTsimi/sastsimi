@@ -16,13 +16,13 @@ from sastsimi.contracts.dynamic import (
 )
 from sastsimi.contracts.refs import RecordRef, StoredDataRef
 from sastsimi.contracts.work import WorkExecutionState, WorkStatus
-from sastsimi.orchestration.dynamic_verification_handoff import (
-    DynamicParentResumeService,
-)
 from sastsimi.ports.dto import WorkContext, WorkHandlerResult
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.storage.codec import reference
+from sastsimi.verification.dynamic_verification_handoff import (
+    DynamicParentResumeService,
+)
 from tests.contract.domain.canonical_fixtures import make
 from tests.integration.runtime_support import Harness
 from tests.integration.storage.verification_support import prepared_verification

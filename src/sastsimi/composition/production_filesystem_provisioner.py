@@ -44,31 +44,20 @@ from sastsimi.contracts.refs import (
     reference,
 )
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
-from sastsimi.ports.dto import CapabilityProbeResult, Record
-from sastsimi.ports.llm_provider import LLMProviderAdapter
-from sastsimi.ports.trusted_evidence import UnprovenEvidence
-from sastsimi.storage import models
-from sastsimi.storage.artifact_store import LocalArtifactStore
-from sastsimi.storage.configuration_registry import ConfigurationRegistry
-from sastsimi.storage.database import Database
-from sastsimi.storage.migrations import upgrade
-from sastsimi.storage.queries import RuntimeQueries
-from sastsimi.storage.repositories import SQLiteRecordStore
-
-from .production_call_authority import AnalysisApprovedRoute
-from .production_capabilities import (
+from sastsimi.orchestration.production_call_authority import AnalysisApprovedRoute
+from sastsimi.orchestration.production_capabilities import (
     ProfileBackedProductionCapabilityBundle,
     production_profile_hash,
 )
-from .production_composition import (
+from sastsimi.orchestration.production_context import (
     ProductionCapabilityUnavailable,
     ProductionFeatureInstaller,
 )
-from .production_onboarding import (
+from sastsimi.orchestration.production_onboarding import (
     ProductionOnboardingManifest,
     ProductionProvisioningManifest,
 )
-from .production_provisioning import (
+from sastsimi.orchestration.production_provisioning import (
     ExactProductionProvisioningResolver,
     ExactProvisioningArtifactMaterializer,
     MaterializedProvisioningArtifacts,
@@ -82,7 +71,17 @@ from .production_provisioning import (
     SandboxProfileProvisioningTemplate,
     StaticAnalysisProvisioningTemplate,
 )
-from .run_scope_plan import PlannedRunScope
+from sastsimi.orchestration.run_scope_plan import PlannedRunScope
+from sastsimi.ports.dto import CapabilityProbeResult, Record
+from sastsimi.ports.llm_provider import LLMProviderAdapter
+from sastsimi.ports.trusted_evidence import UnprovenEvidence
+from sastsimi.storage import models
+from sastsimi.storage.artifact_store import LocalArtifactStore
+from sastsimi.storage.configuration_registry import ConfigurationRegistry
+from sastsimi.storage.database import Database
+from sastsimi.storage.migrations import upgrade
+from sastsimi.storage.queries import RuntimeQueries
+from sastsimi.storage.repositories import SQLiteRecordStore
 
 
 @dataclass(frozen=True, slots=True)

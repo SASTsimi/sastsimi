@@ -18,13 +18,13 @@ from sastsimi.contracts.work import (
     WorkStatus,
     WorkType,
 )
-from sastsimi.orchestration.dynamic_verification_handoff import (
-    DynamicParentResumeService,
-)
 from sastsimi.ports.dto import Record
 from sastsimi.ports.record_store import RecordStore
 from sastsimi.ports.runtime_query import RuntimeQueryPort
 from sastsimi.runtime.workflow_runner import WorkflowRunner
+from sastsimi.verification.dynamic_verification_handoff import (
+    DynamicParentResumeService,
+)
 from tests.contract.domain.canonical_fixtures import make
 from tests.unit.orchestration.test_production_llm_work_handlers import _context
 

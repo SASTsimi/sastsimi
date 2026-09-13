@@ -35,7 +35,7 @@ def _store_ready_state(database: Database) -> None:
 
 
 def test_locates_exact_current_run_scope_from_sqlite(tmp_path: Path) -> None:
-    from sastsimi.orchestration.run_scope_locator import RunScopeLocator
+    from sastsimi.storage.run_scope_locator import RunScopeLocator
 
     database = Database(tmp_path / "runtime.sqlite3")
     upgrade(database)
@@ -49,7 +49,7 @@ def test_locates_exact_current_run_scope_from_sqlite(tmp_path: Path) -> None:
 
 
 def test_rejects_stale_expected_run_scope(tmp_path: Path) -> None:
-    from sastsimi.orchestration.run_scope_locator import RunScopeError, RunScopeLocator
+    from sastsimi.storage.run_scope_locator import RunScopeError, RunScopeLocator
 
     database = Database(tmp_path / "runtime.sqlite3")
     upgrade(database)

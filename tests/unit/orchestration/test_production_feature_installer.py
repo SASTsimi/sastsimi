@@ -8,6 +8,14 @@ from typing import Any, cast
 import pytest
 
 from sastsimi.bootstrap import T11Services
+from sastsimi.composition.production_composition import (
+    ProductionCapabilityUnavailable,
+)
+from sastsimi.composition.production_feature_installer import (
+    CombinedPostWorkspaceSeeder,
+    CurrentRepositoryProfileT11Resolver,
+    ExactProductionReadiness,
+)
 from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.ids import (
@@ -24,14 +32,6 @@ from sastsimi.contracts.records import RecordMeta, RunMeta
 from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
 from sastsimi.contracts.static import CodeWorkspace, RepositoryProfile
 from sastsimi.contracts.work import WorkExecutionState
-from sastsimi.orchestration.production_composition import (
-    ProductionCapabilityUnavailable,
-)
-from sastsimi.orchestration.production_feature_installer import (
-    CombinedPostWorkspaceSeeder,
-    CurrentRepositoryProfileT11Resolver,
-    ExactProductionReadiness,
-)
 
 
 class _Seeder:

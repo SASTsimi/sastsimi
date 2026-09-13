@@ -10,7 +10,6 @@ that public service when it is installed.
 from __future__ import annotations
 
 import hashlib
-import importlib
 import json
 import os
 import platform
@@ -24,6 +23,25 @@ from typing import Literal, Protocol, cast
 from pydantic import TypeAdapter
 from sqlalchemy import select
 
+from sastsimi.composition.production_default_assembler import (
+    BuiltProductionDynamicFeature,
+    ProductionStaticRuntimePorts,
+    build_default_production_bundle_assembler,
+)
+from sastsimi.composition.production_dynamic_feature_builder import (
+    build_production_dynamic_feature,
+)
+from sastsimi.composition.production_feature_installer import (
+    DynamicProductionFeature,
+    T08ProductionFeature,
+)
+from sastsimi.composition.production_filesystem_provisioner import (
+    ProductionBundleAssemblyContext,
+    ProductionBundleAssemblyPort,
+)
+from sastsimi.composition.production_static_adapters import (
+    StaticAttemptAdapterDispatch,
+)
 from sastsimi.contracts.actions import ActionDecision, ActionRequest, ActionType
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import (
@@ -37,28 +55,9 @@ from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.orchestration.production_cancellation import (
     build_production_cancellation_router,
 )
-from sastsimi.orchestration.production_composition import (
+from sastsimi.orchestration.production_context import (
     ProductionCapabilityUnavailable,
     ProductionInstallationContext,
-)
-from sastsimi.orchestration.production_default_assembler import (
-    BuiltProductionDynamicFeature,
-    ProductionStaticRuntimePorts,
-    build_default_production_bundle_assembler,
-)
-from sastsimi.orchestration.production_dynamic_feature_builder import (
-    build_production_dynamic_feature,
-)
-from sastsimi.orchestration.production_feature_installer import (
-    DynamicProductionFeature,
-    T08ProductionFeature,
-)
-from sastsimi.orchestration.production_filesystem_provisioner import (
-    ProductionBundleAssemblyContext,
-    ProductionBundleAssemblyPort,
-)
-from sastsimi.orchestration.production_static_adapters import (
-    StaticAttemptAdapterDispatch,
 )
 from sastsimi.orchestration.static_external_runner import StaticDispatchState
 from sastsimi.ports.dto import ProcessReceipt, StaticToolObservation, StaticToolRequest
@@ -395,10 +394,11 @@ def _default_docker_resolver(
     """Load T16B's public service; absence is an explicit blocked capability."""
 
     try:
-        module = importlib.import_module("sastsimi.capabilities")
+        from sastsimi.capabilities import build_production_capability_probe_service
+
         builder = cast(
             _CapabilityServiceBuilder,
-            module.build_production_capability_probe_service,
+            build_production_capability_probe_service,
         )
     except (AttributeError, ImportError, ModuleNotFoundError):
         raise ProductionCapabilityUnavailable(

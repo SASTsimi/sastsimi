@@ -8,16 +8,16 @@ from typing import Any, cast
 
 import pytest
 
-from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.orchestration.production_bootstrap_runtime import (
+from sastsimi.composition.production_bootstrap_runtime import (
     ProductionDynamicRuntimeFactory,
     ProductionStaticRuntimeFactory,
     _guarded_read,
 )
-from sastsimi.orchestration.production_composition import (
+from sastsimi.composition.production_composition import (
     ProductionCapabilityUnavailable,
     ProductionInstallationContext,
 )
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.ports.dto import ProcessReceipt
 
 

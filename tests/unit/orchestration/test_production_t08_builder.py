@@ -11,6 +11,12 @@ from typing import cast
 
 import pytest
 
+from sastsimi.composition.production_composition import ProductionInstallationContext
+from sastsimi.composition.production_t08_builder import (
+    ProductionT08Inputs,
+    StaticAdapterBuildContext,
+    build_production_t08_feature,
+)
 from sastsimi.config.production_profile import ProductionProfile
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.analysis import AnalysisStartRequest
@@ -39,7 +45,6 @@ from sastsimi.contracts.refs import (
 )
 from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.orchestration.production_capabilities import production_profile_hash
-from sastsimi.orchestration.production_composition import ProductionInstallationContext
 from sastsimi.orchestration.production_operator_profiles import (
     ProductionOperatorProfiles,
 )
@@ -47,11 +52,6 @@ from sastsimi.orchestration.production_provisioning import (
     StaticAnalysisProvisioning,
     StaticRouteProvisioning,
     WorkspaceStorageProvisioning,
-)
-from sastsimi.orchestration.production_t08_builder import (
-    ProductionT08Inputs,
-    StaticAdapterBuildContext,
-    build_production_t08_feature,
 )
 from sastsimi.orchestration.repository_profile_handler import (
     RepositoryProfileWorkHandler,

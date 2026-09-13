@@ -14,7 +14,6 @@ from sastsimi.contracts.llm import LLMRole
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.record_store import RecordStore
-from sastsimi.prompts.validation import validate_output
 
 from .base import (
     Clock,
@@ -32,6 +31,7 @@ from .storage_io import (
     StoredInvocationResultBuilder,
     StoredOutputValidator,
     StoredPromptInputResolver,
+    StructuredOutputValidator,
 )
 
 
@@ -41,8 +41,8 @@ class OpenAISdkUnavailableError(RuntimeError):
 
 class _OpenAIClientConstructor(Protocol):
     def __call__(
-        self, *, api_key: str, max_retries: int
-    ) -> AbstractAsyncContextManager[OpenAIResponsesClient]: ...
+        self, *, api_key: str, max_retries: Literal[0]
+    ) -> OpenAIResponsesClient: ...
 
 
 def _load_openai_client_type() -> _OpenAIClientConstructor:
@@ -126,6 +126,7 @@ def build_openai_responses_api_adapter(
     semantic_validators: Mapping[StoredDataRef, SemanticValidator],
     metadata_factory: InvocationMetadataFactory,
     clock: Clock,
+    validate_output: StructuredOutputValidator,
     request_semantic_validators: Mapping[tuple[LLMRole, str], RequestSemanticValidator]
     | None = None,
     probe_runner: ProviderProbeRunner | None = None,

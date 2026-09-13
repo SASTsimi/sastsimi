@@ -11,6 +11,13 @@ from uuid import uuid4
 import pytest
 
 from sastsimi.bootstrap import upgrade_database
+from sastsimi.composition.production_composition import (
+    ConcreteProductionApplicationFactory,
+    InstalledProductionServices,
+    ProductionCapabilityResolver,
+    ProductionInstallationContext,
+    ResolvedProductionCapabilities,
+)
 from sastsimi.config.production_profile import ProductionProfile
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.analysis import AnalysisStartRequest
@@ -32,24 +39,15 @@ from sastsimi.contracts.refs import (
 from sastsimi.contracts.work import WorkType
 from sastsimi.orchestration.production_application import ProductionApplication
 from sastsimi.orchestration.production_call_authority import AnalysisApprovedRoute
-from sastsimi.orchestration.production_composition import (
-    ConcreteProductionApplicationFactory,
-    InstalledProductionServices,
-    ProductionCapabilityResolver,
-    ProductionInstallationContext,
-    ResolvedProductionCapabilities,
-)
 from sastsimi.orchestration.reporting_application import ReportingAnalysisApplication
 from sastsimi.orchestration.run_initialization import PostWorkspaceSeederPort
 from sastsimi.orchestration.run_scope_plan import PlannedRunScope
 from sastsimi.ports.dto import WorkContext, WorkHandlerResult
 from sastsimi.ports.llm_provider import LLMProviderAdapter
+from sastsimi.ports.production_prompt import ApprovedProductionRoute
 from sastsimi.ports.scheduler import CancellationObservation, CancellationTarget
 from sastsimi.ports.trusted_evidence import UnprovenEvidence
-from sastsimi.prompts.production import (
-    REQUIRED_PRODUCTION_PROMPT_ROUTES,
-    ApprovedProductionRoute,
-)
+from sastsimi.prompts.production import REQUIRED_PRODUCTION_PROMPT_ROUTES
 from sastsimi.runtime.work_service import HandlerFailureRecorder
 
 COMMIT = CommitId("a" * 40)
@@ -380,7 +378,7 @@ def test_factory_builds_sqlite_foundation_and_complete_handler_application() -> 
 def test_factory_without_exact_capability_resolver_fails_before_creating_state() -> (
     None
 ):
-    from sastsimi.interfaces.cli.analyze import ProductionAnalyzeUnavailable
+    from sastsimi.ports.production_analysis import ProductionAnalyzeUnavailable
 
     with _writable_data_dir() as data_dir:
         with pytest.raises(
@@ -398,7 +396,7 @@ def test_factory_without_exact_capability_resolver_fails_before_creating_state()
 
 
 def test_factory_rejects_incomplete_exact_llm_route_graph_before_installing() -> None:
-    from sastsimi.interfaces.cli.analyze import ProductionAnalyzeUnavailable
+    from sastsimi.ports.production_analysis import ProductionAnalyzeUnavailable
 
     with _writable_data_dir() as data_dir:
         capabilities = _MissingRouteCapabilities()

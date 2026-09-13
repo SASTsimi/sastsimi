@@ -28,12 +28,14 @@ from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
 from sastsimi.contracts.static import StaticFactBundle
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import Record
+from sastsimi.ports.production_prompt import (
+    ApprovedProductionRoute,
+    ProductionPromptApproval,
+)
 from sastsimi.prompts.builder import PromptSource
 from sastsimi.prompts.production import (
     REQUIRED_PRODUCTION_PROMPT_ROUTES,
-    ApprovedProductionRoute,
     ProductionLLMConfigurationService,
-    ProductionPromptApproval,
 )
 from sastsimi.prompts.registry import REQUIRED_TEMPLATE_SECTIONS
 from sastsimi.runtime.prompt_registry import PromptRegistry

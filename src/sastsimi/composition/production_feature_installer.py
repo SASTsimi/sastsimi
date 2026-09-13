@@ -17,14 +17,14 @@ from sastsimi.agents.cwe_labeling import CWECallRefs
 from sastsimi.agents.policy_parser import PolicyParserAgent
 from sastsimi.agents.reporter import ReporterCallRefs
 from sastsimi.agents.rule_scope_gate import RuleScopeCallRefs
-from sastsimi.bootstrap import (
+from sastsimi.chaining.service import ChainingCallRefs, ChainingCallResolver
+from sastsimi.composition.runtime import (
     T11Services,
     build_t10_services,
     build_t11_services,
     build_t12_services,
     build_t13_services,
 )
-from sastsimi.chaining.service import ChainingCallRefs, ChainingCallResolver
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
 from sastsimi.contracts.canonical_json import content_hash
@@ -42,29 +42,14 @@ from sastsimi.contracts.refs import (
 )
 from sastsimi.contracts.static import CodeWorkspace, RepositoryProfile
 from sastsimi.contracts.work import SubjectType, WorkExecutionState, WorkType
-from sastsimi.orchestration.dynamic_verification_handoff import (
-    DynamicParentResumeService,
-    DynamicReproductionWorkHandler,
-    ProductionDynamicVerificationHandoff,
-)
 from sastsimi.orchestration.production_cancellation import (
     AttemptCancellationPort,
     SandboxCancellationDockerPort,
 )
-from sastsimi.orchestration.production_composition import (
+from sastsimi.orchestration.production_context import (
     InstalledProductionServices,
     ProductionCapabilityUnavailable,
     ProductionInstallationContext,
-)
-from sastsimi.orchestration.production_llm_work_handlers import (
-    DynamicVerificationPort,
-    EvidenceBranchWorkHandler,
-    EvidenceCommittedPort,
-    HypothesisProposalWorkHandler,
-    HypothesisWorkflowPort,
-    NonDynamicCompletionPort,
-    ProductionCallPort,
-    VerificationWorkHandler,
 )
 from sastsimi.orchestration.production_stage_handoff import (
     ProductionStageRouter,
@@ -80,6 +65,7 @@ from sastsimi.policy.collector import PolicyCollector
 from sastsimi.policy.preparation_service import PolicyPreparationService
 from sastsimi.policy.program_catalog import ProgramCatalog
 from sastsimi.policy.work_handler import PolicyWorkHandler
+from sastsimi.ports.authorized_llm_call import AuthorizedLLMCall
 from sastsimi.ports.chaining import ChainingAgentInput
 from sastsimi.ports.dto import WorkContext, WorkHandlerResult
 from sastsimi.ports.dynamic_sandbox import TrustedDockerTargetResolverPort
@@ -92,7 +78,21 @@ from sastsimi.ports.workspace import WorkspaceLocatorPort
 from sastsimi.reporting.cwe_workflow import GateCallRefs
 from sastsimi.reproduction.production import DynamicSandboxAuthorizationResolver
 from sastsimi.verification.completion import VerificationCompletionCoordinator
-from sastsimi.verification.debate_service import AuthorizedLLMCall
+from sastsimi.verification.dynamic_verification_handoff import (
+    DynamicParentResumeService,
+    DynamicReproductionWorkHandler,
+    ProductionDynamicVerificationHandoff,
+)
+from sastsimi.verification.production_llm_work_handlers import (
+    DynamicVerificationPort,
+    EvidenceBranchWorkHandler,
+    EvidenceCommittedPort,
+    HypothesisProposalWorkHandler,
+    HypothesisWorkflowPort,
+    NonDynamicCompletionPort,
+    ProductionCallPort,
+    VerificationWorkHandler,
+)
 
 
 class ReadinessCheck(Protocol):

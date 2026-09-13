@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
 
-from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.evaluation import EvaluationRecommendation
 from sastsimi.contracts.ids import AttemptId, LogicalRecordId, RecordId
 from sastsimi.contracts.llm import (
@@ -30,23 +28,23 @@ from sastsimi.ports.clock import Clock
 from sastsimi.ports.configuration_registry import ConfigurationRegistryPort
 from sastsimi.ports.dto import Record
 from sastsimi.ports.id_generator import IdGenerator
+from sastsimi.ports.production_prompt import (
+    ApprovedProductionRoute as ApprovedProductionRoute,
+)
+from sastsimi.ports.production_prompt import (
+    PreparedProductionCall as PreparedProductionCall,
+)
+from sastsimi.ports.production_prompt import (
+    ProductionPromptApproval as ProductionPromptApproval,
+)
+from sastsimi.ports.production_prompt import ProductionRoute as ProductionRoute
+from sastsimi.ports.prompt_registry import PromptRegistryPort
 from sastsimi.ports.record_store import RecordStore
 from sastsimi.ports.runtime_query import RuntimeQueryPort
-from sastsimi.runtime.prompt_registry import PromptRegistry
 
 from .builder import PromptBuilder, PromptSource
 from .loader import PromptLoader
 from .registry import LoadedPromptDefinition
-
-
-class ProductionRoute(Protocol):
-    """Structural view of one ``ProductionProfile.llm_routes`` item."""
-
-    role: LLMRole
-    task_kind: str
-    provider_profile_key: str
-    model: str
-    prompt_key: str
 
 
 @dataclass(frozen=True)
@@ -183,18 +181,6 @@ _REQUIRED_REDACTIONS = frozenset(
 _FORBIDDEN_CONTEXT = frozenset({"credential", "provider_profile", "llm_invocation_log"})
 
 
-class ProductionPromptApproval(ContractModel):
-    """Operator-provided exact R8 quality approval; never a credential value."""
-
-    evaluation_prompt_ref: StoredDataRef
-    quality_evaluation_ref: StoredDataRef
-    provider_profile_ref: StoredDataRef
-
-
-class ApprovedProductionRoute(ProductionPromptApproval):
-    active_prompt_ref: StoredDataRef
-
-
 @dataclass(frozen=True)
 class PromptActivation:
     route: ProductionRoute
@@ -216,14 +202,6 @@ class ResolvedProductionRoute:
     definition: LoadedPromptDefinition
 
 
-@dataclass(frozen=True)
-class PreparedProductionCall:
-    payload: PromptPayload
-    payload_ref: StoredDataRef
-    call_spec: LLMCallSpec
-    call_spec_ref: StoredDataRef
-
-
 class ProductionLLMConfigurationService:
     """Provision approved routes and bind exact per-attempt LLM calls.
 
@@ -238,7 +216,7 @@ class ProductionLLMConfigurationService:
         records: RecordStore,
         queries: RuntimeQueryPort,
         configuration: ConfigurationRegistryPort,
-        prompt_registry: PromptRegistry,
+        prompt_registry: PromptRegistryPort,
         artifacts: ArtifactStore,
         ids: IdGenerator,
         clock: Clock,

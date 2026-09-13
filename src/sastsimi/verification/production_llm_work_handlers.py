@@ -11,14 +11,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, cast
 
-from pydantic import BaseModel
-
 from sastsimi.agents.dynamic_reproduction import DynamicAgentInvocation
 from sastsimi.agents.verification import (
     VerificationAgentOutcome,
     VerificationCallRefs,
 )
-from sastsimi.chaining.work_handlers import require_claimed_context
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.domain import same_scope
 from sastsimi.contracts.hypothesis import VulnerabilityHypothesis
@@ -27,7 +24,6 @@ from sastsimi.contracts.llm import (
     LLMInvocationRequest,
     LLMInvocationResult,
     LLMRole,
-    PromptInputSlot,
 )
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import (
@@ -51,21 +47,15 @@ from sastsimi.contracts.work import (
     WorkStatus,
     WorkType,
 )
-from sastsimi.ports.dto import Record, WorkContext, WorkHandlerResult
+from sastsimi.ports.authorized_llm_call import AuthorizedLLMCall
+from sastsimi.ports.dto import WorkContext, WorkHandlerResult
 from sastsimi.ports.llm_invocation import PersistedLLMInvocation
 from sastsimi.ports.record_store import RecordStore
 from sastsimi.ports.verification_assembly import VerificationGenerationInputs
-from sastsimi.prompts.builder import PromptSource
-from sastsimi.prompts.production import (
-    ApprovedProductionRoute,
-    PreparedProductionCall,
-    ProductionLLMConfigurationService,
-    ProductionRoute,
-)
+from sastsimi.runtime.claimed_context import require_claimed_context
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.verification.completion import VerificationCompletion
 from sastsimi.verification.debate_service import (
-    AuthorizedLLMCall,
     DebateIncompleteError,
     DebateResult,
     DebateService,
@@ -74,26 +64,6 @@ from sastsimi.verification.service import VerificationService
 
 type EvidenceRole = Literal["PRO", "CON"]
 type BudgetScopeResolver = Callable[[str], BudgetScopeRef]
-
-
-class ProductionRouteLookup(Protocol):
-    """Resolve an analysis-owned route and its exact approval graph."""
-
-    def __call__(
-        self, analysis_id: str, role: LLMRole, task_kind: str
-    ) -> tuple[ProductionRoute, ApprovedProductionRoute]: ...
-
-
-class PreparedCallAuthorizer(Protocol):
-    """Attach budget and action authority after prompt preparation."""
-
-    def authorize(
-        self, *, work: WorkExecutionState, prepared: PreparedProductionCall
-    ) -> AuthorizedLLMCall: ...
-
-    def settle(
-        self, call: AuthorizedLLMCall, invocation: PersistedLLMInvocation
-    ) -> None: ...
 
 
 class ProductionCallPort(Protocol):
@@ -109,124 +79,6 @@ class ProductionCallPort(Protocol):
     def settle(
         self, call: AuthorizedLLMCall, invocation: PersistedLLMInvocation
     ) -> None: ...
-
-
-@dataclass(frozen=True, slots=True)
-class ConfiguredProductionCallResolver:
-    """Build a call from the exact route selected for this analysis.
-
-    The route lookup is keyed by ``analysis_id``.  Consequently a handler
-    cannot silently reuse another analysis's prompt approval, Provider, or
-    model.  The configuration service additionally verifies their exact refs.
-    """
-
-    configuration: ProductionLLMConfigurationService
-    records: RecordStore
-    route_lookup: ProductionRouteLookup
-    authorizer: PreparedCallAuthorizer
-
-    def resolve(
-        self,
-        *,
-        work: WorkExecutionState,
-        role: LLMRole,
-        task_kind: str,
-        source_refs: tuple[StoredDataRef, ...],
-    ) -> AuthorizedLLMCall:
-        if (
-            not isinstance(work.meta, RecordMeta)
-            or work.status != WorkStatus.RUNNING
-            or work.active_attempt_id is None
-            or not source_refs
-            or len(source_refs) != len(set(source_refs))
-        ):
-            raise ValueError("PRODUCTION_LLM_CALL_SCOPE_MISMATCH")
-        route, approval = self.route_lookup(str(work.meta.analysis_id), role, task_kind)
-        if route.role != role or route.task_kind != task_kind:
-            raise ValueError("PRODUCTION_LLM_ROUTE_MISMATCH")
-        resolved = self.configuration.resolve_route(route=route, approval=approval)
-        sources = self._sources(work.meta, resolved.entry.input_slots, source_refs)
-        prepared = self.configuration.prepare_call(
-            route=route,
-            approval=approval,
-            work=work,
-            sources=sources,
-        )
-        if (
-            prepared.call_spec.agent_role != role
-            or prepared.call_spec.task_kind != task_kind
-            or prepared.call_spec.model != route.model
-            or prepared.call_spec.provider_profile_ref != resolved.provider_ref
-            or prepared.call_spec.context_refs != source_refs
-        ):
-            raise ValueError("PRODUCTION_LLM_CALL_SCOPE_MISMATCH")
-        call = self.authorizer.authorize(work=work, prepared=prepared)
-        if call.work != work or call.call_spec_ref != prepared.call_spec_ref:
-            raise ValueError("PRODUCTION_LLM_AUTHORIZATION_MISMATCH")
-        return call
-
-    def settle(
-        self, call: AuthorizedLLMCall, invocation: PersistedLLMInvocation
-    ) -> None:
-        self.authorizer.settle(call, invocation)
-
-    def _sources(
-        self,
-        work_meta: RecordMeta,
-        slots: tuple[PromptInputSlot, ...],
-        refs: tuple[StoredDataRef, ...],
-    ) -> tuple[PromptSource, ...]:
-        # PromptInputSlot is deliberately consumed structurally so this adapter
-        # does not introduce another prompt-contract model.
-        slot_by_kind: dict[str, PromptInputSlot] = {}
-        for slot in slots:
-            kind = str(slot.data_kind)
-            if not kind or kind in slot_by_kind:
-                raise ValueError("PRODUCTION_PROMPT_SOURCE_AMBIGUOUS")
-            slot_by_kind[kind] = slot
-        sources: list[PromptSource] = []
-        counts: dict[str, int] = {}
-        for ref in refs:
-            candidate_slot = slot_by_kind.get(ref.data_kind)
-            try:
-                value = self.records.get_exact(ref)
-            except (LookupError, ValueError) as error:
-                raise ValueError("PRODUCTION_PROMPT_SOURCE_NOT_EXACT") from error
-            meta = getattr(value, "meta", None)
-            if (
-                candidate_slot is None
-                or not isinstance(value, BaseModel)
-                or not isinstance(meta, RecordMeta)
-                or reference(cast(Record, value)) != ref
-            ):
-                raise ValueError("PRODUCTION_PROMPT_SOURCE_NOT_EXACT")
-            if (
-                meta.analysis_id != work_meta.analysis_id
-                or meta.workspace_id != work_meta.workspace_id
-                or meta.commit_id != work_meta.commit_id
-                or (
-                    meta.hypothesis_id is not None
-                    and meta.hypothesis_id != work_meta.hypothesis_id
-                )
-            ):
-                raise ValueError("PRODUCTION_PROMPT_SOURCE_SCOPE_MISMATCH")
-            name = str(candidate_slot.slot)
-            sources.append(PromptSource(name, ref, value))
-            counts[name] = counts.get(name, 0) + 1
-        for slot in slots:
-            name = str(slot.slot)
-            cardinality = str(slot.cardinality)
-            count = counts.get(name, 0)
-            if (
-                cardinality == "REQUIRED_ONE"
-                and count != 1
-                or cardinality == "OPTIONAL_ONE"
-                and count > 1
-                or cardinality == "REQUIRED_MANY"
-                and count < 1
-            ):
-                raise ValueError("PROMPT_CARDINALITY_MISMATCH")
-        return tuple(sources)
 
 
 @dataclass(frozen=True, slots=True)
@@ -850,15 +702,12 @@ def _unique_refs(refs: tuple[RecordRef, ...]) -> tuple[RecordRef, ...]:
 
 
 __all__ = [
-    "ConfiguredProductionCallResolver",
     "DynamicVerificationPort",
     "EvidenceBranchWorkHandler",
     "HypothesesCommittedPort",
     "HypothesisProposalWorkHandler",
     "ProductionDynamicStageCallResolver",
-    "PreparedCallAuthorizer",
     "ProductionCallPort",
-    "ProductionRouteLookup",
     "VerificationClaim",
     "VerificationClaimResolver",
     "VerificationWorkHandler",

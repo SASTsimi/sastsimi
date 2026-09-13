@@ -49,11 +49,13 @@ from sastsimi.ports.dto import (
     WorkContext,
     WorkHandlerResult,
 )
+from sastsimi.ports.static_workflows import (
+    ContextRetrievalServicePort,
+    StaticToolServicePort,
+)
 from sastsimi.runtime.workflow_runner import WorkflowRunner
-from sastsimi.static_analysis.coordinator import StaticToolCoordinator
 from sastsimi.static_analysis.repository_profile import static_tool_work_inputs
 from sastsimi.storage.context_policy import resolve_context_ceiling
-from sastsimi.verification.context_service import ContextRetrievalService
 
 from .repository_profile_handler import (
     RepositoryProfileCall,
@@ -856,7 +858,7 @@ class ExactStaticToolCallResolver:
 
 @dataclass(frozen=True, slots=True)
 class StaticToolWorkHandler:
-    tools: StaticToolCoordinator
+    tools: StaticToolServicePort
     resolve_call: ExactStaticToolCallResolver
     graph: StaticProductionGraph
 
@@ -1072,7 +1074,7 @@ class ExactContextRetrievalCallResolver:
 
 @dataclass(frozen=True, slots=True)
 class ContextRetrievalWorkHandler:
-    service: ContextRetrievalService
+    service: ContextRetrievalServicePort
     resolve_call: ExactContextRetrievalCallResolver
     requester_identity_ref: BudgetScopeRef
     service_identity_ref: BudgetScopeRef

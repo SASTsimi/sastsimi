@@ -8,6 +8,13 @@ from typing import Literal, cast
 
 from pydantic import model_validator
 
+from sastsimi.composition.production_feature_installer import (
+    PolicyProductionFeature,
+    build_official_policy_feature,
+)
+from sastsimi.composition.production_filesystem_provisioner import (
+    ProductionBundleAssemblyContext,
+)
 from sastsimi.config.production_profile import PolicySource
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -23,6 +30,11 @@ from sastsimi.contracts.policy import (
     PolicyFreshnessCriterion,
 )
 from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.orchestration.production_context import (
+    ProductionCapabilityUnavailable,
+    ProductionInstallationContext,
+)
+from sastsimi.orchestration.production_provisioning import PolicyCatalogProvisioning
 from sastsimi.policy.adapters.official_http import (
     OfficialHttpPolicySource,
     PinnedHttpsTransport,
@@ -31,18 +43,7 @@ from sastsimi.policy.adapters.official_http import (
 from sastsimi.policy.program_catalog import ProgramCatalog
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.policy_catalog import ProgramCatalogEntry
-
-from .production_composition import (
-    ProductionCapabilityUnavailable,
-    ProductionInstallationContext,
-)
-from .production_feature_installer import (
-    PolicyProductionFeature,
-    build_official_policy_feature,
-)
-from .production_filesystem_provisioner import ProductionBundleAssemblyContext
-from .production_llm_work_handlers import ProductionCallPort
-from .production_provisioning import PolicyCatalogProvisioning
+from sastsimi.verification.production_llm_work_handlers import ProductionCallPort
 
 
 class PolicySourceEvidence(ContractModel):

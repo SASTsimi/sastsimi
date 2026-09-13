@@ -11,6 +11,17 @@ from typing import cast
 
 import pytest
 
+from sastsimi.composition.production_static_adapters import (
+    ProductionStaticAdapterFactory,
+    StaticAdapterCancellationRouter,
+    StaticAttemptAdapterDispatch,
+    classify_codeql_language,
+    codeql_database_create_argv,
+)
+from sastsimi.composition.production_t08_builder import (
+    ApprovedStaticRuleClosure,
+    StaticAdapterBuildContext,
+)
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import (
     AnalysisId,
@@ -21,17 +32,6 @@ from sastsimi.contracts.ids import (
 )
 from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef, reference
 from sastsimi.contracts.static import CodeWorkspace, StaticToolProfile
-from sastsimi.orchestration.production_static_adapters import (
-    ProductionStaticAdapterFactory,
-    StaticAdapterCancellationRouter,
-    StaticAttemptAdapterDispatch,
-    classify_codeql_language,
-    codeql_database_create_argv,
-)
-from sastsimi.orchestration.production_t08_builder import (
-    ApprovedStaticRuleClosure,
-    StaticAdapterBuildContext,
-)
 from sastsimi.orchestration.static_work_handlers import StaticToolRoute
 from sastsimi.ports.dto import (
     CancellationResult,

@@ -27,17 +27,17 @@ from sastsimi.contracts.refs import (
     require_record_ref,
 )
 from sastsimi.contracts.work import WorkExecutionState, WorkStatus
+from sastsimi.ports.authorized_llm_call import AuthorizedLLMCall
 from sastsimi.ports.dto import Record
 from sastsimi.ports.llm_invocation import PersistedLLMInvocation
-from sastsimi.ports.record_store import RecordStore
-from sastsimi.ports.runtime_query import RuntimeQueryPort
-from sastsimi.prompts.production import (
+from sastsimi.ports.production_prompt import (
     ApprovedProductionRoute,
     PreparedProductionCall,
     ProductionRoute,
 )
+from sastsimi.ports.record_store import RecordStore
+from sastsimi.ports.runtime_query import RuntimeQueryPort
 from sastsimi.runtime.workflow_runner import WorkflowRunner
-from sastsimi.verification.debate_service import AuthorizedLLMCall
 
 
 @dataclass(frozen=True, slots=True)
