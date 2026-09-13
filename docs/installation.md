@@ -43,13 +43,19 @@ uv sync --frozen
 uv sync --frozen --all-groups
 ```
 
-이후 이 문서와 운영 안내의 SASTSIMI 명령은 모두 저장소 루트에서 `uv run sastsimi`로 실행합니다. `uv run`은 방금 lock으로 설치한 실행 환경을 선택하므로 별도 가상 환경 활성화에 의존하지 않습니다.
+소스 저장소에서 실행할 때는 이 문서와 운영 안내의 명령을 저장소 루트에서
+`uv run sastsimi`로 실행합니다. `uv run`은 lock으로 설치한 실행 환경을 선택하므로
+별도 가상 환경 활성화에 의존하지 않습니다.
 
 출시 wheel을 받은 사용자는 깨끗한 가상 환경에 그 wheel을 설치합니다.
 
 ```text
 python -m pip install <검증된-sastsimi-wheel-경로>
 ```
+
+wheel 설치 사용자는 그 가상 환경을 활성화한 뒤 아래 예시의 `uv run sastsimi`를
+`sastsimi`로 바꿔 실행합니다. wheel 사용에는 소스 저장소나 uv가 필요하지 않습니다.
+예: `sastsimi doctor --format json`.
 
 기본 상태 저장소를 준비합니다.
 
