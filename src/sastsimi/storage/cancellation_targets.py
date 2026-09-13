@@ -13,7 +13,7 @@ from sastsimi.contracts.actions import (
     validate_decision_revision,
 )
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
-from sastsimi.contracts.refs import RecordRef, StoredDataRef
+from sastsimi.contracts.refs import RecordRef
 from sastsimi.contracts.work import WorkAttempt, WorkExecutionState
 from sastsimi.ports.dto import Record
 from sastsimi.ports.scheduler import CancellationTarget, CancellationTargetKind
@@ -33,16 +33,6 @@ _PROVIDER_ACTIONS = frozenset(
 _STATIC_ACTIONS = frozenset(
     {ActionType.READ_CODE, ActionType.RUN_TOOL, ActionType.FETCH_POLICY}
 )
-_SANDBOX_RESOURCE_KINDS = frozenset(
-    {
-        "environment_recipe",
-        "sandbox_environment",
-        "sandbox_command_record",
-        "dynamic_reproduction_tool_request",
-    }
-)
-
-
 class CancellationTargetStore:
     """Never discovers host resources; only follows exact durable references."""
 
@@ -141,20 +131,6 @@ class CancellationTargetStore:
                     raise ValueError("CANCELLATION_TARGET_KIND_MISMATCH")
                 if action.llm_call_spec_ref is not None:
                     self._exact(connection, action.llm_call_spec_ref)
-                resources = tuple(
-                    dict.fromkeys(
-                        ref
-                        for ref in (
-                            *action.input_refs,
-                            action.reproduction_plan_ref,
-                            action.sandbox_profile_ref,
-                            action.resource_profile_ref,
-                        )
-                        if isinstance(ref, StoredDataRef)
-                        and ref.data_kind in _SANDBOX_RESOURCE_KINDS
-                        and self._is_exact(connection, ref)
-                    )
-                )
                 targets.append(
                     CancellationTarget(
                         target_kind=kind,
@@ -163,7 +139,9 @@ class CancellationTargetStore:
                         action_request_ref=reference(action),
                         action_decision_ref=reference(used),
                         call_spec_ref=action.llm_call_spec_ref,
-                        sandbox_resource_refs=resources,
+                        # Sandbox resources are owned only by the exact-attempt
+                        # journal snapshot, never inferred from action inputs.
+                        sandbox_resource_refs=(),
                         issued_action_decision_ref=issued_ref,
                     )
                 )
@@ -208,11 +186,5 @@ class CancellationTargetStore:
         if content_hash(record) != ref.content_hash:
             raise ValueError("HASH_MISMATCH")
         return record
-
-    @classmethod
-    def _is_exact(cls, connection: Connection, ref: RecordRef) -> bool:
-        cls._exact(connection, ref)
-        return True
-
 
 __all__ = ["CancellationTargetStore"]

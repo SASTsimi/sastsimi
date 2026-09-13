@@ -60,7 +60,12 @@ from sastsimi.ports.workspace import WorkspaceLocatorPort
 from sastsimi.reproduction.production import DynamicSandboxAuthorization
 from sastsimi.reproduction.service import DynamicOperationalError
 from sastsimi.runtime.workflow_runner import WorkflowRunner
-from sastsimi.sandbox.docker_adapter import DockerAdapter
+from sastsimi.sandbox.docker_adapter import (
+    DockerAdapter,
+    DockerContainerPresence,
+    DockerImageState,
+    DockerImageTagPresence,
+)
 from sastsimi.verification.production_llm_work_handlers import ProductionCallPort
 from sastsimi.verification.service import VerificationService
 
@@ -102,6 +107,25 @@ class _LazyDockerCancellation:
 
     async def remove(self, resource_ids: tuple[str, ...]) -> None:
         await self._delegate().remove(resource_ids)
+
+    async def inspect_container_presence(
+        self, container_id: str, *, by_name: bool = False
+    ) -> DockerContainerPresence:
+        return await self._delegate().inspect_container_presence(
+            container_id, by_name=by_name
+        )
+
+    async def inspect_owned_image(self, image_digest: str) -> DockerImageState:
+        return await self._delegate().inspect_owned_image(image_digest)
+
+    async def inspect_image_tag(self, image_tag: str) -> DockerImageTagPresence:
+        return await self._delegate().inspect_image_tag(image_tag)
+
+    async def remove_images(self, image_digests: tuple[str, ...]) -> None:
+        await self._delegate().remove_images(image_digests)
+
+    async def remove_image_tags(self, image_tags: tuple[str, ...]) -> None:
+        await self._delegate().remove_image_tags(image_tags)
 
     def _delegate(self) -> DockerAdapter:
         adapter = self._adapter

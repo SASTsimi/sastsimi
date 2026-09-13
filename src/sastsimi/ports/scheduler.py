@@ -15,8 +15,21 @@ from .dto import WorkContext
 from .work_handler import WorkHandler
 
 type CancellationTargetKind = Literal["STATIC", "PROVIDER", "SANDBOX"]
-type CancellationStatus = Literal["STOPPED", "ABSENT", "UNKNOWN"]
+type CancellationStatus = Literal["STOPPED", "ABSENT", "UNKNOWN", "PRESERVED"]
 type RunDisposition = Literal["TERMINAL", "BLOCKED", "CANCELLED", "FAILED"]
+
+
+@dataclass(frozen=True)
+class SandboxCancellationResource:
+    """Credential-free exact resource copied from one validated snapshot."""
+
+    resource_kind: Literal["CONTAINER", "IMAGE", "CONTAINER_INTENT", "IMAGE_INTENT"]
+    resource_id: str
+    resource_ref: StoredDataRef | None
+    resource_tag: str | None
+    labels: tuple[tuple[str, str], ...]
+    lookup_by_name: bool
+    preservation_reason: Literal["REUSABLE_BASELINE"] | None
 
 
 @dataclass(frozen=True)
@@ -34,6 +47,15 @@ class CancellationTarget:
     # action projection retains its unique USED revision.  Cancellation needs
     # both identities and must never substitute one for the other.
     issued_action_decision_ref: RecordRef | None = None
+    sandbox_resources: tuple[SandboxCancellationResource, ...] = ()
+    sandbox_inventory_fingerprint: str | None = None
+
+
+@dataclass(frozen=True)
+class CancellationResourceObservation:
+    resource: SandboxCancellationResource
+    status: CancellationStatus
+    reason_code: str | None
 
 
 @dataclass(frozen=True)
@@ -41,6 +63,7 @@ class CancellationObservation:
     target: CancellationTarget
     status: CancellationStatus
     reason_code: str | None
+    resource_observations: tuple[CancellationResourceObservation, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -156,9 +179,11 @@ __all__ = [
     "AnalysisApplicationPort",
     "AnalysisStatusView",
     "CancellationObservation",
+    "CancellationResourceObservation",
     "CancellationStatus",
     "CancellationTarget",
     "CancellationTargetKind",
+    "SandboxCancellationResource",
     "ExternalCancellationPort",
     "HandlerRegistryPort",
     "RunControlPort",

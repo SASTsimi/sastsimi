@@ -35,6 +35,21 @@ class ExactCancellationRouter:
             "SANDBOX": sandbox,
         }
 
+    async def prepare(
+        self, targets: tuple[CancellationTarget, ...]
+    ) -> tuple[CancellationTarget, ...]:
+        """Validate every adapter-owned inventory before any cancellation I/O."""
+        prepared: list[CancellationTarget] = []
+        for target in targets:
+            adapter = self._adapters[target.target_kind]
+            prepare = getattr(adapter, "prepare", None)
+            value = await prepare(target) if callable(prepare) else target
+            if not isinstance(value, CancellationTarget):
+                raise ValueError("CANCELLATION_PREPARED_TARGET_INVALID")
+            _validate_target(value, str(value.work.meta.analysis_id))
+            prepared.append(value)
+        return tuple(prepared)
+
     async def cancel(self, target: CancellationTarget) -> CancellationObservation:
         _validate_target(target, str(target.work.meta.analysis_id))
         try:
@@ -86,7 +101,15 @@ class CancellationService:
             _validate_target(target, analysis_id)
         prepare = getattr(self._external, "prepare", None)
         if callable(prepare):
-            await prepare(targets)
+            prepared = await prepare(targets)
+            if prepared is not None:
+                if not isinstance(prepared, tuple) or not all(
+                    isinstance(item, CancellationTarget) for item in prepared
+                ):
+                    raise ValueError("CANCELLATION_PREPARED_TARGET_INVALID")
+                targets = prepared
+                for target in targets:
+                    _validate_target(target, analysis_id)
         read_observations = getattr(self._controls, "cancellation_observations", None)
         durable = callable(read_observations)
         if callable(read_observations):
@@ -112,6 +135,7 @@ class CancellationService:
                 "STOPPED",
                 "ABSENT",
                 "UNKNOWN",
+                "PRESERVED",
             }:
                 observed = CancellationObservation(
                     target, "UNKNOWN", "CANCELLATION_ADAPTER_INVALID"
@@ -147,7 +171,15 @@ def _validate_target(target: CancellationTarget, analysis_id: str) -> None:
         raise ValueError("CANCELLATION_TARGET_SCOPE_MISMATCH")
     if target.target_kind == "PROVIDER" and target.call_spec_ref is None:
         raise ValueError("CANCELLATION_TARGET_SCOPE_MISMATCH")
-    if target.target_kind != "SANDBOX" and target.sandbox_resource_refs:
+    if target.target_kind != "SANDBOX" and (
+        target.sandbox_resource_refs
+        or target.sandbox_resources
+        or target.sandbox_inventory_fingerprint is not None
+    ):
+        raise ValueError("CANCELLATION_TARGET_SCOPE_MISMATCH")
+    if target.target_kind == "SANDBOX" and bool(target.sandbox_resources) != bool(
+        target.sandbox_inventory_fingerprint
+    ):
         raise ValueError("CANCELLATION_TARGET_SCOPE_MISMATCH")
 
 

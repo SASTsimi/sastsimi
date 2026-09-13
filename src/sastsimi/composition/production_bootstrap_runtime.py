@@ -215,11 +215,18 @@ class ProductionCancellationFactory:
         provider_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter],
         dynamic: DynamicProductionFeature,
     ) -> ExternalCancellationPort:
+        from sastsimi.sandbox.cleanup import OwnedResourceRegistry
+
         return build_production_cancellation_router(
             records=context.runtime.unit_of_work.records,
             static=static.static_cancellation,
             provider_adapters=provider_adapters,
             docker=dynamic.docker,
+            # A new owner reloads the durable journal before taking the exact
+            # attempt snapshot; no prior process memory is trusted.
+            resources=OwnedResourceRegistry(
+                journal_path=dynamic.resource_journal_path
+            ),
         )
 
 

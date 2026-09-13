@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Connection, insert, select, update
@@ -17,7 +17,12 @@ from sastsimi.contracts.work import (
 )
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
-from sastsimi.ports.scheduler import CancellationObservation, CancellationTarget
+from sastsimi.ports.scheduler import (
+    CancellationObservation,
+    CancellationResourceObservation,
+    CancellationStatus,
+    CancellationTarget,
+)
 
 from . import models
 from .codec import encode
@@ -28,7 +33,7 @@ if TYPE_CHECKING:
     from .work_service import WorkService
 
 _SAFE_REASON = re.compile(r"[A-Z0-9_]{1,64}\Z")
-_CLOSED_STATUSES = frozenset({"STOPPED", "ABSENT"})
+_CLOSED_STATUSES = frozenset({"STOPPED", "ABSENT", "PRESERVED"})
 
 
 @dataclass(frozen=True)
@@ -39,6 +44,10 @@ class _ObservationResource:
     tag: str | None = None
     labels: str = "{}"
     lookup_by_name: int = 0
+    preservation_reason: str | None = None
+    inventory_fingerprint: str = ""
+    ordinal: int = 0
+    count: int = 1
 
 
 class RunControlStore:
@@ -111,7 +120,7 @@ class RunControlStore:
             current = CancellationTargetStore(self._database).cancellation_targets(
                 analysis_id, _connection=connection
             )
-            if target not in current:
+            if not any(_same_target_identity(target, item) for item in current):
                 raise ValueError("CANCELLATION_TARGET_NOT_CURRENT")
             existing = self._observations(connection, (target,))[0]
             if existing is not None:
@@ -119,10 +128,10 @@ class RunControlStore:
                     raise ValueError("CANCELLATION_OBSERVATION_CONFLICT")
                 return
             now = self._clock.now().isoformat()
-            for resource in _resources(target):
+            for resource, status, reason in _resource_observations(observation):
                 connection.execute(
                     insert(models.cancellation_observations).values(
-                        **_observation_values(observation, resource),
+                        **_observation_values(target, status, reason, resource),
                         observed_at=now,
                     )
                 )
@@ -146,7 +155,10 @@ class RunControlStore:
             current = CancellationTargetStore(self._database).cancellation_targets(
                 analysis_id, _connection=connection
             )
-            if tuple(item.target for item in observations) != current:
+            if len(observations) != len(current) or any(
+                not _same_target_identity(item.target, expected)
+                for item, expected in zip(observations, current, strict=True)
+            ):
                 raise ValueError("CANCELLATION_TARGET_NOT_CURRENT")
             persisted = self._observations(connection, current)
             if any(
@@ -368,7 +380,17 @@ class RunControlStore:
                 .mappings()
                 .all()
             )
-            if any(row["status"] not in _CLOSED_STATUSES for row in observations):
+            if any(
+                row["status"] not in _CLOSED_STATUSES
+                or (
+                    row["status"] == "PRESERVED"
+                    and (
+                        row["resource_kind"] != "IMAGE"
+                        or row["preservation_reason"] != "REUSABLE_BASELINE"
+                    )
+                )
+                for row in observations
+            ):
                 raise ValueError("RUN_NOT_QUIESCENT")
             if work_ids:
                 dispatches = connection.execute(
@@ -409,6 +431,34 @@ class RunControlStore:
             raise ValueError("CANCELLATION_OBSERVATION_REASON_INVALID")
         if observation.target.issued_action_decision_ref is None:
             raise ValueError("CANCELLATION_TARGET_ISSUED_DECISION_REQUIRED")
+        target = observation.target
+        if target.target_kind == "SANDBOX":
+            if (
+                not target.sandbox_resources
+                or target.sandbox_inventory_fingerprint is None
+                or tuple(item.resource for item in observation.resource_observations)
+                != target.sandbox_resources
+            ):
+                raise ValueError("CANCELLATION_SANDBOX_INVENTORY_MISMATCH")
+            for item in observation.resource_observations:
+                if item.status not in {*_CLOSED_STATUSES, "UNKNOWN"}:
+                    raise ValueError("CANCELLATION_OBSERVATION_STATUS_INVALID")
+                if item.status == "PRESERVED" and (
+                    item.resource.resource_kind != "IMAGE"
+                    or item.resource.preservation_reason != "REUSABLE_BASELINE"
+                ):
+                    raise ValueError("CANCELLATION_PRESERVATION_INVALID")
+                if item.reason_code is not None and (
+                    _SAFE_REASON.fullmatch(item.reason_code) is None
+                ):
+                    raise ValueError("CANCELLATION_OBSERVATION_REASON_INVALID")
+            if _aggregate_sandbox(observation.resource_observations) != (
+                observation.status,
+                observation.reason_code,
+            ):
+                raise ValueError("CANCELLATION_OBSERVATION_STATUS_MISMATCH")
+        elif observation.resource_observations:
+            raise ValueError("CANCELLATION_OBSERVATION_RESOURCE_INVALID")
 
     def _observations(
         self,
@@ -431,10 +481,9 @@ class RunControlStore:
                     .one_or_none()
                 )
                 if row is not None:
-                    candidate = CancellationObservation(
-                        target, row["status"], row["reason_code"]
+                    expected = _observation_values(
+                        target, row["status"], row["reason_code"], resource
                     )
-                    expected = _observation_values(candidate, resource)
                     if any(row[name] != value for name, value in expected.items()):
                         raise ValueError("CANCELLATION_OBSERVATION_SCOPE_MISMATCH")
                 rows.append(row)
@@ -444,11 +493,27 @@ class RunControlStore:
                 continue
             if len(present) != len(resources):
                 raise ValueError("CANCELLATION_OBSERVATION_INCOMPLETE")
-            statuses = {(row["status"], row["reason_code"]) for row in present}
-            if len(statuses) != 1:
-                raise ValueError("CANCELLATION_OBSERVATION_CONFLICT")
-            status, reason = statuses.pop()
-            observation = CancellationObservation(target, status, reason)
+            if target.target_kind == "SANDBOX":
+                resource_observations = tuple(
+                    CancellationResourceObservation(
+                        resource=resource,
+                        status=row["status"],
+                        reason_code=row["reason_code"],
+                    )
+                    for resource, row in zip(
+                        target.sandbox_resources, present, strict=True
+                    )
+                )
+                status, reason = _aggregate_sandbox(resource_observations)
+                observation = CancellationObservation(
+                    target, status, reason, resource_observations
+                )
+            else:
+                statuses = {(row["status"], row["reason_code"]) for row in present}
+                if len(statuses) != 1:
+                    raise ValueError("CANCELLATION_OBSERVATION_CONFLICT")
+                status, reason = statuses.pop()
+                observation = CancellationObservation(target, status, reason)
             self._validate_observation(observation)
             result.append(observation)
         return tuple(result)
@@ -456,15 +521,27 @@ class RunControlStore:
 
 def _resources(target: CancellationTarget) -> tuple[_ObservationResource, ...]:
     if target.target_kind == "SANDBOX":
-        if not target.sandbox_resource_refs:
+        fingerprint = target.sandbox_inventory_fingerprint
+        if not target.sandbox_resources or fingerprint is None:
             raise ValueError("CANCELLATION_SANDBOX_RESOURCE_MISSING")
         return tuple(
             _ObservationResource(
-                kind=ref.data_kind,
-                resource_id=str(ref.stored_data_id),
-                ref=canonical_bytes(ref).decode(),
+                kind=resource.resource_kind,
+                resource_id=resource.resource_id,
+                ref=(
+                    canonical_bytes(resource.resource_ref).decode()
+                    if resource.resource_ref is not None
+                    else None
+                ),
+                tag=resource.resource_tag,
+                labels=canonical_bytes(dict(resource.labels)).decode(),
+                lookup_by_name=int(resource.lookup_by_name),
+                preservation_reason=resource.preservation_reason,
+                inventory_fingerprint=fingerprint,
+                ordinal=ordinal,
+                count=len(target.sandbox_resources),
             )
-            for ref in target.sandbox_resource_refs
+            for ordinal, resource in enumerate(target.sandbox_resources)
         )
     if target.target_kind == "PROVIDER":
         if target.call_spec_ref is None:
@@ -474,6 +551,7 @@ def _resources(target: CancellationTarget) -> tuple[_ObservationResource, ...]:
                 kind="PROVIDER_CALL",
                 resource_id=str(target.call_spec_ref.stored_data_id),
                 ref=canonical_bytes(target.call_spec_ref).decode(),
+                inventory_fingerprint=content_hash(target.call_spec_ref),
             ),
         )
     if target.target_kind == "STATIC":
@@ -482,6 +560,9 @@ def _resources(target: CancellationTarget) -> tuple[_ObservationResource, ...]:
                 kind="STATIC_ATTEMPT",
                 resource_id=str(target.attempt.attempt_id),
                 ref=None,
+                inventory_fingerprint=content_hash(
+                    [target.work.work_id, target.attempt.attempt_id]
+                ),
             ),
         )
     raise ValueError("CANCELLATION_TARGET_KIND_MISMATCH")
@@ -506,14 +587,20 @@ def _observation_key(
             resource.tag,
             resource.labels,
             resource.lookup_by_name,
+            resource.preservation_reason,
+            resource.inventory_fingerprint,
+            resource.ordinal,
+            resource.count,
         ]
     )
 
 
 def _observation_values(
-    observation: CancellationObservation, resource: _ObservationResource
+    target: CancellationTarget,
+    status: str,
+    reason_code: str | None,
+    resource: _ObservationResource,
 ) -> dict[str, object]:
-    target = observation.target
     issued = target.issued_action_decision_ref
     if issued is None:
         raise ValueError("CANCELLATION_TARGET_ISSUED_DECISION_REQUIRED")
@@ -532,9 +619,56 @@ def _observation_values(
         "resource_tag": resource.tag,
         "labels": resource.labels,
         "lookup_by_name": resource.lookup_by_name,
-        "status": observation.status,
-        "reason_code": observation.reason_code,
+        "preservation_reason": resource.preservation_reason,
+        "inventory_fingerprint": resource.inventory_fingerprint,
+        "resource_ordinal": resource.ordinal,
+        "resource_count": resource.count,
+        "status": status,
+        "reason_code": reason_code,
     }
+
+
+def _resource_observations(
+    observation: CancellationObservation,
+) -> tuple[tuple[_ObservationResource, str, str | None], ...]:
+    resources = _resources(observation.target)
+    if observation.target.target_kind != "SANDBOX":
+        return tuple(
+            (resource, observation.status, observation.reason_code)
+            for resource in resources
+        )
+    return tuple(
+        (resource, item.status, item.reason_code)
+        for resource, item in zip(
+            resources, observation.resource_observations, strict=True
+        )
+    )
+
+
+def _aggregate_sandbox(
+    observations: tuple[CancellationResourceObservation, ...],
+) -> tuple[CancellationStatus, str | None]:
+    if any(item.status == "UNKNOWN" for item in observations):
+        return "UNKNOWN", "SANDBOX_RESOURCE_UNKNOWN"
+    if any(item.status == "STOPPED" for item in observations):
+        return "STOPPED", None
+    if any(item.status == "ABSENT" for item in observations):
+        return "ABSENT", None
+    return "PRESERVED", "REUSABLE_BASELINE"
+
+
+def _same_target_identity(left: CancellationTarget, right: CancellationTarget) -> bool:
+    return replace(
+        left,
+        sandbox_resource_refs=(),
+        sandbox_resources=(),
+        sandbox_inventory_fingerprint=None,
+    ) == replace(
+        right,
+        sandbox_resource_refs=(),
+        sandbox_resources=(),
+        sandbox_inventory_fingerprint=None,
+    )
 
 
 def cancel_latched(connection: Connection, analysis_id: str) -> bool:

@@ -3,28 +3,32 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Protocol
 
-from sastsimi.contracts.dynamic import SandboxEnvironment
 from sastsimi.contracts.llm import LLMCallSpec
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
-from sastsimi.ports.docker_state import DockerContainerState
 from sastsimi.ports.dto import CancellationResult
 from sastsimi.ports.llm_provider import LLMProviderAdapter
 from sastsimi.ports.record_store import RecordStore
-from sastsimi.ports.scheduler import CancellationObservation, CancellationTarget
+from sastsimi.ports.scheduler import (
+    CancellationObservation,
+    CancellationResourceObservation,
+    CancellationStatus,
+    CancellationTarget,
+    SandboxCancellationResource,
+)
 from sastsimi.runtime.cancellation_service import ExactCancellationRouter
+from sastsimi.sandbox.cleanup import CleanupDockerPort, OwnedResourceRegistry
 
 
 class AttemptCancellationPort(Protocol):
     async def cancel(self, attempt_id: str) -> CancellationResult: ...
 
 
-class SandboxCancellationDockerPort(Protocol):
-    async def inspect(self, container_id: str) -> DockerContainerState: ...
-
-    async def remove(self, resource_ids: tuple[str, ...]) -> None: ...
+class SandboxCancellationDockerPort(CleanupDockerPort, Protocol):
+    pass
 
 
 class ProductionStaticCancellation:
@@ -67,82 +71,142 @@ class ProductionProviderCancellation:
 
 
 class ProductionSandboxCancellation:
-    """Remove only exact, attempt-owned containers recorded by the runtime."""
+    """Observe only the complete immutable exact-attempt resource snapshot."""
 
     def __init__(
-        self, *, records: RecordStore, docker: SandboxCancellationDockerPort
+        self,
+        *,
+        records: RecordStore,
+        docker: SandboxCancellationDockerPort,
+        resources: OwnedResourceRegistry,
     ) -> None:
         self._records = records
         self._docker = docker
+        self._resources = resources
+
+    async def prepare(self, target: CancellationTarget) -> CancellationTarget:
+        if target.target_kind != "SANDBOX":
+            raise ValueError("CANCELLATION_TARGET_KIND_MISMATCH")
+        meta = target.attempt.meta
+        if not isinstance(meta, RecordMeta):
+            raise ValueError("CANCELLATION_SANDBOX_SCOPE_MISMATCH")
+        snapshot = self._resources.snapshot(meta=meta)
+        resources = tuple(
+            SandboxCancellationResource(
+                resource_kind=item.resource_kind,
+                resource_id=item.resource_id,
+                resource_ref=item.ref,
+                resource_tag=item.resource_tag,
+                labels=tuple(sorted(item.labels.items())),
+                lookup_by_name=item.lookup_by_name,
+                preservation_reason=item.preservation_reason,
+            )
+            for item in snapshot.resources
+        ) + tuple(
+            SandboxCancellationResource(
+                resource_kind="CONTAINER_INTENT",
+                resource_id=item.container_name,
+                resource_ref=None,
+                resource_tag=None,
+                labels=tuple(sorted(item.labels.items())),
+                lookup_by_name=True,
+                preservation_reason=None,
+            )
+            for item in snapshot.container_intents
+        ) + tuple(
+            SandboxCancellationResource(
+                resource_kind="IMAGE_INTENT",
+                resource_id=item.image_tag,
+                resource_ref=None,
+                resource_tag=item.image_tag,
+                labels=tuple(sorted(item.labels.items())),
+                lookup_by_name=False,
+                preservation_reason=None,
+            )
+            for item in snapshot.image_intents
+        )
+        if not resources:
+            raise ValueError("CANCELLATION_SANDBOX_RESOURCE_MISSING")
+        return replace(
+            target,
+            sandbox_resource_refs=tuple(
+                item.resource_ref
+                for item in resources
+                if item.resource_ref is not None
+            ),
+            sandbox_resources=resources,
+            sandbox_inventory_fingerprint=snapshot.fingerprint,
+        )
 
     async def cancel(self, target: CancellationTarget) -> CancellationObservation:
         if target.target_kind != "SANDBOX":
             raise ValueError("CANCELLATION_TARGET_KIND_MISMATCH")
-        environments: list[SandboxEnvironment] = []
-        for ref in target.sandbox_resource_refs:
-            record = self._records.get_exact(ref)
-            if reference(record) != ref:
-                raise ValueError("CANCELLATION_SANDBOX_RESOURCE_NOT_EXACT")
-            if isinstance(record, SandboxEnvironment):
-                environments.append(record)
-        if not environments:
-            return CancellationObservation(
-                target, "UNKNOWN", "SANDBOX_CANCELLATION_RESOURCE_MISSING"
+        if not target.sandbox_resources or target.sandbox_inventory_fingerprint is None:
+            target = await self.prepare(target)
+        observations: list[CancellationResourceObservation] = []
+        for resource in target.sandbox_resources:
+            observations.append(await self._cancel_resource(resource))
+        values = tuple(observations)
+        status: CancellationStatus
+        reason: str | None
+        if any(item.status == "UNKNOWN" for item in values):
+            status, reason = "UNKNOWN", "SANDBOX_RESOURCE_UNKNOWN"
+        elif any(item.status == "STOPPED" for item in values):
+            status, reason = "STOPPED", None
+        elif any(item.status == "ABSENT" for item in values):
+            status, reason = "ABSENT", None
+        else:
+            status, reason = "PRESERVED", "REUSABLE_BASELINE"
+        return CancellationObservation(target, status, reason, values)
+
+    async def _cancel_resource(
+        self, resource: SandboxCancellationResource
+    ) -> CancellationResourceObservation:
+        if resource.preservation_reason == "REUSABLE_BASELINE":
+            return CancellationResourceObservation(
+                resource, "PRESERVED", "REUSABLE_BASELINE"
             )
-        resource_ids = tuple(
-            dict.fromkeys(item.container_instance_id for item in environments)
-        )
-        for environment in environments:
-            self._require_owned(target, environment)
-        for resource_id in resource_ids:
-            state = await self._docker.inspect(resource_id)
-            self._require_labels(target, state)
-        await self._docker.remove(resource_ids)
-        return CancellationObservation(target, "STOPPED", None)
-
-    @staticmethod
-    def _require_owned(
-        target: CancellationTarget, environment: SandboxEnvironment
-    ) -> None:
-        meta = environment.meta
-        work_meta = target.work.meta
-        if not isinstance(meta, RecordMeta) or not isinstance(work_meta, RecordMeta):
-            raise ValueError("CANCELLATION_SANDBOX_SCOPE_MISMATCH")
-        if (
-            meta.analysis_id,
-            meta.workspace_id,
-            meta.commit_id,
-            meta.hypothesis_id,
-            meta.attempt_id,
-        ) != (
-            work_meta.analysis_id,
-            work_meta.workspace_id,
-            work_meta.commit_id,
-            work_meta.hypothesis_id,
-            target.attempt.attempt_id,
-        ):
-            raise ValueError("CANCELLATION_SANDBOX_SCOPE_MISMATCH")
-
-    @staticmethod
-    def _require_labels(
-        target: CancellationTarget, state: DockerContainerState
-    ) -> None:
-        meta = target.work.meta
-        if not isinstance(meta, RecordMeta):
-            raise ValueError("CANCELLATION_SANDBOX_SCOPE_MISMATCH")
-        expected = {
-            "sastsimi.owner": "reproduction-setup-automation",
-            "sastsimi.analysis-id": str(meta.analysis_id),
-            "sastsimi.workspace-id": str(meta.workspace_id),
-            "sastsimi.commit-id": str(meta.commit_id),
-            "sastsimi.hypothesis-id": str(meta.hypothesis_id),
-            "sastsimi.attempt-id": str(target.attempt.attempt_id),
-            "sastsimi.resource-kind": "container",
-        }
-        if not state.container_id or any(
-            state.labels.get(key) != value for key, value in expected.items()
-        ):
-            raise ValueError("CANCELLATION_SANDBOX_OWNERSHIP_MISMATCH")
+        labels = dict(resource.labels)
+        try:
+            if resource.resource_kind in {"CONTAINER", "CONTAINER_INTENT"}:
+                container_presence = await self._docker.inspect_container_presence(
+                    resource.resource_id,
+                    by_name=resource.lookup_by_name,
+                )
+                if container_presence.status == "ABSENT":
+                    return CancellationResourceObservation(resource, "ABSENT", None)
+                if (
+                    container_presence.status != "PRESENT"
+                    or container_presence.state is None
+                ):
+                    return _unknown_resource(resource)
+                state = container_presence.state
+                if dict(state.labels) != labels or (
+                    resource.resource_kind == "CONTAINER"
+                    and not resource.lookup_by_name
+                    and state.container_id != resource.resource_id
+                ):
+                    return _unknown_resource(resource)
+                await self._docker.remove((state.container_id,))
+                return CancellationResourceObservation(resource, "STOPPED", None)
+            if resource.resource_tag is None:
+                return _unknown_resource(resource)
+            image_presence = await self._docker.inspect_image_tag(
+                resource.resource_tag
+            )
+            if image_presence.status == "ABSENT":
+                return CancellationResourceObservation(resource, "ABSENT", None)
+            if image_presence.status != "PRESENT" or image_presence.state is None:
+                return _unknown_resource(resource)
+            if dict(image_presence.state.labels) != labels or (
+                resource.resource_kind == "IMAGE"
+                and image_presence.state.image_digest != resource.resource_id
+            ):
+                return _unknown_resource(resource)
+            await self._docker.remove_image_tags((resource.resource_tag,))
+            return CancellationResourceObservation(resource, "STOPPED", None)
+        except (OSError, RuntimeError, ValueError):
+            return _unknown_resource(resource)
 
 
 def build_production_cancellation_router(
@@ -151,6 +215,7 @@ def build_production_cancellation_router(
     static: AttemptCancellationPort,
     provider_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter],
     docker: SandboxCancellationDockerPort,
+    resources: OwnedResourceRegistry,
 ) -> ExactCancellationRouter:
     """Compose all production cancellation targets without a fallback adapter."""
 
@@ -159,7 +224,9 @@ def build_production_cancellation_router(
         provider=ProductionProviderCancellation(
             records=records, adapters=provider_adapters
         ),
-        sandbox=ProductionSandboxCancellation(records=records, docker=docker),
+        sandbox=ProductionSandboxCancellation(
+            records=records, docker=docker, resources=resources
+        ),
     )
 
 
@@ -170,6 +237,14 @@ def _observation(
         target=target,
         status="STOPPED" if result.cancelled else "UNKNOWN",
         reason_code=None if result.cancelled else unresolved,
+    )
+
+
+def _unknown_resource(
+    resource: SandboxCancellationResource,
+) -> CancellationResourceObservation:
+    return CancellationResourceObservation(
+        resource, "UNKNOWN", "SANDBOX_RESOURCE_UNKNOWN"
     )
 
 
