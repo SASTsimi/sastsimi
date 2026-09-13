@@ -6,7 +6,7 @@ import hashlib
 import os
 from collections.abc import Mapping
 from contextlib import AbstractAsyncContextManager
-from typing import Literal, cast
+from typing import Literal, Protocol, cast
 
 from sastsimi.config.secrets import SecretReference
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -39,10 +39,16 @@ class OpenAISdkUnavailableError(RuntimeError):
     """The required official SDK cannot be loaded in this installation."""
 
 
-def _load_openai_client_type() -> type[OpenAIResponsesClient]:
+class _OpenAIClientConstructor(Protocol):
+    def __call__(
+        self, *, api_key: str, max_retries: int
+    ) -> AbstractAsyncContextManager[OpenAIResponsesClient]: ...
+
+
+def _load_openai_client_type() -> _OpenAIClientConstructor:
     from openai import AsyncOpenAI
 
-    return cast(type[OpenAIResponsesClient], AsyncOpenAI)
+    return cast(_OpenAIClientConstructor, AsyncOpenAI)
 
 
 class EnvironmentSecretResolver(SecretResolver):
@@ -75,8 +81,7 @@ class OfficialOpenAIResponsesClientFactory(OpenAIResponsesClientFactory):
     ) -> AbstractAsyncContextManager[OpenAIResponsesClient]:
         if max_retries != 0 or not api_key or api_key != api_key.strip():
             raise ValueError("OPENAI_CLIENT_CONFIGURATION_INVALID")
-        client = self._client_type(api_key=api_key, max_retries=0)
-        return cast(AbstractAsyncContextManager[OpenAIResponsesClient], client)
+        return self._client_type(api_key=api_key, max_retries=0)
 
 
 class StoredProviderSessionStore:

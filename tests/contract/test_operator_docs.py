@@ -143,9 +143,7 @@ def test_production_profile_example_is_complete_and_contains_no_secret() -> None
             "credential_ref": {"reference": "env:OPENAI_API_KEY"},
         }
     ]
-    routes = {
-        (item["role"], item["task_kind"]) for item in profile["llm_routes"]
-    }
+    routes = {(item["role"], item["task_kind"]) for item in profile["llm_routes"]}
     assert routes == {
         ("HYPOTHESIS", "GENERATE_INITIAL"),
         ("PRO", "COLLECT_SUPPORT"),
