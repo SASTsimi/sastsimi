@@ -1338,7 +1338,7 @@ class ProductionDynamicExecutor:
         work: WorkExecutionState,
         request: DynamicReproductionRequest,
         request_ref: StoredDataRef,
-        authorizations: DynamicStageAuthorizations,
+        authorizations: DynamicStageAuthorizations | None,
     ) -> WorkHandlerResult:
         service = DynamicReproductionWorkflowService(
             agent=self.agent,
