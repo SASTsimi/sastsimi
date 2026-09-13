@@ -89,11 +89,11 @@ class Harness:
         run_input = AnalysisRunInput.model_validate_json(
             json.dumps(
                 dict(
-                meta=metadata("analysis_run_input", input_key),
-                repository_ref="https://example.invalid/repository",
-                requested_git_ref="requested-ref",
-                program_id="program",
-                purpose=profile.purpose.value,
+                    meta=metadata("analysis_run_input", input_key),
+                    repository_ref="https://example.invalid/repository",
+                    requested_git_ref="requested-ref",
+                    program_id="program",
+                    purpose=profile.purpose.value,
                 )
             )
         )

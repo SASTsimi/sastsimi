@@ -204,8 +204,7 @@ class ProductionProvisioningManifest(ContractModel):
             or not required_capabilities <= set(capability_slots)
             or set(artifact_slots) != required_artifacts
             or any(
-                item.profile_ref.host_id != self.host_id
-                for item in self.capabilities
+                item.profile_ref.host_id != self.host_id for item in self.capabilities
             )
             or any(
                 item.profile_ref.data_kind

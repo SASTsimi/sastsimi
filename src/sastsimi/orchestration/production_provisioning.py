@@ -115,9 +115,10 @@ class VerificationPlaybooksProvisioning(_ProvisioningArtifactDocument):
 
     @model_validator(mode="after")
     def one_policy(self) -> Self:
-        if tuple(ref.data_kind for ref in self.record_refs).count(
-            "playbook_policy"
-        ) != 1:
+        if (
+            tuple(ref.data_kind for ref in self.record_refs).count("playbook_policy")
+            != 1
+        ):
             raise ValueError("PRODUCTION_PLAYBOOK_POLICY_AMBIGUOUS")
         return self
 
@@ -167,9 +168,7 @@ class ProviderConfigurationProvisioning(_ProvisioningArtifactDocument):
             "provider_profile",
         }
     )
-    REQUIRED_KINDS = frozenset(
-        {"provider_validation_evidence", "provider_profile"}
-    )
+    REQUIRED_KINDS = frozenset({"provider_validation_evidence", "provider_profile"})
     slot: Literal["PROVIDER_CONFIGURATION"]
 
     @model_validator(mode="after")
@@ -213,9 +212,9 @@ class PromptRoutesProvisioning(_ProvisioningArtifactDocument):
 
     @model_validator(mode="after")
     def exact_validators(self) -> Self:
-        if not self.semantic_validator_keys or len(
-            self.semantic_validator_keys
-        ) != len(set(self.semantic_validator_keys)):
+        if not self.semantic_validator_keys or len(self.semantic_validator_keys) != len(
+            set(self.semantic_validator_keys)
+        ):
             raise ValueError("PRODUCTION_SEMANTIC_VALIDATOR_SET_INVALID")
         return self
 
@@ -308,9 +307,7 @@ class ExactProvisioningArtifactMaterializer:
                 try:
                     record = self._records.get_exact(ref)
                 except (LookupError, TypeError, ValueError):
-                    raise ValueError(
-                        "PRODUCTION_PROVISIONING_RECORD_MISSING"
-                    ) from None
+                    raise ValueError("PRODUCTION_PROVISIONING_RECORD_MISSING") from None
                 meta = getattr(record, "meta", None)
                 expected_model = _PROVISIONED_RECORD_MODELS.get(ref.data_kind)
                 if (
@@ -322,9 +319,7 @@ class ExactProvisioningArtifactMaterializer:
                     or str(meta.commit_id) != commit_id
                     or reference(record) != ref
                 ):
-                    raise ValueError(
-                        "PRODUCTION_PROVISIONING_RECORD_SCOPE_MISMATCH"
-                    )
+                    raise ValueError("PRODUCTION_PROVISIONING_RECORD_SCOPE_MISMATCH")
                 current = tuple(
                     item
                     for item in self._queries.current_records(

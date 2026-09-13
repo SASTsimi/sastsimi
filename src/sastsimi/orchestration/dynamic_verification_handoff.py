@@ -417,9 +417,7 @@ class DynamicParentResumeService:
                 continue
             if not isinstance(work.parent_work_ref, StoredDataRef):
                 raise ValueError("DYNAMIC_PARENT_REQUIRED")
-            historical_parent = self._exact(
-                work.parent_work_ref, WorkExecutionState
-            )
+            historical_parent = self._exact(work.parent_work_ref, WorkExecutionState)
             current_parent = self.runner.runtime.work.get(
                 str(historical_parent.work_id)
             )

@@ -202,17 +202,13 @@ class CompositeProductionTrustedEvidence(TrustedEvidencePort):
             else self._configuration.generation_restart_evidence(action)
         )
 
-    def authorized_outputs(
-        self, action: ActionRequest
-    ) -> tuple[RecordRef, ...] | None:
+    def authorized_outputs(self, action: ActionRequest) -> tuple[RecordRef, ...] | None:
         return self._operator.authorized_outputs(action)
 
     def identity_role(self, ref: BudgetScopeRef) -> RequesterRole | None:
         return self._operator.identity_role(ref)
 
-    def approved(
-        self, profile: ExecutionBudgetProfile | BudgetProfileBinding
-    ) -> bool:
+    def approved(self, profile: ExecutionBudgetProfile | BudgetProfileBinding) -> bool:
         return self._operator.approved(profile)
 
     def pricing(self, profile: ExecutionBudgetProfile) -> bool:
@@ -242,9 +238,7 @@ class CompositeProductionTrustedEvidence(TrustedEvidencePort):
     ) -> tuple[BudgetScopeRef, ...] | None:
         return self._operator.action_evidence(action, check)
 
-    def item_count(
-        self, action: ActionRequest, work: WorkExecutionState
-    ) -> int | None:
+    def item_count(self, action: ActionRequest, work: WorkExecutionState) -> int | None:
         return self._operator.item_count(action, work)
 
 
@@ -365,9 +359,7 @@ class ProfileBackedProductionCapabilityResolver:
             queries=bundle.queries,
             approvals=bundle.approved_llm_routes,
         )
-        connections = {
-            item.provider_profile_key: item for item in profile.providers
-        }
+        connections = {item.provider_profile_key: item for item in profile.providers}
         for configured in profile.llm_routes:
             route, approval = lookup(
                 str(scope.analysis_id), configured.role, configured.task_kind

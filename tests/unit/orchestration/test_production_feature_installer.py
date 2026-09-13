@@ -47,9 +47,7 @@ class _Seeder:
     ) -> tuple[WorkExecutionState, ...]:
         del request, state, binding_ref
         self.calls += 1
-        return (
-            WorkExecutionState.model_construct(work_id=WorkId(self.work_id)),
-        )
+        return (WorkExecutionState.model_construct(work_id=WorkId(self.work_id)),)
 
 
 class _Records:
@@ -193,6 +191,7 @@ def test_t11_is_built_lazily_from_current_profile_and_exact_checkout() -> None:
     locator = _Locator(root)
     built: list[tuple[RepositoryProfile, Path]] = []
     service = cast(T11Services, object())
+
     def build(found: RepositoryProfile, found_root: Path) -> T11Services:
         built.append((found, found_root))
         return service
@@ -220,9 +219,7 @@ def test_t11_fails_closed_before_build_when_current_profile_is_missing() -> None
         queries=cast(Any, _Queries(())),
         workspace_for=lambda _work: _workspace(),
         workspace_locator=cast(Any, _Locator(Path.cwd())),
-        build=lambda found, root: cast(
-            T11Services, built.append((found, root))
-        ),
+        build=lambda found, root: cast(T11Services, built.append((found, root))),
     )
     work = WorkExecutionState.model_construct(meta=profile.meta)
 

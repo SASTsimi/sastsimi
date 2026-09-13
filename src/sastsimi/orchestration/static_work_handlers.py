@@ -212,9 +212,7 @@ def resolve_static_tool_recovery_action(
     work_ref = reference(work)
     candidates = tuple(
         item
-        for item in runner.runtime.queries.published_records(
-            str(work.meta.analysis_id)
-        )
+        for item in runner.runtime.queries.published_records(str(work.meta.analysis_id))
         if isinstance(item, ActionRequest)
         and item.action_type == ActionType.RUN_TOOL
         and item.work_ref == work_ref

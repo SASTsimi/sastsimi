@@ -226,9 +226,7 @@ def test_static_recovery_resolver_blocks_ambiguous_attempt_closure(
     actions = (
         (
             current,
-            _action(
-                context, "static-action-duplicate", attempt_id="attempt-current"
-            ),
+            _action(context, "static-action-duplicate", attempt_id="attempt-current"),
         )
         if failure == "duplicate"
         else (_action(context, "static-action-stale", attempt_id="attempt-stale"),)

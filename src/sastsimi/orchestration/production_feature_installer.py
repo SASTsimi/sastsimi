@@ -310,9 +310,7 @@ class _CallAdapters:
 
     def technical(self, context: WorkContext) -> GateCallRefs:
         call = self._resolve(context, "TECHNICAL_GATE", "REVIEW_TECHNICAL")
-        return CWECallRefs(
-            call.decision_ref, call.reservation_ref, call.call_spec_ref
-        )
+        return CWECallRefs(call.decision_ref, call.reservation_ref, call.call_spec_ref)
 
     def rule_scope(self, context: WorkContext) -> RuleScopeCallRefs:
         call = self._resolve(context, "RULE_SCOPE_GATE", "REVIEW")
@@ -435,12 +433,8 @@ class ProductionFeatureInstaller:
             ids=context.ids,
             role_identity_refs=context.role_identity_refs,
         )
-        verification_identity = _stored_identity(
-            context, RequesterRole.VERIFICATION
-        )
-        orchestration_identity = context.role_identity_refs[
-            RequesterRole.ORCHESTRATION
-        ]
+        verification_identity = _stored_identity(context, RequesterRole.VERIFICATION)
+        orchestration_identity = context.role_identity_refs[RequesterRole.ORCHESTRATION]
         dispatch = InitialVerificationDispatcher(
             records=records,
             current=runtime.queries,
@@ -635,9 +629,7 @@ class ProductionFeatureInstaller:
             WorkType.PRO_EVIDENCE: pro,
             WorkType.CON_EVIDENCE: con,
             WorkType.VERIFICATION: RoutedWorkHandler(verification, router),
-            WorkType.DYNAMIC_REPRO: RoutedWorkHandler(
-                dynamic_handler, router
-            ),
+            WorkType.DYNAMIC_REPRO: RoutedWorkHandler(dynamic_handler, router),
             WorkType.PRIMITIVE_UPDATE: t13.primitive_update,
             WorkType.CHAINING: t13.chaining,
             WorkType.CWE_LABEL: RoutedWorkHandler(t12.cwe, router),
@@ -696,9 +688,7 @@ class ProductionFeatureInstaller:
             )
             is not self.inputs.policy.catalog
         ):
-            raise ProductionCapabilityUnavailable(
-                "PRODUCTION_FEATURE_INPUT_NOT_EXACT"
-            )
+            raise ProductionCapabilityUnavailable("PRODUCTION_FEATURE_INPUT_NOT_EXACT")
         for component in (
             self.inputs.t08.workspace_prep,
             self.inputs.t08.repository_profile,

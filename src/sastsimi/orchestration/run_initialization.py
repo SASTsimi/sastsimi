@@ -146,9 +146,7 @@ class RunInitializationService:
             raise ValueError("RUN_EXECUTION_PROFILE_REQUIRED")
         bootstrap = self._state_factory.create(request, execution_ref)
         state = bootstrap.state
-        self._validate_initial_state(
-            request, execution_ref, bootstrap.run_input, state
-        )
+        self._validate_initial_state(request, execution_ref, bootstrap.run_input, state)
 
         # This call is deliberately adjacent to the atomic pin. A resolver may
         # reject a profile retired or replaced after its earlier lookup.

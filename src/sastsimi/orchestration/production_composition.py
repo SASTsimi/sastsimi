@@ -258,9 +258,7 @@ class ConcreteProductionApplicationFactory:
             evidence=evidence,
             context_service_identity_ref=context_identity,
             finding_service_identity_ref=finding_identity,
-            analysis_finalization_identity_ref=identities[
-                RequesterRole.ORCHESTRATION
-            ],
+            analysis_finalization_identity_ref=identities[RequesterRole.ORCHESTRATION],
             llm_adapters=resolved.llm_adapters,
             capability_host_id=profile.host_id,
         )
@@ -273,9 +271,7 @@ class ConcreteProductionApplicationFactory:
         )
         profiles.publish_code_profiles(runtime.configuration)
 
-        scheduler_store = WorkDispatchStore(
-            cast(SQLiteWorkService, runtime.work.store)
-        )
+        scheduler_store = WorkDispatchStore(cast(SQLiteWorkService, runtime.work.store))
         runner = WorkflowRunner(
             runtime,
             clock,
@@ -415,10 +411,9 @@ def _require_resolved_capabilities(
         (item.route.role, item.route.task_kind): item
         for item in resolved.approved_llm_routes
     }
-    if (
-        len(approved_routes) != len(resolved.approved_llm_routes)
-        or set(approved_routes) != set(profile_routes)
-    ):
+    if len(approved_routes) != len(resolved.approved_llm_routes) or set(
+        approved_routes
+    ) != set(profile_routes):
         raise ProductionCapabilityUnavailable(
             "PRODUCTION_LLM_ROUTE_APPROVAL_INCOMPLETE"
         )
@@ -455,9 +450,7 @@ def _require_resolved_capabilities(
             )
         approved_provider_keys.add((approval.provider_profile_ref, configured.model))
     if approved_provider_keys != set(resolved.llm_adapters):
-        raise ProductionCapabilityUnavailable(
-            "PRODUCTION_LLM_ROUTE_ADAPTER_MISMATCH"
-        )
+        raise ProductionCapabilityUnavailable("PRODUCTION_LLM_ROUTE_ADAPTER_MISMATCH")
 
     dependencies = resolved.workspace_dependency_refs
     policies = tuple(
@@ -478,9 +471,7 @@ def _require_resolved_capabilities(
         or any(ref.host_id != profile.host_id for ref in git_refs)
         or len(policies) + len(git_refs) != len(dependencies)
     ):
-        raise ProductionCapabilityUnavailable(
-            "PRODUCTION_WORKSPACE_CAPABILITY_INVALID"
-        )
+        raise ProductionCapabilityUnavailable("PRODUCTION_WORKSPACE_CAPABILITY_INVALID")
 
 
 def _require_installed_services(installation: InstalledProductionServices) -> None:
@@ -494,9 +485,7 @@ def _require_installed_services(installation: InstalledProductionServices) -> No
         )
         or not callable(getattr(installation.seeder, "ensure_initial", None))
         or not callable(getattr(installation.readiness, "require_ready", None))
-        or not callable(
-            getattr(installation.external_cancellation, "cancel", None)
-        )
+        or not callable(getattr(installation.external_cancellation, "cancel", None))
     ):
         raise ProductionCapabilityUnavailable(
             "PRODUCTION_HANDLER_INSTALLATION_INCOMPLETE"

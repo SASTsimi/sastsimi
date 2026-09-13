@@ -82,10 +82,9 @@ from tests.contract.domain.fixtures import bundle
 def _prompt_fixture(tmp_path: Path) -> tuple[Any, Any, Any, Any, Any]:
     fixtures = import_module("tests.unit.prompts.test_production_configuration")
     service, records, artifacts = fixtures._service(tmp_path)
-    route, approval = fixtures._approved_hypothesis_route(
-        service, records, artifacts
-    )
+    route, approval = fixtures._approved_hypothesis_route(service, records, artifacts)
     return service, records, artifacts, route, approval
+
 
 NOW = datetime(2026, 9, 13, tzinfo=UTC)
 
@@ -219,9 +218,7 @@ class _Records:
     ) -> bool:
         return earlier_ref == later_ref
 
-    def commit_transition(
-        self, request: TransitionCommitRequest
-    ) -> TransitionCommit:
+    def commit_transition(self, request: TransitionCommitRequest) -> TransitionCommit:
         raise AssertionError(request)
 
 

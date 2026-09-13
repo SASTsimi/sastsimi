@@ -160,9 +160,7 @@ def _setup(tmp_path: Path) -> tuple[Any, ...]:
         lambda value: canonicalize_repository_source(value, allow_local_file=True),
         decode_workspace_storage_policy,
         lease_root_resolver=lambda lease_id: (
-            loader.root
-            if lease_id == "workspace-lease"
-            else tmp_path / "unknown-lease"
+            loader.root if lease_id == "workspace-lease" else tmp_path / "unknown-lease"
         ),
     )
     handler = WorkspacePrepWorkHandler(
@@ -188,9 +186,7 @@ def _setup(tmp_path: Path) -> tuple[Any, ...]:
 async def test_workspace_handler_uses_exact_local_source_and_commit(
     tmp_path: Path,
 ) -> None:
-    runtime, handler, _, loader, context, run_input, policy_ref = _setup(
-        tmp_path
-    )
+    runtime, handler, _, loader, context, run_input, policy_ref = _setup(tmp_path)
 
     result = await handler.execute(context)
 
@@ -201,9 +197,7 @@ async def test_workspace_handler_uses_exact_local_source_and_commit(
         lambda value: canonicalize_repository_source(value, allow_local_file=True),
         decode_workspace_storage_policy,
         lease_root_resolver=lambda lease_id: (
-            loader.root
-            if lease_id == "workspace-lease"
-            else tmp_path / "unknown-lease"
+            loader.root if lease_id == "workspace-lease" else tmp_path / "unknown-lease"
         ),
     )
     preparation = restarted.resolve_repository_preparation(

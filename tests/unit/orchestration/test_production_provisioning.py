@@ -127,9 +127,7 @@ def _artifact_documents() -> tuple[dict[str, bytes], str]:
             "WORKSPACE_STORAGE": document(
                 "WORKSPACE_STORAGE", backend="SQLITE_RECORDS_AND_CAS"
             ),
-            "STATIC_ANALYSIS": document(
-                "STATIC_ANALYSIS", enabled_tools=["AST"]
-            ),
+            "STATIC_ANALYSIS": document("STATIC_ANALYSIS", enabled_tools=["AST"]),
             "VERIFICATION_PLAYBOOKS": document(
                 "VERIFICATION_PLAYBOOKS",
                 record_refs=[item.model_dump(mode="json") for item in verification],
@@ -194,12 +192,10 @@ def _manifest() -> tuple[
         refs["AST"]: ast,
     }
     artifacts = {
-        item.content_sha256: f"{item.slot}-data".encode()
-        for item in manifest.artifacts
+        item.content_sha256: f"{item.slot}-data".encode() for item in manifest.artifacts
     }
     assert all(
-        hashlib.sha256(data).hexdigest() == digest
-        for digest, data in artifacts.items()
+        hashlib.sha256(data).hexdigest() == digest for digest, data in artifacts.items()
     )
     return manifest, records, artifacts
 

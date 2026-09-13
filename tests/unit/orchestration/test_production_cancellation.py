@@ -115,9 +115,7 @@ async def test_provider_cancellation_uses_exact_profile_model_and_call_id() -> N
         adapters={(data.provider_ref, "gpt-test"): cast(Any, adapter)},
     )
 
-    observed = await service.cancel(
-        _target("PROVIDER", call_spec_ref=data.spec_ref)
-    )
+    observed = await service.cancel(_target("PROVIDER", call_spec_ref=data.spec_ref))
 
     assert observed.status == "STOPPED"
     assert observed.reason_code is None

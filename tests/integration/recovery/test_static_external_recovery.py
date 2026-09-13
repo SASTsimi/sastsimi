@@ -456,9 +456,7 @@ async def test_public_coordinator_recovers_a_durable_static_receipt(
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     digest = hashlib.sha256(executable.read_bytes()).hexdigest()
-    _, runner, request, profile = _runtime_request(
-        tmp_path, executable_sha256=digest
-    )
+    _, runner, request, profile = _runtime_request(tmp_path, executable_sha256=digest)
     assert isinstance(request.action.meta, RecordMeta)
     assert request.action.meta.attempt_id is not None
     calls = 0

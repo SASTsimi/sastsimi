@@ -173,9 +173,7 @@ class _Capabilities(ProductionCapabilityResolver):
             ),
             approved_llm_routes=approved_routes,
             workspace_dependency_refs=cast(tuple[RecordRef, ...], (policy, git)),
-            handler_failure_recorder=cast(
-                HandlerFailureRecorder, _FailureRecorder()
-            ),
+            handler_failure_recorder=cast(HandlerFailureRecorder, _FailureRecorder()),
             install=self._install,
             configuration_evidence=UnprovenEvidence(),
         )
@@ -379,8 +377,9 @@ def test_factory_builds_sqlite_foundation_and_complete_handler_application() -> 
         assert tuple(core.handlers.resolve(kind) for kind in WorkType)
 
 
-def test_factory_without_exact_capability_resolver_fails_before_creating_state(
-) -> None:
+def test_factory_without_exact_capability_resolver_fails_before_creating_state() -> (
+    None
+):
     from sastsimi.interfaces.cli.analyze import ProductionAnalyzeUnavailable
 
     with _writable_data_dir() as data_dir:

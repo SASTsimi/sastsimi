@@ -226,9 +226,7 @@ def test_production_unavailable_prints_only_the_safe_reason_code(
         == 4
     )
     output = json.loads(capsys.readouterr().err)
-    assert output["data"]["reason_code"] == (
-        "PRODUCTION_PROVIDER_APPROVAL_INCOMPLETE"
-    )
+    assert output["data"]["reason_code"] == ("PRODUCTION_PROVIDER_APPROVAL_INCOMPLETE")
 
 
 def test_production_results_without_available_query_fails_closed(

@@ -190,9 +190,7 @@ class _Records:
         self.values[ref] = record
         return ref
 
-    def commit_transition(
-        self, request: TransitionCommitRequest
-    ) -> TransitionCommit:
+    def commit_transition(self, request: TransitionCommitRequest) -> TransitionCommit:
         raise AssertionError(request)
 
 
@@ -665,9 +663,7 @@ async def test_hypothesis_handler_rejects_exact_ref_mismatch_before_llm_call() -
         workflow=_HypothesisWorkflow(_ref("hypothesis_proposal", "proposal")),
         calls=calls,
         orchestration_identity_ref=_ref("role_identity", "orchestrator"),
-        hypotheses_committed=cast(
-            HypothesesCommittedPort, lambda _proposal_refs: None
-        ),
+        hypotheses_committed=cast(HypothesesCommittedPort, lambda _proposal_refs: None),
     )
 
     with pytest.raises(ValueError, match="HYPOTHESIS_STATIC_CLOSURE_MISMATCH"):
@@ -825,9 +821,7 @@ async def test_resumed_verification_reuses_prior_evidence_without_new_debate() -
         runner=cast(WorkflowRunner, runner),
         verification=cast(VerificationService, _Verification(records)),
         debate=cast(DebateService, debate),
-        non_dynamic=cast(
-            NonDynamicCompletionPort, _NonDynamic(context.work, records)
-        ),
+        non_dynamic=cast(NonDynamicCompletionPort, _NonDynamic(context.work, records)),
         dynamic=cast(DynamicVerificationPort, dynamic),
         calls=calls,
         verification_identity_ref=_ref("role_identity", "verification"),
@@ -856,9 +850,7 @@ async def test_verification_handler_branch_failure_never_reaches_a_verdict() -> 
         runner=cast(WorkflowRunner, runner),
         verification=cast(VerificationService, verification),
         debate=cast(DebateService, debate),
-        non_dynamic=cast(
-            NonDynamicCompletionPort, _NonDynamic(context.work, records)
-        ),
+        non_dynamic=cast(NonDynamicCompletionPort, _NonDynamic(context.work, records)),
         dynamic=cast(DynamicVerificationPort, _NoDynamic()),
         calls=calls,
         verification_identity_ref=_ref("role_identity", "verification"),

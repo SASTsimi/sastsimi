@@ -96,9 +96,7 @@ class StaticExternalRecoveryPort(Protocol):
         self,
         request: StaticToolRequest,
         profile: StaticToolProfile,
-        operation: Callable[
-            [MonotonicActionDeadline], Awaitable[StaticToolObservation]
-        ]
+        operation: Callable[[MonotonicActionDeadline], Awaitable[StaticToolObservation]]
         | None = None,
     ) -> ToolRunResult: ...
 

@@ -771,9 +771,7 @@ def _production_fixture(
         RunOutcome(ANALYSIS_ID, "TERMINAL", None),
         RunOutcome(ANALYSIS_ID, final_outcome, None),
     ]
-    scheduler = _ScriptedScheduler(
-        registry, initializer, budgets, work_query, outcomes
-    )
+    scheduler = _ScriptedScheduler(registry, initializer, budgets, work_query, outcomes)
     aggregator = _CandidateAggregator(_candidate(candidate_status))
     finalizer = _Finalizer()
     pipeline = ProductionPipeline(
@@ -897,9 +895,7 @@ class _ExactRecords:
     def stage_record(self, record: Record) -> RecordRef:
         raise AssertionError(record)
 
-    def commit_transition(
-        self, request: TransitionCommitRequest
-    ) -> TransitionCommit:
+    def commit_transition(self, request: TransitionCommitRequest) -> TransitionCommit:
         raise AssertionError(request)
 
 

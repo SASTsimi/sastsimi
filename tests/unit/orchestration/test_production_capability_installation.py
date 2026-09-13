@@ -69,9 +69,7 @@ from tests.unit.orchestration.test_production_llm_work_handlers import _context
 def _prompt_fixture(tmp_path: Path) -> tuple[Any, Any, Any, Any, Any]:
     fixtures = import_module("tests.unit.prompts.test_production_configuration")
     service, records, artifacts = fixtures._service(tmp_path)
-    route, approval = fixtures._approved_hypothesis_route(
-        service, records, artifacts
-    )
+    route, approval = fixtures._approved_hypothesis_route(service, records, artifacts)
     return service, records, artifacts, route, approval
 
 
@@ -151,9 +149,7 @@ class _RecordStore:
     def stage_record(self, record: Record) -> RecordRef:
         return self.add(record)
 
-    def commit_transition(
-        self, request: TransitionCommitRequest
-    ) -> TransitionCommit:
+    def commit_transition(self, request: TransitionCommitRequest) -> TransitionCommit:
         raise AssertionError(request)
 
 
@@ -238,9 +234,7 @@ def _git_profile() -> RuntimeCapabilityProfile:
         publication_commit_id=_scope().commit_id,
         record_id=RecordId("git-approval"),
     )
-    profile_meta = meta(
-        "runtime_capability_profile", hypothesis=None, attempt=None
-    )
+    profile_meta = meta("runtime_capability_profile", hypothesis=None, attempt=None)
     profile_meta["created_at"] = datetime(2026, 9, 13, tzinfo=UTC)
     return RuntimeCapabilityProfile.model_validate(
         {

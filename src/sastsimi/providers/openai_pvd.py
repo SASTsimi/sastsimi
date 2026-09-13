@@ -132,9 +132,7 @@ class OpenAIResponsesPVDProbeRunner:
                 self._run_test(
                     test_id,
                     candidate,
-                    cast(OpenAIResponsesApiAdapter, adapter)
-                    if adapter_valid
-                    else None,
+                    cast(OpenAIResponsesApiAdapter, adapter) if adapter_valid else None,
                     checks.get(test_id, ()),
                     identity_digest,
                     invalid_configuration=invalid_configuration,
