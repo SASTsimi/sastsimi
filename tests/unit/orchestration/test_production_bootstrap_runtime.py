@@ -5,6 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import patch
 
 import pytest
 
@@ -162,17 +163,41 @@ def test_guarded_receipt_read_allows_access_time_only_change(
     assert _guarded_read(target, 1024) == b"trusted output"
 
 
-def test_dynamic_runtime_rejects_an_untrusted_docker_resolver() -> None:
-    factory = ProductionDynamicRuntimeFactory(
-        docker_resolver_factory=lambda _assembly: cast(Any, SimpleNamespace())
-    )
+def test_dynamic_runtime_defers_docker_resolver_until_dynamic_use() -> None:
+    calls: list[object] = []
 
+    def resolver_factory(assembly: object) -> object:
+        calls.append(assembly)
+        return SimpleNamespace()
+
+    factory = ProductionDynamicRuntimeFactory(
+        docker_resolver_factory=cast(Any, resolver_factory)
+    )
+    captured: dict[str, object] = {}
+
+    def build_dynamic(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return SimpleNamespace(feature=cast(Any, object()), readiness_checks=())
+
+    assembly = SimpleNamespace(resolved=object(), materialized=object())
+    with patch(
+        "sastsimi.composition.production_bootstrap_runtime."
+        "build_production_dynamic_feature",
+        side_effect=build_dynamic,
+    ):
+        built = factory(
+            cast(Any, assembly),
+            cast(Any, SimpleNamespace()),
+            cast(Any, object()),
+        )
+
+    assert calls == []
+    assert built.readiness_checks == ()
     with pytest.raises(
         ProductionCapabilityUnavailable,
         match="PRODUCTION_DOCKER_RESOLVER_INVALID",
     ):
-        factory(
-            cast(Any, SimpleNamespace()),
-            cast(Any, SimpleNamespace()),
-            cast(Any, object()),
+        cast(Any, captured["docker_target_resolver"]).resolve_current(
+            cast(Any, object())
         )
+    assert calls == [assembly]

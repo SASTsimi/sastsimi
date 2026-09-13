@@ -7,6 +7,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePath
+from threading import Lock
 from typing import Literal
 
 from sastsimi.composition.production_feature_installer import (
@@ -37,12 +38,16 @@ from sastsimi.contracts.refs import (
 )
 from sastsimi.contracts.static import CodeWorkspace, RepositoryProfile
 from sastsimi.contracts.work import WorkExecutionState
-from sastsimi.orchestration.production_context import ProductionInstallationContext
+from sastsimi.orchestration.production_context import (
+    ProductionCapabilityUnavailable,
+    ProductionInstallationContext,
+)
 from sastsimi.orchestration.production_provisioning import (
     MaterializedProvisioningArtifacts,
     ResolvedProductionProvisioning,
     SandboxProfileProvisioning,
 )
+from sastsimi.ports.docker_state import DockerContainerState
 from sastsimi.ports.dto import Record
 from sastsimi.ports.dynamic_sandbox import (
     SandboxRunSpec,
@@ -53,6 +58,7 @@ from sastsimi.ports.runtime_query import RuntimeQueryPort
 from sastsimi.ports.runtime_store import ActionAuthorizationPort
 from sastsimi.ports.workspace import WorkspaceLocatorPort
 from sastsimi.reproduction.production import DynamicSandboxAuthorization
+from sastsimi.reproduction.service import DynamicOperationalError
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.sandbox.docker_adapter import DockerAdapter
 from sastsimi.verification.production_llm_work_handlers import ProductionCallPort
@@ -63,6 +69,7 @@ _DOCKER_OPERATIONS = frozenset(
 )
 _NUMERIC_USER = re.compile(r"^[1-9][0-9]*(?::[1-9][0-9]*)?$")
 _IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_SAFE_REASON = re.compile(r"^[A-Z0-9_]{1,96}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +82,39 @@ class DockerCapabilityReadiness:
     def __call__(self) -> None:
         target = self.resolver.resolve_current(self.profile_ref)
         self.resolver.require_current(target)
+
+
+class _LazyDockerCancellation:
+    """Resolve Docker only if an owned dynamic container needs cancellation."""
+
+    def __init__(
+        self,
+        profile_ref: HostConfigurationRef,
+        resolver: TrustedDockerTargetResolverPort,
+    ) -> None:
+        self._profile_ref = profile_ref
+        self._resolver = resolver
+        self._lock = Lock()
+        self._adapter: DockerAdapter | None = None
+
+    async def inspect(self, container_id: str) -> DockerContainerState:
+        return await self._delegate().inspect(container_id)
+
+    async def remove(self, resource_ids: tuple[str, ...]) -> None:
+        await self._delegate().remove(resource_ids)
+
+    def _delegate(self) -> DockerAdapter:
+        adapter = self._adapter
+        if adapter is not None:
+            return adapter
+        with self._lock:
+            adapter = self._adapter
+            if adapter is None:
+                adapter = DockerAdapter.from_profile(
+                    self._profile_ref, self._resolver
+                )
+                self._adapter = adapter
+            return adapter
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,7 +143,21 @@ class ProductionDynamicAuthorizationResolver:
         image_digest: str | None,
         context_refs: tuple[StoredDataRef, ...],
     ) -> DynamicSandboxAuthorization:
-        self.docker_readiness()
+        try:
+            self.docker_readiness()
+        except (
+            LookupError,
+            OSError,
+            ProductionCapabilityUnavailable,
+            TypeError,
+            ValueError,
+        ) as error:
+            reason = str(error)
+            if _SAFE_REASON.fullmatch(reason) is None:
+                reason = "PRODUCTION_DOCKER_CAPABILITY_UNAVAILABLE"
+            raise DynamicOperationalError(
+                "BLOCKED", "EXTERNAL_CONFIGURATION", reason
+            ) from error
         if phase not in {"BUILD", "RUN"}:
             raise ValueError("PRODUCTION_SANDBOX_PHASE_INVALID")
         if not isinstance(work.meta, RecordMeta):
@@ -253,14 +307,14 @@ class ProductionDynamicAuthorizationResolver:
 
 @dataclass(frozen=True, slots=True)
 class BuiltDynamicProductionFeature:
-    """R7 feature plus the mandatory live-Docker readiness check."""
+    """R7 feature plus its dynamic-claim Docker readiness check."""
 
     feature: DynamicProductionFeature
     docker_readiness: DockerCapabilityReadiness
 
     @property
     def readiness_checks(self) -> tuple[ReadinessCheck, ...]:
-        return (self.docker_readiness,)
+        return ()
 
 
 def build_production_dynamic_feature(
@@ -312,7 +366,6 @@ def build_production_dynamic_feature(
     if not isinstance(docker_profile_ref, HostConfigurationRef):
         raise ValueError("PRODUCTION_DOCKER_CAPABILITY_REQUIRED")
     readiness = DockerCapabilityReadiness(docker_profile_ref, docker_target_resolver)
-    readiness()
     journal_relative = PurePath(document.resource_journal_relative)
     journal = _inside(
         context.data_dir,
@@ -336,7 +389,7 @@ def build_production_dynamic_feature(
         docker_readiness=readiness,
         authorization=context.runtime.validator,
     )
-    docker_adapter = DockerAdapter.from_profile(
+    docker_adapter = _LazyDockerCancellation(
         docker_profile_ref, docker_target_resolver
     )
     feature = DynamicProductionFeature(

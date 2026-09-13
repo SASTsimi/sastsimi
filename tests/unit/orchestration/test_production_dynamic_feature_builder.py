@@ -46,12 +46,14 @@ from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef, reference
 from sastsimi.contracts.static import RepositoryProfile
 from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.orchestration.production_context import ProductionCapabilityUnavailable
 from sastsimi.orchestration.production_provisioning import (
     MaterializedProvisioningArtifacts,
     ResolvedProductionProvisioning,
     SandboxProfileProvisioning,
 )
 from sastsimi.ports.dynamic_sandbox import TrustedDockerTarget
+from sastsimi.reproduction.service import DynamicOperationalError
 
 NOW = datetime(2026, 9, 13, tzinfo=UTC)
 ANALYSIS = AnalysisId("analysis")
@@ -153,13 +155,16 @@ class _DockerTargetResolver:
             enforced_build_limits=frozenset({"CPU", "MEMORY", "PID", "DISK"}),
             external_build_disk_limit_bytes=1024 * 1024 * 1024,
         )
+        self.calls: list[str] = []
 
     def resolve_current(self, profile_ref: HostConfigurationRef) -> TrustedDockerTarget:
+        self.calls.append("resolve_current")
         if profile_ref != self.target.profile_ref:
             raise ValueError("PRODUCTION_DOCKER_CAPABILITY_STALE")
         return self.target
 
     def require_current(self, target: TrustedDockerTarget) -> None:
+        self.calls.append("require_current")
         if (
             target != self.target
             or not target.executable.is_file()
@@ -285,8 +290,10 @@ def test_builder_pins_exact_sandbox_docker_and_t11_settings() -> None:
         built.feature.resource_journal_path
         == (data_dir / "sandbox" / str(ANALYSIS) / "resource-journal.json").resolve()
     )
-    assert built.readiness_checks == (built.docker_readiness,)
+    assert built.readiness_checks == ()
+    assert docker_targets.calls == []
     built.docker_readiness()
+    assert docker_targets.calls == ["resolve_current", "require_current"]
     executable.unlink()
     binary_dir.rmdir()
 
@@ -365,6 +372,45 @@ def test_builder_rejects_changed_docker_binary_and_unapproved_egress() -> None:
         )
     executable.unlink()
     binary_dir.rmdir()
+
+
+def test_dynamic_authorization_blocks_when_docker_is_unavailable() -> None:
+    def unavailable() -> None:
+        raise ProductionCapabilityUnavailable(
+            "PRODUCTION_DOCKER_EXECUTABLE_UNAVAILABLE"
+        )
+
+    resolver = ProductionDynamicAuthorizationResolver(
+        runner=cast(Any, object()),
+        records=cast(Any, object()),
+        queries=cast(Any, object()),
+        current_run=cast(Any, object()),
+        setup_identity=cast(Any, object()),
+        sandbox_profile=cast(Any, object()),
+        container_user="65532:65532",
+        workspace_root_for=cast(Any, object()),
+        docker_readiness=unavailable,
+        authorization=cast(Any, object()),
+    )
+
+    with pytest.raises(DynamicOperationalError) as captured:
+        resolver(
+            cast(Any, object()),
+            cast(Any, object()),
+            cast(Any, object()),
+            cast(Any, object()),
+            "BUILD",
+            cast(Any, object()),
+            None,
+            (),
+        )
+
+    assert captured.value.failure.status == "BLOCKED"
+    assert captured.value.failure.failure_category == "EXTERNAL_CONFIGURATION"
+    assert (
+        captured.value.failure.hypothesis_outcome == "INCONCLUSIVE"
+        and captured.value.failure.poc_ref is None
+    )
 
 
 def test_authorization_resolver_builds_baked_source_default_deny_spec() -> None:

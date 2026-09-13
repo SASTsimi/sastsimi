@@ -18,6 +18,7 @@ import stat
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from threading import Lock
 from typing import Literal, Protocol, cast
 
 from pydantic import TypeAdapter
@@ -61,7 +62,10 @@ from sastsimi.orchestration.production_context import (
 )
 from sastsimi.orchestration.static_external_runner import StaticDispatchState
 from sastsimi.ports.dto import ProcessReceipt, StaticToolObservation, StaticToolRequest
-from sastsimi.ports.dynamic_sandbox import TrustedDockerTargetResolverPort
+from sastsimi.ports.dynamic_sandbox import (
+    TrustedDockerTarget,
+    TrustedDockerTargetResolverPort,
+)
 from sastsimi.ports.llm_provider import LLMProviderAdapter
 from sastsimi.ports.scheduler import ExternalCancellationPort
 from sastsimi.ports.static_tool import ProductionStaticOutputQuotaPort
@@ -93,6 +97,46 @@ class _CapabilityServiceBuilder(Protocol):
         executable_paths: Mapping[str, Path],
         docker_host: str | None,
     ) -> TrustedDockerTargetResolverPort: ...
+
+
+class _LazyDockerTargetResolver:
+    """Create the host resolver only when dynamic reproduction claims Docker."""
+
+    def __init__(
+        self,
+        factory: DockerTargetResolverFactory,
+        context: ProductionBundleAssemblyContext,
+    ) -> None:
+        self._factory = factory
+        self._context = context
+        self._lock = Lock()
+        self._resolver: TrustedDockerTargetResolverPort | None = None
+
+    def resolve_current(
+        self, profile_ref: HostConfigurationRef
+    ) -> TrustedDockerTarget:
+        return self._delegate().resolve_current(profile_ref)
+
+    def require_current(self, target: TrustedDockerTarget) -> None:
+        self._delegate().require_current(target)
+
+    def _delegate(self) -> TrustedDockerTargetResolverPort:
+        resolver = self._resolver
+        if resolver is not None:
+            return resolver
+        with self._lock:
+            resolver = self._resolver
+            if resolver is None:
+                resolver = self._factory(self._context)
+                if any(
+                    not callable(getattr(resolver, method, None))
+                    for method in ("resolve_current", "require_current")
+                ):
+                    raise ProductionCapabilityUnavailable(
+                        "PRODUCTION_DOCKER_RESOLVER_INVALID"
+                    )
+                self._resolver = resolver
+            return resolver
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,12 +172,7 @@ class ProductionDynamicRuntimeFactory:
         context: ProductionInstallationContext,
         static: T08ProductionFeature,
     ) -> BuiltProductionDynamicFeature:
-        resolver = self.docker_resolver_factory(assembly)
-        if any(
-            not callable(getattr(resolver, method, None))
-            for method in ("resolve_current", "require_current")
-        ):
-            raise ProductionCapabilityUnavailable("PRODUCTION_DOCKER_RESOLVER_INVALID")
+        resolver = _LazyDockerTargetResolver(self.docker_resolver_factory, assembly)
 
         def workspace_root_for(work: WorkExecutionState) -> Path:
             meta = work.meta
