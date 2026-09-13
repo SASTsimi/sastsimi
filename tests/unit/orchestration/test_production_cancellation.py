@@ -8,6 +8,10 @@ from typing import Any, cast
 import pytest
 from sqlalchemy import insert
 
+from sastsimi.composition.production_cancellation import (
+    ProductionProviderCancellation,
+    ProductionSandboxCancellation,
+)
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RecordRef, RunStoredDataRef, StoredDataRef
 from sastsimi.contracts.work import (
@@ -15,10 +19,6 @@ from sastsimi.contracts.work import (
     AttemptTrigger,
     WorkAttempt,
     WorkExecutionState,
-)
-from sastsimi.orchestration.production_cancellation import (
-    ProductionProviderCancellation,
-    ProductionSandboxCancellation,
 )
 from sastsimi.ports.docker_state import DockerContainerState
 from sastsimi.ports.dto import CancellationResult

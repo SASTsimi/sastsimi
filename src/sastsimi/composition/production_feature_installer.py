@@ -18,6 +18,10 @@ from sastsimi.agents.policy_parser import PolicyParserAgent
 from sastsimi.agents.reporter import ReporterCallRefs
 from sastsimi.agents.rule_scope_gate import RuleScopeCallRefs
 from sastsimi.chaining.service import ChainingCallRefs, ChainingCallResolver
+from sastsimi.composition.production_cancellation import (
+    AttemptCancellationPort,
+    SandboxCancellationDockerPort,
+)
 from sastsimi.composition.runtime import (
     T11Services,
     build_t10_services,
@@ -42,10 +46,6 @@ from sastsimi.contracts.refs import (
 )
 from sastsimi.contracts.static import CodeWorkspace, RepositoryProfile
 from sastsimi.contracts.work import SubjectType, WorkExecutionState, WorkType
-from sastsimi.orchestration.production_cancellation import (
-    AttemptCancellationPort,
-    SandboxCancellationDockerPort,
-)
 from sastsimi.orchestration.production_context import (
     InstalledProductionServices,
     ProductionCapabilityUnavailable,

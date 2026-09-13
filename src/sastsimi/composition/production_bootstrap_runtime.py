@@ -24,6 +24,9 @@ from typing import Literal, Protocol, cast
 from pydantic import TypeAdapter
 from sqlalchemy import select
 
+from sastsimi.composition.production_cancellation import (
+    build_production_cancellation_router,
+)
 from sastsimi.composition.production_default_assembler import (
     BuiltProductionDynamicFeature,
     ProductionStaticRuntimePorts,
@@ -53,9 +56,6 @@ from sastsimi.contracts.refs import (
 )
 from sastsimi.contracts.static import CodeWorkspace, StaticToolProfile
 from sastsimi.contracts.work import WorkExecutionState
-from sastsimi.orchestration.production_cancellation import (
-    build_production_cancellation_router,
-)
 from sastsimi.orchestration.production_context import (
     ProductionCapabilityUnavailable,
     ProductionInstallationContext,

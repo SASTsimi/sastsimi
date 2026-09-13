@@ -6,7 +6,7 @@ import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import Protocol
 
 from sqlalchemy import Connection, insert, select, update
 
@@ -25,12 +25,19 @@ from sastsimi.ports.scheduler import (
 from . import models
 from .database import Database
 
-if TYPE_CHECKING:
-    from .transition_service import TransitionService
-    from .work_service import WorkService
-
 _SAFE_REASON = re.compile(r"[A-Z0-9_]{1,64}\Z")
 _CLOSED_STATUSES = frozenset({"STOPPED", "ABSENT", "PRESERVED"})
+
+
+class CancellationTransitionPort(Protocol):
+    """Narrow transition dependency needed by cancellation reconciliation."""
+
+    def cancel_in_transaction(
+        self,
+        connection: Connection,
+        work: WorkExecutionState,
+        identity_ref: BudgetScopeRef,
+    ) -> WorkExecutionState: ...
 
 
 @dataclass(frozen=True)
@@ -53,9 +60,9 @@ class RunControlStore:
         database: Database,
         clock: Clock,
         *,
-        works: WorkService | None = None,
+        works: object | None = None,
         ids: IdGenerator | None = None,
-        transitions: TransitionService | None = None,
+        transitions: CancellationTransitionPort | None = None,
         cancellation_identity_ref: BudgetScopeRef | None = None,
     ) -> None:
         configured = (works, ids, transitions, cancellation_identity_ref)

@@ -1,4 +1,4 @@
-"""Fail-closed cancellation adapters for exact production dispatch targets."""
+"""Compose fail-closed cancellation adapters for exact production targets."""
 
 from __future__ import annotations
 
