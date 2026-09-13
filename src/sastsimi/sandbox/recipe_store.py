@@ -180,9 +180,8 @@ class PreparedRecipeSource:
             or hashlib.sha256(self.context_archive).hexdigest() != self.context_digest
             or self.repository_profile_ref not in self.source_refs
             or self.source_refs[:1] != (self.repository_profile_ref,)
-            or len(self.source_refs) != (
-                4 if self.dependency_bundle_ref is not None else 3
-            )
+            or len(self.source_refs)
+            != (4 if self.dependency_bundle_ref is not None else 3)
             or any(
                 ref.data_kind != "artifact"
                 for ref in self.source_refs[
@@ -203,8 +202,7 @@ class PreparedRecipeSource:
             raise ValueError("RECIPE_CONTEXT_BINDING_INVALID")
         if self.source_manifest is not None and (
             self.source_manifest.repository_profile_ref != self.repository_profile_ref
-            or self.source_manifest.dependency_bundle_ref
-            != self.dependency_bundle_ref
+            or self.source_manifest.dependency_bundle_ref != self.dependency_bundle_ref
             or self.source_manifest.dockerfile_digest != self.dockerfile_digest
             or self.source_manifest.context_digest != self.context_digest
             or self.source_manifest.dockerfile_path != self.dockerfile_path
@@ -743,8 +741,7 @@ class EnvironmentRecipeStore:
                 meta=meta,
             )
             if any(
-                path == _DEPENDENCY_PREFIX
-                or path.startswith(f"{_DEPENDENCY_PREFIX}/")
+                path == _DEPENDENCY_PREFIX or path.startswith(f"{_DEPENDENCY_PREFIX}/")
                 for path in entries
             ):
                 raise ValueError("DEPENDENCY_BUNDLE_CONTEXT_COLLISION")
