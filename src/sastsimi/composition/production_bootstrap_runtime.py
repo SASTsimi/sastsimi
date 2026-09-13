@@ -225,9 +225,7 @@ class ProductionCancellationFactory:
             docker=dynamic.docker,
             # A new owner reloads the durable journal before taking the exact
             # attempt snapshot; no prior process memory is trusted.
-            resources=OwnedResourceRegistry(
-                journal_path=dynamic.resource_journal_path
-            ),
+            resources=OwnedResourceRegistry(journal_path=dynamic.resource_journal_path),
         )
 
 
