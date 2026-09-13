@@ -174,3 +174,37 @@ async def test_default_builder_loads_operator_onboarding_without_injected_loader
                 profile=tmp_path / "production.toml",
             )
         )
+
+
+def test_default_builder_installs_a_non_empty_production_feature_assembler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shipped command must bind the real T08-T13 assembler by default."""
+
+    from sastsimi.orchestration import production_onboarding
+    from sastsimi.orchestration.production_filesystem_provisioner import (
+        FilesystemAnalysisCapabilityProvisioner,
+        ProductionBundleAssemblyRegistry,
+    )
+
+    captured: dict[str, object] = {}
+
+    class _CapturingLoader:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        production_onboarding,
+        "OnboardedProductionCapabilityBundleLoader",
+        _CapturingLoader,
+    )
+
+    bootstrap.build_production_analyze()
+
+    provisioner = cast(
+        FilesystemAnalysisCapabilityProvisioner,
+        captured["provision"],
+    )
+    assembler = cast(Any, provisioner)._assemble
+    assert callable(assembler)
+    assert not isinstance(assembler, ProductionBundleAssemblyRegistry)

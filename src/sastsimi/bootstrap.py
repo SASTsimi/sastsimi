@@ -780,6 +780,9 @@ def build_production_analyze(capability_bundle_loader: object | None = None) -> 
     from datetime import UTC, datetime
 
     from sastsimi.config.production_profile import load_production_profile
+    from sastsimi.orchestration.production_bootstrap_runtime import (
+        build_production_bootstrap_assembler,
+    )
     from sastsimi.orchestration.production_capabilities import (
         ProductionCapabilityBundleLoader,
         ProfileBackedProductionCapabilityResolver,
@@ -790,7 +793,6 @@ def build_production_analyze(capability_bundle_loader: object | None = None) -> 
     from sastsimi.orchestration.production_entrypoint import ProductionAnalyzeService
     from sastsimi.orchestration.production_filesystem_provisioner import (
         FilesystemAnalysisCapabilityProvisioner,
-        ProductionBundleAssemblyRegistry,
     )
     from sastsimi.orchestration.production_onboarding import (
         OnboardedProductionCapabilityBundleLoader,
@@ -798,11 +800,14 @@ def build_production_analyze(capability_bundle_loader: object | None = None) -> 
     from sastsimi.runtime.system_support import UUIDIds
 
     if capability_bundle_loader is None:
-        feature_assemblies = ProductionBundleAssemblyRegistry()
+        repository_root = Path(__file__).resolve().parents[2]
+        feature_assembler = build_production_bootstrap_assembler(
+            repository_root=repository_root
+        )
         capability_bundle_loader = OnboardedProductionCapabilityBundleLoader(
-            repository_root=Path(__file__).resolve().parents[2],
+            repository_root=repository_root,
             clock=lambda: datetime.now(UTC),
-            provision=FilesystemAnalysisCapabilityProvisioner(feature_assemblies),
+            provision=FilesystemAnalysisCapabilityProvisioner(feature_assembler),
         )
 
     capability_resolver = ProfileBackedProductionCapabilityResolver(
