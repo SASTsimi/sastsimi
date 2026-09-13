@@ -9,7 +9,8 @@ No Fake adapter, fallback handler, or guessed capability is accepted.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol, cast
 
 from sastsimi.agents.cwe_labeling import CWECallRefs
@@ -17,7 +18,9 @@ from sastsimi.agents.policy_parser import PolicyParserAgent
 from sastsimi.agents.reporter import ReporterCallRefs
 from sastsimi.agents.rule_scope_gate import RuleScopeCallRefs
 from sastsimi.bootstrap import (
+    T11Services,
     build_t10_services,
+    build_t11_services,
     build_t12_services,
     build_t13_services,
 )
@@ -25,9 +28,24 @@ from sastsimi.chaining.service import ChainingCallRefs, ChainingCallResolver
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
 from sastsimi.contracts.canonical_json import content_hash
+from sastsimi.contracts.dynamic import DynamicReproductionRequest
+from sastsimi.contracts.hypothesis import HypothesisProcessState
+from sastsimi.contracts.ids import WorkId
 from sastsimi.contracts.llm import LLMRole
-from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef
+from sastsimi.contracts.records import RecordMeta
+from sastsimi.contracts.refs import (
+    BudgetScopeRef,
+    RunStoredDataRef,
+    StoredDataRef,
+    reference,
+)
+from sastsimi.contracts.static import CodeWorkspace, RepositoryProfile
 from sastsimi.contracts.work import SubjectType, WorkExecutionState, WorkType
+from sastsimi.orchestration.dynamic_verification_handoff import (
+    DynamicParentResumeService,
+    DynamicReproductionWorkHandler,
+    ProductionDynamicVerificationHandoff,
+)
 from sastsimi.orchestration.production_composition import (
     InstalledProductionServices,
     ProductionCapabilityUnavailable,
@@ -41,6 +59,7 @@ from sastsimi.orchestration.production_llm_work_handlers import (
     HypothesisWorkflowPort,
     NonDynamicCompletionPort,
     ProductionCallPort,
+    ProductionDynamicStageCallResolver,
     VerificationWorkHandler,
 )
 from sastsimi.orchestration.production_stage_handoff import (
@@ -60,9 +79,14 @@ from sastsimi.policy.work_handler import PolicyWorkHandler
 from sastsimi.ports.chaining import ChainingAgentInput
 from sastsimi.ports.dto import WorkContext, WorkHandlerResult
 from sastsimi.ports.llm_invocation import PersistedLLMInvocation
+from sastsimi.ports.record_store import RecordStore
+from sastsimi.ports.runtime_query import RuntimeQueryPort
 from sastsimi.ports.scheduler import ExternalCancellationPort
 from sastsimi.ports.work_handler import WorkHandler
+from sastsimi.ports.workspace import WorkspaceLocatorPort
 from sastsimi.reporting.cwe_workflow import GateCallRefs
+from sastsimi.reproduction.production import DynamicSandboxAuthorizationResolver
+from sastsimi.verification.completion import VerificationCompletionCoordinator
 from sastsimi.verification.debate_service import AuthorizedLLMCall
 
 
@@ -80,6 +104,7 @@ class T08ProductionFeature:
     static_normalize: WorkHandler
     context_retrieval: WorkHandler
     seeder: PostWorkspaceSeederPort
+    workspace_locator: WorkspaceLocatorPort
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,11 +153,66 @@ class OfficialPolicyPostWorkspaceSeeder:
 
 @dataclass(frozen=True, slots=True)
 class DynamicProductionFeature:
-    """T10 handoff plus the independently scheduled real T11 handler."""
+    """Exact T11 configuration; RepositoryProfile is resolved only at execution."""
 
-    handoff: DynamicVerificationPort
-    handler: WorkHandler
-    reconcile_pending: Callable[[str], tuple[WorkExecutionState, ...]]
+    sandbox_authorization: DynamicSandboxAuthorizationResolver
+    sandbox_profile: Callable[[WorkExecutionState], StoredDataRef]
+    resource_journal_path: Path
+    max_execute_turns: int
+    docker_executable: str
+
+
+type T11Builder = Callable[[RepositoryProfile, Path], T11Services]
+
+
+@dataclass(slots=True)
+class CurrentRepositoryProfileT11Resolver:
+    """Build T11 from the one current profile and exact checked-out workspace."""
+
+    records: RecordStore
+    queries: RuntimeQueryPort
+    workspace_for: Callable[[WorkExecutionState], CodeWorkspace]
+    workspace_locator: WorkspaceLocatorPort
+    build: T11Builder
+    _cache: dict[tuple[StoredDataRef, Path], T11Services] = field(
+        default_factory=dict, init=False, repr=False
+    )
+
+    def __call__(self, work: WorkExecutionState) -> T11Services:
+        if not isinstance(work.meta, RecordMeta):
+            raise ValueError("DYNAMIC_REPOSITORY_PROFILE_SCOPE_REQUIRED")
+        matches = tuple(
+            item
+            for item in self.queries.current_records(
+                str(work.meta.analysis_id), RepositoryProfile.KIND
+            )
+            if isinstance(item, RepositoryProfile)
+            and item.meta.workspace_id == work.meta.workspace_id
+            and item.meta.commit_id == work.meta.commit_id
+        )
+        if len(matches) != 1:
+            raise ValueError("CURRENT_REPOSITORY_PROFILE_REQUIRED")
+        profile = matches[0]
+        profile_ref = reference(profile)
+        if (
+            not isinstance(profile_ref, StoredDataRef)
+            or self.records.get_exact(profile_ref) != profile
+        ):
+            raise ValueError("CURRENT_REPOSITORY_PROFILE_REQUIRED")
+        workspace = self.workspace_for(work)
+        if (
+            workspace.status != "READY"
+            or workspace.workspace_id != work.meta.workspace_id
+            or workspace.commit_id != work.meta.commit_id
+        ):
+            raise ValueError("CURRENT_WORKSPACE_REQUIRED")
+        root = self.workspace_locator.root_for(workspace).resolve(strict=True)
+        key = (profile_ref, root)
+        service = self._cache.get(key)
+        if service is None:
+            service = self.build(profile, root)
+            self._cache[key] = service
+        return service
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,13 +460,106 @@ class ProductionFeatureInstaller:
                 raise ValueError("CURRENT_BUDGET_SCOPE_REQUIRED")
             return ref
 
+        def resolve_work(work_id: WorkId) -> WorkExecutionState | None:
+            try:
+                return runtime.work.get(str(work_id))
+            except LookupError:
+                return None
+
+        def workspace_for(work: WorkExecutionState) -> CodeWorkspace:
+            state = runtime.budget_registry.current_state(str(work.meta.analysis_id))
+            workspace_ref = state.workspace_ref
+            if not isinstance(workspace_ref, RunStoredDataRef):
+                raise ValueError("CURRENT_WORKSPACE_REQUIRED")
+            workspace = records.get_exact(workspace_ref)
+            if not isinstance(workspace, CodeWorkspace):
+                raise ValueError("CURRENT_WORKSPACE_REQUIRED")
+            return workspace
+
+        def current_dynamic_process(
+            request: DynamicReproductionRequest,
+        ) -> HypothesisProcessState:
+            candidates = tuple(
+                item
+                for item in runtime.queries.current_records(
+                    str(request.meta.analysis_id), HypothesisProcessState.KIND
+                )
+                if isinstance(item, HypothesisProcessState)
+                and item.meta.hypothesis_id == request.meta.hypothesis_id
+            )
+            if len(candidates) != 1:
+                raise ValueError("DYNAMIC_REQUEST_NOT_CURRENT")
+            return candidates[0]
+
+        completion = VerificationCompletionCoordinator(
+            verification=t10.verification,
+            runner=runner,
+            records=records,
+            work_resolver=resolve_work,
+            current_process=current_dynamic_process,
+            verification_identity_ref=verification_identity,
+        )
+        parent_resume = DynamicParentResumeService(
+            records=records,
+            queries=runtime.queries,
+            runner=runner,
+            verification_identity_ref=verification_identity,
+        )
+        dynamic_calls = ProductionDynamicStageCallResolver(
+            self.inputs.calls,
+            max_execute_turns=self.inputs.dynamic.max_execute_turns,
+        )
+
+        def build_t11(profile: RepositoryProfile, root: Path) -> T11Services:
+            return build_t11_services(
+                runtime=runtime,
+                runner=runner,
+                clock=context.clock,
+                ids=context.ids,
+                workspace_root=root,
+                workspace_id=context.scope.workspace_id,
+                commit_id=context.scope.commit_id,
+                role_identity_refs=context.role_identity_refs,
+                sandbox_authorization=self.inputs.dynamic.sandbox_authorization,
+                verification=t10.verification,
+                repository_profile=profile,
+                resource_journal_path=self.inputs.dynamic.resource_journal_path,
+                docker_executable=self.inputs.dynamic.docker_executable,
+                dynamic_call_resolver=dynamic_calls,
+            )
+
+        dynamic_services = CurrentRepositoryProfileT11Resolver(
+            records=records,
+            queries=runtime.queries,
+            workspace_for=workspace_for,
+            workspace_locator=self.inputs.t08.workspace_locator,
+            build=build_t11,
+        )
+        dynamic_handler = DynamicReproductionWorkHandler(
+            records=records,
+            services_for=dynamic_services,
+            parent_resume=parent_resume,
+        )
+        dynamic_handoff = ProductionDynamicVerificationHandoff(
+            records=records,
+            queries=runtime.queries,
+            runner=runner,
+            verification=t10.verification,
+            completion=completion,
+            calls=self.inputs.calls,
+            dynamic_registration=runtime.dynamic_registration,
+            verification_identity_ref=verification_identity,
+            budget_scope=budget_scope,
+            sandbox_profile=self.inputs.dynamic.sandbox_profile,
+        )
+
         verification = VerificationWorkHandler(
             records=records,
             runner=runner,
             verification=t10.verification,
             debate=t10.debate,
             non_dynamic=cast(NonDynamicCompletionPort, t10.non_dynamic_completion),
-            dynamic=self.inputs.dynamic.handoff,
+            dynamic=cast(DynamicVerificationPort, dynamic_handoff),
             calls=self.inputs.calls,
             verification_identity_ref=verification_identity,
             budget_scope=budget_scope,
@@ -456,7 +629,7 @@ class ProductionFeatureInstaller:
             WorkType.CON_EVIDENCE: con,
             WorkType.VERIFICATION: RoutedWorkHandler(verification, router),
             WorkType.DYNAMIC_REPRO: RoutedWorkHandler(
-                self.inputs.dynamic.handler, router
+                dynamic_handler, router
             ),
             WorkType.PRIMITIVE_UPDATE: t13.primitive_update,
             WorkType.CHAINING: t13.chaining,
@@ -478,7 +651,7 @@ class ProductionFeatureInstaller:
             seeder=CombinedPostWorkspaceSeeder(
                 self.inputs.t08.seeder,
                 OfficialPolicyPostWorkspaceSeeder(context, self.inputs.policy.catalog),
-                self.inputs.dynamic.reconcile_pending,
+                parent_resume.reconcile_pending,
             ),
             readiness=ExactProductionReadiness(
                 str(context.scope.analysis_id),
@@ -526,14 +699,21 @@ class ProductionFeatureInstaller:
             self.inputs.t08.static_normalize,
             self.inputs.t08.context_retrieval,
             self.inputs.t08.seeder,
-            self.inputs.dynamic.handoff,
-            self.inputs.dynamic.handler,
-            self.inputs.dynamic.reconcile_pending,
+            self.inputs.t08.workspace_locator,
+            self.inputs.dynamic.sandbox_authorization,
+            self.inputs.dynamic.sandbox_profile,
             self.inputs.calls,
             self.inputs.external_cancellation,
         ):
             if "fake" in type(component).__module__.casefold():
                 raise ProductionCapabilityUnavailable("FAKE_PRODUCTION_COMPONENT")
+        if (
+            isinstance(self.inputs.dynamic.max_execute_turns, bool)
+            or self.inputs.dynamic.max_execute_turns < 1
+            or not self.inputs.dynamic.docker_executable.strip()
+            or not self.inputs.dynamic.resource_journal_path.is_absolute()
+        ):
+            raise ProductionCapabilityUnavailable("PRODUCTION_DYNAMIC_CONFIG_INVALID")
 
 
 def _stored_identity(
@@ -554,6 +734,7 @@ def _stored_inputs(work: WorkExecutionState) -> tuple[StoredDataRef, ...]:
 
 __all__ = [
     "CombinedPostWorkspaceSeeder",
+    "CurrentRepositoryProfileT11Resolver",
     "DynamicProductionFeature",
     "ExactProductionReadiness",
     "OfficialPolicyPostWorkspaceSeeder",
