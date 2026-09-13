@@ -34,6 +34,7 @@
 | [`docs/usage.md`](./usage.md) | 실제 저장소 분석 시작, 상태·결과 조회와 Markdown 보고서 내보내기 순서를 설명합니다. | 도구 사용자·운영 담당자 | 운영 안내 |
 | [`docs/troubleshooting.md`](./troubleshooting.md) | capability·인증·정적 도구·Docker·보고서 오류를 verdict와 섞지 않고 처리하는 방법을 설명합니다. | 도구 사용자·운영 담당자 | 운영 안내 |
 | [`docs/release-follow-ups.md`](./release-follow-ups.md) | 첫 실행 버전에서 의도적으로 미룬 Medium/Low 확장 항목을 기록합니다. | PM·후속 구현 담당자 | 후속 목록 |
+| [`config/profiles/production.example.toml`](../config/profiles/production.example.toml) | secret 없이 production profile의 전체 필드와 역할별 LLM route를 작성하는 예시입니다. 값 자체는 승인 기록이 아닙니다. | 설치·Provider·운영 담당자 | 설정 예시 |
 
 ## 협업·승인 규칙
 

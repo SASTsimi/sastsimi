@@ -1,0 +1,199 @@
+# 구조 확인용 예시입니다. 이 파일 자체는 승인된 production profile이 아닙니다.
+# Windows에서는 workspace_root를 예: "C:/sastsimi-data/workspaces"로 바꾸세요.
+# 실제 secret은 넣지 말고 env:NAME 참조만 유지하세요.
+
+schema_version = 1
+program_id = "replace-with-approved-program-id"
+host_id = "replace-with-approved-host-id"
+workspace_root = "/var/lib/sastsimi/workspaces"
+taxonomy_version = "replace-with-approved-cwe-version"
+
+[worker]
+max_workers = 4
+lease_ms = 30000
+heartbeat_ms = 5000
+poll_ms = 100
+
+[timeouts]
+workspace_ms = 120000
+static_tool_ms = 300000
+llm_ms = 120000
+sandbox_ms = 600000
+shutdown_ms = 5000
+
+[workspace_limits]
+max_git_bytes = 1073741824
+max_checkout_bytes = 2147483648
+max_file_count = 100000
+min_free_bytes = 536870912
+
+[budget]
+profile_key = "replace-with-approved-budget-profile"
+approval_key = "replace-with-approval-record-key"
+approved_by = "replace-with-approver-id"
+pricing_revision = "replace-with-current-pricing-revision"
+currency = "USD"
+max_analysis_elapsed_ms = 3600000
+max_total_cost_minor_units = 100000
+max_total_work = 1000
+max_total_llm_calls = 500
+max_total_retries = 100
+max_parallel_work = 8
+work_timeout_ms = 600000
+max_attempts_per_work = 3
+max_calls_per_work = 10
+max_items_per_work = 1000
+max_verification_elapsed_ms = 900000
+max_work_per_verification = 100
+max_llm_calls_per_verification = 50
+max_retries_per_work = 3
+max_parallel_evidence_calls = 2
+max_dynamic_attempts = 3
+
+[tools]
+git = "git"
+python = "python"
+codeql = "codeql"
+opengrep = "opengrep"
+docker = "docker"
+
+[policy]
+program_namespace = "replace-with-program-namespace"
+external_program_id = "replace-with-external-program-id"
+source_version = "replace-with-current-source-version"
+official_endpoint = "https://security.example.invalid/policy"
+publisher = "replace-with-policy-publisher"
+parser_name = "approved-policy-parser"
+parser_version = "replace-with-parser-version"
+freshness_ttl_seconds = 3600
+timeout_seconds = 30
+max_response_bytes = 1048576
+allowed_content_types = ["text/html", "application/json"]
+allowed_redirect_hosts = []
+
+[[providers]]
+provider_profile_key = "approved-openai-profile"
+product = "OPENAI_API"
+environment = "PERSONAL_LOCAL"
+client_name = "openai-python"
+client_version = "replace-with-approved-client-version"
+credential_ref = { reference = "env:OPENAI_API_KEY" }
+
+[[llm_routes]]
+role = "HYPOTHESIS"
+task_kind = "GENERATE_INITIAL"
+provider_profile_key = "approved-openai-profile"
+model = "replace-with-approved-model-id"
+prompt_key = "hypothesis.generate-initial.production-v1"
+
+[[llm_routes]]
+role = "PRO"
+task_kind = "COLLECT_SUPPORT"
+provider_profile_key = "approved-openai-profile"
+model = "replace-with-approved-model-id"
+prompt_key = "pro.collect-support.production-v1"
+
+[[llm_routes]]
+role = "CON"
+task_kind = "COLLECT_COUNTEREVIDENCE"
+provider_profile_key = "approved-openai-profile"
+model = "replace-with-approved-model-id"
+prompt_key = "con.collect-counterevidence.production-v1"
+
+[[llm_routes]]
+role = "VERIFICATION"
+task_kind = "ASSESS_INITIAL"
+provider_profile_key = "approved-openai-profile"
+model = "replace-with-approved-model-id"
+prompt_key = "verification.assess-initial.production-v1"
+
+[[llm_routes]]
+role = "VERIFICATION"
+task_kind = "CREATE_DYNAMIC_REQUEST"
+provider_profile_key = "approved-openai-profile"
+model = "replace-with-approved-model-id"
+prompt_key = "verification.create-dynamic-request.production-v1"
+
+[[llm_routes]]
+role = "VERIFICATION"
+task_kind = "FINAL_VERDICT"
+provider_profile_key = "approved-openai-profile"
+model = "replace-with-approved-model-id"
+prompt_key = "verification.final-verdict.production-v1"
+
+[[llm_routes]]
+role = "DYNAMIC_REPRODUCTION"
+task_kind = "DERIVE_ENVIRONMENT"
+provider_profile_key = "approved-openai-profile"
+model = "replace-with-approved-model-id"
+prompt_key = "dynamic-reproduction.derive-environment.production-v1"
+
+[[llm_routes]]
+role = "DYNAMIC_REPRODUCTION"
+task_kind = "PLAN_REPRODUCTION"
+provider_profile_key = "approved-openai-profile"
+model = "replace-with-approved-model-id"
+prompt_key = "dynamic-reproduction.plan-reproduction.production-v1"
+
+[[llm_routes]]
+role = "DYNAMIC_REPRODUCTION"
+task_kind = "CREATE_POC_CANDIDATE"
+provider_profile_key = "approved-openai-profile"
+model = "replace-with-approved-model-id"
+prompt_key = "dynamic-reproduction.create-poc-candidate.production-v1"
+
+[[llm_routes]]
+role = "DYNAMIC_REPRODUCTION"
+task_kind = "EXECUTE_REPRODUCTION"
+provider_profile_key = "approved-openai-profile"
+model = "replace-with-approved-model-id"
+prompt_key = "dynamic-reproduction.execute-reproduction.production-v1"
+
+[[llm_routes]]
+role = "DYNAMIC_REPRODUCTION"
+task_kind = "INTERPRET_ATTEMPT"
+provider_profile_key = "approved-openai-profile"
+model = "replace-with-approved-model-id"
+prompt_key = "dynamic-reproduction.interpret-attempt.production-v1"
+
+[[llm_routes]]
+role = "CWE_LABELING"
+task_kind = "CLASSIFY_CWE"
+provider_profile_key = "approved-openai-profile"
+model = "replace-with-approved-model-id"
+prompt_key = "cwe-labeling.classify.production-v1"
+
+[[llm_routes]]
+role = "TECHNICAL_GATE"
+task_kind = "REVIEW_TECHNICAL"
+provider_profile_key = "approved-openai-profile"
+model = "replace-with-approved-model-id"
+prompt_key = "technical-gate.review.production-v1"
+
+[[llm_routes]]
+role = "RULE_SCOPE_GATE"
+task_kind = "REVIEW"
+provider_profile_key = "approved-openai-profile"
+model = "replace-with-approved-model-id"
+prompt_key = "rule-scope-gate.review.production-v1"
+
+[[llm_routes]]
+role = "REPORTER"
+task_kind = "CREATE_DRAFT"
+provider_profile_key = "approved-openai-profile"
+model = "replace-with-approved-model-id"
+prompt_key = "reporter.create-draft.production-v1"
+
+[[llm_routes]]
+role = "POLICY_PARSER"
+task_kind = "PARSE_POLICY"
+provider_profile_key = "approved-openai-profile"
+model = "replace-with-approved-model-id"
+prompt_key = "policy-parser.parse-policy.production-v1"
+
+[[llm_routes]]
+role = "CHAINING"
+task_kind = "MATCH_PRIMITIVES"
+provider_profile_key = "approved-openai-profile"
+model = "replace-with-approved-model-id"
+prompt_key = "chaining.match-primitives.production-v1"
