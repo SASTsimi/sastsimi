@@ -69,6 +69,23 @@ RULES: dict[str, frozenset[str]] = {
 # concrete persistence adapters. Keep these exceptions module-exact so the
 # package-wide dependency policy is not weakened for unrelated code.
 EXACT_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
+    # This operator-only adapter invokes the narrow capability application
+    # facade and uses its public DTOs. It does not import capability internals,
+    # storage, the runtime, or executable adapters directly.
+    "sastsimi.interfaces.cli.capability": frozenset(
+        {
+            "sastsimi.capabilities",
+            "sastsimi.capabilities.CapabilityProbeReceipt",
+            "sastsimi.capabilities.ProductionCapabilityProbeService",
+            "sastsimi.capabilities.build_production_capability_probe_service",
+            "sastsimi.capabilities.models",
+            "sastsimi.capabilities.models.ProbeKind",
+            "sastsimi.config.secrets",
+            "sastsimi.config.secrets.SecretReference",
+            "sastsimi.contracts.refs",
+            "sastsimi.contracts.refs.HostConfigurationRef",
+        }
+    ),
     "sastsimi.orchestration.static_external_runner": frozenset(
         {"sastsimi.static_analysis.coordinator"}
     ),

@@ -8,6 +8,7 @@ from typing import cast
 import pytest
 
 from sastsimi.capabilities import build_production_capability_probe_service
+from sastsimi.contracts.dynamic import EnvironmentRequirement
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.static import RepositoryProfile
 from sastsimi.ports.capability_registry import ProductionCapabilityResolverPort
@@ -119,6 +120,25 @@ def test_repository_fixtures_choose_existing_or_generated_recipe(
     request, requirements, _plan = _dynamic_records()
     request_ref = reference(request)
     assert isinstance(request_ref, StoredDataRef)
+    if fixture == "javascript-generated-dockerfile":
+        requirements = requirements.model_copy(
+            update={
+                "items": (
+                    EnvironmentRequirement(
+                        requirement_id="node-version",
+                        kind="VERSION",
+                        name="node",
+                        required=True,
+                        expected="22",
+                        expected_ref=None,
+                        alternatives=(),
+                        check_ref=None,
+                        secret_ref=None,
+                        source_refs=(request_ref,),
+                    ),
+                )
+            }
+        )
 
     prepared = EnvironmentRecipeStore(artifacts=_MemoryArtifacts()).preflight(
         context=tmp_path,
@@ -131,7 +151,7 @@ def test_repository_fixtures_choose_existing_or_generated_recipe(
     assert prepared.dockerfile_origin == origin
     assert marker in prepared.dockerfile
     if fixture == "javascript-generated-dockerfile":
-        assert b'["npm", "install", "--ignore-scripts"]' in prepared.dockerfile
+        assert b"RUN npm" not in prepared.dockerfile
 
 
 def test_public_python_probe_approves_exact_active_profile(tmp_path: Path) -> None:

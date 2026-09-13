@@ -273,6 +273,16 @@ def _repository_profile(files: Mapping[str, bytes]) -> RepositoryProfile:
     )
 
 
+def _repository_profile_from_workspace(workspace: Path) -> RepositoryProfile:
+    return _repository_profile(
+        {
+            path.relative_to(workspace).as_posix(): path.read_bytes()
+            for path in sorted(workspace.rglob("*"))
+            if path.is_file()
+        }
+    )
+
+
 def _dynamic_records() -> tuple[
     DynamicReproductionRequest,
     EnvironmentRequirements,
@@ -403,6 +413,7 @@ def _approval(
         checked_boundary_refs=(),
         decided_at=NOW,
     )
+    source_baked = recipe is not None and recipe.source_manifest is not None
     return SandboxBoundaryOutcome(
         decision=policy,
         approved_spec=SandboxRunSpec(
@@ -410,11 +421,15 @@ def _approval(
             image_digest=IMAGE_DIGEST,
             user="65532:65532",
             mounts=(
-                SandboxMount(
-                    source=workspace,
-                    target=PurePosixPath("/workspace"),
-                    read_only=True,
-                ),
+                ()
+                if source_baked
+                else (
+                    SandboxMount(
+                        source=workspace,
+                        target=PurePosixPath("/workspace"),
+                        read_only=True,
+                    ),
+                )
             ),
             network_mode="DEFAULT_DENY",
             network_targets=(),
@@ -428,6 +443,7 @@ def _approval(
             disk_limit_bytes=64 * 1024 * 1024,
             pid_limit=64,
             requested_execution_ms=10_000,
+            source_baked=source_baked,
         ),
         approved_recipe_ref=(
             cast(StoredDataRef, reference(recipe)) if recipe is not None else None
@@ -459,12 +475,14 @@ async def _prepare(
     requirements: EnvironmentRequirements,
     plan: ReproductionPlan,
     meta: RecordMeta,
+    repository_profile: RepositoryProfile | None = None,
 ) -> PreparedSandbox:
     source = await setup.preflight(
         workspace_root=workspace,
         request=request,
         requirements=requirements,
         meta=meta,
+        repository_profile=repository_profile,
     )
     recipe = await setup.build(
         approval=_build_approval(workspace, request, source),
@@ -746,6 +764,21 @@ class _FailedBuildDocker(FakeDockerAdapter):
         timeout_ms: int,
     ) -> str:
         self.built.append((dockerfile, timeout_ms))
+        return await self._fail_build(labels)
+
+    async def build_context(
+        self,
+        context_archive: bytes,
+        dockerfile_path: str,
+        labels: Mapping[str, str],
+        *,
+        spec: SandboxRunSpec,
+        timeout_ms: int,
+    ) -> str:
+        self.built_contexts.append((context_archive, dockerfile_path, timeout_ms))
+        return await self._fail_build(labels)
+
+    async def _fail_build(self, labels: Mapping[str, str]) -> str:
         image_tag = DockerAdapter.runtime_image_tag(labels)
         if self.presence == "PRESENT":
             self.image_tags[image_tag] = DockerImageState(IMAGE_DIGEST, dict(labels))
@@ -770,9 +803,12 @@ class _FailedBuildDocker(FakeDockerAdapter):
 async def _run_failed_build(docker: FakeDockerAdapter) -> None:
     workspace = Path(__file__).parents[2] / "fixtures/sandbox/sql_injection"
     request, requirements, _ = _dynamic_records()
-    setup = _setup(docker)
+    artifacts = _MemoryArtifacts()
+    setup = _setup(docker, artifacts=artifacts)
+    profile = _repository_profile_from_workspace(workspace)
     source = await setup.preflight(
         workspace_root=workspace,
+        repository_profile=profile,
         request=request,
         requirements=requirements,
         meta=_meta("environment_recipe", "failed-build-source"),
@@ -816,9 +852,10 @@ async def test_build_failure_keeps_unknown_image_tag_intent_durable(
 ) -> None:
     docker = _FailedBuildDocker("timeout", presence="UNKNOWN")
     journal = tmp_path / "owned.json"
+    artifacts = _MemoryArtifacts()
     setup = ReproductionSetupAutomation(
         docker=docker,
-        recipes=EnvironmentRecipeStore(),
+        recipes=EnvironmentRecipeStore(artifacts=artifacts),
         health=SandboxHealthChecker(),
         resources=OwnedResourceRegistry(journal_path=journal),
     )
@@ -829,6 +866,7 @@ async def test_build_failure_keeps_unknown_image_tag_intent_durable(
         request=request,
         requirements=requirements,
         meta=_meta("environment_recipe", "unknown-build-source"),
+        repository_profile=_repository_profile_from_workspace(workspace),
     )
 
     with pytest.raises(DockerOperationError):
@@ -877,7 +915,7 @@ async def test_build_refuses_to_overwrite_preexisting_foreign_stable_tag(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     docker = FakeDockerAdapter()
-    setup = _setup(docker)
+    setup = _setup(docker, artifacts=_MemoryArtifacts())
     labels = dict(
         ReproductionSetupAutomation._image_labels(_meta("environment_recipe", "owned"))
     )
@@ -898,6 +936,7 @@ async def test_build_refuses_to_overwrite_preexisting_foreign_stable_tag(
         request=request,
         requirements=requirements,
         meta=_meta("environment_recipe", "preexisting-tag-source"),
+        repository_profile=_repository_profile_from_workspace(workspace),
     )
 
     with pytest.raises(
@@ -1009,7 +1048,7 @@ class _CancelledCreateDocker(FakeDockerAdapter):
 @pytest.mark.asyncio
 async def test_early_create_cancellation_treats_absent_as_clean() -> None:
     docker = _CancelledCreateDocker("ABSENT")
-    setup = _setup(docker)
+    setup = _setup(docker, artifacts=_MemoryArtifacts())
     workspace = Path(__file__).parents[2] / "fixtures/sandbox/sql_injection"
     request, requirements, plan = _dynamic_records()
     task = asyncio.create_task(
@@ -1020,9 +1059,10 @@ async def test_early_create_cancellation_treats_absent_as_clean() -> None:
             requirements=requirements,
             plan=plan,
             meta=_meta("sandbox_environment", "early-absent"),
+            repository_profile=_repository_profile_from_workspace(workspace),
         )
     )
-    await docker.entered.wait()
+    await asyncio.wait_for(docker.entered.wait(), timeout=5)
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -1034,7 +1074,7 @@ async def test_early_create_cancellation_treats_absent_as_clean() -> None:
 @pytest.mark.asyncio
 async def test_early_create_cancellation_keeps_unknown_intent() -> None:
     docker = _CancelledCreateDocker("UNKNOWN")
-    setup = _setup(docker)
+    setup = _setup(docker, artifacts=_MemoryArtifacts())
     workspace = Path(__file__).parents[2] / "fixtures/sandbox/sql_injection"
     request, requirements, plan = _dynamic_records()
     task = asyncio.create_task(
@@ -1045,9 +1085,10 @@ async def test_early_create_cancellation_keeps_unknown_intent() -> None:
             requirements=requirements,
             plan=plan,
             meta=_meta("sandbox_environment", "early-unknown"),
+            repository_profile=_repository_profile_from_workspace(workspace),
         )
     )
-    await docker.entered.wait()
+    await asyncio.wait_for(docker.entered.wait(), timeout=5)
 
     task.cancel()
     with pytest.raises(SandboxSetupCleanupError):

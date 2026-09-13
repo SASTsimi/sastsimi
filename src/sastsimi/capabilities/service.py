@@ -434,6 +434,8 @@ class _CapabilityProbeEngine:
             raise ValueError("CAPABILITY_DOCKER_PROFILE_REQUIRED")
         executable, daemon_target = self.resolve_docker_command(profile_ref)
         boundary = profile.docker_build_capability
+        if boundary.build_backend != "LEGACY_LIMITED":
+            raise ValueError("CAPABILITY_DOCKER_BUILD_BACKEND_UNSUPPORTED")
         current_boundary = self._docker_build_boundary_result()
         if current_boundary.capability != boundary:
             raise ValueError("CAPABILITY_DOCKER_BOUNDARY_CHANGED")
