@@ -18,66 +18,12 @@
       "title": "CommitId",
       "type": "string"
     },
-    "EnvironmentRecipeSourceManifest": {
-      "additionalProperties": false,
-      "description": "Durable exact inputs needed to rebuild one repository-backed recipe.",
-      "properties": {
-        "build_context_ref": {
-          "$ref": "#/$defs/StoredDataRef"
-        },
-        "context_digest": {
-          "pattern": "^[0-9a-f]{64}$",
-          "title": "Context Digest",
-          "type": "string"
-        },
-        "dependency_bundle_ref": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/StoredDataRef"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "dockerfile_digest": {
-          "pattern": "^[0-9a-f]{64}$",
-          "title": "Dockerfile Digest",
-          "type": "string"
-        },
-        "dockerfile_origin": {
-          "enum": [
-            "REPOSITORY",
-            "GENERATED"
-          ],
-          "title": "Dockerfile Origin",
-          "type": "string"
-        },
-        "dockerfile_path": {
-          "minLength": 1,
-          "pattern": "\\S",
-          "title": "Dockerfile Path",
-          "type": "string"
-        },
-        "dockerfile_ref": {
-          "$ref": "#/$defs/StoredDataRef"
-        },
-        "repository_profile_ref": {
-          "$ref": "#/$defs/StoredDataRef"
-        }
-      },
-      "required": [
-        "repository_profile_ref",
-        "dockerfile_ref",
-        "build_context_ref",
-        "dockerfile_path",
-        "dockerfile_origin",
-        "dockerfile_digest",
-        "context_digest"
+    "DependencyEcosystem": {
+      "enum": [
+        "PYTHON_WHEELS",
+        "NPM_CACHE"
       ],
-      "title": "EnvironmentRecipeSourceManifest",
-      "type": "object"
+      "type": "string"
     },
     "HypothesisId": {
       "minLength": 1,
@@ -244,85 +190,74 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "description": "Human-approved offline dependency archive bound to one exact attempt.",
   "properties": {
-    "base_image_digest": {
-      "minLength": 1,
-      "pattern": "\\S",
-      "title": "Base Image Digest",
+    "approval_target_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Approval Target Hash",
       "type": "string"
     },
-    "baseline_recipe_ref": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/StoredDataRef"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "build_disposition": {
-      "enum": [
-        "BUILT",
-        "REUSED"
-      ],
-      "title": "Build Disposition",
-      "type": "string"
-    },
-    "built_image_digest": {
-      "minLength": 1,
-      "pattern": "\\S",
-      "title": "Built Image Digest",
-      "type": "string"
-    },
-    "created_at": {
+    "approved_at": {
       "format": "date-time",
-      "title": "Created At",
+      "title": "Approved At",
       "type": "string"
     },
-    "environment_requirements_ref": {
+    "approved_by": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Approved By",
+      "type": "string"
+    },
+    "approved_by_role": {
+      "const": "HUMAN",
+      "title": "Approved By Role",
+      "type": "string"
+    },
+    "archive_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Archive Digest",
+      "type": "string"
+    },
+    "archive_format": {
+      "const": "TAR",
+      "title": "Archive Format",
+      "type": "string"
+    },
+    "archive_ref": {
       "$ref": "#/$defs/StoredDataRef"
+    },
+    "dependency_input_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Dependency Input Hash",
+      "type": "string"
+    },
+    "ecosystem": {
+      "$ref": "#/$defs/DependencyEcosystem"
     },
     "meta": {
       "$ref": "#/$defs/RecordMeta"
     },
-    "recipe_source_ref": {
+    "repository_profile_ref": {
       "$ref": "#/$defs/StoredDataRef"
     },
     "request_ref": {
       "$ref": "#/$defs/StoredDataRef"
-    },
-    "source_manifest": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/EnvironmentRecipeSourceManifest"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "source_refs": {
-      "items": {
-        "$ref": "#/$defs/StoredDataRef"
-      },
-      "title": "Source Refs",
-      "type": "array"
     }
   },
   "required": [
     "meta",
     "request_ref",
-    "environment_requirements_ref",
-    "recipe_source_ref",
-    "source_refs",
-    "base_image_digest",
-    "built_image_digest",
-    "baseline_recipe_ref",
-    "build_disposition",
-    "source_manifest",
-    "created_at"
+    "repository_profile_ref",
+    "ecosystem",
+    "dependency_input_hash",
+    "archive_ref",
+    "archive_digest",
+    "archive_format",
+    "approval_target_hash",
+    "approved_by",
+    "approved_by_role",
+    "approved_at"
   ],
-  "title": "EnvironmentRecipe",
+  "title": "DependencyBundle",
   "type": "object"
 }

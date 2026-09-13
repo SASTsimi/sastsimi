@@ -10,6 +10,7 @@ from sastsimi.contracts.actions import ActionRequest
 from sastsimi.contracts.budget import DynamicReproductionLifecycleProfile
 from sastsimi.contracts.dynamic import (
     CleanupResult,
+    DependencyBundle,
     DynamicReproductionRequest,
     EnvironmentRecipe,
     EnvironmentRecipeSourceManifest,
@@ -119,6 +120,9 @@ class PreparedRecipeSourceView(Protocol):
     def repository_profile_ref(self) -> StoredDataRef | None: ...
 
     @property
+    def dependency_bundle_ref(self) -> StoredDataRef | None: ...
+
+    @property
     def dockerfile_origin(self) -> Literal["REPOSITORY", "GENERATED"]: ...
 
     @property
@@ -223,6 +227,7 @@ class ReproductionSetupPort(Protocol):
         requirements: EnvironmentRequirements,
         meta: RecordMeta,
         repository_profile: RepositoryProfile | None = None,
+        dependency_bundle: DependencyBundle | None = None,
     ) -> PreparedRecipeSourceView: ...
 
     async def build(

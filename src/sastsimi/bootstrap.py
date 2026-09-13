@@ -48,7 +48,7 @@ if TYPE_CHECKING:
         HypothesisProposalHandler,
         PrimitiveUpdateHandler,
     )
-    from sastsimi.contracts.dynamic import DynamicReproductionRequest
+    from sastsimi.contracts.dynamic import DependencyBundle, DynamicReproductionRequest
     from sastsimi.contracts.evaluation import AnalysisRunResult
     from sastsimi.contracts.hypothesis import HypothesisProcessState
     from sastsimi.contracts.reporting import ReportDraft
@@ -1213,6 +1213,7 @@ def build_t11_services(
     resource_journal_path: Path,
     docker_profile_ref: HostConfigurationRef,
     docker_target_resolver: TrustedDockerTargetResolverPort,
+    dependency_bundle: DependencyBundle | None = None,
 ) -> T11Services:
     """Build the real local-Docker T11 slice after trusted config resolution."""
 
@@ -1288,6 +1289,7 @@ def build_t11_services(
             sink=sink,
             authorization=sandbox_authorization,
             repository_profile=repository_profile,
+            dependency_bundle=dependency_bundle,
         )
 
     production = ProductionDynamicExecutor(

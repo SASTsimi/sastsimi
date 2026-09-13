@@ -12,6 +12,7 @@ from uuid import uuid4
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.dynamic import (
     CleanupResult,
+    DependencyBundle,
     DynamicReproductionRequest,
     EnvironmentCheck,
     EnvironmentRecipe,
@@ -138,6 +139,7 @@ class ReproductionSetupAutomation:
         requirements: EnvironmentRequirements,
         meta: RecordMeta,
         repository_profile: RepositoryProfile | None = None,
+        dependency_bundle: DependencyBundle | None = None,
     ) -> PreparedRecipeSource:
         """Read and validate recipe files without touching Docker."""
 
@@ -158,6 +160,7 @@ class ReproductionSetupAutomation:
             requirements=requirements,
             meta=meta,
             repository_profile=repository_profile,
+            dependency_bundle=dependency_bundle,
         )
 
     async def build(

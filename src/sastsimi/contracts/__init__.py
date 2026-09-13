@@ -75,6 +75,8 @@ from .closure import validate_committed_output as validate_committed_output
 from .dynamic import AgentLog as AgentLog
 from .dynamic import AgentLogEvent as AgentLogEvent
 from .dynamic import CleanupResult as CleanupResult
+from .dynamic import DependencyBundle as DependencyBundle
+from .dynamic import DependencyEcosystem as DependencyEcosystem
 from .dynamic import DynamicReproductionConclusion as DynamicReproductionConclusion
 from .dynamic import DynamicReproductionRequest as DynamicReproductionRequest
 from .dynamic import DynamicReproductionResult as DynamicReproductionResult
@@ -93,6 +95,9 @@ from .dynamic import SandboxCommandRecord as SandboxCommandRecord
 from .dynamic import SandboxEnvironment as SandboxEnvironment
 from .dynamic import SandboxPolicyDecision as SandboxPolicyDecision
 from .dynamic import SandboxProfile as SandboxProfile
+from .dynamic import (
+    dependency_bundle_target_hash as dependency_bundle_target_hash,
+)
 from .evaluation import AnalysisRunResult as AnalysisRunResult
 from .evaluation import EvaluationMetric as EvaluationMetric
 from .evaluation import EvaluationRecommendation as EvaluationRecommendation

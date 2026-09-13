@@ -16,12 +16,14 @@ import pytest
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.dynamic import (
     POC_RUNTIME_PATH,
+    DependencyBundle,
     DynamicReproductionRequest,
     EnvironmentRecipe,
     EnvironmentRequirement,
     EnvironmentRequirements,
     ReproductionPlan,
     SandboxPolicyDecision,
+    dependency_bundle_target_hash,
 )
 from sastsimi.contracts.dynamic_resource import owned_container_resource_ref
 from sastsimi.contracts.ids import (
@@ -59,7 +61,11 @@ from sastsimi.sandbox.docker_adapter import (
     DockerOperationError,
 )
 from sastsimi.sandbox.health_check import SandboxHealthChecker
-from sastsimi.sandbox.recipe_store import EnvironmentRecipeStore, PreparedRecipeSource
+from sastsimi.sandbox.recipe_store import (
+    EnvironmentRecipeStore,
+    PreparedRecipeSource,
+    dependency_input_hash,
+)
 from sastsimi.sandbox.setup_automation import (
     PreparedSandbox,
     ReproductionSetupAutomation,
@@ -209,6 +215,7 @@ def _repository_profile(files: Mapping[str, bytes]) -> RepositoryProfile:
             "requirements.txt": "REQUIREMENTS",
             "pyproject.toml": "PYPROJECT",
             "package.json": "PACKAGE_JSON",
+            "package-lock.json": "PACKAGE_LOCK",
         }.get(name)
         if kind is not None:
             configs.append({"path": path, "kind": kind})
@@ -315,6 +322,61 @@ def _dynamic_records() -> tuple[
         requested_evidence=(),
     )
     return request, requirements, plan
+
+
+def _dependency_archive(files: Mapping[str, bytes]) -> bytes:
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w", format=tarfile.PAX_FORMAT) as archive:
+        for path, raw in sorted(files.items()):
+            info = tarfile.TarInfo(path)
+            info.mode = 0o644
+            info.size = len(raw)
+            archive.addfile(info, io.BytesIO(raw))
+    return stream.getvalue()
+
+
+def _dependency_bundle(
+    *,
+    artifacts: _MemoryArtifacts,
+    profile: RepositoryProfile,
+    request: DynamicReproductionRequest,
+    ecosystem: str,
+    files: Mapping[str, bytes],
+    dependency_hash: str | None = None,
+) -> DependencyBundle:
+    archive = _dependency_archive(files)
+    archive_ref = artifacts.commit(
+        artifacts.stage_bytes(archive, "application/x-tar")
+    )
+    request_ref = reference(request)
+    profile_ref = reference(profile)
+    assert isinstance(request_ref, StoredDataRef)
+    assert isinstance(profile_ref, StoredDataRef)
+    input_hash = dependency_hash or dependency_input_hash(profile)
+    target_hash = dependency_bundle_target_hash(
+        request_ref=request_ref,
+        ecosystem=ecosystem,
+        repository_profile_ref=profile_ref,
+        dependency_input_hash=input_hash,
+        archive_ref=archive_ref,
+        archive_digest=archive_ref.content_hash,
+    )
+    return DependencyBundle.model_validate(
+        {
+            "meta": _meta("dependency_bundle", f"{ecosystem.lower()}-bundle"),
+            "request_ref": request_ref,
+            "repository_profile_ref": profile_ref,
+            "ecosystem": ecosystem,
+            "dependency_input_hash": input_hash,
+            "archive_ref": archive_ref,
+            "archive_digest": archive_ref.content_hash,
+            "archive_format": "TAR",
+            "approval_target_hash": target_hash,
+            "approved_by": "operator@example.invalid",
+            "approved_by_role": "HUMAN",
+            "approved_at": NOW,
+        }
+    )
 
 
 def _approval(
@@ -1286,6 +1348,199 @@ async def test_generated_recipe_blocks_unapproved_javascript_dependency_supply(
             requirements=requirements,
             meta=_meta("environment_recipe", "node-recipe-source"),
         )
+
+
+@pytest.mark.asyncio
+async def test_approved_python_wheel_bundle_is_baked_for_offline_install(
+    tmp_path: Path,
+) -> None:
+    files = {
+        "app.py": b"import demo\n",
+        "requirements.txt": b"demo==1.0.0\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    profile = _repository_profile(files)
+    request, requirements, _ = _dynamic_records()
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
+    requirements = requirements.model_copy(
+        update={
+            "items": (
+                EnvironmentRequirement(
+                    requirement_id="python-version",
+                    kind="VERSION",
+                    name="python",
+                    required=True,
+                    expected="3.12",
+                    expected_ref=None,
+                    alternatives=(),
+                    check_ref=None,
+                    secret_ref=None,
+                    source_refs=(request_ref,),
+                ),
+            )
+        }
+    )
+    artifacts = _MemoryArtifacts()
+    bundle = _dependency_bundle(
+        artifacts=artifacts,
+        profile=profile,
+        request=request,
+        ecosystem="PYTHON_WHEELS",
+        files={"demo-1.0.0-py3-none-any.whl": b"immutable-wheel"},
+    )
+    source = await _setup(FakeDockerAdapter(), artifacts=artifacts).preflight(
+        workspace_root=tmp_path,
+        repository_profile=profile,
+        dependency_bundle=bundle,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "python-offline-source"),
+    )
+
+    assert source.source_manifest is not None
+    assert source.source_manifest.dependency_bundle_ref == reference(bundle)
+    assert source.context_archive is not None
+    with tarfile.open(fileobj=io.BytesIO(source.context_archive), mode="r:") as archive:
+        names = set(archive.getnames())
+        dockerfile = archive.extractfile(source.dockerfile_path)
+        assert dockerfile is not None
+        dockerfile_bytes = dockerfile.read()
+    assert (
+        ".sastsimi/dependencies/python/demo-1.0.0-py3-none-any.whl" in names
+    )
+    assert b"python -m pip install --no-index" in dockerfile_bytes
+    assert b"--find-links=/opt/sastsimi-dependencies/python" in dockerfile_bytes
+
+
+@pytest.mark.asyncio
+async def test_approved_npm_cache_bundle_is_baked_for_offline_install(
+    tmp_path: Path,
+) -> None:
+    files = {
+        "package.json": b'{"dependencies":{"demo":"1.0.0"}}\n',
+        "package-lock.json": b'{"lockfileVersion":3,"packages":{}}\n',
+        "server.js": b"require('demo')\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    profile = _repository_profile(files)
+    request, requirements, _ = _dynamic_records()
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
+    requirements = requirements.model_copy(
+        update={
+            "items": (
+                EnvironmentRequirement(
+                    requirement_id="node-version",
+                    kind="VERSION",
+                    name="node",
+                    required=True,
+                    expected="22",
+                    expected_ref=None,
+                    alternatives=(),
+                    check_ref=None,
+                    secret_ref=None,
+                    source_refs=(request_ref,),
+                ),
+            )
+        }
+    )
+    artifacts = _MemoryArtifacts()
+    bundle = _dependency_bundle(
+        artifacts=artifacts,
+        profile=profile,
+        request=request,
+        ecosystem="NPM_CACHE",
+        files={"_cacache/content-v2/sha512/aa/item": b"immutable-package"},
+    )
+    source = await _setup(FakeDockerAdapter(), artifacts=artifacts).preflight(
+        workspace_root=tmp_path,
+        repository_profile=profile,
+        dependency_bundle=bundle,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "npm-offline-source"),
+    )
+
+    assert source.context_archive is not None
+    with tarfile.open(fileobj=io.BytesIO(source.context_archive), mode="r:") as archive:
+        names = set(archive.getnames())
+        dockerfile = archive.extractfile(source.dockerfile_path)
+        assert dockerfile is not None
+        dockerfile_bytes = dockerfile.read()
+    assert (
+        ".sastsimi/dependencies/npm/_cacache/content-v2/sha512/aa/item" in names
+    )
+    assert b"npm ci --offline" in dockerfile_bytes
+    assert b"--cache /opt/sastsimi-dependencies/npm" in dockerfile_bytes
+    assert b"--ignore-scripts" in dockerfile_bytes
+
+
+@pytest.mark.asyncio
+async def test_dependency_bundle_input_mismatch_is_rejected_before_docker(
+    tmp_path: Path,
+) -> None:
+    files = {"app.py": b"import demo\n", "requirements.txt": b"demo==1\n"}
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    profile = _repository_profile(files)
+    request, requirements, _ = _dynamic_records()
+    artifacts = _MemoryArtifacts()
+    bundle = _dependency_bundle(
+        artifacts=artifacts,
+        profile=profile,
+        request=request,
+        ecosystem="PYTHON_WHEELS",
+        files={"demo-1-py3-none-any.whl": b"wheel"},
+        dependency_hash="f" * 64,
+    )
+    docker = FakeDockerAdapter()
+
+    with pytest.raises(ValueError, match="DEPENDENCY_BUNDLE_INPUT_MISMATCH"):
+        await _setup(docker, artifacts=artifacts).preflight(
+            workspace_root=tmp_path,
+            repository_profile=profile,
+            dependency_bundle=bundle,
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "mismatched-bundle-source"),
+        )
+
+    assert docker.built_contexts == []
+
+
+@pytest.mark.asyncio
+async def test_dependency_bundle_rejects_secret_paths_without_exposing_content(
+    tmp_path: Path,
+) -> None:
+    files = {"app.py": b"import demo\n", "requirements.txt": b"demo==1\n"}
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    profile = _repository_profile(files)
+    request, requirements, _ = _dynamic_records()
+    artifacts = _MemoryArtifacts()
+    bundle = _dependency_bundle(
+        artifacts=artifacts,
+        profile=profile,
+        request=request,
+        ecosystem="PYTHON_WHEELS",
+        files={".npmrc": b"token=must-not-appear"},
+    )
+
+    with pytest.raises(ValueError) as raised:
+        await _setup(FakeDockerAdapter(), artifacts=artifacts).preflight(
+            workspace_root=tmp_path,
+            repository_profile=profile,
+            dependency_bundle=bundle,
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "secret-bundle-source"),
+        )
+
+    assert str(raised.value) == "DEPENDENCY_BUNDLE_ARCHIVE_INVALID"
+    assert "must-not-appear" not in str(raised.value)
 
 
 @pytest.mark.asyncio
