@@ -10,6 +10,7 @@ schema_version = 1
 program_id = "example-program"
 host_id = "local-host"
 workspace_root = "{root}"
+allow_local_repository = true
 taxonomy_version = "CWE-4.17"
 
 [worker]
@@ -106,6 +107,7 @@ def test_loads_explicit_production_profile_without_resolving_secret(
 
     assert profile.program_id == "example-program"
     assert profile.workspace_root == workspace_root
+    assert profile.allow_local_repository is True
     assert profile.worker.max_workers == 4
     assert profile.workspace_limits.max_file_count == 100_000
     assert profile.budget.max_parallel_work == 8

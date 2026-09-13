@@ -182,6 +182,9 @@ class ProductionProfile(ContractModel):
     program_id: NonEmptyStr
     host_id: NonEmptyStr
     workspace_root: Path
+    # Local repositories are a deliberate operator choice.  Remote HTTPS
+    # remains the default so a profile cannot silently widen repository input.
+    allow_local_repository: bool = False
     taxonomy_version: NonEmptyStr
     worker: WorkerSettings
     timeouts: TimeoutSettings
