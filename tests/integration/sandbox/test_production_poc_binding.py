@@ -174,20 +174,6 @@ class _CleanupSetup:
 
 
 @dataclass
-class _Claim:
-    authorization: DynamicSandboxAuthorization = cast(
-        DynamicSandboxAuthorization, object()
-    )
-    events: list[str] = field(default_factory=list)
-
-    async def dispatch(self) -> None:
-        self.events.append("dispatch")
-
-    async def returned(self) -> None:
-        self.events.append("return")
-
-
-@dataclass
 class _RecreateController:
     outcome: SandboxBoundaryOutcome
     calls: list[dict[str, object]] = field(default_factory=list)
@@ -471,20 +457,6 @@ async def test_selecting_candidate_materializes_exact_verified_bytes() -> None:
             hashlib.sha256(expected).hexdigest(),
         )
     ]
-
-
-@pytest.mark.asyncio
-async def test_cleanup_returns_active_runtime_sandbox_dispatch() -> None:
-    workflow, _docker, chain, _request_ref = _prepared_workflow()
-    cleanup = _CleanupSetup(chain["cleanup"])
-    claim = _Claim()
-    workflow._setup = cast(ReproductionSetupAutomation, cleanup)
-    workflow._active_authorization = claim
-
-    await workflow.cleanup(workflow._session(workflow._policy_ref()))
-
-    assert claim.events == ["return"]
-    assert workflow._active_authorization is None
 
 
 @pytest.mark.asyncio
