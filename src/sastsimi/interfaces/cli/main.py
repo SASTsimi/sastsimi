@@ -271,7 +271,7 @@ def main(
         if args.command == "onboarding":
             command_name = "onboarding " + args.onboarding_command
             profile = load_production_profile(args.profile)
-            repository_root = Path(__file__).resolve().parents[4]
+            repository_root = bootstrap.builtin_resource_root()
             if args.onboarding_command == "init":
                 onboarding_result = onboarding_command.run_init(
                     args.output_dir,

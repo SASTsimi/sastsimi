@@ -205,6 +205,7 @@ def test_default_builder_installs_a_non_empty_production_feature_assembler(
         FilesystemAnalysisCapabilityProvisioner,
         captured["provision"],
     )
+    assert captured["repository_root"] == bootstrap.builtin_resource_root()
     assembler = cast(Any, provisioner)._assemble
     assert callable(assembler)
     assert not isinstance(assembler, ProductionBundleAssemblyRegistry)

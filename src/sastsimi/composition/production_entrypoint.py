@@ -1,7 +1,8 @@
 """Wire the production command from approved capability bundles."""
 
-from pathlib import Path
 from typing import cast
+
+from sastsimi.config.package_resources import builtin_package_root
 
 
 def build_production_analyze(capability_bundle_loader: object | None = None) -> object:
@@ -30,7 +31,7 @@ def build_production_analyze(capability_bundle_loader: object | None = None) -> 
     from sastsimi.runtime.system_support import UUIDIds
 
     if capability_bundle_loader is None:
-        repository_root = Path(__file__).resolve().parents[3]
+        repository_root = builtin_package_root()
         feature_assembler = build_production_bootstrap_assembler(
             repository_root=repository_root
         )

@@ -48,6 +48,7 @@ from sastsimi.composition.production_t08_builder import (
     ProductionT08Inputs,
     build_production_t08_feature,
 )
+from sastsimi.config.package_resources import resolve_builtin_resource
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.ids import AttemptId, LogicalRecordId, RecordId
 from sastsimi.contracts.records import RecordMeta
@@ -588,12 +589,9 @@ def _t08_inputs(
         for route in static.routes
     }
     git_executable = executable_resolver(installation.profile.tools.git)
-    worker = (
-        repository_root
-        / "src"
-        / "sastsimi"
-        / "static_analysis"
-        / "python_ast_worker.py"
+    worker = resolve_builtin_resource(
+        repository_root,
+        Path("src/sastsimi/static_analysis/python_ast_worker.py"),
     )
     worker = worker.resolve(strict=True)
     if not worker.is_file():

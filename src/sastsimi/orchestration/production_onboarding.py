@@ -19,6 +19,7 @@ from typing import Literal, Protocol, Self
 
 from pydantic import AwareDatetime, model_validator
 
+from sastsimi.config.package_resources import resolve_builtin_resource
 from sastsimi.config.production_profile import ProductionProfile
 from sastsimi.contracts.base import ContractModel, NonEmptyStr, Sha256
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -565,9 +566,13 @@ def read_builtin_prompt(repository_root: Path, relative: Path) -> bytes:
         part in {"", ".", ".."} for part in relative.parts
     ):
         raise ValueError("PROMPT_PATH_DENIED")
-    candidate = root.joinpath(*relative.parts)
+    try:
+        candidate = resolve_builtin_resource(root, relative)
+    except ValueError as error:
+        raise ValueError("PROMPT_PATH_DENIED") from error
+    physical_relative = candidate.relative_to(root)
     current = root
-    for part in relative.parts:
+    for part in physical_relative.parts:
         current = current / part
         info = current.lstat()
         if stat.S_ISLNK(info.st_mode) or bool(

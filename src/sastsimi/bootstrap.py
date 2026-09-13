@@ -1,5 +1,8 @@
 """Public facade for the concrete application composition root."""
 
+from sastsimi.config.package_resources import (
+    builtin_package_root as builtin_resource_root,
+)
 from sastsimi.composition.production_entrypoint import (
     build_production_analyze as build_production_analyze,
 )
