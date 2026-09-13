@@ -8,6 +8,7 @@ No Fake adapter, fallback handler, or guessed capability is accepted.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol, cast
 
@@ -131,6 +132,7 @@ class DynamicProductionFeature:
 
     handoff: DynamicVerificationPort
     handler: WorkHandler
+    reconcile_pending: Callable[[str], tuple[WorkExecutionState, ...]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +182,7 @@ class CombinedPostWorkspaceSeeder:
 
     static: PostWorkspaceSeederPort
     policy: PostWorkspaceSeederPort
+    reconcile_pending: Callable[[str], tuple[WorkExecutionState, ...]] | None = None
 
     def ensure_initial(
         self,
@@ -187,6 +190,8 @@ class CombinedPostWorkspaceSeeder:
         state: AnalysisRunState,
         binding_ref: StoredDataRef,
     ) -> tuple[WorkExecutionState, ...]:
+        if self.reconcile_pending is not None:
+            self.reconcile_pending(str(state.meta.analysis_id))
         static = self.static.ensure_initial(request, state, binding_ref)
         policy = self.policy.ensure_initial(request, state, binding_ref)
         combined = (*static, *policy)
@@ -473,6 +478,7 @@ class ProductionFeatureInstaller:
             seeder=CombinedPostWorkspaceSeeder(
                 self.inputs.t08.seeder,
                 OfficialPolicyPostWorkspaceSeeder(context, self.inputs.policy.catalog),
+                self.inputs.dynamic.reconcile_pending,
             ),
             readiness=ExactProductionReadiness(
                 str(context.scope.analysis_id),
@@ -522,6 +528,7 @@ class ProductionFeatureInstaller:
             self.inputs.t08.seeder,
             self.inputs.dynamic.handoff,
             self.inputs.dynamic.handler,
+            self.inputs.dynamic.reconcile_pending,
             self.inputs.calls,
             self.inputs.external_cancellation,
         ):

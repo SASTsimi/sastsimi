@@ -144,6 +144,7 @@ def test_compose_t12_services_wires_post_claim_resolvers_without_model() -> None
         role: _ref("agent_identity", role)
         for role in (
             "ORCHESTRATION",
+            "VERIFICATION",
             "CWE_LABELING",
             "TECHNICAL_GATE",
             "RULE_SCOPE_GATE",
