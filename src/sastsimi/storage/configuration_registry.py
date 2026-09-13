@@ -999,10 +999,11 @@ class ConfigurationRegistry:
                     )
                 ):
                     raise ValueError("PROVIDER_CONFIGURATION_CLOSURE_MISMATCH")
-        # ``codex exec --json`` does not currently expose a provider-reported
-        # model identity.  A requested model therefore cannot satisfy PVD-02,
-        # even when an external probe incorrectly labels that test PASS.
-        if record.product == "CODEX" or record.support_status != "SUPPORTED":
+        # Subscription clients remain ineligible until their exact PVD has all
+        # mandatory PASS observations. The generic closure checks above bind
+        # those observations, client profile and selected model; no product is
+        # permanently denied once it can satisfy that evidence contract.
+        if record.support_status != "SUPPORTED":
             raise ValueError("PROVIDER_CONFIGURATION_NOT_SUPPORTED")
         approved = self.records.evidence.llm_configuration_approved
         return self._publish(record, approved)

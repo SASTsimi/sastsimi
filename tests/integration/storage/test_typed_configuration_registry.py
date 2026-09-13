@@ -383,8 +383,9 @@ def test_typed_registries_require_family_evidence_and_exact_closure(
         | {"client_execution_profile_ref": reference(subscription_client)}
     )
     h.evidence.llm_configuration_approvals.add(content_hash(subscription_profile))
-    with pytest.raises(ValueError, match="PROVIDER_CONFIGURATION_NOT_SUPPORTED"):
-        configs.register_provider_profile(subscription_profile, subscription_probe)
+    assert configs.register_provider_profile(
+        subscription_profile, subscription_probe
+    ) == reference(subscription_profile)
 
     all_na = validation.model_copy(
         update={

@@ -176,6 +176,7 @@ class ApprovedCodexExecutionBinding:
     executable: ApprovedCodexExecutable
     codex_home: Path
     runtime_environment: Environment
+    provider_validation_evidence: ProviderValidationEvidence | None = None
 
     def __post_init__(self) -> None:
         _validate_execution_binding(self)
@@ -926,6 +927,13 @@ def _validate_execution_binding(binding: ApprovedCodexExecutionBinding) -> None:
         client = ClientExecutionProfile.model_validate(binding.client_execution_profile)
         profile_ref = reference(profile)
         client_ref = reference(client)
+        validation = (
+            None
+            if binding.provider_validation_evidence is None
+            else ProviderValidationEvidence.model_validate(
+                binding.provider_validation_evidence
+            )
+        )
         canonical_home = binding.codex_home.resolve(strict=True)
     except (OSError, TypeError, ValueError) as error:
         raise ValueError("CODEX_EXECUTION_BINDING_MISMATCH") from error
@@ -937,7 +945,7 @@ def _validate_execution_binding(binding: ApprovedCodexExecutionBinding) -> None:
         or profile.transport != "CODEX_CLIENT"
         or profile.auth_mode != "SUBSCRIPTION_LOGIN"
         or profile.credential_source != "OFFICIAL_CLIENT_SESSION"
-        or profile.support_status != "EXPERIMENTAL"
+        or profile.support_status not in {"EXPERIMENTAL", "SUPPORTED"}
         or profile.client_execution_profile_ref != client_ref
         or profile.validation_evidence_ref != client.verification_evidence_ref
         or profile.meta.analysis_id != client.meta.analysis_id
@@ -949,6 +957,41 @@ def _validate_execution_binding(binding: ApprovedCodexExecutionBinding) -> None:
         or binding.codex_home.is_symlink()
         or canonical_home != binding.codex_home
     ):
+        raise ValueError("CODEX_EXECUTION_BINDING_MISMATCH")
+    if profile.support_status == "SUPPORTED":
+        required_tests = {f"PVD-{index:02d}" for index in range(1, 16)}
+        if validation is None:
+            raise ValueError("CODEX_EXECUTION_BINDING_MISMATCH")
+        validation_ref = reference(validation)
+        tests = {str(item.test_id): item for item in validation.tests}
+        identity = (
+            "profile_key",
+            "provider",
+            "product",
+            "transport",
+            "model",
+            "environment",
+            "auth_mode",
+            "client_name",
+            "client_version",
+        )
+        if (
+            not isinstance(validation_ref, StoredDataRef)
+            or validation_ref != profile.validation_evidence_ref
+            or validation_ref != client.verification_evidence_ref
+            or any(
+                getattr(validation, field) != getattr(profile, field)
+                for field in identity
+            )
+            or set(tests) not in (required_tests, required_tests | {"PVD-16"})
+            or len(tests) != len(validation.tests)
+            or any(
+                item.result != "PASS" or not item.evidence_refs
+                for item in tests.values()
+            )
+        ):
+            raise ValueError("CODEX_EXECUTION_BINDING_MISMATCH")
+    elif binding.provider_validation_evidence is not None:
         raise ValueError("CODEX_EXECUTION_BINDING_MISMATCH")
 
 

@@ -7,7 +7,12 @@ import pytest
 from pydantic import JsonValue
 
 import sastsimi.providers.codex_subscription as codex_subscription
-from sastsimi.contracts.llm import ClientExecutionProfile, ProviderProfile
+from sastsimi.contracts.ids import LogicalRecordId, RecordId
+from sastsimi.contracts.llm import (
+    ClientExecutionProfile,
+    ProviderProfile,
+    ProviderValidationEvidence,
+)
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.providers.base import (
     CodexProcessRequest,
@@ -68,6 +73,63 @@ def _approved_records() -> tuple[ProviderProfile, ClientExecutionProfile]:
         )
     )
     return profile, client
+
+
+def _supported_records() -> tuple[
+    ProviderProfile, ClientExecutionProfile, ProviderValidationEvidence
+]:
+    profile, client = _approved_records()
+    evidence = ProviderValidationEvidence.model_validate_json(
+        json.dumps(
+            make("ProviderValidationEvidence")
+            | {
+                "meta": profile.meta.model_copy(
+                    update={
+                        "record_type": "provider_validation_evidence",
+                        "record_id": RecordId("supported-codex-validation-r1"),
+                        "logical_record_id": LogicalRecordId(
+                            "supported-codex-validation-l1"
+                        ),
+                    }
+                ),
+                **{
+                    field: getattr(profile, field)
+                    for field in (
+                        "profile_key",
+                        "provider",
+                        "product",
+                        "transport",
+                        "model",
+                        "environment",
+                        "auth_mode",
+                        "client_name",
+                        "client_version",
+                    )
+                },
+                "tests": tuple(
+                    {
+                        "test_id": f"PVD-{index:02d}",
+                        "result": "PASS",
+                        "evidence_refs": (ref("observation", record=False),),
+                        "safe_summary": "approved observation",
+                    }
+                    for index in range(1, 17)
+                ),
+            },
+            default=lambda value: value.model_dump(mode="json"),
+        )
+    )
+    validation_ref = reference(evidence)
+    assert isinstance(validation_ref, StoredDataRef)
+    client = client.model_copy(update={"verification_evidence_ref": validation_ref})
+    profile = profile.model_copy(
+        update={
+            "support_status": "SUPPORTED",
+            "validation_evidence_ref": validation_ref,
+            "client_execution_profile_ref": reference(client),
+        }
+    )
+    return profile, client, evidence
 
 
 def request(profile_ref: StoredDataRef | None = None) -> CodexProcessRequest:
@@ -269,7 +331,7 @@ def test_execution_binding_rejects_different_client_approval_evidence() -> None:
         )
 
 
-def test_execution_binding_rejects_a_supported_codex_profile() -> None:
+def test_execution_binding_rejects_a_supported_codex_profile_without_evidence() -> None:
     executable = Path(__file__).resolve()
     profile, client = _approved_records()
 
@@ -277,6 +339,46 @@ def test_execution_binding_rejects_a_supported_codex_profile() -> None:
         ApprovedCodexExecutionBinding(
             provider_profile=profile.model_copy(update={"support_status": "SUPPORTED"}),
             client_execution_profile=client,
+            executable=ApprovedCodexExecutable(
+                path=executable,
+                sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
+            ),
+            codex_home=executable.parent,
+            runtime_environment="PERSONAL_LOCAL",
+        )
+
+
+def test_supported_codex_binding_requires_and_rechecks_exact_pvd() -> None:
+    executable = Path(__file__).resolve()
+    profile, client, evidence = _supported_records()
+
+    binding = ApprovedCodexExecutionBinding(
+        provider_profile=profile,
+        client_execution_profile=client,
+        provider_validation_evidence=evidence,
+        executable=ApprovedCodexExecutable(
+            path=executable,
+            sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
+        ),
+        codex_home=executable.parent,
+        runtime_environment="PERSONAL_LOCAL",
+    )
+
+    assert binding.provider_validation_evidence == evidence
+
+    failed = evidence.model_copy(
+        update={
+            "tests": (
+                evidence.tests[0].model_copy(update={"result": "FAIL"}),
+                *evidence.tests[1:],
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="CODEX_EXECUTION_BINDING_MISMATCH"):
+        ApprovedCodexExecutionBinding(
+            provider_profile=profile,
+            client_execution_profile=client,
+            provider_validation_evidence=failed,
             executable=ApprovedCodexExecutable(
                 path=executable,
                 sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
