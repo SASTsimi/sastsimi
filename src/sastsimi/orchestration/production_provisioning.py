@@ -39,6 +39,10 @@ from sastsimi.contracts.llm import (
     ProviderValidationEvidence,
     SemanticValidatorSpec,
 )
+from sastsimi.contracts.policy import (
+    OfficialPolicySourceConfig,
+    PolicyFreshnessCriterion,
+)
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import (
     HostConfigurationRef,
@@ -509,7 +513,10 @@ class SandboxProfileProvisioning(_ProvisioningArtifactDocument):
 
 class PolicyCatalogProvisioning(_ProvisioningArtifactDocument):
     SLOT = "POLICY_CATALOG"
-    ALLOWED_KINDS = frozenset()
+    ALLOWED_KINDS = frozenset(
+        {OfficialPolicySourceConfig.KIND, PolicyFreshnessCriterion.KIND}
+    )
+    REQUIRED_KINDS = ALLOWED_KINDS
     slot: Literal["POLICY_CATALOG"]
     source_configuration_sha256: Sha256
     freshness_criterion_sha256: Sha256
@@ -739,7 +746,8 @@ class SandboxProfileProvisioningTemplate(_ProvisioningTemplateDocument):
 
 class PolicyCatalogProvisioningTemplate(_ProvisioningTemplateDocument):
     SLOT = "POLICY_CATALOG"
-    ALLOWED_KINDS = frozenset()
+    ALLOWED_KINDS = PolicyCatalogProvisioning.ALLOWED_KINDS
+    REQUIRED_KINDS = PolicyCatalogProvisioning.REQUIRED_KINDS
     slot: Literal["POLICY_CATALOG"]
     source_configuration_sha256: Sha256
     freshness_criterion_sha256: Sha256
@@ -945,6 +953,8 @@ _PROVISIONED_RECORD_MODELS: Mapping[str, type[Record]] = cast(
         EvaluationRunConfig.KIND: EvaluationRunConfig,
         EvaluationRunResult.KIND: EvaluationRunResult,
         EvaluationRecommendation.KIND: EvaluationRecommendation,
+        OfficialPolicySourceConfig.KIND: OfficialPolicySourceConfig,
+        PolicyFreshnessCriterion.KIND: PolicyFreshnessCriterion,
     },
 )
 

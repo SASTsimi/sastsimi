@@ -135,8 +135,10 @@ from .ids import TransitionCommitId as TransitionCommitId
 from .ids import TransitionId as TransitionId
 from .ids import WorkId as WorkId
 from .ids import WorkspaceId as WorkspaceId
+from .policy import OfficialPolicySourceConfig as OfficialPolicySourceConfig
 from .policy import PolicyCacheRecord as PolicyCacheRecord
 from .policy import PolicyCollectionResult as PolicyCollectionResult
+from .policy import PolicyFreshnessCriterion as PolicyFreshnessCriterion
 from .policy import PolicyItem as PolicyItem
 from .policy import PolicyMissingInfo as PolicyMissingInfo
 from .policy import PolicyParserResult as PolicyParserResult

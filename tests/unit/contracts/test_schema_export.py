@@ -58,6 +58,8 @@ EXPECTED_KINDS = {
     "static_tool_profile",
     "tool_capability_evidence",
     "runtime_capability_profile",
+    "official_policy_source_config",
+    "policy_freshness_criterion",
 }
 
 

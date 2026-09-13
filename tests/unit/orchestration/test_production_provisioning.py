@@ -334,6 +334,10 @@ def _artifact_documents() -> tuple[dict[str, bytes], str]:
         _run_ref("playbook_policy", 2),
     ]
     sandbox = [_run_ref("sandbox_profile", 3)]
+    policy = [
+        _run_ref("official_policy_source_config", 14),
+        _run_ref("policy_freshness_criterion", 15),
+    ]
     providers = [
         _run_ref("provider_validation_evidence", 4),
         _run_ref("provider_profile", 5),
@@ -391,6 +395,7 @@ def _artifact_documents() -> tuple[dict[str, bytes], str]:
             ),
             "POLICY_CATALOG": document(
                 "POLICY_CATALOG",
+                record_refs=[item.model_dump(mode="json") for item in policy],
                 source_configuration_sha256=source,
                 freshness_criterion_sha256=freshness,
                 parser_implementation_key="OFFICIAL_HTTP_POLICY_V1",
@@ -453,6 +458,10 @@ def _artifact_templates() -> tuple[dict[str, bytes], str]:
         record_template("playbook-policy", "playbook_policy"),
     ]
     sandbox = [record_template("sandbox-profile", "sandbox_profile")]
+    policy = [
+        record_template("policy-source-config", "official_policy_source_config"),
+        record_template("policy-freshness-record", "policy_freshness_criterion"),
+    ]
     provider = [
         record_template("provider-evidence", "provider_validation_evidence"),
         record_template("provider-profile", "provider_profile"),
@@ -515,10 +524,15 @@ def _artifact_templates() -> tuple[dict[str, bytes], str]:
             ),
             "POLICY_CATALOG": template(
                 "POLICY_CATALOG",
+                record_templates=policy,
                 source_configuration_sha256=policy_source,
                 freshness_criterion_sha256=policy_freshness,
                 parser_implementation_key="OFFICIAL_HTTP_POLICY_V1",
-                evidence_sha256=[policy_source, policy_freshness],
+                evidence_sha256=[
+                    policy_source,
+                    policy_freshness,
+                    *record_digests(policy),
+                ],
             ),
             "PROVIDER_CONFIGURATION": template(
                 "PROVIDER_CONFIGURATION",

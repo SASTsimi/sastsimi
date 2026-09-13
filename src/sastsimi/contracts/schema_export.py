@@ -43,6 +43,7 @@ from .llm import (
     ProviderValidationEvidence,
     SemanticValidatorSpec,
 )
+from .policy import OfficialPolicySourceConfig, PolicyFreshnessCriterion
 from .records import PolicyCacheMeta, RecordMeta, RunMeta
 from .refs import HostConfigurationRef, PolicyCacheRef, RunStoredDataRef, StoredDataRef
 from .reporting import FindingIndexState, ReportProcessState
@@ -101,6 +102,8 @@ CORE_SCHEMAS: Mapping[str, type[BaseModel]] = MappingProxyType(
         "llm_invocation_result": LLMInvocationResult,
         "llm_invocation_log": LLMInvocationLog,
         "evaluation_run_config": EvaluationRunConfig,
+        "official_policy_source_config": OfficialPolicySourceConfig,
+        "policy_freshness_criterion": PolicyFreshnessCriterion,
         "playbook_policy": PlaybookPolicy,
         "verification_playbook": VerificationPlaybook,
         "execution_budget_profile": ExecutionBudgetProfile,

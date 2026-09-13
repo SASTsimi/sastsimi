@@ -34,6 +34,10 @@ from sastsimi.contracts.llm import (
     ProviderValidationEvidence,
     SemanticValidatorSpec,
 )
+from sastsimi.contracts.policy import (
+    OfficialPolicySourceConfig,
+    PolicyFreshnessCriterion,
+)
 from sastsimi.contracts.refs import (
     RunStoredDataRef,
     StoredDataRef,
@@ -453,6 +457,12 @@ class FilesystemAnalysisCapabilityProvisioner:
             elif isinstance(record, PromptRegistryEntry):
                 configuration.register_prompt_entry(record)
             elif isinstance(record, (EvaluationRunResult, EvaluationRecommendation)):
+                FilesystemAnalysisCapabilityProvisioner._publish_current(
+                    records, record
+                )
+            elif isinstance(
+                record, (OfficialPolicySourceConfig, PolicyFreshnessCriterion)
+            ):
                 FilesystemAnalysisCapabilityProvisioner._publish_current(
                     records, record
                 )
