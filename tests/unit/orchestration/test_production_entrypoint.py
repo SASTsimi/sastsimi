@@ -1,14 +1,17 @@
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
+from sastsimi import bootstrap
 from sastsimi.config.production_profile import ProductionProfile
 from sastsimi.contracts.analysis import AnalysisStartRequest
 from sastsimi.contracts.ids import AnalysisId, OpaqueId
 from sastsimi.orchestration.production_entrypoint import ProductionAnalyzeService
 from sastsimi.orchestration.run_scope_plan import PlannedRunScope
 from sastsimi.ports.scheduler import RunOutcome
+from tests.unit.orchestration.test_production_onboarding import _production_profile
 
 
 @dataclass(frozen=True)
@@ -146,5 +149,28 @@ async def test_invalid_profile_fails_before_scope_allocation(tmp_path: Path) -> 
                 repository="https://example.invalid/repo.git",
                 commit=COMMIT,
                 profile=tmp_path / "bad.toml",
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_default_builder_loads_operator_onboarding_without_injected_loader(
+    tmp_path: Path,
+) -> None:
+    """The shipped CLI composition must not require an unpublished Python hook."""
+
+    service = cast(ProductionAnalyzeService, bootstrap.build_production_analyze())
+    cast(Any, service)._load_profile = lambda _path: _production_profile()
+
+    with pytest.raises(
+        RuntimeError,
+        match="PRODUCTION_ONBOARDING_REQUIRED",
+    ):
+        await service(
+            _Input(
+                data_dir=tmp_path / "data",
+                repository="https://example.invalid/repo.git",
+                commit=COMMIT,
+                profile=tmp_path / "production.toml",
             )
         )

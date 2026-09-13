@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import ClassVar, Literal, Self, cast
 
 from pydantic import model_validator
@@ -45,6 +46,75 @@ type ProvisioningSlot = Literal[
     "PROVIDER_CONFIGURATION",
     "PROMPT_ROUTES",
 ]
+
+type StaticProvisioningTool = Literal["AST", "CODEQL", "OPENGREP"]
+type StaticAdapterKey = Literal["PYTHON_AST", "CODEQL", "OPENGREP"]
+type StaticDecoderKey = Literal[
+    "PYTHON_AST_JSON_V1",
+    "CODEQL_SARIF_V1",
+    "OPENGREP_JSON_V1",
+]
+type SemanticValidatorImplementationKey = Literal["JSON_SCHEMA_AND_AUTHORITY_V1",]
+
+
+class ProvisioningRecordTemplateRef(ContractModel):
+    """Immutable operator input that will become one run-scoped record."""
+
+    template_key: NonEmptyStr
+    data_kind: NonEmptyStr
+    content_sha256: Sha256
+
+
+class StaticRouteProvisioning(ContractModel):
+    """One explicit static adapter/config binding; no executable is guessed."""
+
+    tool: StaticProvisioningTool
+    adapter_key: StaticAdapterKey
+    executable_slot: Literal["PYTHON_RUNTIME", "CODEQL", "OPENGREP"]
+    decoder_key: StaticDecoderKey
+    analysis_config_sha256: Sha256
+    rule_catalog_sha256: Sha256 | None = None
+    rule_selection_sha256: Sha256 | None = None
+    rule_mapping_sha256: Sha256 | None = None
+
+    @model_validator(mode="after")
+    def matched_route(self) -> Self:
+        expected = {
+            "AST": ("PYTHON_AST", "PYTHON_RUNTIME", "PYTHON_AST_JSON_V1"),
+            "CODEQL": ("CODEQL", "CODEQL", "CODEQL_SARIF_V1"),
+            "OPENGREP": ("OPENGREP", "OPENGREP", "OPENGREP_JSON_V1"),
+        }[self.tool]
+        rule_values = (
+            self.rule_catalog_sha256,
+            self.rule_selection_sha256,
+            self.rule_mapping_sha256,
+        )
+        if (
+            (self.adapter_key, self.executable_slot, self.decoder_key) != expected
+            or (self.tool == "AST" and any(value is not None for value in rule_values))
+            or (self.tool != "AST" and any(value is None for value in rule_values))
+        ):
+            raise ValueError("PRODUCTION_STATIC_ROUTE_INVALID")
+        return self
+
+
+class SemanticValidatorBinding(ContractModel):
+    """Map an approved validator key only to a compiled-in implementation."""
+
+    validator_key: NonEmptyStr
+    implementation_key: SemanticValidatorImplementationKey
+
+
+class ProviderImplementationBinding(ContractModel):
+    """Bind one configured Provider profile key to a compiled-in adapter."""
+
+    provider_profile_key: NonEmptyStr
+    implementation_key: Literal[
+        "OPENAI_RESPONSES_API_V1",
+        "CODEX_OFFICIAL_CLIENT_V1",
+        "ANTHROPIC_MESSAGES_API_V1",
+        "CLAUDE_CODE_OFFICIAL_CLIENT_V1",
+    ]
 
 
 class _ProvisioningArtifactDocument(ContractModel):
@@ -88,20 +158,52 @@ class WorkspaceStorageProvisioning(_ProvisioningArtifactDocument):
     ALLOWED_KINDS = frozenset()
     slot: Literal["WORKSPACE_STORAGE"]
     backend: Literal["SQLITE_RECORDS_AND_CAS"]
+    root_relative: NonEmptyStr
+    capacity_bytes: int
+    backend_key: NonEmptyStr
+    enforcement_evidence_sha256: Sha256
+
+    @model_validator(mode="after")
+    def enforceable_storage(self) -> Self:
+        path = PurePosixPath(self.root_relative)
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or "." in path.parts
+            or "\\" in self.root_relative
+            or self.capacity_bytes <= 0
+            or self.enforcement_evidence_sha256 not in self.evidence_sha256
+        ):
+            raise ValueError("PRODUCTION_WORKSPACE_STORAGE_INVALID")
+        return self
 
 
 class StaticAnalysisProvisioning(_ProvisioningArtifactDocument):
     SLOT = "STATIC_ANALYSIS"
     ALLOWED_KINDS = frozenset()
     slot: Literal["STATIC_ANALYSIS"]
-    enabled_tools: tuple[Literal["AST", "CODEQL", "OPENGREP"], ...]
+    enabled_tools: tuple[StaticProvisioningTool, ...]
+    routes: tuple[StaticRouteProvisioning, ...]
 
     @model_validator(mode="after")
     def exact_tools(self) -> Self:
+        route_evidence = {
+            digest
+            for route in self.routes
+            for digest in (
+                route.analysis_config_sha256,
+                route.rule_catalog_sha256,
+                route.rule_selection_sha256,
+                route.rule_mapping_sha256,
+            )
+            if digest is not None
+        }
         if (
             not self.enabled_tools
             or "AST" not in self.enabled_tools
             or len(self.enabled_tools) != len(set(self.enabled_tools))
+            or tuple(item.tool for item in self.routes) != self.enabled_tools
+            or not route_evidence <= set(self.evidence_sha256)
         ):
             raise ValueError("PRODUCTION_STATIC_TOOL_SET_INVALID")
         return self
@@ -130,6 +232,10 @@ class SandboxProfileProvisioning(_ProvisioningArtifactDocument):
     slot: Literal["SANDBOX_PROFILE"]
     container_user: NonEmptyStr
     max_execute_turns: int
+    resource_journal_relative: NonEmptyStr
+    authorization_policy_sha256: Sha256
+    authorization_implementation_key: Literal["RUNTIME_DYNAMIC_AUTHORIZATION_V1"]
+    setup_implementation_key: Literal["DOCKER_REPRODUCTION_SETUP_V1"]
 
     @model_validator(mode="after")
     def safe_execution_settings(self) -> Self:
@@ -137,6 +243,10 @@ class SandboxProfileProvisioning(_ProvisioningArtifactDocument):
             len(self.record_refs) != 1
             or self.max_execute_turns < 1
             or self.max_execute_turns > 128
+            or PurePosixPath(self.resource_journal_relative).is_absolute()
+            or ".." in PurePosixPath(self.resource_journal_relative).parts
+            or "\\" in self.resource_journal_relative
+            or self.authorization_policy_sha256 not in self.evidence_sha256
         ):
             raise ValueError("PRODUCTION_SANDBOX_EXECUTION_INVALID")
         return self
@@ -148,6 +258,7 @@ class PolicyCatalogProvisioning(_ProvisioningArtifactDocument):
     slot: Literal["POLICY_CATALOG"]
     source_configuration_sha256: Sha256
     freshness_criterion_sha256: Sha256
+    parser_implementation_key: Literal["OFFICIAL_HTTP_POLICY_V1"]
 
     @model_validator(mode="after")
     def policy_evidence_is_declared(self) -> Self:
@@ -170,12 +281,19 @@ class ProviderConfigurationProvisioning(_ProvisioningArtifactDocument):
     )
     REQUIRED_KINDS = frozenset({"provider_validation_evidence", "provider_profile"})
     slot: Literal["PROVIDER_CONFIGURATION"]
+    provider_implementation_bindings: tuple[ProviderImplementationBinding, ...]
 
     @model_validator(mode="after")
     def matched_provider_evidence(self) -> Self:
         kinds = tuple(ref.data_kind for ref in self.record_refs)
-        if kinds.count("provider_profile") != kinds.count(
-            "provider_validation_evidence"
+        binding_keys = tuple(
+            item.provider_profile_key for item in self.provider_implementation_bindings
+        )
+        if (
+            kinds.count("provider_profile")
+            != kinds.count("provider_validation_evidence")
+            or not binding_keys
+            or len(binding_keys) != len(set(binding_keys))
         ):
             raise ValueError("PRODUCTION_PROVIDER_EVIDENCE_INCOMPLETE")
         return self
@@ -209,6 +327,7 @@ class PromptRoutesProvisioning(_ProvisioningArtifactDocument):
     )
     slot: Literal["PROMPT_ROUTES"]
     semantic_validator_keys: tuple[NonEmptyStr, ...]
+    semantic_validator_bindings: tuple[SemanticValidatorBinding, ...]
 
     @model_validator(mode="after")
     def exact_validators(self) -> Self:
@@ -216,7 +335,315 @@ class PromptRoutesProvisioning(_ProvisioningArtifactDocument):
             set(self.semantic_validator_keys)
         ):
             raise ValueError("PRODUCTION_SEMANTIC_VALIDATOR_SET_INVALID")
+        binding_keys = tuple(
+            item.validator_key for item in self.semantic_validator_bindings
+        )
+        if binding_keys != self.semantic_validator_keys or len(binding_keys) != len(
+            set(binding_keys)
+        ):
+            raise ValueError("PRODUCTION_SEMANTIC_VALIDATOR_BINDING_INVALID")
         return self
+
+
+class _ProvisioningTemplateDocument(ContractModel):
+    """Host/profile-scoped approval input created before a run ID exists."""
+
+    SLOT: ClassVar[str]
+    ALLOWED_KINDS: ClassVar[frozenset[str]]
+    REQUIRED_KINDS: ClassVar[frozenset[str]] = frozenset()
+
+    schema_version: Literal[1]
+    template_scope: Literal["HOST_PROFILE"]
+    slot: ProvisioningSlot
+    profile_hash: Sha256
+    host_id: NonEmptyStr
+    record_templates: tuple[ProvisioningRecordTemplateRef, ...]
+    evidence_sha256: tuple[Sha256, ...] = ()
+
+    @model_validator(mode="after")
+    def exact_template_inventory(self) -> Self:
+        keys = tuple(item.template_key for item in self.record_templates)
+        kinds = tuple(item.data_kind for item in self.record_templates)
+        digests = tuple(item.content_sha256 for item in self.record_templates)
+        if (
+            self.slot != self.SLOT
+            or len(keys) != len(set(keys))
+            or len(digests) != len(set(digests))
+            or len(self.evidence_sha256) != len(set(self.evidence_sha256))
+            or any(kind not in self.ALLOWED_KINDS for kind in kinds)
+            or not self.REQUIRED_KINDS <= set(kinds)
+            or not set(digests) <= set(self.evidence_sha256)
+        ):
+            raise ValueError("PRODUCTION_PROVISIONING_TEMPLATE_INVALID")
+        return self
+
+
+class WorkspaceStorageProvisioningTemplate(_ProvisioningTemplateDocument):
+    SLOT = "WORKSPACE_STORAGE"
+    ALLOWED_KINDS = frozenset()
+    slot: Literal["WORKSPACE_STORAGE"]
+    backend: Literal["SQLITE_RECORDS_AND_CAS"]
+    root_relative: NonEmptyStr
+    capacity_bytes: int
+    backend_key: NonEmptyStr
+    enforcement_evidence_sha256: Sha256
+
+    @model_validator(mode="after")
+    def enforceable_storage(self) -> Self:
+        path = PurePosixPath(self.root_relative)
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or "." in path.parts
+            or "\\" in self.root_relative
+            or self.capacity_bytes <= 0
+            or self.enforcement_evidence_sha256 not in self.evidence_sha256
+        ):
+            raise ValueError("PRODUCTION_WORKSPACE_STORAGE_INVALID")
+        return self
+
+
+class StaticAnalysisProvisioningTemplate(_ProvisioningTemplateDocument):
+    SLOT = "STATIC_ANALYSIS"
+    ALLOWED_KINDS = frozenset()
+    slot: Literal["STATIC_ANALYSIS"]
+    enabled_tools: tuple[StaticProvisioningTool, ...]
+    routes: tuple[StaticRouteProvisioning, ...]
+
+    @model_validator(mode="after")
+    def exact_tools(self) -> Self:
+        route_evidence = {
+            digest
+            for route in self.routes
+            for digest in (
+                route.analysis_config_sha256,
+                route.rule_catalog_sha256,
+                route.rule_selection_sha256,
+                route.rule_mapping_sha256,
+            )
+            if digest is not None
+        }
+        if (
+            not self.enabled_tools
+            or "AST" not in self.enabled_tools
+            or len(self.enabled_tools) != len(set(self.enabled_tools))
+            or tuple(item.tool for item in self.routes) != self.enabled_tools
+            or not route_evidence <= set(self.evidence_sha256)
+        ):
+            raise ValueError("PRODUCTION_STATIC_TOOL_SET_INVALID")
+        return self
+
+
+class VerificationPlaybooksProvisioningTemplate(_ProvisioningTemplateDocument):
+    SLOT = "VERIFICATION_PLAYBOOKS"
+    ALLOWED_KINDS = frozenset({"verification_playbook", "playbook_policy"})
+    REQUIRED_KINDS = ALLOWED_KINDS
+    slot: Literal["VERIFICATION_PLAYBOOKS"]
+
+    @model_validator(mode="after")
+    def one_policy(self) -> Self:
+        if (
+            tuple(item.data_kind for item in self.record_templates).count(
+                "playbook_policy"
+            )
+            != 1
+        ):
+            raise ValueError("PRODUCTION_PLAYBOOK_POLICY_AMBIGUOUS")
+        return self
+
+
+class SandboxProfileProvisioningTemplate(_ProvisioningTemplateDocument):
+    SLOT = "SANDBOX_PROFILE"
+    ALLOWED_KINDS = frozenset({"sandbox_profile"})
+    REQUIRED_KINDS = ALLOWED_KINDS
+    slot: Literal["SANDBOX_PROFILE"]
+    container_user: NonEmptyStr
+    max_execute_turns: int
+    resource_journal_relative: NonEmptyStr
+    authorization_policy_sha256: Sha256
+    authorization_implementation_key: Literal["RUNTIME_DYNAMIC_AUTHORIZATION_V1"]
+    setup_implementation_key: Literal["DOCKER_REPRODUCTION_SETUP_V1"]
+
+    @model_validator(mode="after")
+    def safe_execution_settings(self) -> Self:
+        path = PurePosixPath(self.resource_journal_relative)
+        if (
+            len(self.record_templates) != 1
+            or self.max_execute_turns < 1
+            or self.max_execute_turns > 128
+            or path.is_absolute()
+            or ".." in path.parts
+            or "\\" in self.resource_journal_relative
+            or self.authorization_policy_sha256 not in self.evidence_sha256
+        ):
+            raise ValueError("PRODUCTION_SANDBOX_EXECUTION_INVALID")
+        return self
+
+
+class PolicyCatalogProvisioningTemplate(_ProvisioningTemplateDocument):
+    SLOT = "POLICY_CATALOG"
+    ALLOWED_KINDS = frozenset()
+    slot: Literal["POLICY_CATALOG"]
+    source_configuration_sha256: Sha256
+    freshness_criterion_sha256: Sha256
+    parser_implementation_key: Literal["OFFICIAL_HTTP_POLICY_V1"]
+
+    @model_validator(mode="after")
+    def policy_evidence_is_declared(self) -> Self:
+        if not {
+            self.source_configuration_sha256,
+            self.freshness_criterion_sha256,
+        } <= set(self.evidence_sha256):
+            raise ValueError("PRODUCTION_POLICY_EVIDENCE_INCOMPLETE")
+        return self
+
+
+class ProviderConfigurationProvisioningTemplate(_ProvisioningTemplateDocument):
+    SLOT = "PROVIDER_CONFIGURATION"
+    ALLOWED_KINDS = ProviderConfigurationProvisioning.ALLOWED_KINDS
+    REQUIRED_KINDS = ProviderConfigurationProvisioning.REQUIRED_KINDS
+    slot: Literal["PROVIDER_CONFIGURATION"]
+    provider_implementation_bindings: tuple[ProviderImplementationBinding, ...]
+
+    @model_validator(mode="after")
+    def matched_provider_evidence(self) -> Self:
+        kinds = tuple(item.data_kind for item in self.record_templates)
+        binding_keys = tuple(
+            item.provider_profile_key for item in self.provider_implementation_bindings
+        )
+        if (
+            kinds.count("provider_profile")
+            != kinds.count("provider_validation_evidence")
+            or not binding_keys
+            or len(binding_keys) != len(set(binding_keys))
+        ):
+            raise ValueError("PRODUCTION_PROVIDER_EVIDENCE_INCOMPLETE")
+        return self
+
+
+class PromptRoutesProvisioningTemplate(_ProvisioningTemplateDocument):
+    SLOT = "PROMPT_ROUTES"
+    ALLOWED_KINDS = PromptRoutesProvisioning.ALLOWED_KINDS
+    REQUIRED_KINDS = PromptRoutesProvisioning.REQUIRED_KINDS
+    slot: Literal["PROMPT_ROUTES"]
+    semantic_validator_bindings: tuple[SemanticValidatorBinding, ...]
+
+    @model_validator(mode="after")
+    def exact_validators(self) -> Self:
+        keys = tuple(item.validator_key for item in self.semantic_validator_bindings)
+        if not keys or len(keys) != len(set(keys)):
+            raise ValueError("PRODUCTION_SEMANTIC_VALIDATOR_SET_INVALID")
+        return self
+
+
+type ParsedProvisioningTemplate = (
+    WorkspaceStorageProvisioningTemplate
+    | StaticAnalysisProvisioningTemplate
+    | VerificationPlaybooksProvisioningTemplate
+    | SandboxProfileProvisioningTemplate
+    | PolicyCatalogProvisioningTemplate
+    | ProviderConfigurationProvisioningTemplate
+    | PromptRoutesProvisioningTemplate
+)
+
+_TEMPLATE_MODELS: Mapping[str, type[_ProvisioningTemplateDocument]] = {
+    item.SLOT: item
+    for item in (
+        WorkspaceStorageProvisioningTemplate,
+        StaticAnalysisProvisioningTemplate,
+        VerificationPlaybooksProvisioningTemplate,
+        SandboxProfileProvisioningTemplate,
+        PolicyCatalogProvisioningTemplate,
+        ProviderConfigurationProvisioningTemplate,
+        PromptRoutesProvisioningTemplate,
+    )
+}
+
+
+class ProvisioningTemplateMaterializer:
+    """Bind pre-approved host/profile templates only after run IDs exist."""
+
+    @staticmethod
+    def parse(
+        artifacts: Mapping[str, bytes], *, profile_hash: str, host_id: str
+    ) -> Mapping[str, ParsedProvisioningTemplate]:
+        if set(artifacts) != set(_TEMPLATE_MODELS):
+            raise ValueError("PRODUCTION_PROVISIONING_TEMPLATE_SET_INCOMPLETE")
+        documents: dict[str, ParsedProvisioningTemplate] = {}
+        for slot, raw in artifacts.items():
+            try:
+                document = cast(
+                    ParsedProvisioningTemplate,
+                    _TEMPLATE_MODELS[slot].model_validate_json(raw),
+                )
+            except ValueError:
+                raise ValueError("PRODUCTION_PROVISIONING_TEMPLATE_INVALID") from None
+            if document.profile_hash != profile_hash or document.host_id != host_id:
+                raise ValueError("PRODUCTION_PROVISIONING_TEMPLATE_SCOPE_MISMATCH")
+            documents[slot] = document
+        template_keys = tuple(
+            item.template_key
+            for document in documents.values()
+            for item in document.record_templates
+        )
+        if len(template_keys) != len(set(template_keys)):
+            raise ValueError("PRODUCTION_PROVISIONING_TEMPLATE_KEY_DUPLICATED")
+        return documents
+
+    @staticmethod
+    def bind_run(
+        templates: Mapping[str, ParsedProvisioningTemplate],
+        *,
+        analysis_id: str,
+        workspace_id: str,
+        commit_id: str,
+        record_refs: Mapping[str, StoredDataRef],
+    ) -> Mapping[str, bytes]:
+        expected = {
+            item.template_key: item
+            for document in templates.values()
+            for item in document.record_templates
+        }
+        if set(record_refs) != set(expected) or any(
+            ref.data_kind != expected[key].data_kind
+            or ref.record_id is None
+            or (str(ref.workspace_id), str(ref.commit_id)) != (workspace_id, commit_id)
+            for key, ref in record_refs.items()
+        ):
+            raise ValueError("PRODUCTION_PROVISIONING_RUN_RECORD_MISMATCH")
+        bound: dict[str, bytes] = {}
+        template_fields = {
+            "template_scope",
+            "host_id",
+            "record_templates",
+        }
+        for slot, document in templates.items():
+            payload = document.model_dump(mode="python")
+            for field in template_fields:
+                payload.pop(field, None)
+            payload.update(
+                {
+                    "schema_version": 1,
+                    "analysis_id": analysis_id,
+                    "workspace_id": workspace_id,
+                    "commit_id": commit_id,
+                    "record_refs": tuple(
+                        record_refs[item.template_key]
+                        for item in document.record_templates
+                    ),
+                }
+            )
+            if isinstance(document, PromptRoutesProvisioningTemplate):
+                payload["semantic_validator_keys"] = tuple(
+                    item.validator_key for item in document.semantic_validator_bindings
+                )
+            bound[slot] = (
+                _ARTIFACT_MODELS[slot]
+                .model_validate(payload)
+                .model_dump_json(exclude_none=True)
+                .encode()
+            )
+        return bound
 
 
 type ParsedProvisioningArtifact = (
@@ -433,6 +860,7 @@ class ExactProductionProvisioningResolver:
         *,
         records: RecordStore,
         queries: RuntimeQueryPort,
+        record_refs: Mapping[str, StoredDataRef],
         profile_hash: str,
         analysis_id: str,
         workspace_id: str,
@@ -441,12 +869,24 @@ class ExactProductionProvisioningResolver:
         """Resolve host capabilities and the complete exact run artifact set."""
 
         resolved = self.resolve(manifest)
+        templates = ProvisioningTemplateMaterializer.parse(
+            resolved.artifacts,
+            profile_hash=profile_hash,
+            host_id=manifest.host_id,
+        )
+        run_artifacts = ProvisioningTemplateMaterializer.bind_run(
+            templates,
+            analysis_id=analysis_id,
+            workspace_id=workspace_id,
+            commit_id=commit_id,
+            record_refs=record_refs,
+        )
         materialized = ExactProvisioningArtifactMaterializer(
             records=records,
             queries=queries,
             evidence=self._evidence,
         ).materialize(
-            resolved.artifacts,
+            run_artifacts,
             profile_hash=profile_hash,
             analysis_id=analysis_id,
             workspace_id=workspace_id,
@@ -507,11 +947,23 @@ __all__ = [
     "ExactProvisioningArtifactMaterializer",
     "MaterializedProvisioningArtifacts",
     "PolicyCatalogProvisioning",
+    "PolicyCatalogProvisioningTemplate",
     "PromptRoutesProvisioning",
+    "PromptRoutesProvisioningTemplate",
+    "ProviderImplementationBinding",
+    "ProvisioningRecordTemplateRef",
+    "ProvisioningTemplateMaterializer",
     "ProviderConfigurationProvisioning",
+    "ProviderConfigurationProvisioningTemplate",
     "ResolvedProductionProvisioning",
     "SandboxProfileProvisioning",
+    "SandboxProfileProvisioningTemplate",
+    "SemanticValidatorBinding",
     "StaticAnalysisProvisioning",
+    "StaticAnalysisProvisioningTemplate",
+    "StaticRouteProvisioning",
     "VerificationPlaybooksProvisioning",
+    "VerificationPlaybooksProvisioningTemplate",
     "WorkspaceStorageProvisioning",
+    "WorkspaceStorageProvisioningTemplate",
 ]

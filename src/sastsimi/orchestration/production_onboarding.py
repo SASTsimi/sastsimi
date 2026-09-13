@@ -41,6 +41,12 @@ _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 class ProductionOnboardingUnavailable(RuntimeError):
     """Safe reason why a profile cannot be used for production yet."""
 
+    def __init__(self, reason_code: str) -> None:
+        if re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", reason_code) is None:
+            reason_code = "PRODUCTION_ONBOARDING_UNAVAILABLE"
+        self.reason_code = reason_code
+        super().__init__(reason_code)
+
 
 class PVDObservation(ContractModel):
     test_id: Literal[
@@ -157,14 +163,17 @@ class ProvisioningArtifact(ContractModel):
 
 
 class ProductionProvisioningManifest(ContractModel):
-    """Exact, credential-free inputs required to construct one run bundle.
+    """Exact host/profile templates required to construct one run bundle.
 
     The approval receipt deliberately names immutable host revisions and
-    content-addressed configuration artifacts.  A provisioner must resolve and
-    revalidate every item; absence is not permission to select a default.
+    content-addressed configuration templates before an analysis ID exists.
+    A provisioner must revalidate them, then materialize fresh run-scoped
+    records after scope allocation; absence is not permission to select a
+    default.
     """
 
-    schema_version: Literal[1]
+    schema_version: Literal[2]
+    artifact_scope: Literal["HOST_PROFILE_TEMPLATE"]
     profile_hash: Sha256
     host_id: NonEmptyStr
     created_at: AwareDatetime

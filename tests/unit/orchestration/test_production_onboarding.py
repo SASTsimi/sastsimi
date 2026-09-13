@@ -178,7 +178,8 @@ def _provisioning_payload(profile: ProductionProfile) -> dict[str, object]:
         "PROMPT_ROUTES",
     ]
     return {
-        "schema_version": 1,
+        "schema_version": 2,
+        "artifact_scope": "HOST_PROFILE_TEMPLATE",
         "profile_hash": production_profile_hash(profile),
         "host_id": profile.host_id,
         "created_at": now.isoformat(),

@@ -265,7 +265,10 @@ class ProfileBackedProductionCapabilityResolver:
             )
         except ProductionCapabilityUnavailable:
             raise
-        except Exception:
+        except Exception as error:
+            reason_code = getattr(error, "reason_code", None)
+            if isinstance(reason_code, str) and _SAFE_REASON.fullmatch(reason_code):
+                raise ProductionCapabilityUnavailable(reason_code) from None
             raise ProductionCapabilityUnavailable(
                 "PRODUCTION_CAPABILITY_BUNDLE_UNAVAILABLE"
             ) from None
