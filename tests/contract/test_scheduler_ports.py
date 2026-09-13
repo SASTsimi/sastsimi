@@ -23,6 +23,7 @@ def test_scheduler_transport_dtos_are_small_and_immutable() -> None:
         "cancel_requested",
         "waiting_for",
         "result_ref",
+        "failures",
     ]
     assert [item.name for item in fields(CancellationTarget)] == [
         "target_kind",

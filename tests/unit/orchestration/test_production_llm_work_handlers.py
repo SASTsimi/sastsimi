@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -369,14 +370,12 @@ def _verification_fixture() -> tuple[
     StaticFactBundle,
     tuple[StoredDataRef, ...],
 ]:
-    bundle = StaticFactBundle.model_validate_json(
-        __import__("json").dumps(make("StaticFactBundle"))
-    )
+    bundle = StaticFactBundle.model_validate_json(json.dumps(make("StaticFactBundle")))
     bundle_ref = reference(bundle)
     assert isinstance(bundle_ref, StoredDataRef)
     location = bundle.locations[0]
     hypothesis = VulnerabilityHypothesis.model_validate_json(
-        __import__("json").dumps(
+        json.dumps(
             make("VulnerabilityHypothesis")
             | {
                 "meta": _meta(
@@ -399,12 +398,12 @@ def _verification_fixture() -> tuple[
     hypothesis_ref = reference(hypothesis)
     assert isinstance(hypothesis_ref, StoredDataRef)
     playbook = VerificationPlaybook.model_validate_json(
-        __import__("json").dumps(make("VerificationPlaybook"))
+        json.dumps(make("VerificationPlaybook"))
     )
     playbook_ref = reference(playbook)
     assert isinstance(playbook_ref, StoredDataRef)
     policy = PlaybookPolicy.model_validate_json(
-        __import__("json").dumps(
+        json.dumps(
             make("PlaybookPolicy")
             | {"common_playbook_ref": playbook_ref.model_dump(mode="json")}
         )
@@ -412,7 +411,7 @@ def _verification_fixture() -> tuple[
     policy_ref = reference(policy)
     assert isinstance(policy_ref, StoredDataRef)
     application = PlaybookApplication.model_validate_json(
-        __import__("json").dumps(
+        json.dumps(
             make("PlaybookApplication")
             | {
                 "verification_work_id": "verification-work",
@@ -619,9 +618,7 @@ class _ResumedDynamic:
 
 @pytest.mark.asyncio
 async def test_hypothesis_handler_uses_exact_bundle_and_settles_real_call() -> None:
-    bundle = StaticFactBundle.model_validate_json(
-        __import__("json").dumps(make("StaticFactBundle"))
-    )
+    bundle = StaticFactBundle.model_validate_json(json.dumps(make("StaticFactBundle")))
     bundle_ref = reference(bundle)
     assert isinstance(bundle_ref, StoredDataRef)
     proposal_ref = _ref("hypothesis_proposal", "proposal")
@@ -650,9 +647,7 @@ async def test_hypothesis_handler_uses_exact_bundle_and_settles_real_call() -> N
 
 @pytest.mark.asyncio
 async def test_hypothesis_handler_rejects_exact_ref_mismatch_before_llm_call() -> None:
-    bundle = StaticFactBundle.model_validate_json(
-        __import__("json").dumps(make("StaticFactBundle"))
-    )
+    bundle = StaticFactBundle.model_validate_json(json.dumps(make("StaticFactBundle")))
     exact_ref = reference(bundle)
     assert isinstance(exact_ref, StoredDataRef)
     wrong_ref = exact_ref.model_copy(update={"content_hash": "f" * 64})

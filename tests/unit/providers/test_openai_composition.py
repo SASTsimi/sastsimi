@@ -74,10 +74,10 @@ def test_missing_openai_sdk_is_an_explicit_unavailable_capability(
 ) -> None:
     from sastsimi.providers import openai_composition
 
-    def unavailable(_name: str) -> Any:
+    def unavailable() -> Any:
         raise ModuleNotFoundError("do not expose this loader detail")
 
-    monkeypatch.setattr(openai_composition, "_import_module", unavailable)
+    monkeypatch.setattr(openai_composition, "_load_openai_client_type", unavailable)
 
     with pytest.raises(OpenAISdkUnavailableError, match="OPENAI_SDK_UNAVAILABLE"):
         OfficialOpenAIResponsesClientFactory()

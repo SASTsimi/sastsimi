@@ -4,7 +4,6 @@ import shutil
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -64,12 +63,15 @@ from sastsimi.storage.artifact_store import LocalArtifactStore
 from tests.contract.domain.fixtures import meta
 from tests.integration.orchestration.test_production_composition import _profile
 from tests.unit.orchestration.test_production_llm_work_handlers import _context
+from tests.unit.prompts.test_production_configuration import (
+    _approved_hypothesis_route,
+    _service,
+)
 
 
 def _prompt_fixture(tmp_path: Path) -> tuple[Any, Any, Any, Any, Any]:
-    fixtures = import_module("tests.unit.prompts.test_production_configuration")
-    service, records, artifacts = fixtures._service(tmp_path)
-    route, approval = fixtures._approved_hypothesis_route(service, records, artifacts)
+    service, records, artifacts = _service(tmp_path)
+    route, approval = _approved_hypothesis_route(service, records, artifacts)
     return service, records, artifacts, route, approval
 
 

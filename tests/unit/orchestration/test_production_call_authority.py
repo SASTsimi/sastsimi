@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -77,12 +77,15 @@ from sastsimi.ports.dto import (
 from sastsimi.ports.llm_invocation import PersistedLLMInvocation
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from tests.contract.domain.fixtures import bundle
+from tests.unit.prompts.test_production_configuration import (
+    _approved_hypothesis_route,
+    _service,
+)
 
 
 def _prompt_fixture(tmp_path: Path) -> tuple[Any, Any, Any, Any, Any]:
-    fixtures = import_module("tests.unit.prompts.test_production_configuration")
-    service, records, artifacts = fixtures._service(tmp_path)
-    route, approval = fixtures._approved_hypothesis_route(service, records, artifacts)
+    service, records, artifacts = _service(tmp_path)
+    route, approval = _approved_hypothesis_route(service, records, artifacts)
     return service, records, artifacts, route, approval
 
 
@@ -367,7 +370,7 @@ def test_exact_route_authorizes_one_call_and_accounts_only_returned_usage(
     service, prompt_records, artifacts, raw_route, approval = _prompt_fixture(tmp_path)
     route = _production_route(raw_route)
     records = _Records(prompt_records)
-    facts = StaticFactBundle.model_validate_json(__import__("json").dumps(bundle()))
+    facts = StaticFactBundle.model_validate_json(json.dumps(bundle()))
     facts_ref = records.add(facts)
     work = _work(facts_ref)
     binding = _binding()

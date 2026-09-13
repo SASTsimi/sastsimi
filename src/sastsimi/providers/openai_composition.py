@@ -6,7 +6,6 @@ import hashlib
 import os
 from collections.abc import Mapping
 from contextlib import AbstractAsyncContextManager
-from importlib import import_module as _stdlib_import_module
 from typing import Literal, cast
 
 from sastsimi.config.secrets import SecretReference
@@ -35,11 +34,15 @@ from .storage_io import (
     StoredPromptInputResolver,
 )
 
-_import_module = _stdlib_import_module
-
 
 class OpenAISdkUnavailableError(RuntimeError):
     """The required official SDK cannot be loaded in this installation."""
+
+
+def _load_openai_client_type() -> type[OpenAIResponsesClient]:
+    from openai import AsyncOpenAI
+
+    return cast(type[OpenAIResponsesClient], AsyncOpenAI)
 
 
 class EnvironmentSecretResolver(SecretResolver):
@@ -60,8 +63,7 @@ class OfficialOpenAIResponsesClientFactory(OpenAIResponsesClientFactory):
 
     def __init__(self) -> None:
         try:
-            sdk = _import_module("openai")
-            client_type = sdk.AsyncOpenAI
+            client_type = _load_openai_client_type()
         except (ImportError, AttributeError) as error:
             raise OpenAISdkUnavailableError("OPENAI_SDK_UNAVAILABLE") from error
         if not callable(client_type):

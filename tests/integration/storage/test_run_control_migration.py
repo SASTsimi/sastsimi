@@ -24,7 +24,7 @@ def test_run_control_migration_and_cancel_latch_are_durable(tmp_path: Path) -> N
         "quiescent_at",
     }
     assert ScriptDirectory.from_config(config(database)).get_heads() == [
-        "0006_run_control"
+        "0007_prompt_analysis_scope"
     ]
     with database.write() as connection:
         connection.execute(
