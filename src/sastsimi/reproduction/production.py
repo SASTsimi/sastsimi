@@ -63,6 +63,7 @@ from .service import (
     DynamicReproductionWorkflowService,
     DynamicSandboxSession,
     DynamicStageAuthorizations,
+    DynamicStageCallResolver,
     DynamicWorkflowFailure,
 )
 
@@ -1327,6 +1328,9 @@ class ProductionDynamicExecutor:
 
     agent: DynamicAgentPort
     workflow_factory: Callable[[WorkExecutionState], ProductionDynamicWorkflow]
+    call_resolver_factory: (
+        Callable[[WorkExecutionState], DynamicStageCallResolver] | None
+    ) = None
 
     async def __call__(
         self,
@@ -1339,6 +1343,11 @@ class ProductionDynamicExecutor:
         service = DynamicReproductionWorkflowService(
             agent=self.agent,
             workflow=self.workflow_factory(work),
+            call_resolver=(
+                self.call_resolver_factory(work)
+                if self.call_resolver_factory is not None
+                else None
+            ),
         )
         return await service.execute(
             work=work,

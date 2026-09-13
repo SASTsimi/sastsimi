@@ -163,6 +163,7 @@ class DynamicProductionFeature:
 
     sandbox_authorization: DynamicSandboxAuthorizationResolver
     sandbox_profile: Callable[[WorkExecutionState], StoredDataRef]
+    max_execute_turns: int
     resource_journal_path: Path
     docker_profile_ref: HostConfigurationRef
     docker_target_resolver: TrustedDockerTargetResolverPort
@@ -519,6 +520,8 @@ class ProductionFeatureInstaller:
                 commit_id=context.scope.commit_id,
                 role_identity_refs=context.role_identity_refs,
                 sandbox_authorization=self.inputs.dynamic.sandbox_authorization,
+                dynamic_calls=self.inputs.calls,
+                max_execute_turns=self.inputs.dynamic.max_execute_turns,
                 verification=t10.verification,
                 repository_profile=profile,
                 resource_journal_path=self.inputs.dynamic.resource_journal_path,

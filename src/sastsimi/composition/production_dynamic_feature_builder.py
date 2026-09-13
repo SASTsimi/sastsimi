@@ -55,6 +55,7 @@ from sastsimi.ports.workspace import WorkspaceLocatorPort
 from sastsimi.reproduction.production import DynamicSandboxAuthorization
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.sandbox.docker_adapter import DockerAdapter
+from sastsimi.verification.production_llm_work_handlers import ProductionCallPort
 from sastsimi.verification.service import VerificationService
 
 _DOCKER_OPERATIONS = frozenset(
@@ -346,6 +347,7 @@ def build_production_dynamic_feature(
             records=context.runtime.unit_of_work.records,
             queries=context.runtime.queries,
         ),
+        max_execute_turns=document.max_execute_turns,
         resource_journal_path=journal,
         docker_profile_ref=docker_profile_ref,
         docker_target_resolver=docker_target_resolver,
@@ -362,6 +364,7 @@ def build_current_repository_t11_resolver(
     workspace_for: Callable[[WorkExecutionState], CodeWorkspace],
     workspace_locator: WorkspaceLocatorPort,
     verification: VerificationService,
+    calls: ProductionCallPort,
 ) -> CurrentRepositoryProfileT11Resolver:
     """Join the exact current RepositoryProfile to the real T11 service builder."""
 
@@ -376,6 +379,8 @@ def build_current_repository_t11_resolver(
             commit_id=context.scope.commit_id,
             role_identity_refs=context.role_identity_refs,
             sandbox_authorization=feature.sandbox_authorization,
+            dynamic_calls=calls,
+            max_execute_turns=feature.max_execute_turns,
             verification=verification,
             repository_profile=profile,
             resource_journal_path=feature.resource_journal_path,

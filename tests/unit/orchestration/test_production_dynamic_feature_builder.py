@@ -280,6 +280,7 @@ def test_builder_pins_exact_sandbox_docker_and_t11_settings() -> None:
 
     assert built.feature.docker_profile_ref == reference(docker)
     assert built.feature.docker_target_resolver is docker_targets
+    assert built.feature.max_execute_turns == 8
     assert (
         built.feature.resource_journal_path
         == (data_dir / "sandbox" / str(ANALYSIS) / "resource-journal.json").resolve()
@@ -513,6 +514,7 @@ def test_current_repository_resolver_builds_real_t11_with_exact_feature() -> Non
     feature = DynamicProductionFeature(
         sandbox_authorization=cast(Any, object()),
         sandbox_profile=cast(Any, object()),
+        max_execute_turns=8,
         resource_journal_path=root / "journal.json",
         docker_profile_ref=cast(Any, object()),
         docker_target_resolver=cast(Any, object()),
@@ -530,6 +532,7 @@ def test_current_repository_resolver_builds_real_t11_with_exact_feature() -> Non
         role_identity_refs=cast(Any, object()),
     )
     expected = cast(Any, object())
+    calls = cast(Any, object())
 
     with patch(
         "sastsimi.composition.production_dynamic_feature_builder.build_t11_services",
@@ -541,6 +544,7 @@ def test_current_repository_resolver_builds_real_t11_with_exact_feature() -> Non
             workspace_for=cast(Any, object()),
             workspace_locator=cast(Any, object()),
             verification=cast(Any, object()),
+            calls=calls,
         )
         assert resolver.build(profile, root) is expected
 
@@ -549,6 +553,8 @@ def test_current_repository_resolver_builds_real_t11_with_exact_feature() -> Non
     assert called["repository_profile"] is profile
     assert called["workspace_root"] == root
     assert called["sandbox_authorization"] is feature.sandbox_authorization
+    assert called["dynamic_calls"] is calls
+    assert called["max_execute_turns"] == 8
     assert called["resource_journal_path"] == feature.resource_journal_path
     assert called["docker_profile_ref"] is feature.docker_profile_ref
     assert called["docker_target_resolver"] is feature.docker_target_resolver

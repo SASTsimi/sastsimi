@@ -118,6 +118,7 @@ if TYPE_CHECKING:
         TrackedFilesResolver,
     )
     from sastsimi.verification.debate_service import DebateService
+    from sastsimi.verification.production_llm_work_handlers import ProductionCallPort
     from sastsimi.verification.revision_workflow import RevisionWorkflow
     from sastsimi.verification.service import VerificationService
     from sastsimi.verification.verdict_router import VerdictRouter
@@ -1235,6 +1236,8 @@ def build_t11_services(
     commit_id: CommitId,
     role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
     sandbox_authorization: DynamicSandboxAuthorizationResolver,
+    dynamic_calls: ProductionCallPort,
+    max_execute_turns: int,
     verification: VerificationService,
     repository_profile: RepositoryProfile,
     resource_journal_path: Path,
@@ -1266,6 +1269,9 @@ def build_t11_services(
     from sastsimi.sandbox.session_manager import ReproductionSessionManager
     from sastsimi.sandbox.setup_automation import ReproductionSetupAutomation
     from sastsimi.verification.completion import VerificationCompletionCoordinator
+    from sastsimi.verification.production_llm_work_handlers import (
+        ProductionDynamicStageCallResolver,
+    )
 
     artifacts = runtime.unit_of_work.artifacts
     docker = DockerAdapter.from_profile(docker_profile_ref, docker_target_resolver)
@@ -1320,7 +1326,12 @@ def build_t11_services(
         )
 
     production = ProductionDynamicExecutor(
-        cast(DynamicAgentPort, agent), workflow_factory
+        cast(DynamicAgentPort, agent),
+        workflow_factory,
+        call_resolver_factory=lambda _work: ProductionDynamicStageCallResolver(
+            dynamic_calls,
+            max_execute_turns=max_execute_turns,
+        ),
     )
     return T11Services(
         execute_dynamic=_dynamic_executor(production),
