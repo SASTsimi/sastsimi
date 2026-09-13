@@ -197,6 +197,12 @@ class _ConfirmationRequiredSetup:
         raise ValueError("ENVIRONMENT_REQUIREMENT_CONFIRMATION_REQUIRED:DATABASE")
 
 
+@dataclass
+class _DependencyRequiredSetup:
+    async def preflight(self, **_: object) -> object:
+        raise ValueError("DEPENDENCY_SUPPLY_CONFIRMATION_REQUIRED")
+
+
 def _selection_tool(chain: _Chain) -> DynamicReproductionToolRequest:
     return wire(
         DynamicReproductionToolRequest,
@@ -379,6 +385,35 @@ async def test_preflight_confirmation_is_blocked_without_a_verdict() -> None:
 
     assert raised.value.failure.status == "BLOCKED"
     assert raised.value.failure.failure_category == "EXTERNAL_CONFIGURATION"
+    assert raised.value.failure.hypothesis_outcome == "INCONCLUSIVE"
+    assert raised.value.failure.poc_ref is None
+
+
+@pytest.mark.asyncio
+async def test_missing_dependency_bundle_is_blocked_without_a_verdict() -> None:
+    workflow, _, chain, request_ref = _prepared_workflow()
+    workflow._controller = cast(
+        SandboxController,
+        SimpleNamespace(workspace_root=Path.cwd()),
+    )
+    workflow._setup = cast(
+        ReproductionSetupAutomation,
+        _DependencyRequiredSetup(),
+    )
+
+    with pytest.raises(DynamicOperationalError) as raised:
+        await workflow.open_session(
+            work=workflow._work,
+            request=chain["request"],
+            request_ref=request_ref,
+            requirements=chain["requirements"],
+            requirements_ref=cast(StoredDataRef, reference(chain["requirements"])),
+            plan=chain["plan"],
+            plan_ref=cast(StoredDataRef, reference(chain["plan"])),
+        )
+
+    assert raised.value.failure.status == "BLOCKED"
+    assert raised.value.failure.failure_category == "DEPENDENCY"
     assert raised.value.failure.hypothesis_outcome == "INCONCLUSIVE"
     assert raised.value.failure.poc_ref is None
 

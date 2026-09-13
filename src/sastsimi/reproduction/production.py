@@ -17,6 +17,7 @@ from sastsimi.contracts.dynamic import (
     AgentLog,
     AgentLogEvent,
     CleanupResult,
+    DependencyBundle,
     DynamicReproductionConclusion,
     DynamicReproductionRequest,
     DynamicReproductionToolRequest,
@@ -199,6 +200,7 @@ class ProductionDynamicWorkflow:
         sink: DynamicRecordSink,
         authorization: DynamicSandboxAuthorizationResolver,
         repository_profile: RepositoryProfile | None = None,
+        dependency_bundle: DependencyBundle | None = None,
     ) -> None:
         self._work = work
         self._controller = controller
@@ -211,6 +213,7 @@ class ProductionDynamicWorkflow:
         self._sink = sink
         self._authorization = authorization
         self._repository_profile = repository_profile
+        self._dependency_bundle = dependency_bundle
         self._records: dict[str, Record] = {}
         self._prepared: PreparedSandbox | None = None
         self._policy: SandboxPolicyDecision | None = None
@@ -263,17 +266,33 @@ class ProductionDynamicWorkflow:
     ) -> DynamicSandboxSession:
         self._require_work(work, request, request_ref)
         try:
-            source = await self._setup.preflight(
-                workspace_root=self._controller.workspace_root,
-                request=request,
-                requirements=requirements,
-                meta=self._meta("environment_recipe"),
-                repository_profile=self._repository_profile,
-            )
+            if self._dependency_bundle is None:
+                source = await self._setup.preflight(
+                    workspace_root=self._controller.workspace_root,
+                    request=request,
+                    requirements=requirements,
+                    meta=self._meta("environment_recipe"),
+                    repository_profile=self._repository_profile,
+                )
+            else:
+                source = await self._setup.preflight(
+                    workspace_root=self._controller.workspace_root,
+                    request=request,
+                    requirements=requirements,
+                    meta=self._meta("environment_recipe"),
+                    repository_profile=self._repository_profile,
+                    dependency_bundle=self._dependency_bundle,
+                )
         except asyncio.CancelledError:
             raise
         except Exception as error:
             reason = _safe_error(error)
+            if reason.startswith("DEPENDENCY_"):
+                raise DynamicOperationalError(
+                    "BLOCKED" if "CONFIRMATION_REQUIRED" in reason else "FAILED",
+                    "DEPENDENCY",
+                    reason,
+                ) from error
             if "CONFIRMATION_REQUIRED" in reason:
                 raise DynamicOperationalError(
                     "BLOCKED", "EXTERNAL_CONFIGURATION", reason

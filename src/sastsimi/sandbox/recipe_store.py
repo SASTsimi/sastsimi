@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.dynamic import (
+    DependencyBundle,
     EnvironmentRecipe,
     EnvironmentRecipeSourceManifest,
     EnvironmentRequirements,
@@ -33,6 +34,8 @@ from sastsimi.ports.dynamic_sandbox import PreparedRecipeSourceView, SandboxRunS
 
 _MAX_RECIPE_INPUT_BYTES = 4 * 1024 * 1024
 _MAX_BUILD_CONTEXT_BYTES = 64 * 1024 * 1024
+_MAX_DEPENDENCY_BUNDLE_FILES = 20_000
+_DEPENDENCY_PREFIX = ".sastsimi/dependencies"
 _KNOWN_RECIPE_NAMES = frozenset(
     {
         "dockerfile",
@@ -68,6 +71,34 @@ _SECRET_FILE_NAMES = frozenset(
         "settings.xml",
     }
 )
+_DEPENDENCY_INPUT_KINDS = frozenset(
+    {
+        "REQUIREMENTS",
+        "PYPROJECT",
+        "PACKAGE_JSON",
+        "PACKAGE_LOCK",
+        "YARN_LOCK",
+        "PNPM_LOCK",
+        "PYTHON_LOCK",
+        "PIPFILE",
+    }
+)
+
+
+def dependency_input_hash(profile: RepositoryProfile) -> str:
+    """Hash exact tracked dependency declarations selected from a profile."""
+
+    paths = {
+        item.path
+        for item in profile.config_files
+        if item.kind in _DEPENDENCY_INPUT_KINDS
+    }
+    selected = tuple(
+        item.model_dump(mode="python")
+        for item in profile.tracked_files
+        if item.git_path in paths
+    )
+    return content_hash(selected)
 
 
 class RecipeDockerPort(Protocol):
@@ -110,6 +141,7 @@ class PreparedRecipeSource:
     dockerfile_digest: str
     base_image: str
     repository_profile_ref: StoredDataRef | None = None
+    dependency_bundle_ref: StoredDataRef | None = None
     dockerfile_origin: Literal["REPOSITORY", "GENERATED"] = "REPOSITORY"
     dockerfile_path: str = "Dockerfile"
     context_archive: bytes | None = None
@@ -134,6 +166,7 @@ class PreparedRecipeSource:
             if (
                 self.context_digest is not None
                 or self.repository_profile_ref is not None
+                or self.dependency_bundle_ref is not None
                 or self.dockerfile_origin != "REPOSITORY"
                 or self.dockerfile_path != "Dockerfile"
                 or self.source_manifest is not None
@@ -147,10 +180,22 @@ class PreparedRecipeSource:
             or hashlib.sha256(self.context_archive).hexdigest() != self.context_digest
             or self.repository_profile_ref not in self.source_refs
             or self.source_refs[:1] != (self.repository_profile_ref,)
-            or len(self.source_refs) != 3
-            or any(ref.data_kind != "artifact" for ref in self.source_refs[1:])
+            or len(self.source_refs) != (
+                4 if self.dependency_bundle_ref is not None else 3
+            )
+            or any(
+                ref.data_kind != "artifact"
+                for ref in self.source_refs[
+                    2 if self.dependency_bundle_ref is not None else 1 :
+                ]
+            )
             or {self.dockerfile_digest, self.context_digest}
-            != {ref.content_hash for ref in self.source_refs[1:]}
+            != {
+                ref.content_hash
+                for ref in self.source_refs[
+                    2 if self.dependency_bundle_ref is not None else 1 :
+                ]
+            }
             or self.dockerfile_path.startswith("/")
             or ".." in PurePosixPath(self.dockerfile_path).parts
             or self.source_manifest is None
@@ -158,6 +203,8 @@ class PreparedRecipeSource:
             raise ValueError("RECIPE_CONTEXT_BINDING_INVALID")
         if self.source_manifest is not None and (
             self.source_manifest.repository_profile_ref != self.repository_profile_ref
+            or self.source_manifest.dependency_bundle_ref
+            != self.dependency_bundle_ref
             or self.source_manifest.dockerfile_digest != self.dockerfile_digest
             or self.source_manifest.context_digest != self.context_digest
             or self.source_manifest.dockerfile_path != self.dockerfile_path
@@ -167,6 +214,11 @@ class PreparedRecipeSource:
                     self.source_manifest.repository_profile_ref,
                     self.source_manifest.dockerfile_ref,
                     self.source_manifest.build_context_ref,
+                    *(
+                        (self.source_manifest.dependency_bundle_ref,)
+                        if self.source_manifest.dependency_bundle_ref is not None
+                        else ()
+                    ),
                 )
             )
             != set(self.source_refs)
@@ -216,6 +268,7 @@ class EnvironmentRecipeStore:
         requirements: EnvironmentRequirements,
         meta: RecordMeta,
         repository_profile: RepositoryProfile | None = None,
+        dependency_bundle: DependencyBundle | None = None,
     ) -> PreparedRecipeSource:
         """Parse and hash local files without contacting the Docker daemon."""
 
@@ -225,8 +278,11 @@ class EnvironmentRecipeStore:
                 request_ref=request_ref,
                 requirements=requirements,
                 repository_profile=repository_profile,
+                dependency_bundle=dependency_bundle,
                 meta=meta,
             )
+        if dependency_bundle is not None:
+            raise ValueError("DEPENDENCY_BUNDLE_REPOSITORY_PROFILE_REQUIRED")
 
         dockerfile, source_ref, source_refs, source_digest = self._source(context, meta)
         content = self._validated_dockerfile(dockerfile)
@@ -403,6 +459,7 @@ class EnvironmentRecipeStore:
             dockerfile_digest=manifest.dockerfile_digest,
             base_image=self._base_image(dockerfile.decode("utf-8")),
             repository_profile_ref=manifest.repository_profile_ref,
+            dependency_bundle_ref=manifest.dependency_bundle_ref,
             dockerfile_origin=manifest.dockerfile_origin,
             dockerfile_path=manifest.dockerfile_path,
             context_archive=context_archive,
@@ -620,6 +677,7 @@ class EnvironmentRecipeStore:
         request_ref: StoredDataRef,
         requirements: EnvironmentRequirements,
         repository_profile: RepositoryProfile,
+        dependency_bundle: DependencyBundle | None,
         meta: RecordMeta,
     ) -> PreparedRecipeSource:
         root = context.resolve(strict=True)
@@ -675,10 +733,35 @@ class EnvironmentRecipeStore:
                 raise ValueError("REPOSITORY_SECRET_FILE_DENIED")
             entries[path] = value
 
+        bundle_ref: StoredDataRef | None = None
+        if dependency_bundle is not None:
+            bundle_entries, bundle_ref = self._dependency_bundle_entries(
+                bundle=dependency_bundle,
+                repository_profile=repository_profile,
+                profile_ref=profile_ref,
+                request_ref=request_ref,
+                meta=meta,
+            )
+            if any(
+                path == _DEPENDENCY_PREFIX
+                or path.startswith(f"{_DEPENDENCY_PREFIX}/")
+                for path in entries
+            ):
+                raise ValueError("DEPENDENCY_BUNDLE_CONTEXT_COLLISION")
+            entries.update(bundle_entries)
+            source_refs.append(bundle_ref)
+
+        if (
+            sum(len(content) for content, _mode in entries.values())
+            > _MAX_BUILD_CONTEXT_BYTES
+        ):
+            raise ValueError("RECIPE_BUILD_CONTEXT_LIMIT_EXCEEDED")
+
         dockerfile_path, dockerfile, origin = self._select_dockerfile(
             entries,
             repository_profile,
             requirements,
+            dependency_bundle,
         )
         dockerfile = self._validated_dockerfile(
             dockerfile,
@@ -705,7 +788,7 @@ class EnvironmentRecipeStore:
             for path, (raw, _) in sorted(entries.items())
         )
         source_digest = hashlib.sha256(
-            canonical_bytes((profile_ref, parts))
+            canonical_bytes((profile_ref, bundle_ref, parts))
         ).hexdigest()
         requirements_ref = reference(requirements)
         if not isinstance(requirements_ref, StoredDataRef):
@@ -726,6 +809,7 @@ class EnvironmentRecipeStore:
             dockerfile_origin=origin,
             dockerfile_digest=hashlib.sha256(dockerfile).hexdigest(),
             context_digest=hashlib.sha256(archive).hexdigest(),
+            dependency_bundle_ref=bundle_ref,
         )
         return PreparedRecipeSource(
             workspace_root=root,
@@ -739,12 +823,102 @@ class EnvironmentRecipeStore:
             dockerfile_digest=hashlib.sha256(dockerfile).hexdigest(),
             base_image=self._base_image(dockerfile.decode("utf-8")),
             repository_profile_ref=profile_ref,
+            dependency_bundle_ref=bundle_ref,
             dockerfile_origin=origin,
             dockerfile_path=dockerfile_path,
             context_archive=archive,
             context_digest=hashlib.sha256(archive).hexdigest(),
             source_manifest=source_manifest,
         )
+
+    def _dependency_bundle_entries(
+        self,
+        *,
+        bundle: DependencyBundle,
+        repository_profile: RepositoryProfile,
+        profile_ref: StoredDataRef,
+        request_ref: StoredDataRef,
+        meta: RecordMeta,
+    ) -> tuple[dict[str, tuple[bytes, int]], StoredDataRef]:
+        if self._artifacts is None:
+            raise ValueError("RECIPE_ARTIFACT_STORE_REQUIRED")
+        if (
+            bundle.request_ref != request_ref
+            or bundle.repository_profile_ref != profile_ref
+            or bundle.dependency_input_hash != dependency_input_hash(repository_profile)
+            or (
+                bundle.meta.analysis_id,
+                bundle.meta.workspace_id,
+                bundle.meta.commit_id,
+                bundle.meta.hypothesis_id,
+                bundle.meta.attempt_id,
+            )
+            != (
+                meta.analysis_id,
+                meta.workspace_id,
+                meta.commit_id,
+                meta.hypothesis_id,
+                meta.attempt_id,
+            )
+        ):
+            raise ValueError("DEPENDENCY_BUNDLE_INPUT_MISMATCH")
+        bundle_ref = reference(bundle)
+        if not isinstance(bundle_ref, StoredDataRef):
+            raise ValueError("DEPENDENCY_BUNDLE_REFERENCE_INVALID")
+        try:
+            with self._artifacts.open_verified(bundle.archive_ref) as stream:
+                archive_bytes = stream.read(_MAX_BUILD_CONTEXT_BYTES + 1)
+        except Exception as error:
+            raise ValueError("DEPENDENCY_BUNDLE_ARTIFACT_UNAVAILABLE") from error
+        if (
+            len(archive_bytes) > _MAX_BUILD_CONTEXT_BYTES
+            or hashlib.sha256(archive_bytes).hexdigest() != bundle.archive_digest
+        ):
+            raise ValueError("DEPENDENCY_BUNDLE_DIGEST_MISMATCH")
+        entries: dict[str, tuple[bytes, int]] = {}
+        try:
+            with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:") as archive:
+                members = archive.getmembers()
+                if not members or len(members) > _MAX_DEPENDENCY_BUNDLE_FILES:
+                    raise ValueError
+                total = 0
+                for member in members:
+                    path = member.name.replace("\\", "/")
+                    parts = PurePosixPath(path).parts
+                    if (
+                        not member.isfile()
+                        or path.startswith("/")
+                        or re.match(r"^[A-Za-z]:", path)
+                        or any(part in {"", ".", ".."} for part in parts)
+                        or path in entries
+                        or self._looks_secret(path)
+                        or not self._valid_dependency_path(bundle.ecosystem, path)
+                    ):
+                        raise ValueError
+                    extracted = archive.extractfile(member)
+                    if extracted is None:
+                        raise ValueError
+                    raw = extracted.read(member.size + 1)
+                    if len(raw) != member.size:
+                        raise ValueError
+                    total += len(raw)
+                    if total > _MAX_BUILD_CONTEXT_BYTES:
+                        raise ValueError
+                    prefix = (
+                        f"{_DEPENDENCY_PREFIX}/python"
+                        if bundle.ecosystem == "PYTHON_WHEELS"
+                        else f"{_DEPENDENCY_PREFIX}/npm"
+                    )
+                    entries[f"{prefix}/{path}"] = (raw, 0o644)
+        except (tarfile.TarError, ValueError, OSError) as error:
+            raise ValueError("DEPENDENCY_BUNDLE_ARCHIVE_INVALID") from error
+        return entries, bundle_ref
+
+    @staticmethod
+    def _valid_dependency_path(ecosystem: str, path: str) -> bool:
+        if ecosystem == "PYTHON_WHEELS":
+            return "/" not in path and path.casefold().endswith(".whl")
+        return path.startswith("_cacache/")
 
     @staticmethod
     def _looks_secret(path: str) -> bool:
@@ -892,7 +1066,10 @@ class EnvironmentRecipeStore:
         entries: Mapping[str, tuple[bytes, int]],
         profile: RepositoryProfile,
         requirements: EnvironmentRequirements,
+        dependency_bundle: DependencyBundle | None,
     ) -> tuple[str, bytes, Literal["REPOSITORY", "GENERATED"]]:
+        family = cls._repository_family(profile)
+        cls._validate_dependency_bundle_family(dependency_bundle, family)
         candidates = tuple(
             item.path for item in profile.config_files if item.kind == "DOCKERFILE"
         )
@@ -901,27 +1078,30 @@ class EnvironmentRecipeStore:
             if len(candidates) > 1 and "Dockerfile" not in candidates:
                 raise ValueError("DOCKERFILE_SELECTION_CONFIRMATION_REQUIRED")
             try:
-                return selected, entries[selected][0], "REPOSITORY"
+                dockerfile = entries[selected][0]
             except KeyError as error:
                 raise ValueError("REPOSITORY_MANIFEST_MISMATCH") from error
+            if dependency_bundle is not None:
+                dockerfile = cls._inject_offline_dependency_environment(
+                    dockerfile,
+                    family,
+                )
+            else:
+                cls._dependency_install(entries, profile, family, None)
+            return selected, dockerfile, "REPOSITORY"
 
-        language_names = {item.name for item in profile.languages}
-        family: Literal["PYTHON", "NODE"] | None = (
-            "PYTHON"
-            if language_names == {"PYTHON"}
-            else "NODE"
-            if language_names and language_names <= {"JAVASCRIPT", "TYPESCRIPT"}
-            else None
-        )
-        if family is None:
-            raise ValueError("ENVIRONMENT_BUILD_CONFIRMATION_REQUIRED")
         version = cls._runtime_version(requirements, family)
         if version is None:
             raise ValueError("ENVIRONMENT_VERSION_CONFIRMATION_REQUIRED")
         image = (
             f"python:{version}-slim" if family == "PYTHON" else f"node:{version}-slim"
         )
-        install = cls._dependency_install(entries, profile, family)
+        install = cls._dependency_install(
+            entries,
+            profile,
+            family,
+            dependency_bundle,
+        )
         dockerfile = (
             f"FROM {image}\n"
             "WORKDIR /workspace\n"
@@ -936,6 +1116,7 @@ class EnvironmentRecipeStore:
         entries: Mapping[str, tuple[bytes, int]],
         profile: RepositoryProfile,
         family: Literal["PYTHON", "NODE"],
+        dependency_bundle: DependencyBundle | None,
     ) -> str:
         if family == "PYTHON":
             requirement_paths = tuple(
@@ -954,7 +1135,17 @@ class EnvironmentRecipeStore:
                 raise ValueError("DEPENDENCY_FILE_SELECTION_CONFIRMATION_REQUIRED")
             if requirement_paths:
                 if entries[requirement_paths[0]][0].strip():
-                    raise ValueError("DEPENDENCY_SUPPLY_CONFIRMATION_REQUIRED")
+                    if dependency_bundle is None:
+                        raise ValueError("DEPENDENCY_SUPPLY_CONFIRMATION_REQUIRED")
+                    return (
+                        "COPY .sastsimi/dependencies/python/ "
+                        "/opt/sastsimi-dependencies/python/\n"
+                        "RUN python -m pip install --no-index "
+                        "--find-links=/opt/sastsimi-dependencies/python "
+                        f"-r {requirement_paths[0]}\n"
+                    )
+                if dependency_bundle is not None:
+                    raise ValueError("DEPENDENCY_BUNDLE_NOT_REQUIRED")
                 return ""
             if pyproject_paths:
                 try:
@@ -966,7 +1157,16 @@ class EnvironmentRecipeStore:
                 declared = project.get("project", {}).get("dependencies", ())
                 build_requires = project.get("build-system", {}).get("requires", ())
                 if declared or build_requires:
-                    raise ValueError("DEPENDENCY_SUPPLY_CONFIRMATION_REQUIRED")
+                    if dependency_bundle is None:
+                        raise ValueError("DEPENDENCY_SUPPLY_CONFIRMATION_REQUIRED")
+                    return (
+                        "COPY .sastsimi/dependencies/python/ "
+                        "/opt/sastsimi-dependencies/python/\n"
+                        "RUN python -m pip install --no-index "
+                        "--find-links=/opt/sastsimi-dependencies/python .\n"
+                    )
+                if dependency_bundle is not None:
+                    raise ValueError("DEPENDENCY_BUNDLE_NOT_REQUIRED")
                 return ""
             raise ValueError("DEPENDENCY_FILE_CONFIRMATION_REQUIRED")
 
@@ -992,8 +1192,79 @@ class EnvironmentRecipeStore:
         if any(package.get(field) for field in dependency_fields) or package.get(
             "workspaces"
         ):
-            raise ValueError("DEPENDENCY_SUPPLY_CONFIRMATION_REQUIRED")
+            if dependency_bundle is None:
+                raise ValueError("DEPENDENCY_SUPPLY_CONFIRMATION_REQUIRED")
+            locks = tuple(
+                item.path
+                for item in profile.config_files
+                if item.kind == "PACKAGE_LOCK" and item.path in entries
+            )
+            if len(locks) != 1:
+                raise ValueError("DEPENDENCY_LOCK_CONFIRMATION_REQUIRED")
+            return (
+                "COPY .sastsimi/dependencies/npm/ "
+                "/opt/sastsimi-dependencies/npm/\n"
+                "RUN npm ci --offline --cache /opt/sastsimi-dependencies/npm "
+                "--ignore-scripts\n"
+            )
+        if dependency_bundle is not None:
+            raise ValueError("DEPENDENCY_BUNDLE_NOT_REQUIRED")
         return ""
+
+    @staticmethod
+    def _repository_family(
+        profile: RepositoryProfile,
+    ) -> Literal["PYTHON", "NODE"]:
+        language_names = {item.name for item in profile.languages}
+        if language_names == {"PYTHON"}:
+            return "PYTHON"
+        if language_names and language_names <= {"JAVASCRIPT", "TYPESCRIPT"}:
+            return "NODE"
+        raise ValueError("ENVIRONMENT_BUILD_CONFIRMATION_REQUIRED")
+
+    @staticmethod
+    def _validate_dependency_bundle_family(
+        bundle: DependencyBundle | None,
+        family: Literal["PYTHON", "NODE"],
+    ) -> None:
+        expected = "PYTHON_WHEELS" if family == "PYTHON" else "NPM_CACHE"
+        if bundle is not None and bundle.ecosystem != expected:
+            raise ValueError("DEPENDENCY_BUNDLE_ECOSYSTEM_MISMATCH")
+
+    @staticmethod
+    def _inject_offline_dependency_environment(
+        dockerfile: bytes,
+        family: Literal["PYTHON", "NODE"],
+    ) -> bytes:
+        try:
+            content = dockerfile.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("DOCKERFILE_INVALID_UTF8") from error
+        if family == "PYTHON":
+            addition = (
+                "ENV PIP_NO_INDEX=1 "
+                "PIP_FIND_LINKS=/opt/sastsimi-dependencies/python\n"
+                "COPY .sastsimi/dependencies/python/ "
+                "/opt/sastsimi-dependencies/python/\n"
+            )
+        else:
+            addition = (
+                "ENV npm_config_offline=true "
+                "npm_config_cache=/opt/sastsimi-dependencies/npm "
+                "npm_config_ignore_scripts=true\n"
+                "COPY .sastsimi/dependencies/npm/ /opt/sastsimi-dependencies/npm/\n"
+            )
+        lines = content.splitlines(keepends=True)
+        result: list[str] = []
+        injected = False
+        for line in lines:
+            result.append(line)
+            if line.lstrip().upper().startswith("FROM "):
+                result.append(addition)
+                injected = True
+        if not injected:
+            raise ValueError("DOCKERFILE_FROM_REQUIRED")
+        return "".join(result).encode("utf-8")
 
     @staticmethod
     def _runtime_version(

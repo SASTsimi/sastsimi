@@ -23,7 +23,7 @@ from .budget import (
 )
 from .capabilities import CapabilityApprovalEvidence, RuntimeCapabilityProfile
 from .chaining import PrimitiveIndexState
-from .dynamic import DynamicReproductionState, SandboxProfile
+from .dynamic import DependencyBundle, DynamicReproductionState, SandboxProfile
 from .evaluation import EvaluationRunConfig
 from .hypothesis import VulnerabilityHypothesis
 from .llm import (
@@ -73,6 +73,7 @@ CORE_SCHEMAS: Mapping[str, type[BaseModel]] = MappingProxyType(
         "action_check": ActionCheck,
         "action_decision": ActionDecision,
         "sandbox_profile": SandboxProfile,
+        "dependency_bundle": DependencyBundle,
         "code_context_request": CodeContextRequest,
         "static_tool_profile": StaticToolProfile,
         "repository_profile": RepositoryProfile,
