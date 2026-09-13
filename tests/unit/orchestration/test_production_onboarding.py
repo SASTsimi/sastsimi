@@ -67,13 +67,7 @@ def _manifest_payload(root: Path) -> dict[str, object]:
     }
     return {
         "schema_version": 1,
-        "profile_hash": _sha(
-            json.dumps(
-                profile.model_dump(mode="json"),
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ),
+        "profile_hash": production_profile_hash(profile),
         "created_at": now.isoformat(),
         "expires_at": (now + timedelta(days=30)).isoformat(),
         "approved_by": "operator@example.invalid",
