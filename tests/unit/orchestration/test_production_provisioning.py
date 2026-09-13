@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
 from sastsimi.contracts.capabilities import RuntimeCapabilityProfile
-from sastsimi.contracts.refs import HostConfigurationRef, reference
+from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef, reference
 from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.orchestration.production_onboarding import ProductionProvisioningManifest
 from sastsimi.orchestration.production_provisioning import (
     ExactProductionProvisioningResolver,
+    ExactProvisioningArtifactMaterializer,
 )
 from tests.integration.storage.test_production_capability_registry import (
     _runtime_profile,
@@ -39,6 +40,93 @@ class _Configuration:
         self, ref: HostConfigurationRef
     ) -> RuntimeCapabilityProfile | StaticToolProfile:
         return self.records[ref]
+
+
+def _run_ref(kind: str, index: int) -> StoredDataRef:
+    marker = format(index, "x")[-1]
+    return StoredDataRef(
+        stored_data_id=f"{kind}-{index}",
+        data_kind=kind,
+        content_hash=marker * 64,
+        workspace_id="workspace",
+        commit_id="c" * 40,
+        record_id=f"{kind}-{index}",
+    )
+
+
+def _artifact_documents() -> tuple[dict[str, bytes], str]:
+    profile_hash = "f" * 64
+    source = hashlib.sha256(b"source").hexdigest()
+    freshness = hashlib.sha256(b"freshness").hexdigest()
+    common: dict[str, object] = {
+        "schema_version": 1,
+        "profile_hash": profile_hash,
+        "analysis_id": "analysis",
+        "workspace_id": "workspace",
+        "commit_id": "c" * 40,
+        "record_refs": [],
+        "evidence_sha256": [],
+    }
+
+    def document(slot: str, **values: object) -> bytes:
+        return json.dumps(common | {"slot": slot} | values).encode()
+
+    verification = [
+        _run_ref("verification_playbook", 1),
+        _run_ref("playbook_policy", 2),
+    ]
+    sandbox = [_run_ref("sandbox_profile", 3)]
+    providers = [
+        _run_ref("provider_validation_evidence", 4),
+        _run_ref("provider_profile", 5),
+    ]
+    prompt_kinds = (
+        "execution_limits",
+        "llm_retry_policy",
+        "llm_tool_policy",
+        "prompt_redaction_policy",
+        "output_schema_spec",
+        "semantic_validator_spec",
+        "prompt_registry_entry",
+        "evaluation_recommendation",
+    )
+    prompts = [_run_ref(kind, index + 6) for index, kind in enumerate(prompt_kinds)]
+    return (
+        {
+            "WORKSPACE_STORAGE": document(
+                "WORKSPACE_STORAGE", backend="SQLITE_RECORDS_AND_CAS"
+            ),
+            "STATIC_ANALYSIS": document(
+                "STATIC_ANALYSIS", enabled_tools=["AST"]
+            ),
+            "VERIFICATION_PLAYBOOKS": document(
+                "VERIFICATION_PLAYBOOKS",
+                record_refs=[item.model_dump(mode="json") for item in verification],
+            ),
+            "SANDBOX_PROFILE": document(
+                "SANDBOX_PROFILE",
+                record_refs=[item.model_dump(mode="json") for item in sandbox],
+                container_user="65532:65532",
+                max_execute_turns=8,
+            ),
+            "POLICY_CATALOG": document(
+                "POLICY_CATALOG",
+                source_configuration_sha256=source,
+                freshness_criterion_sha256=freshness,
+                evidence_sha256=[source, freshness],
+            ),
+            "PROVIDER_CONFIGURATION": document(
+                "PROVIDER_CONFIGURATION",
+                record_refs=[item.model_dump(mode="json") for item in providers],
+            ),
+            "PROMPT_ROUTES": document(
+                "PROMPT_ROUTES",
+                record_refs=[item.model_dump(mode="json") for item in prompts],
+                semantic_validator_keys=["production-v1"],
+            ),
+        },
+        profile_hash,
+    )
 
 
 def _manifest() -> tuple[
@@ -123,3 +211,64 @@ def test_exact_provisioning_rejects_stale_capability_substitution() -> None:
 
     with pytest.raises(ValueError, match="PRODUCTION_CAPABILITY_REFERENCE_MISMATCH"):
         resolver.resolve(manifest)
+
+
+def test_exact_provisioning_parser_accepts_complete_typed_seven_slot_set() -> None:
+    artifacts, profile_hash = _artifact_documents()
+
+    parsed = ExactProvisioningArtifactMaterializer.parse(
+        artifacts,
+        profile_hash=profile_hash,
+        analysis_id="analysis",
+        workspace_id="workspace",
+        commit_id="c" * 40,
+    )
+
+    assert set(parsed) == set(artifacts)
+    assert parsed["STATIC_ANALYSIS"].slot == "STATIC_ANALYSIS"
+
+
+def test_exact_provisioning_parser_rejects_stale_run_scope() -> None:
+    artifacts, profile_hash = _artifact_documents()
+
+    with pytest.raises(
+        ValueError, match="PRODUCTION_PROVISIONING_ARTIFACT_SCOPE_MISMATCH"
+    ):
+        ExactProvisioningArtifactMaterializer.parse(
+            artifacts,
+            profile_hash=profile_hash,
+            analysis_id="different-analysis",
+            workspace_id="workspace",
+            commit_id="c" * 40,
+        )
+
+
+def test_exact_provisioning_materializer_rejects_wrong_record_type() -> None:
+    artifacts, profile_hash = _artifact_documents()
+
+    class _WrongRecordStore:
+        @staticmethod
+        def get_exact(_ref: StoredDataRef) -> object:
+            return object()
+
+    class _UnusedQueries:
+        @staticmethod
+        def current_records(_analysis_id: str, _kind: str) -> tuple[object, ...]:
+            raise AssertionError("wrong record types must fail before current lookup")
+
+    materializer = ExactProvisioningArtifactMaterializer(
+        records=cast(Any, _WrongRecordStore()),
+        queries=cast(Any, _UnusedQueries()),
+        evidence=lambda _digest: b"unused",
+    )
+
+    with pytest.raises(
+        ValueError, match="PRODUCTION_PROVISIONING_RECORD_SCOPE_MISMATCH"
+    ):
+        materializer.materialize(
+            artifacts,
+            profile_hash=profile_hash,
+            analysis_id="analysis",
+            workspace_id="workspace",
+            commit_id="c" * 40,
+        )
