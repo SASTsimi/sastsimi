@@ -460,7 +460,7 @@ def test_repository_imports() -> None:
     assert not errors, "\n".join(errors)
 
 
-def test_real_static_slice_is_private_and_not_selected_by_cli() -> None:
+def test_real_static_slice_is_public_composition_only_and_not_selected_by_cli() -> None:
     root = Path(__file__).resolve().parents[2] / "src" / "sastsimi"
     bootstrap = (root / "bootstrap.py").read_text(encoding="utf-8")
     interfaces = "\n".join(
@@ -468,8 +468,8 @@ def test_real_static_slice_is_private_and_not_selected_by_cli() -> None:
         for path in sorted((root / "interfaces").rglob("*.py"))
     )
 
-    assert "def _build_real_static_slice(" in bootstrap
-    assert "_build_real_static_slice" not in interfaces
+    assert "def build_real_static_slice(" in bootstrap
+    assert "build_real_static_slice" not in interfaces
     assert "StaticToolCoordinator" not in interfaces
     assert "PythonAstProcessAdapter" not in interfaces
     assert "OpenGrepProcessAdapter" not in interfaces

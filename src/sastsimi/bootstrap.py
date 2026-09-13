@@ -343,8 +343,8 @@ class T10Services:
 
 
 @dataclass(frozen=True, slots=True)
-class _RealStaticSlice:
-    """Explicit, private composition of T08 services; never selected implicitly."""
+class RealStaticSlice:
+    """Explicit production T08 services assembled from exact approved inputs."""
 
     external: StaticExternalRunner
     tools: StaticToolCoordinator
@@ -362,7 +362,7 @@ class _RuntimeStaticToolProfileResolver:
         return self.runtime.configuration.resolve_static_tool_profile_ref(profile_ref)
 
 
-def _build_real_static_slice(
+def build_real_static_slice(
     *,
     runner: WorkflowRunner,
     workspace_locator: WorkspaceLocatorPort,
@@ -384,8 +384,14 @@ def _build_real_static_slice(
     tracked_files_for: TrackedFilesResolver,
     prohibited_workspace_roots: tuple[Path, ...],
     lineage_reader: ContextLineageReaderPort | None = None,
-) -> _RealStaticSlice:
-    """Wire exact injected dependencies without profiles, I/O, or CLI activation."""
+) -> RealStaticSlice:
+    """Wire exact injected dependencies without fallback, probing, or guessing.
+
+    Every executable, configuration reference, rule set, decoder, and workspace
+    boundary is supplied by the production provisioner.  An incomplete mapping
+    therefore fails at construction or first exact lookup instead of silently
+    selecting a fixture/default capability.
+    """
     from sastsimi.orchestration.static_external_runner import StaticExternalRunner
     from sastsimi.orchestration.static_publication import (
         StaticAttemptPublisher,
@@ -434,7 +440,14 @@ def _build_real_static_slice(
         receipt_root=context_receipt_root,
         lineage_reader=lineage_reader,
     )
-    return _RealStaticSlice(external, tools, normalization, context)
+    return RealStaticSlice(external, tools, normalization, context)
+
+
+# Backward-compatible internal spelling retained for callers created before the
+# production composition root was made public.  New production code must use
+# ``build_real_static_slice``.
+_RealStaticSlice = RealStaticSlice
+_build_real_static_slice = build_real_static_slice
 
 
 def build_config(
