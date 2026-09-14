@@ -1,0 +1,52 @@
+{
+  "fixture_kind": "R3_PROMPT_HANDOFF_REVIEW_ONLY",
+  "source": "SYNTHETIC_FROM_ARCHITECTURE_V5",
+  "cases": [
+    {
+      "case_id": "R3-PMT-FORMAT-001",
+      "description": "Closed enum, hash, field allowlist and trust-class violations",
+      "registry": {
+        "agent_role": "HYPOTHESIS",
+        "task_kind": "GENERATE_INITIAL",
+        "required_slots": ["facts"],
+        "session_policy": "CONTINUE"
+      },
+      "context_bindings": [
+        {
+          "slot": "facts",
+          "data_kind": "static_fact_bundle",
+          "content_hash": "not-a-sha256",
+          "workspace_id": "ws-demo-001",
+          "commit_id": "1111111111111111111111111111111111111111",
+          "field_paths": ["/entities", "/private_secret"],
+          "trust_class": "TRUSTED_INSTRUCTION"
+        }
+      ]
+    },
+    {
+      "case_id": "R3-PMT-MISSING-001",
+      "description": "The REQUIRED_ONE facts slot is absent",
+      "registry": {
+        "agent_role": "HYPOTHESIS",
+        "task_kind": "GENERATE_INITIAL",
+        "required_slots": ["facts"],
+        "session_policy": "NEW"
+      },
+      "context_bindings": []
+    },
+    {
+      "case_id": "R3-PMT-TIMEOUT-001",
+      "description": "A valid invocation exceeds its exact time limit",
+      "preconditions": {
+        "payload_validation": "PASS",
+        "provider_invocation_started": true,
+        "timeout_ms": 30000
+      },
+      "observed": {
+        "elapsed_ms": 30001,
+        "provider_response_received": false
+      }
+    }
+  ]
+}
+

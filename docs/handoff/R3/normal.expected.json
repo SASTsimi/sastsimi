@@ -1,0 +1,22 @@
+{
+  "fixture_kind": "R3_PROMPT_HANDOFF_EXPECTATION_ONLY",
+  "case_id": "R3-PMT-NORMAL-001",
+  "expected": {
+    "accepted_for_payload_build": true,
+    "provider_call_allowed_after_runtime_checks": true,
+    "checks": {
+      "role_and_task_match": "PASS",
+      "required_slots": "PASS",
+      "identity_and_revision": "PASS",
+      "allowed_field_paths": "PASS",
+      "trust_boundary": "PASS",
+      "timeout_configured": "PASS"
+    },
+    "required_properties": [
+      "facts remains UNTRUSTED_DATA",
+      "no forbidden context is included",
+      "template and schema are resolved to exact immutable references"
+    ]
+  }
+}
+

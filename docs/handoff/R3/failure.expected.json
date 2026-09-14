@@ -1,0 +1,34 @@
+{
+  "fixture_kind": "R3_PROMPT_HANDOFF_EXPECTATION_ONLY",
+  "cases": [
+    {
+      "case_id": "R3-PMT-FORMAT-001",
+      "accepted_for_payload_build": false,
+      "provider_called": false,
+      "domain_output_committed": false,
+      "failed_checks": [
+        "session_policy is not a closed enum value",
+        "content_hash is not a SHA-256 digest",
+        "field path is not allowed",
+        "untrusted repository data was promoted to TRUSTED_INSTRUCTION"
+      ],
+      "handling": "Reject before provider invocation and record validation errors."
+    },
+    {
+      "case_id": "R3-PMT-MISSING-001",
+      "accepted_for_payload_build": false,
+      "provider_called": false,
+      "domain_output_committed": false,
+      "failed_checks": ["required facts slot is missing"],
+      "handling": "Do not invent an empty StaticFactBundle or convert the gap to zero findings."
+    },
+    {
+      "case_id": "R3-PMT-TIMEOUT-001",
+      "invocation_status": "TIMED_OUT",
+      "domain_output_committed": false,
+      "technical_verdict_created": false,
+      "handling": "Preserve the invocation and timeout error. If retry is allowed, use a new llm_call_id, action, decision and attempt."
+    }
+  ]
+}
+
