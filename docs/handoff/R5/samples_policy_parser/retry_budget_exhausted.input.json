@@ -1,0 +1,79 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — canonical_input_projection and versioned-policy references are assertion projections, not persisted records; partial reference assertions are not StoredDataRef values.",
+  "fixture_metadata": {
+    "scenario": "policy_parser_provider_format_retry_budget_exhausted",
+    "work_id": "work-policy-retry-budget-1",
+    "work_type": "POLICY_FETCH",
+    "work_creation_count": 1,
+    "parser_name": "policy-parser",
+    "parser_version": "1.0.0"
+  },
+  "canonical_input_projection": {
+    "official_source": {
+      "record_id": "rec-official-policy-retry-1",
+      "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "publisher_verified": true,
+      "text": "Scope: api.example.test. Testing: no denial-of-service.",
+      "locators": ["scope", "testing"]
+    },
+    "r8_versioned_policy_config": {
+      "parse_work_budget_profile_ref": { "record_id": "rec-r8-policy-parse-budget-v7", "data_kind": "work_budget_profile", "owner": "R8" },
+      "parser_retry_policy_ref": { "record_id": "rec-r8-policy-parser-retry-v7", "data_kind": "llm_retry_policy", "owner": "R8" },
+      "applied_policy_assertions": {
+        "parse_budget_ms": 180000,
+        "additional_retry_limit": 3,
+        "initial_attempt_included": true
+      },
+      "ownership_assertion": "R5 fixture verifies the values applied from these R8 versioned policy/config revisions; it does not define a retry or budget policy."
+    }
+  },
+  "attempt_provenance": [
+    {
+      "attempt_id": "attempt-policy-retry-1",
+      "trigger": "INITIAL",
+      "work_id": "work-policy-retry-budget-1",
+      "input_source_ref_record_id": "rec-official-policy-retry-1",
+      "elapsed_ms": 45000,
+      "failure_category": "TIMEOUT",
+      "failure_reason": "PROVIDER_TIMEOUT",
+      "usage": { "input_tokens": 1200, "output_tokens": null, "reason_unavailable": "Provider timed out before reporting completion usage." },
+      "cost": { "minor_units": null, "reason_unavailable": "Provider billing telemetry was not returned for the timed-out call." }
+    },
+    {
+      "attempt_id": "attempt-policy-retry-2",
+      "trigger": "RETRY",
+      "previous_attempt_id": "attempt-policy-retry-1",
+      "work_id": "work-policy-retry-budget-1",
+      "input_source_ref_record_id": "rec-official-policy-retry-1",
+      "elapsed_ms": 40000,
+      "failure_category": "INVALID_OUTPUT",
+      "failure_reason": "OUTPUT_SCHEMA_MISMATCH",
+      "usage": { "input_tokens": 1200, "output_tokens": 94, "reason_unavailable": null },
+      "cost": { "minor_units": 18, "reason_unavailable": null }
+    },
+    {
+      "attempt_id": "attempt-policy-retry-3",
+      "trigger": "RETRY",
+      "previous_attempt_id": "attempt-policy-retry-2",
+      "work_id": "work-policy-retry-budget-1",
+      "input_source_ref_record_id": "rec-official-policy-retry-1",
+      "elapsed_ms": 50000,
+      "failure_category": "PROVIDER_ERROR",
+      "failure_reason": "PROVIDER_UNAVAILABLE",
+      "usage": { "input_tokens": null, "output_tokens": null, "reason_unavailable": "Provider rejected the request before usage telemetry was available." },
+      "cost": { "minor_units": null, "reason_unavailable": "No provider usage or priceable completion was returned." }
+    },
+    {
+      "attempt_id": "attempt-policy-retry-4",
+      "trigger": "RETRY",
+      "previous_attempt_id": "attempt-policy-retry-3",
+      "work_id": "work-policy-retry-budget-1",
+      "input_source_ref_record_id": "rec-official-policy-retry-1",
+      "elapsed_ms": 45000,
+      "failure_category": "TIMEOUT",
+      "failure_reason": "PROVIDER_TIMEOUT",
+      "usage": { "input_tokens": null, "output_tokens": null, "reason_unavailable": "Provider timed out without returning usage telemetry." },
+      "cost": { "minor_units": null, "reason_unavailable": "Timed-out provider call has no billable usage response." }
+    }
+  ]
+}

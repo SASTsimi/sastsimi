@@ -28,7 +28,7 @@ Owner: R5
 - Technical fixtures: `samples_technical_gate/{normal,failure}.{input,expected}.json`
 - Rule Scope fixtures: `samples_rule_scope_gate/{normal,failure}.{input,expected}.json`
 - Reporter fixtures: `samples_reporter/{normal,failure,chaining_normal}.{input,expected}.json`
-- Policy Parser fixtures: `samples_policy_parser/{normal,failure}.{input,expected}.json`
+- Policy Parser fixtures: `samples_policy_parser/{normal,failure,retry_budget_exhausted}.{input,expected}.json`
 
 모두 이 `docs/handoff/R5/` 디렉터리 아래에 있다.
 
@@ -40,7 +40,7 @@ Owner: R5
 - Technical normal은 exact TRUE/CWE, `agent_invoked=true`, same-attempt dynamic/AgentLog/validated PoC closure와 candidate revision/content-or-command digest 실행 증명이 있어 ACCEPT다. cross-attempt AgentLog failure는 호출 전 stale/reference validation failure로 domain output·새 generation 없이 차단한다. 별도 REVISE fixture는 reference가 모두 정상이지만 기술 근거가 의미적으로 부족한 경우다.
 - Rule Scope normal은 CURRENT official policy와 각 area의 evidence link가 있어 PASS 및 ALLOW다. failure는 `ABSENT_CONFIRMED + UNVERIFIED`로서 policy를 추측하지 않고 UNCERTAIN 및 DENY다. `COLLECTION_FAILED`라면 이 failure fixture처럼 review를 만들지 않는다는 점을 분리했다.
 - Reporter normal은 REPORT_READY와 `FindingIndexState(status=CURRENT, finding_ref=exact input Finding)`, validated PoC, same-attempt execution proof 및 redaction PASS를 충족한다. chaining normal은 같은 조건에서 `ChainingResult`의 정확한 `source_result_refs`와 match/proposal provenance로 §9를 작성하되, 그 결과에 CWE/Rule Scope/admission ref를 추가하지 않는다. 이 current chain은 authorization, provider invocation, draft save에서 모두 재검증한다. failure는 token이 남아 REDACTION=PASS 전에는 draft 생성/저장이 차단된다.
-- Policy Parser normal은 Collector가 고정한 exact 공식 원문 하나를 구조화하고, failure는 원문의 비신뢰 지시문이 pre-invocation에서 차단되는 경우다. 두 fixture 모두 schema/semantic/stale/prompt-injection 공통 Runtime Validator 규칙을 따른다.
+- Policy Parser normal은 Collector가 고정한 exact 공식 원문 하나를 구조화하고, failure는 원문의 비신뢰 지시문이 pre-invocation에서 차단되는 경우다. `retry_budget_exhausted`는 provider/format 오류가 같은 `POLICY_FETCH`의 새 attempt에서 반복되어 R8 versioned policy/config가 적용한 parse budget과 추가 retry를 모두 소진하는 경우다. 이 fixture의 횟수와 elapsed-time 기대값은 해당 R8 정책 적용 사례를 검증할 뿐 R5의 별도 retry 정책이 아니다. 세 fixture 모두 schema/semantic/stale/prompt-injection 공통 Runtime Validator 규칙을 따른다.
 
 ## 5. 반드시 지켜야 하는 처리 규칙
 
