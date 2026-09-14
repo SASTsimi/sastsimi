@@ -88,6 +88,11 @@ LLM의 설명 문장을 고정 문자열로 비교하지 않는다. JSON 구조,
 | Pro 또는 Con 누락·같은 session | join validator | assessment/final result 생성 금지 |
 | 다른 attempt의 PoC | dynamic provenance validator | final TRUE·VerificationResult 저장 금지 |
 | AgentLog에서 실제 실행되지 않은 candidate | dynamic provenance validator | validated PoC 채택과 final TRUE 금지 |
+| provider timeout·rate limit이 재시도 뒤에도 복구되지 않음 | provider/runtime | 재시도 가능 중에는 `BLOCKED`, 소진 뒤에는 `FAILED`; verdict·VerificationResult 저장 금지 |
+
+## R8 운영 평가 처리
+
+provider timeout·rate limit fixture는 사람 정답과 비교하는 품질 표본에서 제외하되, 실패 사실을 숨기지 않고 운영 지표에는 포함한다. 각 독립 invocation의 elapsed time과 retry predecessor를 보존하고, work 단위 elapsed time·attempt 수·retry 수·stop reason을 집계한다. provider가 token usage 또는 비용을 제공하지 않으면 값을 추정하지 않고 canonical `UsageMeasurement`의 `UNAVAILABLE`, `null`, 미제공 이유를 함께 기록한다. 이 실행을 사람 정답의 `FALSE`나 모델의 오판으로 채점하지 않는다.
 
 ## Task별 fixture coverage
 

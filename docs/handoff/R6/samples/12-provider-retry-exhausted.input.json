@@ -1,0 +1,102 @@
+{
+  "fixture_version": "r6-handoff-1.1",
+  "fixture_notice": "SYNTHETIC PROVIDER FAILURE FIXTURE - invocation and usage records are evaluation inputs, not R6 domain output.",
+  "fixture_id": "R6-PROVIDER-RETRY-EXHAUSTED-01",
+  "analysis_purpose": "EVALUATION",
+  "analysis_id": "ana_fixture_012",
+  "workspace_id": "ws_fixture_012",
+  "commit_id": "cccccccccccccccccccccccccccccccccccccccc",
+  "hypothesis_id": "hyp_provider_failure_012",
+  "verification_work_id": "work_verify_012",
+  "verification_generation": 1,
+  "failed_role": "CON",
+  "retry_policy": {
+    "retry_policy_ref": "retry_policy_ref_012",
+    "max_retries": 2,
+    "retryable_statuses": ["TIMED_OUT", "RATE_LIMITED"]
+  },
+  "provider_invocations": [
+    {
+      "llm_call_id": "llm_call_con_012_1",
+      "attempt_id": "attempt_verify_012_1",
+      "status": "RATE_LIMITED",
+      "retry_count": 0,
+      "retry_of_llm_call_id": null,
+      "started_at": "2026-09-14T01:00:00Z",
+      "finished_at": "2026-09-14T01:00:01Z",
+      "elapsed_ms": 1000,
+      "safe_error": "Provider rate limit prevented completion.",
+      "usage": {
+        "token_source": "UNAVAILABLE",
+        "input_tokens": null,
+        "output_tokens": null,
+        "total_tokens": null,
+        "token_unavailable_reason": "Provider did not report token usage for the rate-limited call.",
+        "provider_units": {"http_status": 429},
+        "cost_source": "UNAVAILABLE",
+        "cost_minor_units": null,
+        "currency": null,
+        "pricing_revision_ref": null,
+        "cost_unavailable_reason": "Token usage and billable units were not reported."
+      }
+    },
+    {
+      "llm_call_id": "llm_call_con_012_2",
+      "attempt_id": "attempt_verify_012_2",
+      "status": "RATE_LIMITED",
+      "retry_count": 1,
+      "retry_of_llm_call_id": "llm_call_con_012_1",
+      "started_at": "2026-09-14T01:00:03Z",
+      "finished_at": "2026-09-14T01:00:04Z",
+      "elapsed_ms": 1000,
+      "safe_error": "Provider rate limit persisted after backoff.",
+      "usage": {
+        "token_source": "UNAVAILABLE",
+        "input_tokens": null,
+        "output_tokens": null,
+        "total_tokens": null,
+        "token_unavailable_reason": "Provider did not report token usage for the rate-limited call.",
+        "provider_units": {"http_status": 429},
+        "cost_source": "UNAVAILABLE",
+        "cost_minor_units": null,
+        "currency": null,
+        "pricing_revision_ref": null,
+        "cost_unavailable_reason": "Token usage and billable units were not reported."
+      }
+    },
+    {
+      "llm_call_id": "llm_call_con_012_3",
+      "attempt_id": "attempt_verify_012_3",
+      "status": "RATE_LIMITED",
+      "retry_count": 2,
+      "retry_of_llm_call_id": "llm_call_con_012_2",
+      "started_at": "2026-09-14T01:00:09Z",
+      "finished_at": "2026-09-14T01:00:10.250Z",
+      "elapsed_ms": 1250,
+      "safe_error": "Provider rate limit persisted and the retry allowance was exhausted.",
+      "usage": {
+        "token_source": "UNAVAILABLE",
+        "input_tokens": null,
+        "output_tokens": null,
+        "total_tokens": null,
+        "token_unavailable_reason": "Provider did not report token usage for the rate-limited call.",
+        "provider_units": {"http_status": 429},
+        "cost_source": "UNAVAILABLE",
+        "cost_minor_units": null,
+        "currency": null,
+        "pricing_revision_ref": null,
+        "cost_unavailable_reason": "Token usage and billable units were not reported."
+      }
+    }
+  ],
+  "runtime_observation": {
+    "elapsed_ms": 10250,
+    "attempt_count": 3,
+    "retry_count": 2,
+    "stop_reason": "PROVIDER_RETRY_EXHAUSTED"
+  },
+  "pro_result_persisted": true,
+  "con_result_persisted": false,
+  "initial_assessment_persisted": false,
+  "verification_result_persisted": false
+}

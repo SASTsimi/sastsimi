@@ -73,6 +73,7 @@ Architecture v5의 R6 검증·반박·플레이북 담당 기능을 실제 LLM P
 | `09-context-cycle` | 가설 수신 직후 필수 Context 부족 | assessment 후 최소 context request content |
 | `10-poc-provenance-failures` | 다른 attempt PoC·미실행 candidate | final TRUE 저장 차단 |
 | `11-task-coverage-matrix` | 여덟 prompt별 정상·schema·semantic·injection·stale 범위 | 활성화 전 다섯 case class 필수 |
+| `12-provider-retry-exhausted` | provider rate limit 재시도 소진 | verdict·VerificationResult 없이 `FAILED`, R8 운영 지표에는 포함 |
 
 각 `.input.json`은 입력 상황이고 `.expected.json`은 문장 전체 일치가 아닌 필수 projection·판정 조건이다. 상세 채점 규칙은 `evaluation-criteria.md`를 따른다.
 

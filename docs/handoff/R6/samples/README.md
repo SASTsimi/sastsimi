@@ -15,6 +15,7 @@
 | 09 | Assess Context, Create Context Request | 필수 Context 부족과 최소 조회 내용 생성 |
 | 10 | Final Verdict | 다른 attempt PoC·미실행 candidate provenance 차단 |
 | 11 | 전체 8개 prompt | task별 정상·schema·semantic·injection·stale coverage matrix |
+| 12 | provider/runtime, R8 평가 | rate limit 재시도 소진을 verdict와 분리하고 운영 지표만 집계 |
 
 검증 순서는 다음과 같다.
 
