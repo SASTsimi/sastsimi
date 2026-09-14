@@ -1,0 +1,437 @@
+{
+  "_note": {
+    "source": "직접 만든 테스트 데이터입니다. 실제 도구 출력이 아닙니다.",
+    "basis": "08-lightweight-data-contracts.md §1 StaticFactBundle 스키마를 그대로 따랐습니다. 가정한 코드는 Flask + sqlite3의 주문 조회 핸들러입니다.",
+    "replace_when": "실제 codeql·opengrep 정규화 출력이 확보되면 교체합니다. 특히 producer.raw_result_ref와 symbol_id 형식은 R2의 정규화 결과에 맞춰야 합니다.",
+    "case": "정상. 도구가 모두 성공했고 요청 진입점에서 source 후보까지 도달 경로가 관측된 입력.",
+    "projection": "프롬프트가 실제로 받는 projection 후 payload입니다. 05-prompt-runtime.md:231의 facts slot field_paths에 /meta가 없으므로 bundle의 meta는 들어오지 않습니다.",
+    "contract_note": "08:856에 따라 저장 record를 가리키는 StoredDataRef는 record_id가 필수입니다. rule_execution_record는 08:646 registry에 등록된 저장 record이므로 record_id를 채웠고, raw_tool_result는 독립 artifact라 null입니다.",
+    "data_flow": "cr-df-001은 요청 진입점(41:14)에서 source 후보(45:5)까지의 관측된 관계입니다. data_flow_candidates는 도달 근거 전용이 아니라 관측된 데이터 흐름 관계 전체를 담으므로, 이 입력에 source에서 sink까지의 관계가 없다는 것은 그 구간이 관측되지 않았다는 뜻이지 이어지지 않는다는 뜻이 아닙니다."
+  },
+  "facts": {
+    "entities": [
+      {
+        "symbol_id": "sym-get-order",
+        "symbol_kind": "CALLABLE",
+        "native_kind": "function",
+        "name": "get_order",
+        "location": {
+          "workspace_id": "ws-001",
+          "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+          "file_path": "src/orders.py",
+          "start_line": 41,
+          "start_column": 1,
+          "end_line": 52,
+          "end_column": 1
+        }
+      },
+      {
+        "symbol_id": "sym-orders-route",
+        "symbol_kind": "ROUTE",
+        "native_kind": "flask_route",
+        "name": "GET /orders/<id>",
+        "location": {
+          "workspace_id": "ws-001",
+          "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+          "file_path": "src/orders.py",
+          "start_line": 40,
+          "start_column": 1,
+          "end_line": 40,
+          "end_column": 34
+        }
+      },
+      {
+        "symbol_id": "sym-db-execute",
+        "symbol_kind": "CALLABLE",
+        "native_kind": "method",
+        "name": "Cursor.execute",
+        "location": {
+          "workspace_id": "ws-001",
+          "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+          "file_path": "src/orders.py",
+          "start_line": 48,
+          "start_column": 5,
+          "end_line": 48,
+          "end_column": 27
+        }
+      }
+    ],
+    "locations": [
+      {
+        "workspace_id": "ws-001",
+        "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+        "file_path": "src/orders.py",
+        "start_line": 40,
+        "start_column": 1,
+        "end_line": 52,
+        "end_column": 1
+      }
+    ],
+    "source_candidates": [
+      {
+        "fact_id": "cf-src-001",
+        "fact_kind": "SOURCE",
+        "symbol_id": null,
+        "location": {
+          "workspace_id": "ws-001",
+          "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+          "file_path": "src/orders.py",
+          "start_line": 45,
+          "start_column": 5,
+          "end_line": 45,
+          "end_column": 42
+        },
+        "producer": {
+          "attempt_id": "attempt-codeql-001",
+          "tool_name": "codeql",
+          "tool_version": "2.15.0",
+          "rule_id": "py/sql-injection",
+          "raw_result_ref": {
+            "stored_data_id": "data-raw-codeql-001",
+            "data_kind": "raw_tool_result",
+            "content_hash": "1a2b3c4d5e6f7081920a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60",
+            "workspace_id": "ws-001",
+            "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+            "record_id": null
+          }
+        }
+      }
+    ],
+    "sink_candidates": [
+      {
+        "fact_id": "cf-sink-001",
+        "fact_kind": "SINK",
+        "symbol_id": "sym-db-execute",
+        "location": {
+          "workspace_id": "ws-001",
+          "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+          "file_path": "src/orders.py",
+          "start_line": 48,
+          "start_column": 5,
+          "end_line": 48,
+          "end_column": 27
+        },
+        "producer": {
+          "attempt_id": "attempt-codeql-001",
+          "tool_name": "codeql",
+          "tool_version": "2.15.0",
+          "rule_id": "py/sql-injection",
+          "raw_result_ref": {
+            "stored_data_id": "data-raw-codeql-001",
+            "data_kind": "raw_tool_result",
+            "content_hash": "1a2b3c4d5e6f7081920a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60",
+            "workspace_id": "ws-001",
+            "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+            "record_id": null
+          }
+        }
+      }
+    ],
+    "sanitizer_candidates": [],
+    "validator_candidates": [],
+    "auth_and_permission_checks": [
+      {
+        "fact_id": "cf-auth-001",
+        "fact_kind": "AUTH_CHECK",
+        "symbol_id": "sym-get-order",
+        "location": {
+          "workspace_id": "ws-001",
+          "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+          "file_path": "src/orders.py",
+          "start_line": 42,
+          "start_column": 5,
+          "end_line": 43,
+          "end_column": 40
+        },
+        "producer": {
+          "attempt_id": "attempt-opengrep-001",
+          "tool_name": "opengrep",
+          "tool_version": "1.9.0",
+          "rule_id": "python.flask.security.audit.login-required",
+          "raw_result_ref": {
+            "stored_data_id": "data-raw-opengrep-001",
+            "data_kind": "raw_tool_result",
+            "content_hash": "2b3c4d5e6f708192a0b1c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f6071",
+            "workspace_id": "ws-001",
+            "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+            "record_id": null
+          }
+        }
+      }
+    ],
+    "other_facts": [],
+    "call_edges": [
+      {
+        "relation_id": "cr-call-001",
+        "relation_kind": "CALL",
+        "from_symbol_id": "sym-get-order",
+        "from_location": {
+          "workspace_id": "ws-001",
+          "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+          "file_path": "src/orders.py",
+          "start_line": 48,
+          "start_column": 5,
+          "end_line": 48,
+          "end_column": 27
+        },
+        "to_symbol_id": "sym-db-execute",
+        "to_location": {
+          "workspace_id": "ws-001",
+          "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+          "file_path": "src/orders.py",
+          "start_line": 48,
+          "start_column": 5,
+          "end_line": 48,
+          "end_column": 27
+        },
+        "producer": {
+          "attempt_id": "attempt-ast-001",
+          "tool_name": "ast_dataflow",
+          "tool_version": "1.4.2",
+          "rule_id": null,
+          "raw_result_ref": {
+            "stored_data_id": "data-raw-ast-001",
+            "data_kind": "raw_tool_result",
+            "content_hash": "3c4d5e6f708192a0b1c2d3e4f50617283940a5b6c7d8e9f0a1b2c3d4e5f60718",
+            "workspace_id": "ws-001",
+            "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+            "record_id": null
+          }
+        }
+      }
+    ],
+    "data_flow_candidates": [
+      {
+        "relation_id": "cr-df-001",
+        "relation_kind": "DATA_FLOW",
+        "from_symbol_id": "sym-get-order",
+        "from_location": {
+          "workspace_id": "ws-001",
+          "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+          "file_path": "src/orders.py",
+          "start_line": 41,
+          "start_column": 14,
+          "end_line": 41,
+          "end_column": 16
+        },
+        "to_symbol_id": null,
+        "to_location": {
+          "workspace_id": "ws-001",
+          "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+          "file_path": "src/orders.py",
+          "start_line": 45,
+          "start_column": 5,
+          "end_line": 45,
+          "end_column": 42
+        },
+        "producer": {
+          "attempt_id": "attempt-ast-001",
+          "tool_name": "ast_dataflow",
+          "tool_version": "1.4.2",
+          "rule_id": null,
+          "raw_result_ref": {
+            "stored_data_id": "data-raw-ast-001",
+            "data_kind": "raw_tool_result",
+            "content_hash": "3c4d5e6f708192a0b1c2d3e4f50617283940a5b6c7d8e9f0a1b2c3d4e5f60718",
+            "workspace_id": "ws-001",
+            "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+            "record_id": null
+          }
+        }
+      }
+    ],
+    "route_bindings": [
+      {
+        "relation_id": "cr-route-001",
+        "relation_kind": "ROUTE_BINDING",
+        "from_symbol_id": "sym-orders-route",
+        "from_location": {
+          "workspace_id": "ws-001",
+          "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+          "file_path": "src/orders.py",
+          "start_line": 40,
+          "start_column": 1,
+          "end_line": 40,
+          "end_column": 34
+        },
+        "to_symbol_id": "sym-get-order",
+        "to_location": {
+          "workspace_id": "ws-001",
+          "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+          "file_path": "src/orders.py",
+          "start_line": 41,
+          "start_column": 1,
+          "end_line": 41,
+          "end_column": 24
+        },
+        "producer": {
+          "attempt_id": "attempt-ast-001",
+          "tool_name": "ast_dataflow",
+          "tool_version": "1.4.2",
+          "rule_id": null,
+          "raw_result_ref": {
+            "stored_data_id": "data-raw-ast-001",
+            "data_kind": "raw_tool_result",
+            "content_hash": "3c4d5e6f708192a0b1c2d3e4f50617283940a5b6c7d8e9f0a1b2c3d4e5f60718",
+            "workspace_id": "ws-001",
+            "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+            "record_id": null
+          }
+        }
+      }
+    ],
+    "tool_runs": [
+      {
+        "meta": {
+          "record_id": "rec-trr-0001",
+          "logical_record_id": "lrec-trr-0001",
+          "record_type": "tool_run_result",
+          "schema_version": "1.0.0",
+          "analysis_id": "an-0001",
+          "workspace_id": "ws-001",
+          "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+          "hypothesis_id": null,
+          "attempt_id": "attempt-codeql-001",
+          "revision_number": 1,
+          "previous_record_id": null,
+          "created_at": "2026-09-09T02:08:12Z"
+        },
+        "tool_name": "codeql",
+        "tool_version": "2.15.0",
+        "tool_kind": "RULE_BASED",
+        "status": "SUCCEEDED",
+        "coverage": {
+          "analyzed_paths": [
+            "src/"
+          ],
+          "skipped_paths": [],
+          "analyzed_languages": [
+            "python"
+          ],
+          "skipped_languages": [],
+          "notes": []
+        },
+        "rule_execution_ref": {
+          "stored_data_id": "data-rer-001",
+          "data_kind": "rule_execution_record",
+          "content_hash": "4d5e6f708192a0b1c2d3e4f5061728394a0b5c6d7e8f90a1b2c3d4e5f6071829",
+          "workspace_id": "ws-001",
+          "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+          "record_id": "rec-rer-001"
+        },
+        "raw_result_ref": {
+          "stored_data_id": "data-raw-codeql-001",
+          "data_kind": "raw_tool_result",
+          "content_hash": "1a2b3c4d5e6f7081920a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60",
+          "workspace_id": "ws-001",
+          "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+          "record_id": null
+        },
+        "gaps": [],
+        "errors": [],
+        "started_at": "2026-09-09T02:08:12Z",
+        "finished_at": "2026-09-09T02:10:40Z",
+        "elapsed_ms": 148000
+      },
+      {
+        "meta": {
+          "record_id": "rec-trr-0002",
+          "logical_record_id": "lrec-trr-0002",
+          "record_type": "tool_run_result",
+          "schema_version": "1.0.0",
+          "analysis_id": "an-0001",
+          "workspace_id": "ws-001",
+          "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+          "hypothesis_id": null,
+          "attempt_id": "attempt-ast-001",
+          "revision_number": 1,
+          "previous_record_id": null,
+          "created_at": "2026-09-09T02:08:12Z"
+        },
+        "tool_name": "ast_dataflow",
+        "tool_version": "1.4.2",
+        "tool_kind": "STRUCTURE",
+        "status": "SUCCEEDED",
+        "coverage": {
+          "analyzed_paths": [
+            "src/"
+          ],
+          "skipped_paths": [],
+          "analyzed_languages": [
+            "python"
+          ],
+          "skipped_languages": [],
+          "notes": []
+        },
+        "rule_execution_ref": null,
+        "raw_result_ref": {
+          "stored_data_id": "data-raw-ast-001",
+          "data_kind": "raw_tool_result",
+          "content_hash": "3c4d5e6f708192a0b1c2d3e4f50617283940a5b6c7d8e9f0a1b2c3d4e5f60718",
+          "workspace_id": "ws-001",
+          "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+          "record_id": null
+        },
+        "gaps": [],
+        "errors": [],
+        "started_at": "2026-09-09T02:08:12Z",
+        "finished_at": "2026-09-09T02:09:01Z",
+        "elapsed_ms": 49000
+      },
+      {
+        "meta": {
+          "record_id": "rec-trr-0003",
+          "logical_record_id": "lrec-trr-0003",
+          "record_type": "tool_run_result",
+          "schema_version": "1.0.0",
+          "analysis_id": "an-0001",
+          "workspace_id": "ws-001",
+          "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+          "hypothesis_id": null,
+          "attempt_id": "attempt-opengrep-001",
+          "revision_number": 1,
+          "previous_record_id": null,
+          "created_at": "2026-09-09T02:08:12Z"
+        },
+        "tool_name": "opengrep",
+        "tool_version": "1.9.0",
+        "tool_kind": "RULE_BASED",
+        "status": "SUCCEEDED",
+        "coverage": {
+          "analyzed_paths": [
+            "src/"
+          ],
+          "skipped_paths": [],
+          "analyzed_languages": [
+            "python"
+          ],
+          "skipped_languages": [],
+          "notes": []
+        },
+        "rule_execution_ref": {
+          "stored_data_id": "data-rer-002",
+          "data_kind": "rule_execution_record",
+          "content_hash": "5e6f708192a0b1c2d3e4f50617283940a1b2c5d6e7f8091a2b3c4d5e6f708192",
+          "workspace_id": "ws-001",
+          "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+          "record_id": "rec-rer-002"
+        },
+        "raw_result_ref": {
+          "stored_data_id": "data-raw-opengrep-001",
+          "data_kind": "raw_tool_result",
+          "content_hash": "2b3c4d5e6f708192a0b1c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f6071",
+          "workspace_id": "ws-001",
+          "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+          "record_id": null
+        },
+        "gaps": [],
+        "errors": [],
+        "started_at": "2026-09-09T02:08:12Z",
+        "finished_at": "2026-09-09T02:09:55Z",
+        "elapsed_ms": 103000
+      }
+    ],
+    "gaps": [],
+    "errors": []
+  }
+}
