@@ -1,0 +1,27 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — expected_canonical_projection is not a persisted ReportDraft record; partial reference assertions are not StoredDataRef values.",
+  "expected_canonical_projection": {
+    "finding_ref": { "record_id": "rec-finding-chain-1" },
+    "verification_result_ref": { "record_id": "rec-ver-chain-child-1" },
+    "technical_review_ref": { "record_id": "rec-tech-chain-child-1" },
+    "rule_scope_impact_review_ref": { "record_id": "rec-rule-chain-child-1" },
+    "cwe_label_ref": { "record_id": "rec-cwe-chain-child-1" },
+    "run_policy_state_ref": { "record_id": "rec-policy-state-chain-1" },
+    "policy_record_ref": { "record_id": "rec-policy-chain-1" },
+    "dynamic_result_ref": { "record_id": "rec-dyn-chain-child-1" },
+    "poc_ref": { "record_id": "rec-poc-chain-child-1" },
+    "redaction_status": "PASSED",
+    "draft_status": "DRAFTED"
+  },
+  "fixture_assertions": {
+    "content_ref_required": true,
+    "section_9": {
+      "primitive_refs": ["rec-primitive-upstream-1", "rec-primitive-downstream-1"],
+      "match": "match-chain-1/input-authz-1",
+      "proposal_origin": "CHAINING",
+      "source_result_ref_record_ids": ["rec-ver-upstream-1", "rec-tech-upstream-1", "rec-ver-downstream-1"],
+      "forbidden_chaining_result_ref_kinds": ["cwe_label", "rule_scope_impact_review", "primitive_admission_decision"]
+    }
+  },
+  "why": "The source_result_refs are exactly the two input Primitives' source Verification refs plus the one non-null Technical review ref. The §9 match is provenance; it is not itself a confirmed report claim."
+}

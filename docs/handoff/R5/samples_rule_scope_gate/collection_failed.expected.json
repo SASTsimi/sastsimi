@@ -1,0 +1,13 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — expected behavior, not a persisted RuleScopeImpactReview.",
+  "expected_behavior": {
+    "rule_scope_review_created": false,
+    "reporter_started": false,
+    "primitive_admission_runtime_started": true,
+    "primitive_admission_decision": {
+      "decision": "ALLOW",
+      "reason": "POLICY_COLLECTION_FAILED",
+      "testing_restriction_compliance": "NOT_EVALUATED"
+    }
+  }
+}

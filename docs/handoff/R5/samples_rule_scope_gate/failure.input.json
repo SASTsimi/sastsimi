@@ -1,0 +1,10 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — canonical_input_projection is not a persisted record; partial reference assertions are not StoredDataRef values.",
+  "canonical_input_projection": {
+    "verification_result_ref": { "record_id": "rec-ver-5", "workspace_id": "ws-1", "commit_id": "c0ffee" },
+    "technical_review": { "status": "ACCEPT", "verification_result_ref": { "record_id": "rec-ver-5" }, "cwe_label_ref": { "record_id": "rec-cwe-5" } },
+    "run_policy_state": { "status": "UNVERIFIED", "collection_result_ref": { "record_id": "rec-collect-absent-1" }, "policy_record_ref": null, "freshness_criterion_ref": null },
+    "policy_collection_result": { "status": "ABSENT_CONFIRMED", "absence_evidence": "Official program source checked; no policy text was published." },
+    "note": "This is policy absence, not COLLECTION_FAILED."
+  }
+}

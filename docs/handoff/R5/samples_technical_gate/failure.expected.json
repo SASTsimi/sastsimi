@@ -1,0 +1,10 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — expected_canonical_projection is not a persisted record; partial reference assertions are not StoredDataRef values.",
+  "expected_behavior": {
+    "provider_called": false,
+    "domain_output_created": false,
+    "new_verification_generation_created": false,
+    "runtime_failure": "STALE_REFERENCE"
+  },
+  "why": "A cross-attempt AgentLog is stale/reference validation failure before invocation, not a REVISE decision."
+}
