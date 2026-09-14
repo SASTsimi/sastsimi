@@ -1,0 +1,46 @@
+{
+  "code_request_id": "ctxreq-r2verify-001",
+  "meta": {
+    "record_id": "ccr-r2verify-normal-001",
+    "logical_record_id": "ccr-r2verify-normal-001",
+    "record_type": "code_context_response",
+    "schema_version": "1.0.0",
+    "analysis_id": "analysis-r2verify-001",
+    "workspace_id": "ws-r2verify-001",
+    "commit_id": "99c66f2",
+    "hypothesis_id": "hyp-r2verify-001",
+    "attempt_id": "attempt-r2verify-ctxreq-001",
+    "revision_number": 1,
+    "previous_record_id": null,
+    "created_at": "2026-09-05T16:30:00Z"
+  },
+  "entities": [],
+  "locations": [
+    {
+      "workspace_id": "ws-r2verify-001",
+      "commit_id": "99c66f2",
+      "file_path": "src/orders.py",
+      "start_line": 12,
+      "start_column": null,
+      "end_line": 18,
+      "end_column": null
+    }
+  ],
+  "code_fragment_refs": [
+    {
+      "stored_data_id": "data-code-r2verify-001",
+      "data_kind": "code_fragment",
+      "content_hash": "08d43bc1eb38b95b76186c3a0740196a5369a8f4e902ac782aece91ae14ac777",
+      "workspace_id": "ws-r2verify-001",
+      "commit_id": "99c66f2",
+      "record_id": null
+    }
+  ],
+  "discovered_relations": [],
+  "gaps": [],
+  "errors": [],
+  "truncated": false,
+  "returned_fragment_count": 1,
+  "returned_bytes": 571,
+  "consumed_token_estimate": 180
+}

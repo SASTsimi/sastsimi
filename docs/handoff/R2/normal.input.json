@@ -1,0 +1,74 @@
+{
+  "_comment_ko": "Static Fact Normalizer가 받는 원본 입력. 실제로 codeql CLI 2.26.4로 sample-app(src/orders.py, get_order 핸들러)에 codeql/python-queries 1.8.9의 Security/CWE-089/SqlInjection.ql을 실행해서 나온 진짜 SARIF 결과이며, 손으로 만든 값이 아닙니다.",
+  "tool_invocation": {
+    "attempt_id": "attempt-codeql-verify-001",
+    "tool_name": "codeql",
+    "tool_version": "2.26.4",
+    "tool_kind": "RULE_BASED",
+    "query_pack": "codeql/python-queries",
+    "query_pack_version": "1.8.9+1d123a2caa0e4e6256a49d963bfcbd51a01617e8",
+    "query": "Security/CWE-089/SqlInjection.ql",
+    "rule_id": "py/sql-injection",
+    "command": "codeql database analyze orders-db codeql/python-queries/1.8.9/Security/CWE-089/SqlInjection.ql --format=sarif-latest --output=sqli-result.sarif",
+    "database": "orders-db",
+    "language": "python",
+    "started_at": "2026-09-05T16:26:46Z",
+    "finished_at": "2026-09-05T16:26:50Z",
+    "exit_code": 0
+  },
+  "raw_sarif_result": {
+    "_source": "sqli-result.sarif, runs[0].results[0] (실제 CodeQL 출력에서 그대로 발췌, 값 수정 없음)",
+    "ruleId": "py/sql-injection",
+    "message": {
+      "text": "This SQL query depends on a [user-provided value](1)."
+    },
+    "locations": [
+      {
+        "physicalLocation": {
+          "artifactLocation": {
+            "uri": "src/orders.py",
+            "uriBaseId": "%SRCROOT%"
+          },
+          "region": {
+            "startLine": 16,
+            "startColumn": 20,
+            "endColumn": 25
+          }
+        }
+      }
+    ],
+    "codeFlows_source_location": {
+      "physicalLocation": {
+        "artifactLocation": {
+          "uri": "src/orders.py",
+          "uriBaseId": "%SRCROOT%"
+        },
+        "region": {
+          "startLine": 12,
+          "startColumn": 15,
+          "endColumn": 17
+        }
+      },
+      "message": {
+        "text": "ControlFlowNode for id"
+      }
+    },
+    "relatedLocations_user_provided_value": {
+      "startLine": 12,
+      "startColumn": 15,
+      "endColumn": 17,
+      "message": {
+        "text": "user-provided value"
+      }
+    }
+  },
+  "raw_result_file": {
+    "path": "sqli-result.sarif",
+    "content_hash": "sha256:48b36c9ebc33498f5bee3589e745541c3338a4526fc080bfa5946332033863fe",
+    "note": "전체 원본 SARIF 파일(5.9KB)의 sha256. StaticFactBundle.source_candidates[0].producer.raw_result_ref가 이 값을 가리킵니다."
+  },
+  "source_file_hash": {
+    "path": "src/orders.py",
+    "content_hash": "sha256:08d43bc1eb38b95b76186c3a0740196a5369a8f4e902ac782aece91ae14ac777"
+  }
+}

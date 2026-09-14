@@ -100,7 +100,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $repositoryFullPath '.git'))) {
     throw "RepositoryRoot must be a Git worktree: $repositoryFullPath"
 }
 
-$trackedMarkdown = @(& git -C $repositoryFullPath ls-files -- '*.md')
+$trackedMarkdown = @(& git -C $repositoryFullPath -c core.quotepath=false ls-files -- '*.md')
 if ($LASTEXITCODE -ne 0) {
     throw 'Unable to read Git-tracked Markdown files.'
 }
