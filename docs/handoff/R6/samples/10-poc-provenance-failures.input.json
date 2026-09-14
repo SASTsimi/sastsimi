@@ -1,0 +1,60 @@
+{
+  "fixture_version": "r6-handoff-1.1",
+  "fixture_notice": "SYNTHETIC NEGATIVE PROVENANCE FIXTURE - neither case may produce final TRUE.",
+  "fixture_id": "R6-POC-PROVENANCE-FAILURES-01",
+  "cases": [
+    {
+      "case_id": "poc-from-different-attempt",
+      "task": "VERIFICATION/FINAL_VERDICT",
+      "dynamic_result": {
+        "request_ref": "dynamic_request_ref_010_g1",
+        "attempt_id": "attempt_dynamic_010_2",
+        "status": "SUCCEEDED",
+        "hypothesis_outcome": "SUPPORTED",
+        "agent_invoked": true,
+        "poc_ref": "poc_ref_010_a1"
+      },
+      "poc": {
+        "poc_ref": "poc_ref_010_a1",
+        "request_ref": "dynamic_request_ref_010_g1",
+        "attempt_id": "attempt_dynamic_010_1",
+        "agent_log_ref": "agent_log_ref_010_a1",
+        "validated_at": "2026-09-12T12:00:00Z"
+      }
+    },
+    {
+      "case_id": "candidate-not-actually-executed",
+      "task": "VERIFICATION/FINAL_VERDICT",
+      "dynamic_result": {
+        "request_ref": "dynamic_request_ref_010_g1",
+        "attempt_id": "attempt_dynamic_010_3",
+        "status": "SUCCEEDED",
+        "hypothesis_outcome": "SUPPORTED",
+        "agent_invoked": true,
+        "agent_log_ref": "agent_log_ref_010_a3",
+        "poc_ref": "poc_ref_010_a3"
+      },
+      "agent_log": {
+        "attempt_id": "attempt_dynamic_010_3",
+        "events": [
+          {
+            "event_type": "POC_EXECUTION_FINISHED",
+            "action_id": "action_execute_010_3",
+            "poc_candidate_ref": "poc_candidate_ref_010_a3_executed",
+            "exit_code": 0,
+            "output_refs": ["observation_ref_010_a3"]
+          }
+        ]
+      },
+      "poc": {
+        "poc_ref": "poc_ref_010_a3",
+        "attempt_id": "attempt_dynamic_010_3",
+        "candidate_ref": "poc_candidate_ref_010_a3_not_executed",
+        "candidate_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "execution_action_id": "action_execute_010_3",
+        "evidence_refs": ["observation_ref_010_a3"],
+        "validated_at": "2026-09-12T12:10:00Z"
+      }
+    }
+  ]
+}

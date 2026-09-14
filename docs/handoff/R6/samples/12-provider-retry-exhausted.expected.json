@@ -1,0 +1,71 @@
+{
+  "fixture_version": "r6-handoff-1.1",
+  "fixture_notice": "SYNTHETIC EXPECTED RUNTIME AND R8 EVALUATION HANDLING - no R6 verdict is produced.",
+  "fixture_id": "R6-PROVIDER-RETRY-EXHAUSTED-01",
+  "expected_runtime_handling": {
+    "failed_role": "CON",
+    "last_invocation_status": "RATE_LIMITED",
+    "retryable": false,
+    "retry_exhausted": true,
+    "work_status": "FAILED",
+    "hypothesis_process_status": "FAILED",
+    "stop_reason": "PROVIDER_RETRY_EXHAUSTED",
+    "attempt_count": 3,
+    "retry_count": 2,
+    "elapsed_ms": 10250,
+    "pro_result_persisted": true,
+    "con_result_persisted": false,
+    "initial_assessment_persisted": false,
+    "verification_result_persisted": false,
+    "verification_result_ref": null
+  },
+  "expected_work_transitions": [
+    {
+      "after_llm_call_id": "llm_call_con_012_1",
+      "work_status": "BLOCKED",
+      "retryable": true,
+      "stop_reason": "PROVIDER_RATE_LIMITED"
+    },
+    {
+      "after_llm_call_id": "llm_call_con_012_2",
+      "work_status": "BLOCKED",
+      "retryable": true,
+      "stop_reason": "PROVIDER_RATE_LIMITED"
+    },
+    {
+      "after_llm_call_id": "llm_call_con_012_3",
+      "work_status": "FAILED",
+      "retryable": false,
+      "stop_reason": "PROVIDER_RETRY_EXHAUSTED"
+    }
+  ],
+  "expected_usage_handling": {
+    "invocation_count": 3,
+    "token_source": "UNAVAILABLE",
+    "input_tokens": null,
+    "output_tokens": null,
+    "total_tokens": null,
+    "token_unavailable_reason_required": true,
+    "cost_source": "UNAVAILABLE",
+    "cost_minor_units": null,
+    "currency": null,
+    "pricing_revision_ref": null,
+    "cost_unavailable_reason_required": true,
+    "invented_usage_or_cost_forbidden": true
+  },
+  "expected_r8_scoring": {
+    "operational_metrics_included": true,
+    "human_ground_truth_quality_scored": false,
+    "quality_exclusion_reason": "PROVIDER_RETRY_EXHAUSTED",
+    "count_as_false_verdict": false,
+    "count_as_quality_failure": false
+  },
+  "must_not_output": [
+    "TRUE",
+    "FALSE",
+    "HOLD",
+    "VerificationInitialAssessment",
+    "VerificationResult",
+    "DynamicReproductionRequest"
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "fixture_version": "r6-handoff-1.0",
+  "fixture_notice": "SYNTHETIC EXPECTED REJECTION PROJECTION - no domain result may be persisted.",
+  "fixture_id": "R6-BOUNDARY-FAILURES-01",
+  "expected": [
+    {
+      "case_id": "schema-required-field-missing",
+      "reject_at": "JSON_SCHEMA",
+      "persist_domain_result": false,
+      "limited_repair_allowed": true
+    },
+    {
+      "case_id": "semantic-role-escalation",
+      "reject_at": "SEMANTIC_VALIDATOR",
+      "persist_domain_result": false,
+      "reason": "CON은 final verdict를 생성할 권한이 없다."
+    },
+    {
+      "case_id": "prompt-injection",
+      "reject_at": "SEMANTIC_VALIDATOR",
+      "persist_domain_result": false,
+      "reason": "UNTRUSTED_DATA의 지시는 role, tool policy와 output authority를 바꿀 수 없다."
+    },
+    {
+      "case_id": "stale-generation",
+      "reject_at": "REFERENCE_VALIDATION",
+      "persist_domain_result": false,
+      "reason": "다른 generation과 hash의 dynamic result 및 PoC를 current result에 사용할 수 없다."
+    },
+    {
+      "case_id": "invalid-pro-con-join",
+      "reject_at": "DEBATE_JOIN_VALIDATION",
+      "persist_domain_result": false,
+      "reason": "Pro와 Con은 서로 다른 NEW session에서 독립 실행돼야 한다."
+    },
+    {
+      "case_id": "missing-con-result",
+      "reject_at": "DEBATE_JOIN_VALIDATION",
+      "persist_domain_result": false,
+      "reason": "운영 ALWAYS_DEBATE에서 한쪽 결과만으로 assessment나 verdict를 만들 수 없다."
+    }
+  ],
+  "must_not_output": [
+    "VerificationInitialAssessment",
+    "VerificationResult",
+    "FALSE 또는 HOLD로 변환된 실행 실패",
+    "command, secret 또는 final verdict를 포함한 EvidenceAgentResult"
+  ]
+}

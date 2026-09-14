@@ -1,0 +1,137 @@
+{
+  "fixture_version": "r6-handoff-1.0",
+  "fixture_notice": "SYNTHETIC EXPECTED PROJECTION - runtime-owned fields are intentionally omitted.",
+  "fixture_id": "R6-INSUFFICIENT-01",
+  "expected_pro_result": {
+    "role": "PRO",
+    "parent_work_id": "work_verify_003",
+    "verification_generation": 1,
+    "debate_input_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "evidence": [
+      {
+        "claim_id": "pro_claim_003",
+        "statement": "route는 요청 path의 id를 문서 조회에 사용한다.",
+        "source_role": "PRO",
+        "evidence_refs": [
+          "ev_document_route"
+        ],
+        "code_locations": [
+          {
+            "workspace_id": "ws_fixture_003",
+            "commit_id": "3333333333333333333333333333333333333333",
+            "file_path": "app/routes/documents.py",
+            "start_line": 40,
+            "end_line": 44
+          }
+        ],
+        "limitations": [
+          "조회 내부에서 ownership check가 수행되는지는 확인할 수 없다."
+        ]
+      }
+    ],
+    "summary": "공격자 선택 id가 조회 입력으로 사용되는 사실은 확인됐다.",
+    "limitations": [
+      "callee body가 없어 실제 권한 검사 여부는 확인할 수 없다."
+    ]
+  },
+  "expected_con_result": {
+    "role": "CON",
+    "parent_work_id": "work_verify_003",
+    "verification_generation": 1,
+    "debate_input_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "evidence": [],
+    "summary": "제공된 Context에서는 ownership check를 확인하지 못했지만, callee body 부재 때문에 방어가 없다고 결론낼 수 없다.",
+    "limitations": [
+      "document_service.get 구현 또는 정상 실행 관찰이 필요하다."
+    ]
+  },
+  "expected_verification_result": {
+    "outcome_type": "VERIFICATION_RESULT_CANDIDATE",
+    "playbook_ref": "playbook_ref_idor_001",
+    "playbook_application_ref": "playbook_application_ref_003",
+    "verification_mode": "ALWAYS_DEBATE",
+    "debate_triggers": [],
+    "debate_skip_reason": null,
+    "debate_input_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "pro_evidence_ref": "pro_result_ref_003",
+    "con_evidence_ref": "con_result_ref_003",
+    "initial_verdict": "HOLD",
+    "verdict": "HOLD",
+    "verdict_rationale": "fq_003은 current Context로 INCONCLUSIVE다. route의 id 전달은 확인됐으나 ownership check가 존재하는지 판정할 callee 구현이 없다.",
+    "supporting_evidence": [
+      "pro_claim_003"
+    ],
+    "counter_evidence": [],
+    "falsification_results": [
+      {
+        "question_id": "fq_003",
+        "outcome": "INCONCLUSIVE",
+        "evidence_refs": [
+          "ev_document_route",
+          "ev_service_fragment_missing_body"
+        ],
+        "rationale": "정상 조회된 범위에는 callee body가 없어 owner 비교의 존재 여부를 확인할 수 없다."
+      }
+    ],
+    "validation_results": [
+      {
+        "validation_id": "vc_005",
+        "completion": "COMPLETE",
+        "evidence_refs": [
+          "ev_document_route"
+        ],
+        "summary": "제공된 route 범위에서 조회 호출까지 확인했다."
+      },
+      {
+        "validation_id": "vc_006",
+        "completion": "COMPLETE",
+        "evidence_refs": [
+          "ev_service_fragment_missing_body"
+        ],
+        "summary": "확보된 Context의 한계와 ownership check 미확인 상태를 확인했다."
+      }
+    ],
+    "restrictions": [],
+    "bypass_candidates": [],
+    "required_primitive_candidates": [
+      {
+        "draft_id": "primitive_need_owner_check_003",
+        "entity_refs": [
+          {
+            "symbol_id": "symbol_document_service_get_003",
+            "symbol_kind": "CALLABLE",
+            "native_kind": "function",
+            "name": "document_service.get",
+            "location": {
+              "workspace_id": "ws_fixture_003",
+              "commit_id": "3333333333333333333333333333333333333333",
+              "file_path": "app/routes/documents.py",
+              "start_line": 42,
+              "end_line": 42
+            }
+          }
+        ],
+        "description": "document_service.get이 현재 사용자와 문서 소유자를 비교하지 않는다는 확인",
+        "privilege_level": null,
+        "evidence_refs": [
+          "ev_service_fragment_missing_body"
+        ]
+      }
+    ],
+    "provided_primitive_candidates": [],
+    "impact_escalation_candidates": [],
+    "material_child_proposals": [],
+    "unresolved_conditions": [
+      "document_service.get의 실제 구현 또는 동등한 실행 관찰에서 ownership check 여부 확인"
+    ],
+    "dynamic_request_ref": null,
+    "dynamic_result_ref": null,
+    "poc_ref": null,
+    "errors": []
+  },
+  "must_not_output": [
+    "ownership check가 없다는 확정 주장",
+    "final TRUE 또는 FALSE",
+    "실행 실패 code"
+  ]
+}

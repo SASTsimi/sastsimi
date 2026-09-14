@@ -1,0 +1,36 @@
+{
+  "fixture_version": "r6-handoff-1.0",
+  "fixture_notice": "SYNTHETIC EXPECTED RUNTIME HANDLING - no R6 domain output should be produced.",
+  "fixture_id": "R6-EXECUTION-FAILURE-01",
+  "expected_runtime_handling": {
+    "provider_called": false,
+    "pro_result_persisted": false,
+    "con_result_persisted": false,
+    "initial_assessment_persisted": false,
+    "verification_result_persisted": false,
+    "hypothesis_process_status": "VERIFYING",
+    "work_status": "BLOCKED",
+    "reason_code": "REQUIRED_CONTEXT_UNAVAILABLE",
+    "retryable": true,
+    "error_ref": "err_context_timeout_004"
+  },
+  "expected_validation_state": [
+    {
+      "validation_id": "vc_007",
+      "completion": "INCOMPLETE",
+      "reason": "Context timeout으로 source-to-sink data flow를 확인하지 못했다."
+    },
+    {
+      "validation_id": "vc_008",
+      "completion": "INCOMPLETE",
+      "reason": "Context timeout으로 redirect와 DNS 방어를 확인하지 못했다."
+    }
+  ],
+  "must_not_output": [
+    "FALSE",
+    "HOLD",
+    "VerificationInitialAssessment",
+    "VerificationResult",
+    "DynamicReproductionRequest"
+  ]
+}

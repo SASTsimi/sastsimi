@@ -1,0 +1,34 @@
+{
+  "fixture_version": "r6-handoff-1.1",
+  "fixture_notice": "SYNTHETIC EXPECTED PROJECTION - runtime-owned fields are intentionally omitted.",
+  "fixture_id": "R6-VERDICT-EVIDENCE-01",
+  "expected_initial_assessment": {
+    "result_kind": "verification_initial_assessment",
+    "verification_generation": 1,
+    "proposed_verdict": "HOLD",
+    "next_step": "VERDICT_EVIDENCE",
+    "pro_evidence_ref": "pro_result_ref_008",
+    "con_evidence_ref": "con_result_ref_008",
+    "unresolved_conditions": [
+      "동시 요청에서 중복 상태 전이가 실제로 관찰되는지 확인"
+    ]
+  },
+  "expected_dynamic_request": {
+    "result_kind": "dynamic_reproduction_request",
+    "verification_generation": 1,
+    "purpose": "VERDICT_EVIDENCE",
+    "initial_verdict": "HOLD",
+    "goal": "격리된 환경에서 두 동시 요청의 상태 전이와 중복 효과를 관찰한다."
+  },
+  "runtime_assertions": {
+    "request_initial_verdict_equals_assessment_proposed_verdict": true,
+    "assessment_persisted": true,
+    "preflight_or_execution_failure": false
+  },
+  "expected_final_result": null,
+  "must_not_output": [
+    "실행 전 final HOLD",
+    "실행 전 final TRUE 또는 FALSE",
+    "preflight 실패로 위장된 정상 VERDICT_EVIDENCE routing"
+  ]
+}
