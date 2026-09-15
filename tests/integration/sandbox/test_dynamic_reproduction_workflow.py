@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import BytesIO
-from typing import BinaryIO, Literal, cast
+from typing import Any, BinaryIO, Literal, cast
 
 import pytest
 
@@ -50,11 +51,13 @@ from sastsimi.contracts.work import (
     WorkType,
 )
 from sastsimi.ports.dto import StagedArtifact, WorkHandlerResult
+from sastsimi.reproduction.production import ProductionDynamicExecutor
 from sastsimi.reproduction.service import (
     DynamicOperationalError,
     DynamicReproductionWorkflowService,
     DynamicSandboxSession,
     DynamicStageAuthorizations,
+    DynamicStageCallResolver,
 )
 from sastsimi.runtime.fake_support import FakeClock, FakeIds
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
@@ -699,6 +702,212 @@ class BlockedFlowAgent:
 
 
 @dataclass
+class RecordingStageResolver:
+    calls: list[tuple[str, tuple[StoredDataRef, ...]]]
+    settled: list[str]
+
+    def resolve(
+        self,
+        *,
+        work: WorkExecutionState,
+        task_kind: str,
+        context_refs: tuple[StoredDataRef, ...],
+    ) -> DynamicAgentInvocation:
+        del work
+        self.calls.append((task_kind, context_refs))
+        return DynamicAgentInvocation(
+            decision_ref=stored_ref("action_decision", f"decision-{task_kind}"),
+            reservation_ref=stored_ref(
+                "budget_reservation", f"reservation-{task_kind}"
+            ),
+            call_spec_ref=stored_ref("llm_call_spec", f"call-{task_kind}"),
+        )
+
+    def settle(
+        self,
+        authorization: DynamicAgentInvocation,
+        invocation: PersistedLLMInvocation,
+    ) -> None:
+        del authorization
+        self.settled.append(invocation.request.task_kind)
+
+
+@pytest.mark.asyncio
+async def test_production_executor_resolves_each_dynamic_call_after_dispatch() -> None:
+    """Removing the production resolver factory must stop real child dispatch."""
+
+    artifacts = MemoryArtifacts()
+    request = reproduction_request()
+    request_ref = cast(StoredDataRef, reference(request))
+    work = dynamic_work(request_ref)
+    derive = invocation(
+        artifacts,
+        work,
+        task="DERIVE_ENVIRONMENT",
+        contexts=(request_ref,),
+        content={"items": []},
+        sequence=31,
+    )
+    agent = BlockedFlowAgent(derive)
+    port = FakeWorkflowPort(
+        DynamicSandboxSession.blocked(
+            policy_ref=stored_ref("sandbox_policy_decision", "production-denied"),
+            log_ref=stored_ref("agent_log", "production-denied-log"),
+        )
+    )
+    resolver = RecordingStageResolver([], [])
+    observed_work: list[WorkExecutionState] = []
+
+    def call_resolver_for(found: WorkExecutionState) -> DynamicStageCallResolver:
+        observed_work.append(found)
+        return cast(DynamicStageCallResolver, resolver)
+
+    executor = ProductionDynamicExecutor(
+        agent=agent,
+        workflow_factory=cast(Any, lambda found: port if found == work else None),
+        call_resolver_factory=call_resolver_for,
+    )
+
+    completed = await executor(
+        work=work,
+        request=request,
+        request_ref=request_ref,
+        authorizations=None,
+    )
+
+    assert completed.output_refs == (
+        stored_ref("dynamic_reproduction_result", "failed-result"),
+    )
+    assert observed_work == [work]
+    assert [task for task, _refs in resolver.calls] == [
+        "DERIVE_ENVIRONMENT",
+        "PLAN_REPRODUCTION",
+    ]
+    assert port.failure is not None
+    assert port.failure.failure_category == "POLICY_BLOCKED"  # type: ignore[attr-defined]
+    assert port.verdict_calls == 0
+    assert port.gate_calls == 0
+
+
+@dataclass
+class RejectingStageResolver:
+    error_code: str
+    max_execute_turns: int = 1
+
+    def resolve(self, **_: object) -> DynamicAgentInvocation:
+        raise ValueError(self.error_code)
+
+    def settle(
+        self,
+        authorization: DynamicAgentInvocation,
+        invocation: PersistedLLMInvocation,
+    ) -> None:
+        del authorization, invocation
+        raise AssertionError("a rejected authorization cannot be settled")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "resolver_error",
+    [
+        None,
+        "DYNAMIC_LLM_AUTHORIZATION_STALE",
+        "DYNAMIC_LLM_AUTHORIZATION_SCOPE_MIXED",
+    ],
+)
+async def test_production_executor_fails_closed_for_invalid_stage_authority(
+    resolver_error: str | None,
+) -> None:
+    """Missing, stale, or mixed authority must never become an R6 verdict."""
+
+    request = reproduction_request()
+    request_ref = cast(StoredDataRef, reference(request))
+    work = dynamic_work(request_ref)
+    port = FakeWorkflowPort(
+        DynamicSandboxSession.blocked(
+            policy_ref=stored_ref("sandbox_policy_decision", "unused-policy"),
+            log_ref=stored_ref("agent_log", "unused-log"),
+        )
+    )
+    call_resolver_factory = (
+        None
+        if resolver_error is None
+        else lambda _work: cast(
+            DynamicStageCallResolver, RejectingStageResolver(resolver_error)
+        )
+    )
+    executor = ProductionDynamicExecutor(
+        agent=FailingFlowAgent("AGENT"),
+        workflow_factory=cast(Any, lambda found: port if found == work else None),
+        call_resolver_factory=call_resolver_factory,
+    )
+
+    completed = await executor(
+        work=work,
+        request=request,
+        request_ref=request_ref,
+        authorizations=None,
+    )
+
+    assert completed.output_refs == (
+        stored_ref("dynamic_reproduction_result", "failed-result"),
+    )
+    assert port.failure is not None
+    assert port.failure.status == "FAILED"  # type: ignore[attr-defined]
+    assert port.failure.hypothesis_outcome == "INCONCLUSIVE"  # type: ignore[attr-defined]
+    assert port.failure.poc_ref is None  # type: ignore[attr-defined]
+    assert port.verdict_calls == 0
+    assert port.gate_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_production_calls_are_resolved_after_prior_stage_is_published() -> None:
+    artifacts = MemoryArtifacts()
+    request = reproduction_request()
+    request_ref = cast(StoredDataRef, reference(request))
+    work = dynamic_work(request_ref)
+    derive = invocation(
+        artifacts,
+        work,
+        task="DERIVE_ENVIRONMENT",
+        contexts=(request_ref,),
+        content={"items": []},
+        sequence=21,
+    )
+    agent = BlockedFlowAgent(derive)
+    port = FakeWorkflowPort(
+        DynamicSandboxSession.blocked(
+            policy_ref=stored_ref("sandbox_policy_decision", "stage-denied"),
+            log_ref=stored_ref("agent_log", "stage-log"),
+        )
+    )
+    resolver = RecordingStageResolver([], [])
+    service = DynamicReproductionWorkflowService(
+        agent=agent,
+        workflow=port,
+        call_resolver=cast(DynamicStageCallResolver, resolver),
+    )
+
+    await service.execute(
+        work=work,
+        request=request,
+        request_ref=request_ref,
+        authorizations=None,
+    )
+
+    assert [task for task, _refs in resolver.calls] == [
+        "DERIVE_ENVIRONMENT",
+        "PLAN_REPRODUCTION",
+    ]
+    requirements_ref = resolver.calls[1][1][1]
+    assert resolver.calls == [
+        ("DERIVE_ENVIRONMENT", (request_ref,)),
+        ("PLAN_REPRODUCTION", (request_ref, requirements_ref)),
+    ]
+    assert resolver.settled == ["DERIVE_ENVIRONMENT", "DERIVE_ENVIRONMENT"]
+
+
+@dataclass
 class FailingFlowAgent:
     category: Literal["AGENT", "TIMEOUT", "EXECUTION"]
 
@@ -736,6 +945,14 @@ class UnexpectedAfterOpenAgent(BlockedFlowAgent):
         self, **_: object
     ) -> DynamicAgentOutcome[PoCCandidate]:
         raise RuntimeError("TEST_ONLY_SECRET unexpected provider failure")
+
+
+@dataclass
+class CancelledAfterOpenAgent(BlockedFlowAgent):
+    async def create_poc_candidate(
+        self, **_: object
+    ) -> DynamicAgentOutcome[PoCCandidate]:
+        raise asyncio.CancelledError
 
 
 @pytest.mark.asyncio
@@ -862,6 +1079,60 @@ async def test_unexpected_failure_is_cleaned_and_recorded_safely() -> None:
     assert port.failure.failure_reason == (  # type: ignore[attr-defined]
         "Unexpected dynamic workflow failure"
     )
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_open_cleans_exact_session_resources() -> None:
+    artifacts = MemoryArtifacts()
+    request = reproduction_request()
+    request_ref = cast(StoredDataRef, reference(request))
+    work = dynamic_work(request_ref)
+    persisted_invocation = invocation(
+        artifacts,
+        work,
+        task="DERIVE_ENVIRONMENT",
+        contexts=(request_ref,),
+        content={"items": []},
+        sequence=1,
+    )
+    env = environment(
+        request_ref,
+        stored_ref("reproduction_plan", "allowed-plan"),
+        stored_ref("environment_requirements", "allowed-requirements"),
+    )
+    log = agent_log(request_ref)
+    port = FakeWorkflowPort(
+        DynamicSandboxSession(
+            allowed=True,
+            policy_ref=stored_ref("sandbox_policy_decision", "allowed-policy"),
+            log_ref=cast(StoredDataRef, reference(log)),
+            environment=env,
+            environment_ref=cast(StoredDataRef, reference(env)),
+            log=log,
+        )
+    )
+    service = DynamicReproductionWorkflowService(
+        agent=CancelledAfterOpenAgent(persisted_invocation),
+        workflow=port,
+    )
+    authorization = auth(persisted_invocation)
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.execute(
+            work=work,
+            request=request,
+            request_ref=request_ref,
+            authorizations=DynamicStageAuthorizations(
+                derive=authorization,
+                plan=authorization,
+                candidate=authorization,
+                execute=(),
+                interpret=None,
+            ),
+        )
+
+    assert port.cleanup_calls == 1
+    assert port.failure is None
 
 
 @pytest.mark.asyncio

@@ -1,10 +1,11 @@
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from sastsimi.contracts.actions import ActionDecision, Decision
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.refs import (
+    HostConfigurationRef,
     StoredDataRef,
     reference,
     require_record_ref,
@@ -28,7 +29,9 @@ from .dto import (
 
 @runtime_checkable
 class StaticToolAdapter(Protocol):
-    async def probe(self, profile_ref: StoredDataRef) -> ToolCapabilityResult: ...
+    async def probe(
+        self, profile_ref: StoredDataRef | HostConfigurationRef
+    ) -> ToolCapabilityResult: ...
     async def run(self, request: StaticToolRequest) -> ToolRunResult: ...
     async def cancel(self, attempt_id: str) -> CancellationResult: ...
 
@@ -51,6 +54,25 @@ class StaticProcessAdapter(Protocol):
     async def cancel(self, attempt_id: str) -> CancellationResult: ...
 
 
+def validate_static_material_ref(ref: StoredDataRef, *, legacy_data_kind: str) -> None:
+    """Accept the immutable route artifact or an exact legacy record reference.
+
+    Production ``StaticToolRoute`` stores configuration and rule material in
+    the code-scoped CAS, whose references deliberately have no ``record_id``.
+    Evaluation fixtures created before that contract may still use a semantic
+    stored record.  No other ambiguous shape is accepted.
+    """
+
+    artifact = (
+        ref.data_kind == "artifact"
+        and ref.record_id is None
+        and str(ref.stored_data_id) == ref.content_hash
+    )
+    legacy = ref.data_kind == legacy_data_kind and ref.record_id is not None
+    if not (artifact or legacy):
+        raise ValueError("STATIC_MATERIAL_REFERENCE_INVALID")
+
+
 class StaticOutputQuotaPort(Protocol):
     """Trusted status proof for an attempt root's write-denying hard quota.
 
@@ -69,10 +91,29 @@ class StaticOutputQuotaPort(Protocol):
         lease_id: str,
         action_id: str,
         attempt_id: str,
-        profile_ref: StoredDataRef,
+        profile_ref: StoredDataRef | HostConfigurationRef,
         root: Path,
         limit_bytes: int,
     ) -> StaticOutputQuotaBinding: ...
+
+
+type StaticOutputPurpose = Literal["DATABASE", "EXECUTION", "PROBE"]
+
+
+class ProductionStaticOutputQuotaPort(StaticOutputQuotaPort, Protocol):
+    """Allocate attempt-scoped roots with a host-enforced write ceiling."""
+
+    def allocate(
+        self,
+        *,
+        purpose: StaticOutputPurpose,
+        action_id: str,
+        attempt_id: str,
+        profile_ref: StoredDataRef | HostConfigurationRef,
+        limit_bytes: int,
+    ) -> StaticOutputQuotaBinding: ...
+
+    def finalize(self, *, lease_id: str, outcome: str) -> None: ...
 
 
 class StaticExternalExecutionPort(Protocol):
@@ -86,8 +127,22 @@ class StaticExternalExecutionPort(Protocol):
     ) -> ToolRunResult: ...
 
 
+class StaticExternalRecoveryPort(Protocol):
+    """Resume one exact claimed static action without a second dispatch."""
+
+    async def recover_tool(
+        self,
+        request: StaticToolRequest,
+        profile: StaticToolProfile,
+        operation: Callable[[MonotonicActionDeadline], Awaitable[StaticToolObservation]]
+        | None = None,
+    ) -> ToolRunResult: ...
+
+
 class StaticToolProfileResolverPort(Protocol):
-    def resolve(self, profile_ref: StoredDataRef) -> StaticToolProfile: ...
+    def resolve(
+        self, profile_ref: StoredDataRef | HostConfigurationRef
+    ) -> StaticToolProfile: ...
 
 
 class StaticAttemptPublisherPort(Protocol):
@@ -111,14 +166,31 @@ def validate_static_tool_profile_binding(
             profile_ref,
             resolved_profile.meta,
             content_hash(resolved_profile),
-            analysis_id=work.meta.analysis_id,
+            analysis_id=(
+                None
+                if isinstance(profile_ref, HostConfigurationRef)
+                else work.meta.analysis_id
+            ),
         )
     except ValueError as error:
         raise ValueError("STATIC_TOOL_PROFILE_BINDING_MISMATCH") from error
     action = request.action
     if (
-        resolved_profile.status != "APPROVED"
-        or resolved_profile.purpose not in {"FIXTURE", "EVALUATION"}
+        (
+            isinstance(profile_ref, HostConfigurationRef)
+            and (
+                resolved_profile.status != "ACTIVE"
+                or resolved_profile.purpose != "PRODUCTION"
+                or resolved_profile.host_id != profile_ref.host_id
+            )
+        )
+        or (
+            isinstance(profile_ref, StoredDataRef)
+            and (
+                resolved_profile.status != "APPROVED"
+                or resolved_profile.purpose not in {"FIXTURE", "EVALUATION"}
+            )
+        )
         or work.work_type != "STATIC_TOOL"
         or action.action_type != "RUN_TOOL"
         or action.tool_name != resolved_profile.tool_name

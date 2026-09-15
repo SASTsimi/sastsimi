@@ -67,6 +67,30 @@ chaining → contracts, ports, runtime, agents
 
 ## Verification
 
+### T14 composition-root implementation
+
+`bootstrap.py` remains the public application facade. Its concrete builders now
+live in `composition/`, including the reusable runtime construction and T08–T13
+production installers. Domain packages must not import `composition/`; the
+architecture contract permits entry only from the bootstrap facade and the exact
+existing `capabilities.composition → composition.runtime.build_runtime` wiring
+edge. CLI adapters continue to use the public bootstrap facade.
+
+Shared production installation values stay in
+`orchestration/production_context.py`, static factory input values in
+`orchestration/static_adapter_context.py`, and prompt, authorized-call, Docker
+state, and application-error values in `ports/`. Prompt registry and static
+workflow dependencies use injected protocols. Production verification handlers
+live in `verification/`, prompt call preparation in `prompts/production_calls.py`,
+and the SQLite run-scope locator in `storage/`.
+
+The orchestration package allowlist is unchanged. Additional cross-package
+exceptions name individual DTOs, ports, or existing pure helpers; they do not
+authorize concrete builders or service imports from neighboring symbols.
+All imports, including lazy imports, are statically visible and the contract
+rejects module cycles. Provider composition receives its structured-output
+validator from the application root.
+
 - Architecture validator의 `Assert-MaintainableWorkflowBoundaries`가 6개 exact mapping, import allowlist, VerdictRouter의 권한 검사·주입 경계, ADR index와 stale 표현을 검사한다.
 - T01 inventory의 `-CheckLinks`와 `git diff --check`로 문서 연결과 diff를 검사한다.
 - 실제 Python 구현의 `tests/contract/test_architecture_imports.py`에서 금지 import·adapter 직접 의존을 검사한다.

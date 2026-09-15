@@ -1,0 +1,203 @@
+"""Transport-only ports for production scheduling and durable run control."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Literal, Protocol
+
+from sastsimi.contracts.analysis import AnalysisStartRequest
+from sastsimi.contracts.evaluation import AnalysisRunResult
+from sastsimi.contracts.refs import RecordRef, RunStoredDataRef, StoredDataRef
+from sastsimi.contracts.work import WorkAttempt, WorkExecutionState, WorkType
+
+from .dto import WorkContext
+from .work_handler import WorkHandler
+
+type CancellationTargetKind = Literal["STATIC", "PROVIDER", "SANDBOX"]
+type CancellationStatus = Literal["STOPPED", "ABSENT", "UNKNOWN", "PRESERVED"]
+type RunDisposition = Literal["TERMINAL", "BLOCKED", "CANCELLED", "FAILED"]
+
+
+@dataclass(frozen=True)
+class SandboxCancellationResource:
+    """Credential-free exact resource copied from one validated snapshot."""
+
+    resource_kind: Literal["CONTAINER", "IMAGE", "CONTAINER_INTENT", "IMAGE_INTENT"]
+    resource_id: str
+    resource_ref: StoredDataRef | None
+    resource_tag: str | None
+    labels: tuple[tuple[str, str], ...]
+    lookup_by_name: bool
+    preservation_reason: Literal["REUSABLE_BASELINE"] | None
+
+
+@dataclass(frozen=True)
+class CancellationTarget:
+    """Exact persisted external target; callers cannot widen it with raw IDs."""
+
+    target_kind: CancellationTargetKind
+    work: WorkExecutionState
+    attempt: WorkAttempt
+    action_request_ref: RecordRef
+    action_decision_ref: RecordRef
+    call_spec_ref: StoredDataRef | None
+    sandbox_resource_refs: tuple[StoredDataRef, ...]
+    # The dispatch row retains the exact issued/UNUSED decision while the
+    # action projection retains its unique USED revision.  Cancellation needs
+    # both identities and must never substitute one for the other.
+    issued_action_decision_ref: RecordRef | None = None
+    sandbox_resources: tuple[SandboxCancellationResource, ...] = ()
+    sandbox_inventory_fingerprint: str | None = None
+
+
+@dataclass(frozen=True)
+class CancellationResourceObservation:
+    resource: SandboxCancellationResource
+    status: CancellationStatus
+    reason_code: str | None
+
+
+@dataclass(frozen=True)
+class CancellationObservation:
+    target: CancellationTarget
+    status: CancellationStatus
+    reason_code: str | None
+    resource_observations: tuple[CancellationResourceObservation, ...] = ()
+
+
+@dataclass(frozen=True)
+class RunOutcome:
+    analysis_id: str
+    disposition: RunDisposition
+    result_ref: RunStoredDataRef | None
+
+
+@dataclass(frozen=True)
+class WorkFailureView:
+    """Safe, structured non-success detail for one production work item."""
+
+    work_id: str
+    work_type: str
+    status: str
+    stop_reason: str | None
+    error_ids: tuple[str, ...]
+    waiting_for: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AnalysisStatusView:
+    analysis_id: str
+    run_status: str
+    work_counts: tuple[tuple[str, int], ...]
+    cancel_requested: bool
+    waiting_for: tuple[str, ...]
+    result_ref: RunStoredDataRef | None
+    failures: tuple[WorkFailureView, ...] = ()
+
+
+class SchedulerStorePort(Protocol):
+    def ready_work(
+        self, analysis_id: str, limit: int
+    ) -> tuple[WorkExecutionState, ...]: ...
+
+    def work_for_run(self, analysis_id: str) -> tuple[WorkExecutionState, ...]: ...
+
+    def attempts_for_work(self, work_id: str) -> tuple[WorkAttempt, ...]: ...
+
+    def try_claim_ready(
+        self,
+        analysis_id: str,
+        work_id: str,
+        expected_state_version: int,
+        worker_id: str,
+        lease_expires_at: datetime,
+    ) -> WorkContext | None: ...
+
+    def renew_lease(
+        self,
+        context: WorkContext,
+        worker_id: str,
+        lease_expires_at: datetime,
+        elapsed_ms: int,
+    ) -> WorkContext: ...
+
+
+class RunControlPort(Protocol):
+    def request_cancel(self, analysis_id: str, reason: str) -> None: ...
+
+    def cancel_requested(self, analysis_id: str) -> bool: ...
+
+    def mark_quiescent(self, analysis_id: str) -> None: ...
+
+    def cancellation_targets(
+        self, analysis_id: str
+    ) -> tuple[CancellationTarget, ...]: ...
+
+    def cancellation_observations(
+        self, targets: tuple[CancellationTarget, ...]
+    ) -> tuple[CancellationObservation | None, ...]: ...
+
+    def record_cancellation_observation(
+        self, observation: CancellationObservation
+    ) -> None: ...
+
+    def reconcile_cancellation(
+        self,
+        analysis_id: str,
+        observations: tuple[CancellationObservation, ...],
+    ) -> None: ...
+
+
+class ExternalCancellationPort(Protocol):
+    async def prepare(
+        self, targets: tuple[CancellationTarget, ...]
+    ) -> tuple[CancellationTarget, ...]: ...
+
+    def validate_inventory(
+        self, analysis_id: str, targets: tuple[CancellationTarget, ...]
+    ) -> None: ...
+
+    async def cancel(self, target: CancellationTarget) -> CancellationObservation: ...
+
+
+class HandlerRegistryPort(Protocol):
+    def validate_complete(self, required: tuple[WorkType, ...]) -> None: ...
+
+    def resolve(self, work_type: WorkType) -> WorkHandler: ...
+
+
+class WorkSchedulerPort(Protocol):
+    async def drain(self, analysis_id: str) -> RunOutcome: ...
+
+
+class AnalysisApplicationPort(Protocol):
+    async def run(self, request: AnalysisStartRequest) -> RunOutcome: ...
+
+    def status(self, analysis_id: str) -> AnalysisStatusView: ...
+
+    async def cancel(self, analysis_id: str) -> AnalysisStatusView: ...
+
+    async def resume(self, analysis_id: str) -> RunOutcome: ...
+
+    def result(self, analysis_id: str) -> AnalysisRunResult: ...
+
+
+__all__ = [
+    "AnalysisApplicationPort",
+    "AnalysisStatusView",
+    "CancellationObservation",
+    "CancellationResourceObservation",
+    "CancellationStatus",
+    "CancellationTarget",
+    "CancellationTargetKind",
+    "SandboxCancellationResource",
+    "ExternalCancellationPort",
+    "HandlerRegistryPort",
+    "RunControlPort",
+    "RunDisposition",
+    "RunOutcome",
+    "SchedulerStorePort",
+    "WorkSchedulerPort",
+    "WorkFailureView",
+]

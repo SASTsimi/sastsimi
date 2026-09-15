@@ -6,7 +6,7 @@ from types import MappingProxyType
 
 from ._domain import exact, same_scope
 from .actions import RequesterRole
-from .analysis import AnalysisRunState
+from .analysis import AnalysisRunInput, AnalysisRunState
 from .base import ContractModel
 from .budget import BudgetLedgerEntry, BudgetReservation
 from .chaining import ChainingResult, Primitive, PrimitiveAdmissionDecision
@@ -47,6 +47,8 @@ from .reporting import Finding, ReportDraft
 from .static import (
     CodeContextResponse,
     CodeWorkspace,
+    RepositoryExecutionSelection,
+    RepositoryProfile,
     RuleExecutionRecord,
     StaticFactBundle,
     ToolRunResult,
@@ -84,6 +86,7 @@ def build_registry(
 
 RESULT_REGISTRY = build_registry(
     (
+        ("analysis_run_input", AnalysisRunInput, RequesterRole.ORCHESTRATION),
         ("analysis_run_state", AnalysisRunState, RequesterRole.ORCHESTRATION),
         (
             "hypothesis_process_state",
@@ -96,6 +99,12 @@ RESULT_REGISTRY = build_registry(
             RequesterRole.ORCHESTRATION,
         ),
         ("code_workspace", CodeWorkspace, RequesterRole.REPOSITORY_LOADER),
+        ("repository_profile", RepositoryProfile, RequesterRole.STATIC_ANALYSIS),
+        (
+            "repository_execution_selection",
+            RepositoryExecutionSelection,
+            RequesterRole.STATIC_ANALYSIS,
+        ),
         (
             "code_context_response",
             CodeContextResponse,

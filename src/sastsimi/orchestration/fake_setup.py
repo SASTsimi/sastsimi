@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from sastsimi.contracts.actions import RequesterRole
-from sastsimi.contracts.analysis import AnalysisRunState
+from sastsimi.contracts.analysis import AnalysisRunInput, AnalysisRunState
 from sastsimi.contracts.budget import (
     WORK_OPERATIONS,
     BudgetProfileBinding,
@@ -275,12 +275,24 @@ class FakeSetupStages:
             identity_ref = self.runtime.configuration.register_work_budget(profile)
             self.evidence.bind_identity(identity_ref, role)
         self.context_service_identity_ref = context_identity_ref
+        run_input = AnalysisRunInput.model_validate_json(
+            canonical_bytes(
+                dict(
+                    meta=self._run_meta("analysis_run_input"),
+                    repository_ref="https://example.invalid/fake",
+                    requested_git_ref=str(COMMIT_ID),
+                    program_id=PROGRAM_ID,
+                    purpose="PRODUCTION",
+                )
+            )
+        )
         initial = AnalysisRunState.model_validate_json(
             canonical_bytes(
                 dict(
                     meta=self._run_meta("analysis_run_state"),
                     purpose="PRODUCTION",
                     eval_config_refs=(),
+                    analysis_input_ref=reference(run_input),
                     program_id=PROGRAM_ID,
                     execution_budget_profile_ref=execution_ref,
                     budget_binding_ref=None,
@@ -296,7 +308,9 @@ class FakeSetupStages:
                 )
             )
         )
-        scope = self.runtime.budget_registry.pin_execution(execution, initial)
+        scope = self.runtime.budget_registry.pin_execution(
+            execution, initial, run_input
+        )
         self.runner = WorkflowRunner(
             self.runtime,
             self.clock,

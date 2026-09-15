@@ -514,12 +514,58 @@ async def test_budget_limit_rejects_zero_and_allows_parallel_new_sessions() -> N
     assert result.pro.meta.attempt_id != result.con.meta.attempt_id
     assert result.pro.llm_call_id != result.con.llm_call_id
     assert result.pro_session_ref != result.con_session_ref
+    assert result.pro_invocation.request.agent_role == "PRO"
+    assert result.con_invocation.request.agent_role == "CON"
     assert result.pro.evidence[0].claim_id.startswith("pro-claim-")
     assert result.con.evidence[0].claim_id.startswith("con-claim-")
     assert result.pro.evidence[0].source_role == "PRO"
     assert result.con.evidence[0].source_role == "CON"
     assert records.get_exact(result.pro_ref) == result.pro
     assert records.get_exact(result.con_ref) == result.con
+
+
+@pytest.mark.asyncio
+async def test_one_claimed_branch_commits_without_waiting_for_sibling() -> None:
+    public_inputs = tuple(
+        sorted(
+            (
+                _ref("static_fact_bundle", "facts"),
+                _ref("playbook_application", "application"),
+            ),
+            key=canonical_bytes,
+        )
+    )
+    parent = _work("VERIFICATION", public_inputs)
+    pro_work = _work("PRO", public_inputs, parent=parent)
+    records, artifacts = MemoryRecords(), MemoryArtifacts()
+    call = _authorized_call(records, "PRO", pro_work, public_inputs)
+    calls = ConcurrentLLMCalls(
+        records,
+        artifacts,
+        {"PRO": _output("PRO", public_inputs[0])},
+    )
+    publisher = RecordingPublisher(records)
+    service = DebateService(
+        records=records,
+        artifacts=artifacts,
+        llm_calls=calls,
+        metadata_factory=MetadataFactory(),
+        claim_id_factory=ClaimIds(),
+        publish_result=publisher,
+        parallel_limit=lambda _work: 2,
+    )
+
+    result = await service.run_branch(
+        parent_work=parent,
+        public_input_refs=public_inputs,
+        call=call,
+        role="PRO",
+    )
+
+    assert calls.calls == ["PRO"]
+    assert result.record.role == "PRO"
+    assert records.get_exact(result.output_ref) == result.record
+    assert result.session_ref == "pro-session"
 
 
 @pytest.mark.asyncio
@@ -571,6 +617,8 @@ async def test_limit_one_serializes_calls_and_failure_cannot_complete_debate() -
     assert calls.max_active == 1
     assert set(calls.calls) == {"PRO", "CON"}
     assert captured.value.failure_count == 1
+    assert captured.value.pro_invocation is not None
+    assert captured.value.con_invocation is None
     assert captured.value.completed_refs == tuple(
         reference(value) for value in publisher.published
     )
@@ -635,6 +683,7 @@ def test_parallel_limit_uses_only_current_exact_active_budget_binding() -> None:
             ),
             "purpose": Purpose.PRODUCTION,
             "eval_config_refs": (),
+            "analysis_input_ref": _run_ref("analysis_run_input", "run-input"),
             "program_id": "program-1",
             "execution_budget_profile_ref": execution_ref,
             "budget_binding_ref": binding_ref,

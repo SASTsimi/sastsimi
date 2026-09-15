@@ -45,6 +45,58 @@ from sastsimi.static_analysis.workspace_storage import (
 from tests.integration.runtime_support import metadata
 
 
+def test_repository_loader_binds_the_executed_git_to_the_pinned_identity(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "git.exe"
+    executable.write_bytes(b"trusted-git")
+    output = tmp_path / "output"
+    output.mkdir()
+    subject = RepositoryLoader(
+        storage=FixtureQuotaWorkspaceStorage(
+            tmp_path / "leases", capacity_bytes=1_000_000
+        ),
+        process_runner_factory=lambda _lease, _deadline, _output: FakeRunner([], []),
+        git_executable=executable,
+        output_dir=output,
+        allow_local_file=True,
+    )
+
+    subject.verify_git_capability("git", hashlib.sha256(b"trusted-git").hexdigest())
+    with pytest.raises(ValueError, match="GIT_EXECUTABLE_CAPABILITY_MISMATCH"):
+        subject.verify_git_capability(
+            "other-git", hashlib.sha256(b"trusted-git").hexdigest()
+        )
+    with pytest.raises(ValueError, match="GIT_EXECUTABLE_CAPABILITY_MISMATCH"):
+        subject.verify_git_capability("git", "f" * 64)
+
+    executable.write_bytes(b"replaced-git")
+    with pytest.raises(ValueError, match="GIT_EXECUTABLE_CHANGED"):
+        subject.verify_git_capability("git", hashlib.sha256(b"trusted-git").hexdigest())
+
+
+def test_workspace_guard_binds_integrity_commands_to_the_pinned_git(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "git.exe"
+    executable.write_bytes(b"trusted-git")
+    output = tmp_path / "output"
+    output.mkdir()
+    subject = WorkspaceGuard(
+        roots={},
+        manifests={},
+        process_runner_factory=lambda _root, _deadline, _attempt: FakeRunner([], []),
+        git_executable=executable,
+        output_dir=output,
+    )
+
+    digest = hashlib.sha256(b"trusted-git").hexdigest()
+    subject.verify_git_capability("git", digest)
+    executable.write_bytes(b"replaced-git")
+    with pytest.raises(ValueError, match="GIT_EXECUTABLE_CHANGED"):
+        subject.verify_git_capability("git", digest)
+
+
 def quota_ref() -> RunStoredDataRef:
     raw = canonical_bytes(
         {
@@ -214,7 +266,10 @@ class FreeReserveCrossingRunner(QuotaCrossingRunner):
         self.specs.append(spec)
         self.storage.crossed = True
         try:
-            await asyncio.wait_for(self._cancelled.wait(), timeout=0.1)
+            # A loaded Windows xdist worker may not schedule the quota monitor
+            # within 100 ms.  Keep the fake process alive long enough to test
+            # cancellation rather than scheduler timing.
+            await asyncio.wait_for(self._cancelled.wait(), timeout=1.0)
         except TimeoutError:
             self.natural_finished = True
         return result(spec, outcome="CANCELLED" if self.cancelled else "SUCCEEDED")
@@ -583,6 +638,9 @@ async def test_manifest_excludes_git_links_submodules_lfs_and_unsafe_paths(
             b"120000 " + b"2" * 40 + b" 0\tlinked.py\0",
             b"160000 " + b"3" * 40 + b" 0\tvendor/sub\0",
             b"100644 " + b"4" * 40 + b" 0\t.env\0",
+            b"100644 " + b"5" * 40 + b" 0\t.npmrc\0",
+            b"100644 " + b"6" * 40 + b" 0\tconfig/service-account.json\0",
+            b"100644 " + b"7" * 40 + b" 0\tmaven/settings.xml\0",
         )
     )
     subject, runner = loader(
@@ -608,12 +666,28 @@ async def test_manifest_excludes_git_links_submodules_lfs_and_unsafe_paths(
     assert root is not None
     (root / "safe.py").write_text("print('safe')", encoding="utf-8")
     (root / ".env").write_text("SECRET=x", encoding="utf-8")
+    (root / ".npmrc").write_text("_authToken=x", encoding="utf-8")
+    (root / "config").mkdir()
+    (root / "config" / "service-account.json").write_text("{}", encoding="utf-8")
+    (root / "maven").mkdir()
+    (root / "maven" / "settings.xml").write_text("<settings/>", encoding="utf-8")
     reparsed = subject.build_manifest(root, manifest)
     assert tuple(item.git_path for item in reparsed[0]) == ("safe.py",)
     assert {gap.code for gap in reparsed[1]} == {
         "SYMLINK_EXCLUDED",
         "SUBMODULE_UNAVAILABLE",
         "SENSITIVE_PATH_EXCLUDED",
+    }
+    assert {
+        path
+        for gap in reparsed[1]
+        if gap.code == "SENSITIVE_PATH_EXCLUDED"
+        for path in gap.affected_paths
+    } == {
+        ".env",
+        ".npmrc",
+        "config/service-account.json",
+        "maven/settings.xml",
     }
     assert len(runner.specs) == 5
 

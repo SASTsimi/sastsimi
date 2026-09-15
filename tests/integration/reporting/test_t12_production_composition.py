@@ -144,19 +144,24 @@ def test_compose_t12_services_wires_post_claim_resolvers_without_model() -> None
         role: _ref("agent_identity", role)
         for role in (
             "ORCHESTRATION",
+            "VERIFICATION",
             "CWE_LABELING",
             "TECHNICAL_GATE",
             "RULE_SCOPE_GATE",
             "REPORTER",
         )
     }
+    primitive_handoff = object()
+    t10_services = SimpleNamespace(
+        revision=object(), primitive_handoff=primitive_handoff
+    )
 
     services = build_t12_services(
         runtime=cast(Any, runtime),
         runner=cast(Any, object()),
         clock=cast(Any, object()),
         ids=cast(Any, object()),
-        t10_services=cast(Any, SimpleNamespace(revision=object())),
+        t10_services=cast(Any, t10_services),
         taxonomy_version="CWE-4.17",
         role_identity_refs=cast(Any, identities),
         cwe_call_resolver=cast(Any, calls.cwe),
@@ -172,6 +177,7 @@ def test_compose_t12_services_wires_post_claim_resolvers_without_model() -> None
     assert services.rule_scope.resolve_inputs.resolve_call is calls.rule_scope
     assert isinstance(services.reporter.resolve_inputs, StoredReporterInputResolver)
     assert services.reporter.resolve_inputs.resolve_call is calls.reporter
+    assert services.primitive_handoff is primitive_handoff
     assert not hasattr(services, "provider")
     assert not hasattr(services, "model")
 

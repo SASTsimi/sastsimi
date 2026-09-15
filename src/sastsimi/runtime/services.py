@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 
+from sastsimi.ports.chaining import ChainingLineagePort
 from sastsimi.ports.unit_of_work import UnitOfWork
 
 from .action_validator import RuntimeValidator
@@ -43,3 +44,4 @@ class RuntimeServices:
     finalization: AnalysisFinalizationService
     llm_calls: LLMCallService
     policy: PolicyRuntimeService
+    chaining_lineage: ChainingLineagePort | None

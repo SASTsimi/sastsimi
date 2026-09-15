@@ -9,7 +9,13 @@ from pydantic import AwareDatetime, field_validator, model_validator
 from .base import ContractModel, NonEmptyStr, NonNegativeInt, PositiveInt
 from .ids import ActionId, DecisionId, ErrorId
 from .records import RecordMeta, validate_revision
-from .refs import BudgetScopeRef, RecordRef, StoredDataRef, require_record_ref
+from .refs import (
+    BudgetScopeRef,
+    CheckedConfigurationRef,
+    RecordRef,
+    StoredDataRef,
+    require_record_ref,
+)
 from .work import ScopedRecord
 
 _IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -514,7 +520,7 @@ class ActionDecision(ScopedRecord):
     required_checks: tuple[CheckType, ...]
     check_results: tuple[ActionCheck, ...]
     checked_state_version: PositiveInt | None
-    checked_config_refs: tuple[BudgetScopeRef, ...]
+    checked_config_refs: tuple[CheckedConfigurationRef, ...]
     valid_until: AwareDatetime | None
     error_ids: tuple[ErrorId, ...]
     use_status: UseStatus

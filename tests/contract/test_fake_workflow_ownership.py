@@ -137,7 +137,9 @@ def test_domain_workflows_do_not_reach_back_into_orchestration() -> None:
 
 
 def test_composition_uses_typed_factory_instead_of_dynamic_service_lookup() -> None:
-    bootstrap = (PACKAGE_ROOT / "bootstrap.py").read_text(encoding="utf-8")
+    bootstrap = (PACKAGE_ROOT / "composition" / "runtime.py").read_text(
+        encoding="utf-8"
+    )
     scenario = (PACKAGE_ROOT / "orchestration/fake_scenario_runtime.py").read_text(
         encoding="utf-8"
     )

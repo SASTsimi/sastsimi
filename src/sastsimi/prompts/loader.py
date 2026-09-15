@@ -8,6 +8,8 @@ from pathlib import Path
 import yaml  # type: ignore[import-untyped]
 from yaml.nodes import MappingNode  # type: ignore[import-untyped]
 
+from sastsimi.config.package_resources import resolve_builtin_resource
+
 from .registry import LoadedPromptDefinition, PromptManifest, PromptRegistry
 
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -100,8 +102,18 @@ class PromptLoader:
             or any(part in {"", ".", ".."} for part in relative.parts)
         ):
             raise ValueError("PROMPT_PATH_DENIED")
-        candidate = self.root.joinpath(*relative.parts)
-        self._assert_no_reparse(relative)
+        if relative.parts[: len(_CANONICAL_TEMPLATE_PREFIX)] == (
+            _CANONICAL_TEMPLATE_PREFIX
+        ):
+            try:
+                candidate = resolve_builtin_resource(self.root, relative)
+                physical_relative = candidate.relative_to(self._resolved_root)
+            except ValueError as error:
+                raise ValueError("PROMPT_PATH_DENIED") from error
+        else:
+            candidate = self.root.joinpath(*relative.parts)
+            physical_relative = relative
+        self._assert_no_reparse(physical_relative)
         try:
             resolved = candidate.resolve(strict=True)
             resolved.relative_to(self._resolved_root)

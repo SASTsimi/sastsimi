@@ -1,0 +1,249 @@
+"""Rehydrate exact active external cancellation targets from committed rows only."""
+
+from __future__ import annotations
+
+from contextlib import nullcontext
+
+from sqlalchemy import Connection, select
+
+from sastsimi.contracts.actions import (
+    ActionDecision,
+    ActionRequest,
+    ActionType,
+    validate_decision_revision,
+)
+from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
+from sastsimi.contracts.refs import RecordRef
+from sastsimi.contracts.work import WorkAttempt, WorkExecutionState
+from sastsimi.ports.dto import Record
+from sastsimi.ports.scheduler import CancellationTarget, CancellationTargetKind
+
+from . import models
+from .codec import REF_ADAPTER, decode, reference
+from .database import Database
+
+_PROVIDER_ACTIONS = frozenset(
+    {
+        ActionType.CALL_LLM,
+        ActionType.CALL_TECHNICAL_GATE,
+        ActionType.CALL_RULE_SCOPE_GATE,
+        ActionType.CREATE_REPORT_DRAFT,
+    }
+)
+_STATIC_ACTIONS = frozenset(
+    {ActionType.READ_CODE, ActionType.RUN_TOOL, ActionType.FETCH_POLICY}
+)
+
+
+class CancellationTargetStore:
+    """Never discovers host resources; only follows exact durable references."""
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    def cancellation_targets(
+        self, analysis_id: str, *, _connection: Connection | None = None
+    ) -> tuple[CancellationTarget, ...]:
+        if not analysis_id:
+            raise ValueError("RUN_CONTROL_INPUT_INVALID")
+        targets: list[CancellationTarget] = []
+        with (
+            self._database.engine.connect()
+            if _connection is None
+            else nullcontext(_connection) as connection
+        ):
+            if _connection is None:
+                connection.exec_driver_sql("BEGIN")
+            inventory = self._work_inventory(connection, analysis_id)
+            rows = connection.execute(
+                select(models.external_dispatches)
+                .join(
+                    models.work_states,
+                    models.work_states.c.work_id
+                    == models.external_dispatches.c.work_id,
+                )
+                .where(
+                    models.work_states.c.analysis_id == analysis_id,
+                    models.external_dispatches.c.dispatched_at.is_not(None),
+                    models.external_dispatches.c.returned_at.is_(None),
+                    models.external_dispatches.c.reconciled_at.is_(None),
+                )
+                .order_by(
+                    models.external_dispatches.c.work_id,
+                    models.external_dispatches.c.action_id,
+                )
+            ).mappings()
+            for row in rows:
+                current = inventory.get(row["work_id"])
+                if current is None:
+                    raise ValueError("CANCELLATION_TARGET_SCOPE_MISMATCH")
+                work, attempt = current
+                if (
+                    work.status != "RUNNING"
+                    or attempt is None
+                    or row["attempt_id"] != str(work.active_attempt_id)
+                    or row["dispatched_at"] is None
+                    or row["returned_at"] is not None
+                    or row["reconciled_at"] is not None
+                ):
+                    raise ValueError("CANCELLATION_TARGET_SCOPE_MISMATCH")
+                issued_ref = REF_ADAPTER.validate_json(row["decision_ref"])
+                issued = self._exact(connection, issued_ref)
+                if not isinstance(issued, ActionDecision):
+                    raise ValueError("CANCELLATION_TARGET_EXACT_REF_REQUIRED")
+                action = self._exact(connection, issued.action_ref)
+                if not isinstance(action, ActionRequest):
+                    raise ValueError("CANCELLATION_TARGET_EXACT_REF_REQUIRED")
+                used_payload = connection.execute(
+                    select(models.action_decisions.c.payload).where(
+                        models.action_decisions.c.action_id == str(action.action_id)
+                    )
+                ).scalar_one_or_none()
+                if used_payload is None:
+                    raise ValueError("CANCELLATION_TARGET_EXACT_REF_REQUIRED")
+                used = ActionDecision.model_validate_json(used_payload)
+                if (
+                    issued.use_status != "UNUSED"
+                    or used.use_status != "USED"
+                    or issued.action_ref != reference(action)
+                    or used.action_ref != reference(action)
+                    or str(action.action_id) != row["action_id"]
+                    or action.work_ref != reference(work)
+                    or action.expected_state_version != work.state_version
+                ):
+                    raise ValueError("CANCELLATION_TARGET_SCOPE_MISMATCH")
+                validate_decision_revision(issued, used)
+                kind = self._target_kind(action.action_type)
+                if kind is None:
+                    raise ValueError("CANCELLATION_TARGET_KIND_MISMATCH")
+                if action.llm_call_spec_ref is not None:
+                    self._exact(connection, action.llm_call_spec_ref)
+                targets.append(
+                    CancellationTarget(
+                        target_kind=kind,
+                        work=work,
+                        attempt=attempt,
+                        action_request_ref=reference(action),
+                        action_decision_ref=reference(used),
+                        call_spec_ref=action.llm_call_spec_ref,
+                        # Sandbox resources are owned only by the exact-attempt
+                        # journal snapshot, never inferred from action inputs.
+                        sandbox_resource_refs=(),
+                        issued_action_decision_ref=issued_ref,
+                    )
+                )
+        identities = {
+            (
+                item.target_kind,
+                canonical_bytes(item.action_request_ref),
+                str(item.attempt.attempt_id),
+            )
+            for item in targets
+        }
+        if len(identities) != len(targets):
+            raise ValueError("DUPLICATE_CANCELLATION_TARGET")
+        return tuple(targets)
+
+    @staticmethod
+    def _work_inventory(
+        connection: Connection, analysis_id: str
+    ) -> dict[str, tuple[WorkExecutionState, WorkAttempt | None]]:
+        """Validate the complete run projection in the target read snapshot."""
+        inventory: dict[str, tuple[WorkExecutionState, WorkAttempt | None]] = {}
+        rows = (
+            connection.execute(
+                select(models.work_states)
+                .where(models.work_states.c.analysis_id == analysis_id)
+                .order_by(models.work_states.c.work_id)
+            )
+            .mappings()
+            .all()
+        )
+        for row in rows:
+            work = WorkExecutionState.model_validate_json(row["payload"])
+            active_id = (
+                str(work.active_attempt_id)
+                if work.active_attempt_id is not None
+                else None
+            )
+            if (
+                str(work.meta.analysis_id) != analysis_id
+                or str(work.work_id) != row["work_id"]
+                or work.status.value != row["status"]
+                or work.state_version != row["state_version"]
+                or active_id != row["active_attempt_id"]
+                or row["work_id"] in inventory
+            ):
+                raise ValueError("CANCELLATION_WORK_STATE_NOT_CURRENT")
+            attempt: WorkAttempt | None = None
+            if work.status == "RUNNING":
+                if row["worker_id"] is None or row["lease_expires_at"] is None:
+                    raise ValueError("CANCELLATION_WORK_STATE_NOT_CURRENT")
+                attempt_row = (
+                    connection.execute(
+                        select(models.work_attempts).where(
+                            models.work_attempts.c.work_id == row["work_id"],
+                            models.work_attempts.c.attempt_id == active_id,
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if attempt_row is None:
+                    raise ValueError("CANCELLATION_WORK_STATE_NOT_CURRENT")
+                attempt = WorkAttempt.model_validate_json(attempt_row["payload"])
+                if (
+                    attempt_row["status"] != "RUNNING"
+                    or attempt.status != "RUNNING"
+                    or str(attempt.meta.analysis_id) != analysis_id
+                    or str(attempt.work_id) != row["work_id"]
+                    or str(attempt.attempt_id) != active_id
+                    or attempt.input_hash != work.input_hash
+                ):
+                    raise ValueError("CANCELLATION_WORK_STATE_NOT_CURRENT")
+            elif (
+                row["worker_id"] is not None
+                or row["lease_expires_at"] is not None
+                or connection.execute(
+                    select(models.work_attempts.c.attempt_id).where(
+                        models.work_attempts.c.work_id == row["work_id"],
+                        models.work_attempts.c.status == "RUNNING",
+                    )
+                ).first()
+            ):
+                raise ValueError("CANCELLATION_WORK_STATE_NOT_CURRENT")
+            inventory[row["work_id"]] = (work, attempt)
+        return inventory
+
+    @staticmethod
+    def _target_kind(action_type: ActionType) -> CancellationTargetKind | None:
+        if action_type in _PROVIDER_ACTIONS:
+            return "PROVIDER"
+        if action_type in _STATIC_ACTIONS:
+            return "STATIC"
+        if action_type == ActionType.RUN_SANDBOX:
+            return "SANDBOX"
+        return None
+
+    @staticmethod
+    def _exact(connection: Connection, ref: RecordRef) -> Record:
+        if ref.record_id is None:
+            raise ValueError("CANCELLATION_TARGET_EXACT_REF_REQUIRED")
+        row = (
+            connection.execute(
+                select(models.records)
+                .join(models.record_revisions)
+                .where(models.records.c.record_id == str(ref.record_id))
+            )
+            .mappings()
+            .one()
+        )
+        if REF_ADAPTER.validate_json(row["ref"]) != ref:
+            raise ValueError("RECORD_REVISION_MISMATCH: exact cancellation target")
+        record = decode(row["kind"], row["payload"])
+        if content_hash(record) != ref.content_hash:
+            raise ValueError("HASH_MISMATCH")
+        return record
+
+
+__all__ = ["CancellationTargetStore"]

@@ -15,6 +15,7 @@ from sastsimi.contracts.budget import (
     WorkBudgetProfile,
 )
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
+from sastsimi.contracts.capabilities import CapabilityApprovalEvidence
 from sastsimi.contracts.dynamic import SandboxProfile
 from sastsimi.contracts.ids import (
     ActionId,
@@ -88,6 +89,7 @@ class FakeEvidence(UnprovenEvidence):
         self.llm_approvals: set[str] = set()
         self.sandbox_approvals: set[str] = set()
         self.static_tool_approvals: set[str] = set()
+        self.capability_approvals: set[str] = set()
         self.identities: dict[BudgetScopeRef, RequesterRole] = {}
         self._role_identities: dict[RequesterRole, BudgetScopeRef] = {}
         self._output_approvals: dict[ActionId, _OutputApproval] = {}
@@ -183,6 +185,11 @@ class FakeEvidence(UnprovenEvidence):
 
     def static_tool_configuration_approved(self, profile: StaticToolProfile) -> bool:
         return content_hash(profile) in self.static_tool_approvals
+
+    def capability_approval_authorized(
+        self, evidence: CapabilityApprovalEvidence
+    ) -> bool:
+        return content_hash(evidence) in self.capability_approvals
 
     def action_evidence(
         self, action: ActionRequest, check: CheckType

@@ -155,6 +155,25 @@ def _expected_rule_scope_evidence(
     return tuple(dict.fromkeys(values))
 
 
+def expected_rule_scope_evidence(
+    *,
+    verification: VerificationResult,
+    label: CWELabel,
+    state: RunPolicyState,
+    policy: ProgramPolicyRecord | None,
+    source_refs: tuple[StoredDataRef, ...],
+) -> tuple[StoredDataRef, ...]:
+    """Public composition seam for the canonical Rule Scope input closure."""
+
+    return _expected_rule_scope_evidence(
+        verification=verification,
+        label=label,
+        state=state,
+        policy=policy,
+        source_refs=source_refs,
+    )
+
+
 class AgentPort(Protocol):
     async def review(self, **kwargs: object) -> RuleScopeAgentOutcome: ...
 
@@ -624,4 +643,5 @@ __all__ = [
     "RuleScopeGateInputs",
     "RuleScopeGateOutcome",
     "RuleScopeGateService",
+    "expected_rule_scope_evidence",
 ]

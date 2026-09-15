@@ -33,6 +33,7 @@ from sastsimi.contracts.policy import PolicySourceCheck
 from sastsimi.contracts.records import RecordMetadata
 from sastsimi.contracts.refs import (
     BudgetScopeRef,
+    HostConfigurationRef,
     RecordRef,
     RunStoredDataRef,
     StoredDataRef,
@@ -79,7 +80,7 @@ class StaticOutputQuotaBinding:
     root: Path
     action_id: str
     attempt_id: str
-    profile_ref: StoredDataRef
+    profile_ref: StoredDataRef | HostConfigurationRef
     effective_limit_bytes: int
     hard_enforced: bool
     limit_breached: bool
@@ -236,7 +237,7 @@ class StaticCapabilityObservation:
 
 @dataclass(frozen=True)
 class ToolCapabilityResult:
-    ref: StoredDataRef
+    ref: StoredDataRef | HostConfigurationRef
     available: bool
     tool_name: str
     tool_kind: Literal["STRUCTURE", "RULE_BASED"]
@@ -428,9 +429,11 @@ class WorkspaceStorageUsage:
 class StaticToolRequest:
     action: ActionRequest
     workspace: CodeWorkspace
-    tool_profile_ref: StoredDataRef
+    tool_profile_ref: StoredDataRef | HostConfigurationRef
     analysis_config_ref: StoredDataRef
     rule_catalog_ref: StoredDataRef | None
+    repository_profile_ref: StoredDataRef | None = None
+    execution_selection_ref: StoredDataRef | None = None
 
 
 @dataclass(frozen=True)

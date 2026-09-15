@@ -13,6 +13,7 @@ RULES: dict[str, frozenset[str]] = {
     "contracts": frozenset(),
     "ports": frozenset({"contracts"}),
     "config": frozenset({"contracts"}),
+    "security": frozenset(),
     "prompts": frozenset({"contracts", "ports", "config"}),
     "agents": frozenset({"contracts", "ports", "prompts"}),
     "runtime": frozenset({"contracts", "ports", "config"}),
@@ -24,16 +25,19 @@ RULES: dict[str, frozenset[str]] = {
     "policy": frozenset({"contracts", "ports", "runtime", "agents", "config"}),
     "evaluation": frozenset({"contracts", "ports", "runtime", "agents", "config"}),
     "providers": frozenset({"contracts", "ports", "config"}),
-    "static_analysis": frozenset({"contracts", "ports", "config"}),
+    "static_analysis": frozenset({"contracts", "ports", "config", "security"}),
     "sandbox": frozenset({"contracts", "ports", "config"}),
     "storage": frozenset({"contracts", "ports", "config"}),
     "interfaces": frozenset({"bootstrap", "orchestration", "runtime", "evaluation"}),
     "logging": frozenset(),
-    "bootstrap": frozenset(
+    "bootstrap": frozenset({"composition"}),
+    # Concrete creation/injection only; applications never import this root.
+    "composition": frozenset(
         {
             "contracts",
             "ports",
             "config",
+            "security",
             "prompts",
             "agents",
             "runtime",
@@ -49,6 +53,19 @@ RULES: dict[str, frozenset[str]] = {
             "sandbox",
             "storage",
             "logging",
+            "capabilities",
+        }
+    ),
+    "capabilities": frozenset(
+        {
+            "bootstrap",
+            "config",
+            "contracts",
+            "ports",
+            "runtime",
+            "sandbox",
+            "static_analysis",
+            "storage",
         }
     ),
 }
@@ -57,6 +74,23 @@ RULES: dict[str, frozenset[str]] = {
 # concrete persistence adapters. Keep these exceptions module-exact so the
 # package-wide dependency policy is not weakened for unrelated code.
 EXACT_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
+    # This operator-only adapter invokes the narrow capability application
+    # facade and uses its public DTOs. It does not import capability internals,
+    # storage, the runtime, or executable adapters directly.
+    "sastsimi.interfaces.cli.capability": frozenset(
+        {
+            "sastsimi.capabilities",
+            "sastsimi.capabilities.CapabilityProbeReceipt",
+            "sastsimi.capabilities.ProductionCapabilityProbeService",
+            "sastsimi.capabilities.build_production_capability_probe_service",
+            "sastsimi.capabilities.models",
+            "sastsimi.capabilities.models.ProbeKind",
+            "sastsimi.config.secrets",
+            "sastsimi.config.secrets.SecretReference",
+            "sastsimi.contracts.refs",
+            "sastsimi.contracts.refs.HostConfigurationRef",
+        }
+    ),
     "sastsimi.orchestration.static_external_runner": frozenset(
         {"sastsimi.static_analysis.coordinator"}
     ),
@@ -69,6 +103,10 @@ EXACT_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
     "sastsimi.storage.context_binding": frozenset(
         {"sastsimi.static_analysis.context_retrieval"}
     ),
+    # This concrete adapter uses the pure Reporter artifact validator only.
+    "sastsimi.storage.report_export": frozenset(
+        {"sastsimi.reporting.content_validation"}
+    ),
     "sastsimi.verification.context_service": frozenset(
         {
             "sastsimi.static_analysis.context_retrieval",
@@ -78,6 +116,105 @@ EXACT_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
             "sastsimi.storage.models",
             "sastsimi.storage.recovery_service",
             "sastsimi.storage.repositories",
+        }
+    ),
+}
+
+# Symbol-exact DTO, port, and pure helper edges. Unlike module exceptions,
+# allowing one value does not permit importing another concrete service there.
+SYMBOL_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
+    "sastsimi.capabilities.composition": frozenset(
+        {
+            "sastsimi.composition.runtime.build_runtime",
+        }
+    ),
+    "sastsimi.interfaces.cli.analyze": frozenset(
+        {
+            "sastsimi.contracts.evaluation.AnalysisRunResult",
+            "sastsimi.ports.production_analysis.ProductionAnalyzeUnavailable",
+            "sastsimi.ports.scheduler.AnalysisStatusView",
+            "sastsimi.ports.scheduler.RunOutcome",
+        }
+    ),
+    "sastsimi.interfaces.cli.cancel": frozenset(
+        {
+            "sastsimi.ports.scheduler.AnalysisApplicationPort",
+            "sastsimi.ports.scheduler.AnalysisStatusView",
+        }
+    ),
+    "sastsimi.interfaces.cli.resume": frozenset(
+        {
+            "sastsimi.ports.scheduler.AnalysisApplicationPort",
+        }
+    ),
+    "sastsimi.interfaces.cli.status": frozenset(
+        {
+            "sastsimi.ports.scheduler.AnalysisStatusView",
+        }
+    ),
+    "sastsimi.interfaces.cli.run": frozenset(
+        {
+            "sastsimi.contracts.analysis.AnalysisStartRequest",
+            "sastsimi.ports.scheduler.AnalysisApplicationPort",
+            "sastsimi.ports.scheduler.RunOutcome",
+        }
+    ),
+    "sastsimi.interfaces.cli.result": frozenset(
+        {
+            "sastsimi.contracts.evaluation.AnalysisRunResult",
+        }
+    ),
+    "sastsimi.interfaces.cli.main": frozenset(
+        {
+            "sastsimi.config.production_profile.load_production_profile",
+        }
+    ),
+    "sastsimi.interfaces.cli.onboarding": frozenset(
+        {
+            "sastsimi.config.production_profile.ProductionProfile",
+            "sastsimi.prompts.production.REQUIRED_PRODUCTION_PROMPT_ROUTES",
+        }
+    ),
+    "sastsimi.orchestration.production_capabilities": frozenset(
+        {
+            "sastsimi.config.production_profile.ProductionProfile",
+        }
+    ),
+    "sastsimi.orchestration.production_context": frozenset(
+        {
+            "sastsimi.config.production_profile.ProductionProfile",
+        }
+    ),
+    "sastsimi.orchestration.production_descriptor": frozenset(
+        {
+            "sastsimi.config.production_profile.ProductionProfile",
+        }
+    ),
+    "sastsimi.orchestration.production_entrypoint": frozenset(
+        {
+            "sastsimi.config.production_profile.ProductionProfile",
+        }
+    ),
+    "sastsimi.orchestration.production_onboarding": frozenset(
+        {
+            "sastsimi.config.production_profile.ProductionProfile",
+            "sastsimi.prompts.production.REQUIRED_PRODUCTION_PROMPT_ROUTES",
+        }
+    ),
+    "sastsimi.orchestration.production_operator_profiles": frozenset(
+        {
+            "sastsimi.config.production_profile.ProductionBudgetSettings",
+        }
+    ),
+    "sastsimi.orchestration.production_stage_handoff": frozenset(
+        {
+            "sastsimi.reporting.rule_scope_gate_workflow.expected_rule_scope_evidence",
+        }
+    ),
+    "sastsimi.orchestration.static_work_handlers": frozenset(
+        {
+            "sastsimi.static_analysis.repository_profile.static_tool_work_inputs",
+            "sastsimi.storage.context_policy.resolve_context_ceiling",
         }
     ),
 }
@@ -365,6 +502,14 @@ def violations(source: str, module: str) -> list[str]:
     errors: list[str] = []
     allowed = RULES[owner] | {owner}
     exact_allowed = EXACT_IMPORT_EXCEPTIONS.get(module, frozenset())
+    symbols = SYMBOL_IMPORT_EXCEPTIONS.get(module, frozenset())
+    symbol_bases = {symbol.rsplit(".", 1)[0] for symbol in symbols}
+    direct_imports = {
+        alias.name
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
     policy_adapter = module.startswith("sastsimi.policy.adapters.")
     if policy_adapter:
         allowed = frozenset({"contracts", "ports", "config"})
@@ -378,6 +523,8 @@ def violations(source: str, module: str) -> list[str]:
             dependency = target.split(".")[1]
             if dependency not in RULES or (
                 dependency not in allowed
+                and target not in symbols
+                and not (target in symbol_bases and target not in direct_imports)
                 and not same_policy_adapter_package
                 and not any(
                     target == exception
@@ -409,6 +556,50 @@ def test_allowed_import_fixture() -> None:
             "from sastsimi.ports import work_handler", "sastsimi.verification.service"
         )
         == []
+    )
+
+
+@pytest.mark.parametrize(
+    "owner", ["orchestration", "runtime", "verification", "providers", "storage"]
+)
+def test_domain_packages_cannot_enter_composition(owner: str) -> None:
+    assert violations(
+        "from sastsimi.composition.runtime import build_runtime",
+        f"sastsimi.{owner}.service",
+    )
+
+
+def test_symbol_exception_does_not_allow_a_concrete_service() -> None:
+    module = "sastsimi.orchestration.production_onboarding"
+    assert (
+        violations(
+            "from sastsimi.prompts.production import REQUIRED_PRODUCTION_PROMPT_ROUTES",
+            module,
+        )
+        == []
+    )
+    assert violations(
+        "from sastsimi.prompts.production import ProductionLLMConfigurationService",
+        module,
+    )
+    assert violations("import sastsimi.prompts.production as prompts", module)
+
+
+def test_descriptor_may_import_only_the_profile_value_model() -> None:
+    module = "sastsimi.orchestration.production_descriptor"
+    assert (
+        violations(
+            "from sastsimi.config.production_profile import ProductionProfile", module
+        )
+        == []
+    )
+    assert violations(
+        "from sastsimi.config.production_profile import load_production_profile", module
+    )
+    assert violations("import sastsimi.config.production_profile as profiles", module)
+    assert violations(
+        "from sastsimi.config.production_profile import ProductionProfile",
+        "sastsimi.orchestration.unrelated",
     )
 
 
@@ -456,16 +647,16 @@ def test_repository_imports() -> None:
     assert not errors, "\n".join(errors)
 
 
-def test_real_static_slice_is_private_and_not_selected_by_cli() -> None:
+def test_real_static_slice_is_public_composition_only_and_not_selected_by_cli() -> None:
     root = Path(__file__).resolve().parents[2] / "src" / "sastsimi"
-    bootstrap = (root / "bootstrap.py").read_text(encoding="utf-8")
+    bootstrap = (root / "composition" / "runtime.py").read_text(encoding="utf-8")
     interfaces = "\n".join(
         path.read_text(encoding="utf-8")
         for path in sorted((root / "interfaces").rglob("*.py"))
     )
 
-    assert "def _build_real_static_slice(" in bootstrap
-    assert "_build_real_static_slice" not in interfaces
+    assert "def build_real_static_slice(" in bootstrap
+    assert "build_real_static_slice" not in interfaces
     assert "StaticToolCoordinator" not in interfaces
     assert "PythonAstProcessAdapter" not in interfaces
     assert "OpenGrepProcessAdapter" not in interfaces

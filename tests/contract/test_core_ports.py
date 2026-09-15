@@ -21,6 +21,7 @@ from sastsimi.contracts.llm import (
 from sastsimi.contracts.records import RecordMeta, RecordMetadata, RunMeta
 from sastsimi.contracts.refs import (
     BudgetScopeRef,
+    HostConfigurationRef,
     RecordRef,
     RunStoredDataRef,
     StoredDataRef,
@@ -204,7 +205,9 @@ class FakePolicy:
 
 
 class FakeStatic:
-    async def probe(self, profile_ref: StoredDataRef) -> ToolCapabilityResult:
+    async def probe(
+        self, profile_ref: StoredDataRef | HostConfigurationRef
+    ) -> ToolCapabilityResult:
         return ToolCapabilityResult(
             ref=profile_ref,
             available=False,
@@ -248,6 +251,8 @@ def test_static_transport_and_lower_process_seams_are_frozen() -> None:
         "tool_profile_ref",
         "analysis_config_ref",
         "rule_catalog_ref",
+        "repository_profile_ref",
+        "execution_selection_ref",
     ]
     for transport in (
         CanonicalRepositorySource,

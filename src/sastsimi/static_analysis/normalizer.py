@@ -10,7 +10,11 @@ from types import MappingProxyType
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.ids import GapId
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef, validate_exact_ref
+from sastsimi.contracts.refs import (
+    HostConfigurationRef,
+    StoredDataRef,
+    validate_exact_ref,
+)
 from sastsimi.contracts.static import (
     CodeFact,
     CodeLocation,
@@ -50,7 +54,7 @@ class StaticRawReplayInput:
 class StaticNormalizationInput:
     result_ref: StoredDataRef
     result: ToolRunResult
-    profile_ref: StoredDataRef
+    profile_ref: StoredDataRef | HostConfigurationRef
     profile: StaticToolProfile
     analysis_config_ref: StoredDataRef
     rule_catalog_ref: StoredDataRef | None
@@ -62,7 +66,9 @@ class StaticNormalizationInput:
 
 
 def decoder_key(
-    profile_ref: StoredDataRef, tool_name: str, tool_version: str
+    profile_ref: StoredDataRef | HostConfigurationRef,
+    tool_name: str,
+    tool_version: str,
 ) -> DecoderKey:
     if profile_ref.record_id is None:
         raise ValueError("STATIC_DECODER_PROFILE_INVALID")
@@ -404,16 +410,44 @@ class StaticNormalizer:
             material.profile_ref,
             material.profile.meta,
             content_hash(material.profile),
-            analysis_id=bundle_meta.analysis_id,
+            analysis_id=(
+                None
+                if isinstance(material.profile_ref, HostConfigurationRef)
+                else bundle_meta.analysis_id
+            ),
+        )
+        production_profile = isinstance(material.profile_ref, HostConfigurationRef)
+        production_host_matches = (
+            material.profile.host_id == material.profile_ref.host_id
+            if isinstance(material.profile_ref, HostConfigurationRef)
+            else True
         )
         if (
             material.result.meta.workspace_id != bundle_meta.workspace_id
             or material.result.meta.commit_id != bundle_meta.commit_id
-            or material.profile.meta.workspace_id != bundle_meta.workspace_id
-            or material.profile.meta.commit_id != bundle_meta.commit_id
+            or (
+                not production_profile
+                and (
+                    material.profile.meta.workspace_id != bundle_meta.workspace_id
+                    or material.profile.meta.commit_id != bundle_meta.commit_id
+                )
+            )
             or material.result.meta.attempt_id is None
-            or material.profile.status != "APPROVED"
-            or material.profile.purpose not in {"FIXTURE", "EVALUATION"}
+            or (
+                production_profile
+                and (
+                    material.profile.status != "ACTIVE"
+                    or material.profile.purpose != "PRODUCTION"
+                    or not production_host_matches
+                )
+            )
+            or (
+                not production_profile
+                and (
+                    material.profile.status != "APPROVED"
+                    or material.profile.purpose not in {"FIXTURE", "EVALUATION"}
+                )
+            )
             or (
                 material.result.tool_name,
                 material.result.tool_version,
@@ -472,7 +506,9 @@ class StaticNormalizer:
     ]:
         values: dict[str, CodeSymbol] = {}
         ast_values: dict[str, CodeSymbol] = {}
-        definitions: dict[tuple[StoredDataRef, str], set[str]] = {}
+        definitions: dict[
+            tuple[StoredDataRef | HostConfigurationRef, str], set[str]
+        ] = {}
         candidates: list[
             tuple[StaticNormalizationInput, StaticToolObservation, str, str]
         ] = []
@@ -581,7 +617,7 @@ class StaticNormalizer:
         decoded: list[tuple[StaticNormalizationInput, StaticToolObservation]],
     ) -> tuple[DataGap, ...]:
         claims: dict[
-            tuple[StoredDataRef, str, str],
+            tuple[StoredDataRef | HostConfigurationRef, str, str],
             dict[bytes, CandidateLocation],
         ] = {}
         for material, observation in decoded:

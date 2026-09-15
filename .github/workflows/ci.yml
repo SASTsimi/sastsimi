@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 jobs:
-  core:
-    name: core (${{ matrix.os }})
+  quality:
+    name: quality (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -20,33 +20,71 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
           architecture: x64
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
       - name: Install frozen dependencies
         run: uv sync --frozen --all-groups
+      - name: Require every test file in exactly one shard
+        if: runner.os == 'Linux'
+        run: |
+          $shardPaths = @(
+            'tests/unit',
+            'tests/contract',
+            'tests/integration/static_analysis',
+            'tests/integration/providers',
+            'tests/integration/policy',
+            'tests/integration/capabilities',
+            'tests/capability',
+            'tests/integration/budget',
+            'tests/integration/chaining',
+            'tests/integration/reporting',
+            'tests/integration/verification',
+            'tests/integration/concurrency',
+            'tests/integration/orchestration',
+            'tests/integration/storage',
+            'tests/integration/recovery',
+            'tests/integration/sandbox',
+            'tests/integration/test_cli.py',
+            'tests/integration/cli',
+            'tests/security_negative',
+            'tests/e2e'
+          )
+          $allTests = @(
+            Get-ChildItem tests -Recurse -File -Filter 'test_*.py' |
+              ForEach-Object { $_.FullName }
+          )
+          $assignedTests = @(
+            foreach ($path in $shardPaths) {
+              if (Test-Path -LiteralPath $path -PathType Leaf) {
+                (Get-Item -LiteralPath $path).FullName
+              } elseif (Test-Path -LiteralPath $path -PathType Container) {
+                Get-ChildItem -LiteralPath $path -Recurse -File -Filter 'test_*.py' |
+                  ForEach-Object { $_.FullName }
+              }
+            }
+          )
+          $missingTests = @($allTests | Where-Object { $_ -notin $assignedTests })
+          $duplicateTests = @(
+            $assignedTests | Group-Object | Where-Object { $_.Count -ne 1 }
+          )
+          if ($missingTests.Count -ne 0 -or $duplicateTests.Count -ne 0) {
+            $missing = $missingTests -join ', '
+            $duplicates = @($duplicateTests | ForEach-Object { $_.Name }) -join ', '
+            throw "Test shard coverage mismatch. Missing: [$missing]. Duplicates: [$duplicates]."
+          }
       - name: Format
         run: uv run ruff format --check .
       - name: Lint
         run: uv run ruff check .
       - name: Strict types
         run: uv run mypy --strict src tests
-      - name: Require real Docker dynamic reproduction E2E
-        if: runner.os == 'Linux'
-        env:
-          SASTSIMI_REQUIRE_DOCKER_E2E: '1'
-        run: |
-          docker version
-          docker pull python:3.12-slim
-          uv run python -m pytest tests/e2e/test_dynamic_reproduction.py -q
-      - name: All existing suites
-        timeout-minutes: 90
-        run: uv run pytest tests -v --tb=short
       - name: Architecture validator (Windows PowerShell)
         if: runner.os == 'Windows'
         shell: powershell
@@ -95,3 +133,153 @@ jobs:
           }
           git diff --check "$rangeBase..$rangeHead"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  tests:
+    name: tests (${{ matrix.os }}, ${{ matrix.shard.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+        shard:
+          - name: unit
+            paths: tests/unit
+            optional_paths: ''
+          - name: contract
+            paths: tests/contract
+            optional_paths: ''
+          - name: integration-analysis
+            paths: tests/integration/static_analysis tests/integration/providers tests/integration/policy tests/integration/capabilities
+            optional_paths: tests/capability
+          - name: integration-workflow
+            paths: tests/integration/budget tests/integration/chaining tests/integration/reporting tests/integration/verification
+            optional_paths: tests/integration/concurrency tests/integration/orchestration
+          - name: integration-state
+            paths: tests/integration/storage tests/integration/recovery
+            optional_paths: ''
+          - name: integration-sandbox
+            paths: tests/integration/sandbox tests/integration/test_cli.py
+            optional_paths: tests/integration/cli
+          - name: security-negative
+            paths: tests/security_negative
+            optional_paths: ''
+          - name: e2e
+            paths: tests/e2e
+            optional_paths: ''
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+      - name: Install frozen dependencies
+        run: uv sync --frozen --all-groups
+      - name: Run non-overlapping test shard
+        env:
+          SHARD_NAME: ${{ matrix.shard.name }}
+          TEST_PATHS: ${{ matrix.shard.paths }}
+          OPTIONAL_TEST_PATHS: ${{ matrix.shard.optional_paths }}
+          TEST_OS: ${{ runner.os }}
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          $pytestArguments = @($env:TEST_PATHS -split '\s+' | Where-Object { $_ })
+          $optionalPaths = @($env:OPTIONAL_TEST_PATHS -split '\s+' | Where-Object { $_ })
+          foreach ($path in $optionalPaths) {
+            if (Test-Path -LiteralPath $path) {
+              $pytestArguments += $path
+            }
+          }
+          if ($env:TEST_OS -eq 'Linux' -and $env:SHARD_NAME -eq 'e2e') {
+            $pytestArguments += '--ignore=tests/e2e/test_dynamic_reproduction.py'
+          }
+          $pytestArguments += @('-q', '-n', '4')
+          uv run pytest @pytestArguments
+
+  real-docker-e2e:
+    name: real Docker dynamic reproduction E2E (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+      - name: Install frozen dependencies
+        run: uv sync --frozen --all-groups
+      - name: Require real Docker dynamic reproduction E2E
+        env:
+          SASTSIMI_REQUIRE_DOCKER_E2E: '1'
+        run: |
+          docker version
+          docker pull python:3.12-slim
+          uv run python -m pytest tests/e2e/test_dynamic_reproduction.py -q
+
+  installed-wheel-smoke:
+    name: installed wheel smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+      - name: Build, install, and exercise wheel outside the source tree
+        run: |
+          $workRoot = Join-Path $env:RUNNER_TEMP 'sastsimi-wheel-smoke'
+          & ./scripts/wheel-smoke.ps1 -WorkRoot $workRoot
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  core:
+    name: core (${{ matrix.os }})
+    if: always()
+    needs: [quality, tests, real-docker-e2e, installed-wheel-smoke]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Require every quality, test, and Docker job
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          TEST_RESULT: ${{ needs.tests.result }}
+          DOCKER_RESULT: ${{ needs.real-docker-e2e.result }}
+          WHEEL_SMOKE_RESULT: ${{ needs.installed-wheel-smoke.result }}
+        run: |
+          $results = @(
+            $env:QUALITY_RESULT,
+            $env:TEST_RESULT,
+            $env:DOCKER_RESULT,
+            $env:WHEEL_SMOKE_RESULT
+          )
+          if ($results -contains 'failure' -or $results -contains 'cancelled') {
+            throw "At least one required CI job failed or was cancelled: $results"
+          }
+          if ($results | Where-Object { $_ -ne 'success' }) {
+            throw "At least one required CI job did not succeed: $results"
+          }

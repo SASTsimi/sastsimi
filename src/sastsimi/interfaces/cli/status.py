@@ -1,0 +1,40 @@
+"""Read-only production analysis status leaf."""
+
+from typing import Protocol
+
+from sastsimi.ports.scheduler import AnalysisStatusView
+
+
+class StatusApplicationPort(Protocol):
+    def status(self, analysis_id: str) -> AnalysisStatusView: ...
+
+
+def run(application: StatusApplicationPort, analysis_id: str) -> dict[str, object]:
+    return project(application.status(analysis_id))
+
+
+def project(view: AnalysisStatusView) -> dict[str, object]:
+    return {
+        "analysis_id": view.analysis_id,
+        "status": view.run_status,
+        "work_counts": dict(view.work_counts),
+        "cancel_requested": view.cancel_requested,
+        "waiting_for": list(view.waiting_for),
+        "failures": [
+            {
+                "work_id": item.work_id,
+                "work_type": item.work_type,
+                "status": item.status,
+                "stop_reason": item.stop_reason,
+                "error_ids": list(item.error_ids),
+                "waiting_for": list(item.waiting_for),
+            }
+            for item in view.failures
+        ],
+        "result_record_id": str(view.result_ref.record_id)
+        if view.result_ref is not None
+        else None,
+    }
+
+
+__all__ = ["project", "run"]

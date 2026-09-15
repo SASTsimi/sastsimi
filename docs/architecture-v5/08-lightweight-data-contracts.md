@@ -24,6 +24,80 @@ AnalysisStartRequest:
   purpose: PRODUCTION | EVALUATION
 ```
 
+```yaml
+AnalysisRunInput:
+  meta: RunMeta
+  repository_ref: string
+  requested_git_ref: string
+  program_id: string
+  purpose: PRODUCTION | EVALUATION
+  workspace_id: string | null
+  commit_id: string | null
+  production_profile_ref: RunStoredDataRef | null
+  production_onboarding_ref: RunStoredDataRef | null
+  production_authority_catalog_ref: RunStoredDataRef | null
+```
+
+`AnalysisRunInput`의 `workspace_id`, `commit_id`, `production_profile_ref`,
+`production_onboarding_ref`, `production_authority_catalog_ref` 다섯 필드만
+레거시 record 읽기 호환을 위해 생략 가능하며 기본값은 `null`이다.
+새 `PRODUCTION` 실행은 다섯 필드 모두 non-null로 고정해야 한다.
+`workspace_id`는 미리 할당한 작업공간 ID, `commit_id`는 요청한 exact commit이며
+checkout 완료의 증거는 아니다. 두 reference는 같은 `analysis_id`에 고정한
+credential-free canonical ProductionProfile과 승인된 onboarding manifest의 exact
+run artifact를 가리킨다. provisioning manifest와 evidence는 승인 manifest의 exact
+hash로 연결한다. 레거시 입력에 descriptor가 없으면 재시작 검사를 fail-closed로
+차단하며 현재 설정이나 새 identity로 보충하지 않는다.
+
+레거시 exact bytes와 hash를 보존하기 위해 위 다섯 필드의 `null` 값만
+`AnalysisRunInput` canonical JSON에서 생략한다. non-null 값은 반드시 직렬화하고
+hash에 포함한다. 이 예외는 다른 record나 다른 nullable 필드에 적용하지 않으며,
+그 밖의 result 필드는 `null`을 허용하더라도 필드 자체가 필수라는 규칙을 유지한다.
+
+```yaml
+ProductionAuthorityCatalog:
+  schema_version: "1"
+  artifact_scope: ANALYSIS_OPERATOR_AUTHORITY
+  analysis_id: string
+  workspace_id: string
+  commit_id: string
+  program_id: string
+  purpose: PRODUCTION
+  production_profile_ref: RunStoredDataRef
+  production_onboarding_ref: RunStoredDataRef
+  execution_budget_profile_ref: RunStoredDataRef
+  work_budget_profile_ref: StoredDataRef
+  verification_budget_profile_ref: StoredDataRef
+  dynamic_lifecycle_profile_ref: StoredDataRef
+  role_identities: [ProductionRoleIdentity]
+
+ProductionRoleIdentity:
+  role: RequesterRole
+  identity_ref: RunStoredDataRef | StoredDataRef
+```
+
+이 catalog는 `RunMeta`나 record ID가 없는 immutable configuration artifact이며
+result registry에 등록하지 않는다. canonical bytes의 SHA-256이 artifact의 ID와
+hash다. 현재 `RequesterRole` 전체를 enum 순서로 정확히 한 번씩 기록하며,
+identity reference를 중복하지 않는다. REPOSITORY_LOADER는 execution profile을,
+나머지 역할은 같은 analysis·workspace·commit의 서로 다른 ACTIVE PRODUCTION
+WorkBudgetProfile을 가리킨다. 공통 work profile을 역할 identity로 재사용하지 않는다.
+role mapping은 이름·profile key·한도·action 이력에서 추론하지 않는다.
+
+artifact를 먼저 승격한 뒤, 그 ref를 입력·초기 상태·execution pin과 같은 SQLite
+초기화 transaction에서 연결한다. 연결되지 않은 artifact는 권한을 부여하지 않는다.
+state에는 catalog ref를 복제하지 않으며 immutable `analysis_input_ref`로만 접근한다.
+기존 네 descriptor 필드 입력도 exact bytes/hash를 유지하지만 catalog 없이는 검사에
+통과하지 않는다. catalog는 미래의 binding ref를 포함하지 않는다. workspace READY
+뒤 state에 고정하는 기존 full binding만 binding identity의 정본이며 그 네 constituent
+profile ref가 catalog와 일치해야 한다. binding 전 검사는 상태 변경 없이
+`PRODUCTION_AUTHORITY_BINDING_NOT_PINNED`로 종료한다.
+
+재시작 검사는 저장된 exact catalog·profile·승인·current pointer와 scope를 검증한다.
+ID·권한 객체·승인 decision·새 binding을 만들거나 credentials를 읽지 않는다.
+검사 snapshot은 실행 권한이 아니며 공개 resume은 성공한 검사 뒤에도 exit 4와
+`PRODUCTION_RESUME_DISPATCH_NOT_AVAILABLE`을 유지한다.
+
 `AnalysisStartRequest`는 내부 `program_id` 하나만 받는다. runtime은 `analysis_id`나 work를 만들기 전에 이 ID가 승인된 Program Catalog에서 정확히 하나의 사용 가능한 프로그램으로 해석되는지 확인한다. 없거나 알 수 없거나 둘 이상으로 해석되면 `INPUT_ERROR`로 요청을 거절하며 `AnalysisRunState`를 만들지 않는다. `program_namespace + external_program_id`는 Program Catalog 등록·조회 입력이며 `AnalysisStartRequest`의 대체 입력이 아니다. CLI나 UI가 외부 프로그램 키를 받더라도 먼저 catalog에서 내부 ID 하나로 해석한 뒤 이 요청을 만들어야 한다. 저장소 하나가 여러 프로그램에 연결돼 있으면 호출자가 하나를 선택하고 프로그램마다 별도 analysis run을 시작한다. runtime은 repository URL만 보고 프로그램을 임의 선택하거나 한 run에 여러 프로그램을 자동 결합하지 않는다.
 
 `CodeWorkspace`는 별도 저장소 복사본이 아니라 `Repository Loader`가 실행별로 clone하고 지정한 commit을 checkout한 로컬 분석 폴더다.
@@ -42,6 +116,46 @@ CodeWorkspace:
 `workspace_id`는 재사용하지 않는다. clone 또는 checkout이 진행 중이면 `status=PREPARING`, `commit_id=null`이다. 준비 작업이 실패하면 `status=FAILED`이며 `commit_id`는 checkout 확인 여부에 따라 값이 있거나 `null`일 수 있다. `status=READY`이면 `commit_id`가 반드시 있어야 하며, 코드 분석은 이때만 시작한다. 로컬 폴더를 정리하면 `status=REMOVED`로 바꾸되, 성공한 작업공간의 `workspace_id`와 `repository_url`·`commit_id` 연결 정보는 결과 추적을 위해 보존한다.
 
 `CodeWorkspace`는 `WORKSPACE_PREP` work가 생산하는 append-only run record다. 상태가 바뀔 때 같은 `logical_record_id`에 새 `record_id`와 증가한 `revision_number`를 만들고 과거 revision을 덮어쓰지 않는다. `AnalysisRunState.workspace_ref`가 현재 revision을 가리키며 `workspace_id`와 `commit_id`는 참조 대상 값과 같아야 한다.
+
+`RepositoryProfile`은 준비가 끝난 정확한 작업공간에서 Git이 추적하는 일반 파일만 읽어 만든 저장소 탐지 결과다.
+
+```yaml
+RepositoryProfile:
+  meta: RecordMeta without hypothesis, with attempt
+  workspace_id: string
+  commit_id: string
+  workspace_ref: RunStoredDataRef
+  action_decision_ref: StoredDataRef
+  manifest_hash: sha256
+  tracked_files: [RepositoryTrackedFile]
+  languages: [RepositoryLanguage]
+  frameworks: [RepositoryFramework]
+  config_files: [RepositoryConfigFile]
+  execution_hints: [RepositoryExecutionHint]
+  gaps: [RepositoryProfileGap]
+  errors: [RepositoryProfileError]
+  status: READY | NEEDS_CONFIRMATION
+  confirmation_reasons: [string]
+```
+
+`tracked_files`는 경로 순으로 정렬하며 경로를 중복하지 않는다. `manifest_hash`는 이 목록 전체의 canonical JSON hash다. 언어·프레임워크의 근거 경로와 설정 파일·실행 힌트의 경로는 모두 이 목록 안에 있어야 한다. `READY`이면 `confirmation_reasons=[]`이고, 확실하지 않은 언어 또는 실행 방법이 있으면 `NEEDS_CONFIRMATION`과 하나 이상의 이유를 기록한다.
+
+`RepositoryExecutionSelection`은 위 profile과 현재 host에서 `ACTIVE`인 정확한 Git·정적 분석 capability revision을 결합한 실행 선택 결과다.
+
+```yaml
+RepositoryExecutionSelection:
+  meta: RecordMeta without hypothesis, with attempt
+  repository_profile_ref: StoredDataRef
+  git_clone_profile_ref: HostConfigurationRef
+  git_checkout_profile_ref: HostConfigurationRef
+  languages: [PYTHON | JAVASCRIPT]
+  selected_tools: [RepositorySelectedTool]
+  gaps: [DataGap]
+  errors: [AnalysisError]
+  status: READY | BLOCKED | FAILED
+```
+
+`READY`는 선택한 모든 실행 경로가 정확한 `ACTIVE StaticToolProfile` revision에 연결되고, Python에는 `PYTHON_AST`, 각 언어에는 `CODEQL | OPENGREP` 중 하나 이상의 SAST 경로가 있다는 뜻이다. Python의 지원 후보는 `PYTHON_AST`, `CODEQL`, `OPENGREP`, JavaScript의 지원 후보는 `CODEQL`, `OPENGREP`이다. 이 가운데 실제 capability가 검증된 경로만 선택하며, 비활성 후보는 `DataGap(reason=MISSING)`으로 보존한다. 따라서 CodeQL처럼 안전 경계 검증이 끝나지 않은 선택 경로 하나 때문에 다른 검증 완료 도구까지 막지 않는다. 다만 Python 구조 분석 경로가 없거나 해당 언어에서 실행할 SAST가 하나도 없거나 profile 확인이 필요하면 도구를 임의 추정하지 않고 `BLOCKED`와 gap을 남긴다. 실행 자체의 복구 불가능한 registry 오류는 `FAILED`와 error로 남기며 어느 경우도 취약점 verdict로 바꾸지 않는다.
 
 분석을 시작했지만 아직 코드 작업공간이나 commit이 준비되지 않은 상태는 `RunMeta`를 사용한다.
 
@@ -170,6 +284,7 @@ AnalysisRunState:
   meta: RunMeta
   purpose: PRODUCTION | EVALUATION
   eval_config_refs: [RunStoredDataRef | StoredDataRef]
+  analysis_input_ref: RunStoredDataRef
   program_id: string
   execution_budget_profile_ref: RunStoredDataRef
   budget_binding_ref: StoredDataRef | null
@@ -251,6 +366,8 @@ ReportProcessState:
   finished_at: timestamp | null
   elapsed_ms: integer
 ```
+
+`AnalysisStartRequest`가 검증되고 `analysis_id`가 발급되면 runtime은 저장소 입력, 요청 commit, 프로그램, 실행 목적을 credential-free `AnalysisRunInput`으로 한 번 저장한다. 새 `PRODUCTION` 실행은 미리 할당한 `workspace_id`, exact `commit_id`, `production_profile_ref`, `production_onboarding_ref`, `production_authority_catalog_ref`도 이때 함께 고정한다. `AnalysisRunState.analysis_input_ref`는 이 immutable run record의 exact revision을 가리키며 같은 `analysis_id`에서 바꾸지 않는다. `WORKSPACE_PREP` 입력도 이 reference를 포함해야 하므로 프로세스를 다시 시작한 뒤에도 동일 입력만 검사하고 checkout 전 실패도 원래 요청 기준으로 집계할 수 있다. descriptor 검증 성공은 재개 실행 권한이나 checkout 완료의 증거가 아니며, 실제 dispatch는 별도의 복구·현재 상태·권한·예산 검사를 통과해야 한다.
 
 `AnalysisRunState.program_id`는 검증된 `AnalysisStartRequest.program_id`와 같고 분석 요청을 승인된 Program Catalog의 정확히 한 프로그램과 연결한다. `program_id`가 없거나 승인된 catalog에서 하나로 해석되지 않으면 분석을 시작하지 않는다. 한 분석에는 프로그램 하나만 허용하고 시작 뒤에는 바꾸지 않는다. `execution_budget_profile_ref`는 `analysis_id` 발급 직후 trusted Budget Profile Registry가 같은 purpose의 승인 원본에서 run-local로 고정한 exact `ExecutionBudgetProfile(status=ACTIVE)`을 가리킨다. 이 reference가 없으면 `WORKSPACE_PREP`도 시작하지 않는다. `budget_binding_ref`는 workspace·commit 준비 전에는 `null`이고, `CodeWorkspace.status=READY` 뒤 full `BudgetProfileBinding(status=ACTIVE)`을 확정하면 그 exact revision을 가리킨다. full binding이 고정되기 전에는 `STATIC_TOOL | POLICY_FETCH`를 포함한 후속 work를 등록하지 않는다. `AnalysisRunState`는 처음에는 `workspace_id: null`, `commit_id: null`, `workspace_ref=null`일 수 있다. Repository Loader가 첫 `CodeWorkspace` revision을 저장하면 같은 atomic transition에서 `workspace_id`와 exact `workspace_ref`를 기록하고, checkout을 확인한 `READY` revision을 저장하면 그 revision으로 `workspace_ref`를 갱신하면서 `commit_id`를 기록한다. `workspace_id`와 실제 `commit_id`는 같은 분석에서 값이 생긴 뒤 바꾸지 않는다. 이후 cleanup이 `REMOVED` revision을 만들면 `workspace_ref`만 그 revision으로 갱신하고 ID 연결은 보존한다. `COMPLETE`와 `PARTIAL`은 두 ID가 모두 필요하고, clone·checkout 전 `FAILED | CANCELLED`는 둘 중 하나 또는 모두가 `null`일 수 있다. 코드 근거 record는 두 ID가 모두 있고 exact `workspace_ref`가 가리키는 `CodeWorkspace.status=READY`일 때만 만들 수 있다.
 
@@ -641,12 +758,14 @@ Orchestration Runtime은 schema-valid proposal의 전역 등록과 Verification 
 
 `SAVE_RESULT`는 검사할 결과 후보를 action에 정확히 고정한다.
 
+- 핵심 registry 추가 항목은 `analysis_run_input -> AnalysisRunInput -> ORCHESTRATION`이다.
+
 - `result_kind`와 `candidate_result_ref`는 `SAVE_RESULT`에서 필수이고 다른 action에서는 `null`이다. `candidate_result_ref.data_kind`는 `result_kind`와 같고 `candidate_result_ref.record_id`에는 저장 runtime이 미리 발급한 결과 revision ID가 있어야 한다.
 - `PolicyCacheRef`는 `POLICY_FETCH`의 work·attempt·transition·action input/output/candidate/outcome reference에만 추가한다. 다른 work가 이를 일반 `StoredDataRef` 대신 사용하거나 cache publication을 우회해 cross-run artifact를 연결하면 `SCHEMA_INVALID | AUTHORITY_DENIED`로 거절한다.
 - `candidate_result_ref.content_hash`는 미리 발급한 ID를 포함해 canonical serialization한 결과 후보 전체의 hash다. 후보 record는 read-only staging 영역에 두며 action decision이 생긴 뒤 수정하거나 같은 `stored_data_id`·`record_id`에 다른 bytes를 넣지 않는다. candidate ref도 action `input_refs`에 정확히 한 번 포함한다. staging record는 `TransitionCommit.state=COMMITTED` 전에는 일반 결과 조회나 다음 단계에서 보이지 않는다.
 - `SCHEMA`는 result kind에 맞는 schema와 필수 필드를, `AUTHORITY`는 result kind의 등록된 생산 역할과 `requested_by`를 검사한다. `IDENTITY`·`REVISION`·`STATE`는 모든 candidate의 analysis, current `work_ref`·active attempt·input refs와 hash를 검사하고, `RecordMeta` candidate이면 workspace·commit·hypothesis·`meta.attempt_id`까지 정확히 일치하는지 검사한다.
 - LLM 출력에서 만드는 candidate는 성공한 같은 work·attempt의 `LLMInvocationResult`, `LLMInvocationLog`와 두 record가 공통으로 가리키는 schema·semantic 검증 완료 canonical JSON artifact를 `SAVE_RESULT.input_refs`에 포함해야 한다. 이 artifact는 `data_kind=artifact`, `record_id=null`이며 Agent가 반환한 내용만 보존하는 비신뢰 원본이다. T10부터 사용하는 역할별 trusted domain finalizer가 exact artifact만 읽어 `RecordMeta`, `logical_record_id`, `record_id`와 계약상 runtime 소유 ID를 새로 발급하고 domain candidate를 만든다. finalizer는 기존 역할 runtime 안의 비-LLM 권한 경계이지 새 Agent나 새 pipeline 단계가 아니다. Runtime Validator는 artifact의 내용과 candidate의 Agent 소유 필드가 일치하는지, runtime 소유 필드가 신뢰 경로에서 발급됐는지, 호출·work·attempt·role·result kind가 같은지 확인한 뒤에만 `SAVE_RESULT`를 허용한다. `parsed_output_ref`를 domain record reference로 바꾸거나 Agent 출력의 ID·`meta`를 복사하지 않는다.
-- 핵심 registry 항목은 `analysis_run_state -> AnalysisRunState -> ORCHESTRATION`, `hypothesis_process_state -> HypothesisProcessState -> ORCHESTRATION`, `verification_assignment -> VerificationAssignment -> ORCHESTRATION`, `code_workspace -> CodeWorkspace -> REPOSITORY_LOADER`, `tool_run_result -> ToolRunResult -> STATIC_ANALYSIS`, `static_fact_bundle -> StaticFactBundle -> STATIC_ANALYSIS`, `rule_execution_record -> RuleExecutionRecord -> STATIC_ANALYSIS`, `hypothesis_proposal -> HypothesisProposal -> ORCHESTRATION`, `hypothesis_duplicate_review -> HypothesisDuplicateReview -> HYPOTHESIS`, `pro_evidence_result -> EvidenceAgentResult(role=PRO) -> PRO`, `con_evidence_result -> EvidenceAgentResult(role=CON) -> CON`, `verification_result -> VerificationResult -> VERIFICATION`, `primitive_admission_decision -> PrimitiveAdmissionDecision -> PRIMITIVE_ADMISSION_RUNTIME`, `primitive -> Primitive -> PRIMITIVE_ADMISSION_RUNTIME`, `chaining_result -> ChainingResult -> CHAINING`, `dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`, `environment_requirements -> EnvironmentRequirements -> DYNAMIC_REPRODUCTION`, `reproduction_plan -> ReproductionPlan -> DYNAMIC_REPRODUCTION`, `environment_recipe -> EnvironmentRecipe -> REPRODUCTION_SETUP_AUTOMATION`, `sandbox_environment -> SandboxEnvironment -> REPRODUCTION_SETUP_AUTOMATION`, `cleanup_result -> CleanupResult -> REPRODUCTION_SETUP_AUTOMATION`, `sandbox_policy_decision -> SandboxPolicyDecision -> SANDBOX_CONTROLLER`, `sandbox_command_record -> SandboxCommandRecord -> REPRODUCTION_SESSION_MANAGER`, `poc_candidate -> PoCCandidate -> DYNAMIC_REPRODUCTION`, `dynamic_reproduction_conclusion -> DynamicReproductionConclusion -> DYNAMIC_REPRODUCTION`, `agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`, `poc_bundle -> PoCBundle -> REPRODUCTION_SESSION_MANAGER`, `dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`, `cwe_label -> CWELabel -> CWE_LABELING`, `run_policy_state -> RunPolicyState -> POLICY_COLLECTOR`, `policy_cache_record -> PolicyCacheRecord -> POLICY_COLLECTOR`, `policy_parser_result -> PolicyParserResult -> POLICY_PARSER`, `policy_collection_result -> PolicyCollectionResult -> POLICY_COLLECTOR`, `program_policy_record -> ProgramPolicyRecord -> POLICY_COLLECTOR`, `technical_evidence_review -> TechnicalEvidenceReview -> TECHNICAL_GATE`, `rule_scope_impact_review -> RuleScopeImpactReview -> RULE_SCOPE_GATE`, `finding -> Finding -> VERIFICATION`, `report_draft -> ReportDraft -> REPORTER`, `budget_reservation -> BudgetReservation -> BUDGET_RUNTIME`, `budget_ledger_entry -> BudgetLedgerEntry -> BUDGET_RUNTIME`, `evaluation_run_result -> EvaluationRunResult -> R8_EVALUATION_RUNTIME`, `evaluation_recommendation -> EvaluationRecommendation -> R8_EVALUATION_RUNTIME`, `analysis_run_result -> AnalysisRunResult -> ORCHESTRATION`이다. 앞 값은 `result_kind`·`data_kind`, 가운데 값은 검사할 schema, 뒤 값은 유일한 생산 역할이다. `ORCHESTRATION`, `BUDGET_RUNTIME`, `R8_EVALUATION_RUNTIME`은 LLM Agent가 아니라 각각 등록·집계, 예산 예약·장부, 평가 집계·제안을 담당하는 신뢰 runtime identity다. 다른 result kind도 versioned result-owner registry에 정확히 한 schema와 생산 역할을 등록해야 하며, broad requester 표만으로 저장 권한을 얻지 않는다.
+- 핵심 registry 항목은 `analysis_run_state -> AnalysisRunState -> ORCHESTRATION`, `hypothesis_process_state -> HypothesisProcessState -> ORCHESTRATION`, `verification_assignment -> VerificationAssignment -> ORCHESTRATION`, `code_workspace -> CodeWorkspace -> REPOSITORY_LOADER`, `repository_profile -> RepositoryProfile -> STATIC_ANALYSIS`, `repository_execution_selection -> RepositoryExecutionSelection -> STATIC_ANALYSIS`, `tool_run_result -> ToolRunResult -> STATIC_ANALYSIS`, `static_fact_bundle -> StaticFactBundle -> STATIC_ANALYSIS`, `rule_execution_record -> RuleExecutionRecord -> STATIC_ANALYSIS`, `hypothesis_proposal -> HypothesisProposal -> ORCHESTRATION`, `hypothesis_duplicate_review -> HypothesisDuplicateReview -> HYPOTHESIS`, `pro_evidence_result -> EvidenceAgentResult(role=PRO) -> PRO`, `con_evidence_result -> EvidenceAgentResult(role=CON) -> CON`, `verification_result -> VerificationResult -> VERIFICATION`, `primitive_admission_decision -> PrimitiveAdmissionDecision -> PRIMITIVE_ADMISSION_RUNTIME`, `primitive -> Primitive -> PRIMITIVE_ADMISSION_RUNTIME`, `chaining_result -> ChainingResult -> CHAINING`, `dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`, `environment_requirements -> EnvironmentRequirements -> DYNAMIC_REPRODUCTION`, `reproduction_plan -> ReproductionPlan -> DYNAMIC_REPRODUCTION`, `environment_recipe -> EnvironmentRecipe -> REPRODUCTION_SETUP_AUTOMATION`, `sandbox_environment -> SandboxEnvironment -> REPRODUCTION_SETUP_AUTOMATION`, `cleanup_result -> CleanupResult -> REPRODUCTION_SETUP_AUTOMATION`, `sandbox_policy_decision -> SandboxPolicyDecision -> SANDBOX_CONTROLLER`, `sandbox_command_record -> SandboxCommandRecord -> REPRODUCTION_SESSION_MANAGER`, `poc_candidate -> PoCCandidate -> DYNAMIC_REPRODUCTION`, `dynamic_reproduction_conclusion -> DynamicReproductionConclusion -> DYNAMIC_REPRODUCTION`, `agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`, `poc_bundle -> PoCBundle -> REPRODUCTION_SESSION_MANAGER`, `dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`, `cwe_label -> CWELabel -> CWE_LABELING`, `run_policy_state -> RunPolicyState -> POLICY_COLLECTOR`, `policy_cache_record -> PolicyCacheRecord -> POLICY_COLLECTOR`, `policy_parser_result -> PolicyParserResult -> POLICY_PARSER`, `policy_collection_result -> PolicyCollectionResult -> POLICY_COLLECTOR`, `program_policy_record -> ProgramPolicyRecord -> POLICY_COLLECTOR`, `technical_evidence_review -> TechnicalEvidenceReview -> TECHNICAL_GATE`, `rule_scope_impact_review -> RuleScopeImpactReview -> RULE_SCOPE_GATE`, `finding -> Finding -> VERIFICATION`, `report_draft -> ReportDraft -> REPORTER`, `budget_reservation -> BudgetReservation -> BUDGET_RUNTIME`, `budget_ledger_entry -> BudgetLedgerEntry -> BUDGET_RUNTIME`, `evaluation_run_result -> EvaluationRunResult -> R8_EVALUATION_RUNTIME`, `evaluation_recommendation -> EvaluationRecommendation -> R8_EVALUATION_RUNTIME`, `analysis_run_result -> AnalysisRunResult -> ORCHESTRATION`이다. 앞 값은 `result_kind`·`data_kind`, 가운데 값은 검사할 schema, 뒤 값은 유일한 생산 역할이다. `ORCHESTRATION`, `BUDGET_RUNTIME`, `R8_EVALUATION_RUNTIME`은 LLM Agent가 아니라 각각 등록·집계, 예산 예약·장부, 평가 집계·제안을 담당하는 신뢰 runtime identity다. 다른 result kind도 versioned result-owner registry에 정확히 한 schema와 생산 역할을 등록해야 하며, broad requester 표만으로 저장 권한을 얻지 않는다.
 - `result_kind=code_workspace`이면 REPOSITORY_LOADER만 저장할 수 있다. candidate의 `meta.analysis_id`, `workspace_id`, repository URL과 current `WORKSPACE_PREP` work·attempt가 일치해야 한다. `PREPARING`에서 `READY | FAILED`로 바꿀 때 같은 logical record의 새 revision을 만들고, `READY`에는 checkout으로 검증한 non-null `commit_id`가 필수다. 저장과 `AnalysisRunState.workspace_ref`, `workspace_id`, 존재하는 `commit_id`, `WORKSPACE_PREP` output·상태는 같은 `TransitionCommit`으로 확정한다. cleanup의 `REMOVED` revision도 같은 ID 연결을 보존하며 과거 `READY` revision을 수정하지 않는다.
 - 핵심 registry에 `proposal_process_state -> ProposalProcessState -> ORCHESTRATION`을 추가한다. 이 상태는 Agent 출력이 아니라 trusted proposal 검증·등록 runtime이 exact proposal과 같은 atomic projection으로 저장하는 비-LLM 제어 결과다.
 - `result_kind=tool_run_result`이면 STATIC_ANALYSIS만 저장할 수 있다. candidate의 `meta.analysis_id`, `meta.workspace_id`, `meta.commit_id`, `meta.attempt_id`, 도구 이름·버전이 current `STATIC_TOOL` work·attempt·tool profile과 일치해야 한다. 규칙 기반 결과의 `rule_execution_ref`와 raw artifact reference, 상태·gap·error 조합을 함께 검사하며 같은 `STATIC_TOOL` 종료 transition에서 output으로 확정한다. retry는 새 attempt와 새 record를 만들며 도구별 current 결과는 work의 COMMITTED output이 정한다.
@@ -683,7 +802,7 @@ Orchestration Runtime은 schema-valid proposal의 전역 등록과 Verification 
 - 각 `chained_hypothesis_proposals`는 COMMITTED match의 exact `source_primitive_match_id`와 부모 가설을 보존한다. `origin=CHAINING`이면 `observed_facts=[]`만 허용한다. `target_entities`·`target_locations`·`suspected_path`는 비어 있을 수 있지만, 값을 넣으면 부모 Primitive의 `result.entity_refs`와 `inputs[].entity_refs`에서 exact하게 얻을 수 있는 범위를 벗어날 수 없다. 부모 reference가 무효하거나 Verification이 사용할 entity·location 시작점을 하나도 복원할 수 없으면 가설 등록과 Verification 배정을 거절한다. proposal restrictions는 두 부모 Primitive의 `Restriction` 객체 합집합과 exact match하고, 같은 `restriction_id`의 canonical content가 다르면 저장하지 않는다. 남은 `PrimitiveDraft`마다 `description`과 같은 assumption을 정확히 하나 보존하고, 결합 지점을 겨냥한 반증 질문이 하나 이상 있는지(목록이 비어 있지 않은지만) 확인한다 — 그 질문이 실제로 결합 지점을 겨냥했는지는 Technical Evidence Gate의 의미적 충분성 검토 몫이다.
 - 다음 중 하나라도 해당하면 저장을 거절한다: 같은 `(upstream_result_ref, downstream_input_ref, matched_input_id)` 조합 중복, 조상 링크를 따라 이미 사용한 Primitive의 재사용, 일반 research·동적 재현·Gate 보완 출력, CHAINING이 아닌 proposal origin.
 - 저장 runtime은 claim한 action의 candidate bytes와 hash를 다시 확인한다. 확정된 result ref는 candidate와 `stored_data_id`·`data_kind`·`content_hash`·`record_id`가 모두 같아야 한다. 결과 ref, 종료 `StateTransition`과 `TransitionCommit`은 같은 output을 가리켜야 하며 `TransitionCommit.state=COMMITTED`가 된 뒤에만 소비할 수 있다. 후속 `ActionDecision.outcome_refs`에는 그 exact result ref와 COMMITTED commit ref를 각각 한 번 넣는다.
-- `result_kind=environment_requirements | reproduction_plan | poc_candidate | dynamic_reproduction_tool_request | dynamic_reproduction_conclusion`이면 DYNAMIC_REPRODUCTION만 저장할 수 있다. 한 LLM 호출은 이 중 한 result kind의 schema·semantic 검증 완료 canonical JSON artifact 하나만 만든다. 역할별 trusted domain finalizer가 같은 호출·work·attempt의 artifact에서 해당 domain candidate를 만들고, artifact·invocation result·log를 `SAVE_RESULT.input_refs`에 함께 고정한다. requirements는 R6 request의 모든 `environment_needs`를 빠뜨리거나 약화하지 않고, plan의 request·purpose·hypothesis·profile은 request와 exact match하며 current requirements를 가리킨다. plan에는 mode·exact command·step·payload·cleanup allowlist를 넣지 않는다. candidate의 `llm_call_id`는 current-generation exact R6 request와 현재 R7 work·attempt의 plan을 입력으로 사용한 성공한 `CREATE_POC_CANDIDATE` 호출과 같아야 한다. tool request는 current-generation exact R6 request와 같은 R7 attempt의 plan·READY 환경·현재 AgentLog를 사용한 `EXECUTE_REPRODUCTION` 호출에서만 만든다. conclusion의 `llm_call_id`는 current-generation exact R6 request와 같은 R7 attempt의 plan·환경·candidate·관찰을 사용한 성공한 `INTERPRET_ATTEMPT` 호출과 같아야 한다. candidate를 처음 저장할 때는 current-generation exact R6 request, 현재 R7 work·attempt의 plan, 성공 호출과 source artifact content digest를 검사하며 아직 뒤따를 AgentLog event를 요구하지 않는다. conclusion은 `TRUE | FALSE | HOLD`를 출력하지 않는다. candidate·tool request·conclusion 존재만으로 실행이나 성공을 인정하지 않고, `DynamicReproductionResult`와 validated PoC를 저장할 때 same-attempt `AgentLog`의 작성·실행 event가 exact candidate revision·digest·tool request·관찰을 가리키는지 검사한다.
+- `result_kind=environment_requirements | reproduction_plan | poc_candidate | dynamic_reproduction_tool_request | dynamic_reproduction_conclusion`이면 DYNAMIC_REPRODUCTION만 저장할 수 있다. 한 LLM 호출은 이 중 한 result kind의 schema·semantic 검증 완료 canonical JSON artifact 하나만 만든다. 역할별 trusted domain finalizer가 같은 호출·work·attempt의 artifact에서 해당 domain candidate를 만들고, artifact·invocation result·log를 `SAVE_RESULT.input_refs`에 함께 고정한다. requirements는 R6 request의 모든 `environment_needs`를 빠뜨리거나 약화하지 않고, plan의 request·purpose·hypothesis·profile은 request와 exact match하며 current requirements를 가리킨다. plan에는 mode·exact command·step·payload·cleanup allowlist를 넣지 않는다. candidate의 `llm_call_id`는 current-generation exact R6 request, 현재 R7 work·attempt의 plan·READY environment, request의 `code_refs`가 가리키는 exact `CodeContextResponse`, 각 response의 `code_fragment_refs`가 가리키는 검증·redaction 완료 artifact를 입력으로 사용한 성공한 `CREATE_POC_CANDIDATE` 호출과 같아야 한다. tool request는 current-generation exact R6 request와 같은 R7 attempt의 plan·READY 환경·현재 AgentLog를 사용한 `EXECUTE_REPRODUCTION` 호출에서만 만든다. conclusion의 `llm_call_id`는 current-generation exact R6 request와 같은 R7 attempt의 plan·환경·candidate·관찰을 사용한 성공한 `INTERPRET_ATTEMPT` 호출과 같아야 한다. candidate를 처음 저장할 때는 current-generation exact R6 request, 현재 R7 work·attempt의 plan·environment, 성공 호출, exact code response·fragment reference와 source artifact content digest를 검사하며 아직 뒤따를 AgentLog event를 요구하지 않는다. code response는 같은 analysis·workspace·commit·hypothesis여야 하지만 앞 단계의 context 수집 attempt일 수 있고, plan·environment만 current R7 attempt와 같아야 한다. reference 불일치, attempt 혼합 또는 artifact 저장소 읽기·digest 검증 실패는 provider 호출 전에 거절하며 PoC candidate나 동적 결과를 저장하지 않는다. conclusion은 `TRUE | FALSE | HOLD`를 출력하지 않는다. candidate·tool request·conclusion 존재만으로 실행이나 성공을 인정하지 않고, `DynamicReproductionResult`와 validated PoC를 저장할 때 same-attempt `AgentLog`의 작성·실행 event가 exact candidate revision·digest·tool request·관찰을 가리키는지 검사한다.
 - `result_kind=environment_recipe | sandbox_environment | cleanup_result`이면 REPRODUCTION_SETUP_AUTOMATION만 저장할 수 있다. recipe는 저장소 선언 의존성 source, 서로 구분된 base/built digest, build/reuse 결정을 기록한다. environment는 current generation의 exact R6 request와 같은 R7 work·attempt의 plan·recipe·requirements, container instance·생성/재사용 사유를 가리킨다. cleanup은 실제 생성 자원과 환경을 빠짐없이 가리킨다. 다른 가설의 writable container 공유와 근거 없는 reuse는 거절한다.
 - `result_kind=agent_log | poc_bundle | dynamic_reproduction_result`이면 REPRODUCTION_SESSION_MANAGER만 저장할 수 있다. `AgentLog` revision은 event를 삭제·수정·재정렬하지 않고 append만 허용하며 전역 고유 `event_id`, attempt별 증가 `sequence`, start/end의 동일 `action_id`를 검사한다. `DynamicReproductionResult`의 input에는 exact request, RUN_SANDBOX decision, 존재하는 plan·recipe·정책·환경·candidate·PoC·cleanup과 필수 `AgentLog`를 넣는다. `agent_invoked`는 log의 `AGENT_STARTED` 존재와 같아야 한다. plan issue는 결과 안에만 저장하며 `OPEN` issue가 있으면 `SUPPORTED`와 validated PoC를 금지한다. `poc_ref`는 `SUCCEEDED + SUPPORTED`이고 same-attempt log가 exact candidate revision·digest를 실제 실행했으며 `PoCBundle`의 request·plan·recipe·environment·log·candidate·action이 모두 exact match할 때만 허용한다. 나머지 상태와 `DISPROVED | INCONCLUSIVE`에서는 `poc_ref=null`이다.
 - check 뒤 candidate bytes·hash, active attempt, work input 또는 state version이 달라지면 decision을 `EXPIRED`로 만들거나 save를 `DENY`하고 `STALE_RESULT | RECORD_REVISION_MISMATCH | STATE_VERSION_CONFLICT` 중 실제 원인을 기록한다. 변한 후보를 저장하거나 이미 `USED`인 action으로 다시 저장하지 않는다.
@@ -1602,6 +1721,15 @@ BudgetRemaining:
   available_units: BudgetUnits
   active_reservation_count: integer
 
+EnvironmentRecipeSourceManifest:
+  repository_profile_ref: StoredDataRef
+  dockerfile_ref: StoredDataRef
+  build_context_ref: StoredDataRef
+  dockerfile_path: string
+  dockerfile_origin: REPOSITORY | GENERATED
+  dockerfile_digest: string
+  context_digest: string
+
 EnvironmentRecipe:
   meta: RecordMeta
   request_ref: StoredDataRef
@@ -1612,6 +1740,7 @@ EnvironmentRecipe:
   built_image_digest: string
   baseline_recipe_ref: StoredDataRef | null
   build_disposition: BUILT | REUSED
+  source_manifest: EnvironmentRecipeSourceManifest | null
   created_at: timestamp
 
 EnvironmentCheck:
@@ -1815,7 +1944,7 @@ Budget Runtime은 새 실행 전에 남은 COMMITTED ledger와 active reservatio
 
 `status`는 재현 작업이 어디까지 진행됐는지, `hypothesis_outcome`은 실제 동적 관측이 가설과 어떤 관계인지 나타낸다. R7의 outcome은 동적 실행 결과에 대한 판단이며 최종 `TRUE | FALSE | HOLD`가 아니다. 최종 취약점 판정은 R6 Verification이 정적·Pro·Con·동적 근거를 함께 읽고 결정한다.
 
-`PoCCandidate.llm_call_id`는 같은 analysis·hypothesis·work·attempt에서 candidate를 만든 성공한 `DYNAMIC_REPRODUCTION / CREATE_POC_CANDIDATE` 호출 ID와 같아야 한다. 그 호출의 `LLMInvocationLog.parsed_output_ref`는 candidate 내용을 담은 schema·semantic 검증 완료 canonical JSON artifact를 가리키며 `PoCCandidate` domain revision을 직접 가리키지 않는다. trusted domain finalizer가 그 exact artifact에 runtime 소유 ID와 `RecordMeta`를 붙여 candidate를 만들고 source artifact·호출 provenance와 함께 `SAVE_RESULT`한다. candidate는 log record를 역참조하지 않는다.
+`PoCCandidate.llm_call_id`는 같은 analysis·hypothesis·work·attempt에서 candidate를 만든 성공한 `DYNAMIC_REPRODUCTION / CREATE_POC_CANDIDATE` 호출 ID와 같아야 한다. 그 호출은 current request·plan·READY environment뿐 아니라 request의 exact `CodeContextResponse`와 검증된 모든 `code_fragment_refs`를 `LLMCallSpec.context_refs`에 고정한다. 실제 code artifact는 원래 exact reference와 digest를 유지하되 prompt에는 민감정보가 제거된 `redacted_body`만 투영한다. 그 호출의 `LLMInvocationLog.parsed_output_ref`는 candidate 내용을 담은 schema·semantic 검증 완료 canonical JSON artifact를 가리키며 `PoCCandidate` domain revision을 직접 가리키지 않는다. trusted domain finalizer가 그 exact artifact에 runtime 소유 ID와 `RecordMeta`를 붙여 candidate를 만들고 source artifact·호출 provenance와 함께 `SAVE_RESULT`한다. candidate는 log record를 역참조하지 않는다.
 
 `DynamicReproductionConclusion`은 Dynamic Reproduction Agent의 해석 제안이지 최종 실행 사실이나 취약점 판정이 아니다. `llm_call_id`는 같은 analysis·hypothesis·work·attempt의 성공한 `DYNAMIC_REPRODUCTION / INTERPRET_ATTEMPT` 호출 ID와 같아야 한다. 그 log의 유일한 `parsed_output_ref`는 conclusion 내용을 담은 schema·semantic 검증 완료 canonical JSON artifact이고 domain conclusion revision이 아니다. trusted domain finalizer가 exact artifact에 runtime 소유 ID와 `RecordMeta`를 붙여 conclusion candidate를 만들고 source artifact·호출 provenance와 함께 `SAVE_RESULT`한다. conclusion은 log record를 역참조하지 않는다. conclusion의 request·plan·environment·candidate·observation reference는 그 호출의 허용 입력과 같아야 하며 다른 attempt의 record를 섞지 않는다.
 
@@ -1851,11 +1980,15 @@ credential·cookie·token·password와 재사용 가능한 인증 값은 require
 
 plan의 입력 부족이나 모순은 별도 `PlanIssue` record를 만들지 않고 `DynamicReproductionResult.plan_issues`에 `PlanIssueItem`으로 반환한다. Dynamic Reproduction Agent가 attempt 안에서 해결하면 `status=RESOLVED`로 이력을 남기고 계속할 수 있다. `OPEN` 항목이 남아 재현을 신뢰할 수 없으면 `hypothesis_outcome=INCONCLUSIVE`, `poc_ref=null`이며, 외부 수정 가능 여부에 따라 결과 status는 `BLOCKED | FAILED`다.
 
-`EnvironmentRecipe`는 current `DYNAMIC_REPRO` attempt의 binding record이자 저장소와 필요한 실행 환경에서 Docker image를 다시 만들 수 있는 불변 build recipe다. `meta.hypothesis_id`와 `meta.attempt_id`는 반드시 현재 work·attempt 값이어야 하며 base·built image digest를 구분해 기록한다. `source_refs`는 Dockerfile·README·package manifest·lockfile처럼 저장소가 이미 선언한 의존성을 우선 가리킨다. 별도 Dependency Scanner나 R2 사전 package prefetch를 전제로 하지 않는다. `base_image_digest`는 시작 image, `built_image_digest`는 실제 build 또는 재사용한 완성 image를 뜻하며 서로 바꾸어 쓰지 않는다. package 누락을 실제로 확인하면 Dynamic Reproduction Agent가 recipe source를 갱신하고 Setup Automation이 새 image를 build한 뒤 현재 attempt의 새 binding record를 만든다. 과거 성공 환경은 `baseline_recipe_ref`로만 참조할 수 있다. baseline을 재사용해도 현재 attempt에는 `build_disposition=REUSED`, exact `baseline_recipe_ref`와 같은 `built_image_digest`를 가진 새 `EnvironmentRecipe` binding을 생성해 provenance를 고정한다. `PERSISTENT_BASELINE`을 writable container 재사용 모드로 정의하지 않으며 writable container는 가설 work를 넘겨 재사용하지 않는다.
+`EnvironmentRecipe`는 current `DYNAMIC_REPRO` attempt의 binding record이자 저장소와 필요한 실행 환경에서 Docker image를 다시 만들 수 있는 불변 build recipe다. `meta.hypothesis_id`와 `meta.attempt_id`는 반드시 현재 work·attempt 값이어야 하며 base·built image digest를 구분해 기록한다. production recipe의 `source_refs`는 exact `RepositoryProfile`, 검증된 Dockerfile artifact와 build-context tar artifact를 가리키고 `source_manifest`가 각 artifact의 역할·경로·digest를 명시한다. 프로세스가 재시작되어 메모리 cache가 사라져도 이 manifest와 content-addressed artifact만으로 같은 build input을 복원할 수 있어야 한다. 기존 Dockerfile을 우선 사용하고, 없을 때만 확정된 Python 또는 JavaScript package 선언을 설치하는 Dockerfile을 생성한다. `.dockerignore`를 안전하게 해석할 수 없거나 context에 제외되지 않은 credential 파일이 있으면 build하지 않는다. 별도 Dependency Scanner나 R2 사전 package prefetch를 전제로 하지 않는다. `base_image_digest`는 시작 image, `built_image_digest`는 실제 build 또는 재사용한 완성 image를 뜻하며 서로 바꾸어 쓰지 않는다. package 누락을 실제로 확인하면 Dynamic Reproduction Agent가 recipe source를 갱신하고 Setup Automation이 새 image를 build한 뒤 현재 attempt의 새 binding record를 만든다. 과거 성공 환경은 `baseline_recipe_ref`로만 참조할 수 있다. baseline을 재사용해도 현재 attempt에는 `build_disposition=REUSED`, exact `baseline_recipe_ref`와 같은 `built_image_digest`를 가진 새 `EnvironmentRecipe` binding을 생성해 provenance를 고정한다. `PERSISTENT_BASELINE`을 writable container 재사용 모드로 정의하지 않으며 writable container는 가설 work를 넘겨 재사용하지 않는다.
 
 `SandboxEnvironment`는 Reproduction Setup Automation이 해당 attempt에서 실제로 만든 또는 재사용한 환경과 요구사항 비교를 기록하는 불변 record다. R6가 생산한 exact `DynamicReproductionRequest`는 current Verification generation의 입력으로 고정하지만, 그 생산 attempt를 R7 `DYNAMIC_REPRO` 실행 attempt와 같다고 요구하지 않는다. `request_ref`는 그 exact R6 request를 가리키고, `reproduction_plan_ref`, `environment_recipe_ref`와 `requirements_ref`는 모두 현재 R7 work·attempt의 exact record를 가리킨다. `checks`는 요구사항의 모든 `requirement_id`를 정확히 한 번씩 포함한다. `MATCH | MISMATCH`에는 공개 가능한 `actual` 또는 실제 구성 artifact를 가리키는 exact `actual_ref` 중 하나 이상이 필요하다. `NOT_CHECKED | ERROR`에서는 두 필드가 모두 `null`일 수 있지만 비어 있지 않은 `difference`와 비교 시도 근거가 필요하다. 모든 check는 `evidence_refs` 또는 `check_result_ref` 중 하나 이상을 가져야 하며, `check_result_ref`는 Health Check 결과를 가리킨다. 실제 비밀값은 어느 필드에도 저장하지 않는다.
 
 필수 item은 모두 `MATCH`이고 필수 setup 오류가 없어야 `SandboxEnvironment.status=READY`다. VERSION의 실제 값이 `expected` 또는 R7 requirements에 안전하게 명시한 `alternatives` 중 하나면 `MATCH`로 기록할 수 있으며 대체 버전을 썼다면 `difference`에 그 사실을 남긴다. 대체값은 R6 request의 필수 조건을 약화하거나 Sandbox profile을 우회할 수 없다. `MISMATCH | NOT_CHECKED | ERROR`에는 비어 있지 않은 `difference`가 필요하다. 필수 item에 확인된 값 차이 또는 미확인이 있으면 환경 status는 `MISMATCH`, setup·비교 자체의 오류가 있으면 `ERROR`다. 선택 item의 차이·오류만 `limitations`에 남기고 진행할 수 있다.
+
+명시된 Docker `HEALTHCHECK`가 없어 실제 health 상태가 `null`이면 이를
+`healthy`로 추정하지 않는다. 해당 `HEALTH_CHECK`는 `NOT_CHECKED`이고, 필수
+요구사항이면 environment는 `MISMATCH`다.
 
 가설의 첫 `DYNAMIC_REPRO` attempt는 writable 상태를 공유하지 않는 clean container에서 시작하며 `container_action=CREATED`, `container_reason=INITIAL_CLEAN`, `previous_environment_ref=null`이다. 서로 다른 가설은 같은 `container_instance_id`의 writable container를 공유하지 않는다. 같은 가설·work 안에서는 attempt가 달라도 다음 실행에 영향을 줄 상태·설정 변화가 없을 때만 기존 container를 `REUSED + NO_RELEVANT_CHANGE`로 사용할 수 있다. 재사용하더라도 current attempt의 새 `SandboxEnvironment` binding record를 만들고 `previous_environment_ref`로 직전 환경을 연결한다. Dynamic Reproduction Agent가 `STATE_CHANGED | CONFIG_CHANGED | STATE_UNCERTAIN`을 이유로 재생성을 요청할 수 있고, crash·비정상 종료·사후 Health Check 실패면 runtime이 `STATE_UNCERTAIN`으로 강제한다. 각 결정은 새 `SandboxEnvironment` record와 `previous_environment_ref`로 연결하고 `SANDBOX_RECREATE_REQUESTED | SANDBOX_RECREATED` event에 요청 주체·사유·이전/새 환경을 남긴다.
 

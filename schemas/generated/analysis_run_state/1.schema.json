@@ -207,6 +207,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "analysis_input_ref": {
+      "$ref": "#/$defs/RunStoredDataRef"
+    },
     "analysis_result_ref": {
       "anyOf": [
         {
@@ -324,6 +327,7 @@
     "meta",
     "purpose",
     "eval_config_refs",
+    "analysis_input_ref",
     "program_id",
     "execution_budget_profile_ref",
     "budget_binding_ref",

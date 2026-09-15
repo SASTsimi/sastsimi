@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "sastsimi"
 version = "0.1.0"
 description = "Architecture v5 application foundation"
+readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "pydantic>=2.8,<3",
@@ -13,6 +14,7 @@ dependencies = [
   "alembic>=1.13,<2",
   "PyYAML>=6,<7",
   "platformdirs>=4,<5",
+  "openai>=2,<3",
 ]
 
 [project.scripts]
@@ -22,6 +24,7 @@ sastsimi = "sastsimi.interfaces.cli.main:main"
 dev = [
     "pytest>=8,<9",
     "pytest-asyncio>=0.24,<1",
+    "pytest-xdist>=3.6,<4",
     "ruff>=0.12,<1",
     "mypy>=1.11,<2",
     "hatchling>=1.32.0",

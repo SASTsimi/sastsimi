@@ -42,6 +42,9 @@ class RecoverableLoader:
         self.calls = 0
         self.process_receipts: tuple[ProcessReceipt, ...] = ()
 
+    def verify_git_capability(self, subject_key: str, expected_sha256: str) -> None:
+        del subject_key, expected_sha256
+
     async def prepare(self, **values: Any) -> RepositoryPreparation:
         self.calls += 1
         deadline = cast(MonotonicActionDeadline, values["deadline"])
@@ -97,6 +100,9 @@ class RecoverableLoader:
 class AcceptingRecoveryValidator:
     def __init__(self) -> None:
         self.calls = 0
+
+    def verify_git_capability(self, subject_key: str, expected_sha256: str) -> None:
+        del subject_key, expected_sha256
 
     async def validate(
         self,

@@ -22,6 +22,7 @@ from sastsimi.orchestration.primitive_handoff import (
     PrimitiveHandoffRefs,
     PrimitiveUpdateHandoff,
 )
+from sastsimi.ports.chaining import HoldPrimitiveAdmissionClosure
 from sastsimi.ports.dto import Record
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import ref, wire
@@ -106,6 +107,37 @@ class _Ready:
     ) -> WorkExecutionState:
         del scope, identity, role
         return registered
+
+    def ensure_enqueue(
+        self,
+        scope: BudgetScopeRef,
+        metadata: RecordMetadata,
+        work_type: str,
+        subject_type: str,
+        subject_id: str,
+        identity: BudgetScopeRef,
+        *,
+        stable_key: str,
+        role: str = "ORCHESTRATION",
+        generation: int = 1,
+        inputs: tuple[RecordRef, ...] = (),
+        parent: RecordRef | None = None,
+        trigger_primitive_ref: RecordRef | None = None,
+    ) -> WorkExecutionState:
+        del stable_key
+        return self.enqueue(
+            scope,
+            metadata,
+            work_type,
+            subject_type,
+            subject_id,
+            identity,
+            role=role,
+            generation=generation,
+            inputs=inputs,
+            parent=parent,
+            trigger_primitive_ref=trigger_primitive_ref,
+        )
 
 
 def _fixture(
@@ -269,6 +301,109 @@ def test_stale_primitive_index_stops_before_ready_handoff() -> None:
     with pytest.raises(ValueError, match="STALE_RESULT"):
         service.enqueue_true(
             refs=refs,
+            scope=identity,
+            metadata=metadata,
+            identity=identity,
+        )
+
+    assert ready.calls == []
+
+
+def _hold_fixture(
+    *, mismatched_index: bool = False
+) -> tuple[
+    PrimitiveUpdateHandoff,
+    HoldPrimitiveAdmissionClosure,
+    _Ready,
+    RecordMetadata,
+]:
+    primitive_draft = make("PrimitiveDraft") | {
+        "evidence_refs": [ref("code_fragment", record=False)]
+    }
+    verification = wire(
+        VerificationResult,
+        make("VerificationResult")
+        | {
+            "required_primitive_candidates": [primitive_draft],
+            "unresolved_conditions": ["A reachable authenticated session is needed."],
+        },
+    )
+    verification_ref = _exact(verification)
+    process = wire(
+        HypothesisProcessState,
+        make("HypothesisProcessState")
+        | {
+            "status": "TERMINAL",
+            "verification_assignment_ref": ref("verification_assignment"),
+            "verification_generation": 1,
+            "verification_work_ref": None,
+            "verification_result_ref": verification_ref.model_dump(mode="json"),
+            "finished_at": "2026-09-08T00:00:01Z",
+        },
+    )
+    index_verification_ref = (
+        _exact(
+            wire(
+                VerificationResult,
+                make("VerificationResult")
+                | {
+                    "meta": make("VerificationResult")["meta"]
+                    | {
+                        "record_id": "verification-result-r2",
+                        "logical_record_id": "verification-result-l2",
+                    }
+                },
+            )
+        )
+        if mismatched_index
+        else verification_ref
+    )
+    index = wire(
+        PrimitiveIndexState,
+        make("PrimitiveIndexState")
+        | {
+            "current_verification_ref": index_verification_ref.model_dump(mode="json"),
+            "primitive_refs": [],
+        },
+    )
+    closure = HoldPrimitiveAdmissionClosure(
+        verification_ref=verification_ref,
+        hypothesis_process_ref=_exact(process),
+        expected_primitive_index_ref=_exact(index),
+    )
+    ready = _Ready([])
+    service = PrimitiveUpdateHandoff(
+        records=_Records((process, verification, index)),
+        current=_Current((process, index)),
+        ready_work=ready,
+    )
+    return service, closure, ready, process.meta
+
+
+def test_non_empty_hold_enqueues_the_exact_three_ref_closure_as_ready_only() -> None:
+    service, closure, ready, metadata = _hold_fixture()
+    identity = StoredDataRef.model_validate(ref("agent_identity"))
+
+    returned = service.enqueue_hold(
+        closure=closure,
+        scope=identity,
+        metadata=metadata,
+        identity=identity,
+    )
+
+    assert returned is not None
+    assert ready.calls[0]["inputs"] == closure.input_refs()
+    assert ready.calls[0]["work_type"] == "PRIMITIVE_UPDATE"
+    assert "start" not in ready.calls[0]
+
+
+def test_hold_with_a_mismatched_expected_index_never_reaches_ready() -> None:
+    service, closure, ready, metadata = _hold_fixture(mismatched_index=True)
+    identity = StoredDataRef.model_validate(ref("agent_identity"))
+
+    with pytest.raises(ValueError, match="STALE_RESULT"):
+        service.enqueue_hold(
+            closure=closure,
             scope=identity,
             metadata=metadata,
             identity=identity,

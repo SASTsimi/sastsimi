@@ -47,6 +47,31 @@ def test_repository_source_canonicalizes_one_secret_free_https_identity() -> Non
     assert source.repository_path == "/team/repo%2Egit"
 
 
+def test_explicit_local_repository_path_resolves_to_one_file_uri(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+
+    source = canonicalize_repository_source(str(repository), allow_local_file=True)
+
+    assert source.url == repository.resolve(strict=True).as_uri()
+    assert source.host == "localhost"
+    assert Path(source.repository_path).resolve(strict=True) == repository.resolve(
+        strict=True
+    )
+
+
+def test_local_repository_path_is_rejected_without_explicit_opt_in(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+
+    with pytest.raises(ValueError, match="REPOSITORY_SOURCE_INVALID"):
+        canonicalize_repository_source(str(repository))
+
+
 def test_clone_destination_must_be_private_empty_child(tmp_path: Path) -> None:
     """Relaxing root checks must not allow caller-controlled or linked destinations."""
     storage_root = tmp_path / "leases"

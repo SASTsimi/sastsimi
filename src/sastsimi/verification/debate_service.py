@@ -31,6 +31,7 @@ from sastsimi.contracts.work import (
     WorkType,
     validate_parent_work,
 )
+from sastsimi.ports.authorized_llm_call import AuthorizedLLMCall as AuthorizedLLMCall
 from sastsimi.ports.fake_workflow import ProviderInvoker, ProviderProber
 from sastsimi.ports.llm_invocation import (
     InvocationMetadataFactory,
@@ -59,16 +60,6 @@ class FakeDebateResult:
 
 
 @dataclass(frozen=True)
-class AuthorizedLLMCall:
-    """One already-authorized call bound to a running evidence child work."""
-
-    work: WorkExecutionState
-    decision_ref: StoredDataRef
-    reservation_ref: RecordRef
-    call_spec_ref: StoredDataRef
-
-
-@dataclass(frozen=True)
 class DebateResult:
     pro: ProEvidenceResult
     con: ConEvidenceResult
@@ -76,6 +67,18 @@ class DebateResult:
     con_ref: StoredDataRef
     pro_session_ref: str
     con_session_ref: str
+    pro_invocation: PersistedLLMInvocation
+    con_invocation: PersistedLLMInvocation
+
+
+@dataclass(frozen=True)
+class EvidenceBranchResult:
+    """One independently committed branch; the parent is joined elsewhere."""
+
+    record: ProEvidenceResult | ConEvidenceResult
+    output_ref: StoredDataRef
+    session_ref: str
+    invocation: PersistedLLMInvocation
 
 
 class LLMInvoker(Protocol):
@@ -112,10 +115,15 @@ class DebateIncompleteError(ValueError):
         self,
         failure_count: int,
         completed_refs: tuple[StoredDataRef, ...],
+        *,
+        pro_invocation: PersistedLLMInvocation | None = None,
+        con_invocation: PersistedLLMInvocation | None = None,
     ) -> None:
         super().__init__("EVIDENCE_DEBATE_INCOMPLETE")
         self.failure_count = failure_count
         self.completed_refs = completed_refs
+        self.pro_invocation = pro_invocation
+        self.con_invocation = con_invocation
 
 
 def run_fake_debate(
@@ -365,7 +373,7 @@ class DebateService:
         pro_call: AuthorizedLLMCall,
         con_call: AuthorizedLLMCall,
     ) -> DebateResult:
-        public_inputs = _normalized_inputs(public_input_refs)
+        public_inputs = tuple(public_input_refs)
         if (
             not isinstance(verification_work.meta, RecordMeta)
             or verification_work.meta.hypothesis_id is None
@@ -373,6 +381,7 @@ class DebateService:
             or verification_work.status != WorkStatus.RUNNING
             or verification_work.active_attempt_id is None
             or verification_work.input_hash != content_hash(public_inputs)
+            or len(public_inputs) != len(set(public_inputs))
         ):
             raise ValueError("EVIDENCE_PARENT_WORK_SCOPE_MISMATCH")
         if not public_inputs or any(
@@ -444,15 +453,32 @@ class DebateService:
 
         completed_refs: list[StoredDataRef] = []
         if failures:
+            publish_failures = 0
             for call, output, invocation in zip(
                 (pro_call, con_call), outputs, invocations, strict=True
             ):
                 if output is not None:
                     assert isinstance(invocation, PersistedLLMInvocation)
-                    completed_refs.append(
-                        self._publish_exact(call.work, output, invocation)
-                    )
-            raise DebateIncompleteError(len(failures), tuple(completed_refs))
+                    try:
+                        completed_refs.append(
+                            self._publish_exact(call.work, output, invocation)
+                        )
+                    except Exception:
+                        publish_failures += 1
+            raise DebateIncompleteError(
+                len(failures) + publish_failures,
+                tuple(completed_refs),
+                pro_invocation=(
+                    invocations[0]
+                    if isinstance(invocations[0], PersistedLLMInvocation)
+                    else None
+                ),
+                con_invocation=(
+                    invocations[1]
+                    if isinstance(invocations[1], PersistedLLMInvocation)
+                    else None
+                ),
+            )
 
         pro = outputs[0]
         con = outputs[1]
@@ -465,16 +491,26 @@ class DebateService:
         pro_session = pro_invocation.result.session_ref
         con_session = con_invocation.result.session_ref
         assert pro_session is not None and con_session is not None
-        validate_evidence_sessions(
-            pro,
-            con,
-            pro_session_id=pro_session,
-            con_session_id=con_session,
-            pro_mode=SessionMode(pro_invocation.request.session_policy),
-            con_mode=SessionMode(con_invocation.request.session_policy),
-        )
-        pro_ref = self._publish_exact(pro_call.work, pro, pro_invocation)
-        con_ref = self._publish_exact(con_call.work, con, con_invocation)
+        completed_refs = []
+        try:
+            validate_evidence_sessions(
+                pro,
+                con,
+                pro_session_id=pro_session,
+                con_session_id=con_session,
+                pro_mode=SessionMode(pro_invocation.request.session_policy),
+                con_mode=SessionMode(con_invocation.request.session_policy),
+            )
+            pro_ref = self._publish_exact(pro_call.work, pro, pro_invocation)
+            completed_refs.append(pro_ref)
+            con_ref = self._publish_exact(con_call.work, con, con_invocation)
+        except Exception as error:
+            raise DebateIncompleteError(
+                1,
+                tuple(completed_refs),
+                pro_invocation=pro_invocation,
+                con_invocation=con_invocation,
+            ) from error
         return DebateResult(
             pro,
             con,
@@ -482,7 +518,72 @@ class DebateService:
             con_ref,
             pro_session,
             con_session,
+            pro_invocation,
+            con_invocation,
         )
+
+    async def run_branch(
+        self,
+        *,
+        parent_work: WorkExecutionState,
+        public_input_refs: tuple[StoredDataRef, ...],
+        call: AuthorizedLLMCall,
+        role: str,
+    ) -> EvidenceBranchResult:
+        """Run one claimed branch without waiting for its sibling worker.
+
+        A parent may still be PENDING while both children run.  The caller's
+        non-blocking completion hook promotes that parent only after both exact
+        branch results are committed.
+        """
+
+        if role not in {"PRO", "CON"}:
+            raise ValueError("FAKE_DEBATE_ROLE_MISMATCH")
+        public_inputs = _normalized_inputs(public_input_refs)
+        if (
+            not isinstance(parent_work.meta, RecordMeta)
+            or parent_work.meta.hypothesis_id is None
+            or parent_work.work_type != WorkType.VERIFICATION
+            or parent_work.status not in {WorkStatus.PENDING, WorkStatus.RUNNING}
+            or not public_inputs
+            or any(
+                ref.data_kind in _PRIVATE_DEBATE_INPUT_KINDS for ref in public_inputs
+            )
+        ):
+            raise ValueError("EVIDENCE_PARENT_WORK_SCOPE_MISMATCH")
+        limit = self.parallel_limit(parent_work)
+        if isinstance(limit, bool) or limit < 1:
+            raise ValueError("BUDGET_EXCEEDED: parallel evidence calls")
+        self._validate_call(call, role, parent_work, public_inputs)
+        invocation = await self._invoke(call)
+        if (
+            invocation.request.call_spec_ref != call.call_spec_ref
+            or tuple(invocation.request.context_refs) != public_inputs
+        ):
+            raise ValueError("EVIDENCE_INVOCATION_CLOSURE_MISMATCH")
+        debate_hash = content_hash(public_inputs)
+        output = (
+            self.pro.finalize(
+                invocation,
+                parent_work=parent_work,
+                evidence_work=call.work,
+                debate_input_hash=debate_hash,
+                allowed_evidence_refs=public_inputs,
+            )
+            if role == "PRO"
+            else self.con.finalize(
+                invocation,
+                parent_work=parent_work,
+                evidence_work=call.work,
+                debate_input_hash=debate_hash,
+                allowed_evidence_refs=public_inputs,
+            )
+        )
+        output_ref = self._publish_exact(call.work, output, invocation)
+        session_ref = invocation.result.session_ref
+        if not session_ref:
+            raise ValueError("EVIDENCE_NEW_SESSION_REQUIRED")
+        return EvidenceBranchResult(output, output_ref, session_ref, invocation)
 
     async def _invoke(self, call: AuthorizedLLMCall) -> PersistedLLMInvocation:
         return await self.llm_calls.invoke(
@@ -578,6 +679,7 @@ __all__ = [
     "DebateIncompleteError",
     "DebateResult",
     "DebateService",
+    "EvidenceBranchResult",
     "EvidenceParallelLimit",
     "FakeDebateResult",
     "run_fake_debate",

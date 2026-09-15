@@ -6,7 +6,7 @@ from typing import Literal, Self
 from pydantic import AwareDatetime, model_validator
 
 from ._domain import DomainRecord, exact, exact_set, same_scope, unique
-from .base import ContractModel, NonEmptyStr
+from .base import ContractModel, NonEmptyStr, PositiveInt
 from .canonical_json import content_hash
 from .ids import ErrorId, GapId, ProgramId
 from .records import PolicyCacheMeta
@@ -25,6 +25,45 @@ POLICY_ITEM_FIELDS = (
     "impact_criteria",
     "disclosure_requirements",
 )
+
+
+class OfficialPolicySourceConfig(DomainRecord):
+    """Run-scoped record for the exact approved official policy source."""
+
+    KIND = "official_policy_source_config"
+    HYPOTHESIS = False
+    ATTEMPT = False
+    program_id: ProgramId
+    source_artifact_ref: StoredDataRef
+    program_namespace: NonEmptyStr
+    external_program_id: NonEmptyStr
+    source_version: NonEmptyStr
+    official_endpoint: NonEmptyStr
+    publisher: NonEmptyStr
+    parser_name: NonEmptyStr
+    parser_version: NonEmptyStr
+    timeout_seconds: PositiveInt
+    max_response_bytes: PositiveInt
+    allowed_content_types: tuple[NonEmptyStr, ...]
+    allowed_redirect_hosts: tuple[NonEmptyStr, ...] = ()
+
+    @model_validator(mode="after")
+    def complete_source(self) -> Self:
+        if not self.allowed_content_types:
+            raise ValueError("POLICY_SOURCE_CONFIGURATION_INVALID")
+        return self
+
+
+class PolicyFreshnessCriterion(DomainRecord):
+    """Run-scoped record for the exact approved source freshness rule."""
+
+    KIND = "policy_freshness_criterion"
+    HYPOTHESIS = False
+    ATTEMPT = False
+    program_id: ProgramId
+    criterion_artifact_ref: StoredDataRef
+    source_version: NonEmptyStr
+    freshness_ttl_seconds: PositiveInt
 
 
 class RunPolicyState(DomainRecord):

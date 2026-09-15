@@ -14,7 +14,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, cast
 
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.static import StaticToolProfile
+from sastsimi.contracts.static import (
+    StaticToolProfile,
+    is_runnable_static_tool_profile,
+)
 from sastsimi.ports.dto import (
     CancellationResult,
     CandidateError,
@@ -429,8 +432,7 @@ def replay_python_ast_raw(
     if (
         replay.rule_execution is not None
         or replay.rule_mappings
-        or profile.status != "APPROVED"
-        or profile.purpose not in {"FIXTURE", "EVALUATION"}
+        or not is_runnable_static_tool_profile(profile)
         or (profile.adapter_key, profile.tool_name, profile.tool_kind)
         != ("PYTHON_AST", "AST", "STRUCTURE")
         or (result.tool_name, result.tool_version, result.tool_kind)
@@ -778,7 +780,8 @@ class PythonAstProcessAdapter:
         except (OSError, ValueError) as error:
             raise ValueError("STATIC_AST_EXECUTION_MISMATCH") from error
         if (
-            not self._profile_tuple(profile)
+            not is_runnable_static_tool_profile(profile)
+            or not self._profile_tuple(profile)
             or _digest(self.executable) != profile.executable_sha256
             or attempt_id is None
             or str(attempt_id) != self.process_runner.attempt_id

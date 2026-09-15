@@ -10,6 +10,7 @@ EXPECTED_KINDS = {
     "policy_cache_meta",
     "run_stored_data_ref",
     "stored_data_ref",
+    "host_configuration_ref",
     "policy_cache_ref",
     "work_execution_state",
     "work_attempt",
@@ -19,6 +20,7 @@ EXPECTED_KINDS = {
     "action_check",
     "action_decision",
     "sandbox_profile",
+    "dependency_bundle",
     "code_context_request",
     "vulnerability_hypothesis",
     "playbook_application",
@@ -49,12 +51,17 @@ EXPECTED_KINDS = {
     "verification_budget_profile",
     "dynamic_reproduction_lifecycle_profile",
     "budget_profile_binding",
+    "production_authority_catalog",
     "budget_units",
     "budget_reservation",
     "budget_ledger_entry",
     "budget_remaining",
     "evaluation_run_config",
     "static_tool_profile",
+    "tool_capability_evidence",
+    "runtime_capability_profile",
+    "official_policy_source_config",
+    "policy_freshness_criterion",
 }
 
 

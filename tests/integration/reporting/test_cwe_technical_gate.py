@@ -266,6 +266,37 @@ class _Ready:
         self.records.add(ready)
         return ready
 
+    def ensure_enqueue(
+        self,
+        scope: BudgetScopeRef,
+        metadata: RecordMetadata,
+        work_type: str,
+        subject_type: str,
+        subject_id: str,
+        identity: BudgetScopeRef,
+        *,
+        stable_key: str,
+        role: str = "ORCHESTRATION",
+        generation: int = 1,
+        inputs: tuple[RecordRef, ...] = (),
+        parent: RecordRef | None = None,
+        trigger_primitive_ref: RecordRef | None = None,
+    ) -> WorkExecutionState:
+        del stable_key
+        return self.enqueue(
+            scope,
+            metadata,
+            work_type,
+            subject_type,
+            subject_id,
+            identity,
+            role=role,
+            generation=generation,
+            inputs=inputs,
+            parent=parent,
+            trigger_primitive_ref=trigger_primitive_ref,
+        )
+
 
 class _Current:
     def __init__(

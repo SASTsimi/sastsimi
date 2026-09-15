@@ -9,12 +9,14 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
+from typing import cast
 
 from pydantic import TypeAdapter
 
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import (
+    HostConfigurationRef,
     RunStoredDataRef,
     StoredDataRef,
     reference,
@@ -33,6 +35,7 @@ from sastsimi.ports.dto import (
 )
 from sastsimi.ports.static_tool import (
     StaticExternalExecutionPort,
+    StaticExternalRecoveryPort,
     StaticProcessAdapter,
     StaticToolProfileResolverPort,
 )
@@ -95,7 +98,7 @@ class StaticToolCoordinator:
         self._active: dict[str, StaticProcessAdapter] = {}
 
     def _resolve(
-        self, profile_ref: StoredDataRef
+        self, profile_ref: StoredDataRef | HostConfigurationRef
     ) -> tuple[StaticToolProfile, StaticProcessAdapter]:
         try:
             profile = self._profiles.resolve(profile_ref)
@@ -103,14 +106,28 @@ class StaticToolCoordinator:
                 profile_ref,
                 profile.meta,
                 content_hash(profile),
-                analysis_id=profile.meta.analysis_id,
+                analysis_id=(
+                    None
+                    if isinstance(profile_ref, HostConfigurationRef)
+                    else profile.meta.analysis_id
+                ),
             )
         except (KeyError, ValueError) as error:
             raise ValueError("STATIC_TOOL_PROFILE_INVALID") from error
-        if profile.status != "APPROVED" or profile.purpose not in {
-            "FIXTURE",
-            "EVALUATION",
-        }:
+        if (
+            isinstance(profile_ref, HostConfigurationRef)
+            and (
+                profile.status != "ACTIVE"
+                or profile.purpose != "PRODUCTION"
+                or profile.host_id != profile_ref.host_id
+            )
+        ) or (
+            isinstance(profile_ref, StoredDataRef)
+            and (
+                profile.status != "APPROVED"
+                or profile.purpose not in {"FIXTURE", "EVALUATION"}
+            )
+        ):
             raise ValueError("STATIC_TOOL_PROFILE_INVALID")
         try:
             adapter = self._adapters[profile.adapter_key]
@@ -155,7 +172,9 @@ class StaticToolCoordinator:
             raise ValueError("STATIC_EXECUTABLE_INVALID")
         return resolved
 
-    async def probe(self, profile_ref: StoredDataRef) -> ToolCapabilityResult:
+    async def probe(
+        self, profile_ref: StoredDataRef | HostConfigurationRef
+    ) -> ToolCapabilityResult:
         profile, adapter = self._resolve(profile_ref)
         started = int(self._monotonic_ns())
         deadline = MonotonicActionDeadline(
@@ -190,6 +209,16 @@ class StaticToolCoordinator:
         return ToolCapabilityResult(ref=profile_ref, **observation.__dict__)
 
     async def run(self, request: StaticToolRequest) -> ToolRunResult:
+        return await self._run_or_recover(request, recover=False)
+
+    async def recover(self, request: StaticToolRequest) -> ToolRunResult:
+        """Resume one exact durable action instead of dispatching it again."""
+
+        return await self._run_or_recover(request, recover=True)
+
+    async def _run_or_recover(
+        self, request: StaticToolRequest, *, recover: bool
+    ) -> ToolRunResult:
         profile, adapter = self._resolve(request.tool_profile_ref)
         self._validate_request_binding(request, profile)
         if not isinstance(request.action.meta, RecordMeta):
@@ -246,6 +275,12 @@ class StaticToolCoordinator:
 
         self._active[str(attempt_id)] = adapter
         try:
+            if recover:
+                if not hasattr(self._external, "recover_tool"):
+                    raise ValueError("STATIC_TOOL_RECOVERY_UNAVAILABLE")
+                return await cast(
+                    StaticExternalRecoveryPort, self._external
+                ).recover_tool(request, profile, operation)
             return await self._external.invoke(request, profile, operation)
         finally:
             self._active.pop(str(attempt_id), None)
@@ -266,6 +301,24 @@ class StaticToolCoordinator:
             request.tool_profile_ref,
             request.analysis_config_ref,
         }
+        production_profile = isinstance(request.tool_profile_ref, HostConfigurationRef)
+        if production_profile:
+            if (
+                request.repository_profile_ref is None
+                or request.execution_selection_ref is None
+            ):
+                raise ValueError("STATIC_TOOL_SELECTION_BINDING_MISSING")
+            expected_refs.update(
+                {
+                    request.repository_profile_ref,
+                    request.execution_selection_ref,
+                }
+            )
+        elif (
+            request.repository_profile_ref is not None
+            or request.execution_selection_ref is not None
+        ):
+            raise ValueError("STATIC_TOOL_SELECTION_BINDING_UNEXPECTED")
         if request.rule_catalog_ref is not None:
             expected_refs.add(request.rule_catalog_ref)
         if (

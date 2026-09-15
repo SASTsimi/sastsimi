@@ -9,6 +9,8 @@ import re
 from collections.abc import Callable, Iterable
 from ipaddress import ip_address
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
+from typing import cast
 from urllib.parse import urlsplit
 
 from sastsimi.contracts.actions import (
@@ -60,6 +62,82 @@ _DOCKER_ENDPOINTS = (
 RecordResolver = Callable[[StoredDataRef], object]
 
 
+def verify_outer_boundary_controls(workspace_root: Path) -> bool:
+    """Exercise the fail-closed host boundary without starting Docker."""
+
+    root = workspace_root.resolve(strict=True)
+    controller = SandboxController(
+        workspace_root=root,
+        workspace_id="capability-probe",
+        commit_id="capability-probe",
+        record_resolver=lambda _ref: None,
+    )
+    raw_secret = StoredDataRef.model_validate(
+        {
+            "stored_data_id": "probe-secret",
+            "data_kind": "artifact",
+            "content_hash": "0" * 64,
+            "workspace_id": "capability-probe",
+            "commit_id": "capability-probe",
+            "record_id": None,
+        }
+    )
+    spec = SandboxRunSpec(
+        workspace_root=root,
+        image_digest=None,
+        user="root",
+        mounts=(
+            SandboxMount(
+                source=Path(root.anchor),
+                target=PurePosixPath("/var/run/docker.sock"),
+                read_only=False,
+            ),
+        ),
+        network_mode="host",
+        network_targets=("https://example.invalid",),
+        secret_refs=(raw_secret,),
+        privileged=True,
+        pid_mode="host",
+        ipc_mode="host",
+        capabilities=("SYS_ADMIN",),
+        cpu_limit_millicores=2,
+        memory_limit_bytes=2,
+        disk_limit_bytes=2,
+        pid_limit=2,
+        requested_execution_ms=2,
+    )
+    profile = cast(
+        SandboxProfile,
+        SimpleNamespace(
+            network_mode="DEFAULT_DENY",
+            cpu_limit_millicores=1,
+            memory_limit_bytes=1,
+            disk_limit_bytes=1,
+            pid_limit=1,
+            max_requested_execution_ms=1,
+        ),
+    )
+    action = cast(ActionRequest, SimpleNamespace(resource_limits=None))
+    reasons: list[str] = []
+    controller._check_boundary(reasons, spec, action, profile)
+    required = {
+        "DOCKER_SOCKET_DENIED",
+        "HOST_ROOT_MOUNT_DENIED",
+        "WORKSPACE_MOUNT_DENIED",
+        "WRITE_MOUNT_DENIED",
+        "NON_ROOT_USER_REQUIRED",
+        "PRIVILEGED_DENIED",
+        "HOST_NAMESPACE_DENIED",
+        "CAPABILITY_ADD_DENIED",
+        "RAW_SECRET_DENIED",
+        "SANDBOX_SECRET_DENIED",
+        "LIVE_ENDPOINT_DENIED",
+        "RESOURCE_LIMIT_EXCEEDED",
+        "RESOURCE_LIMIT_UNSPECIFIED",
+    }
+    return required <= set(reasons)
+
+
 class SandboxController:
     """Validate external isolation before any Docker adapter can be called."""
 
@@ -71,12 +149,14 @@ class SandboxController:
         commit_id: str,
         record_resolver: RecordResolver,
         isolated_network_targets: Iterable[str] = (),
+        require_baked_source: bool = False,
     ) -> None:
         self._workspace_root = workspace_root.resolve(strict=False)
         self._workspace_id = workspace_id
         self._commit_id = commit_id
         self._resolve = record_resolver
         self._isolated_network_targets = frozenset(isolated_network_targets)
+        self._require_baked_source = require_baked_source
 
     @property
     def workspace_root(self) -> Path:
@@ -128,6 +208,8 @@ class SandboxController:
             required_context_refs=required_context_refs,
         )
         self._check_recipe_source(reasons, spec, request, plan, source)
+        if self._require_baked_source and (not spec.source_baked or spec.mounts):
+            reasons.append("HOST_MOUNT_DENIED")
         self._check_boundary(reasons, spec, action, sandbox_profile)
         if spec.image_digest is not None:
             reasons.append("BUILD_IMAGE_DIGEST_FORBIDDEN")
@@ -197,6 +279,11 @@ class SandboxController:
             required_context_refs=required_context_refs,
         )
         self._check_recipe(reasons, recipe, request, plan, meta)
+        if self._require_baked_source or any(
+            ref.data_kind == "repository_profile" for ref in recipe.source_refs
+        ):
+            if not spec.source_baked or spec.mounts:
+                reasons.append("HOST_MOUNT_DENIED")
         self._check_boundary(reasons, spec, action, sandbox_profile)
         if not isinstance(spec.image_digest, str) or not _IMAGE_DIGEST.fullmatch(
             spec.image_digest
@@ -465,6 +552,10 @@ class SandboxController:
             strict=False
         ):
             reasons.append("RECIPE_WORKSPACE_MISMATCH")
+        if source.repository_profile_ref is not None and (
+            not spec.source_baked or spec.mounts
+        ):
+            reasons.append("HOST_MOUNT_DENIED")
         if (
             source.request_ref != self._stored_reference(request)
             or source.requirements_ref != plan.environment_requirements_ref
@@ -511,6 +602,10 @@ class SandboxController:
         self._check_resources(reasons, spec, action, profile)
 
     def _check_mounts(self, reasons: list[str], spec: SandboxRunSpec) -> None:
+        if spec.source_baked:
+            if spec.mounts:
+                reasons.append("HOST_MOUNT_DENIED")
+            return
         if not spec.mounts:
             reasons.append("WORKSPACE_MOUNT_REQUIRED")
             return

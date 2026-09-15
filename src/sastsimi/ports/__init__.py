@@ -1,5 +1,48 @@
 from .artifact_store import ArtifactStore as ArtifactStore
 from .budget_ledger import BudgetLedgerPort as BudgetLedgerPort
+from .capability_registry import (
+    ProductionCapabilityResolverPort as ProductionCapabilityResolverPort,
+)
+from .chaining import ChainedHypothesisContent as ChainedHypothesisContent
+from .chaining import ChainingAgentInput as ChainingAgentInput
+from .chaining import ChainingAgentOutcome as ChainingAgentOutcome
+from .chaining import ChainingAgentOutput as ChainingAgentOutput
+from .chaining import ChainingAgentPort as ChainingAgentPort
+from .chaining import ChainingChildHandoffPort as ChainingChildHandoffPort
+from .chaining import ChainingCohortMember as ChainingCohortMember
+from .chaining import ChainingCohortPort as ChainingCohortPort
+from .chaining import ChainingCohortRegistration as ChainingCohortRegistration
+from .chaining import ChainingCommittedSourcePort as ChainingCommittedSourcePort
+from .chaining import ChainingComparison as ChainingComparison
+from .chaining import ChainingDecision as ChainingDecision
+from .chaining import ChainingEvidence as ChainingEvidence
+from .chaining import ChainingLineagePort as ChainingLineagePort
+from .chaining import ChainingMatchIdentity as ChainingMatchIdentity
+from .chaining import ChainingMatchReservationPort as ChainingMatchReservationPort
+from .chaining import ChainingPoolHistory as ChainingPoolHistory
+from .chaining import ChainingPoolHistoryPort as ChainingPoolHistoryPort
+from .chaining import ChainingPrimitive as ChainingPrimitive
+from .chaining import ChainingPrimitiveInput as ChainingPrimitiveInput
+from .chaining import ChainingPrimitiveResult as ChainingPrimitiveResult
+from .chaining import ChainingProposalRegistration as ChainingProposalRegistration
+from .chaining import (
+    ChainingProposalRegistrationPort as ChainingProposalRegistrationPort,
+)
+from .chaining import ChainingReconciliationPort as ChainingReconciliationPort
+from .chaining import ChainingResultPublisherPort as ChainingResultPublisherPort
+from .chaining import (
+    ChainingResultReconciliationRequest as ChainingResultReconciliationRequest,
+)
+from .chaining import HoldPrimitiveAdmissionClosure as HoldPrimitiveAdmissionClosure
+from .chaining import PinnedChainingUniverse as PinnedChainingUniverse
+from .chaining import PrimitiveAdmissionClosure as PrimitiveAdmissionClosure
+from .chaining import PrimitiveAdmissionPort as PrimitiveAdmissionPort
+from .chaining import PrimitiveAdmissionSourcePort as PrimitiveAdmissionSourcePort
+from .chaining import PrimitiveUpdateOutcome as PrimitiveUpdateOutcome
+from .chaining import (
+    PrimitiveUpdateReconciliationRequest as PrimitiveUpdateReconciliationRequest,
+)
+from .chaining import TruePrimitiveAdmissionClosure as TruePrimitiveAdmissionClosure
 from .clock import Clock as Clock
 from .dto import ApprovedSandboxCommand as ApprovedSandboxCommand
 from .dto import AttemptOutputBudgetPort as AttemptOutputBudgetPort
@@ -37,6 +80,16 @@ from .record_store import RecordStore as RecordStore
 from .report_query import CurrentReportRecordQuery as CurrentReportRecordQuery
 from .report_query import current_report_drafts as current_report_drafts
 from .sandbox import SandboxPort as SandboxPort
+from .scheduler import AnalysisApplicationPort as AnalysisApplicationPort
+from .scheduler import AnalysisStatusView as AnalysisStatusView
+from .scheduler import CancellationObservation as CancellationObservation
+from .scheduler import CancellationTarget as CancellationTarget
+from .scheduler import ExternalCancellationPort as ExternalCancellationPort
+from .scheduler import HandlerRegistryPort as HandlerRegistryPort
+from .scheduler import RunControlPort as RunControlPort
+from .scheduler import RunOutcome as RunOutcome
+from .scheduler import SchedulerStorePort as SchedulerStorePort
+from .scheduler import WorkSchedulerPort as WorkSchedulerPort
 from .static_tool import StaticAttemptPublisherPort as StaticAttemptPublisherPort
 from .static_tool import StaticExternalExecutionPort as StaticExternalExecutionPort
 from .static_tool import StaticOutputQuotaPort as StaticOutputQuotaPort

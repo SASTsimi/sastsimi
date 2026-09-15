@@ -18,6 +18,62 @@
       "title": "CommitId",
       "type": "string"
     },
+    "HostConfigurationRef": {
+      "additionalProperties": false,
+      "description": "Exact host configuration revision reusable across repository analyses.",
+      "properties": {
+        "configuration_scope": {
+          "const": "HOST",
+          "default": "HOST",
+          "title": "Configuration Scope",
+          "type": "string"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "host_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Host Id",
+          "type": "string"
+        },
+        "publication_analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "publication_commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "publication_workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "host_id",
+        "publication_analysis_id",
+        "publication_workspace_id",
+        "publication_commit_id",
+        "record_id"
+      ],
+      "title": "HostConfigurationRef",
+      "type": "object"
+    },
     "HypothesisId": {
       "minLength": 1,
       "pattern": "\\S",
@@ -129,51 +185,6 @@
       "title": "StoredDataId",
       "type": "string"
     },
-    "StoredDataRef": {
-      "additionalProperties": false,
-      "properties": {
-        "commit_id": {
-          "$ref": "#/$defs/CommitId"
-        },
-        "content_hash": {
-          "pattern": "^[0-9a-f]{64}$",
-          "title": "Content Hash",
-          "type": "string"
-        },
-        "data_kind": {
-          "minLength": 1,
-          "pattern": "\\S",
-          "title": "Data Kind",
-          "type": "string"
-        },
-        "record_id": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/RecordId"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "stored_data_id": {
-          "$ref": "#/$defs/StoredDataId"
-        },
-        "workspace_id": {
-          "$ref": "#/$defs/WorkspaceId"
-        }
-      },
-      "required": [
-        "stored_data_id",
-        "data_kind",
-        "content_hash",
-        "workspace_id",
-        "commit_id",
-        "record_id"
-      ],
-      "title": "StoredDataRef",
-      "type": "object"
-    },
     "WorkspaceId": {
       "minLength": 1,
       "pattern": "\\S",
@@ -197,7 +208,7 @@
     "capability_evidence_ref": {
       "anyOf": [
         {
-          "$ref": "#/$defs/StoredDataRef"
+          "$ref": "#/$defs/HostConfigurationRef"
         },
         {
           "type": "null"
@@ -220,6 +231,20 @@
       "pattern": "\\S",
       "title": "Expected Version",
       "type": "string"
+    },
+    "host_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Host Id"
     },
     "max_artifact_read_bytes": {
       "minimum": 1,

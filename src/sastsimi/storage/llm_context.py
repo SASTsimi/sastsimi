@@ -162,10 +162,17 @@ def check_llm_context(
         if ref.record_id is None:
             continue
         value = records.resolve(connection, ref)
+        scope_names: tuple[str, ...] = (
+            "analysis_id",
+            "workspace_id",
+            "commit_id",
+        )
+        if work.work_type != "CHAINING":
+            scope_names = (*scope_names, "hypothesis_id")
         if any(
             getattr(value.meta, name, None) is not None
             and getattr(value.meta, name, None) != getattr(work.meta, name, None)
-            for name in ("analysis_id", "workspace_id", "commit_id", "hypothesis_id")
+            for name in scope_names
         ):
             raise ValueError("LLM_CONTEXT_WORK_MISMATCH")
         if (

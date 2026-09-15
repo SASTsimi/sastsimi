@@ -271,17 +271,36 @@ def _fixture(
     )
 
 
-def test_canonical_registry_is_draft_evaluation_only() -> None:
+def test_canonical_registry_exposes_only_reviewed_active_fixtures() -> None:
     root = Path(__file__).resolve().parents[3]
     registry = PromptLoader(root).load_registry(Path("config/prompts/registry.yaml"))
-    assert len(registry.definitions) == 1
-    entry = registry.definitions[0].entry
-    assert (entry.purpose, entry.status, entry.agent_role, entry.task_kind) == (
+    entries = {
+        (definition.entry.agent_role, definition.entry.task_kind): definition.entry
+        for definition in registry.definitions
+    }
+    assert set(entries) == {
+        ("HYPOTHESIS", "GENERATE_INITIAL"),
+        ("CHAINING", "MATCH_PRIMITIVES"),
+    }
+    hypothesis = entries[("HYPOTHESIS", "GENERATE_INITIAL")]
+    assert (hypothesis.purpose, hypothesis.status) == (
         "EVALUATION",
         "DRAFT",
-        "HYPOTHESIS",
-        "GENERATE_INITIAL",
     )
+    chaining = entries[("CHAINING", "MATCH_PRIMITIVES")]
+    assert (chaining.purpose, chaining.status) == ("EVALUATION", "ACTIVE")
+    assert chaining.result_kind == "chaining_result"
+    chaining_slots = tuple(
+        (slot.slot, slot.data_kind, slot.cardinality) for slot in chaining.input_slots
+    )
+    assert chaining_slots == (
+        ("indexes", "primitive_index_state", "REQUIRED_MANY"),
+        ("considered", "primitive", "REQUIRED_MANY"),
+        ("lineage_hypotheses", "vulnerability_hypothesis", "REQUIRED_MANY"),
+        ("lineage_results", "chaining_result", "OPTIONAL_MANY"),
+    )
+    selected = registry.select("CHAINING", "MATCH_PRIMITIVES", "EVALUATION")
+    assert selected.entry is chaining
     with pytest.raises(LookupError, match="PROMPT_REGISTRY_NOT_ACTIVE"):
         registry.select("HYPOTHESIS", "GENERATE_INITIAL", "EVALUATION")
 
@@ -428,6 +447,53 @@ def test_builder_binds_exact_redacted_artifact_source(work_path: Path) -> None:
 
     assert payload.context_bindings[0].source_ref == source_ref
     assert body.encode("utf-8") in builder.read_artifact(payload.rendered_prompt_ref)
+
+
+def test_builder_redacts_code_artifact_and_keeps_exact_source_ref(
+    work_path: Path,
+) -> None:
+    builder, definition, entry, _, _, _, _ = _fixture(work_path)
+    secret = "sk-0123456789abcdef"
+    source_ref = builder.artifacts.commit(
+        builder.artifacts.stage_bytes(
+            f"token = '{secret}'\nprint('safe')".encode(), "text/plain"
+        )
+    )
+    source_entry = entry.model_copy(
+        update={
+            "input_slots": (
+                PromptInputSlot(
+                    slot="code_fragment",
+                    data_kind="artifact",
+                    field_paths=("/redacted_body",),
+                    cardinality="REQUIRED_ONE",
+                    trust_class="UNTRUSTED_DATA",
+                ),
+            )
+        }
+    )
+    source_definition = LoadedPromptDefinition.from_bytes(
+        entry=source_entry,
+        template_path=definition.template_path,
+        template=definition.template,
+    )
+
+    payload = builder.build_payload(
+        definition=source_definition,
+        registry_entry_ref=_exact_ref(source_entry),
+        metadata=_meta("prompt_payload", "code-artifact-payload"),
+        sources=(builder.bind_artifact("code_fragment", source_ref),),
+    )
+
+    binding = payload.context_bindings[0]
+    rendered = builder.read_artifact(payload.rendered_prompt_ref)
+    projected = builder.read_artifact(binding.projected_data_ref)
+    assert binding.source_ref == source_ref
+    assert projected == canonical_bytes(
+        {"/redacted_body": "[REDACTED:TOKEN]\nprint('safe')"}
+    )
+    assert secret.encode() not in rendered
+    assert b"[REDACTED:TOKEN]" in rendered
 
 
 def test_builder_rejects_artifact_wrapper_that_does_not_match_exact_bytes(

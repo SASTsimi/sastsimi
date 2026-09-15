@@ -2,42 +2,79 @@
 
 SASTSIMI는 정적 분석 도구가 모은 코드 정보를 LLM이 검토하고, 필요하면 격리된 환경에서 재현한 뒤, 사람이 최종 판단하는 보안 분석 연구 프로젝트입니다.
 
-이 저장소는 실행 프로그램을 배포하는 곳이 아닙니다. 팀이 실제 구현을 시작하기 전에 전체 흐름, 역할, 파트 사이의 입출력 약속과 안전 규칙을 함께 검토하는 공간입니다.
+이 저장소에는 승인된 Architecture v5 설계와 이를 옮긴 실행 코드가 함께 있습니다. 구현은 진행 중이며, 실제 저장소를 Fake Adapter 없이 clone부터 Markdown 보고서까지 완주한 출시 증거는 아직 확정되지 않았습니다.
 
-## 30초 요약
-
-- AST와 SAST는 코드에서 찾은 사실을 제공합니다. 취약점 여부를 최종 판단하지 않습니다.
-- LLM Agent는 취약점 가능성을 제안하고 코드·실행 근거를 검토합니다.
-- Docker sandbox(다른 시스템과 격리된 실행 환경)는 동적 근거가 필요하거나 final `TRUE`를 PoC로 확인할 때 사용합니다. validated PoC가 없는 결과는 final `TRUE`가 될 수 없습니다.
-- Gate(다음 단계로 보내도 되는지 확인하는 검토 단계)는 근거와 공식 정책을 확인합니다.
-- Reporter의 `ReportDraft`가 마지막 Agent 산출물입니다. 결과 저장 뒤 자동화가 끝나며 외부 공개 여부는 사람이 결정합니다.
-- **설계 검토는 완료**됐으며 실행 코드는 아직 없습니다.
-
-모르는 용어는 [쉬운 용어집](./docs/GLOSSARY.md), 각 파일의 목적은 [전체 문서 지도](./docs/DOCUMENT_GUIDE.md)에서 확인할 수 있습니다.
-
-## 현재 단계
+## 지금 상태
 
 ```text
 DESIGN_APPROVED
-NOT_IMPLEMENTED
+IMPLEMENTATION_IN_PROGRESS
+PRODUCTION_E2E_NOT_YET_PROVEN
 ```
 
-- Architecture v5는 R1~R8 역할 검토와 전체 문서 추적 검토를 거쳐 **구현 기준 설계**로 승인되었습니다.
-- `DESIGN_APPROVED`는 문서의 역할·흐름·계약을 구현 기준으로 확정했다는 뜻이며, 실행 코드나 보안 성능을 검증했다는 뜻이 아닙니다.
-- 실제 Provider 연결, 평가, Docker 보안 시험과 전체 실행은 아직 `NOT_IMPLEMENTED`입니다.
-- 자동 분석 결과를 외부에 제출하거나 공개하지 않습니다. 최종 공개 여부는 사람이 결정합니다.
+- Architecture v5 설계는 승인됐고, 실제 실행 코드를 구현 중입니다.
+- 저장소 입력용 production CLI와 Fake 시연용 `demo`는 분리되어 있습니다.
+- **아직 Fake 없는 clone → Markdown 전체 production E2E 출시 증거는 없습니다.**
+- capability(실제 도구 시험)와 onboarding(근거·사람 승인)이 `READY`인 exact
+  Provider·모델·도구 조합만 production에서 선택합니다.
+- 자동 외부 제출·공개는 지원하지 않습니다. 사람이 보고서를 검토하고 결정합니다.
 
-## 현재 목표
+## 가장 빠른 설치 확인
 
-승인된 설계를 기준으로 다음 단계의 구현과 검증을 진행합니다.
+필수 프로그램은 **Python 3.12 64-bit, uv, Git**입니다. OpenGrep은 정적 분석,
+Docker는 동적 재현에 필요합니다. CodeQL은 설치 방법을 문서화했지만 현재 production
+경로에서는 안전한 hard-quota 전제조건이 없어 fail-closed로 비활성화됩니다.
 
-1. 공통 계약을 Pydantic·JSON Schema와 저장 구조로 구현합니다.
-2. 정적 분석, 가설 생성, Verification, 동적 재현, 두 Gate와 Reporter를 승인된 순서로 연결합니다.
-3. 실제 Provider·모델 조합은 capability 시험과 R8 평가를 통과한 exact 설정만 활성화합니다.
-4. Docker Sandbox의 외부 경계와 복구·중복·오류 시나리오를 구현 시험으로 확인합니다.
-5. 구현 결과가 문서 계약과 달라져야 한다면 코드를 임의로 우회하지 않고 새 Issue·ADR·PR로 설계를 변경합니다.
+```text
+git clone https://github.com/SASTsimi/sastsimi.git
+cd sastsimi
+uv sync --frozen
+uv run sastsimi doctor --format json
+uv run sastsimi --data-dir <data-dir> db upgrade head
+uv run sastsimi --help
+```
 
-가져온 원본은 commit에 포함되지 않은 작업 폴더의 파일이었습니다. 따라서 특정 commit에서 나온 파일이라고 주장하지 않습니다. 원본 상태와 파일별 SHA-256은 [가져온 출처 기록](./docs/review/PROVENANCE.md)에 남깁니다. 이 저장소에서 승인된 설계 commit만 별도 PR을 통해 구현 저장소로 전달합니다.
+상세 설치와 외부 도구 준비는 [설치 안내](./docs/installation.md)를 따르세요.
+
+## LLM 인증
+
+- OpenAI API: 실제 key는 파일에 쓰지 않고 실행 환경이 `OPENAI_API_KEY`로
+  주입합니다.
+- ChatGPT 구독을 이용한 Codex: 공식 client에서 `codex login` 후
+  `codex login status`로 확인합니다.
+
+두 방식 모두 로그인 성공만으로 SASTSIMI production 사용이 허용되지는 않습니다.
+exact client·모델·Prompt 검증과 사람 승인이 필요합니다. 자세한 내용은
+[Provider 설정](./docs/provider-setup.md)을 확인하세요.
+
+## 저장소 분석과 보고서 확인
+
+`<exact-SHA>`에는 branch나 짧은 SHA가 아닌 정확한 40자리 또는 64자리 commit을
+입력합니다. 전역 `--data-dir`은 하위 명령 앞에 둡니다.
+
+```text
+uv run sastsimi --data-dir <data-dir> analyze --repo <URL-or-local-path> --commit <exact-SHA> --profile <production-profile.toml> --format json
+uv run sastsimi --data-dir <data-dir> status <analysis_id> --format json
+uv run sastsimi --data-dir <data-dir> results <analysis_id> --format json
+uv run sastsimi --data-dir <data-dir> reports <analysis_id> --format json
+uv run sastsimi --data-dir <data-dir> report show <finding_id>
+uv run sastsimi --data-dir <data-dir> report export <finding_id> --format markdown
+```
+
+준비되지 않은 production 입력은 Fake로 대체하지 않고 `BLOCKED` 또는 오류로
+종료됩니다. 설치 확인용 Fake 시나리오는 별도 명령으로 실행합니다.
+
+```text
+uv run sastsimi --data-dir <demo-data-dir> demo analyze --scenario TRUE --format json
+```
+
+순서대로 읽기: [설치](./docs/installation.md) →
+[Provider 인증](./docs/provider-setup.md) → [실행](./docs/usage.md) →
+[실패 해결](./docs/troubleshooting.md). 모르는 용어는
+[쉬운 용어집](./docs/GLOSSARY.md), 파일별 목적은
+[전체 문서 지도](./docs/DOCUMENT_GUIDE.md)에서 확인할 수 있습니다.
+T17까지 구현된 범위와 다음 작업의 정확한 기준은
+[T17 구현 인계서](./docs/handoff/T17_IMPLEMENTATION_HANDOFF.md)를 확인하세요.
 
 ## 전체 분석 흐름
 

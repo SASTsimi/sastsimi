@@ -20,8 +20,11 @@ from typing import Literal, Protocol, cast
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef, reference, require_record_ref
-from sastsimi.contracts.static import StaticToolProfile
+from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.static import (
+    StaticToolProfile,
+    is_runnable_static_tool_profile,
+)
 from sastsimi.ports.dto import (
     CancellationResult,
     CandidateError,
@@ -38,6 +41,7 @@ from sastsimi.ports.dto import (
     StaticToolRequest,
     TrackedFile,
 )
+from sastsimi.ports.static_tool import validate_static_material_ref
 from sastsimi.static_analysis.normalizer import StaticRawReplayInput
 
 _WINDOWS_COMMAND_LIMIT_BYTES = 32_767 * 2
@@ -100,8 +104,14 @@ class OpenGrepExecutionInputs:
         catalog_ids = tuple(item.rule_id for item in self.rule_catalog)
         tracked_paths = tuple(item.git_path for item in self.tracked_files)
         try:
-            require_record_ref(self.analysis_config_ref, "analysis_config")
-            require_record_ref(self.rule_catalog_ref, "rule_catalog")
+            validate_static_material_ref(
+                self.analysis_config_ref,
+                legacy_data_kind="analysis_config",
+            )
+            validate_static_material_ref(
+                self.rule_catalog_ref,
+                legacy_data_kind="rule_catalog",
+            )
         except ValueError as error:
             raise ValueError("OPENGREP_INPUT_CLOSURE_INVALID") from error
         if (
@@ -605,8 +615,7 @@ def replay_opengrep_raw(
     authorized = tuple(replay.authorized_paths)
     if (
         execution is None
-        or profile.status != "APPROVED"
-        or profile.purpose not in {"FIXTURE", "EVALUATION"}
+        or not is_runnable_static_tool_profile(profile)
         or (profile.adapter_key, profile.tool_name, profile.tool_kind)
         != ("OPENGREP", "OPENGREP", "RULE_BASED")
         or (result.tool_name, result.tool_version, result.tool_kind)
@@ -795,8 +804,7 @@ class OpenGrepProcessAdapter:
 
     def _profile_error(self, profile: StaticToolProfile) -> str | None:
         if (
-            profile.status != "APPROVED"
-            or profile.purpose not in {"FIXTURE", "EVALUATION"}
+            not is_runnable_static_tool_profile(profile)
             or (profile.adapter_key, profile.tool_name, profile.tool_kind)
             != ("OPENGREP", "OPENGREP", "RULE_BASED")
             or profile.executable_key != self.executable_key

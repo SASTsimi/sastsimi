@@ -156,6 +156,7 @@ def analysis_run_state() -> AnalysisRunState:
             "meta": run_metadata("analysis_run_state", "run-state"),
             "purpose": Purpose.EVALUATION,
             "eval_config_refs": (stored_ref("evaluation_config", "eval"),),
+            "analysis_input_ref": run_ref("analysis_run_input", "run-input"),
             "program_id": "program-1",
             "execution_budget_profile_ref": run_ref(
                 "execution_budget_profile", "budget"

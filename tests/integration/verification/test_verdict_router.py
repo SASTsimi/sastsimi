@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import inspect
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
+from sastsimi.bootstrap import build_t10_services
 from sastsimi.contracts._domain import DomainRecord
+from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.dynamic import DynamicReproductionRequest
 from sastsimi.contracts.hypothesis import HypothesisProcessState
@@ -131,6 +135,54 @@ def test_true_with_uncommitted_process_pointer_is_rejected() -> None:
 
     with pytest.raises(ValueError, match="STALE_RESULT"):
         VerdictRouter(records, current_process=lambda _: None).route(result_ref)
+
+
+def test_production_t10_router_resolves_the_current_true_process() -> None:
+    records, result_ref = _result("TRUE")
+    request_ref = records.result.dynamic_request_ref
+    assert request_ref is not None
+    request = records.get_exact(request_ref)
+    assert isinstance(request, DynamicReproductionRequest)
+    process = HypothesisProcessState.model_construct(
+        meta=records.result.meta.model_copy(
+            update={"record_type": "hypothesis_process_state", "attempt_id": None}
+        ),
+        proposal_ref=records.result.playbook_application_ref,
+        status="TERMINAL",
+        verification_assignment_ref=request.verification_assignment_ref,
+        verification_generation=request.verification_generation,
+        verification_work_ref=None,
+        verification_result_ref=result_ref,
+        started_at=records.result.meta.created_at,
+        finished_at=records.result.meta.created_at,
+        elapsed_ms=0,
+    )
+    runtime = SimpleNamespace(
+        unit_of_work=SimpleNamespace(records=records, artifacts=object()),
+        llm_calls=object(),
+        queries=SimpleNamespace(
+            current_records=lambda _analysis, kind: (
+                (process,) if kind == "hypothesis_process_state" else ()
+            )
+        ),
+        budget_registry=SimpleNamespace(current_state=lambda _analysis: object()),
+        work=SimpleNamespace(get=lambda _work_id: None),
+        verification_registration=object(),
+    )
+    identity = records.ref.model_copy(update={"data_kind": "agent_identity"})
+
+    services = build_t10_services(
+        runtime=cast(Any, runtime),
+        runner=cast(Any, object()),
+        clock=cast(Any, object()),
+        ids=cast(Any, object()),
+        role_identity_refs={
+            RequesterRole.VERIFICATION: identity,
+            RequesterRole.ORCHESTRATION: identity,
+        },
+    )
+
+    assert services.verdict_router.route(result_ref)[0].work_type == "CWE_LABEL"
 
 
 def test_router_has_no_concrete_downstream_imports() -> None:

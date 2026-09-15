@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Protocol
+import asyncio
+import errno
+import json
+import os
+import sys
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
+from contextvars import ContextVar
+from pathlib import Path
+from typing import BinaryIO, Literal, Protocol, cast
+from uuid import uuid4
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.dynamic import (
@@ -12,31 +20,257 @@ from sastsimi.contracts.dynamic import (
     DynamicReproductionRequest,
     SandboxEnvironment,
 )
-from sastsimi.contracts.dynamic_resource import owned_container_resource_ref
+from sastsimi.contracts.dynamic_resource import (
+    owned_container_resource_ref,
+    owned_image_resource_ref,
+)
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 
-from .docker_adapter import DockerContainerState
+from .docker_adapter import (
+    DockerAdapter,
+    DockerContainerPresence,
+    DockerContainerState,
+    DockerImageState,
+    DockerImageTagPresence,
+)
 from .recipe_store import fresh_record_meta
+from .resource_snapshot import (
+    ContainerOwnershipIntent as ContainerOwnershipIntent,
+)
+from .resource_snapshot import (
+    ImageOwnershipIntent as ImageOwnershipIntent,
+)
+from .resource_snapshot import (
+    OwnedResource as OwnedResource,
+)
+from .resource_snapshot import (
+    OwnedResourceSnapshot,
+    ownership_scope,
+    snapshot_inventory,
+)
 
-
-@dataclass(frozen=True, slots=True)
-class OwnedResource:
-    ref: StoredDataRef
-    resource_id: str
-    labels: Mapping[str, str]
+_CLEANUP_TIMEOUT_SECONDS = 10.0
+_FENCE_POLL_SECONDS = 0.01
 
 
 class CleanupDockerPort(Protocol):
     async def inspect(self, container_id: str) -> DockerContainerState: ...
+    async def inspect_container_presence(
+        self, container_id: str, *, by_name: bool = False
+    ) -> DockerContainerPresence: ...
     async def remove(self, resource_ids: tuple[str, ...]) -> None: ...
+    async def inspect_owned_image(self, image_digest: str) -> DockerImageState: ...
+    async def inspect_image_tag(self, image_tag: str) -> DockerImageTagPresence: ...
+    async def remove_images(self, image_digests: tuple[str, ...]) -> None: ...
+    async def remove_image_tags(self, image_tags: tuple[str, ...]) -> None: ...
 
 
 class OwnedResourceRegistry:
-    """Tracks only resources created through this exact setup instance."""
+    """Durably tracks exact owned resources and pre-create ownership intents."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        journal_path: Path | None = None,
+        mutation_admission: Callable[[str], AbstractContextManager[None]] | None = None,
+    ) -> None:
         self._resources: dict[bytes, OwnedResource] = {}
+        self._intents: dict[str, ContainerOwnershipIntent] = {}
+        self._image_intents: dict[str, ImageOwnershipIntent] = {}
+        self._journal_path = journal_path
+        self._mutation_admission = mutation_admission
+        self._active_creation_scope: ContextVar[tuple[str, ...] | None] = ContextVar(
+            f"owned_resource_creation_scope_{id(self)}", default=None
+        )
+        self._memory_creation_lock = asyncio.Lock()
+        self._creation_lock_path = (
+            journal_path.with_name(f".{journal_path.name}.creation.lock")
+            if journal_path is not None
+            else None
+        )
+        self._load()
+
+    def snapshot(self, *, meta: RecordMeta) -> OwnedResourceSnapshot:
+        """Read one complete validated attempt inventory without side effects.
+
+        This captures the registry state, not a live Docker observation. Reload
+        the registry to observe a journal updated by another process.
+        """
+
+        scope = _record_scope(meta)
+        return snapshot_inventory(
+            resources=tuple(
+                item
+                for item in self._resources.values()
+                if ownership_scope(item.labels) == scope
+            ),
+            container_intents=tuple(
+                item
+                for item in self._intents.values()
+                if ownership_scope(item.labels) == scope
+            ),
+            image_intents=tuple(
+                item
+                for item in self._image_intents.values()
+                if ownership_scope(item.labels) == scope
+            ),
+            meta=meta,
+        )
+
+    def fresh_snapshot(self, *, meta: RecordMeta) -> OwnedResourceSnapshot:
+        """Reload a durable journal before producing cancellation inventory."""
+        if self._journal_path is None:
+            return self.snapshot(meta=meta)
+        return type(self)(journal_path=self._journal_path).snapshot(meta=meta)
+
+    async def fresh_snapshot_after_creations(
+        self, *, meta: RecordMeta
+    ) -> OwnedResourceSnapshot:
+        """Wait for a started Docker creation before reading its exact scope."""
+
+        async with self._hold_creation_fence():
+            return self.fresh_snapshot(meta=meta)
+
+    @asynccontextmanager
+    async def creation_fence(self, labels: Mapping[str, str]) -> AsyncIterator[None]:
+        """Fence reserve -> external create/build -> register against cancellation."""
+
+        scope = ownership_scope(labels)
+        if self._active_creation_scope.get() is not None:
+            raise ValueError("SANDBOX_CREATION_FENCE_NESTED")
+        async with self._hold_creation_fence():
+            # This short admission is atomic with the durable latch.  Once it
+            # succeeds, cancellation waits on the fence while the exact
+            # intent becomes either a registered resource or a reconciled
+            # absence.  Nested registry writes use the captured exact scope.
+            with self._admit(labels):
+                pass
+            token = self._active_creation_scope.set(scope)
+            try:
+                yield
+            finally:
+                self._active_creation_scope.reset(token)
+
+    @asynccontextmanager
+    async def _hold_creation_fence(self) -> AsyncIterator[None]:
+        path = self._creation_lock_path
+        if path is None:
+            async with self._memory_creation_lock:
+                yield
+            return
+        handle = _open_creation_lock(path)
+        locked = False
+        try:
+            while not locked:
+                locked = _try_creation_lock(handle)
+                if not locked:
+                    await asyncio.sleep(_FENCE_POLL_SECONDS)
+            yield
+        finally:
+            if locked:
+                _unlock_creation_lock(handle)
+            handle.close()
+
+    def fresh_cancellation_snapshots(
+        self,
+        *,
+        analysis_id: str,
+        metas: tuple[RecordMeta, ...],
+    ) -> tuple[OwnedResourceSnapshot, ...]:
+        """Partition one analysis journal into exact prepared-attempt snapshots."""
+
+        if not analysis_id:
+            raise ValueError("CANCELLATION_SANDBOX_SCOPE_MISMATCH")
+        current = (
+            self
+            if self._journal_path is None
+            else type(self)(journal_path=self._journal_path)
+        )
+        entries: tuple[
+            OwnedResource | ContainerOwnershipIntent | ImageOwnershipIntent, ...
+        ] = (
+            *current._resources.values(),
+            *current._intents.values(),
+            *current._image_intents.values(),
+        )
+        all_scopes = {ownership_scope(entry.labels) for entry in entries}
+        if any(scope[0] != analysis_id for scope in all_scopes):
+            raise ValueError("CANCELLATION_SANDBOX_FOREIGN_SCOPE")
+        expected_scopes = {_record_scope(meta) for meta in metas}
+        required_entries: tuple[
+            OwnedResource | ContainerOwnershipIntent | ImageOwnershipIntent, ...
+        ] = (
+            *(
+                resource
+                for resource in current._resources.values()
+                if resource.preservation_reason is None
+            ),
+            *current._intents.values(),
+            *current._image_intents.values(),
+        )
+        required_scopes = {ownership_scope(entry.labels) for entry in required_entries}
+        snapshots = tuple(current.snapshot(meta=meta) for meta in metas)
+        represented_scopes = {
+            _record_scope(meta)
+            for meta, snapshot in zip(metas, snapshots, strict=True)
+            if snapshot.resources
+            or snapshot.container_intents
+            or snapshot.image_intents
+        }
+        if (
+            len(expected_scopes) != len(metas)
+            or not required_scopes.issubset(expected_scopes)
+            or represented_scopes != expected_scopes
+        ):
+            raise ValueError("CANCELLATION_SANDBOX_INVENTORY_INCOMPLETE")
+        return snapshots
+
+    def reserve_container(
+        self,
+        *,
+        container_name: str,
+        labels: Mapping[str, str],
+    ) -> None:
+        with self._admit(labels):
+            if (
+                not container_name
+                or container_name in self._intents
+                or any(
+                    item.resource_id == container_name
+                    for item in self._resources.values()
+                )
+            ):
+                raise ValueError("DUPLICATE_SANDBOX_RESOURCE")
+            self._intents[container_name] = ContainerOwnershipIntent(
+                container_name,
+                dict(labels),
+            )
+            self._persist()
+
+    def register_reserved_container(
+        self,
+        *,
+        container_name: str,
+        container_id: str,
+        meta: RecordMeta,
+        reconcile_required: bool = False,
+        lookup_by_name: bool = False,
+    ) -> StoredDataRef:
+        intent = self._intents.get(container_name)
+        if intent is None:
+            raise ValueError("SANDBOX_OWNERSHIP_INTENT_REQUIRED")
+        with self._admit(intent.labels):
+            ref = self._register_container(
+                container_id=container_id,
+                labels=intent.labels,
+                meta=meta,
+                reconcile_required=reconcile_required,
+                lookup_by_name=lookup_by_name,
+            )
+            del self._intents[container_name]
+            self._persist()
+            return ref
 
     def register_container(
         self,
@@ -44,6 +278,28 @@ class OwnedResourceRegistry:
         container_id: str,
         labels: Mapping[str, str],
         meta: RecordMeta,
+        reconcile_required: bool = False,
+        lookup_by_name: bool = False,
+    ) -> StoredDataRef:
+        with self._admit(labels):
+            ref = self._register_container(
+                container_id=container_id,
+                labels=labels,
+                meta=meta,
+                reconcile_required=reconcile_required,
+                lookup_by_name=lookup_by_name,
+            )
+            self._persist()
+            return ref
+
+    def _register_container(
+        self,
+        *,
+        container_id: str,
+        labels: Mapping[str, str],
+        meta: RecordMeta,
+        reconcile_required: bool,
+        lookup_by_name: bool,
     ) -> StoredDataRef:
         ref = owned_container_resource_ref(
             container_id=container_id,
@@ -52,11 +308,301 @@ class OwnedResourceRegistry:
         key = canonical_bytes(ref)
         if key in self._resources:
             raise ValueError("DUPLICATE_SANDBOX_RESOURCE")
-        self._resources[key] = OwnedResource(ref, container_id, dict(labels))
+        self._resources[key] = OwnedResource(
+            ref=ref,
+            resource_id=container_id,
+            labels=dict(labels),
+            resource_kind="CONTAINER",
+            lookup_by_name=lookup_by_name,
+            reconcile_required=reconcile_required,
+        )
         return ref
+
+    def register_image(
+        self,
+        *,
+        image_digest: str,
+        image_tag: str,
+        labels: Mapping[str, str],
+        meta: RecordMeta,
+        preservation_reason: Literal["REUSABLE_BASELINE"] | None,
+    ) -> StoredDataRef:
+        with self._admit(labels):
+            ref = self._register_image(
+                image_digest=image_digest,
+                image_tag=image_tag,
+                labels=labels,
+                meta=meta,
+                preservation_reason=preservation_reason,
+            )
+            self._persist()
+            return ref
+
+    def _register_image(
+        self,
+        *,
+        image_digest: str,
+        image_tag: str,
+        labels: Mapping[str, str],
+        meta: RecordMeta,
+        preservation_reason: Literal["REUSABLE_BASELINE"] | None,
+    ) -> StoredDataRef:
+        if DockerAdapter.runtime_image_tag(labels) != image_tag:
+            raise ValueError("SANDBOX_IMAGE_TAG_MISMATCH")
+        ref = owned_image_resource_ref(image_digest=image_digest, meta=meta)
+        key = canonical_bytes(ref)
+        if key in self._resources:
+            raise ValueError("DUPLICATE_SANDBOX_RESOURCE")
+        self._resources[key] = OwnedResource(
+            ref=ref,
+            resource_id=image_digest,
+            labels=dict(labels),
+            resource_kind="IMAGE",
+            resource_tag=image_tag,
+            preservation_reason=preservation_reason,
+        )
+        return ref
+
+    def reserve_image(
+        self,
+        *,
+        image_tag: str,
+        labels: Mapping[str, str],
+    ) -> None:
+        with self._admit(labels):
+            if image_tag in self._image_intents or any(
+                item.resource_tag == image_tag for item in self._resources.values()
+            ):
+                raise ValueError("DUPLICATE_SANDBOX_RESOURCE")
+            if DockerAdapter.runtime_image_tag(labels) != image_tag:
+                raise ValueError("SANDBOX_IMAGE_TAG_MISMATCH")
+            self._image_intents[image_tag] = ImageOwnershipIntent(
+                image_tag, dict(labels)
+            )
+            self._persist()
+
+    def register_reserved_image(
+        self,
+        *,
+        image_tag: str,
+        image_digest: str,
+        meta: RecordMeta,
+        preservation_reason: Literal["REUSABLE_BASELINE"] | None,
+    ) -> StoredDataRef:
+        intent = self._image_intents.get(image_tag)
+        if intent is None:
+            raise ValueError("SANDBOX_OWNERSHIP_INTENT_REQUIRED")
+        with self._admit(intent.labels):
+            ref = self._register_image(
+                image_digest=image_digest,
+                image_tag=image_tag,
+                labels=intent.labels,
+                meta=meta,
+                preservation_reason=preservation_reason,
+            )
+            del self._image_intents[image_tag]
+            self._persist()
+            return ref
+
+    def _admit(self, labels: Mapping[str, str]) -> AbstractContextManager[None]:
+        active_scope = self._active_creation_scope.get()
+        if active_scope is None and self._mutation_admission is None:
+            return nullcontext()
+        scope = ownership_scope(labels)
+        if active_scope == scope or self._mutation_admission is None:
+            return nullcontext()
+        return self._mutation_admission(scope[0])
+
+    def forget_image_intent(self, image_tag: str) -> None:
+        if self._image_intents.pop(image_tag, None) is not None:
+            self._persist()
+
+    def forget(self, ref: StoredDataRef) -> None:
+        self._resources.pop(canonical_bytes(ref), None)
+        self._persist()
+
+    def pending_resource_ids(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                (
+                    *(item.container_name for item in self._intents.values()),
+                    *(item.image_tag for item in self._image_intents.values()),
+                    *(item.resource_id for item in self._resources.values()),
+                )
+            )
+        )
 
     def exact(self, ref: StoredDataRef) -> OwnedResource | None:
         return self._resources.get(canonical_bytes(ref))
+
+    def preserved_image_ref(self, image_digest: str) -> StoredDataRef | None:
+        matches = tuple(
+            item.ref
+            for item in self._resources.values()
+            if item.resource_kind == "IMAGE"
+            and item.resource_id == image_digest
+            and item.preservation_reason == "REUSABLE_BASELINE"
+        )
+        if len(matches) > 1:
+            raise ValueError("AMBIGUOUS_BASELINE_IMAGE_OWNERSHIP")
+        return matches[0] if matches else None
+
+    async def reconcile_intent(
+        self,
+        *,
+        docker: CleanupDockerPort,
+        container_name: str,
+    ) -> Literal["REMOVED", "ABSENT", "UNKNOWN"]:
+        intent = self._intents.get(container_name)
+        if intent is None:
+            raise ValueError("SANDBOX_OWNERSHIP_INTENT_REQUIRED")
+        presence = await docker.inspect_container_presence(container_name, by_name=True)
+        if presence.status == "ABSENT":
+            del self._intents[container_name]
+            self._persist()
+            return "ABSENT"
+        if presence.status != "PRESENT" or presence.state is None:
+            return "UNKNOWN"
+        state = presence.state
+        if any(state.labels.get(key) != value for key, value in intent.labels.items()):
+            return "UNKNOWN"
+        try:
+            await docker.remove((state.container_id,))
+        except (OSError, RuntimeError, ValueError):
+            return "UNKNOWN"
+        del self._intents[container_name]
+        self._persist()
+        return "REMOVED"
+
+    async def reconcile_image_intent(
+        self,
+        *,
+        docker: CleanupDockerPort,
+        image_tag: str,
+    ) -> Literal["REMOVED", "ABSENT", "UNKNOWN"]:
+        intent = self._image_intents.get(image_tag)
+        if intent is None:
+            raise ValueError("SANDBOX_OWNERSHIP_INTENT_REQUIRED")
+        presence = await docker.inspect_image_tag(image_tag)
+        if presence.status == "ABSENT":
+            del self._image_intents[image_tag]
+            self._persist()
+            return "ABSENT"
+        if presence.status != "PRESENT" or presence.state is None:
+            return "UNKNOWN"
+        state = presence.state
+        if dict(state.labels) != dict(intent.labels):
+            return "UNKNOWN"
+        try:
+            await docker.remove_image_tags((image_tag,))
+        except (OSError, RuntimeError, ValueError):
+            return "UNKNOWN"
+        del self._image_intents[image_tag]
+        self._persist()
+        return "REMOVED"
+
+    async def prepare_image_intent(
+        self,
+        *,
+        docker: CleanupDockerPort,
+        image_tag: str,
+    ) -> Literal["READY", "UNKNOWN"]:
+        intent = self._image_intents.get(image_tag)
+        if intent is None:
+            raise ValueError("SANDBOX_OWNERSHIP_INTENT_REQUIRED")
+        presence = await docker.inspect_image_tag(image_tag)
+        if presence.status == "ABSENT":
+            return "READY"
+        if presence.status != "PRESENT" or presence.state is None:
+            return "UNKNOWN"
+        if dict(presence.state.labels) != dict(intent.labels):
+            return "UNKNOWN"
+        try:
+            await docker.remove_image_tags((image_tag,))
+        except (OSError, RuntimeError, ValueError):
+            return "UNKNOWN"
+        return "READY"
+
+    async def reconcile_pending(
+        self,
+        *,
+        docker: CleanupDockerPort,
+    ) -> tuple[str, ...]:
+        """Remove exact journaled leftovers; return entries still needing attention."""
+
+        failures: list[str] = []
+        for name in tuple(self._intents):
+            try:
+                status = await self.reconcile_intent(docker=docker, container_name=name)
+            except (OSError, RuntimeError, ValueError):
+                failures.append(name)
+            else:
+                if status == "UNKNOWN":
+                    failures.append(name)
+        for image_tag in tuple(self._image_intents):
+            try:
+                status = await self.reconcile_image_intent(
+                    docker=docker, image_tag=image_tag
+                )
+            except (OSError, RuntimeError, ValueError):
+                failures.append(image_tag)
+            else:
+                if status == "UNKNOWN":
+                    failures.append(image_tag)
+        for key, resource in tuple(self._resources.items()):
+            if resource.preservation_reason is not None:
+                continue
+            if not resource.reconcile_required:
+                continue
+            try:
+                if resource.resource_kind == "CONTAINER":
+                    container_presence = await docker.inspect_container_presence(
+                        resource.resource_id,
+                        by_name=resource.lookup_by_name,
+                    )
+                    if container_presence.status == "ABSENT":
+                        del self._resources[key]
+                        self._persist()
+                        continue
+                    if (
+                        container_presence.status != "PRESENT"
+                        or container_presence.state is None
+                    ):
+                        raise ValueError("CLEANUP_STATE_UNKNOWN")
+                    state = container_presence.state
+                    if any(
+                        state.labels.get(name) != value
+                        for name, value in resource.labels.items()
+                    ):
+                        raise ValueError("CLEANUP_OWNERSHIP_MISMATCH")
+                    await docker.remove((state.container_id,))
+                else:
+                    if resource.resource_tag is None:
+                        raise ValueError("CLEANUP_IMAGE_TAG_REQUIRED")
+                    image_presence = await docker.inspect_image_tag(
+                        resource.resource_tag
+                    )
+                    if image_presence.status == "ABSENT":
+                        del self._resources[key]
+                        self._persist()
+                        continue
+                    if (
+                        image_presence.status != "PRESENT"
+                        or image_presence.state is None
+                    ):
+                        raise ValueError("CLEANUP_STATE_UNKNOWN")
+                    if (
+                        image_presence.state.image_digest != resource.resource_id
+                        or dict(image_presence.state.labels) != dict(resource.labels)
+                    ):
+                        raise ValueError("CLEANUP_OWNERSHIP_MISMATCH")
+                    await docker.remove_image_tags((resource.resource_tag,))
+            except (OSError, RuntimeError, ValueError):
+                failures.append(resource.resource_id)
+            else:
+                del self._resources[key]
+                self._persist()
+        return tuple(failures)
 
     async def cleanup(
         self,
@@ -94,26 +640,90 @@ class OwnedResourceRegistry:
                 failure = "CLEANUP_OWNERSHIP_MISMATCH"
             else:
                 owned.append(resource)
+        containers = [item for item in owned if item.resource_kind == "CONTAINER"]
+        images = [item for item in owned if item.resource_kind == "IMAGE"]
         environment_ids = {item.container_instance_id for item in environments}
-        if {item.resource_id for item in owned} != environment_ids:
+        if {item.resource_id for item in containers} != environment_ids:
             failure = "CLEANUP_RESOURCE_COVERAGE_MISMATCH"
 
         if failure is None:
             try:
-                states = [await docker.inspect(item.resource_id) for item in owned]
-                if any(
-                    state.container_id != item.resource_id
-                    or any(
-                        state.labels.get(key) != value
-                        for key, value in item.labels.items()
-                    )
-                    for item, state in zip(owned, states, strict=True)
-                ):
-                    failure = "CLEANUP_OWNERSHIP_MISMATCH"
-                else:
-                    await docker.remove(tuple(item.resource_id for item in owned))
-            except (OSError, RuntimeError, ValueError):
-                failure = "OWNED_RESOURCE_CLEANUP_FAILED"
+                async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
+                    container_ids: list[str] = []
+                    for item in containers:
+                        container_presence = await docker.inspect_container_presence(
+                            item.resource_id,
+                            by_name=item.lookup_by_name,
+                        )
+                        if container_presence.status == "ABSENT":
+                            continue
+                        if (
+                            container_presence.status != "PRESENT"
+                            or container_presence.state is None
+                        ):
+                            raise ValueError("CLEANUP_STATE_UNKNOWN")
+                        if any(
+                            container_presence.state.labels.get(key) != value
+                            for key, value in item.labels.items()
+                        ):
+                            raise ValueError("CLEANUP_OWNERSHIP_MISMATCH")
+                        container_ids.append(container_presence.state.container_id)
+                    await docker.remove(tuple(container_ids))
+
+                    removable_tags: list[str] = []
+                    for item in images:
+                        if item.preservation_reason is not None:
+                            continue
+                        if item.resource_tag is None:
+                            raise ValueError("CLEANUP_IMAGE_TAG_REQUIRED")
+                        image_presence = await docker.inspect_image_tag(
+                            item.resource_tag
+                        )
+                        if image_presence.status == "ABSENT":
+                            continue
+                        if (
+                            image_presence.status != "PRESENT"
+                            or image_presence.state is None
+                        ):
+                            raise ValueError("CLEANUP_STATE_UNKNOWN")
+                        if (
+                            image_presence.state.image_digest != item.resource_id
+                            or dict(image_presence.state.labels) != dict(item.labels)
+                        ):
+                            raise ValueError("CLEANUP_OWNERSHIP_MISMATCH")
+                        removable_tags.append(item.resource_tag)
+                    await docker.remove_image_tags(tuple(removable_tags))
+                    for item in (*containers, *images):
+                        if item.preservation_reason is not None:
+                            continue
+                        self._resources.pop(canonical_bytes(item.ref), None)
+                    self._persist()
+            except (
+                TimeoutError,
+                asyncio.CancelledError,
+                OSError,
+                RuntimeError,
+                ValueError,
+            ) as error:
+                failure = (
+                    "CLEANUP_OWNERSHIP_MISMATCH"
+                    if str(error) == "CLEANUP_OWNERSHIP_MISMATCH"
+                    else "OWNED_RESOURCE_CLEANUP_FAILED"
+                )
+
+        if failure is not None and owned:
+            for item in owned:
+                self._resources[canonical_bytes(item.ref)] = OwnedResource(
+                    ref=item.ref,
+                    resource_id=item.resource_id,
+                    labels=item.labels,
+                    resource_kind=item.resource_kind,
+                    resource_tag=item.resource_tag,
+                    lookup_by_name=item.lookup_by_name,
+                    preservation_reason=item.preservation_reason,
+                    reconcile_required=True,
+                )
+            self._persist()
 
         return CleanupResult(
             meta=fresh_record_meta(meta, "cleanup_result"),
@@ -123,4 +733,291 @@ class OwnedResourceRegistry:
             status="FAILED" if failure else "SUCCEEDED",
             failure_reason=failure,
             finished_at=meta.created_at,
+        )
+
+    def _load(self) -> None:
+        path = self._journal_path
+        if path is None or not path.exists():
+            return
+        try:
+            value = json.loads(path.read_bytes(), object_pairs_hook=_unique_json_object)
+            if not isinstance(value, dict):
+                raise TypeError
+            if set(value) - {"intents", "image_intents", "resources"}:
+                raise TypeError
+            intents = value.get("intents")
+            image_intents = value.get("image_intents", [])
+            resources = value.get("resources")
+            if (
+                not isinstance(intents, list)
+                or not isinstance(image_intents, list)
+                or not isinstance(resources, list)
+            ):
+                raise TypeError
+            for item in intents:
+                if not isinstance(item, dict):
+                    raise TypeError
+                if set(item) != {"container_name", "labels"}:
+                    raise TypeError
+                name = item["container_name"]
+                labels = item["labels"]
+                if (
+                    not isinstance(name, str)
+                    or not isinstance(labels, dict)
+                    or any(
+                        not isinstance(key, str) or not isinstance(label, str)
+                        for key, label in labels.items()
+                    )
+                ):
+                    raise TypeError
+                if not name or name in self._intents:
+                    raise ValueError("DUPLICATE_SANDBOX_RESOURCE")
+                self._intents[name] = ContainerOwnershipIntent(name, labels)
+            for item in image_intents:
+                if not isinstance(item, dict):
+                    raise TypeError
+                if set(item) != {"image_tag", "labels"}:
+                    raise TypeError
+                image_tag = item["image_tag"]
+                labels = item["labels"]
+                if (
+                    not isinstance(image_tag, str)
+                    or not isinstance(labels, dict)
+                    or any(
+                        not isinstance(key, str) or not isinstance(label, str)
+                        for key, label in labels.items()
+                    )
+                    or DockerAdapter.runtime_image_tag(labels) != image_tag
+                ):
+                    raise TypeError
+                if image_tag in self._image_intents or image_tag in self._intents:
+                    raise ValueError("DUPLICATE_SANDBOX_RESOURCE")
+                self._image_intents[image_tag] = ImageOwnershipIntent(image_tag, labels)
+            for item in resources:
+                if not isinstance(item, dict):
+                    raise TypeError
+                if set(item) - {
+                    "ref",
+                    "resource_id",
+                    "labels",
+                    "resource_kind",
+                    "resource_tag",
+                    "preservation_reason",
+                    "reconcile_required",
+                    "lookup_by_name",
+                }:
+                    raise TypeError
+                ref = StoredDataRef.model_validate(item["ref"])
+                resource_id = item["resource_id"]
+                labels = item["labels"]
+                resource_kind = item.get("resource_kind", "CONTAINER")
+                resource_tag = item.get("resource_tag")
+                preservation_reason = item.get("preservation_reason")
+                # Older journals omitted this field; retain conservative recovery
+                # only for those entries, never overwrite an explicit state.
+                reconcile_required = item.get(
+                    "reconcile_required", preservation_reason is None
+                )
+                lookup_by_name = item.get("lookup_by_name", False)
+                if (
+                    not isinstance(resource_id, str)
+                    or not isinstance(labels, dict)
+                    or any(
+                        not isinstance(key, str) or not isinstance(label, str)
+                        for key, label in labels.items()
+                    )
+                    or resource_kind not in {"CONTAINER", "IMAGE"}
+                    or (resource_tag is not None and not isinstance(resource_tag, str))
+                    or preservation_reason not in {None, "REUSABLE_BASELINE"}
+                    or not isinstance(reconcile_required, bool)
+                    or not isinstance(lookup_by_name, bool)
+                    or (
+                        resource_kind == "CONTAINER" and preservation_reason is not None
+                    )
+                    or (resource_kind == "CONTAINER" and resource_tag is not None)
+                ):
+                    raise TypeError
+                if (
+                    canonical_bytes(ref) in self._resources
+                    or resource_id in self.pending_resource_ids()
+                    or (
+                        resource_tag is not None
+                        and (
+                            resource_tag in self.pending_resource_ids()
+                            or any(
+                                entry.resource_tag == resource_tag
+                                for entry in self._resources.values()
+                            )
+                        )
+                    )
+                ):
+                    raise ValueError("DUPLICATE_SANDBOX_RESOURCE")
+                self._resources[canonical_bytes(ref)] = OwnedResource(
+                    ref=ref,
+                    resource_id=resource_id,
+                    labels=labels,
+                    resource_kind=resource_kind,
+                    resource_tag=(resource_tag if resource_kind == "IMAGE" else None),
+                    lookup_by_name=lookup_by_name,
+                    preservation_reason=cast(
+                        Literal["REUSABLE_BASELINE"] | None,
+                        preservation_reason,
+                    ),
+                    reconcile_required=reconcile_required,
+                )
+            entries: tuple[
+                OwnedResource | ContainerOwnershipIntent | ImageOwnershipIntent, ...
+            ] = (
+                *self._resources.values(),
+                *self._intents.values(),
+                *self._image_intents.values(),
+            )
+            roots = {ownership_scope(entry.labels)[:3] for entry in entries}
+            if len(roots) > 1:
+                raise ValueError("SANDBOX_RESOURCE_SCOPE_MISMATCH")
+        except (
+            KeyError,
+            OSError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as error:
+            raise ValueError("OWNED_RESOURCE_JOURNAL_INVALID") from error
+
+    def _persist(self) -> None:
+        path = self._journal_path
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        value = {
+            "intents": [
+                {
+                    "container_name": item.container_name,
+                    "labels": dict(item.labels),
+                }
+                for item in sorted(
+                    self._intents.values(), key=lambda item: item.container_name
+                )
+            ],
+            "image_intents": [
+                {
+                    "image_tag": item.image_tag,
+                    "labels": dict(item.labels),
+                }
+                for item in sorted(
+                    self._image_intents.values(), key=lambda item: item.image_tag
+                )
+            ],
+            "resources": [
+                {
+                    "ref": item.ref.model_dump(mode="json"),
+                    "resource_id": item.resource_id,
+                    "labels": dict(item.labels),
+                    "resource_kind": item.resource_kind,
+                    "resource_tag": item.resource_tag,
+                    "lookup_by_name": item.lookup_by_name,
+                    "preservation_reason": item.preservation_reason,
+                    "reconcile_required": item.reconcile_required,
+                }
+                for item in sorted(
+                    self._resources.values(), key=lambda item: item.resource_id
+                )
+            ],
+        }
+        payload = canonical_bytes(value)
+        temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+                0o600,
+            )
+            written = 0
+            while written < len(payload):
+                count = os.write(descriptor, payload[written:])
+                if count <= 0:
+                    raise OSError("OWNED_RESOURCE_JOURNAL_WRITE_FAILED")
+                written += count
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = -1
+            os.replace(temporary, path)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("OWNED_RESOURCE_JOURNAL_INVALID")
+        result[key] = value
+    return result
+
+
+def _record_scope(meta: RecordMeta) -> tuple[str, ...]:
+    meta = RecordMeta.model_validate(meta)
+    if meta.hypothesis_id is None or meta.attempt_id is None:
+        raise ValueError("CANCELLATION_SANDBOX_SCOPE_MISMATCH")
+    return (
+        str(meta.analysis_id),
+        str(meta.workspace_id),
+        str(meta.commit_id),
+        str(meta.hypothesis_id),
+        str(meta.attempt_id),
+    )
+
+
+def _open_creation_lock(path: Path) -> BinaryIO:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    handle = os.fdopen(descriptor, "r+b", buffering=0)
+    if os.fstat(descriptor).st_size == 0:
+        handle.write(b"\0")
+        os.fsync(descriptor)
+    handle.seek(0)
+    return handle
+
+
+def _try_creation_lock(handle: BinaryIO) -> bool:
+    handle.seek(0)
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(
+                handle.fileno(),
+                fcntl.LOCK_EX | fcntl.LOCK_NB,
+            )
+    except OSError as error:
+        if error.errno in {errno.EACCES, errno.EAGAIN} or getattr(
+            error, "winerror", None
+        ) in {33, 36}:
+            return False
+        raise
+    return True
+
+
+def _unlock_creation_lock(handle: BinaryIO) -> None:
+    handle.seek(0)
+    if sys.platform == "win32":
+        import msvcrt
+
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(
+            handle.fileno(),
+            fcntl.LOCK_UN,
         )

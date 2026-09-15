@@ -40,6 +40,13 @@
 
 ## 3. 표 읽는 방법
 
+재시작 descriptor 검사의 값 모델 의존성은
+`sastsimi.orchestration.production_descriptor`에서
+`sastsimi.config.production_profile.ProductionProfile` 하나만 허용한다.
+저장된 exact canonical bytes를 검증하기 위한 symbol 단위 예외이며,
+현재 설정 loader, config 모듈 전체 또는 다른 orchestration 모듈에는 적용하지 않는다.
+`tests/contract/test_architecture_imports.py`가 허용 edge와 이 경계를 함께 검사한다.
+
 각 단계 행은 Issue #24의 필수 항목을 다음 열로 묶어 표시한다.
 
 - `주체`: 단계 종류, 논리 담당 역할과 실제 실행 주체

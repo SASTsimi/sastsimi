@@ -20,6 +20,7 @@ from .ids import (
 from .records import RecordMeta, RunMeta
 from .refs import (
     BudgetScopeRef,
+    HostConfigurationRef,
     PolicyCacheRef,
     RecordRef,
     RunStoredDataRef,
@@ -32,6 +33,7 @@ from .refs import (
 
 class WorkType(StrEnum):
     WORKSPACE_PREP = "WORKSPACE_PREP"
+    REPOSITORY_PROFILE = "REPOSITORY_PROFILE"
     STATIC_TOOL = "STATIC_TOOL"
     STATIC_NORMALIZE = "STATIC_NORMALIZE"
     HYPOTHESIS_PROPOSAL = "HYPOTHESIS_PROPOSAL"
@@ -141,7 +143,15 @@ class ScopedRecord(ContractModel):
             value = getattr(self, name)
             values = value if isinstance(value, tuple) else (value,)
             for ref in values:
-                if isinstance(ref, (RunStoredDataRef, StoredDataRef, PolicyCacheRef)):
+                if isinstance(
+                    ref,
+                    (
+                        RunStoredDataRef,
+                        StoredDataRef,
+                        HostConfigurationRef,
+                        PolicyCacheRef,
+                    ),
+                ):
                     validate_ref_scope(ref, self.meta)
         return self
 

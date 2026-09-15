@@ -23,3 +23,7 @@ class RuntimePaths:
     @property
     def quarantine(self) -> Path:
         return self.root / "quarantine"
+
+    @property
+    def reports(self) -> Path:
+        return self.root / "reports"

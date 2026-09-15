@@ -32,6 +32,49 @@ analysis_runs = Table(
     Column("analysis_id", Text, primary_key=True),
     Column("payload", Text, nullable=False),
 )
+run_controls = Table(
+    "run_controls",
+    metadata,
+    Column(
+        "analysis_id",
+        Text,
+        ForeignKey("analysis_runs.analysis_id"),
+        primary_key=True,
+    ),
+    Column("cancel_requested_at", Text, nullable=False),
+    Column("cancel_reason", Text, nullable=False),
+    Column("quiescent_at", Text),
+)
+cancellation_observations = Table(
+    "cancellation_observations",
+    metadata,
+    Column("observation_key", Text, primary_key=True),
+    Column(
+        "analysis_id",
+        Text,
+        ForeignKey("analysis_runs.analysis_id"),
+        nullable=False,
+    ),
+    Column("work_id", Text, nullable=False),
+    Column("attempt_id", Text, nullable=False),
+    Column("action_ref", Text, nullable=False),
+    Column("issued_decision_ref", Text, nullable=False),
+    Column("decision_ref", Text, nullable=False),
+    Column("target_kind", Text, nullable=False),
+    Column("resource_kind", Text, nullable=False),
+    Column("resource_id", Text, nullable=False),
+    Column("resource_ref", Text),
+    Column("resource_tag", Text),
+    Column("labels", Text, nullable=False),
+    Column("lookup_by_name", Integer, nullable=False),
+    Column("preservation_reason", Text),
+    Column("inventory_fingerprint", Text, nullable=False),
+    Column("resource_ordinal", Integer, nullable=False),
+    Column("resource_count", Integer, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("reason_code", Text),
+    Column("observed_at", Text, nullable=False),
+)
 action_requests = Table(
     "action_requests",
     metadata,
@@ -87,6 +130,9 @@ current_records = Table(
 prompt_active_entries = Table(
     "prompt_active_entries",
     metadata,
+    Column("analysis_id", Text, primary_key=True),
+    Column("workspace_id", Text, primary_key=True),
+    Column("commit_id", Text, primary_key=True),
     Column("agent_role", Text, primary_key=True),
     Column("task_kind", Text, primary_key=True),
     Column("purpose", Text, primary_key=True),
@@ -177,4 +223,65 @@ artifacts = Table(
     metadata,
     Column("content_hash", Text, primary_key=True),
     Column("path", Text, nullable=False),
+)
+
+# T13 keeps the exact comparison universe independently of current indexes.
+# The pool is written before a sibling cohort is exposed as READY, so pair
+# ownership can never depend on worker timing or a later index revision.
+chaining_cohorts = Table(
+    "chaining_cohorts",
+    metadata,
+    Column("cohort_id", Text, primary_key=True),
+    Column("source_update_ref", Text, nullable=False, unique=True),
+    Column("analysis_id", Text, nullable=False),
+    Column("workspace_id", Text, nullable=False),
+    Column("commit_id", Text, nullable=False),
+    Column("member_count", Integer, nullable=False),
+    Column("status", Text, nullable=False),
+)
+chaining_work_pools = Table(
+    "chaining_work_pools",
+    metadata,
+    Column(
+        "work_id",
+        Text,
+        ForeignKey("work_states.work_id"),
+        primary_key=True,
+    ),
+    Column(
+        "cohort_id",
+        Text,
+        ForeignKey("chaining_cohorts.cohort_id"),
+        nullable=False,
+    ),
+    Column("member_order", Integer, nullable=False),
+    Column("analysis_id", Text, nullable=False),
+    Column("workspace_id", Text, nullable=False),
+    Column("commit_id", Text, nullable=False),
+    Column("trigger_work_ref", Text, nullable=False, unique=True),
+    Column("work_generation", Integer, nullable=False),
+    Column("input_hash", Text, nullable=False),
+    Column("trigger_primitive_ref", Text, nullable=False),
+    Column("index_refs", Text, nullable=False),
+    Column("considered_primitive_refs", Text, nullable=False),
+    Column("pool_hash", Text, nullable=False),
+    UniqueConstraint("cohort_id", "member_order"),
+    UniqueConstraint("analysis_id", "trigger_primitive_ref"),
+)
+chaining_match_reservations = Table(
+    "chaining_match_reservations",
+    metadata,
+    Column("analysis_id", Text, primary_key=True),
+    Column("primitive_match_id", Text, primary_key=True),
+    Column("upstream_result_ref", Text, nullable=False),
+    Column("downstream_input_ref", Text, nullable=False),
+    Column("matched_input_id", Text, nullable=False),
+    Column("source_result_ref", Text, nullable=False),
+    UniqueConstraint(
+        "analysis_id",
+        "upstream_result_ref",
+        "downstream_input_ref",
+        "matched_input_id",
+        name="uq_chaining_directional_triple",
+    ),
 )

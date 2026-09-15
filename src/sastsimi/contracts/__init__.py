@@ -18,6 +18,9 @@ from .actions import validate_decision_revision as validate_decision_revision
 from .actions import (
     validate_generation_restart_context as validate_generation_restart_context,
 )
+from .analysis import AnalysisRunInput as AnalysisRunInput
+from .analysis import AnalysisRunState as AnalysisRunState
+from .analysis import AnalysisStartRequest as AnalysisStartRequest
 from .base import ContractModel as ContractModel
 from .base import NonEmptyStr as NonEmptyStr
 from .base import NonNegativeInt as NonNegativeInt
@@ -50,6 +53,20 @@ from .canonical_json import CANONICAL_JSON_VERSION as CANONICAL_JSON_VERSION
 from .canonical_json import SetListPolicy as SetListPolicy
 from .canonical_json import canonical_bytes as canonical_bytes
 from .canonical_json import content_hash as content_hash
+from .capabilities import CapabilityApprovalEvidence as CapabilityApprovalEvidence
+from .capabilities import CapabilityArchitecture as CapabilityArchitecture
+from .capabilities import CapabilityControlEvidence as CapabilityControlEvidence
+from .capabilities import CapabilityKind as CapabilityKind
+from .capabilities import CapabilityLanguage as CapabilityLanguage
+from .capabilities import CapabilityOperatingSystem as CapabilityOperatingSystem
+from .capabilities import CapabilityOperation as CapabilityOperation
+from .capabilities import CapabilitySecurityControl as CapabilitySecurityControl
+from .capabilities import RuntimeCapabilityProfile as RuntimeCapabilityProfile
+from .capabilities import RuntimeCapabilitySelection as RuntimeCapabilitySelection
+from .capabilities import (
+    StaticToolCapabilitySelection as StaticToolCapabilitySelection,
+)
+from .capabilities import capability_target_hash as capability_target_hash
 from .chaining import ChainingResult as ChainingResult
 from .chaining import LineageExclusion as LineageExclusion
 from .chaining import NoMatchReason as NoMatchReason
@@ -61,6 +78,8 @@ from .closure import validate_committed_output as validate_committed_output
 from .dynamic import AgentLog as AgentLog
 from .dynamic import AgentLogEvent as AgentLogEvent
 from .dynamic import CleanupResult as CleanupResult
+from .dynamic import DependencyBundle as DependencyBundle
+from .dynamic import DependencyEcosystem as DependencyEcosystem
 from .dynamic import DynamicReproductionConclusion as DynamicReproductionConclusion
 from .dynamic import DynamicReproductionRequest as DynamicReproductionRequest
 from .dynamic import DynamicReproductionResult as DynamicReproductionResult
@@ -79,6 +98,9 @@ from .dynamic import SandboxCommandRecord as SandboxCommandRecord
 from .dynamic import SandboxEnvironment as SandboxEnvironment
 from .dynamic import SandboxPolicyDecision as SandboxPolicyDecision
 from .dynamic import SandboxProfile as SandboxProfile
+from .dynamic import (
+    dependency_bundle_target_hash as dependency_bundle_target_hash,
+)
 from .evaluation import AnalysisRunResult as AnalysisRunResult
 from .evaluation import EvaluationMetric as EvaluationMetric
 from .evaluation import EvaluationRecommendation as EvaluationRecommendation
@@ -118,8 +140,10 @@ from .ids import TransitionCommitId as TransitionCommitId
 from .ids import TransitionId as TransitionId
 from .ids import WorkId as WorkId
 from .ids import WorkspaceId as WorkspaceId
+from .policy import OfficialPolicySourceConfig as OfficialPolicySourceConfig
 from .policy import PolicyCacheRecord as PolicyCacheRecord
 from .policy import PolicyCollectionResult as PolicyCollectionResult
+from .policy import PolicyFreshnessCriterion as PolicyFreshnessCriterion
 from .policy import PolicyItem as PolicyItem
 from .policy import PolicyMissingInfo as PolicyMissingInfo
 from .policy import PolicyParserResult as PolicyParserResult
@@ -133,6 +157,8 @@ from .records import RevisionMeta as RevisionMeta
 from .records import RunMeta as RunMeta
 from .records import validate_revision as validate_revision
 from .refs import BudgetScopeRef as BudgetScopeRef
+from .refs import CheckedConfigurationRef as CheckedConfigurationRef
+from .refs import HostConfigurationRef as HostConfigurationRef
 from .refs import PolicyCacheRef as PolicyCacheRef
 from .refs import RecordRef as RecordRef
 from .refs import RunStoredDataRef as RunStoredDataRef
@@ -167,6 +193,9 @@ from .static import CodeSymbol as CodeSymbol
 from .static import CodeWorkspace as CodeWorkspace
 from .static import ContextRetrievalLimits as ContextRetrievalLimits
 from .static import DataGap as DataGap
+from .static import RepositoryExecutionSelection as RepositoryExecutionSelection
+from .static import RepositoryProfile as RepositoryProfile
+from .static import RepositorySelectedTool as RepositorySelectedTool
 from .static import Restriction as Restriction
 from .static import RuleExecutionItem as RuleExecutionItem
 from .static import RuleExecutionRecord as RuleExecutionRecord
