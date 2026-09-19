@@ -892,9 +892,7 @@ class EnvironmentRecipeStore:
             spec = entries[requirement_paths[0]][0]
         elif pyproject_paths:
             try:
-                project = tomllib.loads(
-                    entries[pyproject_paths[0]][0].decode("utf-8")
-                )
+                project = tomllib.loads(entries[pyproject_paths[0]][0].decode("utf-8"))
             except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
                 raise ValueError("DEPENDENCY_FILE_UNPARSEABLE") from error
             declared = project.get("project", {}).get("dependencies", ())

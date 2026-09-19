@@ -19,9 +19,7 @@ def test_now_never_goes_backward_across_a_real_clock_correction() -> None:
     clock = SystemClock()
     first = clock.now()
 
-    with patch(
-        "sastsimi.runtime.system_support.datetime"
-    ) as patched_datetime:
+    with patch("sastsimi.runtime.system_support.datetime") as patched_datetime:
         patched_datetime.now.return_value = first - timedelta(seconds=30)
         second = clock.now()
 
@@ -32,9 +30,7 @@ def test_now_keeps_tracking_real_time_once_it_advances_again() -> None:
     clock = SystemClock()
     first = clock.now()
 
-    with patch(
-        "sastsimi.runtime.system_support.datetime"
-    ) as patched_datetime:
+    with patch("sastsimi.runtime.system_support.datetime") as patched_datetime:
         patched_datetime.now.return_value = first - timedelta(seconds=30)
         clock.now()
         recovered = first + timedelta(seconds=60)

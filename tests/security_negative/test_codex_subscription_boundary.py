@@ -214,9 +214,7 @@ def test_command_is_pinned_isolated_and_prompt_is_stdin_only() -> None:
         "web_search_cached",
         "web_search_request",
     ):
-        assert deprecated_or_noisy_feature not in _repeated_options(
-            argv, "--disable"
-        )
+        assert deprecated_or_noisy_feature not in _repeated_options(argv, "--disable")
     configs = _repeated_options(argv, "--config")
     assert 'forced_login_method="chatgpt"' in configs
     assert 'model_provider="openai"' in configs
