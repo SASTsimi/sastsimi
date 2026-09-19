@@ -64,8 +64,14 @@ def _inspect(spec: ContainerCodeQLSpec) -> dict[str, object]:
             "DeviceRequests": None,
             "VolumesFrom": None,
             "Tmpfs": {
-                "/work/database": ("rw,noexec,nosuid,nodev,size=268435456,mode=0700"),
-                "/work/output": "rw,noexec,nosuid,nodev,size=16777216,mode=0700",
+                "/work/database": (
+                    "rw,noexec,nosuid,nodev,size=268435456,mode=0700,"
+                    "uid=65532,gid=65532"
+                ),
+                "/work/output": (
+                    "rw,noexec,nosuid,nodev,size=16777216,mode=0700,"
+                    "uid=65532,gid=65532"
+                ),
             },
         },
         "Mounts": [
@@ -125,9 +131,15 @@ def test_run_argv_has_only_the_fixed_codeql_container_boundary() -> None:
         "--memory",
         "536870912",
         "--tmpfs",
-        "/work/database:rw,noexec,nosuid,nodev,size=268435456,mode=0700",
+        (
+            "/work/database:rw,noexec,nosuid,nodev,size=268435456,mode=0700,"
+            "uid=65532,gid=65532"
+        ),
         "--tmpfs",
-        "/work/output:rw,noexec,nosuid,nodev,size=16777216,mode=0700",
+        (
+            "/work/output:rw,noexec,nosuid,nodev,size=16777216,mode=0700,"
+            "uid=65532,gid=65532"
+        ),
         "--mount",
         f"type=bind,src={spec.database_source.resolve()},dst=/input/database,readonly",
         "--mount",

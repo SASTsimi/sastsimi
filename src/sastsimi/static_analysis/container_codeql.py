@@ -136,8 +136,19 @@ def _cpu_text(millicores: int) -> str:
     return value.rstrip("0").rstrip(".") if "." in value else value
 
 
-def _tmpfs_argument(target: str, limit_bytes: int) -> str:
-    return f"{target}:rw,noexec,nosuid,nodev,size={limit_bytes},mode=0700"
+def _tmpfs_identity(user: str) -> tuple[str, str]:
+    identity = _NON_ROOT_USER.fullmatch(user)
+    if identity is None:  # ContainerCodeQLSpec normally rejects this first.
+        raise _fail("CODEQL_CONTAINER_NON_ROOT_REQUIRED")
+    return identity.group("uid"), identity.group("gid")
+
+
+def _tmpfs_argument(target: str, limit_bytes: int, user: str) -> str:
+    uid, gid = _tmpfs_identity(user)
+    return (
+        f"{target}:rw,noexec,nosuid,nodev,size={limit_bytes},mode=0700,"
+        f"uid={uid},gid={gid}"
+    )
 
 
 def _container_name(spec: ContainerCodeQLSpec) -> str:
@@ -176,9 +187,9 @@ def build_container_codeql_run_argv(spec: ContainerCodeQLSpec) -> tuple[str, ...
         "--memory",
         str(spec.memory_limit_bytes),
         "--tmpfs",
-        _tmpfs_argument(_DATABASE_WORK, spec.database_limit_bytes),
+        _tmpfs_argument(_DATABASE_WORK, spec.database_limit_bytes, spec.user),
         "--tmpfs",
-        _tmpfs_argument(_OUTPUT_WORK, spec.output_limit_bytes),
+        _tmpfs_argument(_OUTPUT_WORK, spec.output_limit_bytes, spec.user),
         "--mount",
         f"type=bind,src={_mount_text(spec.database_source)},dst={_DATABASE_TARGET},readonly",
         "--mount",
@@ -201,9 +212,20 @@ def _empty(value: object) -> bool:
     return value is None or value == [] or value == ""
 
 
-def _tmpfs_options(target: str, limit_bytes: int) -> frozenset[str]:
+def _tmpfs_options(target: str, limit_bytes: int, user: str) -> frozenset[str]:
+    del target
+    uid, gid = _tmpfs_identity(user)
     return frozenset(
-        {"rw", "noexec", "nosuid", "nodev", f"size={limit_bytes}", "mode=0700"}
+        {
+            "rw",
+            "noexec",
+            "nosuid",
+            "nodev",
+            f"size={limit_bytes}",
+            "mode=0700",
+            f"uid={uid}",
+            f"gid={gid}",
+        }
     )
 
 
@@ -248,9 +270,9 @@ def validate_container_inspect(
             or not _empty(host.get("VolumesFrom"))
             or set(tmpfs) != {_DATABASE_WORK, _OUTPUT_WORK}
             or frozenset(str(tmpfs[_DATABASE_WORK]).split(","))
-            != _tmpfs_options(_DATABASE_WORK, spec.database_limit_bytes)
+            != _tmpfs_options(_DATABASE_WORK, spec.database_limit_bytes, spec.user)
             or frozenset(str(tmpfs[_OUTPUT_WORK]).split(","))
-            != _tmpfs_options(_OUTPUT_WORK, spec.output_limit_bytes)
+            != _tmpfs_options(_OUTPUT_WORK, spec.output_limit_bytes, spec.user)
         ):
             raise ValueError
 
