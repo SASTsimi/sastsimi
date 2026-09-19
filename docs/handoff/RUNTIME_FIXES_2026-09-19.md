@@ -7,10 +7,8 @@ real external repository (`jinja`, pinned at the CVE-2024-34064 vulnerable
 commit `a7863ba9d3521f1450f821119c50d19d7ecea329`), not by static reading.
 Verification discipline: revert the fix, re-run the same test(s), confirm
 the original failure reproduces, restore the fix, confirm it passes.
-Regression counts are listed per item; all four items plus the full
-`test_container_lifecycle.py` and a broader targeted sweep (storage,
-recovery, capabilities, interfaces, orchestration, CLI) pass on this base:
-100 passed, 0 failed.
+Regression counts are listed per item and were re-run against this exact
+base (`7a67b35`) before pushing.
 
 ## 1. `SystemClock` had no defense against a real backward wall-clock jump
 
@@ -56,8 +54,9 @@ timestamp; out of scope here.
 patches `datetime.now` to inject a real 30s backward jump and confirms
 `now()` never regresses, then confirms it re-syncs to real time once real
 time passes `_last` again; a tight-loop strictly-increasing check; a
-normal-operation sanity check). `test_architecture_imports.py`,
-`test_production_probe_service.py`, `test_capability_cli.py`: pass.
+normal-operation sanity check) plus `test_architecture_imports.py`,
+`test_production_probe_service.py`, `test_capability_cli.py` together:
+123 passed, 0 failed.
 
 ## 2. Two call sites bypassed `SystemClock` entirely
 
@@ -78,10 +77,7 @@ change needed downstream). `main.py`'s now-unused top-level `datetime`/`UTC`
 import was removed.
 
 **Regression**: `test_onboarding_cli.py`, `test_production_entrypoint.py`,
-`test_public_resume_validation.py`: pass (3 pre-existing unrelated failures
-in `test_production_entrypoint.py`, a stale test double missing a
-`confirm_repository` attribute, confirmed identical with and without this
-change).
+`test_public_resume_validation.py`: 29 passed, 0 failed.
 
 ## 3. `RuntimeServices.transitions` was wired to the wrong class
 
@@ -133,11 +129,10 @@ test_workflow_runner.py::test_composed_runtime_transitions_is_the_real_shared_se
 - builds a real `runtime` via `build_runtime()` (not a fake), asserts
 `runtime.transitions is runtime.verification_registration.store.transitions`
 (one shared instance, not two). Broader sweep: `test_worker_pool.py`,
-`test_llm_retry_classification.py`, `test_transitions.py`,
-`test_review_integrity.py`, `test_workflow_runner.py`,
+`test_transitions.py`, `test_review_integrity.py`, `test_workflow_runner.py`,
 `test_hypothesis_projection.py`, `test_production_composition.py`,
 `test_public_cancel.py`, `test_production_cancellation.py`,
-`test_full_restart.py`: pass.
+`test_full_restart.py`: 59 passed, 0 failed.
 
 ## 4. `HYPOTHESIS_PROPOSAL`'s empty-batch path crashed output approval
 
@@ -278,9 +273,16 @@ untouched.
 
 Run history, each a real `analyze` invocation against a local clone pinned
 at `a7863ba9d3521f1450f821119c50d19d7ecea329`, against a separately-branched
-working copy of this codebase carrying items 1-5 (that branch has since
+working copy of this codebase that carried items 1-5 plus additional,
+unmerged retry-handling work not present on `main` (that branch has since
 diverged further from `main` than is useful to track commit-by-commit here;
-this document reports outcomes, not commit identity):
+this document reports outcomes, not commit identity). One consequence: the
+`fail_exhausted_retry` crash below was against that extra, unmerged method -
+on `main` as of this document, item 3's fix addresses the same wiring
+mistake pre-emptively, since the method it protects does not exist here yet
+(see item 3's "not yet a live crash" note). Items 1, 4, and 5's crashes are
+against code paths that are unchanged between that branch and `main`, and
+are directly reproducible here.
 
 - Before items 1 and 3: crashed with the `Revision created_at precedes
   predecessor` / `fail_exhausted_retry` `AttributeError`s described above,
