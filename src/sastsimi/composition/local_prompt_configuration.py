@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 from sastsimi.composition.local_codex_binding import LocalCodexBindingRecords
+from sastsimi.config.package_resources import resolve_builtin_resource
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import LogicalRecordId, RecordId
 from sastsimi.contracts.llm import (
@@ -297,7 +298,12 @@ def build_local_prompt_configuration_plan(
             implementation_ref=implementation_ref,
             test_refs=(test_ref,),
         )
-        template_path = repository_root / spec.template_path
+        try:
+            template_path = resolve_builtin_resource(
+                repository_root, Path(spec.template_path)
+            )
+        except ValueError:
+            raise ValueError("LOCAL_PROMPT_TEMPLATE_MISSING") from None
         try:
             template_bytes = template_path.read_bytes()
         except OSError:

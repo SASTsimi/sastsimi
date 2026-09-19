@@ -14,6 +14,7 @@ from sastsimi.composition.local_prompt_configuration import (
     build_local_prompt_configuration_plan,
     publish_local_prompt_configuration,
 )
+from sastsimi.config.package_resources import builtin_package_root
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.ports.dto import StagedArtifact
 from sastsimi.providers.local_codex_validation import validate_local_codex_binding
@@ -143,6 +144,36 @@ async def test_plan_and_publish_complete_local_prompt_graph() -> None:
         if name.startswith("register_local_")
     )
     assert names.count("register_prompt_entry") == 16
+
+
+@pytest.mark.asyncio
+async def test_plan_loads_templates_from_installed_package_root() -> None:
+    records = _safe_records()
+    artifacts = _Artifacts()
+    validated = await validate_local_codex_binding(
+        records=records,
+        artifacts=artifacts,  # type: ignore[arg-type]
+        ids=_Ids(),
+        clock=_Clock(),
+        live_runner=_ProbeRunner(),
+        unauthenticated_runner=_ProbeRunner(),
+        probe_timeout_ms=500,
+    )
+
+    plan = build_local_prompt_configuration_plan(
+        repository_root=builtin_package_root(),
+        binding_records=records,
+        validation=validated,
+        artifacts=artifacts,  # type: ignore[arg-type]
+        ids=_Ids(),
+        clock=_Clock(),
+        timeout_ms=30_000,
+        max_parallel_calls=2,
+        max_calls_per_work=4,
+        max_retries=1,
+    )
+
+    assert len(plan.prompt_entries) == 16
 
 
 @pytest.mark.asyncio

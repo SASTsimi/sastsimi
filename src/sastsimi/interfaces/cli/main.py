@@ -368,8 +368,9 @@ def main(
             if args.evaluate_command != "analyze":
                 raise _InputError
             if local_evaluation_analyze is None:
-                raise local_evaluation_command.LocalEvaluationUnavailable(
-                    "LOCAL_EVALUATION_COMPOSITION_NOT_CONFIGURED"
+                local_evaluation_analyze = cast(
+                    local_evaluation_command.LocalEvaluationAnalyzeEntrypoint,
+                    bootstrap.build_local_evaluation_analyze(),
                 )
             evaluation_request = (
                 local_evaluation_command.LocalEvaluationAnalyzeRequest(

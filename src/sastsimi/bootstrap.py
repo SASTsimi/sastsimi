@@ -12,6 +12,9 @@ from sastsimi.composition.codeql_operator import (
 from sastsimi.composition.codeql_operator import (
     resolve_operator_executable as resolve_operator_executable,
 )
+from sastsimi.composition.local_evaluation_entrypoint import (
+    build_local_evaluation_analyze as build_local_evaluation_analyze,
+)
 from sastsimi.composition.production_control import (
     ProductionResumeUnavailable as ProductionResumeUnavailable,
 )

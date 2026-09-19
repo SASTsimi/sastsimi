@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
+import pytest
+
+from sastsimi import bootstrap
 from sastsimi.contracts.evaluation import AnalysisRunResult
 from sastsimi.interfaces.cli import local_evaluation as command
 from sastsimi.interfaces.cli.main import main
@@ -21,6 +25,52 @@ class _Entrypoint:
     ) -> RunOutcome:
         self.calls.append(request)
         return RunOutcome("analysis-local-1", "TERMINAL", None)
+
+
+def test_local_evaluation_uses_shipped_composition_when_not_injected(
+    tmp_path: Path,
+    capsys: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entrypoint = _Entrypoint()
+    builds: list[str] = []
+
+    def build() -> _Entrypoint:
+        builds.append("built")
+        return entrypoint
+
+    monkeypatch.setattr(
+        bootstrap,
+        "build_local_evaluation_analyze",
+        cast(object, build),
+        raising=False,
+    )
+
+    assert (
+        main(
+            [
+                "--data-dir",
+                str(tmp_path / "data"),
+                "evaluate",
+                "analyze",
+                "--repo",
+                "https://example.invalid/repository.git",
+                "--commit",
+                "a" * 40,
+                "--profile",
+                str(tmp_path / "local-evaluation.toml"),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
+    assert builds == ["built"]
+    assert len(entrypoint.calls) == 1
+    assert json.loads(capsys.readouterr().out)["data"]["purpose"] == (
+        "LOCAL_EVALUATION"
+    )
 
 
 def test_local_evaluation_analyze_is_explicitly_not_production(
