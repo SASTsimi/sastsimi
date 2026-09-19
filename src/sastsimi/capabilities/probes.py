@@ -136,6 +136,8 @@ class SubprocessCommandProbeRunner:
 
     @staticmethod
     def _decode(output: bytes | bytearray) -> CommandObservation:
+        if not output:
+            return CommandObservation(True, None)
         try:
             text = bytes(output).decode("utf-8", errors="strict").strip()
         except UnicodeDecodeError:

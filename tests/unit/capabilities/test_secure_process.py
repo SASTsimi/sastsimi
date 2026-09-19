@@ -12,6 +12,7 @@ from sastsimi.capabilities.probes import (
     ProductionExecutableRegistry,
     SubprocessCommandProbeRunner,
 )
+from sastsimi.capabilities.service import _CapabilityProbeEngine
 
 
 def test_executable_registry_rejects_mutable_or_indirect_paths(tmp_path: Path) -> None:
@@ -83,6 +84,40 @@ def test_probe_process_receives_only_minimal_environment(
 
     assert result.succeeded is True
     assert result.safe_stdout == "clean"
+
+
+def test_probe_process_accepts_successful_command_without_stdout() -> None:
+    result = SubprocessCommandProbeRunner().run(
+        Path(sys.executable),
+        ("-c", "pass"),
+        timeout_ms=5_000,
+    )
+
+    assert result.succeeded is True
+    assert result.safe_stdout is None
+
+
+def test_version_normalization_still_requires_non_empty_safe_stdout() -> None:
+    assert _CapabilityProbeEngine._safe_version(None) is None
+    assert _CapabilityProbeEngine._safe_version("") is None
+    assert _CapabilityProbeEngine._safe_version("git version 2.52.0") == (
+        "git version 2.52.0"
+    )
+
+
+def test_probe_decode_still_rejects_control_characters() -> None:
+    assert SubprocessCommandProbeRunner._decode(b"safe\x00unsafe").succeeded is False
+
+
+def test_probe_process_still_rejects_stdout_overflow() -> None:
+    result = SubprocessCommandProbeRunner().run(
+        Path(sys.executable),
+        ("-c", "print('x' * 65537, end='')"),
+        timeout_ms=5_000,
+    )
+
+    assert result.succeeded is False
+    assert result.safe_stdout is None
 
 
 def test_probe_process_allows_only_fixed_legacy_builder_override() -> None:
