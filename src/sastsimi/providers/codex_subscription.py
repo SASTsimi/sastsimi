@@ -30,6 +30,7 @@ from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.ports.dto import CancellationResult, CapabilityProbeResult
 
 from .base import (
+    CODEX_PVD_RUNNER_MARKER,
     Clock,
     CodexProcessRequest,
     CodexProcessResult,
@@ -480,9 +481,10 @@ class CodexSubscriptionAdapter:
     ) -> CapabilityProbeResult:
         if self.probe_runner is not None:
             observed = await self.probe_runner.run(candidate, self)
-            from .codex_pvd import CodexSubscriptionPVDProbeRunner
-
-            if isinstance(self.probe_runner, CodexSubscriptionPVDProbeRunner):
+            if (
+                getattr(self.probe_runner, "trusted_runner_marker", None)
+                is CODEX_PVD_RUNNER_MARKER
+            ):
                 return CapabilityProbeResult(evidence=observed.evidence)
             return CapabilityProbeResult(
                 evidence=_fail_unobservable_model_test(observed.evidence)

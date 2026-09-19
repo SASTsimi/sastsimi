@@ -11,6 +11,7 @@ from sastsimi.composition.production_provider_builder import (
     CodexHostBindingEvidence,
     ProductionProviderBuildUnavailable,
     ProductionProviderPromptFeature,
+    _build_codex_adapter,
     _codex_host_binding,
     build_production_adapter_feature,
     build_production_call_feature,
@@ -19,6 +20,7 @@ from sastsimi.composition.production_provider_builder import (
 from sastsimi.config.production_profile import ProductionProfile
 from sastsimi.config.secrets import SecretReference
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.ids import CommitId, WorkspaceId
 from sastsimi.contracts.llm import (
     ProviderProfile,
     ProviderValidationEvidence,
@@ -35,7 +37,14 @@ from sastsimi.orchestration.production_provisioning import (
     ProviderConfigurationProvisioning,
 )
 from sastsimi.prompts.production_calls import ConfiguredProductionCallResolver
-from sastsimi.providers.codex_subscription import ApprovedCodexExecutionBinding
+from sastsimi.providers.codex_pvd import CodexSubscriptionPVDProbeRunner
+from sastsimi.providers.codex_subscription import (
+    ApprovedCodexExecutable,
+    ApprovedCodexExecutionBinding,
+    CodexSubscriptionAdapter,
+)
+from sastsimi.runtime.system_support import SystemClock
+from sastsimi.storage.artifact_store import LocalArtifactStore
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import meta, ref
 from tests.security_negative.test_codex_subscription_boundary import (
@@ -640,6 +649,51 @@ def test_codex_factory_receives_exact_supported_binding() -> None:
     assert binding.executable.path == executable
     assert binding.codex_home == executable.parent
     assert len(feature.adapters) == 1
+
+
+@pytest.mark.asyncio
+async def test_default_codex_builder_installs_a_fail_closed_trusted_pvd_runner(
+    tmp_path: Path,
+) -> None:
+    provider, client, validation = _supported_records()
+    executable = Path(__file__).resolve()
+    provider_ref = cast(StoredDataRef, reference(provider))
+    binding = ApprovedCodexExecutionBinding(
+        provider_profile=provider,
+        client_execution_profile=client,
+        executable=ApprovedCodexExecutable(
+            path=executable,
+            sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
+        ),
+        codex_home=executable.parent,
+        runtime_environment=provider.environment,
+        provider_validation_evidence=validation,
+    )
+    queries = _CurrentQueries((provider, client, validation))
+    artifacts = LocalArtifactStore(
+        tmp_path / "artifacts",
+        WorkspaceId(str(validation.meta.workspace_id)),
+        CommitId(str(validation.meta.commit_id)),
+    )
+
+    adapter = _build_codex_adapter(
+        binding=binding,
+        provider_profile_ref=provider_ref,
+        model=str(provider.model),
+        records=cast(Any, object()),
+        artifacts=artifacts,
+        semantic_validators={},
+        metadata_factory=cast(Any, lambda *_args: None),
+        clock=SystemClock(),
+        request_semantic_validators={},
+        queries=cast(Any, queries),
+    )
+
+    assert isinstance(adapter, CodexSubscriptionAdapter)
+    assert isinstance(adapter.probe_runner, CodexSubscriptionPVDProbeRunner)
+    observed = await adapter.probe(validation)
+    assert all(test.result == "FAIL" for test in observed.evidence.tests)
+    assert all(test.evidence_refs for test in observed.evidence.tests)
 
 
 def test_prompt_feature_rejects_an_incomplete_exact_route_graph() -> None:

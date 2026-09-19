@@ -29,6 +29,11 @@ from sastsimi.ports.dto import CapabilityProbeResult
 
 type StructuredOutputValue = dict[str, JsonValue] | list[JsonValue]
 
+# Identity token shared by the official Codex adapter and its exact PVD runner.
+# The adapter uses object identity rather than importing the concrete runner,
+# which keeps the provider modules acyclic without trusting a caller string.
+CODEX_PVD_RUNNER_MARKER = object()
+
 
 class CredentialUnavailableError(RuntimeError):
     """The approved credential reference cannot currently be resolved."""
@@ -171,6 +176,7 @@ class CodexProcessRunner(Protocol):
 
 
 __all__ = [
+    "CODEX_PVD_RUNNER_MARKER",
     "Clock",
     "CodexProcessRequest",
     "CodexProcessResult",
