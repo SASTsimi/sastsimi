@@ -862,7 +862,6 @@ def _build_runtime(
     from sastsimi.runtime.policy_runtime import PolicyRuntimeService
     from sastsimi.runtime.queries import RuntimeQueries
     from sastsimi.runtime.recovery_service import RecoveryService
-    from sastsimi.runtime.transition_service import TransitionService
     from sastsimi.runtime.verification_registration import (
         VerificationRegistrationService,
     )
@@ -971,7 +970,7 @@ def _build_runtime(
         validator,
         BudgetProfileRegistry(registry),
         BudgetService(budget),
-        TransitionService(records),
+        transitions,
         external,
         recovery,
         unit,
