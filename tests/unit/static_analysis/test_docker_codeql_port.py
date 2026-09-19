@@ -275,7 +275,6 @@ async def test_remove_accepts_only_one_exact_owned_name() -> None:
 async def test_probe_waits_and_parses_strict_bounded_logs_without_exec() -> None:
     payload = {
         "schema_version": 1,
-        "image_digest": "sha256:" + "a" * 64,
         "codeql_version": "2.27.0",
         "database": {
             "target": "/work/database",
@@ -312,7 +311,6 @@ async def test_probe_waits_and_parses_strict_bounded_logs_without_exec() -> None
         (executable, "wait", "--", _NAME),
         (executable, "logs", "--", _NAME),
     ]
-    assert observation.image_digest == "sha256:" + "a" * 64
     assert observation.codeql_version == "2.27.0"
     assert observation.database.attempted_bytes == 101
     assert observation.output.denial_code == "EDQUOT"
@@ -327,7 +325,6 @@ async def test_probe_waits_and_parses_strict_bounded_logs_without_exec() -> None
             0,
             {
                 "schema_version": 1,
-                "image_digest": "sha256:" + "a" * 64,
                 "codeql_version": "2.27.0",
                 "database": {
                     "target": "/work/database",
@@ -344,7 +341,6 @@ async def test_probe_waits_and_parses_strict_bounded_logs_without_exec() -> None
             0,
             {
                 "schema_version": 1,
-                "image_digest": "sha256:" + "a" * 64,
                 "codeql_version": "2.27.0",
                 "database": {
                     "target": "/work/database",

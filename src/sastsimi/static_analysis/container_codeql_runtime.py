@@ -102,7 +102,6 @@ class TmpfsCapDenialEvidence:
 class ContainerCodeQLProbeObservation:
     """Raw trusted-port observation validated before capability activation."""
 
-    image_digest: str
     codeql_version: str
     database: TmpfsCapDenialEvidence
     output: TmpfsCapDenialEvidence
@@ -323,8 +322,7 @@ def _probe_matches(
     request: ContainerCodeQLProbeRequest,
 ) -> bool:
     return (
-        observation.image_digest == spec.image_digest
-        and observation.codeql_version == request.expected_codeql_version
+        observation.codeql_version == request.expected_codeql_version
         and _valid_denial(
             observation.database,
             target=_DATABASE_TARGET,

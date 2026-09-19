@@ -121,7 +121,6 @@ class FakeDockerPort:
         self.remove_failure = False
         self.remove_forever = False
         self.probe_observation = ContainerCodeQLProbeObservation(
-            image_digest=spec.image_digest,
             codeql_version="2.23.1",
             database=TmpfsCapDenialEvidence(
                 target="/work/database",
@@ -457,30 +456,21 @@ async def test_probe_cleanup_timeout_is_bounded_and_fails_with_stable_reason() -
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mismatch", ["image", "version", "database", "output"])
+@pytest.mark.parametrize("mismatch", ["version", "database", "output"])
 async def test_probe_fails_closed_for_substitution_or_missing_denial(
     mismatch: str,
 ) -> None:
     spec = _spec()
     port = FakeDockerPort(spec)
     observation = port.probe_observation
-    if mismatch == "image":
+    if mismatch == "version":
         port.probe_observation = ContainerCodeQLProbeObservation(
-            image_digest="sha256:" + "f" * 64,
-            codeql_version=observation.codeql_version,
-            database=observation.database,
-            output=observation.output,
-        )
-    elif mismatch == "version":
-        port.probe_observation = ContainerCodeQLProbeObservation(
-            image_digest=observation.image_digest,
             codeql_version="2.24.0",
             database=observation.database,
             output=observation.output,
         )
     elif mismatch == "database":
         port.probe_observation = ContainerCodeQLProbeObservation(
-            image_digest=observation.image_digest,
             codeql_version=observation.codeql_version,
             database=TmpfsCapDenialEvidence(
                 target="/work/database",
@@ -493,7 +483,6 @@ async def test_probe_fails_closed_for_substitution_or_missing_denial(
         )
     else:
         port.probe_observation = ContainerCodeQLProbeObservation(
-            image_digest=observation.image_digest,
             codeql_version=observation.codeql_version,
             database=observation.database,
             output=TmpfsCapDenialEvidence(

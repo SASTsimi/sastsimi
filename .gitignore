@@ -29,3 +29,4 @@ build/
 /browser-profiles/
 /config/local*.toml
 /capability-private/
+/docker/codeql/codeql-bundle-linux64.tar.gz

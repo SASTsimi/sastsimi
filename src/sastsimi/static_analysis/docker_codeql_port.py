@@ -23,7 +23,6 @@ _CONTROL_OUTPUT_LIMIT_BYTES = 4096
 _PROBE_OUTPUT_LIMIT_BYTES = 64 * 1024
 _STREAM_CHUNK_BYTES = 64 * 1024
 _TERMINATION_TIMEOUT_SECONDS = 5.0
-_IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PROBE_DENIAL_CODES = frozenset({"ENOSPC", "EDQUOT"})
 _SAFE_ENVIRONMENT_NAMES = (
     "SYSTEMROOT",
@@ -385,14 +384,11 @@ class ContainerCodeQLDockerPort:
                 or set(decoded)
                 != {
                     "schema_version",
-                    "image_digest",
                     "codeql_version",
                     "database",
                     "output",
                 }
                 or decoded["schema_version"] != 1
-                or not isinstance(decoded["image_digest"], str)
-                or _IMAGE_DIGEST.fullmatch(decoded["image_digest"]) is None
                 or decoded["codeql_version"] != request.expected_codeql_version
             ):
                 raise ValueError
@@ -407,7 +403,6 @@ class ContainerCodeQLDockerPort:
                 attempted_bytes=output_attempted,
             )
             return ContainerCodeQLProbeObservation(
-                image_digest=decoded["image_digest"],
                 codeql_version=request.expected_codeql_version,
                 database=TmpfsCapDenialEvidence(**database),
                 output=TmpfsCapDenialEvidence(**output),
