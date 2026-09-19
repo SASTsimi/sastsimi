@@ -212,7 +212,16 @@ def dependency_bundle_target_hash(
 
 
 class DependencyBundle(DynamicRecord):
-    """Human-approved offline dependency archive bound to one exact attempt."""
+    """Offline dependency archive vendored for one exact attempt.
+
+    A repository's declared dependencies are a fact about the repository,
+    not a judgement call, so most bundles are `AUTOMATIC` - fetched and
+    packaged unattended from what the repository itself declares
+    (`sandbox/recipe_store.py::EnvironmentRecipeStore._auto_fetch_
+    dependency_bundle`). `HUMAN` stays available for a bundle an operator
+    hand-supplies instead, e.g. to cover a dependency this repository's
+    declared metadata does not name.
+    """
 
     KIND = "dependency_bundle"
     repository_profile_ref: StoredDataRef
@@ -223,7 +232,7 @@ class DependencyBundle(DynamicRecord):
     archive_format: Literal["TAR"]
     approval_target_hash: Sha256
     approved_by: NonEmptyStr
-    approved_by_role: Literal["HUMAN"]
+    approved_by_role: Literal["HUMAN", "AUTOMATIC"]
     approved_at: AwareDatetime
 
     @model_validator(mode="after")
