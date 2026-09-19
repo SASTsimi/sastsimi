@@ -49,6 +49,7 @@ from sastsimi.composition.production_t08_builder import (
     build_production_t08_feature,
 )
 from sastsimi.config.package_resources import resolve_builtin_resource
+from sastsimi.config.production_profile import ProductionProfile
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.ids import AttemptId, LogicalRecordId, RecordId
 from sastsimi.contracts.records import RecordMeta
@@ -288,7 +289,9 @@ class _DefaultProductionBundleAssembler:
                     reserved_cost_minor_units=_reserved_cost(installation),
                 )
                 static_ports = self.static_runtime_factory(installation)
-                _require_static_runtime_ports(static_ports, static)
+                _require_static_runtime_ports(
+                    static_ports, static, profile=installation.profile
+                )
                 t08 = build_production_t08_feature(
                     installation,
                     _t08_inputs(
@@ -546,14 +549,22 @@ def _reserved_cost(context: ProductionInstallationContext) -> int:
 
 
 def _require_static_runtime_ports(
-    ports: ProductionStaticRuntimePorts, static: StaticAnalysisProvisioning
+    ports: ProductionStaticRuntimePorts,
+    static: StaticAnalysisProvisioning,
+    *,
+    profile: ProductionProfile | None = None,
 ) -> None:
-    if "CODEQL" in static.enabled_tools and (
-        ports.output_quota is None
-        or ports.codeql_database_provider is None
-        or not isinstance(ports.codeql_database_limit_bytes, int)
-        or isinstance(ports.codeql_database_limit_bytes, bool)
-        or ports.codeql_database_limit_bytes <= 0
+    container_codeql = profile is not None and profile.codeql_container is not None
+    if (
+        "CODEQL" in static.enabled_tools
+        and not container_codeql
+        and (
+            ports.output_quota is None
+            or ports.codeql_database_provider is None
+            or not isinstance(ports.codeql_database_limit_bytes, int)
+            or isinstance(ports.codeql_database_limit_bytes, bool)
+            or ports.codeql_database_limit_bytes <= 0
+        )
     ):
         raise ProductionAnalyzeUnavailable(
             "PRODUCTION_CODEQL_SAFE_PREREQUISITES_UNAVAILABLE"
@@ -591,7 +602,11 @@ def _t08_inputs(
 
     executable_names = {
         "PYTHON_AST": installation.profile.tools.python,
-        "CODEQL": installation.profile.tools.codeql,
+        "CODEQL": (
+            installation.profile.tools.docker
+            if installation.profile.codeql_container is not None
+            else installation.profile.tools.codeql
+        ),
         "OPENGREP": installation.profile.tools.opengrep,
     }
     executables: dict[str, Path] = {
@@ -613,6 +628,7 @@ def _t08_inputs(
         output_quota=ports.output_quota,
         codeql_database_provider=ports.codeql_database_provider,
         codeql_database_limit_bytes=ports.codeql_database_limit_bytes,
+        codeql_container_config=installation.profile.codeql_container,
     )
     return ProductionT08Inputs(
         workspace=workspace,

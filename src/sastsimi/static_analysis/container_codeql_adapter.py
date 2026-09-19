@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.static import StaticToolProfile
@@ -126,6 +127,27 @@ class ContainerCodeQLProcessAdapter:
             != identity.provider_evidence_sha256
             or boundary.database_limit_bytes != self.inputs.spec.database_limit_bytes
             or boundary.execution_limit_bytes != self.inputs.spec.output_limit_bytes
+            or boundary.quota_backend_key != "CONTAINER_TMPFS_CAP_PLUS_ONE"
+            or boundary.quota_enforcement_identity_sha256
+            != content_hash(
+                {
+                    "image_digest": self.inputs.spec.image_digest,
+                    "user": self.inputs.spec.user,
+                    "pids_limit": self.inputs.spec.pids_limit,
+                    "memory_limit_bytes": self.inputs.spec.memory_limit_bytes,
+                    "nano_cpus": self.inputs.spec.cpu_limit_millicores * 1_000_000,
+                    "database_limit_bytes": self.inputs.spec.database_limit_bytes,
+                    "output_limit_bytes": self.inputs.spec.output_limit_bytes,
+                }
+            )
+            or boundary.image_digest != self.inputs.spec.image_digest
+            or boundary.expected_codeql_version != profile.expected_version
+            or boundary.query_pack_sha256
+            != self.inputs.artifact_identity.query_digest.removeprefix("sha256:")
+            or boundary.container_user != self.inputs.spec.user
+            or boundary.pids_limit != self.inputs.spec.pids_limit
+            or boundary.memory_limit_bytes != self.inputs.spec.memory_limit_bytes
+            or boundary.nano_cpus != self.inputs.spec.cpu_limit_millicores * 1_000_000
             or language not in boundary.supported_languages
             or boundary.prebuilt_database_only is not True
         ):

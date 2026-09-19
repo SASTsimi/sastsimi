@@ -23,6 +23,7 @@ from sastsimi.capabilities.store import (
     _CapabilityProbeEvidenceAuthority,
     _SQLiteCapabilityProbeStore,
 )
+from sastsimi.config.codeql_container import CodeQLContainerRuntimeConfig
 from sastsimi.config.secrets import SecretReference
 from sastsimi.contracts.capabilities import DockerBuildCapability
 from sastsimi.contracts.ids import CommitId, WorkspaceId
@@ -216,6 +217,7 @@ def _service(
     ),
     quota: ProductionStaticOutputQuotaPort | None = None,
     codeql_provider: PrebuiltCodeQLDatabasePort | None = None,
+    codeql_container_config: CodeQLContainerRuntimeConfig | None = None,
 ) -> tuple[_CapabilityProbeEngine, RuntimeServices, _SQLiteCapabilityProbeStore]:
     binaries = tmp_path / "bin"
     binaries.mkdir(parents=True, exist_ok=True)
@@ -260,8 +262,94 @@ def _service(
         static_output_quota=quota,
         codeql_database_provider=codeql_provider,
         codeql_database_limit_bytes=131072 if quota is not None else None,
+        codeql_container_config=codeql_container_config,
     )
     return service, runtime, store
+
+
+def test_codeql_container_probe_binds_the_docker_boundary_not_host_codeql(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catches a host ``codeql version`` substitution during capability approval."""
+
+    from sastsimi.static_analysis.codeql_adapter import digest_path
+    from sastsimi.static_analysis.container_codeql import ContainerCodeQLSpec
+    from sastsimi.static_analysis.container_codeql_runtime import (
+        CodeQLContainerRunStatus,
+        ContainerCodeQLProbeResult,
+    )
+
+    registry = tmp_path / "codeql-databases"
+    query_pack = tmp_path / "codeql-query-pack"
+    registry.mkdir()
+    query_pack.mkdir()
+    (query_pack / "probe.ql").write_text("// query\n", encoding="utf-8")
+    config = CodeQLContainerRuntimeConfig.model_validate(
+        {
+            "schema_version": 1,
+            "image": "registry.example/sastsimi/codeql@sha256:" + "a" * 64,
+            "expected_codeql_version": "2.27.0",
+            "database_registry_root": registry,
+            "query_pack_root": query_pack,
+            "query_pack_sha256": digest_path(query_pack),
+            "database_provider_key": "approved-provider",
+            "database_provider_revision": "2026-09-19.1",
+            "database_provider_evidence_sha256": "b" * 64,
+            "database_limit_bytes": 8_192,
+            "output_limit_bytes": 4_096,
+            "pids_limit": 64,
+            "memory_limit_bytes": 67_108_864,
+            "nano_cpus": 500_000_000,
+            "container_uid": 65532,
+            "container_gid": 65532,
+        }
+    )
+    observed: list[object] = []
+
+    async def probe_boundary(**kwargs: object) -> ContainerCodeQLProbeResult:
+        observed.append(kwargs["spec"])
+        spec = cast(ContainerCodeQLSpec, kwargs["spec"])
+        return ContainerCodeQLProbeResult(
+            status=CodeQLContainerRunStatus.SUCCEEDED,
+            reason=None,
+            image_digest=spec.image_digest,
+            codeql_version="2.27.0",
+        )
+
+    monkeypatch.setattr(
+        "sastsimi.capabilities.service.probe_container_codeql_boundary",
+        probe_boundary,
+    )
+    service, runtime, _store = _service(
+        tmp_path,
+        available={"docker"},
+        codeql_container_config=config,
+    )
+
+    receipt = service.probe("CODEQL")
+    approved = service.approve(
+        receipt.probe_id,
+        expected_target_hash=receipt.approval_target_hash or "",
+    )
+    profile = runtime.configuration.resolve_pinned_active_profile(approved)
+
+    assert receipt.status == "PASSED"
+    spec = cast(ContainerCodeQLSpec, observed[0])
+    assert spec.user == "65532:65532"
+    assert spec.pids_limit == 64
+    assert spec.output_limit_bytes == 4_096
+    assert profile.executable_key == "docker"
+    assert profile.expected_version == "2.27.0"
+    assert receipt.codeql_boundary is not None
+    assert receipt.codeql_boundary.query_pack_sha256 == digest_path(query_pack)
+    assert service._commands.calls == []
+    service._codeql_container_config = config.model_copy(update={"pids_limit": 65})
+    with pytest.raises(ValueError, match="CAPABILITY_EXECUTION_TARGET_CHANGED"):
+        service.approve(
+            receipt.probe_id,
+            expected_target_hash=receipt.approval_target_hash or "",
+        )
 
 
 def test_codeql_test_quota_cannot_activate_production_without_prebuilt_binding(
@@ -280,7 +368,7 @@ def test_codeql_test_quota_cannot_activate_production_without_prebuilt_binding(
         )
 
 
-def test_codeql_exact_provider_and_hard_quota_can_be_approved(
+def test_codeql_legacy_provider_and_host_quota_cannot_activate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -295,18 +383,16 @@ def test_codeql_exact_provider_and_hard_quota_can_be_approved(
 
     receipt = service.probe("CODEQL")
 
-    assert receipt.status == "PASSED"
-    assert receipt.activation_supported is True
-    assert receipt.codeql_boundary is not None
-    approved = service.approve(
-        receipt.probe_id,
-        expected_target_hash=receipt.approval_target_hash or "",
-    )
-    profile = runtime.configuration.resolve_pinned_active_profile(approved)
-    assert profile.codeql_boundary == receipt.codeql_boundary
+    assert receipt.status == "BLOCKED"
+    assert receipt.activation_supported is False
+    with pytest.raises(ValueError, match="PROBE_NOT_ACTIVATABLE"):
+        service.approve(
+            receipt.probe_id,
+            expected_target_hash=receipt.approval_target_hash or "",
+        )
 
 
-def test_codeql_provider_identity_change_blocks_approval(
+def test_codeql_legacy_provider_change_cannot_reactivate_a_blocked_probe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -321,7 +407,7 @@ def test_codeql_provider_identity_change_blocks_approval(
     receipt = service.probe("CODEQL")
     provider.provider_revision = "2"
 
-    with pytest.raises(ValueError, match="CAPABILITY_EXECUTION_TARGET_CHANGED"):
+    with pytest.raises(ValueError, match="PROBE_NOT_ACTIVATABLE"):
         service.approve(
             receipt.probe_id,
             expected_target_hash=receipt.approval_target_hash or "",
@@ -415,7 +501,7 @@ def test_real_probe_receipts_require_exact_human_approval_before_active(
         "BLOCKED",
     ]
     assert openai.activation_supported is False
-    assert "prebuilt database provider is unavailable" in codeql.safe_summary
+    assert codeql.safe_summary == "CodeQL container boundary probe failed"
     with pytest.raises(LookupError, match="CAPABILITY_ROUTE_NOT_ACTIVE"):
         runtime.configuration.resolve_active_capability(
             capability_kind="GIT",
@@ -600,6 +686,7 @@ def test_public_facade_accepts_only_trusted_quota_configuration_not_probe_result
         "static_output_quota",
         "codeql_database_provider",
         "codeql_database_limit_bytes",
+        "codeql_container_config",
     }
 
     assert "command_runner" not in build_parameters
@@ -613,6 +700,7 @@ def test_public_facade_accepts_only_trusted_quota_configuration_not_probe_result
         "static_output_quota",
         "codeql_database_provider",
         "codeql_database_limit_bytes",
+        "codeql_container_config",
     }
     assert (
         "approved_by"

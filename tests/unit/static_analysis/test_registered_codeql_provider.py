@@ -112,6 +112,25 @@ def test_resolves_only_exact_immutable_database_without_mutating_registry(
     assert _tree_bytes(config.database_registry_root) == before
 
 
+def test_resolves_the_exact_published_entry_for_the_container_runtime(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    _publish(tmp_path, config)
+
+    published = RegisteredCodeQLDatabaseProvider(config).resolve_published(
+        repository_url=_REPOSITORY_URL,
+        commit_id=_COMMIT_ID,
+        language="python",
+        tracked_manifest_sha256=_MANIFEST_SHA256,
+    )
+
+    assert published.identity == _identity(config)
+    assert published.artifact_root.parent == config.database_registry_root
+    assert published.manifest_path.parent == published.artifact_root
+    assert published.database_root.parent == published.artifact_root
+
+
 @pytest.mark.parametrize(
     ("changes"),
     [

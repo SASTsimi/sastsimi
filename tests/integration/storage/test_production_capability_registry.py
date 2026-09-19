@@ -67,6 +67,13 @@ def _codeql_boundary() -> CodeQLBoundaryCapability:
         database_provider_key="test-provider",
         database_provider_revision="1",
         database_provider_evidence_sha256="2" * 64,
+        image_digest="sha256:" + "3" * 64,
+        expected_codeql_version="1.0.0",
+        query_pack_sha256="4" * 64,
+        container_user="65532:65532",
+        pids_limit=64,
+        memory_limit_bytes=64 * 1024 * 1024,
+        nano_cpus=500_000_000,
         supported_languages=("PYTHON", "JAVASCRIPT"),
         prebuilt_database_only=True,
     )
@@ -397,7 +404,9 @@ def test_minimum_static_routes_are_representable(
             "adapter_key": adapter_key,
             "tool_name": tool_name,
             "tool_kind": tool_kind,
-            "executable_key": adapter_key.lower(),
+            "executable_key": "docker"
+            if adapter_key == "CODEQL"
+            else adapter_key.lower(),
             "executable_sha256": "d" * 64,
             "expected_version": "1.0.0",
             "capability_evidence_ref": _placeholder_ref(),
@@ -445,7 +454,9 @@ def test_minimum_static_capability_can_be_activated_and_resolved(
             "adapter_key": adapter_key,
             "tool_name": tool_name,
             "tool_kind": tool_kind,
-            "executable_key": adapter_key.lower(),
+            "executable_key": "docker"
+            if adapter_key == "CODEQL"
+            else adapter_key.lower(),
             "executable_sha256": "d" * 64,
             "expected_version": "1.0.0",
             "capability_evidence_ref": _placeholder_ref(),

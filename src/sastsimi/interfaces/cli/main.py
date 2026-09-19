@@ -191,6 +191,7 @@ def main(
     capability_probe.add_argument("--model")
     capability_probe.add_argument("--credential-ref")
     capability_probe.add_argument("--docker-host")
+    capability_probe.add_argument("--profile", type=Path)
     capability_probe.add_argument("--format", choices=["text", "json"])
     capability_list = capability_commands.add_parser("list", allow_abbrev=False)
     capability_list.add_argument("--format", choices=["text", "json"])
@@ -198,6 +199,7 @@ def main(
     capability_approve.add_argument("probe_id")
     capability_approve.add_argument("--target-hash", required=True)
     capability_approve.add_argument("--docker-host")
+    capability_approve.add_argument("--profile", type=Path)
     capability_approve.add_argument("--format", choices=["text", "json"])
     codeql_parser = subparsers.add_parser(
         "codeql",
@@ -390,6 +392,16 @@ def main(
             return int(onboarding_result.code)
         if args.command == "capability":
             command_name = "capability " + args.capability_command
+            codeql_config = None
+            profile_path = getattr(args, "profile", None)
+            if args.capability_command == "probe" and args.kind == "CODEQL":
+                if profile_path is None:
+                    raise _InputError
+                codeql_config = load_production_profile(profile_path).codeql_container
+                if codeql_config is None:
+                    raise ProductionProfileError("CODEQL_CONTAINER_REQUIRED")
+            elif profile_path is not None:
+                codeql_config = load_production_profile(profile_path).codeql_container
             if args.capability_command == "probe":
                 outcome = capability_command.run_probe(
                     config.data_dir,
@@ -398,6 +410,7 @@ def main(
                     credential_ref=args.credential_ref,
                     host_id=args.host_id,
                     docker_host=args.docker_host,
+                    codeql_container_config=codeql_config,
                 )
             elif args.capability_command == "list":
                 outcome = capability_command.run_list(
@@ -411,6 +424,7 @@ def main(
                     target_hash=args.target_hash,
                     host_id=args.host_id,
                     docker_host=args.docker_host,
+                    codeql_container_config=codeql_config,
                 )
             emit_data(
                 output_format,

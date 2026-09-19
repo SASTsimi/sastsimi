@@ -15,7 +15,8 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, cast
 
-from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.config.codeql_container import CodeQLContainerRuntimeConfig
+from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef, reference
 from sastsimi.contracts.static import CodeWorkspace, StaticToolProfile
@@ -49,11 +50,27 @@ from sastsimi.static_analysis.codeql_adapter import (
     CodeQLProcessAdapter,
     digest_path,
 )
+from sastsimi.static_analysis.container_codeql import ContainerCodeQLSpec
+from sastsimi.static_analysis.container_codeql_adapter import (
+    ContainerCodeQLAdapterInputs,
+    ContainerCodeQLProcessAdapter,
+)
+from sastsimi.static_analysis.container_codeql_runtime import (
+    CodeQLArtifactIdentity,
+    ContainerCodeQLDockerPort,
+)
+from sastsimi.static_analysis.docker_codeql_port import (
+    ContainerCodeQLDockerPort as DockerCodeQLPort,
+)
 from sastsimi.static_analysis.open_grep_adapter import (
     OpenGrepExecutionInputs,
     OpenGrepProcessAdapter,
 )
 from sastsimi.static_analysis.process import AttemptOutputBudget, SafeProcessRunner
+from sastsimi.static_analysis.registered_codeql_provider import (
+    RegisteredCodeQLDatabaseProvider,
+    RegisteredCodeQLProviderError,
+)
 
 if TYPE_CHECKING:
     from sastsimi.orchestration.static_adapter_context import StaticAdapterBuildContext
@@ -1199,9 +1216,7 @@ class _LazyCodeQLAdapter:
                 code="CODEQL_LANGUAGE_SCOPE_AMBIGUOUS",
                 reason="UNSUPPORTED",
             )
-        capability_language = (
-            "PYTHON" if language == "python" else "JAVASCRIPT"
-        )
+        capability_language = "PYTHON" if language == "python" else "JAVASCRIPT"
         if capability_language not in boundary.supported_languages:
             raise ValueError("CODEQL_LANGUAGE_NOT_APPROVED")
         bindings = []
@@ -1383,6 +1398,303 @@ class _LazyCodeQLAdapter:
         return await active.cancel(attempt_id)
 
 
+type ContainerCodeQLPortFactory = Callable[[Path], ContainerCodeQLDockerPort]
+
+
+class _LazyContainerCodeQLAdapter:
+    """Resolve one immutable registered DB and run it in the approved image."""
+
+    def __init__(
+        self,
+        *,
+        docker_executable: Path,
+        config: CodeQLContainerRuntimeConfig,
+        route_analysis_config_ref: StoredDataRef,
+        route_rule_catalog_ref: StoredDataRef,
+        rule_material: _RuleMaterial,
+        workspace_locator: WorkspaceLocatorPort,
+        tracked_files_for: Callable[[CodeWorkspace], tuple[TrackedFile, ...]],
+        port_factory: ContainerCodeQLPortFactory,
+    ) -> None:
+        self.executable = docker_executable
+        self._config = config
+        self._analysis_config_ref = route_analysis_config_ref
+        self._rule_catalog_ref = route_rule_catalog_ref
+        self._rules = rule_material
+        self._workspace_locator = workspace_locator
+        self._tracked_files_for = tracked_files_for
+        self._databases = RegisteredCodeQLDatabaseProvider(config)
+        self._port_factory = port_factory
+        self._active: dict[str, ContainerCodeQLProcessAdapter] = {}
+
+    @staticmethod
+    def _tracked_manifest_sha256(tracked: tuple[TrackedFile, ...]) -> str:
+        return hashlib.sha256(
+            canonical_bytes(
+                [
+                    {
+                        "git_path": item.git_path,
+                        "git_mode": item.git_mode,
+                        "blob_id": item.blob_id,
+                        "size_bytes": item.size_bytes,
+                    }
+                    for item in sorted(tracked, key=lambda item: item.git_path)
+                ]
+            )
+        ).hexdigest()
+
+    def _profile_matches(self, profile: StaticToolProfile) -> bool:
+        boundary = profile.codeql_boundary
+        config = self._config
+        try:
+            executable = self.executable.resolve(strict=True)
+            query_pack = config.query_pack_root.resolve(strict=True)
+        except OSError:
+            return False
+        return bool(
+            profile.status == "ACTIVE"
+            and profile.purpose == "PRODUCTION"
+            and profile.adapter_key == "CODEQL"
+            and profile.executable_key == "docker"
+            and _digest(executable) == profile.executable_sha256
+            and profile.expected_version == config.expected_codeql_version
+            and boundary is not None
+            and boundary.database_limit_bytes == config.database_limit_bytes
+            and boundary.execution_limit_bytes == config.output_limit_bytes
+            and boundary.database_provider_key == config.database_provider_key
+            and boundary.database_provider_revision == config.database_provider_revision
+            and boundary.database_provider_evidence_sha256
+            == config.database_provider_evidence_sha256
+            and boundary.quota_backend_key == "CONTAINER_TMPFS_CAP_PLUS_ONE"
+            and boundary.quota_enforcement_identity_sha256
+            == content_hash(
+                {
+                    "image_digest": config.image.split("@", 1)[1],
+                    "user": config.container_user,
+                    "pids_limit": config.pids_limit,
+                    "memory_limit_bytes": config.memory_limit_bytes,
+                    "nano_cpus": config.nano_cpus,
+                    "database_limit_bytes": config.database_limit_bytes,
+                    "output_limit_bytes": config.output_limit_bytes,
+                }
+            )
+            and boundary.image_digest == config.image.split("@", 1)[1]
+            and boundary.expected_codeql_version == config.expected_codeql_version
+            and boundary.query_pack_sha256 == config.query_pack_sha256
+            and boundary.container_user == config.container_user
+            and boundary.pids_limit == config.pids_limit
+            and boundary.memory_limit_bytes == config.memory_limit_bytes
+            and boundary.nano_cpus == config.nano_cpus
+            and boundary.prebuilt_database_only is True
+            and digest_path(query_pack) == config.query_pack_sha256
+        )
+
+    def _failure(
+        self,
+        profile: StaticToolProfile,
+        tracked: tuple[TrackedFile, ...],
+        *,
+        code: str,
+        retryable: bool,
+    ) -> StaticToolObservation:
+        now = time.monotonic_ns() // 1_000_000
+        return StaticToolObservation(
+            tool_name="CODEQL",
+            tool_version=profile.expected_version,
+            tool_kind="RULE_BASED",
+            status="FAILED",
+            raw_output=None,
+            raw_media_type=None,
+            analyzed_paths=(),
+            skipped_paths=tuple(sorted(item.git_path for item in tracked)),
+            analyzed_languages=(),
+            skipped_languages=(),
+            notes=("Registered container CodeQL execution was not completed.",),
+            selected_rule_packs=self._rules.selected_rule_packs,
+            rules=tuple(
+                CandidateRule(
+                    item.rule_id,
+                    (
+                        "SELECTED"
+                        if item.rule_id in set(self._rules.selected_rule_ids)
+                        else "NOT_SELECTED"
+                    ),
+                    "NOT_EXECUTED",
+                    None,
+                    (
+                        "TOOL_FAILURE"
+                        if item.rule_id in set(self._rules.selected_rule_ids)
+                        else "NOT_SELECTED"
+                    ),
+                    None,
+                )
+                for item in sorted(self._rules.mappings, key=lambda item: item.rule_id)
+            ),
+            symbols=(),
+            facts=(),
+            relations=(),
+            gaps=(
+                CandidateGap(
+                    stage="STATIC_ANALYSIS",
+                    code=code,
+                    reason="BLOCKED" if retryable else "FAILED",
+                    description="The exact registered CodeQL input could not run.",
+                    affected_paths=(),
+                    affected_languages=(),
+                    affected_locations=(),
+                    retryable=retryable,
+                ),
+            ),
+            errors=(
+                CandidateError(
+                    stage="STATIC_ANALYSIS",
+                    code=code,
+                    safe_message="Registered CodeQL execution failed.",
+                    retryable=retryable,
+                ),
+            ),
+            started_monotonic_ms=now,
+            finished_monotonic_ms=now,
+        )
+
+    async def probe(
+        self,
+        profile: StaticToolProfile,
+        deadline: MonotonicActionDeadline,
+    ) -> StaticCapabilityObservation:
+        del deadline
+        available = self._profile_matches(profile)
+        return StaticCapabilityObservation(
+            available=available,
+            tool_name="CODEQL",
+            tool_kind="RULE_BASED",
+            executable_key=str(profile.executable_key),
+            observed_executable_sha256=(
+                _digest(self.executable) if self.executable.is_file() else None
+            ),
+            observed_version=profile.expected_version if available else None,
+            expected_version=profile.expected_version,
+            reason_code=None if available else "CODEQL_CONTAINER_PROFILE_MISMATCH",
+        )
+
+    async def execute(
+        self,
+        request: StaticToolRequest,
+        workspace_root: Path,
+        profile: StaticToolProfile,
+        deadline: MonotonicActionDeadline,
+    ) -> StaticToolObservation:
+        meta = request.action.meta
+        if (
+            not isinstance(meta, RecordMeta)
+            or meta.attempt_id is None
+            or request.tool_profile_ref != reference(profile)
+            or request.analysis_config_ref != self._analysis_config_ref
+            or request.rule_catalog_ref != self._rule_catalog_ref
+            or request.workspace.commit_id is None
+            or workspace_root.resolve(strict=True)
+            != self._workspace_locator.root_for(request.workspace).resolve(strict=True)
+            or not self._profile_matches(profile)
+        ):
+            raise ValueError("CODEQL_CONTAINER_REQUEST_BINDING_INVALID")
+        action_id = str(request.action.action_id)
+        attempt_id = str(meta.attempt_id)
+        if attempt_id in self._active:
+            raise ValueError("CODEQL_ATTEMPT_ALREADY_ACTIVE")
+        full_tracked = self._tracked_files_for(request.workspace)
+        authorized = frozenset(str(path) for path in request.action.file_paths)
+        tracked = tuple(item for item in full_tracked if item.git_path in authorized)
+        if (
+            not tracked
+            or len(tracked) != len(authorized)
+            or {item.git_path for item in tracked} != authorized
+        ):
+            raise ValueError("CODEQL_ACTION_PATH_BINDING_INVALID")
+        try:
+            language = classify_codeql_language(
+                tuple(item.git_path for item in tracked)
+            )
+        except ValueError:
+            return self._failure(
+                profile,
+                tracked,
+                code="CODEQL_LANGUAGE_SCOPE_AMBIGUOUS",
+                retryable=False,
+            )
+        boundary = profile.codeql_boundary
+        capability_language = "PYTHON" if language == "python" else "JAVASCRIPT"
+        if boundary is None or capability_language not in boundary.supported_languages:
+            raise ValueError("CODEQL_LANGUAGE_NOT_APPROVED")
+        try:
+            published = await asyncio.to_thread(
+                self._databases.resolve_published,
+                repository_url=str(request.workspace.repository_url),
+                commit_id=str(request.workspace.commit_id),
+                language=language,
+                tracked_manifest_sha256=self._tracked_manifest_sha256(full_tracked),
+            )
+            if self._config.nano_cpus % 1_000_000 != 0:
+                raise ValueError("CODEQL_CONTAINER_CPU_LIMIT_INVALID")
+            millicores = self._config.nano_cpus // 1_000_000
+            spec = ContainerCodeQLSpec(
+                docker_executable=self.executable,
+                image_digest=self._config.image.split("@", 1)[1],
+                database_source=published.database_root,
+                query_pack_source=self._config.query_pack_root,
+                workspace_root=workspace_root,
+                action_id=action_id,
+                attempt_id=attempt_id,
+                user=self._config.container_user,
+                pids_limit=self._config.pids_limit,
+                memory_limit_bytes=self._config.memory_limit_bytes,
+                cpu_limit_millicores=millicores,
+                database_limit_bytes=self._config.database_limit_bytes,
+                output_limit_bytes=self._config.output_limit_bytes,
+            )
+            lower = ContainerCodeQLProcessAdapter(
+                executable=self.executable,
+                executable_key=str(profile.executable_key),
+                inputs=ContainerCodeQLAdapterInputs(
+                    database=published,
+                    spec=spec,
+                    artifact_identity=CodeQLArtifactIdentity(
+                        database_digest="sha256:" + published.database_digest,
+                        tracked_manifest_digest=(
+                            "sha256:" + published.identity.tracked_manifest_sha256
+                        ),
+                        query_digest="sha256:" + self._config.query_pack_sha256,
+                    ),
+                    analysis_config_ref=self._analysis_config_ref,
+                    rule_catalog_ref=self._rule_catalog_ref,
+                    rule_catalog=self._rules.mappings,
+                    selected_rule_ids=self._rules.selected_rule_ids,
+                    selected_rule_packs=self._rules.selected_rule_packs,
+                    tracked_files=tracked,
+                ),
+                port=self._port_factory(self.executable),
+            )
+        except RegisteredCodeQLProviderError as error:
+            return self._failure(profile, tracked, code=error.code, retryable=False)
+        except (OSError, ValueError):
+            return self._failure(
+                profile,
+                tracked,
+                code="REGISTERED_CODEQL_DATABASE_INVALID",
+                retryable=False,
+            )
+        self._active[attempt_id] = lower
+        try:
+            return await lower.execute(request, workspace_root, profile, deadline)
+        finally:
+            self._active.pop(attempt_id, None)
+
+    async def cancel(self, attempt_id: str) -> CancellationResult:
+        active = self._active.get(attempt_id)
+        if active is None:
+            return CancellationResult(False, "Attempt is not active")
+        return await active.cancel(attempt_id)
+
+
 class ProductionStaticAdapterFactory:
     """Build only configured real adapters; unsupported closures fail closed."""
 
@@ -1395,6 +1707,8 @@ class ProductionStaticAdapterFactory:
         output_quota: ProductionStaticOutputQuotaPort | None = None,
         codeql_database_provider: PrebuiltCodeQLDatabasePort | None = None,
         codeql_database_limit_bytes: int | None = None,
+        codeql_container_config: CodeQLContainerRuntimeConfig | None = None,
+        container_codeql_port_factory: ContainerCodeQLPortFactory | None = None,
     ) -> None:
         self._executables = MappingProxyType(dict(executables))
         self._worker = python_ast_worker
@@ -1402,21 +1716,23 @@ class ProductionStaticAdapterFactory:
         self._output_quota = output_quota
         self._codeql_database_provider = codeql_database_provider
         self._codeql_database_limit_bytes = codeql_database_limit_bytes
+        self._codeql_container_config = codeql_container_config
+        self._container_codeql_port_factory = container_codeql_port_factory or (
+            lambda executable: DockerCodeQLPort(docker_executable=executable)
+        )
 
     @property
     def codeql_safe_prerequisites_ready(self) -> bool:
+        if self._codeql_container_config is not None:
+            return True
         return (
             self._output_quota is not None
             and self._codeql_database_provider is not None
             and bool(getattr(self._output_quota, "backend_key", ""))
-            and len(
-                getattr(self._output_quota, "enforcement_identity_sha256", "")
-            )
+            and len(getattr(self._output_quota, "enforcement_identity_sha256", ""))
             == 64
             and bool(getattr(self._codeql_database_provider, "provider_key", ""))
-            and bool(
-                getattr(self._codeql_database_provider, "provider_revision", "")
-            )
+            and bool(getattr(self._codeql_database_provider, "provider_revision", ""))
             and len(
                 getattr(
                     self._codeql_database_provider,
@@ -1517,6 +1833,30 @@ class ProductionStaticAdapterFactory:
                 )
                 continue
             if profile.adapter_key == "CODEQL":
+                if self._codeql_container_config is not None:
+                    if (
+                        material is None
+                        or material.codeql is None
+                        or route.rule_catalog_ref is None
+                        or material.codeql.query_pack_sha256
+                        != self._codeql_container_config.query_pack_sha256
+                    ):
+                        raise ValueError("PRODUCTION_CODEQL_MATERIAL_MISSING")
+                    rules = _parse_rule_material(context, tool)
+                    container_adapter = _LazyContainerCodeQLAdapter(
+                        docker_executable=executable,
+                        config=self._codeql_container_config,
+                        route_analysis_config_ref=route.analysis_config_ref,
+                        route_rule_catalog_ref=route.rule_catalog_ref,
+                        rule_material=rules,
+                        workspace_locator=context.workspace_locator,
+                        tracked_files_for=context.tracked_files_for,
+                        port_factory=self._container_codeql_port_factory,
+                    )
+                    if not container_adapter._profile_matches(profile):
+                        raise ValueError("PRODUCTION_CODEQL_APPROVED_BOUNDARY_MISMATCH")
+                    adapters[profile.adapter_key] = container_adapter
+                    continue
                 if (
                     material is None
                     or material_root is None

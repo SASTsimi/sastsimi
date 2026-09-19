@@ -12,6 +12,7 @@ from typing import Protocol, cast
 from uuid import uuid4
 
 from sastsimi.composition.runtime import build_runtime
+from sastsimi.config.codeql_container import CodeQLContainerRuntimeConfig
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.config.secrets import SecretReference
 from sastsimi.contracts.capabilities import (
@@ -106,6 +107,7 @@ class ProductionCapabilityProbeService:
         static_output_quota: ProductionStaticOutputQuotaPort | None = None,
         codeql_database_provider: PrebuiltCodeQLDatabasePort | None = None,
         codeql_database_limit_bytes: int | None = None,
+        codeql_container_config: CodeQLContainerRuntimeConfig | None = None,
     ) -> None:
         self.__engine = _build_production_engine(
             data_dir,
@@ -115,6 +117,7 @@ class ProductionCapabilityProbeService:
             static_output_quota=static_output_quota,
             codeql_database_provider=codeql_database_provider,
             codeql_database_limit_bytes=codeql_database_limit_bytes,
+            codeql_container_config=codeql_container_config,
         )
 
     def probe(
@@ -179,6 +182,7 @@ def _build_production_engine(
     static_output_quota: ProductionStaticOutputQuotaPort | None = None,
     codeql_database_provider: PrebuiltCodeQLDatabasePort | None = None,
     codeql_database_limit_bytes: int | None = None,
+    codeql_container_config: CodeQLContainerRuntimeConfig | None = None,
 ) -> _CapabilityProbeEngine:
     if not host_id.strip():
         raise ValueError("CAPABILITY_HOST_REQUIRED")
@@ -202,7 +206,18 @@ def _build_production_engine(
     allowed_executables = frozenset({"git", "opengrep", "docker", "codeql"})
     if not set(executable_paths) <= allowed_executables:
         raise ValueError("CAPABILITY_EXECUTABLE_KEY_UNSUPPORTED")
-    if ("docker" in executable_paths) != (docker_host is not None):
+    effective_docker_host = docker_host
+    if (
+        codeql_container_config is not None
+        and "docker" in executable_paths
+        and effective_docker_host is None
+    ):
+        effective_docker_host = (
+            "npipe:////./pipe/docker_engine"
+            if os.name == "nt"
+            else "unix:///var/run/docker.sock"
+        )
+    if ("docker" in executable_paths) != (effective_docker_host is not None):
         raise ValueError("DOCKER_HOST_CONFIGURATION_MISMATCH")
     executable_registry = ProductionExecutableRegistry(
         {"python": Path(sys.executable), **dict(executable_paths)},
@@ -224,7 +239,7 @@ def _build_production_engine(
     docker_boundary_probe = ProductionDockerBuildBoundaryProbe(
         operating_system=operating_system,
         docker_executable=executable_registry.resolve("docker"),
-        docker_host=docker_host,
+        docker_host=effective_docker_host,
         command_runner=command_runner,
         data_root_inspector=inspect_local_docker_data_root,
         effective_user_id=effective_user_id,
@@ -239,7 +254,7 @@ def _build_production_engine(
         clock=clock.now,
         executable_locator=executable_registry.resolve,
         command_runner=command_runner,
-        docker_host=docker_host,
+        docker_host=effective_docker_host,
         approval_identity=_NativeApprovalIdentity(),
         secret_resolver=EnvironmentSecretLookup(),
         openai_probe=OpenAIResponsesProbe(),
@@ -248,6 +263,7 @@ def _build_production_engine(
         static_output_quota=static_output_quota,
         codeql_database_provider=codeql_database_provider,
         codeql_database_limit_bytes=codeql_database_limit_bytes,
+        codeql_container_config=codeql_container_config,
     )
 
 
@@ -260,6 +276,7 @@ def build_production_capability_probe_service(
     static_output_quota: ProductionStaticOutputQuotaPort | None = None,
     codeql_database_provider: PrebuiltCodeQLDatabasePort | None = None,
     codeql_database_limit_bytes: int | None = None,
+    codeql_container_config: CodeQLContainerRuntimeConfig | None = None,
 ) -> ProductionCapabilityProbeService:
     """Build the production API; unconfigured CodeQL remains non-activatable."""
 
@@ -271,6 +288,7 @@ def build_production_capability_probe_service(
         static_output_quota=static_output_quota,
         codeql_database_provider=codeql_database_provider,
         codeql_database_limit_bytes=codeql_database_limit_bytes,
+        codeql_container_config=codeql_container_config,
     )
 
 

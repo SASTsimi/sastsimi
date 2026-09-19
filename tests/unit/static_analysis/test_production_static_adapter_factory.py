@@ -22,7 +22,8 @@ from sastsimi.composition.production_t08_builder import (
     ApprovedStaticRuleClosure,
     StaticAdapterBuildContext,
 )
-from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.config.codeql_container import CodeQLContainerRuntimeConfig
+from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.ids import (
     AnalysisId,
     CommitId,
@@ -159,7 +160,7 @@ def _rule_profile(executable: Path, tool: str) -> StaticToolProfile:
             "adapter_key": "CODEQL",
             "tool_name": "CODEQL",
             "tool_kind": "RULE_BASED",
-            "executable_key": "codeql",
+            "executable_key": "docker",
             "expected_version": "2.0.0",
             "codeql_boundary": {
                 "quota_backend_key": "test-kernel-quota",
@@ -171,6 +172,13 @@ def _rule_profile(executable: Path, tool: str) -> StaticToolProfile:
                 "database_provider_key": "fixture-provider",
                 "database_provider_revision": "1",
                 "database_provider_evidence_sha256": "e" * 64,
+                "image_digest": "sha256:" + "d" * 64,
+                "expected_codeql_version": "2.0.0",
+                "query_pack_sha256": "f" * 64,
+                "container_user": "65532:65532",
+                "pids_limit": 64,
+                "memory_limit_bytes": 536_870_912,
+                "nano_cpus": 500_000_000,
                 "supported_languages": ("PYTHON", "JAVASCRIPT"),
                 "prebuilt_database_only": True,
             },
@@ -513,6 +521,119 @@ def test_codeql_adapter_is_built_only_with_exact_database_and_quota_ports(
         output_quota=TestQuota(tmp_path / "quota", monkeypatch),
         codeql_database_provider=cast(PrebuiltCodeQLDatabasePort, Provider()),
         codeql_database_limit_bytes=4096,
+    )
+
+    adapters = factory(context)
+
+    assert set(adapters) == {"CODEQL"}
+
+
+def test_container_codeql_factory_needs_no_legacy_host_quota_or_database_port(
+    tmp_path: Path,
+) -> None:
+    docker = tmp_path / "docker.exe"
+    docker.write_bytes(b"trusted-docker")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    locator = _Locator(workspace, ())
+    profile = _rule_profile(docker, "CODEQL")
+    query_file = b"name: approved/query-pack\n"
+    catalog, selection, mappings, closure = _rule_payloads()
+    approved_pack = tmp_path / "approved-pack"
+    approved_pack.mkdir()
+    (approved_pack / "qlpack.yml").write_bytes(query_file)
+    (approved_pack / "sastsimi-selection.json").write_bytes(selection)
+    query_pack_digest = digest_path(approved_pack)
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    config = CodeQLContainerRuntimeConfig.model_validate(
+        {
+            "schema_version": 1,
+            "image": "sastsimi/codeql@sha256:" + "d" * 64,
+            "expected_codeql_version": "2.0.0",
+            "database_registry_root": registry,
+            "query_pack_root": approved_pack,
+            "query_pack_sha256": query_pack_digest,
+            "database_provider_key": "fixture-provider",
+            "database_provider_revision": "1",
+            "database_provider_evidence_sha256": "e" * 64,
+            "database_limit_bytes": 4096,
+            "output_limit_bytes": 1_000_000,
+            "pids_limit": 64,
+            "memory_limit_bytes": 536_870_912,
+            "nano_cpus": 500_000_000,
+            "container_uid": 65532,
+            "container_gid": 65532,
+        }
+    )
+    assert profile.codeql_boundary is not None
+    enforcement_identity = content_hash(
+        {
+            "image_digest": config.image.split("@", 1)[1],
+            "user": config.container_user,
+            "pids_limit": config.pids_limit,
+            "memory_limit_bytes": config.memory_limit_bytes,
+            "nano_cpus": config.nano_cpus,
+            "database_limit_bytes": config.database_limit_bytes,
+            "output_limit_bytes": config.output_limit_bytes,
+        }
+    )
+    profile = StaticToolProfile.model_validate(
+        profile.model_dump(mode="python")
+        | {
+            "codeql_boundary": profile.codeql_boundary.model_dump(mode="python")
+            | {
+                "query_pack_sha256": query_pack_digest,
+                "image_digest": config.image.split("@", 1)[1],
+                "quota_backend_key": "CONTAINER_TMPFS_CAP_PLUS_ONE",
+                "quota_enforcement_identity_sha256": enforcement_identity,
+            }
+        }
+    )
+    profile_ref = cast(HostConfigurationRef, reference(profile))
+    manifest = canonical_bytes(
+        {
+            "schema_version": 1,
+            "tools": {
+                "CODEQL": {
+                    "query_pack_sha256": query_pack_digest,
+                    "files": [
+                        {
+                            "path": "qlpack.yml",
+                            "sha256": hashlib.sha256(query_file).hexdigest(),
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    manifest_ref = _artifact(manifest)
+    catalog_ref = _artifact(catalog)
+    evidence = {
+        hashlib.sha256(payload).hexdigest(): payload
+        for payload in (manifest, catalog, selection, mappings, query_file)
+    }
+    context = StaticAdapterBuildContext(
+        data_dir=tmp_path,
+        workspace_locator=cast(WorkspaceLocatorPort, locator),
+        tracked_files_for=locator.tracked_files_for,
+        routes={
+            "CODEQL": StaticToolRoute(
+                profile_ref,
+                manifest_ref,
+                catalog_ref,
+                closure.catalog_rule_ids,
+            )
+        },
+        profiles={"CODEQL": profile},
+        evidence=evidence,
+        rule_closures={"CODEQL": closure},
+    )
+    factory = ProductionStaticAdapterFactory(
+        executables={"CODEQL": docker},
+        python_ast_worker=docker,
+        python_ast_worker_sha256=_digest(docker),
+        codeql_container_config=config,
     )
 
     adapters = factory(context)

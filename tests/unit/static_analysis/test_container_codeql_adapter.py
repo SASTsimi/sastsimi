@@ -13,6 +13,7 @@ from typing import Any, cast
 import pytest
 
 from sastsimi.contracts.actions import ActionRequest
+from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef, reference
 from sastsimi.contracts.static import CodeWorkspace, StaticToolProfile
 from sastsimi.ports.dto import (
@@ -46,7 +47,7 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _profile(executable: Path) -> StaticToolProfile:
+def _profile(executable: Path, *, query_pack_sha256: str) -> StaticToolProfile:
     profile_meta = meta("static_tool_profile", attempt=None)
     profile_meta.update(
         commit_id=_COMMIT_ID,
@@ -62,18 +63,35 @@ def _profile(executable: Path) -> StaticToolProfile:
             "adapter_key": "CODEQL",
             "tool_name": "CODEQL",
             "tool_kind": "RULE_BASED",
-            "executable_key": "trusted-codeql",
+            "executable_key": "docker",
             "executable_sha256": _sha256(executable),
             "expected_version": "2.20.0",
             "capability_evidence_ref": host_ref("tool_capability_evidence"),
             "codeql_boundary": {
-                "quota_backend_key": "container-tmpfs",
-                "quota_enforcement_identity_sha256": "c" * 64,
+                "quota_backend_key": "CONTAINER_TMPFS_CAP_PLUS_ONE",
+                "quota_enforcement_identity_sha256": content_hash(
+                    {
+                        "image_digest": "sha256:" + "e" * 64,
+                        "user": "65532:65532",
+                        "pids_limit": 64,
+                        "memory_limit_bytes": 536_870_912,
+                        "nano_cpus": 500_000_000,
+                        "database_limit_bytes": 268_435_456,
+                        "output_limit_bytes": 16_777_216,
+                    }
+                ),
                 "database_limit_bytes": 268_435_456,
                 "execution_limit_bytes": 16_777_216,
                 "database_provider_key": "controlled-provider",
                 "database_provider_revision": "2026-09-19.1",
                 "database_provider_evidence_sha256": "d" * 64,
+                "image_digest": "sha256:" + "e" * 64,
+                "expected_codeql_version": "2.20.0",
+                "query_pack_sha256": query_pack_sha256,
+                "container_user": "65532:65532",
+                "pids_limit": 64,
+                "memory_limit_bytes": 536_870_912,
+                "nano_cpus": 500_000_000,
                 "supported_languages": ("PYTHON",),
                 "prebuilt_database_only": True,
             },
@@ -231,7 +249,7 @@ def adapter_fixture(tmp_path: Path) -> dict[str, Any]:
         database_root=database_source,
         identity=database_identity,
     )
-    tool_profile = _profile(docker)
+    tool_profile = _profile(docker, query_pack_sha256=digest_path(query_pack))
     workspace, request, analysis_ref, catalog_ref = _request(tool_profile)
     artifact_identity = CodeQLArtifactIdentity(
         database_digest="sha256:" + database.database_digest,
@@ -274,7 +292,7 @@ def adapter_fixture(tmp_path: Path) -> dict[str, Any]:
     port.stdout_chunks = (_sarif(),)
     adapter = ContainerCodeQLProcessAdapter(
         executable=docker,
-        executable_key="trusted-codeql",
+        executable_key="docker",
         inputs=inputs,
         port=port,
     )
@@ -413,7 +431,7 @@ async def test_same_digest_different_executable_is_blocked_before_docker(
     port = FakeDockerPort(inputs.spec)
     adapter = ContainerCodeQLProcessAdapter(
         executable=substitute,
-        executable_key="trusted-codeql",
+        executable_key="docker",
         inputs=inputs,
         port=port,
     )
@@ -456,7 +474,7 @@ async def test_timeout_is_a_retryable_gap_not_zero_hits(
     port = _BlockingDockerPort(inputs.spec)
     adapter = ContainerCodeQLProcessAdapter(
         executable=executable,
-        executable_key="trusted-codeql",
+        executable_key="docker",
         inputs=inputs,
         port=port,
         monotonic_ns=lambda: 10**18 - 1_000_000,
@@ -491,7 +509,7 @@ async def test_cancel_targets_only_the_exact_active_attempt(
     port = _BlockingDockerPort(inputs.spec)
     adapter = ContainerCodeQLProcessAdapter(
         executable=executable,
-        executable_key="trusted-codeql",
+        executable_key="docker",
         inputs=inputs,
         port=port,
     )

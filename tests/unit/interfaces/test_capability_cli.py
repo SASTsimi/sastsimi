@@ -106,3 +106,31 @@ def test_capability_approve_rejects_wrong_exact_target_hash_safely(
     }
     assert "APPROVAL_TARGET_MISMATCH" not in json.dumps(denied)
     assert "TEST_ONLY_PRIVATE_PATH" not in json.dumps(denied)
+
+
+def test_codeql_capability_probe_requires_an_explicit_production_profile(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Catches the legacy host-CodeQL probe being reachable without a profile."""
+
+    private_data_dir = tmp_path / "PRIVATE_CODEQL_DATA"
+
+    assert (
+        main(
+            [
+                "--data-dir",
+                str(private_data_dir),
+                "capability",
+                "probe",
+                "CODEQL",
+                "--format",
+                "json",
+            ]
+        )
+        == 2
+    )
+
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "PRIVATE_CODEQL_DATA" not in output.err

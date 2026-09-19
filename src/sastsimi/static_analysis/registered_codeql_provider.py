@@ -9,6 +9,7 @@ from typing import Literal
 from sastsimi.config.codeql_container import CodeQLContainerRuntimeConfig
 from sastsimi.static_analysis.codeql_registry import (
     CodeQLDatabaseIdentity,
+    PublishedCodeQLDatabase,
     lookup_codeql_database,
 )
 
@@ -46,6 +47,28 @@ class RegisteredCodeQLDatabaseProvider:
         language: CodeQLLanguage,
         tracked_manifest_sha256: str,
     ) -> RegisteredCodeQLDatabase:
+        registered = self.resolve_published(
+            repository_url=repository_url,
+            commit_id=commit_id,
+            language=language,
+            tracked_manifest_sha256=tracked_manifest_sha256,
+        )
+        return RegisteredCodeQLDatabase(
+            database_root=registered.database_root,
+            database_digest=registered.database_digest,
+            artifact_key=registered.artifact_key,
+        )
+
+    def resolve_published(
+        self,
+        *,
+        repository_url: str,
+        commit_id: str,
+        language: CodeQLLanguage,
+        tracked_manifest_sha256: str,
+    ) -> PublishedCodeQLDatabase:
+        """Return the exact validated registry record for container execution."""
+
         try:
             identity = CodeQLDatabaseIdentity(
                 repository_url=repository_url,
@@ -93,11 +116,7 @@ class RegisteredCodeQLDatabaseProvider:
             or registered.artifact_key != identity.artifact_key
         ):
             raise RegisteredCodeQLProviderError("REGISTERED_CODEQL_DATABASE_INVALID")
-        return RegisteredCodeQLDatabase(
-            database_root=registered.database_root,
-            database_digest=registered.database_digest,
-            artifact_key=registered.artifact_key,
-        )
+        return registered
 
 
 __all__ = [

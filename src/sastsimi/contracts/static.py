@@ -51,6 +51,13 @@ class CodeQLBoundaryCapability(ContractModel):
     database_provider_key: NonEmptyStr
     database_provider_revision: NonEmptyStr
     database_provider_evidence_sha256: Sha256
+    image_digest: str
+    expected_codeql_version: NonEmptyStr
+    query_pack_sha256: Sha256
+    container_user: NonEmptyStr
+    pids_limit: PositiveInt
+    memory_limit_bytes: PositiveInt
+    nano_cpus: PositiveInt
     supported_languages: tuple[Literal["PYTHON", "JAVASCRIPT"], ...]
     prebuilt_database_only: Literal[True]
 
@@ -60,6 +67,16 @@ class CodeQLBoundaryCapability(ContractModel):
             set(self.supported_languages)
         ):
             raise ValueError("CODEQL_BOUNDARY_LANGUAGE_INVALID")
+        if (
+            re.fullmatch(r"sha256:[0-9a-f]{64}", self.image_digest) is None
+            or re.fullmatch(
+                r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?",
+                self.expected_codeql_version,
+            )
+            is None
+            or re.fullmatch(r"[1-9][0-9]*:[1-9][0-9]*", self.container_user) is None
+        ):
+            raise ValueError("CODEQL_CONTAINER_BOUNDARY_INVALID")
         return self
 
 
@@ -101,6 +118,7 @@ class StaticToolProfile(DomainRecord):
         if self.adapter_key == "CODEQL" and self.status == "ACTIVE":
             if (
                 self.codeql_boundary is None
+                or self.executable_key != "docker"
                 or self.codeql_boundary.execution_limit_bytes
                 != self.max_attempt_output_bytes
             ):
