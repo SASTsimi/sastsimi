@@ -306,12 +306,10 @@ def validate_container_inspect(
             if not isinstance(destination, str) or destination in by_destination:
                 raise ValueError
             by_destination[destination] = mount
-        if set(by_destination) != {
-            _DATABASE_TARGET,
-            _QUERY_TARGET,
-            _DATABASE_WORK,
-            _OUTPUT_WORK,
-        }:
+        destinations = set(by_destination)
+        bind_destinations = {_DATABASE_TARGET, _QUERY_TARGET}
+        all_destinations = bind_destinations | {_DATABASE_WORK, _OUTPUT_WORK}
+        if destinations not in (bind_destinations, all_destinations):
             raise ValueError
         expected_binds = {
             _DATABASE_TARGET: spec.database_source,
@@ -325,10 +323,11 @@ def validate_container_inspect(
                 or mount.get("Source") != str(source)
             ):
                 raise ValueError
-        for destination in (_DATABASE_WORK, _OUTPUT_WORK):
-            mount = by_destination[destination]
-            if mount.get("Type") != "tmpfs" or mount.get("RW") is not True:
-                raise ValueError
+        if destinations == all_destinations:
+            for destination in (_DATABASE_WORK, _OUTPUT_WORK):
+                mount = by_destination[destination]
+                if mount.get("Type") != "tmpfs" or mount.get("RW") is not True:
+                    raise ValueError
     except (ContainerCodeQLBoundaryError, KeyError, TypeError, ValueError):
         raise _fail("CODEQL_CONTAINER_INSPECT_MISMATCH") from None
 

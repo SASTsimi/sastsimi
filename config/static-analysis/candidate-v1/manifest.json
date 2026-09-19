@@ -1,0 +1,59 @@
+{
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "3a48eb65849314ee750b033543bbc785815e1e938aa78c4e443888b4a85c2a31",
+      "size_bytes": 1377
+    },
+    {
+      "path": "codeql/python-security.qls",
+      "sha256": "5e116e6daa639876d954a6974aaab589d3a3ac94b902f6521321cf063fd18edb",
+      "size_bytes": 396
+    },
+    {
+      "path": "codeql/qlpack.yml",
+      "sha256": "fc85a5d80296db8f09ed71469cb46d66ee0120bf8a00a69f461b9ae788a20273",
+      "size_bytes": 155
+    },
+    {
+      "path": "codeql/rule-catalog.json",
+      "sha256": "eb7129c6039317b410881f56ce700115f15e77545ca2afd079b2ec2b17f6b8c1",
+      "size_bytes": 1274
+    },
+    {
+      "path": "codeql/rule-mapping.json",
+      "sha256": "c530f77ad879bc5f34f88163e11f13595468390d4a0697721db70b367c372de5",
+      "size_bytes": 1301
+    },
+    {
+      "path": "codeql/rule-selection.json",
+      "sha256": "dbbf2909380bbe1e80d2b56ed66156d261865087aed5e8447d13cc27e37e338d",
+      "size_bytes": 567
+    },
+    {
+      "path": "opengrep/rule-catalog.json",
+      "sha256": "4f72fe3f3d366c82a9555e2d1cd1ae0db0a360c97aa7e5c5eacf5856e7e85642",
+      "size_bytes": 2438
+    },
+    {
+      "path": "opengrep/rule-mapping.json",
+      "sha256": "7a05fe60956354ae9874b68f7402a1054db54094059f433d2e18594c2a0d50dd",
+      "size_bytes": 2645
+    },
+    {
+      "path": "opengrep/rule-selection.json",
+      "sha256": "2c78bcba41a4a0d1adf34567913c334e1d2e503de333e24f68cbb0de9303542a",
+      "size_bytes": 924
+    },
+    {
+      "path": "opengrep/rules.yml",
+      "sha256": "75395fb823356b65effd80f560c32dc00a638fabf12c00dc1ed37b500ea8a6a9",
+      "size_bytes": 6225
+    }
+  ],
+  "material_set": "sastsimi-static-candidate-v1",
+  "material_set_sha256": "e5ac82d2b44315c99103c67b37b82146769a38cc30bf2ae778d151bc80d9ac7f",
+  "production_ready": false,
+  "schema_version": 1,
+  "status": "CANDIDATE"
+}

@@ -224,6 +224,18 @@ def test_inspect_accepts_only_the_exact_requested_boundary() -> None:
     validate_container_inspect(_inspect(spec), spec, operation="analyze")
 
 
+def test_inspect_accepts_pre_start_docker_record_without_tmpfs_mount_entries() -> None:
+    """Docker reports requested tmpfs in HostConfig before the container starts."""
+
+    spec = _spec()
+    actual = _inspect(spec)
+    mounts = actual["Mounts"]
+    assert isinstance(mounts, list)
+    actual["Mounts"] = [item for item in mounts if item["Type"] == "bind"]
+
+    validate_container_inspect(actual, spec, operation="analyze")
+
+
 @pytest.mark.parametrize(
     "mutate",
     [

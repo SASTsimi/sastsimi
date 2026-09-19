@@ -1,0 +1,17 @@
+{
+  "production_ready": false,
+  "rules": [
+    {"flow_start_fact_kind": "SOURCE", "requires_code_flow": true, "result_fact_kind": "SINK", "rule_id": "py/code-injection"},
+    {"flow_start_fact_kind": "SOURCE", "requires_code_flow": true, "result_fact_kind": "SINK", "rule_id": "py/command-line-injection"},
+    {"flow_start_fact_kind": "SOURCE", "requires_code_flow": true, "result_fact_kind": "SINK", "rule_id": "py/nosql-injection"},
+    {"flow_start_fact_kind": "SOURCE", "requires_code_flow": true, "result_fact_kind": "SINK", "rule_id": "py/path-injection"},
+    {"flow_start_fact_kind": "SOURCE", "requires_code_flow": true, "result_fact_kind": "SINK", "rule_id": "py/reflective-xss"},
+    {"flow_start_fact_kind": "SOURCE", "requires_code_flow": true, "result_fact_kind": "SINK", "rule_id": "py/shell-command-constructed-from-input"},
+    {"flow_start_fact_kind": "SOURCE", "requires_code_flow": true, "result_fact_kind": "SINK", "rule_id": "py/sql-injection"},
+    {"flow_start_fact_kind": "SOURCE", "requires_code_flow": true, "result_fact_kind": "SINK", "rule_id": "py/url-redirection"},
+    {"flow_start_fact_kind": "SOURCE", "requires_code_flow": true, "result_fact_kind": "SINK", "rule_id": "py/xpath-injection"}
+  ],
+  "schema_version": 1,
+  "status": "CANDIDATE",
+  "tool": "CODEQL"
+}

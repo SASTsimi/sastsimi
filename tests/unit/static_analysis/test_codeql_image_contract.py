@@ -119,9 +119,18 @@ def test_entrypoint_has_three_exact_modes_and_no_dynamic_command_execution() -> 
         assert forbidden not in entrypoint
 
     assert "cp -R /input/database/. /work/database/codeql-db/" in entrypoint
+    assert "export TMPDIR=/work/database/runtime/tmp" in entrypoint
+    assert "export TMP=/work/database/runtime/tmp" in entrypoint
+    assert "export TEMP=/work/database/runtime/tmp" in entrypoint
+    assert (
+        'export JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=/work/database/runtime/tmp"'
+        in entrypoint
+    )
     assert "/opt/codeql/codeql database analyze" in entrypoint
     assert "/work/database/codeql-db" in entrypoint
-    assert "/input/query-pack" in entrypoint
+    assert "[ -f /input/query-pack/python-security.qls ]" in entrypoint
+    assert "/input/query-pack/python-security.qls" in entrypoint
+    assert "        /input/query-pack \\\n" not in entrypoint
     assert "--format=sarifv2.1.0" in entrypoint
     assert "--output=/work/output/result.sarif" in entrypoint
     assert "--threads=1" in entrypoint

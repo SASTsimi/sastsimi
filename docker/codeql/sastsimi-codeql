@@ -24,6 +24,8 @@ analyze() {
     [ "$#" -eq 0 ] || fail "ANALYZE_ARGUMENTS_INVALID"
     [ -d /input/database ] || fail "DATABASE_INPUT_MISSING"
     [ -d /input/query-pack ] || fail "QUERY_PACK_INPUT_MISSING"
+    [ -f /input/query-pack/python-security.qls ] \
+        || fail "QUERY_SUITE_INPUT_MISSING"
     [ -d /work/database ] || fail "DATABASE_TMPFS_MISSING"
     [ -d /work/output ] || fail "OUTPUT_TMPFS_MISSING"
     [ ! -e /work/output/result.sarif ] || fail "OUTPUT_NOT_CLEAN"
@@ -35,10 +37,13 @@ analyze() {
     cp -R /input/database/. /work/database/codeql-db/
     export HOME=/work/database/runtime/home
     export TMPDIR=/work/database/runtime/tmp
+    export TMP=/work/database/runtime/tmp
+    export TEMP=/work/database/runtime/tmp
+    export JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=/work/database/runtime/tmp"
 
     /opt/codeql/codeql database analyze \
         /work/database/codeql-db \
-        /input/query-pack \
+        /input/query-pack/python-security.qls \
         --format=sarifv2.1.0 \
         --output=/work/output/result.sarif \
         --threads=1 \

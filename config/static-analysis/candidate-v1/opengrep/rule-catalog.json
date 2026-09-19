@@ -1,0 +1,28 @@
+{
+  "production_ready": false,
+  "rule_pack_id": "sastsimi/opengrep-web-candidate@1.0.0",
+  "rules": [
+    {"description": "Candidate authentication check", "languages": ["javascript"], "rule_id": "sastsimi.javascript.auth-check"},
+    {"description": "Candidate command-execution sink", "languages": ["javascript"], "rule_id": "sastsimi.javascript.command-sink"},
+    {"description": "Candidate browser HTML sink", "languages": ["javascript"], "rule_id": "sastsimi.javascript.dom-xss-sink"},
+    {"description": "Candidate permission check", "languages": ["javascript"], "rule_id": "sastsimi.javascript.permission-check"},
+    {"description": "Candidate web-request source", "languages": ["javascript"], "rule_id": "sastsimi.javascript.request-source"},
+    {"description": "Candidate output sanitizer", "languages": ["javascript"], "rule_id": "sastsimi.javascript.sanitizer"},
+    {"description": "Candidate database-query sink", "languages": ["javascript"], "rule_id": "sastsimi.javascript.sql-sink"},
+    {"description": "Candidate input validator", "languages": ["javascript"], "rule_id": "sastsimi.javascript.validator"},
+    {"description": "Candidate authentication check", "languages": ["python"], "rule_id": "sastsimi.python.auth-check"},
+    {"description": "Candidate command-execution sink", "languages": ["python"], "rule_id": "sastsimi.python.command-sink"},
+    {"description": "Candidate server-side HTML sink", "languages": ["python"], "rule_id": "sastsimi.python.html-sink"},
+    {"description": "Candidate outbound HTTP sink", "languages": ["python"], "rule_id": "sastsimi.python.http-client-sink"},
+    {"description": "Candidate filesystem-path sink", "languages": ["python"], "rule_id": "sastsimi.python.path-sink"},
+    {"description": "Candidate permission check", "languages": ["python"], "rule_id": "sastsimi.python.permission-check"},
+    {"description": "Candidate web-request source", "languages": ["python"], "rule_id": "sastsimi.python.request-source"},
+    {"description": "Candidate output sanitizer", "languages": ["python"], "rule_id": "sastsimi.python.sanitizer"},
+    {"description": "Candidate database-query sink", "languages": ["python"], "rule_id": "sastsimi.python.sql-sink"},
+    {"description": "Candidate input validator", "languages": ["python"], "rule_id": "sastsimi.python.validator"}
+  ],
+  "schema_version": 1,
+  "status": "CANDIDATE",
+  "tool": "OPENGREP",
+  "tool_version": "1.16.5"
+}

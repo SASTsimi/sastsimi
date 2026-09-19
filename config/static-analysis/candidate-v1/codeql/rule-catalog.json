@@ -1,0 +1,20 @@
+{
+  "codeql_cli_version": "2.27.0",
+  "production_ready": false,
+  "query_pack": "codeql/python-queries@1.8.10",
+  "rule_pack_id": "sastsimi/python-security-candidate@1.0.0",
+  "rules": [
+    {"cwe": "CWE-094", "query_path": "Security/CWE-094/CodeInjection.ql", "rule_id": "py/code-injection"},
+    {"cwe": "CWE-078", "query_path": "Security/CWE-078/CommandInjection.ql", "rule_id": "py/command-line-injection"},
+    {"cwe": "CWE-943", "query_path": "Security/CWE-943/NoSqlInjection.ql", "rule_id": "py/nosql-injection"},
+    {"cwe": "CWE-022", "query_path": "Security/CWE-022/PathInjection.ql", "rule_id": "py/path-injection"},
+    {"cwe": "CWE-079", "query_path": "Security/CWE-079/ReflectedXss.ql", "rule_id": "py/reflective-xss"},
+    {"cwe": "CWE-078", "query_path": "Security/CWE-078/UnsafeShellCommandConstruction.ql", "rule_id": "py/shell-command-constructed-from-input"},
+    {"cwe": "CWE-089", "query_path": "Security/CWE-089/SqlInjection.ql", "rule_id": "py/sql-injection"},
+    {"cwe": "CWE-601", "query_path": "Security/CWE-601/UrlRedirect.ql", "rule_id": "py/url-redirection"},
+    {"cwe": "CWE-643", "query_path": "Security/CWE-643/XpathInjection.ql", "rule_id": "py/xpath-injection"}
+  ],
+  "schema_version": 1,
+  "status": "CANDIDATE",
+  "tool": "CODEQL"
+}
