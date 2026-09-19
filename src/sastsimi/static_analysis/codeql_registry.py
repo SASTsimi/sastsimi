@@ -87,17 +87,20 @@ def publish_codeql_database(
     database_root: Path,
     identity: CodeQLDatabaseIdentity,
     cancellation_requested: Callable[[], bool] | None = None,
+    max_bytes: int | None = None,
 ) -> PublishedCodeQLDatabase:
     """Publish one validated database atomically without replacing an entry."""
 
     identity = _require_identity(identity)
+    if max_bytes is not None and (type(max_bytes) is not int or max_bytes <= 0):
+        raise ValueError("CODEQL_DATABASE_LIMIT_INVALID")
     registry = _safe_directory(registry_root, "CODEQL_DATABASE_REGISTRY_INVALID")
     source = _safe_directory(database_root, "CODEQL_DATABASE_TREE_INVALID")
     if _overlaps(registry, source):
         raise ValueError("CODEQL_DATABASE_TREE_INVALID")
     _require_safe_tree(source)
     _require_active(cancellation_requested)
-    source_digest = _digest_tree(source, cancellation_requested)
+    source_digest = _digest_tree(source, cancellation_requested, max_bytes=max_bytes)
     target = registry / identity.artifact_key
     lock = registry / f".{identity.artifact_key}.publish.lock"
     # The registry key already makes the final directory exact.  A short random
@@ -119,10 +122,12 @@ def publish_codeql_database(
             raise FileExistsError("CODEQL_DATABASE_ALREADY_PUBLISHED")
         staging.mkdir(mode=0o700)
         copied = staging / "database"
-        _copy_tree(source, copied, cancellation_requested)
+        _copy_tree(source, copied, cancellation_requested, max_bytes=max_bytes)
         if (
-            _digest_tree(source, cancellation_requested) != source_digest
-            or _digest_tree(copied, cancellation_requested) != source_digest
+            _digest_tree(source, cancellation_requested, max_bytes=max_bytes)
+            != source_digest
+            or _digest_tree(copied, cancellation_requested, max_bytes=max_bytes)
+            != source_digest
         ):
             raise ValueError("CODEQL_DATABASE_CHANGED_DURING_PUBLICATION")
         _write_exclusive(staging / _MANIFEST_NAME, canonical_bytes(descriptor))
@@ -316,8 +321,14 @@ def _require_safe_tree(root: Path) -> None:
         raise ValueError("CODEQL_DATABASE_TREE_INVALID") from None
 
 
-def _digest_tree(root: Path, cancellation_requested: Callable[[], bool] | None) -> str:
+def _digest_tree(
+    root: Path,
+    cancellation_requested: Callable[[], bool] | None,
+    *,
+    max_bytes: int | None = None,
+) -> str:
     entries: list[tuple[str, int, str]] = []
+    total = 0
     _require_safe_tree(root)
     for candidate in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
         _require_active(cancellation_requested)
@@ -330,6 +341,9 @@ def _digest_tree(root: Path, cancellation_requested: Callable[[], bool] | None) 
             while chunk := stream.read(1024 * 1024):
                 _require_active(cancellation_requested)
                 size += len(chunk)
+                total += len(chunk)
+                if max_bytes is not None and total > max_bytes:
+                    raise ValueError("CODEQL_DATABASE_LIMIT_EXCEEDED")
                 digest.update(chunk)
         after = candidate.lstat()
         if _file_identity(before) != _file_identity(after) or size != before.st_size:
@@ -344,8 +358,13 @@ def _copy_tree(
     source: Path,
     destination: Path,
     cancellation_requested: Callable[[], bool] | None,
+    *,
+    max_bytes: int | None = None,
 ) -> None:
+    copied_bytes = 0
+
     def copy_file(source_name: str, destination_name: str) -> str:
+        nonlocal copied_bytes
         _require_active(cancellation_requested)
         source_path = Path(source_name)
         destination_path = Path(destination_name)
@@ -355,6 +374,9 @@ def _copy_tree(
         with source_path.open("rb") as reader, destination_path.open("xb") as writer:
             while chunk := reader.read(1024 * 1024):
                 _require_active(cancellation_requested)
+                copied_bytes += len(chunk)
+                if max_bytes is not None and copied_bytes > max_bytes:
+                    raise ValueError("CODEQL_DATABASE_LIMIT_EXCEEDED")
                 writer.write(chunk)
             writer.flush()
             os.fsync(writer.fileno())
