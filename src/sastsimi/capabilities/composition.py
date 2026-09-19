@@ -153,6 +153,13 @@ class ProductionCapabilityProbeService:
     def require_current(self, target: TrustedDockerTarget) -> None:
         self.__engine.require_current(target)
 
+    def require_approved_current(
+        self,
+        probe_id: str,
+        expected_ref: HostConfigurationRef,
+    ) -> HostConfigurationRef:
+        return self.__engine.require_approved_current(probe_id, expected_ref)
+
 
 def _host_platform() -> tuple[CapabilityOperatingSystem, CapabilityArchitecture]:
     operating_system = {

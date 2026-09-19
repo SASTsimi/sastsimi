@@ -519,6 +519,28 @@ class _CapabilityProbeEngine:
         if self.resolve_current(target.profile_ref) != target:
             raise ValueError("CAPABILITY_DOCKER_TARGET_CHANGED")
 
+    def require_approved_current(
+        self,
+        probe_id: str,
+        expected_ref: HostConfigurationRef,
+    ) -> HostConfigurationRef:
+        """Resolve an already-published ACTIVE revision without probing a tool.
+
+        This read-only operation is for manifest composition. Execution paths must
+        still use their capability-specific current-target checks immediately
+        before invoking an external program.
+        """
+
+        receipt = self._store.get(probe_id)
+        if (
+            receipt.approved_profile_ref is None
+            or receipt.approved_profile_ref != expected_ref
+            or expected_ref.host_id != self._host_id
+        ):
+            raise ValueError("CAPABILITY_APPROVED_REFERENCE_CHANGED")
+        self._registry.resolve_pinned_active_profile(expected_ref)
+        return expected_ref
+
     def approve(
         self,
         probe_id: str,

@@ -5,7 +5,7 @@ import asyncio
 import re
 import sys
 from pathlib import Path
-from typing import NoReturn, cast
+from typing import Any, NoReturn, cast
 from uuid import uuid4
 
 from sastsimi import bootstrap
@@ -26,6 +26,9 @@ from sastsimi.interfaces.cli import result as result_command
 from sastsimi.interfaces.cli import status as status_command
 from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.output import emit_data, emit_result
+from sastsimi.orchestration.production_onboarding_builder import (
+    ApprovedProbeResolver,
+)
 from sastsimi.runtime.system_support import SystemClock
 
 
@@ -51,6 +54,47 @@ def _exact_commit(value: str) -> str:
     if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value) is None:
         raise argparse.ArgumentTypeError("exact commit required")
     return value
+
+
+def _approved_probe_resolver(
+    data_dir: Path,
+    profile: Any,
+    docker_host: str | None,
+) -> ApprovedProbeResolver:
+    """Resolve only already-approved, still-current probe revisions."""
+
+    lookup = capability_command.build_service(
+        data_dir,
+        kind=None,
+        host_id=profile.host_id,
+        docker_host=None,
+    )
+    receipts = {item.probe_id: item for item in lookup.list()}
+
+    def resolve(probe_id: str) -> tuple[str, Any]:
+        receipt = receipts.get(probe_id)
+        if (
+            receipt is None
+            or receipt.approved_profile_ref is None
+            or receipt.approval_target_hash is None
+        ):
+            raise ValueError("CAPABILITY_PROBE_NOT_APPROVED")
+        service = capability_command.build_service(
+            data_dir,
+            kind=receipt.kind,
+            host_id=profile.host_id,
+            docker_host=docker_host,
+            codeql_container_config=profile.codeql_container,
+        )
+        current = service.require_approved_current(
+            receipt.probe_id,
+            receipt.approved_profile_ref,
+        )
+        if current != receipt.approved_profile_ref:
+            raise ValueError("CAPABILITY_APPROVED_REFERENCE_CHANGED")
+        return str(receipt.kind), current
+
+    return resolve
 
 
 def main(
@@ -164,9 +208,25 @@ def main(
     )
     onboarding_requirements.add_argument("--profile", type=Path, required=True)
     onboarding_requirements.add_argument("--format", choices=["text", "json"])
+    onboarding_compose = onboarding_commands.add_parser("compose", allow_abbrev=False)
+    onboarding_compose.add_argument("--profile", type=Path, required=True)
+    onboarding_compose.add_argument("--approval-input", type=Path, required=True)
+    onboarding_compose.add_argument(
+        "--slot-template", type=Path, action="append", required=True
+    )
+    onboarding_compose.add_argument(
+        "--evidence", type=Path, action="append", default=[]
+    )
+    onboarding_compose.add_argument("--output-dir", type=Path, required=True)
+    onboarding_compose.add_argument("--docker-host")
+    onboarding_compose.add_argument("--format", choices=["text", "json"])
     onboarding_prepare = onboarding_commands.add_parser("prepare", allow_abbrev=False)
     onboarding_prepare.add_argument("--profile", type=Path, required=True)
-    onboarding_prepare.add_argument("--manifest", type=Path, required=True)
+    onboarding_prepare_input = onboarding_prepare.add_mutually_exclusive_group(
+        required=True
+    )
+    onboarding_prepare_input.add_argument("--manifest", type=Path)
+    onboarding_prepare_input.add_argument("--bundle-dir", type=Path)
     onboarding_prepare.add_argument(
         "--evidence", type=Path, action="append", default=[]
     )
@@ -382,15 +442,40 @@ def main(
                 onboarding_result = onboarding_command.run_requirements(
                     profile, repository_root=repository_root
                 )
-            elif args.onboarding_command == "prepare":
-                onboarding_result = onboarding_command.run_prepare(
+            elif args.onboarding_command == "compose":
+                onboarding_result = onboarding_command.run_compose(
                     config.data_dir,
                     profile=profile,
-                    manifest_path=args.manifest,
+                    approval_input_path=args.approval_input,
+                    slot_template_paths=tuple(args.slot_template),
                     evidence_paths=tuple(args.evidence),
+                    output_dir=args.output_dir,
                     repository_root=repository_root,
                     clock=SystemClock().now,
+                    resolve_probe=_approved_probe_resolver(
+                        config.data_dir, profile, args.docker_host
+                    ),
                 )
+            elif args.onboarding_command == "prepare":
+                if args.bundle_dir is not None:
+                    if args.evidence:
+                        raise _InputError
+                    onboarding_result = onboarding_command.run_prepare_bundle(
+                        config.data_dir,
+                        profile=profile,
+                        bundle_dir=args.bundle_dir,
+                        repository_root=repository_root,
+                        clock=SystemClock().now,
+                    )
+                else:
+                    onboarding_result = onboarding_command.run_prepare(
+                        config.data_dir,
+                        profile=profile,
+                        manifest_path=args.manifest,
+                        evidence_paths=tuple(args.evidence),
+                        repository_root=repository_root,
+                        clock=SystemClock().now,
+                    )
             else:
                 onboarding_result = onboarding_command.run_status(
                     config.data_dir,
