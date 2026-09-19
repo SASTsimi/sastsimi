@@ -79,6 +79,8 @@ class _OutputApproval:
 class ProductionOperatorProfiles(ActiveBudgetProfilesPort):
     """Create one immutable budget/identity catalog from trusted CLI config."""
 
+    _purpose = Purpose.PRODUCTION
+
     def __init__(
         self,
         *,
@@ -136,6 +138,8 @@ class ProductionOperatorProfiles(ActiveBudgetProfilesPort):
     def authority_catalog(
         self, profile_ref: RunStoredDataRef, onboarding_ref: RunStoredDataRef
     ) -> ProductionAuthorityCatalog:
+        if self._purpose != Purpose.PRODUCTION:
+            raise ValueError("LOCAL_EVALUATION_AUTHORITY_UNAVAILABLE")
         return ProductionAuthorityCatalog(
             schema_version="1",
             artifact_scope="ANALYSIS_OPERATOR_AUTHORITY",
@@ -143,7 +147,7 @@ class ProductionOperatorProfiles(ActiveBudgetProfilesPort):
             workspace_id=self.scope.workspace_id,
             commit_id=self.scope.commit_id,
             program_id=self.program_id,
-            purpose="PRODUCTION",
+            purpose=Purpose.PRODUCTION.value,
             production_profile_ref=profile_ref,
             production_onboarding_ref=onboarding_ref,
             execution_budget_profile_ref=self.binding.execution_budget_profile_ref,
@@ -194,7 +198,7 @@ class ProductionOperatorProfiles(ActiveBudgetProfilesPort):
             or state.workspace_id != self.scope.workspace_id
             or state.commit_id != self.scope.commit_id
             or state.program_id != self.program_id
-            or state.purpose != Purpose.PRODUCTION
+            or state.purpose != self._purpose
             or state.status != "RUNNING"
             or state.execution_budget_profile_ref != execution_ref
             or state.budget_binding_ref is not None
@@ -212,7 +216,7 @@ class ProductionOperatorProfiles(ActiveBudgetProfilesPort):
             request.repository_ref != self.scope.repository_ref
             or request.requested_git_ref.lower() != str(self.scope.commit_id)
             or request.program_id != self.program_id
-            or request.purpose != Purpose.PRODUCTION
+            or request.purpose != self._purpose
         ):
             raise ValueError("OPERATOR_PROFILE_SCOPE_MISMATCH")
 
@@ -285,7 +289,7 @@ class ProductionOperatorProfiles(ActiveBudgetProfilesPort):
         return ExecutionBudgetProfile(
             meta=self._run_meta("execution_budget_profile"),
             profile_key=values.profile_key,
-            purpose=Purpose.PRODUCTION,
+            purpose=self._purpose,
             max_analysis_elapsed_ms=values.max_analysis_elapsed_ms,
             max_total_cost_minor_units=values.max_total_cost_minor_units,
             currency=values.currency,
@@ -333,7 +337,7 @@ class ProductionOperatorProfiles(ActiveBudgetProfilesPort):
         return WorkBudgetProfile(
             meta=self._record_meta("work_budget_profile"),
             profile_key=profile_key,
-            purpose=Purpose.PRODUCTION,
+            purpose=self._purpose,
             limits=self._limits(),
             unlisted_operation="DENY",
             status=ProfileStatus.ACTIVE,
@@ -377,7 +381,7 @@ class ProductionOperatorProfiles(ActiveBudgetProfilesPort):
         return BudgetProfileBinding(
             meta=self._record_meta("budget_profile_binding"),
             binding_key=f"{self.settings.profile_key}-binding",
-            purpose=Purpose.PRODUCTION,
+            purpose=self._purpose,
             execution_budget_profile_ref=execution_ref,
             work_budget_profile_ref=work_ref,
             verification_budget_profile_ref=verification_ref,
@@ -387,6 +391,12 @@ class ProductionOperatorProfiles(ActiveBudgetProfilesPort):
             approved_at=self._approved_at,
             status=ProfileStatus.ACTIVE,
         )
+
+
+class LocalEvaluationOperatorProfiles(ProductionOperatorProfiles):
+    """Budget and identity catalog permanently locked to LOCAL_EVALUATION."""
+
+    _purpose = Purpose.LOCAL_EVALUATION
 
 
 class ProductionTrustedEvidence(UnprovenEvidence):
@@ -504,6 +514,7 @@ class ProductionTrustedEvidence(UnprovenEvidence):
 
 __all__ = [
     "BudgetConfigurationPublisher",
+    "LocalEvaluationOperatorProfiles",
     "ProductionOperatorProfiles",
     "ProductionTrustedEvidence",
 ]

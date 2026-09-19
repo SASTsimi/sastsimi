@@ -36,6 +36,7 @@ from sastsimi.contracts.work import (
     WorkType,
 )
 from sastsimi.orchestration.production_operator_profiles import (
+    LocalEvaluationOperatorProfiles,
     ProductionOperatorProfiles,
     ProductionTrustedEvidence,
 )
@@ -211,6 +212,46 @@ def test_builds_and_publishes_exact_operator_owned_budget_and_role_profiles() ->
         evidence.identity_role(catalog.identity_ref(RequesterRole.REPOSITORY_LOADER))
         == RequesterRole.REPOSITORY_LOADER
     )
+
+
+def test_local_operator_profiles_are_locked_to_local_evaluation() -> None:
+    catalog = LocalEvaluationOperatorProfiles(
+        scope=_scope(),
+        program_id="program-one",
+        settings=_settings(),
+        clock=_Clock(),
+        ids=_Ids(),
+    )
+    publisher = _Publisher()
+    catalog.publish_code_profiles(publisher)
+    request = _request().model_copy(update={"purpose": Purpose.LOCAL_EVALUATION})
+    state = _workspace_ready_state(catalog).model_copy(
+        update={"purpose": Purpose.LOCAL_EVALUATION}
+    )
+
+    assert catalog.execution_profile.purpose == Purpose.LOCAL_EVALUATION
+    assert catalog.work_profile.purpose == Purpose.LOCAL_EVALUATION
+    assert catalog.binding.purpose == Purpose.LOCAL_EVALUATION
+    assert catalog.resolve_active_execution(request) == catalog.execution_profile
+    assert catalog.resolve_active_binding(request, state) == catalog.binding
+
+    with pytest.raises(ValueError, match="LOCAL_EVALUATION_AUTHORITY_UNAVAILABLE"):
+        catalog.authority_catalog(
+            RunStoredDataRef(
+                stored_data_id=StoredDataId("profile"),
+                data_kind="production_profile",
+                content_hash="1" * 64,
+                analysis_id=_scope().analysis_id,
+                record_id=RecordId("profile"),
+            ),
+            RunStoredDataRef(
+                stored_data_id=StoredDataId("onboarding"),
+                data_kind="production_onboarding",
+                content_hash="2" * 64,
+                analysis_id=_scope().analysis_id,
+                record_id=RecordId("onboarding"),
+            ),
+        )
 
 
 def test_rejects_wrong_scope_and_never_approves_a_modified_profile() -> None:
