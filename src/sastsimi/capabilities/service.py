@@ -63,6 +63,7 @@ from .probes import (
     CommandProbeRunner,
     OpenAIProbeTransport,
     python_ast_observation,
+    python_runtime_observation,
     safe_repository_loader_control,
     sha256_file,
     verify_outer_boundary_controls,
@@ -179,6 +180,18 @@ class _CapabilityProbeEngine:
                 profile_key, subject_key = "python-ast", "python"
                 status, activation_supported = "PASSED", True
                 summary = "Python AST parse probe passed"
+        elif kind == "PYTHON_RUNTIME":
+            python_executable = self._locate("python")
+            observed = (
+                python_runtime_observation(python_executable, self._commands)
+                if python_executable is not None
+                else None
+            )
+            if observed is not None:
+                version, digest = observed
+                profile_key, subject_key = "python-runtime", "python"
+                status, activation_supported = "PASSED", True
+                summary = "Python runtime start probe passed"
         elif kind == "CODEQL":
             (
                 profile_key,
@@ -422,7 +435,7 @@ class _CapabilityProbeEngine:
                 if profile.adapter_key == "PYTHON_AST"
                 else self._locate(key)
             )
-        elif profile.capability_kind in {"GIT", "DOCKER"}:
+        elif profile.capability_kind in {"GIT", "DOCKER", "PYTHON_RUNTIME"}:
             key = profile.subject_key
             expected_digest = profile.subject_sha256
             executable = self._locate(key)
@@ -434,6 +447,9 @@ class _CapabilityProbeEngine:
             allow_running_interpreter = (
                 isinstance(profile, StaticToolProfile)
                 and profile.adapter_key == "PYTHON_AST"
+            ) or (
+                isinstance(profile, RuntimeCapabilityProfile)
+                and profile.capability_kind == "PYTHON_RUNTIME"
             )
             if executable.is_symlink() and not allow_running_interpreter:
                 raise ValueError
@@ -550,7 +566,10 @@ class _CapabilityProbeEngine:
         if executable is None:
             raise ValueError("CAPABILITY_EXECUTABLE_UNAVAILABLE")
         try:
-            allow_running_interpreter = receipt.kind == "PYTHON_AST"
+            allow_running_interpreter = receipt.kind in {
+                "PYTHON_AST",
+                "PYTHON_RUNTIME",
+            }
             if executable.is_symlink() and not allow_running_interpreter:
                 raise ValueError
             resolved = executable.resolve(strict=True)
@@ -678,6 +697,7 @@ class _CapabilityProbeEngine:
         route = {
             "GIT": (("ANY",), ("CLONE", "CHECKOUT")),
             "PYTHON_AST": (("PYTHON",), ("PARSE",)),
+            "PYTHON_RUNTIME": (("PYTHON",), ("START",)),
             "OPENGREP": (("PYTHON", "JAVASCRIPT"), ("ANALYZE",)),
             "DOCKER": (
                 ("ANY",),
@@ -938,7 +958,11 @@ class _CapabilityProbeEngine:
                     pids_limit=config.pids_limit,
                     memory_limit_bytes=config.memory_limit_bytes,
                     nano_cpus=config.nano_cpus,
-                    supported_languages=("PYTHON", "JAVASCRIPT"),
+                    # The production provisioning path currently creates and
+                    # validates Python databases only.  Do not advertise the
+                    # broader language support of the CodeQL CLI image as an
+                    # executable SASTSIMI capability.
+                    supported_languages=("PYTHON",),
                     prebuilt_database_only=True,
                 ),
             )

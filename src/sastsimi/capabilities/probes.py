@@ -467,6 +467,39 @@ def python_ast_observation(executable: Path) -> tuple[str, str] | None:
     return version, digest
 
 
+def python_runtime_observation(
+    executable: Path,
+    command_runner: CommandProbeRunner,
+) -> tuple[str, str] | None:
+    """Prove that the exact current interpreter can start in isolation."""
+
+    version = ".".join(str(part) for part in sys.version_info[:3])
+    try:
+        resolved = executable.resolve(strict=True)
+        if resolved != Path(sys.executable).resolve(strict=True):
+            return None
+        before = sha256_file(resolved)
+        observed = command_runner.run(
+            resolved,
+            (
+                "-I",
+                "-S",
+                "-c",
+                (
+                    "import sys; "
+                    "print('.'.join(str(part) for part in sys.version_info[:3]))"
+                ),
+            ),
+            timeout_ms=15_000,
+        )
+        after = sha256_file(resolved)
+    except (OSError, subprocess.SubprocessError, TimeoutError, ValueError):
+        return None
+    if not observed.succeeded or observed.safe_stdout != version or before != after:
+        return None
+    return version, after
+
+
 def safe_repository_loader_control(scratch_root: Path) -> bool:
     scratch_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=scratch_root) as temporary:

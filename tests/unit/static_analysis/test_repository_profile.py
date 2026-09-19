@@ -166,7 +166,13 @@ def _capability_meta(kind: str, name: str) -> dict[str, object]:
     return value
 
 
-def _static_selection(adapter: str, language: str) -> StaticToolCapabilitySelection:
+def _static_selection(
+    adapter: str,
+    language: str,
+    *,
+    evidence_languages: tuple[str, ...] | None = None,
+    codeql_languages: tuple[str, ...] = ("PYTHON", "JAVASCRIPT"),
+) -> StaticToolCapabilitySelection:
     name = f"{adapter.lower()}-{language.lower()}"
     placeholder = _host_ref("tool_capability_evidence", f"{name}-approval")
     profile = StaticToolProfile.model_validate(
@@ -199,7 +205,7 @@ def _static_selection(adapter: str, language: str) -> StaticToolCapabilitySelect
                         "pids_limit": 64,
                         "memory_limit_bytes": 536_870_912,
                         "nano_cpus": 500_000_000,
-                        "supported_languages": ("PYTHON", "JAVASCRIPT"),
+                        "supported_languages": codeql_languages,
                     "prebuilt_database_only": True,
                 }
                 if adapter == "CODEQL"
@@ -239,7 +245,7 @@ def _static_selection(adapter: str, language: str) -> StaticToolCapabilitySelect
             "codeql_boundary": profile.codeql_boundary,
             "operating_system": "windows",
             "architecture": "x86_64",
-            "languages": (language,),
+            "languages": evidence_languages or (language,),
             "operations": ("PARSE" if adapter == "PYTHON_AST" else "ANALYZE",),
             "probe_status": "PASSED",
             "probe_evidence_refs": (raw_ref,),
@@ -380,6 +386,53 @@ class _Resolver:
             profile_ref=self.git_ref,
             profile=self.git_profile,
         )
+
+
+class _PythonOnlyCodeQLResolver(_Resolver):
+    """Production-like routes for the currently provisioned Python CodeQL image."""
+
+    def __init__(
+        self,
+        *,
+        missing: tuple[str, str] | tuple[tuple[str, str], ...] | None = None,
+    ) -> None:
+        super().__init__(missing=missing)
+        python_codeql = _static_selection(
+            "CODEQL",
+            "PYTHON",
+            codeql_languages=("PYTHON",),
+        )
+        shared_opengrep = _static_selection(
+            "OPENGREP",
+            "PYTHON",
+            evidence_languages=("PYTHON", "JAVASCRIPT"),
+        )
+        self.selections[("CODEQL", "PYTHON")] = python_codeql
+        del self.selections[("CODEQL", "JAVASCRIPT")]
+        self.selections[("OPENGREP", "PYTHON")] = shared_opengrep
+        self.selections[("OPENGREP", "JAVASCRIPT")] = shared_opengrep
+        self.pinned = {
+            item.profile_ref: item.profile for item in self.selections.values()
+        }
+        self.pinned[self.git_ref] = self.git_profile
+
+    def resolve_active_static_tool(
+        self, **values: str
+    ) -> StaticToolCapabilitySelection:
+        route = (values["adapter_key"], values["language"])
+        if route in self.missing or route not in self.selections:
+            raise LookupError("CAPABILITY_ROUTE_NOT_ACTIVE")
+        return self.selections[route]
+
+
+def _approved_profiles(
+    resolver: _PythonOnlyCodeQLResolver,
+) -> dict[str, HostConfigurationRef]:
+    return {
+        "PYTHON_AST": resolver.selections[("PYTHON_AST", "PYTHON")].profile_ref,
+        "CODEQL": resolver.selections[("CODEQL", "PYTHON")].profile_ref,
+        "OPENGREP": resolver.selections[("OPENGREP", "PYTHON")].profile_ref,
+    }
 
 
 def test_profile_uses_only_exact_tracked_files_and_detects_known_inputs(
@@ -764,7 +817,7 @@ def test_tool_selection_blocks_when_no_sast_capability_is_active(
     }
 
 
-def test_codeql_mixed_language_repository_fails_closed_until_work_is_split(
+def test_python_only_codeql_routes_mixed_repository_without_blocking_opengrep(
     tmp_path: Path,
 ) -> None:
     repository = _build(
@@ -781,11 +834,12 @@ def test_codeql_mixed_language_repository_fails_closed_until_work_is_split(
             _write(tmp_path, "Dockerfile", b"FROM python:3.12-slim\n"),
         ),
     )
-    fake_resolver = _Resolver()
+    fake_resolver = _PythonOnlyCodeQLResolver()
     selector = RepositoryExecutionSelector(
         cast(ProductionCapabilityResolverPort, fake_resolver),
         operating_system="windows",
         architecture="x86_64",
+        approved_static_profiles=_approved_profiles(fake_resolver),
     )
 
     selection = selector.select(
@@ -796,9 +850,60 @@ def test_codeql_mixed_language_repository_fails_closed_until_work_is_split(
         git_checkout_profile_ref=fake_resolver.git_ref,
     )
 
+    assert selection.status == "READY"
+    assert {
+        item.adapter_key: item.languages for item in selection.selected_tools
+    } == {
+        "CODEQL": ("PYTHON",),
+        "OPENGREP": ("JAVASCRIPT", "PYTHON"),
+        "PYTHON_AST": ("PYTHON",),
+    }
+    observed_gaps = [
+        (gap.code, gap.reason, gap.affected_languages) for gap in selection.gaps
+    ]
+    assert observed_gaps == [
+        (
+            "NO_ACTIVE_STATIC_CAPABILITY:CODEQL:JAVASCRIPT",
+            "UNSUPPORTED",
+            ("JAVASCRIPT",),
+        )
+    ]
+
+
+def test_missing_approved_python_codeql_still_blocks_mixed_repository(
+    tmp_path: Path,
+) -> None:
+    repository = _build(
+        tmp_path,
+        (
+            _write(tmp_path, "app.py", b"print('ok')\n"),
+            _write(tmp_path, "web.js", b"console.log('ok')\n"),
+            _write(tmp_path, "pyproject.toml", b"[project]\nname='mixed'\n"),
+            _write(tmp_path, "package.json", b'{"name":"mixed"}'),
+            _write(tmp_path, "Dockerfile", b"FROM python:3.12-slim\n"),
+        ),
+    )
+    fake_resolver = _PythonOnlyCodeQLResolver(missing=("CODEQL", "PYTHON"))
+
+    selection = RepositoryExecutionSelector(
+        cast(ProductionCapabilityResolverPort, fake_resolver),
+        operating_system="windows",
+        architecture="x86_64",
+        approved_static_profiles=_approved_profiles(fake_resolver),
+    ).select(
+        repository,
+        meta=_selection_meta(),
+        repository_profile_ref=cast(StoredDataRef, reference(repository)),
+        git_clone_profile_ref=fake_resolver.git_ref,
+        git_checkout_profile_ref=fake_resolver.git_ref,
+    )
+
     assert selection.status == "BLOCKED"
     assert selection.selected_tools == ()
-    assert selection.gaps[0].code == "CODEQL_MULTILANGUAGE_SPLIT_REQUIRED"
+    assert {(gap.code, gap.reason) for gap in selection.gaps} == {
+        ("NO_ACTIVE_STATIC_CAPABILITY:CODEQL:JAVASCRIPT", "UNSUPPORTED"),
+        ("NO_ACTIVE_STATIC_CAPABILITY:CODEQL:PYTHON", "MISSING"),
+    }
 
 
 def test_registry_mismatch_fails_without_selecting_any_tool(tmp_path: Path) -> None:

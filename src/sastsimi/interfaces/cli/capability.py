@@ -47,6 +47,7 @@ class CapabilityCommandResult:
 _EXECUTABLE_BY_KIND: dict[ProbeKind, tuple[str, str] | None] = {
     "GIT": ("git", "git"),
     "PYTHON_AST": None,
+    "PYTHON_RUNTIME": None,
     "OPENGREP": ("opengrep", "opengrep"),
     "DOCKER": ("docker", "docker"),
     "OPENAI_API": None,

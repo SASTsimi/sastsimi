@@ -531,7 +531,16 @@ class RepositoryExecutionSelection(DomainRecord):
                 or not has_required_structure
                 or not has_sast
                 or represented_missing_routes != missing_routes
-                or any(gap.reason != "MISSING" for gap in self.gaps)
+                or any(
+                    gap.reason not in {"MISSING", "UNSUPPORTED"}
+                    or (
+                        gap.reason == "UNSUPPORTED"
+                        and not gap.code.startswith(
+                            "NO_ACTIVE_STATIC_CAPABILITY:CODEQL:"
+                        )
+                    )
+                    for gap in self.gaps
+                )
             ):
                 raise ValueError("REPOSITORY_EXECUTION_SELECTION_INCOMPLETE")
         elif self.status == "BLOCKED":

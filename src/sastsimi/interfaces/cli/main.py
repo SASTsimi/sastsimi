@@ -186,7 +186,15 @@ def main(
     capability_probe = capability_commands.add_parser("probe", allow_abbrev=False)
     capability_probe.add_argument(
         "kind",
-        choices=["GIT", "PYTHON_AST", "OPENGREP", "DOCKER", "OPENAI_API", "CODEQL"],
+        choices=[
+            "GIT",
+            "PYTHON_AST",
+            "PYTHON_RUNTIME",
+            "OPENGREP",
+            "DOCKER",
+            "OPENAI_API",
+            "CODEQL",
+        ],
     )
     capability_probe.add_argument("--model")
     capability_probe.add_argument("--credential-ref")

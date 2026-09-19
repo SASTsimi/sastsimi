@@ -25,7 +25,10 @@ from sastsimi.capabilities.store import (
 )
 from sastsimi.config.codeql_container import CodeQLContainerRuntimeConfig
 from sastsimi.config.secrets import SecretReference
-from sastsimi.contracts.capabilities import DockerBuildCapability
+from sastsimi.contracts.capabilities import (
+    DockerBuildCapability,
+    RuntimeCapabilityProfile,
+)
 from sastsimi.contracts.ids import CommitId, WorkspaceId
 from sastsimi.ports.static_tool import (
     PrebuiltCodeQLDatabasePort,
@@ -132,6 +135,11 @@ class FakeCommands:
             )
         if command == "codeql":
             return CommandObservation(True, "2.23.1")
+        if command.startswith("python"):
+            assert effective_arguments[:3] == ("-I", "-S", "-c")
+            return CommandObservation(
+                True, ".".join(str(part) for part in sys.version_info[:3])
+            )
         if command == "docker":
             if effective_arguments[0] == "version":
                 if self.docker_daemon:
@@ -342,6 +350,7 @@ def test_codeql_container_probe_binds_the_docker_boundary_not_host_codeql(
     assert profile.executable_key == "docker"
     assert profile.expected_version == "2.27.0"
     assert receipt.codeql_boundary is not None
+    assert receipt.codeql_boundary.supported_languages == ("PYTHON",)
     assert receipt.codeql_boundary.query_pack_sha256 == digest_path(query_pack)
     assert service._commands.calls == []
     service._codeql_container_config = config.model_copy(update={"pids_limit": 65})
@@ -623,6 +632,45 @@ def test_python_ast_approval_accepts_exact_running_interpreter_symlink(
     )
 
     assert service.resolve_executable(profile_ref) == interpreter.resolve(strict=True)
+
+
+def test_python_runtime_probe_runs_and_approves_exact_current_interpreter(
+    tmp_path: Path,
+) -> None:
+    """Catches a version-only check or PYTHON_AST profile substitution."""
+
+    service, runtime, _store = _service(tmp_path, available=set())
+
+    receipt = service.probe("PYTHON_RUNTIME")
+    profile_ref = service.approve(
+        receipt.probe_id,
+        expected_target_hash=receipt.approval_target_hash or "",
+    )
+    profile = runtime.configuration.resolve_pinned_active_profile(profile_ref)
+
+    assert receipt.status == "PASSED"
+    assert receipt.activation_supported is True
+    assert isinstance(profile, RuntimeCapabilityProfile)
+    assert profile.capability_kind == "PYTHON_RUNTIME"
+    assert profile.languages == ("PYTHON",)
+    assert profile.operations == ("START",)
+    assert service.resolve_executable(profile_ref) == Path(sys.executable).resolve(
+        strict=True
+    )
+    assert service._commands.calls == [
+        (
+            Path(sys.executable).stem.lower(),
+            (
+                "-I",
+                "-S",
+                "-c",
+                (
+                    "import sys; "
+                    "print('.'.join(str(part) for part in sys.version_info[:3]))"
+                ),
+            ),
+        )
+    ]
 
 
 @pytest.mark.parametrize(

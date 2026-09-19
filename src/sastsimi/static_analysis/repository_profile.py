@@ -620,9 +620,45 @@ class RepositoryExecutionSelector:
             or selected.evidence.architecture != self._architecture
             or language not in selected.evidence.languages
             or operation not in selected.evidence.operations
+            or (
+                adapter_key == "CODEQL"
+                and (
+                    pinned.codeql_boundary is None
+                    or language not in pinned.codeql_boundary.supported_languages
+                )
+            )
         ):
             raise ValueError("STATIC_CAPABILITY_ROUTE_MISMATCH")
         return selected
+
+    def _configured_codeql_languages(self) -> frozenset[str] | None:
+        """Return the exact approved CodeQL language boundary when observable.
+
+        ``None`` deliberately means that the configured profile could not be
+        verified here.  The normal resolution path then stays fail-closed
+        instead of treating an invalid profile as an unsupported language.
+        """
+
+        if (
+            self._approved_static_profiles is None
+            or "CODEQL" not in self._approved_static_profiles
+        ):
+            return None
+        profile_ref = self._approved_static_profiles["CODEQL"]
+        try:
+            profile = self._resolver.resolve_pinned_active_profile(profile_ref)
+        except LookupError:
+            return None
+        if (
+            not isinstance(profile, StaticToolProfile)
+            or reference(profile) != profile_ref
+            or profile.status != "ACTIVE"
+            or profile.purpose != "PRODUCTION"
+            or profile.adapter_key != "CODEQL"
+            or profile.codeql_boundary is None
+        ):
+            return None
+        return frozenset(profile.codeql_boundary.supported_languages)
 
     def select(
         self,
@@ -729,8 +765,31 @@ class RepositoryExecutionSelector:
         ] = []
         selection_gaps: list[DataGap] = []
         errors: list[AnalysisError] = []
+        configured_codeql_languages = self._configured_codeql_languages()
         for language in supported_languages:
             for adapter_key in _STATIC_ROUTES[language]:
+                if (
+                    adapter_key == "CODEQL"
+                    and configured_codeql_languages is not None
+                    and language not in configured_codeql_languages
+                ):
+                    selection_gaps.append(
+                        self._gap(
+                            repository,
+                            code=(
+                                "NO_ACTIVE_STATIC_CAPABILITY:"
+                                f"CODEQL:{language}"
+                            ),
+                            description=(
+                                "The approved CodeQL runtime does not support "
+                                "this repository language; another verified "
+                                "SAST route must cover it."
+                            ),
+                            languages=(language,),
+                            reason="UNSUPPORTED",
+                        )
+                    )
+                    continue
                 try:
                     selected = self._resolve_static(
                         adapter_key, cast(CapabilityLanguage, language)
@@ -787,6 +846,11 @@ class RepositoryExecutionSelector:
                 for language in supported_languages
                 for adapter in _STATIC_ROUTES[language]
                 if adapter in self._approved_static_profiles
+                and (
+                    adapter != "CODEQL"
+                    or configured_codeql_languages is None
+                    or language in configured_codeql_languages
+                )
             }
             if self._approved_static_profiles is not None
             else set()

@@ -69,6 +69,38 @@ def test_capability_probe_and_list_emit_only_sanitized_structured_data(
     assert "TEST_ONLY_PRIVATE_PATH" not in json.dumps(listed)
 
 
+def test_python_runtime_probe_is_distinct_from_python_ast(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Catches PYTHON_RUNTIME being omitted or published as the AST tool."""
+
+    data_dir = tmp_path / "TEST_ONLY_PRIVATE_PATH"
+    assert (
+        main(
+            [
+                "--data-dir",
+                str(data_dir),
+                "capability",
+                "probe",
+                "PYTHON_RUNTIME",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
+    probe = json.loads(capsys.readouterr().out)["data"]
+    assert probe["activation_supported"] is True
+    assert probe["approval_target_hash"] is not None
+    assert probe["approved_profile_ref"] is None
+    assert probe["kind"] == "PYTHON_RUNTIME"
+    assert probe["safe_summary"] == "Python runtime start probe passed"
+    assert probe["status"] == "PASSED"
+    assert "TEST_ONLY_PRIVATE_PATH" not in json.dumps(probe)
+
+
 def test_capability_approve_rejects_wrong_exact_target_hash_safely(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

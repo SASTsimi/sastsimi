@@ -12,7 +12,13 @@ from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
 from sastsimi.contracts.static import CodeQLBoundaryCapability
 
 type ProbeKind = Literal[
-    "GIT", "PYTHON_AST", "OPENGREP", "DOCKER", "OPENAI_API", "CODEQL"
+    "GIT",
+    "PYTHON_AST",
+    "PYTHON_RUNTIME",
+    "OPENGREP",
+    "DOCKER",
+    "OPENAI_API",
+    "CODEQL",
 ]
 
 

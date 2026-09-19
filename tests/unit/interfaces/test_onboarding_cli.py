@@ -103,12 +103,48 @@ def test_requirements_lists_exact_pvd_and_prompt_work_without_claiming_ready() -
     assert result.code == ExitCode.CAPABILITY_UNSUPPORTED
     assert result.data["status"] == "BLOCKED"
     assert result.data["required_pvd_tests"] == [
-        f"PVD-{index:02d}" for index in range(1, 16)
+        f"PVD-{index:02d}" for index in range(1, 17)
     ]
     routes = result.data["required_routes"]
     assert isinstance(routes, list)
     assert len(routes) == len(REQUIRED_PRODUCTION_PROMPT_ROUTES)
     assert all(item["template_sha256"] for item in routes)
+
+
+def test_prepare_does_not_publish_a_manifest_until_validation_passes(
+    work_dir: Path,
+) -> None:
+    profile = _production_profile()
+    manifest = ProductionOnboardingManifest.model_validate_json(
+        json.dumps(_manifest_payload(Path.cwd()))
+    )
+    manifest_path = work_dir / "approval.json"
+    manifest_path.write_text(manifest.model_dump_json(), encoding="utf-8")
+    data_dir = work_dir / "data"
+
+    blocked = run_prepare(
+        data_dir,
+        profile=profile,
+        manifest_path=manifest_path,
+        evidence_paths=(),
+        repository_root=Path.cwd(),
+        clock=lambda: datetime(2026, 9, 14, tzinfo=UTC),
+    )
+    assert blocked.code == ExitCode.CAPABILITY_UNSUPPORTED
+    assert not (data_dir / "onboarding" / "profiles").exists()
+
+    evidence_path = work_dir / "observations.json"
+    evidence_path.write_bytes(b"safe evidence")
+    retried = run_prepare(
+        data_dir,
+        profile=profile,
+        manifest_path=manifest_path,
+        evidence_paths=(evidence_path,),
+        repository_root=Path.cwd(),
+        clock=lambda: datetime(2026, 9, 14, tzinfo=UTC),
+    )
+
+    assert retried.code == ExitCode.OK
 
 
 def test_init_writes_pending_operator_plan_with_real_probe_commands(
@@ -137,6 +173,7 @@ def test_init_writes_pending_operator_plan_with_real_probe_commands(
         "OPENAI_API",
         "OPENGREP",
         "PYTHON_AST",
+        "PYTHON_RUNTIME",
     }
     openai = next(
         item for item in plan["capability_probes"] if item["kind"] == "OPENAI_API"

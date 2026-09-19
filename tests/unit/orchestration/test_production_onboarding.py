@@ -96,7 +96,7 @@ def _manifest_payload(root: Path) -> dict[str, object]:
                         "evidence_sha256": evidence,
                         "safe_summary": f"PVD-{index:02d} observed",
                     }
-                    for index in range(1, 16)
+                    for index in range(1, 17)
                 ],
             }
         ],
@@ -241,6 +241,32 @@ def test_onboarding_manifest_requires_full_pvd_and_current_terms_approval(
     )
     with pytest.raises(
         ProductionOnboardingUnavailable, match="PROVIDER_TERMS_APPROVAL_STALE"
+    ):
+        loader.load_for_profile(_production_profile())
+
+
+def test_dynamic_provider_requires_pvd_16_at_profile_load(data_dir: Path) -> None:
+    payload = _manifest_payload(Path.cwd())
+    provider = cast(list[dict[str, Any]], payload["provider_approvals"])[0]
+    provider["tests"] = [
+        item
+        for item in cast(list[dict[str, object]], provider["tests"])
+        if item["test_id"] != "PVD-16"
+    ]
+    store = FilesystemProductionOnboardingStore(data_dir)
+    _save(store, payload)
+    loader = OnboardedProductionCapabilityBundleLoader(
+        store=store,
+        repository_root=Path.cwd(),
+        clock=lambda: datetime(2026, 9, 14, tzinfo=UTC),
+        provision=lambda **_kwargs: cast(
+            ProfileBackedProductionCapabilityBundle, SimpleNamespace()
+        ),
+    )
+
+    with pytest.raises(
+        ProductionOnboardingUnavailable,
+        match="PRODUCTION_PROVIDER_DYNAMIC_APPROVAL_INCOMPLETE",
     ):
         loader.load_for_profile(_production_profile())
 

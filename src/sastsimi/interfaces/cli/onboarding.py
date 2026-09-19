@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TypedDict
 
 from sastsimi.config.production_profile import ProductionProfile
@@ -27,7 +28,14 @@ from sastsimi.prompts.production import REQUIRED_PRODUCTION_PROMPT_ROUTES
 
 _MAX_INPUT_BYTES = 4 * 1024 * 1024
 _PLAN_NAME = "onboarding-plan.json"
-_HOST_PROBE_KINDS = ("GIT", "PYTHON_AST", "CODEQL", "OPENGREP", "DOCKER")
+_HOST_PROBE_KINDS = (
+    "GIT",
+    "PYTHON_AST",
+    "PYTHON_RUNTIME",
+    "CODEQL",
+    "OPENGREP",
+    "DOCKER",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,9 +211,16 @@ def _requirements(
     ]
     if len(routes) != len(REQUIRED_PRODUCTION_PROMPT_ROUTES):
         raise ValueError("PRODUCTION_PROMPT_ROUTE_SET_INCOMPLETE")
+    last_pvd = (
+        16
+        if any(route.role == "DYNAMIC_REPRODUCTION" for route in profile.llm_routes)
+        else 15
+    )
     return {
         "profile_hash": production_profile_hash(profile),
-        "required_pvd_tests": [f"PVD-{index:02d}" for index in range(1, 16)],
+        "required_pvd_tests": [
+            f"PVD-{index:02d}" for index in range(1, last_pvd + 1)
+        ],
         "required_routes": routes,
     }
 
@@ -248,9 +263,16 @@ def run_prepare(
     try:
         manifest_data = _read_bounded(manifest_path)
         manifest = ProductionOnboardingManifest.model_validate_json(manifest_data)
+        evidence = tuple(_read_bounded(path) for path in evidence_paths)
+        with TemporaryDirectory(prefix="sastsimi-onboarding-stage-") as stage:
+            staged_store = FilesystemProductionOnboardingStore(Path(stage))
+            for data in evidence:
+                staged_store.put_evidence(data)
+            staged_store.save(manifest)
+            _validator(staged_store, repository_root, clock).load_for_profile(profile)
         store = FilesystemProductionOnboardingStore(data_dir)
-        for path in evidence_paths:
-            store.put_evidence(_read_bounded(path))
+        for data in evidence:
+            store.put_evidence(data)
         store.save(manifest)
         _validator(store, repository_root, clock).load_for_profile(profile)
     except ProductionOnboardingUnavailable as error:
