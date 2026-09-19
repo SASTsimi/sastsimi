@@ -169,8 +169,8 @@ def test_empty_proposal_batch_does_not_invoke_output_approval(
     `output_refs`), to prove the empty-hypothesis-batch path never reaches
     it.
     """
-    from contextlib import contextmanager
     from collections.abc import Iterator
+    from contextlib import contextmanager
 
     from sastsimi.contracts.actions import ActionRequest
     from sastsimi.contracts.refs import RecordRef

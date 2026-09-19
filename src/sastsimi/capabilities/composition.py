@@ -22,7 +22,6 @@ from sastsimi.contracts.ids import CommitId, OpaqueId, WorkspaceId
 from sastsimi.contracts.refs import HostConfigurationRef
 from sastsimi.ports.dynamic_sandbox import TrustedDockerTarget
 from sastsimi.ports.static_tool import ProductionStaticOutputQuotaPort
-from sastsimi.ports.trusted_evidence import UnprovenEvidence
 from sastsimi.runtime.system_support import SystemClock
 from sastsimi.storage.database import Database
 from sastsimi.storage.migrations import upgrade
