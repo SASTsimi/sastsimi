@@ -26,6 +26,7 @@ from sastsimi.ports.static_tool import (
     PrebuiltCodeQLDatabasePort,
     ProductionStaticOutputQuotaPort,
 )
+from sastsimi.ports.trusted_evidence import TrustedEvidencePort
 from sastsimi.runtime.system_support import SystemClock
 from sastsimi.storage.database import Database
 from sastsimi.storage.migrations import upgrade
@@ -109,7 +110,7 @@ class ProductionCapabilityProbeService:
         codeql_database_limit_bytes: int | None = None,
         codeql_container_config: CodeQLContainerRuntimeConfig | None = None,
     ) -> None:
-        self.__engine = _build_production_engine(
+        self.__engine, self.__evidence = _build_production_engine(
             data_dir,
             host_id=host_id,
             executable_paths=executable_paths,
@@ -160,6 +161,11 @@ class ProductionCapabilityProbeService:
     ) -> HostConfigurationRef:
         return self.__engine.require_approved_current(probe_id, expected_ref)
 
+    def trusted_evidence(self) -> TrustedEvidencePort:
+        """Return the read-only authority for this exact durable probe store."""
+
+        return self.__evidence
+
 
 def _host_platform() -> tuple[CapabilityOperatingSystem, CapabilityArchitecture]:
     operating_system = {
@@ -190,7 +196,7 @@ def _build_production_engine(
     codeql_database_provider: PrebuiltCodeQLDatabasePort | None = None,
     codeql_database_limit_bytes: int | None = None,
     codeql_container_config: CodeQLContainerRuntimeConfig | None = None,
-) -> _CapabilityProbeEngine:
+) -> tuple[_CapabilityProbeEngine, TrustedEvidencePort]:
     if not host_id.strip():
         raise ValueError("CAPABILITY_HOST_REQUIRED")
     paths = RuntimePaths(data_dir)
@@ -252,7 +258,7 @@ def _build_production_engine(
         data_root_inspector=inspect_local_docker_data_root,
         effective_user_id=effective_user_id,
     )
-    return _CapabilityProbeEngine(
+    engine = _CapabilityProbeEngine(
         registry=runtime.configuration,
         artifacts=runtime.unit_of_work.artifacts,
         store=store,
@@ -273,6 +279,7 @@ def _build_production_engine(
         codeql_database_limit_bytes=codeql_database_limit_bytes,
         codeql_container_config=codeql_container_config,
     )
+    return engine, authority
 
 
 def build_production_capability_probe_service(
