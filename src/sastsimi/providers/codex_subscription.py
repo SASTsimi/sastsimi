@@ -480,6 +480,10 @@ class CodexSubscriptionAdapter:
     ) -> CapabilityProbeResult:
         if self.probe_runner is not None:
             observed = await self.probe_runner.run(candidate, self)
+            from .codex_pvd import CodexSubscriptionPVDProbeRunner
+
+            if isinstance(self.probe_runner, CodexSubscriptionPVDProbeRunner):
+                return CapabilityProbeResult(evidence=observed.evidence)
             return CapabilityProbeResult(
                 evidence=_fail_unobservable_model_test(observed.evidence)
             )

@@ -50,6 +50,20 @@ codex login status
 - repository, shell, web, MCP, hook, plugin과 ambient secret을 사용하지 않는 no-tools 경계
 - PVD-01~PVD-15와 필요한 경우 PVD-16
 - 정확한 model identity, 구조화 출력, 새 독립 session, timeout·취소·사용량 기록
+
+Codex CLI의 JSON event stream은 현재 provider가 실제 사용한 model identity를 별도
+필드로 보고하지 않습니다. 따라서 이 제한을 숨긴 채 `PVD-02`를 통과시키지 않습니다.
+`PVD-02=PASS`는 같은 실행에서 승인된 공식 CLI 실행 파일의 exact SHA-256을 다시
+확인하고, 요청 model이 명시적인 `--model` 인자로 들어갔으며, 잘못된 model의 negative
+control이 거절되고, 요청 model로 엄격한 structured output 호출이 성공한 경우에만
+허용합니다. 근거에는 `provider_model_reported=false`와 이 제한 설명을 함께 남깁니다.
+이 조건은 provider가 model을 응답으로 확인해 주었다는 뜻이 아니라, 현재 공식 client
+경계에서 검증 가능한 가장 좁은 binding임을 뜻합니다. 이 제한을 수용할지는 사람의
+Provider 승인 단계에서 별도로 판단해야 합니다.
+
+`PVD-15`는 호출 성공으로 자동 통과하지 않습니다. 검토자가 현재 공식 약관 URL,
+계정 범위와 내부 분석 목적을 직접 확인하고 명시적으로 승인한 입력이 있어야만 PASS
+근거를 만들 수 있습니다.
 - R8 평가와 사람의 production 승인
 
 ## 4. onboarding 명령의 역할
