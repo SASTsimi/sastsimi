@@ -299,3 +299,31 @@ are directly reproducible here.
   per run.
 
 None of these runs have yet produced a `TRUE` verdict / Gate / ReportDraft.
+
+## 7. Continuation validation on the current handoff branch
+
+The handoff was continued instead of rebuilding the live path. That choice
+preserves the real jinja execution evidence above and the five defects found by
+that execution. The following checks were then repeated against the current
+branch before opening the integration PR:
+
+- the SASTSIMI `CodexCliProcessRunner` invoked the official Codex CLI 0.152.1
+  through an existing ChatGPT login with model `gpt-5.6-sol`; a strict
+  structured-output request completed as `SUCCEEDED`, returned the expected
+  JSON object and supplied a provider session identifier;
+- OpenGrep 1.30.0 executed successfully;
+- Docker Engine 29.5.3 was reachable;
+- 145 focused runtime, orchestration, storage, sandbox and Codex-boundary tests
+  passed.
+
+The Codex smoke exposed warning events newly emitted by the current CLI. The
+runner no longer asks the CLI to disable removed/deprecated feature names and
+now uses the supported warning-suppression setting, while retaining the same
+read-only, no-tools, no-MCP, no-plugin and minimal-environment boundary.
+
+These checks prove the live subscription transport and the external tool
+boundaries used by the handoff. They do **not** replace a new clone-to-Markdown
+run that yields a vulnerability: the most recent whole-pipeline evidence is
+still the jinja history in section 6, and it did not produce a `TRUE` finding or
+a report. CodeQL was unavailable on this host and remains disabled rather than
+being reported as active.
