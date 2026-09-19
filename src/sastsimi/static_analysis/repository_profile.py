@@ -769,6 +769,33 @@ class RepositoryExecutionSelector:
                 status="FAILED",
             )
         resolved_routes = {(adapter, language) for adapter, language, _ in resolved}
+        # Production provisioning supplies the exact approved adapter set.  An
+        # adapter in that set is mandatory, not a best-effort fallback: if the
+        # final profile enables CodeQL and OpenGrep, losing CodeQL must block
+        # dispatch instead of silently continuing with OpenGrep-only facts.
+        configured_routes = (
+            {
+                (adapter, language)
+                for language in supported_languages
+                for adapter in _STATIC_ROUTES[language]
+                if adapter in self._approved_static_profiles
+            }
+            if self._approved_static_profiles is not None
+            else set()
+        )
+        missing_configured_routes = configured_routes - resolved_routes
+        if missing_configured_routes:
+            return RepositoryExecutionSelection(
+                meta=meta,
+                repository_profile_ref=repository_profile_ref,
+                git_clone_profile_ref=git_clone_profile_ref,
+                git_checkout_profile_ref=git_checkout_profile_ref,
+                languages=supported_languages,
+                selected_tools=(),
+                gaps=tuple(selection_gaps),
+                errors=(),
+                status="BLOCKED",
+            )
         if all(
             ("CODEQL", language) in resolved_routes
             for language in ("PYTHON", "JAVASCRIPT")

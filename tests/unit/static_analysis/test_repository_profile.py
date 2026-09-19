@@ -656,6 +656,44 @@ def test_production_selection_does_not_add_unapproved_active_codeql(
     assert selection.errors == ()
 
 
+def test_production_selection_blocks_when_configured_codeql_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    repository = _build(
+        tmp_path,
+        (
+            _write(tmp_path, "app.py", b"print('ok')\n"),
+            _write(tmp_path, "requirements.txt", b""),
+            _write(tmp_path, "Dockerfile", b"FROM python:3.12-slim\n"),
+        ),
+    )
+    registry = _Resolver(missing=("CODEQL", "PYTHON"))
+    approved = {
+        key: registry.selections[(key, "PYTHON")].profile_ref
+        for key in ("PYTHON_AST", "CODEQL", "OPENGREP")
+    }
+
+    selection = RepositoryExecutionSelector(
+        cast(ProductionCapabilityResolverPort, registry),
+        operating_system="windows",
+        architecture="x86_64",
+        approved_static_profiles=approved,
+    ).select(
+        repository,
+        meta=_selection_meta(),
+        repository_profile_ref=cast(StoredDataRef, reference(repository)),
+        git_clone_profile_ref=registry.git_ref,
+        git_checkout_profile_ref=registry.git_ref,
+    )
+
+    assert selection.status == "BLOCKED"
+    assert selection.selected_tools == ()
+    assert [gap.code for gap in selection.gaps] == [
+        "NO_ACTIVE_STATIC_CAPABILITY:CODEQL:PYTHON"
+    ]
+    assert selection.errors == ()
+
+
 def test_tool_selection_blocks_when_no_sast_capability_is_active(
     tmp_path: Path,
 ) -> None:
