@@ -203,12 +203,13 @@ def main(
     capability_approve.add_argument("--format", choices=["text", "json"])
     codeql_parser = subparsers.add_parser(
         "codeql",
-        help="register or inspect controlled prebuilt CodeQL databases",
+        help="provision, register, or inspect controlled CodeQL databases",
         allow_abbrev=False,
     )
     codeql_commands = codeql_parser.add_subparsers(dest="codeql_command", required=True)
     codeql_register = codeql_commands.add_parser("register", allow_abbrev=False)
     codeql_inspect = codeql_commands.add_parser("inspect", allow_abbrev=False)
+    codeql_provision = codeql_commands.add_parser("provision", allow_abbrev=False)
     for codeql_action in (codeql_register, codeql_inspect):
         codeql_action.add_argument("--profile", type=Path, required=True)
         codeql_action.add_argument("--repo", required=True)
@@ -221,6 +222,12 @@ def main(
         codeql_action.add_argument("--tracked-manifest-sha256", required=True)
         codeql_action.add_argument("--format", choices=["text", "json"])
     codeql_register.add_argument("--database-root", type=Path, required=True)
+    codeql_provision.add_argument("--profile", type=Path, required=True)
+    codeql_provision.add_argument("--repo", required=True)
+    codeql_provision.add_argument("--commit", type=_exact_commit, required=True)
+    codeql_provision.add_argument("--language", choices=["python"], required=True)
+    codeql_provision.add_argument("--repository-root", type=Path, required=True)
+    codeql_provision.add_argument("--format", choices=["text", "json"])
     try:
         args = parser.parse_args(argv)
         requested_output = getattr(args, "format", None)
@@ -454,6 +461,20 @@ def main(
                     language=args.language,
                     tracked_manifest_sha256=args.tracked_manifest_sha256,
                     database_root=args.database_root,
+                )
+            elif args.codeql_command == "provision":
+                outcome = codeql_command.run_provision(
+                    config=codeql_config,
+                    repository_url=args.repo,
+                    commit_id=args.commit,
+                    language=args.language,
+                    repository_root=args.repository_root,
+                    git_executable=codeql_command.resolve_operator_executable(
+                        profile.tools.git
+                    ),
+                    docker_executable=codeql_command.resolve_operator_executable(
+                        profile.tools.docker
+                    ),
                 )
             else:
                 outcome = codeql_command.run_inspect(

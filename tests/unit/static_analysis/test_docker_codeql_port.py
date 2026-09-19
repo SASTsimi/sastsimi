@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import sys
+import tarfile
 from collections import deque
 from pathlib import Path
 from typing import Any, cast
@@ -18,6 +20,7 @@ from sastsimi.static_analysis.docker_codeql_port import (
 )
 
 _NAME = "sastsimi-codeql-0123456789abcdef01234567"
+_PROVISION_NAME = "sastsimi-codeql-provision-0123456789abcdef01234567"
 
 
 class _Stream:
@@ -96,6 +99,15 @@ def _port(spawn: _Spawn) -> ContainerCodeQLDockerPort:
         docker_executable=Path(sys.executable).resolve(),
         spawn=cast(Any, spawn),
     )
+
+
+def _tar_file(name: str, payload: bytes) -> bytes:
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode="w") as archive:
+        info = tarfile.TarInfo(name)
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+    return output.getvalue()
 
 
 @pytest.mark.asyncio
@@ -269,6 +281,120 @@ async def test_remove_accepts_only_one_exact_owned_name() -> None:
     assert spawn.calls == []
     await port.remove(_NAME)
     assert len(spawn.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_copy_database_uses_only_the_fixed_owned_container_source(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "database"
+    destination.mkdir()
+    archive = _tar_file("./codeql-database.yml", b"primaryLanguage: python\n")
+    spawn = _Spawn(_Process(stdout=(archive[:100], archive[100:])))
+    port = _port(spawn)
+
+    await port.copy_database(_PROVISION_NAME, destination, max_bytes=1024 * 1024)
+
+    executable = str(Path(sys.executable).resolve())
+    assert spawn.calls[0][0] == (
+        executable,
+        "exec",
+        _PROVISION_NAME,
+        "/usr/bin/tar",
+        "-C",
+        "/work/database/codeql-db",
+        "-cf",
+        "-",
+        ".",
+    )
+    assert destination.joinpath("codeql-database.yml").read_bytes() == (
+        b"primaryLanguage: python\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_copy_database_rejects_nonempty_or_linked_destination(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "database"
+    destination.mkdir()
+    destination.joinpath("existing").write_text("must not overwrite")
+    spawn = _Spawn()
+    port = _port(spawn)
+
+    with pytest.raises(
+        ContainerCodeQLDockerError,
+        match="^CODEQL_DOCKER_COPY_DESTINATION_INVALID$",
+    ):
+        await port.copy_database(_PROVISION_NAME, destination, max_bytes=1024)
+
+    assert spawn.calls == []
+
+
+@pytest.mark.asyncio
+async def test_copy_database_rejects_archive_escape_or_size_overflow(
+    tmp_path: Path,
+) -> None:
+    for index, (archive, code) in enumerate(
+        (
+            (
+                _tar_file("../escape", b"forbidden"),
+                "CODEQL_DOCKER_COPY_ARCHIVE_INVALID",
+            ),
+            (
+                _tar_file("large", b"x" * 2048),
+                "CODEQL_DOCKER_COPY_LIMIT",
+            ),
+        )
+    ):
+        destination = tmp_path / f"database-{index}"
+        destination.mkdir()
+        port = _port(_Spawn(_Process(stdout=(archive,))))
+
+        with pytest.raises(ContainerCodeQLDockerError, match=f"^{code}$"):
+            await port.copy_database(
+                _PROVISION_NAME,
+                destination,
+                max_bytes=1024,
+            )
+
+        assert tuple(destination.iterdir()) == ()
+
+
+@pytest.mark.asyncio
+async def test_provision_ready_requires_running_container_and_exact_marker() -> None:
+    spawn = _Spawn(
+        _Process(stdout=(b'{"Running":true,"ExitCode":0}',)),
+        _Process(stdout=(b"CODEQL_PROVISION_READY\n",)),
+    )
+    port = _port(spawn)
+
+    assert await port.wait_provision_ready(_PROVISION_NAME) is True
+
+    executable = str(Path(sys.executable).resolve())
+    assert [call[0] for call in spawn.calls] == [
+        (
+            executable,
+            "inspect",
+            "--type",
+            "container",
+            "--format",
+            "{{json .State}}",
+            "--",
+            _PROVISION_NAME,
+        ),
+        (executable, "logs", "--", _PROVISION_NAME),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_provision_ready_rejects_stopped_container_even_with_marker() -> None:
+    spawn = _Spawn(
+        _Process(stdout=(b'{"Running":false,"ExitCode":0}',)),
+        _Process(stdout=(b"CODEQL_PROVISION_READY\n",)),
+    )
+
+    assert await _port(spawn).wait_provision_ready(_PROVISION_NAME) is False
 
 
 @pytest.mark.asyncio

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
 
+from sastsimi.interfaces.cli.capability import CapabilityCommandResult
+from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.main import main
 from tests.unit.test_production_profile import _profile_text, _with_codeql_container
 
@@ -193,3 +196,63 @@ def test_public_codeql_rejects_invalid_input_without_echoing_it(
     assert output.out == ""
     assert "Invalid command or option" in output.err
     assert private_value not in output.err
+
+
+def test_public_provision_computes_identity_instead_of_accepting_manifest_input(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = _write_profile(tmp_path, include_codeql=True)
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    observed: dict[str, object] = {}
+
+    def provision(**kwargs: object) -> CapabilityCommandResult:
+        observed.update(kwargs)
+        return CapabilityCommandResult(
+            ExitCode.OK,
+            {
+                "artifact_key": "codeql-db-safe-key",
+                "database_digest": "d" * 64,
+                "tracked_manifest_sha256": _TRACKED_MANIFEST_SHA256,
+                "status": "REGISTERED",
+            },
+        )
+
+    monkeypatch.setattr(
+        "sastsimi.interfaces.cli.main.codeql_command.run_provision", provision
+    )
+    monkeypatch.setattr(
+        "sastsimi.interfaces.cli.main.codeql_command.resolve_operator_executable",
+        lambda _value: Path(sys.executable).resolve(),
+    )
+
+    assert (
+        main(
+            [
+                "codeql",
+                "provision",
+                "--profile",
+                str(profile),
+                "--repo",
+                _REPOSITORY_URL,
+                "--commit",
+                _COMMIT_ID,
+                "--language",
+                "python",
+                "--repository-root",
+                str(repository),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
+    response = json.loads(capsys.readouterr().out)
+    assert response["command"] == "codeql provision"
+    assert response["data"]["status"] == "REGISTERED"
+    assert observed["repository_root"] == repository
+    assert observed["git_executable"] == Path(sys.executable).resolve()
+    assert observed["docker_executable"] == Path(sys.executable).resolve()

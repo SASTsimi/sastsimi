@@ -7,8 +7,10 @@ import json
 import os
 import re
 import subprocess
+import tarfile
+import tempfile
 from collections.abc import AsyncIterator, Mapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 
 if TYPE_CHECKING:
@@ -17,10 +19,16 @@ if TYPE_CHECKING:
         ContainerCodeQLProbeRequest,
     )
 
-_CONTAINER_NAME = re.compile(r"^sastsimi-codeql-[0-9a-f]{24}$")
+_CONTAINER_NAME = re.compile(
+    r"^sastsimi-codeql(?:-provision)?-[0-9a-f]{24}$"
+)
 _INSPECT_LIMIT_BYTES = 1024 * 1024
 _CONTROL_OUTPUT_LIMIT_BYTES = 4096
 _PROBE_OUTPUT_LIMIT_BYTES = 64 * 1024
+_PROVISION_OUTPUT_LIMIT_BYTES = 1024
+_PROVISION_READY = b"CODEQL_PROVISION_READY\n"
+_ARCHIVE_OVERHEAD_LIMIT_BYTES = 64 * 1024 * 1024
+_ARCHIVE_MEMBER_LIMIT = 100_000
 _STREAM_CHUNK_BYTES = 64 * 1024
 _TERMINATION_TIMEOUT_SECONDS = 5.0
 _PROBE_DENIAL_CODES = frozenset({"ENOSPC", "EDQUOT"})
@@ -340,6 +348,253 @@ class ContainerCodeQLDockerPort:
             limit_code="CODEQL_DOCKER_CONTROL_OUTPUT_LIMIT",
             max_bytes=_CONTROL_OUTPUT_LIMIT_BYTES,
         )
+
+    async def _write_bounded_archive(
+        self,
+        argv: tuple[str, ...],
+        destination: Path,
+        *,
+        max_bytes: int,
+    ) -> None:
+        process = await self._spawn_child(argv)
+        stream = process.stdout
+        if stream is None:
+            await self._terminate_settled(process)
+            raise ContainerCodeQLDockerError("CODEQL_DOCKER_COPY_FAILED")
+        written = 0
+        try:
+            with destination.open("xb") as output:
+                while chunk := await stream.read(_STREAM_CHUNK_BYTES):
+                    if not isinstance(chunk, bytes):
+                        raise ContainerCodeQLDockerError(
+                            "CODEQL_DOCKER_COPY_FAILED"
+                        )
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise ContainerCodeQLDockerError("CODEQL_DOCKER_COPY_LIMIT")
+                    output.write(chunk)
+                output.flush()
+                os.fsync(output.fileno())
+            if await process.wait() != 0:
+                raise ContainerCodeQLDockerError("CODEQL_DOCKER_COPY_FAILED")
+        except asyncio.CancelledError:
+            await self._terminate_settled(process)
+            raise
+        except ContainerCodeQLDockerError:
+            await self._terminate_settled(process)
+            raise
+        except Exception:
+            await self._terminate_settled(process)
+            raise ContainerCodeQLDockerError("CODEQL_DOCKER_COPY_FAILED") from None
+
+    @staticmethod
+    def _archive_parts(name: str) -> tuple[str, ...]:
+        path = PurePosixPath(name)
+        parts = tuple(path.parts)
+        if parts in ((), (".",)):
+            return ()
+        if path.is_absolute() or any(
+            part in ("", ".", "..")
+            or any(character in part for character in "\\:\x00\r\n")
+            or part.endswith((" ", "."))
+            for part in parts
+        ):
+            raise ContainerCodeQLDockerError(
+                "CODEQL_DOCKER_COPY_ARCHIVE_INVALID"
+            )
+        return parts
+
+    @classmethod
+    def _extract_database_archive(
+        cls,
+        archive_path: Path,
+        destination: Path,
+        *,
+        max_bytes: int,
+    ) -> None:
+        seen: set[str] = set()
+        total = 0
+        try:
+            with tarfile.open(archive_path, mode="r:*") as archive:
+                members = archive.getmembers()
+                if len(members) > _ARCHIVE_MEMBER_LIMIT:
+                    raise ContainerCodeQLDockerError("CODEQL_DOCKER_COPY_LIMIT")
+                validated: list[tuple[tarfile.TarInfo, tuple[str, ...]]] = []
+                for member in members:
+                    parts = cls._archive_parts(member.name)
+                    if not parts:
+                        if member.isdir():
+                            continue
+                        raise ContainerCodeQLDockerError(
+                            "CODEQL_DOCKER_COPY_ARCHIVE_INVALID"
+                        )
+                    key = "/".join(parts).casefold()
+                    if key in seen or not (member.isdir() or member.isfile()):
+                        raise ContainerCodeQLDockerError(
+                            "CODEQL_DOCKER_COPY_ARCHIVE_INVALID"
+                        )
+                    seen.add(key)
+                    if member.isfile():
+                        total += member.size
+                        if member.size < 0 or total > max_bytes:
+                            raise ContainerCodeQLDockerError(
+                                "CODEQL_DOCKER_COPY_LIMIT"
+                            )
+                    validated.append((member, parts))
+
+                for member, parts in validated:
+                    target = destination.joinpath(*parts)
+                    if member.isdir():
+                        target.mkdir(parents=True, exist_ok=True)
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    source = archive.extractfile(member)
+                    if source is None:
+                        raise ContainerCodeQLDockerError(
+                            "CODEQL_DOCKER_COPY_ARCHIVE_INVALID"
+                        )
+                    remaining = member.size
+                    with target.open("xb") as output:
+                        while remaining:
+                            chunk = source.read(min(_STREAM_CHUNK_BYTES, remaining))
+                            if not chunk:
+                                raise ContainerCodeQLDockerError(
+                                    "CODEQL_DOCKER_COPY_ARCHIVE_INVALID"
+                                )
+                            output.write(chunk)
+                            remaining -= len(chunk)
+                        output.flush()
+                        os.fsync(output.fileno())
+        except ContainerCodeQLDockerError:
+            raise
+        except (OSError, tarfile.TarError, ValueError):
+            raise ContainerCodeQLDockerError(
+                "CODEQL_DOCKER_COPY_ARCHIVE_INVALID"
+            ) from None
+
+    async def copy_database(
+        self,
+        container_name: str,
+        destination: Path,
+        *,
+        max_bytes: int,
+    ) -> None:
+        """Stream the fixed tmpfs DB through a bounded, safely extracted archive."""
+
+        name = self._name(container_name)
+        if type(max_bytes) is not int or max_bytes <= 0:
+            raise ContainerCodeQLDockerError("CODEQL_DOCKER_COPY_LIMIT")
+        try:
+            info = destination.lstat()
+            exact = destination.resolve(strict=True)
+            if (
+                not destination.is_absolute()
+                or destination.is_symlink()
+                or int(getattr(info, "st_file_attributes", 0)) & 0x400
+                or exact != destination.absolute()
+                or not exact.is_dir()
+                or any(exact.iterdir())
+            ):
+                raise ValueError
+        except (OSError, ValueError):
+            raise ContainerCodeQLDockerError(
+                "CODEQL_DOCKER_COPY_DESTINATION_INVALID"
+            ) from None
+        archive_handle = tempfile.NamedTemporaryFile(
+            mode="xb",
+            prefix=".sastsimi-codeql-",
+            suffix=".tar",
+            dir=exact.parent,
+            delete=False,
+        )
+        archive_path = Path(archive_handle.name)
+        archive_handle.close()
+        archive_path.unlink()
+        try:
+            archive_limit = max_bytes + _ARCHIVE_OVERHEAD_LIMIT_BYTES
+            await self._write_bounded_archive(
+                self._command(
+                    "exec",
+                    name,
+                    "/usr/bin/tar",
+                    "-C",
+                    "/work/database/codeql-db",
+                    "-cf",
+                    "-",
+                    ".",
+                ),
+                archive_path,
+                max_bytes=archive_limit,
+            )
+            self._extract_database_archive(
+                archive_path,
+                exact,
+                max_bytes=max_bytes,
+            )
+        except BaseException:
+            for candidate in tuple(exact.iterdir()):
+                if candidate.is_dir() and not candidate.is_symlink():
+                    import shutil
+
+                    shutil.rmtree(candidate, ignore_errors=True)
+                else:
+                    try:
+                        candidate.unlink()
+                    except OSError:
+                        pass
+            raise
+        finally:
+            try:
+                archive_path.unlink()
+            except OSError:
+                pass
+
+    async def wait_provision_ready(self, container_name: str) -> bool:
+        """Wait for the fixed marker while the tmpfs-bearing container runs."""
+
+        name = self._name(container_name)
+        while True:
+            state_payload = await self._capture(
+                self._command(
+                    "inspect",
+                    "--type",
+                    "container",
+                    "--format",
+                    "{{json .State}}",
+                    "--",
+                    name,
+                ),
+                failure_code="CODEQL_DOCKER_PROVISION_STATE_FAILED",
+                limit_code="CODEQL_DOCKER_CONTROL_OUTPUT_LIMIT",
+                max_bytes=_CONTROL_OUTPUT_LIMIT_BYTES,
+            )
+            logs = await self._capture(
+                self._command("logs", "--", name),
+                failure_code="CODEQL_DOCKER_PROVISION_LOGS_FAILED",
+                limit_code="CODEQL_DOCKER_CONTROL_OUTPUT_LIMIT",
+                max_bytes=_PROVISION_OUTPUT_LIMIT_BYTES,
+            )
+            try:
+                state = json.loads(state_payload.decode("utf-8", errors="strict"))
+                if (
+                    not isinstance(state, dict)
+                    or not isinstance(state.get("Running"), bool)
+                    or type(state.get("ExitCode")) is not int
+                ):
+                    raise ValueError
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                raise ContainerCodeQLDockerError(
+                    "CODEQL_DOCKER_PROVISION_STATE_INVALID"
+                ) from None
+            if state["Running"] is True and logs == _PROVISION_READY:
+                return True
+            if state["Running"] is False:
+                return False
+            if logs not in (b"", _PROVISION_READY):
+                raise ContainerCodeQLDockerError(
+                    "CODEQL_DOCKER_PROVISION_LOGS_INVALID"
+                )
+            await asyncio.sleep(0.1)
 
     async def probe(
         self,

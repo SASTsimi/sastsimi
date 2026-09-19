@@ -1,4 +1,4 @@
-FROM debian:bookworm-slim@sha256:f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b AS runtime
+FROM python@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea AS runtime
 
 LABEL org.opencontainers.image.title="SASTSIMI pinned CodeQL runner"
 LABEL org.opencontainers.image.version="2.27.0"
@@ -19,6 +19,7 @@ RUN set -eu; \
     tar -xzf /tmp/codeql-bundle-linux64.tar.gz -C /opt; \
     rm -f /tmp/codeql-bundle-linux64.tar.gz; \
     test -x /opt/codeql/codeql; \
+    test -x /usr/local/bin/python3; \
     mkdir -p /work/database /work/output; \
     printf '%s\n' 'sastsimi:x:65532:' >> /etc/group; \
     printf '%s\n' 'sastsimi:x:65532:65532:SASTSIMI CodeQL:/nonexistent:/usr/sbin/nologin' >> /etc/passwd; \

@@ -17,8 +17,8 @@ def test_dockerfile_is_offline_pinned_and_installs_only_verified_local_inputs() 
     dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
 
     assert dockerfile.startswith(
-        "FROM debian:bookworm-slim@sha256:"
-        "f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b "
+        "FROM python@sha256:"
+        "78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea "
         "AS runtime\n"
     )
     assert 'LABEL org.opencontainers.image.version="2.27.0"' in dockerfile
@@ -30,10 +30,11 @@ def test_dockerfile_is_offline_pinned_and_installs_only_verified_local_inputs() 
     assert 'LABEL io.sastsimi.codeql.bundle.size="686083106"' in dockerfile
     assert (
         dockerfile.count(
-            "f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b"
+            "78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea"
         )
         == 1
     )
+    assert "test -x /usr/local/bin/python3" in dockerfile
     assert "COPY --chown=0:0 codeql-bundle-linux64.tar.gz /tmp/" in dockerfile
     assert "sha256sum --check --strict" in dockerfile
     assert (
@@ -101,17 +102,19 @@ def test_builder_verifies_fixed_bundle_before_networkless_shell_free_build() -> 
         assert isinstance(shell, ast.Constant) and shell.value is False
 
 
-def test_entrypoint_has_two_exact_modes_and_no_dynamic_command_execution() -> None:
+def test_entrypoint_has_three_exact_modes_and_no_dynamic_command_execution() -> None:
     entrypoint = _ENTRYPOINT.read_text(encoding="utf-8")
 
     assert entrypoint.startswith("#!/bin/sh\nset -eu\n")
     assert 'case "$1" in' in entrypoint
     assert "analyze)" in entrypoint
     assert "probe)" in entrypoint
+    assert "provision-python)" in entrypoint
     assert "UNKNOWN_MODE" in entrypoint
     assert "eval" not in entrypoint
     assert 'analyze "$@"' in entrypoint
     assert 'probe "$@"' in entrypoint
+    assert 'provision_python "$@"' in entrypoint
     for forbidden in ("curl", "wget", "apt-get", "apk ", "dnf ", "git clone"):
         assert forbidden not in entrypoint
 
@@ -125,6 +128,14 @@ def test_entrypoint_has_two_exact_modes_and_no_dynamic_command_execution() -> No
     assert "--ram=1024" in entrypoint
     assert "1>&2" in entrypoint
     assert "cat /work/output/result.sarif" in entrypoint
+
+    assert "[ -d /input/repository ]" in entrypoint
+    assert "/opt/codeql/codeql database create" in entrypoint
+    assert "/work/database/codeql-db" in entrypoint
+    assert "--language=python" in entrypoint
+    assert "--source-root=/input/repository" in entrypoint
+    assert "CODEQL_PROVISION_READY" in entrypoint
+    assert "sleep 3600" in entrypoint
 
 
 def test_probe_is_version_pinned_non_sparse_and_emits_one_bounded_json_line() -> None:

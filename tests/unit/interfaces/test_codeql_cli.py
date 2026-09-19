@@ -6,8 +6,13 @@ import json
 from pathlib import Path
 
 from sastsimi.config.codeql_container import CodeQLContainerRuntimeConfig
-from sastsimi.interfaces.cli.codeql import run_inspect, run_register
+from sastsimi.interfaces.cli.codeql import run_inspect, run_provision, run_register
 from sastsimi.interfaces.cli.exit_codes import ExitCode
+from sastsimi.static_analysis.codeql_provision_source import PreparedCodeQLSource
+from sastsimi.static_analysis.container_codeql_provision import (
+    CodeQLProvisionResult,
+    CodeQLProvisionStatus,
+)
 
 COMMIT_ID = "a" * 40
 TRACKED_MANIFEST_SHA256 = "b" * 64
@@ -236,6 +241,104 @@ def test_register_rejects_database_larger_than_configured_limit(
     assert result.code == ExitCode.INTEGRITY_ERROR
     assert result.data == {
         "reason_code": "CODEQL_DATABASE_REGISTRATION_FAILED",
+        "status": "BLOCKED",
+    }
+    assert tuple(config.database_registry_root.iterdir()) == ()
+
+
+def test_provision_builds_and_publishes_one_exact_python_database(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    executable = Path(__file__).resolve()
+    observed: dict[str, object] = {}
+
+    def prepare(**kwargs: object) -> PreparedCodeQLSource:
+        observed["prepare"] = kwargs
+        destination = kwargs["destination"]
+        assert isinstance(destination, Path)
+        (destination / "app.py").write_text("print('safe')\n", encoding="utf-8")
+        return PreparedCodeQLSource(
+            root=destination.resolve(),
+            tracked_manifest_sha256=TRACKED_MANIFEST_SHA256,
+        )
+
+    async def provision(**kwargs: object) -> CodeQLProvisionResult:
+        spec = kwargs["spec"]
+        observed["spec"] = spec
+        spec.database_destination.joinpath("codeql-database.yml").write_text(
+            "primaryLanguage: python\n", encoding="utf-8"
+        )
+        return CodeQLProvisionResult(
+            CodeQLProvisionStatus.SUCCEEDED,
+            None,
+            spec.database_destination,
+        )
+
+    result = run_provision(
+        config=config,
+        repository_url="https://example.invalid/owner/repository.git",
+        commit_id=COMMIT_ID,
+        language="python",
+        repository_root=repository,
+        git_executable=executable,
+        docker_executable=executable,
+        source_preparer=prepare,
+        docker_port_factory=lambda _path: object(),
+        provision_runner=provision,
+    )
+
+    assert result.code == ExitCode.OK
+    assert result.data["status"] == "REGISTERED"
+    assert result.data["tracked_manifest_sha256"] == TRACKED_MANIFEST_SHA256
+    assert set(result.data) == {
+        "artifact_key",
+        "database_digest",
+        "tracked_manifest_sha256",
+        "status",
+    }
+    assert tuple(config.database_registry_root.iterdir())
+
+
+def test_provision_failure_never_registers_a_partial_database(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    executable = Path(__file__).resolve()
+
+    def prepare(**kwargs: object) -> PreparedCodeQLSource:
+        destination = kwargs["destination"]
+        assert isinstance(destination, Path)
+        return PreparedCodeQLSource(
+            root=destination.resolve(),
+            tracked_manifest_sha256=TRACKED_MANIFEST_SHA256,
+        )
+
+    async def provision(**_kwargs: object) -> CodeQLProvisionResult:
+        return CodeQLProvisionResult(
+            CodeQLProvisionStatus.FAILED,
+            "CODEQL_PROVISION_EXIT_NONZERO",
+            None,
+        )
+
+    result = run_provision(
+        config=config,
+        repository_url="https://example.invalid/owner/repository.git",
+        commit_id=COMMIT_ID,
+        language="python",
+        repository_root=repository,
+        git_executable=executable,
+        docker_executable=executable,
+        source_preparer=prepare,
+        docker_port_factory=lambda _path: object(),
+        provision_runner=provision,
+    )
+
+    assert result.code == ExitCode.BLOCKED
+    assert result.data == {
+        "reason_code": "CODEQL_PROVISION_EXIT_NONZERO",
         "status": "BLOCKED",
     }
     assert tuple(config.database_registry_root.iterdir()) == ()
