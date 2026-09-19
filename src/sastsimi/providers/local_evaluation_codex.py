@@ -17,6 +17,7 @@ from sastsimi.contracts.refs import StoredDataRef, reference
 
 from .base import (
     Clock,
+    CodexProcessRunner,
     InvocationResultBuilder,
     OutputSchemaValidator,
     PromptInputResolver,
@@ -26,6 +27,14 @@ from .codex_subscription import (
     ApprovedCodexExecutionBinding,
     CodexCliProcessRunner,
     CodexSubscriptionAdapter,
+)
+from .local_codex_validation import (
+    LocalEvaluationCodexProcessRunner,
+    LocalValidatedCodexExecutionBinding,
+)
+
+type LocalCodexBinding = (
+    ApprovedCodexExecutionBinding | LocalValidatedCodexExecutionBinding
 )
 
 _SAFE_REASON: Final = re.compile(r"[A-Z][A-Z0-9_]{0,127}\Z")
@@ -49,7 +58,7 @@ class LocalEvaluationCodexCallService:
     def __init__(
         self,
         *,
-        binding: ApprovedCodexExecutionBinding,
+        binding: LocalCodexBinding,
         adapter: CodexSubscriptionAdapter,
     ) -> None:
         provider_profile_ref = reference(binding.provider_profile)
@@ -147,7 +156,7 @@ class LocalEvaluationCodexCallService:
 
 def build_local_evaluation_codex_call_service(
     *,
-    binding: ApprovedCodexExecutionBinding,
+    binding: LocalCodexBinding,
     prompt_resolver: PromptInputResolver,
     session_store: ProviderSessionStore,
     output_schema_validator: OutputSchemaValidator,
@@ -159,10 +168,16 @@ def build_local_evaluation_codex_call_service(
     provider_profile_ref = reference(binding.provider_profile)
     if not isinstance(provider_profile_ref, StoredDataRef):
         raise LocalEvaluationCodexUnavailable("LOCAL_EVALUATION_CODEX_ROUTE_MISMATCH")
-    runner = CodexCliProcessRunner(
-        binding=binding,
-        binding_validator=binding_validator,
-    )
+    runner: CodexProcessRunner
+    if isinstance(binding, LocalValidatedCodexExecutionBinding):
+        if binding_validator is not None:
+            binding_validator(binding.experimental_binding)
+        runner = LocalEvaluationCodexProcessRunner(binding=binding)
+    else:
+        runner = CodexCliProcessRunner(
+            binding=binding,
+            binding_validator=binding_validator,
+        )
     adapter = CodexSubscriptionAdapter(
         provider_profile_ref=provider_profile_ref,
         model=binding.provider_profile.model,
