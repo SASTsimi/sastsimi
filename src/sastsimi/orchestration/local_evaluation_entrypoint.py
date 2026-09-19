@@ -53,6 +53,19 @@ class LocalEvaluationApplicationFactory(Protocol):
     ) -> ScopeOwnedLocalEvaluationApplication: ...
 
 
+class LocalEvaluationApplicationPreflight(Protocol):
+    """Await external validation and return a synchronously prepared factory."""
+
+    async def prepare(
+        self,
+        *,
+        data_dir: Path,
+        request: AnalysisStartRequest,
+        profile: LocalEvaluationProfile,
+        scope: PlannedRunScope,
+    ) -> LocalEvaluationApplicationFactory: ...
+
+
 class LocalEvaluationAnalyzeService:
     """Allocate an exact run labelled LOCAL_EVALUATION, never PRODUCTION."""
 
@@ -62,10 +75,12 @@ class LocalEvaluationAnalyzeService:
         ids: IdGenerator,
         load_profile: Callable[[Path], LocalEvaluationProfile],
         factory: LocalEvaluationApplicationFactory,
+        preflight: LocalEvaluationApplicationPreflight | None = None,
     ) -> None:
         self._scopes = ProductionRunScopeAllocator(ids)
         self._load_profile = load_profile
         self._factory = factory
+        self._preflight = preflight
 
     async def __call__(self, command: LocalEvaluationCommandInput) -> RunOutcome:
         profile = self._load_profile(command.profile)
@@ -76,7 +91,17 @@ class LocalEvaluationAnalyzeService:
             purpose=Purpose.LOCAL_EVALUATION,
         )
         scope = self._scopes.allocate(request)
-        application = self._factory.build(
+        factory = self._factory
+        if self._preflight is not None:
+            factory = await self._preflight.prepare(
+                data_dir=command.data_dir,
+                request=request,
+                profile=profile,
+                scope=scope,
+            )
+            if not callable(getattr(factory, "build", None)):
+                raise ValueError("LOCAL_EVALUATION_PREFLIGHT_FACTORY_INVALID")
+        application = factory.build(
             data_dir=command.data_dir,
             request=request,
             profile=profile,
@@ -96,6 +121,7 @@ class LocalEvaluationAnalyzeService:
 
 __all__ = [
     "LocalEvaluationAnalyzeService",
+    "LocalEvaluationApplicationPreflight",
     "LocalEvaluationApplicationFactory",
     "LocalEvaluationCommandInput",
     "LocalEvaluationProfile",

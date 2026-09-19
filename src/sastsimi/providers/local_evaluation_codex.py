@@ -10,10 +10,17 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Callable
+from threading import Lock
 from typing import Final, Literal
 
-from sastsimi.contracts.llm import LLMInvocationRequest, LLMInvocationResult
+from sastsimi.contracts.llm import (
+    LLMInvocationRequest,
+    LLMInvocationResult,
+    ProviderValidationEvidence,
+)
 from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.ports.dto import CancellationResult, CapabilityProbeResult
+from sastsimi.ports.llm_provider import LLMProviderAdapter
 
 from .base import (
     Clock,
@@ -72,11 +79,27 @@ class LocalEvaluationCodexCallService:
             )
         self.binding = binding
         self.adapter = adapter
-        self._provider_profile_ref = provider_profile_ref
-        self._model = binding.provider_profile.model
+        self.provider_profile_ref = provider_profile_ref
+        self.model = binding.provider_profile.model
         self._seen_call_ids: set[str] = set()
         self._seen_session_refs: set[str] = set()
         self._identity_lock = asyncio.Lock()
+
+    async def probe(
+        self, candidate: ProviderValidationEvidence
+    ) -> CapabilityProbeResult:
+        """Probe only the exact Provider identity bound to this local route."""
+        self._require_probe_identity(candidate)
+        try:
+            result = await self.adapter.probe(candidate)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            raise LocalEvaluationCodexUnavailable(
+                "LOCAL_EVALUATION_CODEX_PROBE_FAILED"
+            ) from None
+        self._require_probe_identity(result.evidence)
+        return result
 
     async def invoke(self, request: LLMInvocationRequest) -> LLMInvocationResult:
         """Invoke the exact route, preserving every fail-closed provider status."""
@@ -106,14 +129,49 @@ class LocalEvaluationCodexCallService:
                 self._seen_session_refs.add(result.session_ref)
         return result
 
+    async def cancel(self, invocation_id: str) -> CancellationResult:
+        """Cancel only a call identifier previously admitted by this wrapper."""
+        async with self._identity_lock:
+            owned = invocation_id in self._seen_call_ids
+        if not owned:
+            return CancellationResult(False, "No matching local evaluation invocation")
+        try:
+            return await self.adapter.cancel(invocation_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            raise LocalEvaluationCodexUnavailable(
+                "LOCAL_EVALUATION_CODEX_CANCEL_FAILED"
+            ) from None
+
+    def _require_probe_identity(self, candidate: ProviderValidationEvidence) -> None:
+        profile = self.binding.provider_profile
+        fields = (
+            "profile_key",
+            "provider",
+            "product",
+            "transport",
+            "model",
+            "environment",
+            "auth_mode",
+            "client_name",
+            "client_version",
+        )
+        if any(
+            getattr(candidate, field) != getattr(profile, field) for field in fields
+        ):
+            raise LocalEvaluationCodexUnavailable(
+                "LOCAL_EVALUATION_CODEX_ROUTE_MISMATCH"
+            )
+
     def _require_request(self, request: LLMInvocationRequest) -> None:
         if request.purpose != self.purpose:
             raise LocalEvaluationCodexUnavailable(
                 "LOCAL_EVALUATION_CODEX_PURPOSE_MISMATCH"
             )
         if (
-            request.provider_profile_ref != self._provider_profile_ref
-            or request.model != self._model
+            request.provider_profile_ref != self.provider_profile_ref
+            or request.model != self.model
         ):
             raise LocalEvaluationCodexUnavailable(
                 "LOCAL_EVALUATION_CODEX_ROUTE_MISMATCH"
@@ -142,7 +200,7 @@ class LocalEvaluationCodexCallService:
             result.llm_call_id != request.llm_call_id
             or result.purpose != self.purpose
             or result.provider != "OPENAI"
-            or result.model != self._model
+            or result.model != self.model
             or result.actual_session_mode != "NEW"
             or any(
                 getattr(result.meta, field) != getattr(request.meta, field)
@@ -152,6 +210,62 @@ class LocalEvaluationCodexCallService:
             raise LocalEvaluationCodexUnavailable(
                 "LOCAL_EVALUATION_CODEX_RESULT_MISMATCH"
             )
+
+
+class DeferredLLMProviderAdapter:
+    """Fail closed until one exact runtime-backed Provider adapter is bound."""
+
+    def __init__(self, *, provider_profile_ref: StoredDataRef, model: str) -> None:
+        if provider_profile_ref.data_kind != "provider_profile" or not model.strip():
+            raise LocalEvaluationCodexUnavailable(
+                "LOCAL_EVALUATION_CODEX_ROUTE_MISMATCH"
+            )
+        self.provider_profile_ref = provider_profile_ref
+        self.model = model
+        self._delegate: LLMProviderAdapter | None = None
+        self._lock = Lock()
+
+    def bind(self, delegate: LLMProviderAdapter) -> None:
+        if (
+            not isinstance(delegate, LLMProviderAdapter)
+            or getattr(delegate, "purpose", None) != "LOCAL_EVALUATION"
+        ):
+            raise LocalEvaluationCodexUnavailable(
+                "LOCAL_EVALUATION_LLM_ADAPTER_INVALID"
+            )
+        if (
+            getattr(delegate, "provider_profile_ref", None) != self.provider_profile_ref
+            or getattr(delegate, "model", None) != self.model
+        ):
+            raise LocalEvaluationCodexUnavailable(
+                "LOCAL_EVALUATION_CODEX_ROUTE_MISMATCH"
+            )
+        with self._lock:
+            if self._delegate is not None:
+                raise LocalEvaluationCodexUnavailable(
+                    "LOCAL_EVALUATION_LLM_ADAPTER_ALREADY_BOUND"
+                )
+            self._delegate = delegate
+
+    def _require_delegate(self) -> LLMProviderAdapter:
+        with self._lock:
+            delegate = self._delegate
+        if delegate is None:
+            raise LocalEvaluationCodexUnavailable(
+                "LOCAL_EVALUATION_LLM_ADAPTER_NOT_BOUND"
+            )
+        return delegate
+
+    async def probe(
+        self, candidate: ProviderValidationEvidence
+    ) -> CapabilityProbeResult:
+        return await self._require_delegate().probe(candidate)
+
+    async def invoke(self, request: LLMInvocationRequest) -> LLMInvocationResult:
+        return await self._require_delegate().invoke(request)
+
+    async def cancel(self, invocation_id: str) -> CancellationResult:
+        return await self._require_delegate().cancel(invocation_id)
 
 
 def build_local_evaluation_codex_call_service(
@@ -192,6 +306,7 @@ def build_local_evaluation_codex_call_service(
 
 
 __all__ = [
+    "DeferredLLMProviderAdapter",
     "LocalEvaluationCodexCallService",
     "LocalEvaluationCodexUnavailable",
     "build_local_evaluation_codex_call_service",

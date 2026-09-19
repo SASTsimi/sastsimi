@@ -13,8 +13,11 @@ from sastsimi.contracts.llm import (
     LLMInvocationRequest,
     LLMInvocationResult,
     ProviderProfile,
+    ProviderValidationEvidence,
 )
 from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.ports.dto import CancellationResult, CapabilityProbeResult
+from sastsimi.ports.llm_provider import LLMProviderAdapter
 from sastsimi.providers.codex_subscription import (
     ApprovedCodexExecutable,
     ApprovedCodexExecutionBinding,
@@ -22,6 +25,7 @@ from sastsimi.providers.codex_subscription import (
     CodexSubscriptionAdapter,
 )
 from sastsimi.providers.local_evaluation_codex import (
+    DeferredLLMProviderAdapter,
     LocalEvaluationCodexCallService,
     LocalEvaluationCodexUnavailable,
     build_local_evaluation_codex_call_service,
@@ -41,10 +45,22 @@ class _RecordingAdapter:
         self.model = model
         self._result_factory = result_factory
         self.requests: list[LLMInvocationRequest] = []
+        self.probes: list[ProviderValidationEvidence] = []
+        self.cancelled: list[str] = []
+
+    async def probe(
+        self, candidate: ProviderValidationEvidence
+    ) -> CapabilityProbeResult:
+        self.probes.append(candidate)
+        return CapabilityProbeResult(evidence=candidate)
 
     async def invoke(self, request: LLMInvocationRequest) -> LLMInvocationResult:
         self.requests.append(request)
         return self._result_factory(request)
+
+    async def cancel(self, invocation_id: str) -> CancellationResult:
+        self.cancelled.append(invocation_id)
+        return CancellationResult(True, None)
 
 
 def _stored_ref(data_kind: str, digest: str = "b") -> StoredDataRef:
@@ -141,6 +157,27 @@ def _request(
     return LLMInvocationRequest.model_validate_json(canonical_bytes(raw))
 
 
+def _validation_evidence(
+    binding: ApprovedCodexExecutionBinding,
+) -> ProviderValidationEvidence:
+    raw = make("ProviderValidationEvidence")
+    profile = binding.provider_profile
+    raw.update(
+        {
+            "profile_key": profile.profile_key,
+            "provider": profile.provider,
+            "product": profile.product,
+            "transport": profile.transport,
+            "model": profile.model,
+            "environment": profile.environment,
+            "auth_mode": profile.auth_mode,
+            "client_name": profile.client_name,
+            "client_version": profile.client_version,
+        }
+    )
+    return ProviderValidationEvidence.model_validate_json(canonical_bytes(raw))
+
+
 def _result(
     request: LLMInvocationRequest,
     *,
@@ -207,6 +244,38 @@ async def test_local_call_accepts_only_exact_local_evaluation_route() -> None:
     assert result.purpose == "LOCAL_EVALUATION"
     assert result.actual_session_mode == "NEW"
     assert len(adapter.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_local_call_service_implements_full_provider_adapter_boundary() -> None:
+    binding = _binding()
+    service, adapter = _service(binding, lambda request: _result(request))
+    candidate = _validation_evidence(binding)
+
+    assert isinstance(service, LLMProviderAdapter)
+    assert (await service.probe(candidate)).evidence == candidate
+    await service.invoke(_request(binding, call_id="owned-call"))
+    assert (await service.cancel("owned-call")).cancelled is True
+    assert adapter.probes == [candidate]
+    assert adapter.cancelled == ["owned-call"]
+
+
+@pytest.mark.asyncio
+async def test_local_call_rejects_probe_and_cancel_outside_exact_route() -> None:
+    binding = _binding()
+    service, adapter = _service(binding, lambda request: _result(request))
+    wrong = _validation_evidence(binding).model_copy(update={"model": "other-model"})
+
+    with pytest.raises(
+        LocalEvaluationCodexUnavailable,
+        match="LOCAL_EVALUATION_CODEX_ROUTE_MISMATCH",
+    ):
+        await service.probe(wrong)
+    cancellation = await service.cancel("not-owned")
+
+    assert cancellation.cancelled is False
+    assert adapter.probes == []
+    assert adapter.cancelled == []
 
 
 @pytest.mark.asyncio
@@ -328,3 +397,61 @@ async def test_exact_provider_profile_and_model_are_required_before_call() -> No
         await service.invoke(request)
 
     assert adapter.requests == []
+
+
+@pytest.mark.asyncio
+async def test_deferred_provider_binds_once_and_delegates_exact_route() -> None:
+    binding = _binding()
+    provider_ref = reference(binding.provider_profile)
+    assert isinstance(provider_ref, StoredDataRef)
+    deferred = DeferredLLMProviderAdapter(
+        provider_profile_ref=provider_ref,
+        model=binding.provider_profile.model,
+    )
+    service_wrapper, adapter = _service(binding, lambda request: _result(request))
+
+    assert isinstance(deferred, LLMProviderAdapter)
+    deferred.bind(service_wrapper)
+    result = await deferred.invoke(_request(binding, call_id="deferred-call"))
+
+    assert result.status == "SUCCEEDED"
+    assert [request.llm_call_id for request in adapter.requests] == ["deferred-call"]
+    with pytest.raises(
+        LocalEvaluationCodexUnavailable,
+        match="LOCAL_EVALUATION_LLM_ADAPTER_ALREADY_BOUND",
+    ):
+        deferred.bind(service_wrapper)
+
+
+def test_deferred_provider_rejects_adapter_without_local_session_guard() -> None:
+    binding = _binding()
+    provider_ref = reference(binding.provider_profile)
+    assert isinstance(provider_ref, StoredDataRef)
+    deferred = DeferredLLMProviderAdapter(
+        provider_profile_ref=provider_ref,
+        model=binding.provider_profile.model,
+    )
+    _service_wrapper, raw_adapter = _service(binding, lambda request: _result(request))
+
+    with pytest.raises(
+        LocalEvaluationCodexUnavailable,
+        match="LOCAL_EVALUATION_LLM_ADAPTER_INVALID",
+    ):
+        deferred.bind(cast(LLMProviderAdapter, raw_adapter))
+
+
+@pytest.mark.asyncio
+async def test_deferred_provider_fails_closed_before_binding() -> None:
+    binding = _binding()
+    provider_ref = reference(binding.provider_profile)
+    assert isinstance(provider_ref, StoredDataRef)
+    deferred = DeferredLLMProviderAdapter(
+        provider_profile_ref=provider_ref,
+        model=binding.provider_profile.model,
+    )
+
+    with pytest.raises(
+        LocalEvaluationCodexUnavailable,
+        match="LOCAL_EVALUATION_LLM_ADAPTER_NOT_BOUND",
+    ):
+        await deferred.invoke(_request(binding, call_id="unbound-call"))

@@ -139,9 +139,9 @@ class _Capabilities(LocalEvaluationCapabilityResolver):
             data_kind="runtime_capability_profile",
             content_hash="c" * 64,
             host_id=profile.host_id,
-            publication_analysis_id=scope.analysis_id,
-            publication_workspace_id=scope.workspace_id,
-            publication_commit_id=scope.commit_id,
+            publication_analysis_id=AnalysisId("capability-publication"),
+            publication_workspace_id=WorkspaceId("host-configuration"),
+            publication_commit_id=CommitId("host-configuration-v1"),
             record_id=RecordId("git-capability-record"),
         )
         provider = StoredDataRef(

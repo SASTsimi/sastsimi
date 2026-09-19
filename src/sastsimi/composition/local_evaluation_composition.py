@@ -249,9 +249,7 @@ class ConcreteLocalEvaluationApplicationFactory:
             finding_service_identity_ref=_stored_identity(
                 identities, RequesterRole.VERIFICATION
             ),
-            analysis_finalization_identity_ref=identities[
-                RequesterRole.ORCHESTRATION
-            ],
+            analysis_finalization_identity_ref=identities[RequesterRole.ORCHESTRATION],
             llm_adapters=resolved.llm_adapters,
             capability_host_id=profile.host_id,
         )
@@ -437,13 +435,10 @@ def _require_resolved_capabilities(
         or len(policies) != 1
         or policies[0].analysis_id != scope.analysis_id
         or len(git_refs) not in {1, 2}
-        or any(
-            ref.host_id != profile.host_id
-            or ref.publication_analysis_id != scope.analysis_id
-            or ref.publication_workspace_id != scope.workspace_id
-            or ref.publication_commit_id != scope.commit_id
-            for ref in git_refs
-        )
+        # Host capability profiles are deliberately reusable across analysis
+        # runs.  The resolver owns the approved-current check; this boundary
+        # only rejects capabilities published for another host.
+        or any(ref.host_id != profile.host_id for ref in git_refs)
         or len(policies) + len(git_refs) != len(dependencies)
     ):
         raise LocalEvaluationCompositionUnavailable(
