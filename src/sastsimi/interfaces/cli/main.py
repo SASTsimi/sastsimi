@@ -9,10 +9,14 @@ from typing import NoReturn, cast
 from uuid import uuid4
 
 from sastsimi import bootstrap
-from sastsimi.config.production_profile import load_production_profile
+from sastsimi.config.production_profile import (
+    ProductionProfileError,
+    load_production_profile,
+)
 from sastsimi.interfaces.cli import analyze as analyze_command
 from sastsimi.interfaces.cli import cancel as cancel_command
 from sastsimi.interfaces.cli import capability as capability_command
+from sastsimi.interfaces.cli import codeql as codeql_command
 from sastsimi.interfaces.cli import commands
 from sastsimi.interfaces.cli import demo as demo_command
 from sastsimi.interfaces.cli import onboarding as onboarding_command
@@ -195,6 +199,26 @@ def main(
     capability_approve.add_argument("--target-hash", required=True)
     capability_approve.add_argument("--docker-host")
     capability_approve.add_argument("--format", choices=["text", "json"])
+    codeql_parser = subparsers.add_parser(
+        "codeql",
+        help="register or inspect controlled prebuilt CodeQL databases",
+        allow_abbrev=False,
+    )
+    codeql_commands = codeql_parser.add_subparsers(dest="codeql_command", required=True)
+    codeql_register = codeql_commands.add_parser("register", allow_abbrev=False)
+    codeql_inspect = codeql_commands.add_parser("inspect", allow_abbrev=False)
+    for codeql_action in (codeql_register, codeql_inspect):
+        codeql_action.add_argument("--profile", type=Path, required=True)
+        codeql_action.add_argument("--repo", required=True)
+        codeql_action.add_argument("--commit", type=_exact_commit, required=True)
+        codeql_action.add_argument(
+            "--language",
+            choices=["python", "javascript-typescript"],
+            required=True,
+        )
+        codeql_action.add_argument("--tracked-manifest-sha256", required=True)
+        codeql_action.add_argument("--format", choices=["text", "json"])
+    codeql_register.add_argument("--database-root", type=Path, required=True)
     try:
         args = parser.parse_args(argv)
         requested_output = getattr(args, "format", None)
@@ -396,6 +420,43 @@ def main(
                 code=outcome.code,
             )
             return int(outcome.code)
+        if args.command == "codeql":
+            command_name = "codeql " + args.codeql_command
+            profile = load_production_profile(args.profile)
+            codeql_config = profile.codeql_container
+            if codeql_config is None:
+                emit_result(
+                    ExitCode.CONFIG_ERROR,
+                    output_format,
+                    sys.stderr,
+                    command=command_name,
+                )
+                return int(ExitCode.CONFIG_ERROR)
+            if args.codeql_command == "register":
+                outcome = codeql_command.run_register(
+                    config=codeql_config,
+                    repository_url=args.repo,
+                    commit_id=args.commit,
+                    language=args.language,
+                    tracked_manifest_sha256=args.tracked_manifest_sha256,
+                    database_root=args.database_root,
+                )
+            else:
+                outcome = codeql_command.run_inspect(
+                    config=codeql_config,
+                    repository_url=args.repo,
+                    commit_id=args.commit,
+                    language=args.language,
+                    tracked_manifest_sha256=args.tracked_manifest_sha256,
+                )
+            emit_data(
+                output_format,
+                sys.stdout if outcome.code == ExitCode.OK else sys.stderr,
+                command=command_name,
+                data=outcome.data,
+                code=outcome.code,
+            )
+            return int(outcome.code)
         else:
             code = ExitCode.OK if commands.doctor() else ExitCode.CAPABILITY_UNSUPPORTED
         emit_result(
@@ -407,6 +468,8 @@ def main(
     except _InputError:
         code = ExitCode.INPUT_ERROR
     except bootstrap.ConfigError:
+        code = ExitCode.CONFIG_ERROR
+    except ProductionProfileError:
         code = ExitCode.CONFIG_ERROR
     except bootstrap.MigrationRequired:
         code = ExitCode.CONFIG_ERROR
