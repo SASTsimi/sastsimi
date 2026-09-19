@@ -1399,6 +1399,7 @@ async def test_approved_python_wheel_bundle_is_baked_for_offline_install(
 
     assert source.source_manifest is not None
     assert source.source_manifest.dependency_bundle_ref == reference(bundle)
+    assert source.source_manifest.dependency_manifest_path == "requirements.txt"
     assert source.context_archive is not None
     with tarfile.open(fileobj=io.BytesIO(source.context_archive), mode="r:") as archive:
         names = set(archive.getnames())
@@ -1409,19 +1410,89 @@ async def test_approved_python_wheel_bundle_is_baked_for_offline_install(
     assert b"python -m pip install --no-index" in dockerfile_bytes
     assert b"--find-links=/opt/sastsimi-dependencies/python" in dockerfile_bytes
 
+    recipe = await _setup(FakeDockerAdapter(), artifacts=artifacts).build(
+        approval=_build_approval(tmp_path, request, source),
+        source=source,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "python-offline-recipe"),
+    )
+    assert recipe.source_manifest is not None
+    assert recipe.source_manifest.dependency_manifest_path == "requirements.txt"
+
 
 @pytest.mark.asyncio
-async def test_python_dependencies_are_auto_fetched_without_an_approved_bundle(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_repository_dockerfile_selects_its_python_manifest_in_mixed_repo(
+    tmp_path: Path,
 ) -> None:
-    """No human ever approves a dependency bundle for dynamic reproduction.
+    files = {
+        "Dockerfile": (
+            b"FROM python:3.12-slim\n"
+            b"WORKDIR /workspace\n"
+            b"COPY requirements.txt requirements.txt\n"
+            b"RUN pip install -r requirements.txt\n"
+            b"COPY . /workspace\n"
+        ),
+        "app.py": b"print('ready')\n",
+        "requirements.txt": b"django==5.1.1\n",
+        "static/app.js": b"console.log('ui')\n",
+        "dockerized_labs/demo/requirements.txt": b"flask==3.0.0\n",
+    }
+    for name, raw in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+    profile = _repository_profile(files)
+    request, requirements, _ = _dynamic_records()
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
+    requirements = requirements.model_copy(
+        update={
+            "items": (
+                EnvironmentRequirement(
+                    requirement_id="python-version",
+                    kind="VERSION",
+                    name="python",
+                    required=True,
+                    expected="3.12",
+                    expected_ref=None,
+                    alternatives=(),
+                    check_ref=None,
+                    secret_ref=None,
+                    source_refs=(request_ref,),
+                ),
+            )
+        }
+    )
+    artifacts = _MemoryArtifacts()
+    bundle = _dependency_bundle(
+        artifacts=artifacts,
+        profile=profile,
+        request=request,
+        ecosystem="PYTHON_WHEELS",
+        files={"django-5.1.1-py3-none-any.whl": b"immutable-wheel"},
+    )
 
-    A repository's declared dependencies are a fact this pipeline reads for
-    itself and vendors offline, exactly like the approved-bundle path above -
-    just without a human supplying the archive first.
-    """
-    import subprocess
+    source = await _setup(FakeDockerAdapter(), artifacts=artifacts).preflight(
+        workspace_root=tmp_path,
+        repository_profile=profile,
+        dependency_bundle=bundle,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "mixed-python-source"),
+    )
 
+    assert source.dockerfile_path == "Dockerfile"
+    assert source.dockerfile_origin == "REPOSITORY"
+    assert source.source_manifest is not None
+    assert source.source_manifest.dependency_bundle_ref == reference(bundle)
+    assert source.source_manifest.dependency_manifest_path == "requirements.txt"
+
+
+@pytest.mark.asyncio
+async def test_python_dependencies_require_an_approved_offline_bundle(
+    tmp_path: Path,
+) -> None:
     files = {
         "app.py": b"import demo\n",
         "requirements.txt": b"demo==1.0.0\n",
@@ -1450,44 +1521,17 @@ async def test_python_dependencies_are_auto_fetched_without_an_approved_bundle(
             )
         }
     )
-    captured: list[tuple[str, ...]] = []
-
-    def fake_pip_download(
-        argv: tuple[str, ...], *, check: bool, capture_output: bool, timeout: float
-    ) -> subprocess.CompletedProcess[bytes]:
-        captured.append(tuple(argv))
-        dest = Path(argv[argv.index("--dest") + 1])
-        (dest / "demo-1.0.0-py3-none-any.whl").write_bytes(b"fake-wheel-bytes")
-        return subprocess.CompletedProcess(argv, 0)
-
-    monkeypatch.setattr(
-        "sastsimi.sandbox.recipe_store.subprocess.run", fake_pip_download
-    )
-    artifacts = _MemoryArtifacts()
-
-    source = await _setup(FakeDockerAdapter(), artifacts=artifacts).preflight(
-        workspace_root=tmp_path,
-        repository_profile=profile,
-        request=request,
-        requirements=requirements,
-        meta=_meta("environment_recipe", "python-auto-fetch-source"),
-    )
-
-    assert len(captured) == 1
-    argv = captured[0]
-    assert "--only-binary=:all:" in argv
-    assert "--no-deps" not in argv
-    assert argv[argv.index("-r") + 1].endswith("requirements.txt")
-    assert source.source_manifest is not None
-    assert source.source_manifest.dependency_bundle_ref is not None
-    assert source.context_archive is not None
-    with tarfile.open(fileobj=io.BytesIO(source.context_archive), mode="r:") as archive:
-        names = set(archive.getnames())
-        dockerfile = archive.extractfile(source.dockerfile_path)
-        assert dockerfile is not None
-        dockerfile_bytes = dockerfile.read()
-    assert ".sastsimi/dependencies/python/demo-1.0.0-py3-none-any.whl" in names
-    assert b"python -m pip install --no-index" in dockerfile_bytes
+    with pytest.raises(
+        ValueError,
+        match="DEPENDENCY_SUPPLY_CONFIRMATION_REQUIRED",
+    ):
+        await _setup(FakeDockerAdapter(), artifacts=_MemoryArtifacts()).preflight(
+            workspace_root=tmp_path,
+            repository_profile=profile,
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "python-no-offline-bundle-source"),
+        )
 
 
 @pytest.mark.asyncio

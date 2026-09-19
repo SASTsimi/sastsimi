@@ -10,10 +10,7 @@ import json
 import os
 import re
 import stat
-import subprocess
-import sys
 import tarfile
-import tempfile
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -27,7 +24,6 @@ from sastsimi.contracts.dynamic import (
     EnvironmentRecipe,
     EnvironmentRecipeSourceManifest,
     EnvironmentRequirements,
-    dependency_bundle_target_hash,
 )
 from sastsimi.contracts.ids import LogicalRecordId, RecordId, StoredDataId
 from sastsimi.contracts.records import RecordMeta
@@ -146,6 +142,7 @@ class PreparedRecipeSource:
     base_image: str
     repository_profile_ref: StoredDataRef | None = None
     dependency_bundle_ref: StoredDataRef | None = None
+    dependency_manifest_path: str | None = None
     dockerfile_origin: Literal["REPOSITORY", "GENERATED"] = "REPOSITORY"
     dockerfile_path: str = "Dockerfile"
     context_archive: bytes | None = None
@@ -171,6 +168,7 @@ class PreparedRecipeSource:
                 self.context_digest is not None
                 or self.repository_profile_ref is not None
                 or self.dependency_bundle_ref is not None
+                or self.dependency_manifest_path is not None
                 or self.dockerfile_origin != "REPOSITORY"
                 or self.dockerfile_path != "Dockerfile"
                 or self.source_manifest is not None
@@ -202,6 +200,10 @@ class PreparedRecipeSource:
             or self.dockerfile_path.startswith("/")
             or ".." in PurePosixPath(self.dockerfile_path).parts
             or self.source_manifest is None
+            or (
+                self.dependency_bundle_ref is not None
+                and self.dependency_manifest_path is None
+            )
         ):
             raise ValueError("RECIPE_CONTEXT_BINDING_INVALID")
         if self.source_manifest is not None and (
@@ -211,6 +213,8 @@ class PreparedRecipeSource:
             or self.source_manifest.context_digest != self.context_digest
             or self.source_manifest.dockerfile_path != self.dockerfile_path
             or self.source_manifest.dockerfile_origin != self.dockerfile_origin
+            or self.source_manifest.dependency_manifest_path
+            != self.dependency_manifest_path
             or set(
                 (
                     self.source_manifest.repository_profile_ref,
@@ -462,6 +466,7 @@ class EnvironmentRecipeStore:
             base_image=self._base_image(dockerfile.decode("utf-8")),
             repository_profile_ref=manifest.repository_profile_ref,
             dependency_bundle_ref=manifest.dependency_bundle_ref,
+            dependency_manifest_path=manifest.dependency_manifest_path,
             dockerfile_origin=manifest.dockerfile_origin,
             dockerfile_path=manifest.dockerfile_path,
             context_archive=context_archive,
@@ -735,20 +740,6 @@ class EnvironmentRecipeStore:
                 raise ValueError("REPOSITORY_SECRET_FILE_DENIED")
             entries[path] = value
 
-        if dependency_bundle is None:
-            # Dynamic reproduction runs unattended end to end - a repository's
-            # declared dependencies are a fact about the repository, not a
-            # judgement call, so this fetches and vendors exactly what pip
-            # would resolve itself instead of stopping for a human to
-            # pre-approve an offline archive.
-            dependency_bundle = self._auto_fetch_dependency_bundle(
-                repository_profile=repository_profile,
-                entries=entries,
-                request_ref=request_ref,
-                profile_ref=profile_ref,
-                meta=meta,
-            )
-
         bundle_ref: StoredDataRef | None = None
         if dependency_bundle is not None:
             bundle_entries, bundle_ref = self._dependency_bundle_entries(
@@ -772,11 +763,13 @@ class EnvironmentRecipeStore:
         ):
             raise ValueError("RECIPE_BUILD_CONTEXT_LIMIT_EXCEEDED")
 
-        dockerfile_path, dockerfile, origin = self._select_dockerfile(
-            entries,
-            repository_profile,
-            requirements,
-            dependency_bundle,
+        dockerfile_path, dockerfile, origin, dependency_manifest_path = (
+            self._select_dockerfile(
+                entries,
+                repository_profile,
+                requirements,
+                dependency_bundle,
+            )
         )
         dockerfile = self._validated_dockerfile(
             dockerfile,
@@ -825,6 +818,7 @@ class EnvironmentRecipeStore:
             dockerfile_digest=hashlib.sha256(dockerfile).hexdigest(),
             context_digest=hashlib.sha256(archive).hexdigest(),
             dependency_bundle_ref=bundle_ref,
+            dependency_manifest_path=dependency_manifest_path,
         )
         return PreparedRecipeSource(
             workspace_root=root,
@@ -839,151 +833,12 @@ class EnvironmentRecipeStore:
             base_image=self._base_image(dockerfile.decode("utf-8")),
             repository_profile_ref=profile_ref,
             dependency_bundle_ref=bundle_ref,
+            dependency_manifest_path=dependency_manifest_path,
             dockerfile_origin=origin,
             dockerfile_path=dockerfile_path,
             context_archive=archive,
             context_digest=hashlib.sha256(archive).hexdigest(),
             source_manifest=source_manifest,
-        )
-
-    def _auto_fetch_dependency_bundle(
-        self,
-        *,
-        repository_profile: RepositoryProfile,
-        entries: Mapping[str, tuple[bytes, int]],
-        request_ref: StoredDataRef,
-        profile_ref: StoredDataRef,
-        meta: RecordMeta,
-    ) -> DependencyBundle | None:
-        """Fetch and vendor a Python repository's own declared dependencies.
-
-        Wheels only (`--only-binary=:all:`): a source distribution can run
-        arbitrary code at build time, and this runs with real network access
-        on the host, before the offline (`--network none`) sandbox build
-        ever starts (`docker_adapter.py`). Node/`NPM_CACHE` is left to an
-        explicitly supplied bundle for now - `npm ci` has no equivalent
-        single-command wheels-only fetch, so an unattended default for it
-        needs its own separate treatment, not this one extended.
-        """
-        try:
-            family = self._repository_family(repository_profile)
-        except ValueError:
-            return None
-        if family != "PYTHON":
-            return None
-        requirement_paths = tuple(
-            item.path
-            for item in repository_profile.config_files
-            if item.kind == "REQUIREMENTS" and item.path in entries
-        )
-        pyproject_paths = tuple(
-            item.path
-            for item in repository_profile.config_files
-            if item.kind == "PYPROJECT" and item.path in entries
-        )
-        if len(requirement_paths) > 1 or (
-            not requirement_paths and len(pyproject_paths) > 1
-        ):
-            # Ambiguous manifest selection is its own confirmation gate
-            # (`_dependency_install`, same file) - fall through to it rather
-            # than guessing which file to fetch from.
-            return None
-        if requirement_paths and entries[requirement_paths[0]][0].strip():
-            spec = entries[requirement_paths[0]][0]
-        elif pyproject_paths:
-            try:
-                project = tomllib.loads(entries[pyproject_paths[0]][0].decode("utf-8"))
-            except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-                raise ValueError("DEPENDENCY_FILE_UNPARSEABLE") from error
-            declared = project.get("project", {}).get("dependencies", ())
-            build_requires = project.get("build-system", {}).get("requires", ())
-            if not (declared or build_requires):
-                return None
-            spec = "\n".join((*declared, *build_requires)).encode("utf-8")
-        else:
-            return None
-        if self._artifacts is None:
-            raise ValueError("RECIPE_ARTIFACT_STORE_REQUIRED")
-
-        with tempfile.TemporaryDirectory(prefix="sastsimi-dep-fetch-") as raw_tmp:
-            tmp = Path(raw_tmp)
-            spec_file = tmp / "requirements.txt"
-            spec_file.write_bytes(spec)
-            download_dir = tmp / "wheels"
-            download_dir.mkdir()
-            try:
-                subprocess.run(  # noqa: S603
-                    (
-                        sys.executable,
-                        "-m",
-                        "pip",
-                        "download",
-                        "--no-cache-dir",
-                        "--only-binary=:all:",
-                        "--dest",
-                        str(download_dir),
-                        "-r",
-                        str(spec_file),
-                    ),
-                    check=True,
-                    capture_output=True,
-                    timeout=120,
-                )
-            except (
-                subprocess.CalledProcessError,
-                subprocess.TimeoutExpired,
-                OSError,
-            ) as error:
-                raise ValueError("DEPENDENCY_AUTO_FETCH_FAILED") from error
-            wheels = sorted(download_dir.glob("*.whl"))
-            if not wheels:
-                raise ValueError("DEPENDENCY_AUTO_FETCH_FAILED")
-            wheel_entries = {
-                wheel.name: (wheel.read_bytes(), 0o644) for wheel in wheels
-            }
-
-        archive = self._archive(wheel_entries)
-        if len(archive) > _MAX_BUILD_CONTEXT_BYTES:
-            raise ValueError("RECIPE_BUILD_CONTEXT_LIMIT_EXCEEDED")
-        archive_digest = hashlib.sha256(archive).hexdigest()
-        staged = self._artifacts.stage_bytes(archive, "application/x-tar")
-        archive_ref = self._artifacts.commit(staged)
-        if archive_ref.content_hash != archive_digest:
-            raise ValueError("DEPENDENCY_BUNDLE_ARTIFACT_INVALID")
-        input_hash = dependency_input_hash(repository_profile)
-        target_hash = dependency_bundle_target_hash(
-            request_ref=request_ref,
-            ecosystem="PYTHON_WHEELS",
-            repository_profile_ref=profile_ref,
-            dependency_input_hash=input_hash,
-            archive_ref=archive_ref,
-            archive_digest=archive_digest,
-        )
-        bundle_meta = RecordMeta.model_validate(
-            meta.model_dump()
-            | {
-                "record_id": RecordId(f"dependency-bundle-{target_hash}"),
-                "logical_record_id": LogicalRecordId(
-                    f"dependency-bundle-{target_hash}"
-                ),
-                "record_type": "dependency_bundle",
-                "revision_number": 1,
-                "previous_record_id": None,
-            }
-        )
-        return DependencyBundle(
-            meta=bundle_meta,
-            request_ref=request_ref,
-            repository_profile_ref=profile_ref,
-            ecosystem="PYTHON_WHEELS",
-            dependency_input_hash=input_hash,
-            archive_ref=archive_ref,
-            archive_digest=archive_digest,
-            archive_format="TAR",
-            approval_target_hash=target_hash,
-            approved_by="sastsimi-automatic-dependency-fetch",
-            approved_by_role="AUTOMATIC",
-            approved_at=meta.created_at,
         )
 
     def _dependency_bundle_entries(
@@ -1222,9 +1077,7 @@ class EnvironmentRecipeStore:
         profile: RepositoryProfile,
         requirements: EnvironmentRequirements,
         dependency_bundle: DependencyBundle | None,
-    ) -> tuple[str, bytes, Literal["REPOSITORY", "GENERATED"]]:
-        family = cls._repository_family(profile)
-        cls._validate_dependency_bundle_family(dependency_bundle, family)
+    ) -> tuple[str, bytes, Literal["REPOSITORY", "GENERATED"], str | None]:
         candidates = tuple(
             item.path for item in profile.config_files if item.kind == "DOCKERFILE"
         )
@@ -1236,15 +1089,52 @@ class EnvironmentRecipeStore:
                 dockerfile = entries[selected][0]
             except KeyError as error:
                 raise ValueError("REPOSITORY_MANIFEST_MISMATCH") from error
+            family = cls._repository_family(
+                profile,
+                requirements=requirements,
+                dockerfile=dockerfile,
+            )
+            cls._validate_dependency_bundle_family(dependency_bundle, family)
+            dependency_manifest_path = cls._dependency_manifest_path(
+                entries,
+                profile,
+                family,
+                dockerfile=dockerfile,
+            )
             if dependency_bundle is not None:
+                cls._dependency_install(
+                    entries,
+                    profile,
+                    family,
+                    dependency_bundle,
+                    dependency_manifest_path=dependency_manifest_path,
+                )
                 dockerfile = cls._inject_offline_dependency_environment(
                     dockerfile,
                     family,
                 )
             else:
-                cls._dependency_install(entries, profile, family, None)
-            return selected, dockerfile, "REPOSITORY"
+                cls._dependency_install(
+                    entries,
+                    profile,
+                    family,
+                    None,
+                    dependency_manifest_path=dependency_manifest_path,
+                )
+            return selected, dockerfile, "REPOSITORY", dependency_manifest_path
 
+        family = cls._repository_family(
+            profile,
+            requirements=requirements,
+            dockerfile=None,
+        )
+        cls._validate_dependency_bundle_family(dependency_bundle, family)
+        dependency_manifest_path = cls._dependency_manifest_path(
+            entries,
+            profile,
+            family,
+            dockerfile=None,
+        )
         version = cls._runtime_version(requirements, family)
         if version is None:
             raise ValueError("ENVIRONMENT_VERSION_CONFIRMATION_REQUIRED")
@@ -1256,6 +1146,7 @@ class EnvironmentRecipeStore:
             profile,
             family,
             dependency_bundle,
+            dependency_manifest_path=dependency_manifest_path,
         )
         dockerfile = (
             f"FROM {image}\n"
@@ -1264,7 +1155,7 @@ class EnvironmentRecipeStore:
             f"{install}"
             'CMD ["sleep", "infinity"]\n'
         ).encode()
-        return "Dockerfile", dockerfile, "GENERATED"
+        return "Dockerfile", dockerfile, "GENERATED", dependency_manifest_path
 
     @staticmethod
     def _dependency_install(
@@ -1272,40 +1163,32 @@ class EnvironmentRecipeStore:
         profile: RepositoryProfile,
         family: Literal["PYTHON", "NODE"],
         dependency_bundle: DependencyBundle | None,
+        *,
+        dependency_manifest_path: str | None,
     ) -> str:
         if family == "PYTHON":
-            requirement_paths = tuple(
-                item.path
-                for item in profile.config_files
-                if item.kind == "REQUIREMENTS" and item.path in entries
-            )
-            pyproject_paths = tuple(
-                item.path
-                for item in profile.config_files
-                if item.kind == "PYPROJECT" and item.path in entries
-            )
-            if len(requirement_paths) > 1 or (
-                not requirement_paths and len(pyproject_paths) > 1
-            ):
-                raise ValueError("DEPENDENCY_FILE_SELECTION_CONFIRMATION_REQUIRED")
-            if requirement_paths:
-                if entries[requirement_paths[0]][0].strip():
-                    if dependency_bundle is None:
-                        raise ValueError("DEPENDENCY_SUPPLY_CONFIRMATION_REQUIRED")
-                    return (
-                        "COPY .sastsimi/dependencies/python/ "
-                        "/opt/sastsimi-dependencies/python/\n"
-                        "RUN python -m pip install --no-index "
-                        "--find-links=/opt/sastsimi-dependencies/python "
-                        f"-r {requirement_paths[0]}\n"
-                    )
-                if dependency_bundle is not None:
-                    raise ValueError("DEPENDENCY_BUNDLE_NOT_REQUIRED")
-                return ""
-            if pyproject_paths:
+            if dependency_manifest_path is not None:
+                kind_by_path = {item.path: item.kind for item in profile.config_files}
+                kind = kind_by_path.get(dependency_manifest_path)
+                if kind == "REQUIREMENTS":
+                    if entries[dependency_manifest_path][0].strip():
+                        if dependency_bundle is None:
+                            raise ValueError("DEPENDENCY_SUPPLY_CONFIRMATION_REQUIRED")
+                        return (
+                            "COPY .sastsimi/dependencies/python/ "
+                            "/opt/sastsimi-dependencies/python/\n"
+                            "RUN python -m pip install --no-index "
+                            "--find-links=/opt/sastsimi-dependencies/python "
+                            f"-r {dependency_manifest_path}\n"
+                        )
+                    if dependency_bundle is not None:
+                        raise ValueError("DEPENDENCY_BUNDLE_NOT_REQUIRED")
+                    return ""
+                if kind != "PYPROJECT":
+                    raise ValueError("DEPENDENCY_FILE_CONFIRMATION_REQUIRED")
                 try:
                     project = tomllib.loads(
-                        entries[pyproject_paths[0]][0].decode("utf-8")
+                        entries[dependency_manifest_path][0].decode("utf-8")
                     )
                 except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
                     raise ValueError("DEPENDENCY_FILE_CONFIRMATION_REQUIRED") from error
@@ -1327,19 +1210,12 @@ class EnvironmentRecipeStore:
                 raise ValueError("DEPENDENCY_BUNDLE_NOT_REQUIRED")
             return ""
 
-        package_paths = tuple(
-            item.path
-            for item in profile.config_files
-            if item.kind == "PACKAGE_JSON" and item.path in entries
-        )
-        if len(package_paths) > 1:
-            raise ValueError("DEPENDENCY_FILE_SELECTION_CONFIRMATION_REQUIRED")
-        if not package_paths:
+        if dependency_manifest_path is None:
             if dependency_bundle is not None:
                 raise ValueError("DEPENDENCY_BUNDLE_NOT_REQUIRED")
             return ""
         try:
-            package = json.loads(entries[package_paths[0]][0])
+            package = json.loads(entries[dependency_manifest_path][0])
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise ValueError("DEPENDENCY_FILE_CONFIRMATION_REQUIRED") from error
         if not isinstance(package, dict):
@@ -1355,10 +1231,13 @@ class EnvironmentRecipeStore:
         ):
             if dependency_bundle is None:
                 raise ValueError("DEPENDENCY_SUPPLY_CONFIRMATION_REQUIRED")
+            manifest_parent = str(PurePosixPath(dependency_manifest_path).parent)
             locks = tuple(
                 item.path
                 for item in profile.config_files
-                if item.kind == "PACKAGE_LOCK" and item.path in entries
+                if item.kind == "PACKAGE_LOCK"
+                and item.path in entries
+                and str(PurePosixPath(item.path).parent) == manifest_parent
             )
             if len(locks) != 1:
                 raise ValueError("DEPENDENCY_LOCK_CONFIRMATION_REQUIRED")
@@ -1372,16 +1251,136 @@ class EnvironmentRecipeStore:
             raise ValueError("DEPENDENCY_BUNDLE_NOT_REQUIRED")
         return ""
 
-    @staticmethod
+    @classmethod
     def _repository_family(
+        cls,
         profile: RepositoryProfile,
+        *,
+        requirements: EnvironmentRequirements,
+        dockerfile: bytes | None,
     ) -> Literal["PYTHON", "NODE"]:
+        required_runtime_families = {
+            family
+            for item in requirements.items
+            if item.required and item.kind == "VERSION"
+            for family in (cls._runtime_name_family(item.name),)
+            if family is not None
+        }
+        dockerfile_families = cls._dockerfile_families(dockerfile)
+        primary = required_runtime_families | dockerfile_families
+        if len(primary) == 1:
+            return primary.pop()
+        if len(primary) > 1:
+            raise ValueError("ENVIRONMENT_BUILD_CONFIRMATION_REQUIRED")
+
+        root_manifest_families = {
+            family
+            for item in profile.config_files
+            if "/" not in item.path
+            for family in (cls._config_family(item.kind),)
+            if family is not None
+        }
+        if len(root_manifest_families) == 1:
+            return root_manifest_families.pop()
+        if len(root_manifest_families) > 1:
+            raise ValueError("ENVIRONMENT_BUILD_CONFIRMATION_REQUIRED")
+
         language_names = {item.name for item in profile.languages}
-        if language_names == {"PYTHON"}:
-            return "PYTHON"
-        if language_names and language_names <= {"JAVASCRIPT", "TYPESCRIPT"}:
-            return "NODE"
+        language_families: set[Literal["PYTHON", "NODE"]] = set()
+        if "PYTHON" in language_names:
+            language_families.add("PYTHON")
+        if language_names & {"JAVASCRIPT", "TYPESCRIPT"}:
+            language_families.add("NODE")
+        if len(language_families) == 1:
+            return language_families.pop()
         raise ValueError("ENVIRONMENT_BUILD_CONFIRMATION_REQUIRED")
+
+    @staticmethod
+    def _runtime_name_family(name: str) -> Literal["PYTHON", "NODE"] | None:
+        normalized = name.casefold()
+        if normalized in {"python", "python3"}:
+            return "PYTHON"
+        if normalized in {"node", "nodejs"}:
+            return "NODE"
+        return None
+
+    @staticmethod
+    def _config_family(kind: str) -> Literal["PYTHON", "NODE"] | None:
+        if kind in {"REQUIREMENTS", "PYPROJECT", "PYTHON_LOCK", "PIPFILE"}:
+            return "PYTHON"
+        if kind in {"PACKAGE_JSON", "PACKAGE_LOCK", "YARN_LOCK", "PNPM_LOCK"}:
+            return "NODE"
+        return None
+
+    @classmethod
+    def _dockerfile_families(
+        cls,
+        dockerfile: bytes | None,
+    ) -> set[Literal["PYTHON", "NODE"]]:
+        if dockerfile is None:
+            return set()
+        try:
+            content = cls._join_continued_lines(dockerfile.decode("utf-8"))
+        except UnicodeDecodeError as error:
+            raise ValueError("DOCKERFILE_INVALID_UTF8") from error
+        active = "\n".join(
+            line for line in content.splitlines() if not line.lstrip().startswith("#")
+        ).casefold()
+        families: set[Literal["PYTHON", "NODE"]] = set()
+        if re.search(r"(?:^|[/\s])python(?::|@|\s)|\b(?:python3?|pip3?)\b", active):
+            families.add("PYTHON")
+        if re.search(r"(?:^|[/\s])node(?::|@|\s)|\b(?:node|npm|yarn|pnpm)\b", active):
+            families.add("NODE")
+        return families
+
+    @classmethod
+    def _dependency_manifest_path(
+        cls,
+        entries: Mapping[str, tuple[bytes, int]],
+        profile: RepositoryProfile,
+        family: Literal["PYTHON", "NODE"],
+        *,
+        dockerfile: bytes | None,
+    ) -> str | None:
+        allowed = (
+            {"REQUIREMENTS", "PYPROJECT"} if family == "PYTHON" else {"PACKAGE_JSON"}
+        )
+        candidates = tuple(
+            item.path
+            for item in profile.config_files
+            if item.kind in allowed and item.path in entries
+        )
+        if not candidates:
+            return None
+        if dockerfile is not None:
+            try:
+                content = cls._join_continued_lines(dockerfile.decode("utf-8"))
+            except UnicodeDecodeError as error:
+                raise ValueError("DOCKERFILE_INVALID_UTF8") from error
+            active = "\n".join(
+                line
+                for line in content.splitlines()
+                if not line.lstrip().startswith("#")
+            )
+            referenced = tuple(
+                path
+                for path in candidates
+                if re.search(
+                    rf"(?<![A-Za-z0-9._/-])(?:\./)?{re.escape(path)}"
+                    rf"(?![A-Za-z0-9._/-])",
+                    active,
+                )
+            )
+            if len(referenced) == 1:
+                return referenced[0]
+            if len(referenced) > 1:
+                raise ValueError("DEPENDENCY_FILE_SELECTION_CONFIRMATION_REQUIRED")
+        root_candidates = tuple(path for path in candidates if "/" not in path)
+        if len(root_candidates) == 1:
+            return root_candidates[0]
+        if len(candidates) == 1:
+            return candidates[0]
+        raise ValueError("DEPENDENCY_FILE_SELECTION_CONFIRMATION_REQUIRED")
 
     @staticmethod
     def _validate_dependency_bundle_family(
