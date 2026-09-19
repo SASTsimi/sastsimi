@@ -85,10 +85,18 @@ _FRAMEWORK_DEPENDENCIES: dict[str, frozenset[str]] = {
 
 
 def _identity(details: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+    # Windows derives executable permission bits from the path suffix for
+    # path-based stat calls, while CRT fstat() reports generic read/write bits
+    # for the very same open file (for example, ``make.bat`` is 100777 via
+    # lstat and 100666 via fstat).  Those permission bits are therefore not a
+    # stable file-identity attribute on Windows.  Keep the file type, and keep
+    # every identity/race boundary field below.  Unix retains its exact mode
+    # comparison, including permission bits.
+    mode = stat.S_IFMT(details.st_mode) if os.name == "nt" else details.st_mode
     return (
         details.st_dev,
         details.st_ino,
-        details.st_mode,
+        mode,
         details.st_size,
         details.st_mtime_ns,
         details.st_nlink,

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -418,6 +420,35 @@ def test_profile_fails_closed_when_a_tracked_blob_changed(tmp_path: Path) -> Non
             workspace_ref=_workspace_ref(),
             action_decision_ref=_decision_ref(),
         )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path/descriptor mode semantics")
+def test_profile_accepts_exact_windows_batch_file_when_fd_mode_bits_differ(
+    tmp_path: Path,
+) -> None:
+    tracked = (_write(tmp_path, "docs/make.bat", b"@echo off\r\n"),)
+    target = tmp_path / "docs" / "make.bat"
+    descriptor = os.open(target, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    try:
+        path_details = target.lstat()
+        descriptor_details = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+
+    # Windows reports executable-looking permission bits for a .bat path while
+    # the CRT descriptor reports the same file with regular read/write bits.
+    assert path_details.st_ino == descriptor_details.st_ino
+    assert path_details.st_dev == descriptor_details.st_dev
+    assert stat.S_IFMT(path_details.st_mode) == stat.S_IFMT(
+        descriptor_details.st_mode
+    )
+    assert path_details.st_mode != descriptor_details.st_mode
+
+    result = _build(tmp_path, tracked)
+
+    assert tuple(item.git_path for item in result.tracked_files) == (
+        "docs/make.bat",
+    )
 
 
 def test_unknown_or_ambiguous_build_is_not_guessed(tmp_path: Path) -> None:
