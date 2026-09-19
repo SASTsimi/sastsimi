@@ -19,7 +19,7 @@ def test_dockerfile_is_offline_pinned_and_installs_only_verified_local_inputs() 
     assert dockerfile.startswith(
         "FROM debian:bookworm-slim@sha256:"
         "f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b "
-        "AS bundle-verifier\n"
+        "AS runtime\n"
     )
     assert 'LABEL org.opencontainers.image.version="2.27.0"' in dockerfile
     assert (
@@ -32,14 +32,14 @@ def test_dockerfile_is_offline_pinned_and_installs_only_verified_local_inputs() 
         dockerfile.count(
             "f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b"
         )
-        == 2
+        == 1
     )
     assert "COPY --chown=0:0 codeql-bundle-linux64.tar.gz /tmp/" in dockerfile
     assert "sha256sum --check --strict" in dockerfile
     assert (
         "8e870433e5c80d0e916c3c1aa9005fc88aab990bcdcc649fade9dfc4d7e94305" in dockerfile
     )
-    assert "ADD --chown=0:0 codeql-bundle-linux64.tar.gz /opt/" in dockerfile
+    assert "tar -xzf /tmp/codeql-bundle-linux64.tar.gz -C /opt" in dockerfile
     assert (
         "COPY --chmod=0555 sastsimi-codeql /usr/local/bin/sastsimi-codeql" in dockerfile
     )
@@ -70,10 +70,17 @@ def test_builder_verifies_fixed_bundle_before_networkless_shell_free_build() -> 
     )
     assert expected_digest in source
     assert all(
-        value in source for value in ('"build"', '"--pull=false"', '"--network=none"')
+        value in source
+        for value in (
+            '"build"',
+            '"--load"',
+            '"--pull=false"',
+            '"--network=none"',
+        )
     )
     assert "stdout=subprocess.DEVNULL" in source
     assert "stderr=subprocess.DEVNULL" in source
+    assert '"DOCKER_BUILDX_UNAVAILABLE"' in source
     assert "BUNDLE_HASH_MISMATCH" in source
     assert "BUNDLE_SIZE_MISMATCH" in source
 

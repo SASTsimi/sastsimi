@@ -86,18 +86,33 @@ def _docker_executable() -> Path | None:
     return executable if _regular_file(executable) else None
 
 
+def _buildx_executable(docker: Path) -> Path | None:
+    name = "docker-buildx.exe" if os.name == "nt" else "docker-buildx"
+    candidate = docker.parent.parent / "cli-plugins" / name
+    return candidate.resolve(strict=True) if _regular_file(candidate) else None
+
+
 def _environment() -> dict[str, str]:
     allowed = {
         "DOCKER_CONFIG",
         "DOCKER_CONTEXT",
         "DOCKER_HOST",
+        "APPDATA",
+        "COMSPEC",
         "HOME",
+        "LOCALAPPDATA",
         "PATH",
+        "ProgramFiles",
+        "ProgramW6432",
+        "PROGRAMDATA",
         "SYSTEMROOT",
+        "TEMP",
+        "TMP",
         "USERPROFILE",
         "WINDIR",
     }
-    return {key: value for key, value in os.environ.items() if key in allowed}
+    environment = {key: value for key, value in os.environ.items() if key in allowed}
+    return environment
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -109,9 +124,14 @@ def main(argv: list[str] | None = None) -> int:
     docker = _docker_executable()
     if docker is None:
         return _error("DOCKER_EXECUTABLE_UNAVAILABLE")
+    buildx = _buildx_executable(docker)
+    if buildx is None:
+        return _error("DOCKER_BUILDX_UNAVAILABLE")
 
     try:
-        with tempfile.TemporaryDirectory(prefix="sastsimi-codeql-build-") as raw:
+        with tempfile.TemporaryDirectory(
+            prefix=".sastsimi-codeql-build-", dir=_CONTEXT.parent
+        ) as raw:
             staging = Path(raw)
             for name in ("Dockerfile", "sastsimi-codeql"):
                 source = _CONTEXT / name
@@ -123,8 +143,9 @@ def main(argv: list[str] | None = None) -> int:
                 return _error(bundle_error)
             completed = subprocess.run(
                 (
-                    str(docker),
+                    str(buildx),
                     "build",
+                    "--load",
                     "--pull=false",
                     "--network=none",
                     "--tag",

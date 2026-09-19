@@ -929,6 +929,34 @@ def _decode_sarif(
     )
 
 
+def decode_codeql_sarif(
+    raw: bytes,
+    *,
+    rule_catalog: tuple[StaticRuleMapping, ...],
+    selected_rule_ids: tuple[str, ...],
+    tracked_paths: tuple[str, ...],
+    expected_version: str,
+) -> tuple[
+    tuple[CandidateRule, ...],
+    tuple[CandidateFact, ...],
+    tuple[CandidateRelation, ...],
+    tuple[CandidateGap, ...],
+]:
+    """Decode verified CodeQL SARIF without exposing decoder internals."""
+
+    try:
+        return _decode_sarif(
+            raw,
+            rule_catalog,
+            selected_rule_ids,
+            tracked_paths,
+            expected_version,
+            json.loads,
+        )
+    except _MalformedSarif as error:
+        raise ValueError("STATIC_OUTPUT_MALFORMED") from error
+
+
 def replay_codeql_raw(
     raw: bytes, replay: StaticRawReplayInput
 ) -> StaticToolObservation:
