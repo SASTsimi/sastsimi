@@ -82,3 +82,81 @@ def test_r1_failure_records_never_become_decisive_evidence(
     value = make(model.__name__) | {"evidence_refs": [ref(kind)]}
     with pytest.raises(ValueError, match="ERROR_IS_NOT_EVIDENCE"):
         wire(model, value)
+
+
+def test_local_evaluation_keeps_the_production_debate_safety_rule() -> None:
+    from sastsimi.contracts.hypothesis import (
+        HypothesisProposal,
+        VulnerabilityHypothesis,
+    )
+    from sastsimi.contracts.verification import (
+        PlaybookApplication,
+        PlaybookPolicy,
+        VerificationPlaybook,
+        VerificationResult,
+        validate_verification_closure,
+    )
+
+    proposal = wire(HypothesisProposal, make("HypothesisProposal"))
+    hypothesis = wire(
+        VulnerabilityHypothesis,
+        make("VulnerabilityHypothesis")
+        | dict(
+            proposal_ref=bound(proposal),
+            target_locations=proposal.model_dump(mode="json")["target_locations"],
+            falsification_questions=proposal.model_dump(mode="json")[
+                "falsification_questions"
+            ],
+            validation_checks=proposal.model_dump(mode="json")["validation_checks"],
+        ),
+    )
+    playbook = wire(
+        VerificationPlaybook,
+        make("VerificationPlaybook")
+        | dict(
+            scope="COMMON", vulnerability_type=None, falsification_question_templates=[]
+        ),
+    )
+    policy = wire(
+        PlaybookPolicy,
+        make("PlaybookPolicy")
+        | dict(common_playbook_ref=bound(playbook), type_playbooks=[]),
+    )
+    application = wire(
+        PlaybookApplication,
+        make("PlaybookApplication")
+        | dict(
+            hypothesis_ref=bound(hypothesis),
+            proposal_ref=bound(proposal),
+            policy_ref=bound(policy),
+            playbook_ref=bound(playbook),
+            selection="COMMON",
+            selected_type=None,
+            selection_reason="NO_TYPE",
+            questions=[],
+        ),
+    )
+    basic = make("VerificationResult") | dict(
+        playbook_ref=bound(playbook),
+        playbook_application_ref=bound(application),
+        verification_mode="BASIC",
+        debate_input_hash=None,
+        pro_evidence_ref=None,
+        con_evidence_ref=None,
+        supporting_evidence=[],
+        counter_evidence=[],
+    )
+    result = wire(VerificationResult, basic)
+
+    with pytest.raises(ValueError, match="PRODUCTION_DEBATE_REQUIRED"):
+        validate_verification_closure(
+            result,
+            hypothesis,
+            proposal,
+            application,
+            None,
+            None,
+            current_work_id=application.verification_work_id,
+            current_generation=application.verification_generation,
+            purpose="LOCAL_EVALUATION",
+        )

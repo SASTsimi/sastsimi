@@ -535,7 +535,7 @@ def validate_verification_closure(
     *,
     current_work_id: WorkId,
     current_generation: int,
-    purpose: Literal["PRODUCTION", "EVALUATION"] = "PRODUCTION",
+    purpose: Literal["PRODUCTION", "EVALUATION", "LOCAL_EVALUATION"] = "PRODUCTION",
 ) -> None:
     same_scope(result.meta, hypothesis.meta)
     same_scope(result.meta, application.meta)
@@ -550,7 +550,9 @@ def validate_verification_closure(
         or result.playbook_ref != application.playbook_ref
     ):
         raise ValueError("STALE_RESULT")
-    if purpose == "PRODUCTION" and result.verification_mode != "ALWAYS_DEBATE":
+    if purpose in {"PRODUCTION", "LOCAL_EVALUATION"} and (
+        result.verification_mode != "ALWAYS_DEBATE"
+    ):
         raise ValueError("PRODUCTION_DEBATE_REQUIRED")
     exact_set(
         (q.question_id for q in result.falsification_results),

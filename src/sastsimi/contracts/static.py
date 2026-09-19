@@ -88,7 +88,7 @@ class StaticToolProfile(DomainRecord):
     ATTEMPT = False
     host_id: NonEmptyStr | None = None
     profile_key: NonEmptyStr
-    purpose: Literal["FIXTURE", "EVALUATION", "PRODUCTION"]
+    purpose: Literal["FIXTURE", "EVALUATION", "PRODUCTION", "LOCAL_EVALUATION"]
     status: Literal["DRAFT", "APPROVED", "ACTIVE", "RETIRED"]
     adapter_key: Literal["PYTHON_AST", "CODEQL", "OPENGREP"]
     tool_name: Literal["AST", "CODEQL", "OPENGREP"]

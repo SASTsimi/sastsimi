@@ -14,6 +14,7 @@ from .work import ScopedRecord, WorkType
 class Purpose(StrEnum):
     PRODUCTION = "PRODUCTION"
     EVALUATION = "EVALUATION"
+    LOCAL_EVALUATION = "LOCAL_EVALUATION"
 
 
 class ProfileStatus(StrEnum):

@@ -118,6 +118,7 @@ class ProductionRunControl:
             cancel_requested=cancel_requested,
             waiting_for=waiting_for,
             result_ref=state.analysis_result_ref,
+            purpose=state.purpose,
         )
 
     async def cancel(self, analysis_id: str) -> AnalysisStatusView:

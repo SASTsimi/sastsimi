@@ -75,6 +75,7 @@ class SQLiteProductionQuery:
                 for item in works
                 if item.status in {"BLOCKED", "FAILED", "PARTIAL"}
             ),
+            purpose=state.purpose,
         )
 
     def result(self, analysis_id: str) -> AnalysisRunResult:

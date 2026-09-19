@@ -262,6 +262,21 @@ def test_markdown_export_contains_human_review_sections_and_exact_path(
         assert heading in markdown
 
 
+def test_local_evaluation_report_is_never_presented_as_production_ready(
+    tmp_path: Path,
+) -> None:
+    report = replace(current_report(), purpose="LOCAL_EVALUATION")
+    service = ReportMarkdownService(tmp_path, Source(report))
+
+    summary = service.summaries(report.analysis_id)[0]
+    markdown = service.show(report.finding_id)
+
+    assert summary["purpose"] == "LOCAL_EVALUATION"
+    assert summary["production_ready"] == "false"
+    assert "- 실행 목적: `LOCAL_EVALUATION`" in markdown
+    assert "- 운영 준비 상태: `NOT_PRODUCTION_READY`" in markdown
+
+
 def test_markdown_export_rejects_unproven_redaction_and_unsafe_path(
     tmp_path: Path,
 ) -> None:

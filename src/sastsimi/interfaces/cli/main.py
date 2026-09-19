@@ -16,6 +16,7 @@ from sastsimi.interfaces.cli import capability as capability_command
 from sastsimi.interfaces.cli import codeql as codeql_command
 from sastsimi.interfaces.cli import commands
 from sastsimi.interfaces.cli import demo as demo_command
+from sastsimi.interfaces.cli import local_evaluation as local_evaluation_command
 from sastsimi.interfaces.cli import onboarding as onboarding_command
 from sastsimi.interfaces.cli import report as report_command
 from sastsimi.interfaces.cli import reports as reports_command
@@ -99,6 +100,9 @@ def main(
     *,
     production_analyze: analyze_command.ProductionAnalyzeEntrypoint | None = None,
     production_query: analyze_command.ProductionQueryEntrypoint | None = None,
+    local_evaluation_analyze: (
+        local_evaluation_command.LocalEvaluationAnalyzeEntrypoint | None
+    ) = None,
 ) -> int:
     _configure_standard_streams()
     output_format = "text"
@@ -135,6 +139,19 @@ def main(
     analyze_parser.add_argument("--commit", required=True, type=_exact_commit)
     analyze_parser.add_argument("--profile", required=True, type=Path)
     analyze_parser.add_argument("--format", choices=["text", "json"])
+    evaluate_parser = subparsers.add_parser(
+        "evaluate",
+        help="run explicitly non-production local evaluation",
+        allow_abbrev=False,
+    )
+    evaluate_commands = evaluate_parser.add_subparsers(
+        dest="evaluate_command", required=True
+    )
+    evaluate_analyze = evaluate_commands.add_parser("analyze", allow_abbrev=False)
+    evaluate_analyze.add_argument("--repo", required=True)
+    evaluate_analyze.add_argument("--commit", required=True, type=_exact_commit)
+    evaluate_analyze.add_argument("--profile", required=True, type=Path)
+    evaluate_analyze.add_argument("--format", choices=["text", "json"])
     demo_parser = subparsers.add_parser(
         "demo", help="run deterministic local scenarios", allow_abbrev=False
     )
@@ -346,6 +363,37 @@ def main(
                 code=analyze_result.code,
             )
             return int(analyze_result.code)
+        if args.command == "evaluate":
+            command_name = "evaluate " + args.evaluate_command
+            if args.evaluate_command != "analyze":
+                raise _InputError
+            if local_evaluation_analyze is None:
+                raise local_evaluation_command.LocalEvaluationUnavailable(
+                    "LOCAL_EVALUATION_COMPOSITION_NOT_CONFIGURED"
+                )
+            evaluation_request = (
+                local_evaluation_command.LocalEvaluationAnalyzeRequest(
+                    data_dir=config.data_dir,
+                    repository=args.repo,
+                    commit=args.commit,
+                    profile=args.profile,
+                )
+            )
+            evaluation_result = asyncio.run(
+                local_evaluation_command.run(
+                    local_evaluation_analyze, evaluation_request
+                )
+            )
+            emit_data(
+                output_format,
+                sys.stdout
+                if evaluation_result.code == ExitCode.OK
+                else sys.stderr,
+                command=command_name,
+                data=evaluation_result.data,
+                code=evaluation_result.code,
+            )
+            return int(evaluation_result.code)
         if args.command == "demo":
             command_name = "demo " + args.demo_command
             if args.demo_command == "analyze":
@@ -602,6 +650,7 @@ def main(
         code = ExitCode.CONFIG_ERROR
     except (
         analyze_command.ProductionAnalyzeUnavailable,
+        local_evaluation_command.LocalEvaluationUnavailable,
         bootstrap.ProductionResumeUnavailable,
     ) as error:
         emit_result(

@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.actions import ActionDecision, ActionRequest
+from sastsimi.contracts.budget import Purpose
 from sastsimi.contracts.domain import DomainRecord, same_scope
 from sastsimi.contracts.dynamic import (
     AgentLog,
@@ -51,6 +52,7 @@ from .artifact_store import LocalArtifactStore
 from .codec import REF_ADAPTER
 from .database import Database
 from .repositories import SQLiteRecordStore
+from .run_states import get_run
 
 T = TypeVar("T", bound=ReferencedRecord)
 
@@ -204,12 +206,23 @@ class SQLiteCurrentReportSource:
                 poc_text=poc_text,
                 report_action=action,
                 report_decision=decision,
+                purpose=self._analysis_purpose(str(draft.meta.analysis_id)),
             )
             return report
         except ReportUnavailable:
             raise
         except (LookupError, UnicodeDecodeError, ValueError) as error:
             raise ReportUnavailable("REPORT_EXACT_CLOSURE_INVALID") from error
+
+    def _analysis_purpose(self, analysis_id: str) -> Purpose:
+        if self._database is None:
+            raise ReportUnavailable("REPORT_NOT_FOUND")
+        with self._database.engine.connect() as connection:
+            state = get_run(connection, analysis_id)
+        purpose = str(state.purpose)
+        if purpose not in {"PRODUCTION", "EVALUATION", "LOCAL_EVALUATION"}:
+            raise ReportUnavailable("REPORT_SCOPE_INVALID")
+        return state.purpose
 
     def _report_authority(
         self, draft: ReportDraft

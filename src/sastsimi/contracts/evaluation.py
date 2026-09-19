@@ -294,7 +294,7 @@ class EvaluationRecommendation(DomainRecord):
 
 class AnalysisRunResult(ContractModel):
     meta: RunMeta
-    purpose: Literal["PRODUCTION", "EVALUATION"]
+    purpose: Literal["PRODUCTION", "EVALUATION", "LOCAL_EVALUATION"]
     repository_url: NonEmptyStr
     program_id: ProgramId
     workspace_id: WorkspaceId | None

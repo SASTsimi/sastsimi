@@ -66,6 +66,10 @@ class ReportMarkdownService:
                 "status": "DRAFTED_CURRENT",
                 "cwe": report.cwe.primary or "UNCLASSIFIED",
             }
+            if report.purpose == "LOCAL_EVALUATION":
+                summary.update(
+                    purpose="LOCAL_EVALUATION", production_ready="false"
+                )
             try:
                 assert_safe_provider_text(canonical_bytes(summary))
                 for value in summary.values():
@@ -169,6 +173,12 @@ def render_markdown(report: CurrentReport) -> str:
         f"# {report.content.title}",
         "",
         "- 현재 상태: `DRAFTED / CURRENT`",
+        f"- 실행 목적: `{report.purpose}`",
+        *(
+            ["- 운영 준비 상태: `NOT_PRODUCTION_READY`"]
+            if report.purpose == "LOCAL_EVALUATION"
+            else []
+        ),
         f"- final Verification 판정: `{report.verification.verdict}`",
         "",
         "## 취약점 요약",
@@ -305,7 +315,7 @@ def _report_identity(report: CurrentReport) -> tuple[object, ...]:
     )
     return tuple(
         record.model_dump(mode="python", warnings=False) for record in records
-    ) + (report.poc_text,)
+    ) + (report.poc_text, report.purpose)
 
 
 def _locations(

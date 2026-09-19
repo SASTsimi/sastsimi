@@ -14,7 +14,7 @@ def run(application: StatusApplicationPort, analysis_id: str) -> dict[str, objec
 
 
 def project(view: AnalysisStatusView) -> dict[str, object]:
-    return {
+    result: dict[str, object] = {
         "analysis_id": view.analysis_id,
         "status": view.run_status,
         "work_counts": dict(view.work_counts),
@@ -35,6 +35,9 @@ def project(view: AnalysisStatusView) -> dict[str, object]:
         if view.result_ref is not None
         else None,
     }
+    if view.purpose == "LOCAL_EVALUATION":
+        result.update(purpose="LOCAL_EVALUATION", production_ready=False)
+    return result
 
 
 __all__ = ["project", "run"]
