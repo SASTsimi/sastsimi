@@ -53,10 +53,12 @@ def test_now_is_strictly_increasing_across_consecutive_calls() -> None:
 
 
 def test_now_reports_real_time_under_normal_conditions() -> None:
-    clock = SystemClock()
-    before = datetime.now(UTC)
+    initial = datetime(2026, 9, 19, 1, 2, 3, tzinfo=UTC)
+    advanced = initial + timedelta(microseconds=1)
+    with patch("sastsimi.runtime.system_support.datetime") as patched_datetime:
+        patched_datetime.now.side_effect = (initial, advanced)
+        clock = SystemClock()
 
-    observed = clock.now()
+        observed = clock.now()
 
-    after = datetime.now(UTC)
-    assert before <= observed <= after
+    assert observed == advanced
