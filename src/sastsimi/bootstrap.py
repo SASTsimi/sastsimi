@@ -1,5 +1,17 @@
 """Public facade for the concrete application composition root."""
 
+from sastsimi.composition.codeql_operator import (
+    inspect_database as inspect_database,
+)
+from sastsimi.composition.codeql_operator import (
+    provision_database as provision_database,
+)
+from sastsimi.composition.codeql_operator import (
+    register_database as register_database,
+)
+from sastsimi.composition.codeql_operator import (
+    resolve_operator_executable as resolve_operator_executable,
+)
 from sastsimi.composition.production_control import (
     ProductionResumeUnavailable as ProductionResumeUnavailable,
 )
@@ -8,6 +20,9 @@ from sastsimi.composition.production_control import (
 )
 from sastsimi.composition.production_control import (
     request_production_cancel as request_production_cancel,
+)
+from sastsimi.composition.production_entrypoint import (
+    ProductionProfileError as ProductionProfileError,
 )
 from sastsimi.composition.production_entrypoint import (
     build_production_analyze as build_production_analyze,

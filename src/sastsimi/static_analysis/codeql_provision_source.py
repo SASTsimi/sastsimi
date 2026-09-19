@@ -2,22 +2,29 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import shutil
 import stat
-import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from uuid import uuid4
 
 from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.ports.dto import TrackedFile
+from sastsimi.ports.dto import MonotonicActionDeadline, ProcessSpec, TrackedFile
 from sastsimi.security.sensitive_paths import DEFAULT_SENSITIVE_PATH_POLICY
 
+from .process import AttemptOutputBudget, SafeProcessRunner
 from .repository_loader import _build_manifest
 
 _COMMIT_LENGTHS = frozenset({40, 64})
 _MAX_GIT_OUTPUT = 64 * 1024 * 1024
+_MAX_GIT_STDERR = 64 * 1024
+_GIT_TIMEOUT_NS = 30 * 1_000_000_000
+_ATTEMPT_OUTPUT_LIMIT = 2 * _MAX_GIT_OUTPUT + 4 * _MAX_GIT_STDERR
 _REPARSE_POINT = 0x400
 
 
@@ -61,29 +68,35 @@ def _environment() -> dict[str, str]:
 
 
 def _git(
-    executable: Path,
+    runner: SafeProcessRunner,
     repository: Path,
     *arguments: str,
-    accept_one: bool = False,
 ) -> bytes:
+    started_ns = time.monotonic_ns()
+    spec = ProcessSpec(
+        invocation_id="codeql-source-git-" + uuid4().hex,
+        command_kind="CODEQL_SOURCE_GIT",
+        attempt_id=runner.attempt_id,
+        argv=(str(runner.executable), "-C", str(repository), *arguments),
+        cwd=repository,
+        env=tuple(sorted(_environment().items())),
+        attempt_output_dir=runner.output_root,
+        stdout_limit_bytes=_MAX_GIT_OUTPUT,
+        stderr_limit_bytes=_MAX_GIT_STDERR,
+        attempt_output_limit_bytes=_ATTEMPT_OUTPUT_LIMIT,
+        deadline=MonotonicActionDeadline(
+            action_id=runner.action_id,
+            started_ns=started_ns,
+            expires_ns=started_ns + _GIT_TIMEOUT_NS,
+        ),
+    )
     try:
-        result = subprocess.run(
-            (str(executable), "-C", str(repository), *arguments),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            env=_environment(),
-            shell=False,
-            check=False,
-            timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError):
+        result = asyncio.run(runner.run(spec))
+    except (OSError, RuntimeError, TimeoutError, ValueError):
         raise ValueError("CODEQL_PROVISION_SOURCE_MISMATCH") from None
-    if result.returncode not in ({0, 1} if accept_one else {0}):
+    if result.outcome != "SUCCEEDED" or result.stdout_truncated:
         raise ValueError("CODEQL_PROVISION_SOURCE_MISMATCH")
-    if accept_one and result.returncode != 0:
-        raise ValueError("CODEQL_PROVISION_SOURCE_MISMATCH")
-    if len(result.stdout) > _MAX_GIT_OUTPUT:
+    if result.return_code != 0:
         raise ValueError("CODEQL_PROVISION_SOURCE_MISMATCH")
     return result.stdout
 
@@ -104,10 +117,10 @@ def _manifest_digest(tracked: tuple[TrackedFile, ...]) -> str:
     ).hexdigest()
 
 
-def _unchanged(executable: Path, repository: Path) -> None:
+def _unchanged(runner: SafeProcessRunner, repository: Path) -> None:
     # ``git diff HEAD`` refreshes the index before comparing on Windows,
     # avoiding the racy-stat false positives of a raw ``diff-index`` call.
-    _git(executable, repository, "diff", "--quiet", "HEAD", "--")
+    _git(runner, repository, "diff", "--quiet", "HEAD", "--")
 
 
 def prepare_exact_source(
@@ -131,53 +144,72 @@ def prepare_exact_source(
         or target in repository.parents
     ):
         raise ValueError("CODEQL_PROVISION_SOURCE_MISMATCH")
-    head = _git(executable, repository, "rev-parse", "HEAD")
-    try:
-        observed = head.decode("ascii", errors="strict").strip().lower()
-    except UnicodeDecodeError:
-        raise ValueError("CODEQL_PROVISION_SOURCE_MISMATCH") from None
-    if observed != commit_id:
-        raise ValueError("CODEQL_PROVISION_SOURCE_MISMATCH")
-    _unchanged(executable, repository)
-    raw = _git(executable, repository, "ls-files", "--stage", "-z")
-    tracked, _gaps = _build_manifest(
-        repository, raw, DEFAULT_SENSITIVE_PATH_POLICY
-    )
-    if not tracked:
-        raise ValueError("CODEQL_PROVISION_SOURCE_MISMATCH")
-    for item in tracked:
-        source = repository.joinpath(*item.git_path.split("/"))
-        destination_file = target.joinpath(*item.git_path.split("/"))
+    action_id = "codeql-source-action-" + uuid4().hex
+    attempt_id = "codeql-source-attempt-" + uuid4().hex
+    with TemporaryDirectory(
+        prefix="sastsimi-codeql-source-process-", dir=target.parent
+    ) as output_name:
+        output_root = Path(output_name).resolve(strict=True)
+        runner = SafeProcessRunner(
+            action_id=action_id,
+            attempt_id=attempt_id,
+            workspace_root=repository,
+            output_root=output_root,
+            executable=executable,
+            output_budget=AttemptOutputBudget(
+                attempt_id=attempt_id,
+                limit_bytes=_ATTEMPT_OUTPUT_LIMIT,
+            ),
+        )
+        head = _git(runner, repository, "rev-parse", "HEAD")
         try:
-            before = source.lstat()
-            if (
-                not stat.S_ISREG(before.st_mode)
-                or before.st_nlink != 1
-                or source.is_symlink()
-                or before.st_size != item.size_bytes
-            ):
-                raise ValueError
-            destination_file.parent.mkdir(parents=True, exist_ok=True)
-            with source.open("rb") as reader, destination_file.open("xb") as writer:
-                shutil.copyfileobj(reader, writer, length=1024 * 1024)
-                writer.flush()
-                os.fsync(writer.fileno())
-            after = source.lstat()
-            if (
-                (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-                != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-                or destination_file.stat().st_size != item.size_bytes
-            ):
-                raise ValueError
-        except (OSError, ValueError):
+            observed = head.decode("ascii", errors="strict").strip().lower()
+        except UnicodeDecodeError:
             raise ValueError("CODEQL_PROVISION_SOURCE_MISMATCH") from None
-    _unchanged(executable, repository)
-    second_raw = _git(executable, repository, "ls-files", "--stage", "-z")
-    second, _second_gaps = _build_manifest(
-        repository, second_raw, DEFAULT_SENSITIVE_PATH_POLICY
-    )
-    if second != tracked:
-        raise ValueError("CODEQL_PROVISION_SOURCE_MISMATCH")
+        if observed != commit_id:
+            raise ValueError("CODEQL_PROVISION_SOURCE_MISMATCH")
+        _unchanged(runner, repository)
+        raw = _git(runner, repository, "ls-files", "--stage", "-z")
+        tracked, _gaps = _build_manifest(
+            repository, raw, DEFAULT_SENSITIVE_PATH_POLICY
+        )
+        if not tracked:
+            raise ValueError("CODEQL_PROVISION_SOURCE_MISMATCH")
+        for item in tracked:
+            source = repository.joinpath(*item.git_path.split("/"))
+            destination_file = target.joinpath(*item.git_path.split("/"))
+            try:
+                before = source.lstat()
+                if (
+                    not stat.S_ISREG(before.st_mode)
+                    or before.st_nlink != 1
+                    or source.is_symlink()
+                    or before.st_size != item.size_bytes
+                ):
+                    raise ValueError
+                destination_file.parent.mkdir(parents=True, exist_ok=True)
+                with source.open("rb") as reader, destination_file.open(
+                    "xb"
+                ) as writer:
+                    shutil.copyfileobj(reader, writer, length=1024 * 1024)
+                    writer.flush()
+                    os.fsync(writer.fileno())
+                after = source.lstat()
+                if (
+                    (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                    != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                    or destination_file.stat().st_size != item.size_bytes
+                ):
+                    raise ValueError
+            except (OSError, ValueError):
+                raise ValueError("CODEQL_PROVISION_SOURCE_MISMATCH") from None
+        _unchanged(runner, repository)
+        second_raw = _git(runner, repository, "ls-files", "--stage", "-z")
+        second, _second_gaps = _build_manifest(
+            repository, second_raw, DEFAULT_SENSITIVE_PATH_POLICY
+        )
+        if second != tracked:
+            raise ValueError("CODEQL_PROVISION_SOURCE_MISMATCH")
     return PreparedCodeQLSource(
         root=target,
         tracked_manifest_sha256=_manifest_digest(tracked),

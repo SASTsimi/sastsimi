@@ -4,6 +4,9 @@ from pathlib import Path
 from typing import cast
 
 from sastsimi.config.package_resources import builtin_package_root
+from sastsimi.config.production_profile import (
+    ProductionProfileError as ProductionProfileError,
+)
 
 
 def builtin_resource_root() -> Path:

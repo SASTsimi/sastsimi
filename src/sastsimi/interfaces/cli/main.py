@@ -9,10 +9,7 @@ from typing import Any, NoReturn, cast
 from uuid import uuid4
 
 from sastsimi import bootstrap
-from sastsimi.config.production_profile import (
-    ProductionProfileError,
-    load_production_profile,
-)
+from sastsimi.config.production_profile import load_production_profile
 from sastsimi.interfaces.cli import analyze as analyze_command
 from sastsimi.interfaces.cli import cancel as cancel_command
 from sastsimi.interfaces.cli import capability as capability_command
@@ -499,7 +496,9 @@ def main(
                     raise _InputError
                 codeql_config = load_production_profile(profile_path).codeql_container
                 if codeql_config is None:
-                    raise ProductionProfileError("CODEQL_CONTAINER_REQUIRED")
+                    raise bootstrap.ProductionProfileError(
+                        "CODEQL_CONTAINER_REQUIRED"
+                    )
             elif profile_path is not None:
                 codeql_config = load_production_profile(profile_path).codeql_container
             if args.capability_command == "probe":
@@ -597,7 +596,7 @@ def main(
         code = ExitCode.INPUT_ERROR
     except bootstrap.ConfigError:
         code = ExitCode.CONFIG_ERROR
-    except ProductionProfileError:
+    except bootstrap.ProductionProfileError:
         code = ExitCode.CONFIG_ERROR
     except bootstrap.MigrationRequired:
         code = ExitCode.CONFIG_ERROR

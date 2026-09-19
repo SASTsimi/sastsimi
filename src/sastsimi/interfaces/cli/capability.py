@@ -7,7 +7,7 @@ import platform
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 from uuid import getnode
 
 from sastsimi.capabilities import (
@@ -16,7 +16,6 @@ from sastsimi.capabilities import (
     build_production_capability_probe_service,
 )
 from sastsimi.capabilities.models import ProbeKind
-from sastsimi.config.codeql_container import CodeQLContainerRuntimeConfig
 from sastsimi.config.secrets import SecretReference
 from sastsimi.contracts.refs import HostConfigurationRef
 from sastsimi.interfaces.cli.exit_codes import ExitCode
@@ -61,7 +60,7 @@ def build_service(
     kind: ProbeKind | None,
     host_id: str | None,
     docker_host: str | None,
-    codeql_container_config: CodeQLContainerRuntimeConfig | None = None,
+    codeql_container_config: Any | None = None,
 ) -> ProductionCapabilityProbeService:
     """Compose only the executable needed by this operator action."""
 
@@ -92,7 +91,7 @@ def run_probe(
     credential_ref: str | None,
     host_id: str | None,
     docker_host: str | None,
-    codeql_container_config: CodeQLContainerRuntimeConfig | None = None,
+    codeql_container_config: Any | None = None,
 ) -> CapabilityCommandResult:
     probe_kind = cast(ProbeKind, kind)
     try:
@@ -149,7 +148,7 @@ def run_approve(
     target_hash: str,
     host_id: str | None,
     docker_host: str | None,
-    codeql_container_config: CodeQLContainerRuntimeConfig | None = None,
+    codeql_container_config: Any | None = None,
 ) -> CapabilityCommandResult:
     try:
         lookup = build_service(
