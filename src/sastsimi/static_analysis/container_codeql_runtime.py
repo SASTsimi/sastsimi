@@ -29,6 +29,7 @@ _CONTAINER_NAME = re.compile(r"^sastsimi-codeql-[0-9a-f]{24}$")
 _DATABASE_TARGET = "/work/database"
 _OUTPUT_TARGET = "/work/output"
 _DENIAL_CODES = frozenset({"ENOSPC", "EDQUOT"})
+_DEFAULT_CLEANUP_TIMEOUT_SECONDS = 5.0
 
 
 class CodeQLContainerRunStatus(StrEnum):
@@ -189,12 +190,35 @@ async def _bounded_logs(chunks: AsyncIterator[bytes], *, max_bytes: int) -> byte
     return collect_bounded_stdout(received, max_bytes=max_bytes)
 
 
-async def _remove_exact(port: ContainerCodeQLDockerPort, container_name: str) -> bool:
+def _consume_cleanup_task(task: asyncio.Task[None]) -> None:
     try:
-        await asyncio.shield(port.remove(container_name))
+        task.exception()
     except (asyncio.CancelledError, Exception):
-        return False
-    return True
+        pass
+
+
+async def _remove_exact(
+    port: ContainerCodeQLDockerPort,
+    container_name: str,
+    *,
+    timeout_seconds: float,
+) -> str | None:
+    removal = asyncio.create_task(port.remove(container_name))
+    try:
+        done, _pending = await asyncio.wait({removal}, timeout=timeout_seconds)
+    except asyncio.CancelledError:
+        removal.add_done_callback(_consume_cleanup_task)
+        removal.cancel()
+        return "CODEQL_CONTAINER_REMOVE_FAILED"
+    if not done:
+        removal.add_done_callback(_consume_cleanup_task)
+        removal.cancel()
+        return "CODEQL_CONTAINER_REMOVE_TIMEOUT"
+    try:
+        removal.result()
+    except (asyncio.CancelledError, Exception):
+        return "CODEQL_CONTAINER_REMOVE_FAILED"
+    return None
 
 
 async def run_container_codeql(
@@ -204,10 +228,11 @@ async def run_container_codeql(
     artifact_identity: CodeQLArtifactIdentity,
     timeout_seconds: float,
     stdout_limit_bytes: int,
+    cleanup_timeout_seconds: float = _DEFAULT_CLEANUP_TIMEOUT_SECONDS,
 ) -> CodeQLContainerRunResult:
     """Execute one CodeQL attempt and accept SARIF only after exact inspection."""
 
-    if timeout_seconds <= 0 or stdout_limit_bytes <= 0:
+    if timeout_seconds <= 0 or stdout_limit_bytes <= 0 or cleanup_timeout_seconds <= 0:
         raise ValueError("CODEQL_CONTAINER_RUNTIME_LIMIT_INVALID")
     argv = build_container_codeql_create_argv(spec, operation="analyze")
     name = _container_name(argv)
@@ -257,12 +282,20 @@ async def run_container_codeql(
         result = replace(result, reason=error.code)
     except Exception:
         result = replace(result, reason="CODEQL_CONTAINER_RUNTIME_ERROR")
-    cleanup_succeeded = not create_attempted or await _remove_exact(port, name)
-    if created and not cleanup_succeeded:
+    cleanup_failure = (
+        None
+        if not create_attempted
+        else await _remove_exact(
+            port,
+            name,
+            timeout_seconds=cleanup_timeout_seconds,
+        )
+    )
+    if created and cleanup_failure is not None:
         return replace(
             result,
             status=CodeQLContainerRunStatus.FAILED,
-            reason="CODEQL_CONTAINER_REMOVE_FAILED",
+            reason=cleanup_failure,
             raw_sarif=None,
         )
     return result
@@ -311,10 +344,11 @@ async def probe_container_codeql_boundary(
     spec: ContainerCodeQLSpec,
     request: ContainerCodeQLProbeRequest,
     timeout_seconds: float,
+    cleanup_timeout_seconds: float = _DEFAULT_CLEANUP_TIMEOUT_SECONDS,
 ) -> ContainerCodeQLProbeResult:
     """Prove the pinned version and both destructive tmpfs cap+1 denials."""
 
-    if timeout_seconds <= 0:
+    if timeout_seconds <= 0 or cleanup_timeout_seconds <= 0:
         raise ValueError("CODEQL_CONTAINER_RUNTIME_LIMIT_INVALID")
     argv = build_container_codeql_create_argv(spec, operation="probe")
     name = _container_name(argv)
@@ -365,12 +399,20 @@ async def probe_container_codeql_boundary(
         result = replace(result, reason=error.code)
     except Exception:
         result = replace(result, reason="CODEQL_CONTAINER_PROBE_ERROR")
-    cleanup_succeeded = not create_attempted or await _remove_exact(port, name)
-    if created and not cleanup_succeeded:
+    cleanup_failure = (
+        None
+        if not create_attempted
+        else await _remove_exact(
+            port,
+            name,
+            timeout_seconds=cleanup_timeout_seconds,
+        )
+    )
+    if created and cleanup_failure is not None:
         return replace(
             result,
             status=CodeQLContainerRunStatus.FAILED,
-            reason="CODEQL_CONTAINER_REMOVE_FAILED",
+            reason=cleanup_failure,
             codeql_version=None,
         )
     return result

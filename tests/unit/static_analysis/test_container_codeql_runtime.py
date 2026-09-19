@@ -6,6 +6,7 @@ import json
 import sys
 from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -118,6 +119,7 @@ class FakeDockerPort:
         self.failure_operation: str | None = None
         self.wait_forever = False
         self.remove_failure = False
+        self.remove_forever = False
         self.probe_observation = ContainerCodeQLProbeObservation(
             image_digest=spec.image_digest,
             codeql_version="2.23.1",
@@ -145,8 +147,9 @@ class FakeDockerPort:
         self.operations.append(("create", argv))
         self._fail("create")
         image_position = argv.index(self.spec.image_digest)
-        mutable = copy.deepcopy(self.inspect_record)
-        mutable["Config"]["Cmd"] = list(argv[image_position + 1 :])
+        mutable = copy.deepcopy(dict(self.inspect_record))
+        config = cast(dict[str, object], mutable["Config"])
+        config["Cmd"] = list(argv[image_position + 1 :])
         self.inspect_record = mutable
 
     async def start(self, container_name: str) -> None:
@@ -186,6 +189,8 @@ class FakeDockerPort:
 
     async def remove(self, container_name: str) -> None:
         self.operations.append(("remove", container_name))
+        if self.remove_forever:
+            await asyncio.Event().wait()
         if self.remove_failure:
             raise RuntimeError("unsafe daemon detail")
 
@@ -267,7 +272,8 @@ async def test_run_fails_closed_and_removes_only_the_exact_container(
     port = FakeDockerPort(spec)
     if case == "inspect":
         weakened = copy.deepcopy(_inspect(spec))
-        weakened["HostConfig"]["NetworkMode"] = "bridge"
+        host_config = cast(dict[str, object], weakened["HostConfig"])
+        host_config["NetworkMode"] = "bridge"
         port.inspect_record = weakened
     elif case == "exit":
         port.exit_code = 9
@@ -312,7 +318,10 @@ async def test_run_timeout_is_stable_and_still_removes_the_container() -> None:
 
     assert result.status is CodeQLContainerRunStatus.TIMED_OUT
     assert result.reason == "CODEQL_CONTAINER_TIMEOUT"
-    assert port.operations[-1][0] == "remove"
+    assert port.operations[-1] == (
+        "remove",
+        "sastsimi-codeql-68aa90a6f9fb88217375de7f",
+    )
 
 
 @pytest.mark.asyncio
@@ -331,7 +340,10 @@ async def test_run_cancel_is_a_stable_result_and_still_removes_the_container() -
 
     assert result.status is CodeQLContainerRunStatus.CANCELLED
     assert result.reason == "CODEQL_CONTAINER_CANCELLED"
-    assert port.operations[-1][0] == "remove"
+    assert port.operations[-1] == (
+        "remove",
+        "sastsimi-codeql-68aa90a6f9fb88217375de7f",
+    )
 
 
 @pytest.mark.asyncio
@@ -351,6 +363,33 @@ async def test_cleanup_failure_invalidates_an_otherwise_successful_result() -> N
     assert result.status is CodeQLContainerRunStatus.FAILED
     assert result.raw_sarif is None
     assert result.reason == "CODEQL_CONTAINER_REMOVE_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_run_cleanup_timeout_is_bounded_and_fails_with_stable_reason() -> None:
+    spec = _spec()
+    port = FakeDockerPort(spec)
+    port.remove_forever = True
+
+    result = await asyncio.wait_for(
+        run_container_codeql(
+            port=port,
+            spec=spec,
+            artifact_identity=_identity(),
+            timeout_seconds=1,
+            stdout_limit_bytes=1024,
+            cleanup_timeout_seconds=0.01,
+        ),
+        timeout=0.5,
+    )
+
+    assert result.status is CodeQLContainerRunStatus.FAILED
+    assert result.raw_sarif is None
+    assert result.reason == "CODEQL_CONTAINER_REMOVE_TIMEOUT"
+    assert port.operations[-1] == (
+        "remove",
+        "sastsimi-codeql-68aa90a6f9fb88217375de7f",
+    )
 
 
 @pytest.mark.asyncio
@@ -379,14 +418,41 @@ async def test_probe_requires_exact_image_version_and_real_cap_plus_one_denials(
         "probe",
         "remove",
     ]
-    sent_request = port.operations[3][1][1]
+    probe_call = cast(tuple[str, ContainerCodeQLProbeRequest], port.operations[3][1])
+    sent_request = probe_call[1]
     assert sent_request.database_attempted_bytes == spec.database_limit_bytes + 1
     assert sent_request.output_attempted_bytes == spec.output_limit_bytes + 1
-    create_argv = port.operations[0][1]
+    create_argv = cast(tuple[str, ...], port.operations[0][1])
     assert create_argv[-3:] == (
         "probe",
         str(spec.database_limit_bytes + 1),
         str(spec.output_limit_bytes + 1),
+    )
+
+
+@pytest.mark.asyncio
+async def test_probe_cleanup_timeout_is_bounded_and_fails_with_stable_reason() -> None:
+    spec = _spec()
+    port = FakeDockerPort(spec)
+    port.remove_forever = True
+
+    result = await asyncio.wait_for(
+        probe_container_codeql_boundary(
+            port=port,
+            spec=spec,
+            request=ContainerCodeQLProbeRequest(expected_codeql_version="2.23.1"),
+            timeout_seconds=1,
+            cleanup_timeout_seconds=0.01,
+        ),
+        timeout=0.5,
+    )
+
+    assert result.status is CodeQLContainerRunStatus.FAILED
+    assert result.codeql_version is None
+    assert result.reason == "CODEQL_CONTAINER_REMOVE_TIMEOUT"
+    assert port.operations[-1] == (
+        "remove",
+        "sastsimi-codeql-68aa90a6f9fb88217375de7f",
     )
 
 
