@@ -205,6 +205,11 @@ _INPUTS: dict[tuple[str, str], tuple[PromptInputSlot, ...]] = {
     ("CHAINING", "MATCH_PRIMITIVES"): (
         _slot("indexes", "primitive_index_state", "REQUIRED_MANY"),
         _slot("considered", "primitive", "REQUIRED_MANY"),
+        _slot(
+            "prepared_input",
+            "artifact",
+            fields=("/redacted_body",),
+        ),
     ),
 }
 

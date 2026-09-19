@@ -176,6 +176,14 @@ _CANDIDATE_ARTIFACT_SLOT = (
     "REQUIRED_MANY",
     "UNTRUSTED_DATA",
 )
+_CHAINING_TASK = "MATCH_PRIMITIVES"
+_CHAINING_ARTIFACT_SLOT = (
+    "prepared_input",
+    "artifact",
+    ("/redacted_body",),
+    "REQUIRED_ONE",
+    "UNTRUSTED_DATA",
+)
 _REQUIRED_REDACTIONS = frozenset(
     {
         "CREDENTIAL",
@@ -518,7 +526,11 @@ class ProductionLLMConfigurationService:
         required: RequiredProductionPromptRoute,
         entry: PromptRegistryEntry,
     ) -> None:
-        if required.task_kind != _CANDIDATE_TASK:
+        expected = {
+            _CANDIDATE_TASK: _CANDIDATE_ARTIFACT_SLOT,
+            _CHAINING_TASK: _CHAINING_ARTIFACT_SLOT,
+        }.get(required.task_kind)
+        if expected is None:
             return
         artifact_slots = tuple(
             slot for slot in entry.input_slots if slot.data_kind == "artifact"
@@ -533,7 +545,7 @@ class ProductionLLMConfigurationService:
             slot.cardinality,
             slot.trust_class,
         )
-        if actual != _CANDIDATE_ARTIFACT_SLOT:
+        if actual != expected:
             raise ValueError("PRODUCTION_PROMPT_ROUTE_MISMATCH")
 
     def _required(self, route: ProductionRoute) -> RequiredProductionPromptRoute:

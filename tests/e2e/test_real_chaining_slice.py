@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -16,7 +17,11 @@ from sastsimi.bootstrap import (
     build_t13_services,
     install_t13_services,
 )
-from sastsimi.chaining.service import ChainingCallRefs, chaining_input_hash
+from sastsimi.chaining.service import (
+    ChainingCallRefs,
+    chaining_input_hash,
+    chaining_prompt_input_bytes,
+)
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.chaining import ChainingResult, Primitive, PrimitiveIndexState
@@ -575,23 +580,88 @@ def test_production_route_commits_child_and_replays_after_restart() -> None:
     registry = WorkHandlerRegistry()
     resolver_state: dict[str, object] = {"calls": 0}
 
+    def invocation_meta(
+        source: RecordMeta, record_type: str, attempt_id: AttemptId | None
+    ) -> RecordMeta:
+        return RecordMeta.model_validate(
+            runner.metadata(source, record_type, attempt_id=attempt_id)
+        )
+
     def resolve_call(
         context: WorkContext, content: ChainingAgentInput
     ) -> tuple[ChainingCallRefs, str]:
-        del context
         resolver_state["calls"] = cast(int, resolver_state["calls"]) + 1
-        cast(
-            _ValidatedArtifactAdapter, resolver_state["adapter"]
-        )._raw_output = _match_output(content)
+        work = context.work
+        artifacts = cast(LocalArtifactStore, runtime.unit_of_work.artifacts)
+        prepared_ref = artifacts.commit(
+            artifacts.stage_bytes(
+                chaining_prompt_input_bytes(work, content), "application/json"
+            )
+        )
+
+        def register_call() -> tuple[StoredDataRef, StoredDataRef]:
+            return register_fake_llm_call(
+                runtime,
+                setup.evidence,
+                setup.records.record_meta,
+                setup.records.artifact,
+                setup.clock.now(),
+                _probe,
+                runner=runner,
+                work=work,
+                scope=scope,
+                orchestration_identity=identities[RequesterRole.ORCHESTRATION],
+                role="CHAINING",
+                result_kind="chaining_result",
+                task_kind="MATCH_PRIMITIVES",
+                context_refs=cast(
+                    tuple[StoredDataRef, ...], (*work.input_refs, prepared_ref)
+                ),
+            )
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            call_spec_ref, provider_ref = executor.submit(register_call).result()
+        spec = runtime.unit_of_work.records.get_exact(call_spec_ref)
+        assert isinstance(spec, LLMCallSpec)
+        payload = runtime.unit_of_work.records.get_exact(spec.prompt_payload_ref)
+        assert isinstance(payload, PromptPayload)
+        adapter = _ValidatedArtifactAdapter(
+            records=cast(SQLiteRecordStore, runtime.unit_of_work.records),
+            artifacts=artifacts,
+            output_schema_ref=spec.output_schema_ref,
+            semantic_validator_ref=spec.semantic_validator_ref,
+            raw_output=_match_output(content),
+            metadata_factory=invocation_meta,
+            clock=setup.clock,
+        )
+        cast(Any, cast(Any, runtime.llm_calls)._adapters)._adapters[
+            (provider_ref, spec.model)
+        ] = adapter
+        action = runner.action(
+            work,
+            identities[RequesterRole.CHAINING],
+            RequesterRole.CHAINING.value,
+            "CALL_LLM",
+            llm_call_spec_ref=call_spec_ref,
+            provider_profile_ref=provider_ref,
+            session_mode="NEW",
+            input_refs=llm_action_input_refs(call_spec_ref, spec, payload),
+        )
+        reservation = runner.reserve(
+            work,
+            scope,
+            action,
+            runner.units(elapsed_ms=1, llm_call_count=1, cost_minor_units=1),
+        )
         return (
             cast(
                 ChainingCallRefs,
                 SimpleNamespace(
-                    decision_ref=cast(StoredDataRef, resolver_state["decision_ref"]),
-                    reservation_ref=cast(
-                        StoredDataRef, resolver_state["reservation_ref"]
+                    decision_ref=runner.authorize(work, action, reservation),
+                    reservation_ref=runtime.unit_of_work.records.stage_record(
+                        reservation
                     ),
-                    call_spec_ref=cast(StoredDataRef, resolver_state["call_spec_ref"]),
+                    call_spec_ref=call_spec_ref,
                 ),
             ),
             chaining_input_hash(content),
@@ -624,68 +694,6 @@ def test_production_route_commits_child_and_replays_after_restart() -> None:
     )
     running = _seed_pools(setup, scope=scope, primitive_refs=primitives)
     context = WorkContext(running, _current_attempt(runtime, running))
-    call_spec_ref, provider_ref = register_fake_llm_call(
-        runtime,
-        setup.evidence,
-        setup.records.record_meta,
-        setup.records.artifact,
-        setup.clock.now(),
-        _probe,
-        runner=runner,
-        work=running,
-        scope=scope,
-        orchestration_identity=identities[RequesterRole.ORCHESTRATION],
-        role="CHAINING",
-        result_kind="chaining_result",
-        task_kind="MATCH_PRIMITIVES",
-        context_refs=cast(tuple[StoredDataRef, ...], running.input_refs),
-    )
-    spec = runtime.unit_of_work.records.get_exact(call_spec_ref)
-    assert isinstance(spec, LLMCallSpec)
-    payload = runtime.unit_of_work.records.get_exact(spec.prompt_payload_ref)
-    assert isinstance(payload, PromptPayload)
-
-    def invocation_meta(
-        source: RecordMeta, record_type: str, attempt_id: AttemptId | None
-    ) -> RecordMeta:
-        return RecordMeta.model_validate(
-            runner.metadata(source, record_type, attempt_id=attempt_id)
-        )
-
-    adapter = _ValidatedArtifactAdapter(
-        records=cast(SQLiteRecordStore, runtime.unit_of_work.records),
-        artifacts=cast(LocalArtifactStore, runtime.unit_of_work.artifacts),
-        output_schema_ref=spec.output_schema_ref,
-        semantic_validator_ref=spec.semantic_validator_ref,
-        raw_output=b"{}",
-        metadata_factory=invocation_meta,
-        clock=setup.clock,
-    )
-    cast(Any, cast(Any, runtime.llm_calls)._adapters)._adapters[
-        (provider_ref, spec.model)
-    ] = adapter
-    action = runner.action(
-        running,
-        identities[RequesterRole.CHAINING],
-        RequesterRole.CHAINING.value,
-        "CALL_LLM",
-        llm_call_spec_ref=call_spec_ref,
-        provider_profile_ref=provider_ref,
-        session_mode="NEW",
-        input_refs=llm_action_input_refs(call_spec_ref, spec, payload),
-    )
-    reservation = runner.reserve(
-        running,
-        scope,
-        action,
-        runner.units(elapsed_ms=1, llm_call_count=1, cost_minor_units=1),
-    )
-    resolver_state.update(
-        adapter=adapter,
-        decision_ref=runner.authorize(running, action, reservation),
-        reservation_ref=runtime.unit_of_work.records.stage_record(reservation),
-        call_spec_ref=call_spec_ref,
-    )
 
     outcome = asyncio.run(registry.require(WorkType.CHAINING).execute(context))
     assert resolver_state["calls"] == 1

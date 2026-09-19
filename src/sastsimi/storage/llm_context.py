@@ -11,6 +11,7 @@ from sastsimi.contracts.llm import (
     ProviderProfile,
 )
 from sastsimi.contracts.llm_closure import llm_action_input_refs
+from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RecordRef
 from sastsimi.contracts.work import WorkExecutionState
 
@@ -18,6 +19,66 @@ from . import models
 from .action_context import current_process
 from .codec import reference
 from .repositories import SQLiteRecordStore
+
+
+def _chaining_prepared_input_refs(
+    *, payload: PromptPayload, spec: LLMCallSpec, work: WorkExecutionState
+) -> set[RecordRef]:
+    """Admit the one runtime-built Chaining input bound to this exact call.
+
+    The source artifact is immutable and workspace/commit scoped.  Its
+    analysis, hypothesis and attempt provenance is supplied by the enclosing
+    PromptPayload/LLMCallSpec metadata, which ``check_llm_context`` verifies
+    before this helper is called.
+    """
+
+    if not (
+        work.work_type == "CHAINING"
+        and spec.agent_role == "CHAINING"
+        and spec.task_kind == "MATCH_PRIMITIVES"
+    ):
+        return set()
+    if not isinstance(work.meta, RecordMeta):
+        raise ValueError("LLM_CONTEXT_WORK_MISMATCH: chaining prepared_input")
+    meta = work.meta
+    if (
+        len(spec.context_refs) != len(work.input_refs) + 1
+        or tuple(spec.context_refs[:-1]) != tuple(work.input_refs)
+    ):
+        raise ValueError("LLM_CONTEXT_WORK_MISMATCH: chaining prepared_input")
+    source = spec.context_refs[-1]
+    bindings = tuple(
+        binding
+        for binding in payload.context_bindings
+        if binding.source_ref == source
+    )
+    if len(bindings) != 1:
+        raise ValueError("LLM_CONTEXT_WORK_MISMATCH: chaining prepared_input")
+    binding = bindings[0]
+    projected = binding.projected_data_ref
+    exact_projection = (
+        binding.slot == "prepared_input"
+        and binding.field_paths == ("/redacted_body",)
+    ) or (
+        binding.slot.startswith("context-") and binding.field_paths == ("$",)
+    )
+    if (
+        binding.data_kind != "artifact"
+        or not exact_projection
+        or binding.trust_class != "UNTRUSTED_DATA"
+        or source.data_kind != "artifact"
+        or source.record_id is not None
+        or str(source.stored_data_id) != source.content_hash
+        or projected.data_kind != "artifact"
+        or projected.record_id is not None
+        or str(projected.stored_data_id) != projected.content_hash
+        or (source.workspace_id, source.commit_id)
+        != (meta.workspace_id, meta.commit_id)
+        or (projected.workspace_id, projected.commit_id)
+        != (meta.workspace_id, meta.commit_id)
+    ):
+        raise ValueError("LLM_CONTEXT_WORK_MISMATCH: chaining prepared_input")
+    return {source}
 
 
 def check_llm_context(
@@ -94,6 +155,9 @@ def check_llm_context(
         ):
             raise ValueError("LLM_CONTEXT_WORK_MISMATCH: call spec already bound")
     allowed: set[RecordRef] = set(work.input_refs)
+    allowed.update(
+        _chaining_prepared_input_refs(payload=payload, spec=spec, work=work)
+    )
     if work.work_type == "VERIFICATION":
         process = current_process(records, connection, work)
         if (

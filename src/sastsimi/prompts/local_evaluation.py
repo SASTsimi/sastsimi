@@ -66,6 +66,14 @@ _CANDIDATE_ARTIFACT_SLOT = (
     "REQUIRED_MANY",
     "UNTRUSTED_DATA",
 )
+_CHAINING_TASK = "MATCH_PRIMITIVES"
+_CHAINING_ARTIFACT_SLOT = (
+    "prepared_input",
+    "artifact",
+    ("/redacted_body",),
+    "REQUIRED_ONE",
+    "UNTRUSTED_DATA",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -453,7 +461,11 @@ class LocalEvaluationLLMConfigurationService:
         required: RequiredLocalEvaluationPromptRoute,
         entry: PromptRegistryEntry,
     ) -> None:
-        if required.task_kind != _CANDIDATE_TASK:
+        expected = {
+            _CANDIDATE_TASK: _CANDIDATE_ARTIFACT_SLOT,
+            _CHAINING_TASK: _CHAINING_ARTIFACT_SLOT,
+        }.get(required.task_kind)
+        if expected is None:
             return
         artifact_slots = tuple(
             slot for slot in entry.input_slots if slot.data_kind == "artifact"
@@ -461,13 +473,14 @@ class LocalEvaluationLLMConfigurationService:
         if len(artifact_slots) != 1:
             raise ValueError("LOCAL_EVALUATION_PROMPT_ROUTE_MISMATCH")
         slot = artifact_slots[0]
-        if (
+        actual = (
             slot.slot,
             slot.data_kind,
             slot.field_paths,
             slot.cardinality,
             slot.trust_class,
-        ) != _CANDIDATE_ARTIFACT_SLOT:
+        )
+        if actual != expected:
             raise ValueError("LOCAL_EVALUATION_PROMPT_ROUTE_MISMATCH")
 
     @staticmethod

@@ -18,7 +18,12 @@ from sastsimi.agents.cwe_labeling import CWECallRefs
 from sastsimi.agents.policy_parser import PolicyParserAgent
 from sastsimi.agents.reporter import ReporterCallRefs
 from sastsimi.agents.rule_scope_gate import RuleScopeCallRefs
-from sastsimi.chaining.service import ChainingCallRefs, ChainingCallResolver
+from sastsimi.chaining.service import (
+    ChainingCallRefs,
+    ChainingCallResolver,
+    chaining_input_hash,
+    chaining_prompt_input_bytes,
+)
 from sastsimi.composition.production_cancellation import (
     AttemptCancellationPort,
     SandboxCancellationDockerPort,
@@ -33,7 +38,6 @@ from sastsimi.composition.runtime import (
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
 from sastsimi.contracts.budget import Purpose
-from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.dynamic import DependencyBundle, DynamicReproductionRequest
 from sastsimi.contracts.hypothesis import HypothesisProcessState
 from sastsimi.contracts.ids import WorkId
@@ -67,6 +71,7 @@ from sastsimi.policy.collector import PolicyCollector
 from sastsimi.policy.preparation_service import PolicyPreparationService
 from sastsimi.policy.program_catalog import ProgramCatalog
 from sastsimi.policy.work_handler import PolicyWorkHandler
+from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.authorized_llm_call import AuthorizedLLMCall
 from sastsimi.ports.chaining import ChainingAgentInput
 from sastsimi.ports.dto import WorkContext, WorkHandlerResult
@@ -337,8 +342,9 @@ class SubjectDispatchWorkHandler:
 
 
 class _CallAdapters:
-    def __init__(self, calls: ProductionCallPort) -> None:
+    def __init__(self, calls: ProductionCallPort, artifacts: ArtifactStore) -> None:
         self.calls = calls
+        self.artifacts = artifacts
 
     def cwe(self, context: WorkContext) -> GateCallRefs:
         call = self._resolve(context, "CWE_LABELING", "CLASSIFY_CWE")
@@ -363,14 +369,26 @@ class _CallAdapters:
     def chaining(
         self, context: WorkContext, value: ChainingAgentInput
     ) -> tuple[ChainingCallRefs, str]:
-        refs = _stored_inputs(context.work)
+        work = context.work
+        if not isinstance(work.meta, RecordMeta) or work.active_attempt_id is None:
+            raise ValueError("CHAINING_PROMPT_SCOPE_MISMATCH")
+        raw = chaining_prompt_input_bytes(work, value)
+        prepared_input_ref = self.artifacts.commit(
+            self.artifacts.stage_bytes(raw, "application/json")
+        )
+        if (
+            prepared_input_ref.workspace_id != work.meta.workspace_id
+            or prepared_input_ref.commit_id != work.meta.commit_id
+        ):
+            raise ValueError("CHAINING_PROMPT_SCOPE_MISMATCH")
+        refs = (*_stored_inputs(work), prepared_input_ref)
         call = self.calls.resolve(
-            work=context.work,
+            work=work,
             role="CHAINING",
             task_kind="MATCH_PRIMITIVES",
             source_refs=refs,
         )
-        return cast(ChainingCallRefs, call), content_hash(value)
+        return cast(ChainingCallRefs, call), chaining_input_hash(value)
 
     def _resolve(
         self, context: WorkContext, role: LLMRole, task: str
@@ -461,7 +479,7 @@ class ProductionFeatureInstaller:
         self._require_inputs(context)
         runtime, runner = context.runtime, context.runner
         records = runtime.unit_of_work.records
-        calls = _CallAdapters(self.inputs.calls)
+        calls = _CallAdapters(self.inputs.calls, runtime.unit_of_work.artifacts)
         t10 = build_t10_services(
             runtime=runtime,
             runner=runner,

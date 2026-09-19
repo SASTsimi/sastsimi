@@ -169,6 +169,12 @@ entries:
             - /input_primitive_refs
           cardinality: OPTIONAL_MANY
           trust_class: UNTRUSTED_DATA
+        - slot: prepared_input
+          data_kind: artifact
+          field_paths:
+            - /redacted_body
+          cardinality: REQUIRED_ONE
+          trust_class: UNTRUSTED_DATA
       forbidden_context_kinds:
         - credential
         - provider_profile

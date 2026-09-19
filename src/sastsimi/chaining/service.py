@@ -28,7 +28,10 @@ from sastsimi.contracts.hypothesis import (
 )
 from sastsimi.contracts.ids import AttemptId, ProposalId, RecordId
 from sastsimi.contracts.policy import RunPolicyState
-from sastsimi.contracts.prompt_redaction import redact_untrusted_text
+from sastsimi.contracts.prompt_redaction import (
+    redact_projected_json,
+    redact_untrusted_text,
+)
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
 from sastsimi.contracts.static import CodeSymbol, Restriction, StaticFactBundle
@@ -1063,6 +1066,35 @@ def chaining_input_hash(value: ChainingAgentInput) -> str:
     """Hash the exact content a resolver must embed in its PromptPayload."""
 
     return content_hash(asdict(value))
+
+
+def chaining_prompt_input_bytes(
+    work: WorkExecutionState, value: ChainingAgentInput
+) -> bytes:
+    """Encode one exact, already-redacted Chaining input and its attempt scope."""
+
+    if not isinstance(work.meta, RecordMeta) or work.active_attempt_id is None:
+        raise ValueError("CHAINING_PROMPT_SCOPE_MISMATCH")
+    raw = canonical_bytes(
+        {
+            "schema_version": "1.0.0",
+            "scope": {
+                "analysis_id": str(work.meta.analysis_id),
+                "workspace_id": str(work.meta.workspace_id),
+                "commit_id": str(work.meta.commit_id),
+                "hypothesis_id": (
+                    str(work.meta.hypothesis_id)
+                    if work.meta.hypothesis_id is not None
+                    else None
+                ),
+                "attempt_id": str(work.active_attempt_id),
+            },
+            "content": asdict(value),
+        }
+    )
+    if redact_projected_json(raw).data != raw:
+        raise ValueError("CHAINING_PROMPT_REDACTION_REQUIRED")
+    return raw
 
 
 def _location_summary(value: object) -> str:

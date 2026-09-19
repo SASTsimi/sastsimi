@@ -298,6 +298,7 @@ def test_canonical_registry_exposes_only_reviewed_active_fixtures() -> None:
         ("considered", "primitive", "REQUIRED_MANY"),
         ("lineage_hypotheses", "vulnerability_hypothesis", "REQUIRED_MANY"),
         ("lineage_results", "chaining_result", "OPTIONAL_MANY"),
+        ("prepared_input", "artifact", "REQUIRED_ONE"),
     )
     selected = registry.select("CHAINING", "MATCH_PRIMITIVES", "EVALUATION")
     assert selected.entry is chaining
