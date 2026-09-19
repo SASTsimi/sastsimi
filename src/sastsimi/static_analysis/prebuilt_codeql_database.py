@@ -79,16 +79,35 @@ def _require_safe_tree(root: Path) -> None:
 
 def _read_manifest(path: Path) -> dict[str, object]:
     try:
-        info = path.lstat()
+        before = path.lstat()
         if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_nlink != 1
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
             or _is_link_like(path)
-            or info.st_size <= 0
-            or info.st_size > _MAX_MANIFEST_BYTES
+            or before.st_size <= 0
+            or before.st_size > _MAX_MANIFEST_BYTES
         ):
             raise ValueError
         raw = path.read_bytes()
+        after = path.lstat()
+        before_identity = (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_nlink,
+        )
+        after_identity = (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_nlink,
+        )
+        if before_identity != after_identity or len(raw) != before.st_size:
+            raise ValueError
         value = json.loads(raw)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise ValueError("CODEQL_DATABASE_MANIFEST_INVALID") from error

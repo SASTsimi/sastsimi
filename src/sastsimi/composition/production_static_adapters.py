@@ -25,6 +25,7 @@ from sastsimi.ports.dto import (
     MonotonicActionDeadline,
     PrebuiltCodeQLDatabase,
     StaticCapabilityObservation,
+    StaticOutputQuotaBinding,
     StaticRuleMapping,
     StaticToolObservation,
     StaticToolRequest,
@@ -956,6 +957,50 @@ class _LazyCodeQLAdapter:
             )
         ).hexdigest()
 
+    @staticmethod
+    def _require_quota_binding(
+        binding: object,
+        *,
+        action_id: str,
+        attempt_id: str,
+        profile_ref: HostConfigurationRef,
+        limit_bytes: int,
+    ) -> None:
+        if not isinstance(binding, StaticOutputQuotaBinding):
+            raise ValueError("CODEQL_OUTPUT_QUOTA_UNENFORCEABLE")
+        try:
+            root = _safe_existing_directory(
+                binding.root, "CODEQL_OUTPUT_QUOTA_UNENFORCEABLE"
+            )
+        except ValueError as error:
+            raise ValueError("CODEQL_OUTPUT_QUOTA_UNENFORCEABLE") from error
+        if (
+            not binding.binding_id
+            or not binding.lease_id
+            or not binding.backend_key
+            or not binding.enforcement_evidence
+            or binding.action_id != action_id
+            or binding.attempt_id != attempt_id
+            or binding.profile_ref != profile_ref
+            or binding.effective_limit_bytes != limit_bytes
+            or binding.hard_enforced is not True
+            or binding.limit_breached
+            or binding.breach_evidence is not None
+            or root != binding.root
+            or any(root.iterdir())
+        ):
+            raise ValueError("CODEQL_OUTPUT_QUOTA_UNENFORCEABLE")
+
+    @staticmethod
+    def _paths_overlap(left: Path, right: Path) -> bool:
+        exact_left = left.resolve(strict=True)
+        exact_right = right.resolve(strict=True)
+        return (
+            exact_left == exact_right
+            or exact_left.is_relative_to(exact_right)
+            or exact_right.is_relative_to(exact_left)
+        )
+
     def _lower(
         self,
         *,
@@ -1006,32 +1051,54 @@ class _LazyCodeQLAdapter:
             profile_ref=profile_ref,
             limit_bytes=profile.max_attempt_output_bytes,
         )
-        placeholder = _safe_root(self._output_root, "probes/codeql-placeholder")
-        database_root = _safe_root(placeholder, "database")
-        attempt_root = _safe_root(placeholder, "execution")
-        database = PrebuiltCodeQLDatabase(
-            workspace_id="probe-workspace",
-            commit_id="probe-commit",
-            language="python",
-            database_root=database_root,
-            database_digest=digest_path(database_root),
-        )
-        lower = self._lower(
-            profile=profile,
-            database=database,
-            tracked=(),
-            attempt_root=attempt_root,
-            attempt_id=deadline.action_id,
-            execution_lease_id="unused-execution-" + binding.lease_id,
-            probe_root=binding.root,
-            probe_lease_id=binding.lease_id,
-        )
-        self._active[deadline.action_id] = lower
         outcome = "PROBE_FAILED"
         try:
+            self._require_quota_binding(
+                binding,
+                action_id=deadline.action_id,
+                attempt_id=deadline.action_id,
+                profile_ref=profile_ref,
+                limit_bytes=profile.max_attempt_output_bytes,
+            )
+            placeholder = _safe_root(self._output_root, "probes/codeql-placeholder")
+            database_root = _safe_root(placeholder, "database")
+            attempt_root = _safe_root(placeholder, "execution")
+            if self._paths_overlap(binding.root, placeholder):
+                raise ValueError("CODEQL_OUTPUT_QUOTA_TOPOLOGY_INVALID")
+            database = PrebuiltCodeQLDatabase(
+                workspace_id="probe-workspace",
+                commit_id="probe-commit",
+                language="python",
+                database_root=database_root,
+                database_digest=digest_path(database_root),
+            )
+            lower = self._lower(
+                profile=profile,
+                database=database,
+                tracked=(),
+                attempt_root=attempt_root,
+                attempt_id=deadline.action_id,
+                execution_lease_id="unused-execution-" + binding.lease_id,
+                probe_root=binding.root,
+                probe_lease_id=binding.lease_id,
+            )
+            self._active[deadline.action_id] = lower
             observed = await lower.probe(profile, deadline)
             outcome = "PROBE_SUCCEEDED" if observed.available else "PROBE_FAILED"
             return observed
+        except ValueError:
+            return StaticCapabilityObservation(
+                available=False,
+                tool_name="CODEQL",
+                tool_kind="RULE_BASED",
+                executable_key=str(profile.executable_key),
+                observed_executable_sha256=(
+                    _digest(self.executable) if self.executable.is_file() else None
+                ),
+                observed_version=None,
+                expected_version=profile.expected_version,
+                reason_code="CODEQL_OUTPUT_QUOTA_UNENFORCEABLE",
+            )
         finally:
             self._active.pop(deadline.action_id, None)
             self._quota.finalize(lease_id=binding.lease_id, outcome=outcome)
@@ -1085,6 +1152,13 @@ class _LazyCodeQLAdapter:
                 limit_bytes=self._database_limit_bytes,
             )
             bindings.append(database_binding)
+            self._require_quota_binding(
+                database_binding,
+                action_id=action_id,
+                attempt_id=attempt_id,
+                profile_ref=profile_ref,
+                limit_bytes=self._database_limit_bytes,
+            )
             execution_binding = self._quota.allocate(
                 purpose="EXECUTION",
                 action_id=action_id,
@@ -1093,6 +1167,24 @@ class _LazyCodeQLAdapter:
                 limit_bytes=profile.max_attempt_output_bytes,
             )
             bindings.append(execution_binding)
+            self._require_quota_binding(
+                execution_binding,
+                action_id=action_id,
+                attempt_id=attempt_id,
+                profile_ref=profile_ref,
+                limit_bytes=profile.max_attempt_output_bytes,
+            )
+            if (
+                database_binding.backend_key != execution_binding.backend_key
+                or database_binding.binding_id == execution_binding.binding_id
+                or database_binding.lease_id == execution_binding.lease_id
+                or self._paths_overlap(database_binding.root, execution_binding.root)
+                or self._paths_overlap(database_binding.root, workspace_root)
+                or self._paths_overlap(execution_binding.root, workspace_root)
+                or self._paths_overlap(database_binding.root, self._query_pack_root)
+                or self._paths_overlap(execution_binding.root, self._query_pack_root)
+            ):
+                raise ValueError("CODEQL_OUTPUT_QUOTA_TOPOLOGY_INVALID")
             database = self._databases.materialize(
                 workspace_id=str(request.workspace.workspace_id),
                 repository_url=str(request.workspace.repository_url),
