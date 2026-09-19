@@ -15,8 +15,6 @@ def builtin_resource_root() -> Path:
 def build_production_analyze(capability_bundle_loader: object | None = None) -> object:
     """Build the real production command entrypoint; never select FakePipeline."""
 
-    from datetime import UTC, datetime
-
     from sastsimi.composition.production_bootstrap_runtime import (
         build_production_bootstrap_assembler,
     )
@@ -35,7 +33,7 @@ def build_production_analyze(capability_bundle_loader: object | None = None) -> 
     from sastsimi.orchestration.production_onboarding import (
         OnboardedProductionCapabilityBundleLoader,
     )
-    from sastsimi.runtime.system_support import UUIDIds
+    from sastsimi.runtime.system_support import SystemClock, UUIDIds
 
     if capability_bundle_loader is None:
         repository_root = builtin_resource_root()
@@ -44,7 +42,7 @@ def build_production_analyze(capability_bundle_loader: object | None = None) -> 
         )
         capability_bundle_loader = OnboardedProductionCapabilityBundleLoader(
             repository_root=repository_root,
-            clock=lambda: datetime.now(UTC),
+            clock=SystemClock().now,
             provision=FilesystemAnalysisCapabilityProvisioner(feature_assembler),
         )
 
