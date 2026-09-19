@@ -10,6 +10,7 @@ from urllib.parse import parse_qsl, urlsplit
 
 from pydantic import ValidationError, field_validator, model_validator
 
+from sastsimi.config.codeql_container import CodeQLContainerRuntimeConfig
 from sastsimi.config.secrets import SecretReference
 from sastsimi.contracts.base import (
     ContractModel,
@@ -191,6 +192,7 @@ class ProductionProfile(ContractModel):
     workspace_limits: WorkspaceLimitSettings
     budget: ProductionBudgetSettings
     tools: ToolExecutables
+    codeql_container: CodeQLContainerRuntimeConfig | None = None
     policy: PolicySource
     providers: tuple[ProviderConnection, ...]
     llm_routes: tuple[LLMRoute, ...]
@@ -240,6 +242,7 @@ def load_production_profile(path: Path) -> ProductionProfile:
 
 
 __all__ = [
+    "CodeQLContainerRuntimeConfig",
     "LLMRoute",
     "PolicySource",
     "ProductionBudgetSettings",

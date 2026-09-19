@@ -93,6 +93,33 @@ prompt_key = "hypothesis.generate-initial.production-v1"
 '''
 
 
+def _with_codeql_container(
+    source: str, tmp_path: Path, *, image: str | None = None
+) -> str:
+    configured_image = image or ("ghcr.io/sastsimi/codeql@sha256:" + "a" * 64)
+    table = f'''\
+[codeql_container]
+schema_version = 1
+image = "{configured_image}"
+expected_codeql_version = "2.27.0"
+database_registry_root = "{(tmp_path / "codeql-databases").as_posix()}"
+query_pack_root = "{(tmp_path / "codeql-query-pack").as_posix()}"
+query_pack_sha256 = "{"b" * 64}"
+database_provider_key = "approved-codeql-db-provider"
+database_provider_revision = "2026-09-19-r1"
+database_provider_evidence_sha256 = "{"c" * 64}"
+database_limit_bytes = 4294967296
+output_limit_bytes = 268435456
+pids_limit = 256
+memory_limit_bytes = 8589934592
+nano_cpus = 2000000000
+container_uid = 65532
+container_gid = 65532
+
+'''
+    return source.replace("[policy]\n", table + "[policy]\n")
+
+
 def test_loads_explicit_production_profile_without_resolving_secret(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -114,7 +141,56 @@ def test_loads_explicit_production_profile_without_resolving_secret(
     assert profile.tools.codeql == "codeql"
     assert profile.llm_routes[0].model == "configured-model"
     assert profile.providers[0].credential_ref.reference == "env:OPENAI_API_KEY"
+    assert profile.codeql_container is None
     assert "TEST_ONLY_MUST_NOT_APPEAR" not in profile.model_dump_json()
+
+
+def test_loads_optional_codeql_container_table(tmp_path: Path) -> None:
+    from sastsimi.config.production_profile import load_production_profile
+
+    path = tmp_path / "production.toml"
+    path.write_text(
+        _with_codeql_container(_profile_text(tmp_path / "workspaces"), tmp_path),
+        encoding="utf-8",
+    )
+
+    profile = load_production_profile(path)
+
+    assert profile.codeql_container is not None
+    assert profile.codeql_container.image.endswith("@sha256:" + "a" * 64)
+    assert profile.codeql_container.expected_codeql_version == "2.27.0"
+    assert profile.codeql_container.container_user == "65532:65532"
+
+
+def test_rejects_unpinned_codeql_container_image(tmp_path: Path) -> None:
+    from sastsimi.config.production_profile import (
+        ProductionProfileError,
+        load_production_profile,
+    )
+
+    path = tmp_path / "invalid.toml"
+    path.write_text(
+        _with_codeql_container(
+            _profile_text(tmp_path / "workspaces"),
+            tmp_path,
+            image="ghcr.io/sastsimi/codeql:2.27.0",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProductionProfileError):
+        load_production_profile(path)
+
+
+def test_omitted_codeql_container_remains_compatible(tmp_path: Path) -> None:
+    from sastsimi.config.production_profile import load_production_profile
+
+    path = tmp_path / "production.toml"
+    path.write_text(_profile_text(tmp_path / "workspaces"), encoding="utf-8")
+
+    profile = load_production_profile(path)
+
+    assert profile.codeql_container is None
 
 
 @pytest.mark.parametrize(
