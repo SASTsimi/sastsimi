@@ -6,13 +6,16 @@ from sastsimi.contracts.analysis import AnalysisStartRequest
 from sastsimi.contracts.budget import Purpose
 from sastsimi.contracts.ids import (
     AnalysisId,
+    CommitId,
     OpaqueId,
     ProgramId,
     RecordId,
     StoredDataId,
+    WorkspaceId,
 )
 from sastsimi.contracts.refs import RunStoredDataRef, reference
 from sastsimi.orchestration.analysis_state_factory import AnalysisStateFactory
+from sastsimi.orchestration.run_scope_plan import PlannedRunScope
 
 
 class _Clock:
@@ -69,6 +72,79 @@ def test_factory_rejects_evaluation_without_exact_config_refs() -> None:
                 requested_git_ref="a" * 40,
                 program_id=ProgramId("program-a"),
                 purpose=Purpose.EVALUATION,
+            ),
+            _execution_ref(),
+        )
+
+
+def test_factory_pins_local_evaluation_scope_without_production_descriptors() -> None:
+    commit = CommitId("b" * 40)
+    scope = PlannedRunScope(
+        analysis_id=AnalysisId("published-for-run"),
+        workspace_id=WorkspaceId("workspace-local"),
+        commit_id=commit,
+        repository_ref="https://example.invalid/team/repository.git",
+    )
+    built = AnalysisStateFactory(_Clock(), _Ids(), scope=scope).create(
+        AnalysisStartRequest(
+            repository_ref=scope.repository_ref,
+            requested_git_ref=str(commit),
+            program_id=ProgramId("program-a"),
+            purpose=Purpose.LOCAL_EVALUATION,
+        ),
+        _execution_ref(),
+    )
+
+    assert built.run_input.meta.analysis_id == scope.analysis_id
+    assert built.run_input.workspace_id == scope.workspace_id
+    assert built.run_input.commit_id == scope.commit_id
+    assert built.run_input.production_profile_ref is None
+    assert built.run_input.production_onboarding_ref is None
+    assert built.run_input.production_authority_catalog_ref is None
+
+
+def test_factory_keeps_scoped_production_descriptors_mandatory() -> None:
+    commit = CommitId("b" * 40)
+    scope = PlannedRunScope(
+        analysis_id=AnalysisId("published-for-run"),
+        workspace_id=WorkspaceId("workspace-production"),
+        commit_id=commit,
+        repository_ref="https://example.invalid/team/repository.git",
+    )
+
+    with pytest.raises(ValueError, match="PRODUCTION_DESCRIPTOR_SCOPE_MISMATCH"):
+        AnalysisStateFactory(_Clock(), _Ids(), scope=scope).create(
+            AnalysisStartRequest(
+                repository_ref=scope.repository_ref,
+                requested_git_ref=str(commit),
+                program_id=ProgramId("program-a"),
+                purpose=Purpose.PRODUCTION,
+            ),
+            _execution_ref(),
+        )
+
+
+def test_factory_rejects_production_descriptors_on_local_evaluation() -> None:
+    commit = CommitId("b" * 40)
+    scope = PlannedRunScope(
+        analysis_id=AnalysisId("published-for-run"),
+        workspace_id=WorkspaceId("workspace-local"),
+        commit_id=commit,
+        repository_ref="https://example.invalid/team/repository.git",
+    )
+
+    with pytest.raises(ValueError, match="LOCAL_EVALUATION_DESCRIPTOR_INVALID"):
+        AnalysisStateFactory(
+            _Clock(),
+            _Ids(),
+            scope=scope,
+            production_profile_ref=_execution_ref(),
+        ).create(
+            AnalysisStartRequest(
+                repository_ref=scope.repository_ref,
+                requested_git_ref=str(commit),
+                program_id=ProgramId("program-a"),
+                purpose=Purpose.LOCAL_EVALUATION,
             ),
             _execution_ref(),
         )

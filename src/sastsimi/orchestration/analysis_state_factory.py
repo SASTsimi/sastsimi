@@ -61,18 +61,30 @@ class AnalysisStateFactory:
         if bool(self._eval_config_refs) != (request.purpose == Purpose.EVALUATION):
             raise ValueError("ANALYSIS_EVALUATION_CONFIG_INVALID")
         analysis_id = execution_ref.analysis_id
-        if self._scope is not None and (
-            self._scope.analysis_id != analysis_id
-            or str(self._scope.commit_id) != request.requested_git_ref
-            or self._scope.repository_ref != request.repository_ref
-            or self._production_profile_ref is None
-            or self._production_onboarding_ref is None
-            or self._production_authority_catalog_ref is None
-            or self._production_profile_ref.analysis_id != analysis_id
-            or self._production_onboarding_ref.analysis_id != analysis_id
-            or self._production_authority_catalog_ref.analysis_id != analysis_id
-        ):
-            raise ValueError("PRODUCTION_DESCRIPTOR_SCOPE_MISMATCH")
+        if self._scope is not None:
+            if (
+                self._scope.analysis_id != analysis_id
+                or str(self._scope.commit_id) != request.requested_git_ref
+                or self._scope.repository_ref != request.repository_ref
+            ):
+                raise ValueError("ANALYSIS_SCOPE_MISMATCH")
+            descriptors = (
+                self._production_profile_ref,
+                self._production_onboarding_ref,
+                self._production_authority_catalog_ref,
+            )
+            if request.purpose == Purpose.PRODUCTION and (
+                any(ref is None for ref in descriptors)
+                or any(
+                    ref is not None and ref.analysis_id != analysis_id
+                    for ref in descriptors
+                )
+            ):
+                raise ValueError("PRODUCTION_DESCRIPTOR_SCOPE_MISMATCH")
+            if request.purpose == Purpose.LOCAL_EVALUATION and any(
+                ref is not None for ref in descriptors
+            ):
+                raise ValueError("LOCAL_EVALUATION_DESCRIPTOR_INVALID")
         run_input = AnalysisRunInput(
             meta=self._meta("analysis_run_input", analysis_id),
             repository_ref=request.repository_ref,
