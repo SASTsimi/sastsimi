@@ -6,9 +6,7 @@ import os
 import platform
 import sys
 import tempfile
-import time
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, cast
 from uuid import uuid4
@@ -24,6 +22,8 @@ from sastsimi.contracts.ids import CommitId, OpaqueId, WorkspaceId
 from sastsimi.contracts.refs import HostConfigurationRef
 from sastsimi.ports.dynamic_sandbox import TrustedDockerTarget
 from sastsimi.ports.static_tool import ProductionStaticOutputQuotaPort
+from sastsimi.ports.trusted_evidence import UnprovenEvidence
+from sastsimi.runtime.system_support import SystemClock
 from sastsimi.storage.database import Database
 from sastsimi.storage.migrations import upgrade
 
@@ -51,14 +51,6 @@ class EnvironmentSecretLookup:
         if value is None or not value.strip():
             raise ValueError("SECRET_UNAVAILABLE")
         return value
-
-
-class _SystemClock:
-    def now(self) -> datetime:
-        return datetime.now(UTC)
-
-    def monotonic_ms(self) -> int:
-        return time.monotonic_ns() // 1_000_000
 
 
 class _UuidIds:
@@ -191,7 +183,7 @@ def _build_production_engine(
     )
     authority = _CapabilityProbeEvidenceAuthority(store)
     upgrade(Database(paths.database))
-    clock = _SystemClock()
+    clock = SystemClock()
     runtime = build_runtime(
         data_dir,
         WorkspaceId("host-configuration"),
