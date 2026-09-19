@@ -16,7 +16,9 @@ from sastsimi.composition.production_static_adapters import (
     StaticAttemptDispatchReader,
 )
 from sastsimi.composition.runtime import build_real_static_slice
+from sastsimi.config.local_evaluation_profile import LocalEvaluationProfile
 from sastsimi.contracts.actions import RequesterRole
+from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.capabilities import RuntimeCapabilityProfile
 from sastsimi.contracts.refs import (
     HostConfigurationRef,
@@ -428,6 +430,36 @@ def build_production_t08_feature(
 ) -> T08ProductionFeature:
     """Build all five T08 handlers from exact approved configuration only."""
 
+    return _build_t08_feature(
+        context,
+        inputs,
+        expected_profile_hash=production_profile_hash(context.profile),
+    )
+
+
+def build_local_evaluation_t08_feature(
+    context: object,
+    inputs: ProductionT08Inputs,
+) -> T08ProductionFeature:
+    """Reuse hardened T08 with an exact non-production local profile hash."""
+
+    profile = getattr(context, "profile", None)
+    if not isinstance(profile, LocalEvaluationProfile):
+        raise ValueError("LOCAL_EVALUATION_T08_PROFILE_REQUIRED")
+    return _build_t08_feature(
+        cast(ProductionInstallationContext, context),
+        inputs,
+        expected_profile_hash=content_hash(profile.model_dump(mode="json")),
+    )
+
+
+def _build_t08_feature(
+    context: ProductionInstallationContext,
+    inputs: ProductionT08Inputs,
+    *,
+    expected_profile_hash: str,
+) -> T08ProductionFeature:
+
     if "CODEQL" in inputs.static.enabled_tools and not bool(
         getattr(inputs.build_static_adapters, "codeql_safe_prerequisites_ready", False)
     ):
@@ -443,8 +475,8 @@ def build_production_t08_feature(
         or inputs.static.analysis_id != str(context.scope.analysis_id)
         or inputs.static.workspace_id != str(context.scope.workspace_id)
         or inputs.static.commit_id != str(context.scope.commit_id)
-        or inputs.workspace.profile_hash != production_profile_hash(context.profile)
-        or inputs.static.profile_hash != production_profile_hash(context.profile)
+        or inputs.workspace.profile_hash != expected_profile_hash
+        or inputs.static.profile_hash != expected_profile_hash
     ):
         raise ValueError("PRODUCTION_T08_SCOPE_MISMATCH")
     declared_digests = tuple(
@@ -712,5 +744,6 @@ __all__ = [
     "ProductionT08Inputs",
     "StaticAdapterBuildContext",
     "StaticAdapterFactory",
+    "build_local_evaluation_t08_feature",
     "build_production_t08_feature",
 ]
