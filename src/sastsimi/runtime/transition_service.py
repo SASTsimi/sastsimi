@@ -2,8 +2,7 @@
 
 from typing import Protocol
 
-from sastsimi.contracts.refs import BudgetScopeRef
-from sastsimi.contracts.work import TransitionCommit, WorkExecutionState
+from sastsimi.contracts.work import TransitionCommit
 from sastsimi.ports.dto import TransitionCommitRequest
 from sastsimi.ports.record_store import RecordStore
 
@@ -29,7 +28,3 @@ class TransitionServicePort(Protocol):
     """
 
     def commit(self, request: TransitionCommitRequest) -> TransitionCommit: ...
-
-    def fail_exhausted_retry(
-        self, work: WorkExecutionState, identity_ref: BudgetScopeRef
-    ) -> WorkExecutionState: ...

@@ -145,7 +145,10 @@ class ConcreteProductionApplicationFactory:
         from sastsimi.orchestration.run_initialization import RunInitializationService
         from sastsimi.runtime.cancellation_service import CancellationService
         from sastsimi.storage.database import Database
-        from sastsimi.storage.run_control import RunControlStore
+        from sastsimi.storage.run_control import (
+            CancellationTransitionPort,
+            RunControlStore,
+        )
         from sastsimi.storage.work_dispatch import WorkDispatchStore
         from sastsimi.storage.work_service import WorkService as SQLiteWorkService
 
@@ -248,7 +251,12 @@ class ConcreteProductionApplicationFactory:
             # constructing a second, independent one - the same "reuse the
             # already-built local, don't reconstruct" rule that
             # `RuntimeServices.transitions` itself once violated.
-            transitions=runtime.transitions,
+            # `build_runtime` supplies the concrete storage transition service.
+            # The runtime-facing type deliberately exposes only commit(), while
+            # run control consumes the same instance through its cancellation
+            # port. Keep the single shared instance and narrow it at this
+            # composition boundary.
+            transitions=cast(CancellationTransitionPort, runtime.transitions),
             cancellation_identity_ref=identities[RequesterRole.ORCHESTRATION],
         )
         cancellation = CancellationService(

@@ -1,6 +1,7 @@
 """A workflow runner must use persistent authorization and usage accounting."""
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 from sqlalchemy import func, select
@@ -12,6 +13,9 @@ from sastsimi.contracts.ids import AnalysisId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import RunStoredDataRef
 from sastsimi.contracts.work import TransitionCommit
 from sastsimi.storage import models
+from sastsimi.storage.verification_registration import (
+    VerificationRegistrationService as StoredVerificationRegistrationService,
+)
 from tests.integration.runtime_support import Harness
 
 
@@ -275,4 +279,8 @@ def test_composed_runtime_transitions_is_the_real_shared_service(
     h = Harness(tmp_path)
     runtime = build_runtime(tmp_path, None, None, h.clock, h.ids, evidence=h.evidence)
 
-    assert runtime.transitions is runtime.verification_registration.store.transitions
+    registration_store = cast(
+        StoredVerificationRegistrationService,
+        runtime.verification_registration.store,
+    )
+    assert runtime.transitions is registration_store.transitions

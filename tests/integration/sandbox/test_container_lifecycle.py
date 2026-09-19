@@ -1422,8 +1422,6 @@ async def test_python_dependencies_are_auto_fetched_without_an_approved_bundle(
     """
     import subprocess
 
-    from sastsimi.sandbox import recipe_store as recipe_store_module
-
     files = {
         "app.py": b"import demo\n",
         "requirements.txt": b"demo==1.0.0\n",
@@ -1462,7 +1460,9 @@ async def test_python_dependencies_are_auto_fetched_without_an_approved_bundle(
         (dest / "demo-1.0.0-py3-none-any.whl").write_bytes(b"fake-wheel-bytes")
         return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(recipe_store_module.subprocess, "run", fake_pip_download)
+    monkeypatch.setattr(
+        "sastsimi.sandbox.recipe_store.subprocess.run", fake_pip_download
+    )
     artifacts = _MemoryArtifacts()
 
     source = await _setup(FakeDockerAdapter(), artifacts=artifacts).preflight(
