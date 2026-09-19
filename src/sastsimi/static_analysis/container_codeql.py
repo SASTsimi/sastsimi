@@ -15,6 +15,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from typing import Literal
 
 _IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _BOUND_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -24,6 +25,7 @@ _DATABASE_TARGET = "/input/database"
 _QUERY_TARGET = "/input/query-pack"
 _DATABASE_WORK = "/work/database"
 _OUTPUT_WORK = "/work/output"
+type ContainerCodeQLOperation = Literal["analyze", "probe"]
 
 
 class ContainerCodeQLBoundaryError(ValueError):
@@ -156,8 +158,24 @@ def _container_name(spec: ContainerCodeQLSpec) -> str:
     return "sastsimi-codeql-" + hashlib.sha256(identity).hexdigest()[:24]
 
 
-def build_container_codeql_run_argv(spec: ContainerCodeQLSpec) -> tuple[str, ...]:
-    """Return the only admitted Docker command for one CodeQL analysis.
+def _container_command(
+    spec: ContainerCodeQLSpec, operation: ContainerCodeQLOperation
+) -> tuple[str, ...]:
+    if operation == "analyze":
+        return ("analyze",)
+    if operation == "probe":
+        return (
+            "probe",
+            str(spec.database_limit_bytes + 1),
+            str(spec.output_limit_bytes + 1),
+        )
+    raise _fail("CODEQL_CONTAINER_OPERATION_INVALID")
+
+
+def build_container_codeql_create_argv(
+    spec: ContainerCodeQLSpec, *, operation: ContainerCodeQLOperation
+) -> tuple[str, ...]:
+    """Return the only admitted Docker create command for one analysis.
 
     The pinned image owns the trusted fixed entrypoint.  Repository code,
     command text, environment values, host output directories, Docker sockets,
@@ -166,7 +184,7 @@ def build_container_codeql_run_argv(spec: ContainerCodeQLSpec) -> tuple[str, ...
 
     return (
         str(spec.docker_executable),
-        "run",
+        "create",
         "--name",
         _container_name(spec),
         "--pull",
@@ -199,6 +217,7 @@ def build_container_codeql_run_argv(spec: ContainerCodeQLSpec) -> tuple[str, ...
         "--label",
         f"sastsimi.attempt-id={spec.attempt_id}",
         spec.image_digest,
+        *_container_command(spec, operation),
     )
 
 
@@ -230,7 +249,10 @@ def _tmpfs_options(target: str, limit_bytes: int, user: str) -> frozenset[str]:
 
 
 def validate_container_inspect(
-    record: Mapping[str, object], spec: ContainerCodeQLSpec
+    record: Mapping[str, object],
+    spec: ContainerCodeQLSpec,
+    *,
+    operation: ContainerCodeQLOperation,
 ) -> None:
     """Validate Docker's post-create state against the issued exact request."""
 
@@ -252,6 +274,7 @@ def validate_container_inspect(
         if (
             config.get("Image") != spec.image_digest
             or config.get("User") != spec.user
+            or config.get("Cmd") != list(_container_command(spec, operation))
             or labels.get("sastsimi.action-id") != spec.action_id
             or labels.get("sastsimi.attempt-id") != spec.attempt_id
             or host.get("NetworkMode") != "none"
@@ -350,8 +373,9 @@ def validate_sarif_payload(payload: bytes, *, max_bytes: int) -> bytes:
 
 __all__ = [
     "ContainerCodeQLBoundaryError",
+    "ContainerCodeQLOperation",
     "ContainerCodeQLSpec",
-    "build_container_codeql_run_argv",
+    "build_container_codeql_create_argv",
     "collect_bounded_stdout",
     "validate_container_inspect",
     "validate_sarif_payload",

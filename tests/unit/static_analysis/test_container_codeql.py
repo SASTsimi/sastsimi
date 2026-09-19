@@ -11,7 +11,7 @@ import pytest
 from sastsimi.static_analysis.container_codeql import (
     ContainerCodeQLBoundaryError,
     ContainerCodeQLSpec,
-    build_container_codeql_run_argv,
+    build_container_codeql_create_argv,
     collect_bounded_stdout,
     validate_container_inspect,
     validate_sarif_payload,
@@ -42,6 +42,7 @@ def _inspect(spec: ContainerCodeQLSpec) -> dict[str, object]:
         "Config": {
             "Image": spec.image_digest,
             "User": spec.user,
+            "Cmd": ["analyze"],
             "Labels": {
                 "sastsimi.action-id": spec.action_id,
                 "sastsimi.attempt-id": spec.attempt_id,
@@ -69,8 +70,7 @@ def _inspect(spec: ContainerCodeQLSpec) -> dict[str, object]:
                     "uid=65532,gid=65532"
                 ),
                 "/work/output": (
-                    "rw,noexec,nosuid,nodev,size=16777216,mode=0700,"
-                    "uid=65532,gid=65532"
+                    "rw,noexec,nosuid,nodev,size=16777216,mode=0700,uid=65532,gid=65532"
                 ),
             },
         },
@@ -106,11 +106,11 @@ def test_run_argv_has_only_the_fixed_codeql_container_boundary() -> None:
 
     spec = _spec()
 
-    argv = build_container_codeql_run_argv(spec)
+    argv = build_container_codeql_create_argv(spec, operation="analyze")
 
     assert argv == (
         str(spec.docker_executable.resolve()),
-        "run",
+        "create",
         "--name",
         "sastsimi-codeql-68aa90a6f9fb88217375de7f",
         "--pull",
@@ -149,10 +149,24 @@ def test_run_argv_has_only_the_fixed_codeql_container_boundary() -> None:
         "--label",
         "sastsimi.attempt-id=attempt-456",
         "sha256:" + "a" * 64,
+        "analyze",
     )
     assert "--privileged" not in argv
     assert "/var/run/docker.sock" not in " ".join(argv)
     assert str(spec.workspace_root.resolve()) not in argv
+
+
+def test_probe_create_argv_closes_exact_cap_plus_one_command() -> None:
+    spec = _spec()
+
+    argv = build_container_codeql_create_argv(spec, operation="probe")
+
+    assert argv[-4:] == (
+        spec.image_digest,
+        "probe",
+        str(spec.database_limit_bytes + 1),
+        str(spec.output_limit_bytes + 1),
+    )
 
 
 @pytest.mark.parametrize(
@@ -207,7 +221,7 @@ def test_inspect_accepts_only_the_exact_requested_boundary() -> None:
 
     spec = _spec()
 
-    validate_container_inspect(_inspect(spec), spec)
+    validate_container_inspect(_inspect(spec), spec, operation="analyze")
 
 
 @pytest.mark.parametrize(
@@ -215,6 +229,7 @@ def test_inspect_accepts_only_the_exact_requested_boundary() -> None:
     [
         lambda value: value["Config"].__setitem__("Image", "sha256:" + "b" * 64),
         lambda value: value["Config"].__setitem__("User", "0:0"),
+        lambda value: value["Config"].__setitem__("Cmd", ["probe"]),
         lambda value: value["Config"]["Labels"].__setitem__(
             "sastsimi.attempt-id", "other-attempt"
         ),
@@ -254,7 +269,7 @@ def test_inspect_rejects_security_or_mount_substitution(
     with pytest.raises(
         ContainerCodeQLBoundaryError, match="^CODEQL_CONTAINER_INSPECT_MISMATCH$"
     ):
-        validate_container_inspect(actual, spec)
+        validate_container_inspect(actual, spec, operation="analyze")
 
 
 def test_stdout_collection_is_incremental_and_bounded() -> None:
