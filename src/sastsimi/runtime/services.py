@@ -19,7 +19,7 @@ from .llm_call_service import LLMCallService
 from .policy_runtime import PolicyRuntimeService
 from .queries import RuntimeQueries
 from .recovery_service import RecoveryService
-from .transition_service import TransitionService
+from .transition_service import TransitionServicePort
 from .verification_registration import VerificationRegistrationService
 from .work_service import WorkService
 
@@ -31,7 +31,7 @@ class RuntimeServices:
     validator: RuntimeValidator
     budget_registry: BudgetProfileRegistry
     budget: BudgetService
-    transitions: TransitionService
+    transitions: TransitionServicePort
     external: ExternalCallService
     recovery: RecoveryService
     unit_of_work: UnitOfWork

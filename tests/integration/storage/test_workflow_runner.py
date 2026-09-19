@@ -1,6 +1,7 @@
 """A workflow runner must use persistent authorization and usage accounting."""
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 from sqlalchemy import func, select
@@ -12,6 +13,9 @@ from sastsimi.contracts.ids import AnalysisId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import RunStoredDataRef
 from sastsimi.contracts.work import TransitionCommit
 from sastsimi.storage import models
+from sastsimi.storage.verification_registration import (
+    VerificationRegistrationService as StoredVerificationRegistrationService,
+)
 from tests.integration.runtime_support import Harness
 
 
@@ -254,3 +258,29 @@ async def test_denied_external_call_releases_unused_reservation(tmp_path: Path) 
             ).scalar_one()
             == 0
         )
+
+
+def test_composed_runtime_transitions_is_the_real_shared_service(
+    tmp_path: Path,
+) -> None:
+    """`build_runtime`'s `transitions` field must be the fully-wired service.
+
+    It briefly regressed to constructing a throwaway
+    `runtime.transition_service.TransitionService(records)` (`.commit` only)
+    for `RuntimeServices.transitions`, instead of reusing the same
+    `storage.transition_service.TransitionService` instance already built
+    and threaded into `verification_registration`/`unit_of_work`. Nothing
+    in this codebase currently calls a method on `runtime.transitions`
+    that the thin class lacks, so the mistake was not yet a live crash
+    here - it is fixed for the same single-source-of-truth reason as the
+    rest of `build_runtime`'s wiring, and to guard against the two classes
+    diverging further while both remain in use.
+    """
+    h = Harness(tmp_path)
+    runtime = build_runtime(tmp_path, None, None, h.clock, h.ids, evidence=h.evidence)
+
+    registration_store = cast(
+        StoredVerificationRegistrationService,
+        runtime.verification_registration.store,
+    )
+    assert runtime.transitions is registration_store.transitions

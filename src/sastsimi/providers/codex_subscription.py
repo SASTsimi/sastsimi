@@ -87,7 +87,6 @@ _DISABLED_FEATURES = (
     "browser_use_external",
     "browser_use_full_cdp_access",
     "code_mode",
-    "code_mode_host",
     "computer_use",
     "current_time_reminder",
     "deferred_executor",
@@ -121,8 +120,6 @@ _DISABLED_FEATURES = (
     "unified_exec",
     "use_agent_identity",
     "view_image",
-    "web_search_cached",
-    "web_search_request",
     "workspace_dependencies",
 )
 _CONFIG_OVERRIDES = (
@@ -133,6 +130,7 @@ _CONFIG_OVERRIDES = (
     'history.persistence="none"',
     "hide_agent_reasoning=true",
     "show_raw_agent_reasoning=false",
+    "suppress_unstable_features_warning=true",
     "project_doc_max_bytes=0",
     "project_root_markers=[]",
     'shell_environment_policy.inherit="none"',

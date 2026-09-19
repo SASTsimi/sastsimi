@@ -783,9 +783,14 @@ class WorkflowRunner:
                 work.input_refs if action_input_refs is None else action_input_refs
             ),
         )
+        # An empty hypothesis batch carries no candidate_result_ref, so
+        # derive_outputs returns () without ever consulting an approval -
+        # the approval's "no output_refs" guard exists for the SAVE_RESULT
+        # case, where an output is always expected, and has nothing to
+        # protect here.
         approval = (
             self._output_approval(action, work, refs)
-            if self._output_approval is not None
+            if self._output_approval is not None and not empty_hypothesis_batch
             else nullcontext()
         )
         with approval:

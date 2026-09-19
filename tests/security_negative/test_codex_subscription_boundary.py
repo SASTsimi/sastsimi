@@ -193,7 +193,7 @@ def test_command_is_pinned_isolated_and_prompt_is_stdin_only() -> None:
         "browser_use",
         "browser_use_external",
         "browser_use_full_cdp_access",
-        "code_mode_host",
+        "code_mode",
         "computer_use",
         "hooks",
         "image_generation",
@@ -209,11 +209,18 @@ def test_command_is_pinned_isolated_and_prompt_is_stdin_only() -> None:
         "workspace_dependencies",
     ):
         assert _repeated_options(argv, "--disable").count(feature) == 1
+    for deprecated_or_noisy_feature in (
+        "code_mode_host",
+        "web_search_cached",
+        "web_search_request",
+    ):
+        assert deprecated_or_noisy_feature not in _repeated_options(argv, "--disable")
     configs = _repeated_options(argv, "--config")
     assert 'forced_login_method="chatgpt"' in configs
     assert 'model_provider="openai"' in configs
     assert 'approval_policy="never"' in configs
     assert 'web_search="disabled"' in configs
+    assert "suppress_unstable_features_warning=true" in configs
     assert "mcp_servers={}" in configs
     assert "hooks={}" in configs
     assert "project_doc_max_bytes=0" in configs

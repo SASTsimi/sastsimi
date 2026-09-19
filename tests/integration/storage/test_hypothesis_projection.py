@@ -153,3 +153,59 @@ def test_initial_proposal_work_can_succeed_with_no_candidates(tmp_path: Path) ->
 
     assert completed.status == WorkStatus.SUCCEEDED
     assert completed.output_refs == ()
+
+
+def test_empty_proposal_batch_does_not_invoke_output_approval(
+    tmp_path: Path,
+) -> None:
+    """A zero-candidate round must skip approval, not call it with empty refs.
+
+    The test above uses `prepared_hypothesis`'s runner, which is built with
+    `output_approval=None` and so never exercises the approval gate
+    production wires in - it would pass even if `complete()` called that
+    gate with an empty `output_refs` tuple. This test builds a second
+    runner on the same underlying `runtime`, with a strict approval matching
+    `ProductionOperatorProfiles.output_approval`'s real guard (reject empty
+    `output_refs`), to prove the empty-hypothesis-batch path never reaches
+    it.
+    """
+    from collections.abc import Iterator
+    from contextlib import contextmanager
+
+    from sastsimi.contracts.actions import ActionRequest
+    from sastsimi.contracts.refs import RecordRef
+    from sastsimi.contracts.work import WorkExecutionState
+    from sastsimi.runtime.workflow_runner import WorkflowRunner
+
+    h, runtime, _runner, identity, _proposal, bundle = prepared_hypothesis(tmp_path)
+    scope = runtime.budget_registry.current_state("a1").budget_binding_ref
+    assert scope is not None
+
+    @contextmanager
+    def strict_output_approval(
+        action: ActionRequest,
+        work: WorkExecutionState,
+        output_refs: tuple[RecordRef, ...],
+    ) -> Iterator[None]:
+        del action, work
+        if not output_refs:
+            raise ValueError("PRODUCTION_OUTPUT_APPROVAL_SCOPE_MISMATCH")
+        yield
+
+    strict_runner = WorkflowRunner(
+        runtime, h.clock, h.ids, output_approval=strict_output_approval
+    )
+    work = strict_runner.start(
+        scope,
+        bundle.meta,
+        "HYPOTHESIS_PROPOSAL",
+        "PROPOSAL",
+        "empty-proposal-batch-strict",
+        identity,
+        inputs=(reference(bundle),),
+    )
+
+    completed = strict_runner.complete(work, identity, "ORCHESTRATION", ())
+
+    assert completed.status == WorkStatus.SUCCEEDED
+    assert completed.output_refs == ()

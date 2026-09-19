@@ -1411,6 +1411,86 @@ async def test_approved_python_wheel_bundle_is_baked_for_offline_install(
 
 
 @pytest.mark.asyncio
+async def test_python_dependencies_are_auto_fetched_without_an_approved_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No human ever approves a dependency bundle for dynamic reproduction.
+
+    A repository's declared dependencies are a fact this pipeline reads for
+    itself and vendors offline, exactly like the approved-bundle path above -
+    just without a human supplying the archive first.
+    """
+    import subprocess
+
+    files = {
+        "app.py": b"import demo\n",
+        "requirements.txt": b"demo==1.0.0\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    profile = _repository_profile(files)
+    request, requirements, _ = _dynamic_records()
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
+    requirements = requirements.model_copy(
+        update={
+            "items": (
+                EnvironmentRequirement(
+                    requirement_id="python-version",
+                    kind="VERSION",
+                    name="python",
+                    required=True,
+                    expected="3.12",
+                    expected_ref=None,
+                    alternatives=(),
+                    check_ref=None,
+                    secret_ref=None,
+                    source_refs=(request_ref,),
+                ),
+            )
+        }
+    )
+    captured: list[tuple[str, ...]] = []
+
+    def fake_pip_download(
+        argv: tuple[str, ...], *, check: bool, capture_output: bool, timeout: float
+    ) -> subprocess.CompletedProcess[bytes]:
+        captured.append(tuple(argv))
+        dest = Path(argv[argv.index("--dest") + 1])
+        (dest / "demo-1.0.0-py3-none-any.whl").write_bytes(b"fake-wheel-bytes")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(
+        "sastsimi.sandbox.recipe_store.subprocess.run", fake_pip_download
+    )
+    artifacts = _MemoryArtifacts()
+
+    source = await _setup(FakeDockerAdapter(), artifacts=artifacts).preflight(
+        workspace_root=tmp_path,
+        repository_profile=profile,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "python-auto-fetch-source"),
+    )
+
+    assert len(captured) == 1
+    argv = captured[0]
+    assert "--only-binary=:all:" in argv
+    assert "--no-deps" not in argv
+    assert argv[argv.index("-r") + 1].endswith("requirements.txt")
+    assert source.source_manifest is not None
+    assert source.source_manifest.dependency_bundle_ref is not None
+    assert source.context_archive is not None
+    with tarfile.open(fileobj=io.BytesIO(source.context_archive), mode="r:") as archive:
+        names = set(archive.getnames())
+        dockerfile = archive.extractfile(source.dockerfile_path)
+        assert dockerfile is not None
+        dockerfile_bytes = dockerfile.read()
+    assert ".sastsimi/dependencies/python/demo-1.0.0-py3-none-any.whl" in names
+    assert b"python -m pip install --no-index" in dockerfile_bytes
+
+
+@pytest.mark.asyncio
 async def test_approved_npm_cache_bundle_is_baked_for_offline_install(
     tmp_path: Path,
 ) -> None:

@@ -10,7 +10,10 @@ import json
 import os
 import re
 import stat
+import subprocess
+import sys
 import tarfile
+import tempfile
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -24,6 +27,7 @@ from sastsimi.contracts.dynamic import (
     EnvironmentRecipe,
     EnvironmentRecipeSourceManifest,
     EnvironmentRequirements,
+    dependency_bundle_target_hash,
 )
 from sastsimi.contracts.ids import LogicalRecordId, RecordId, StoredDataId
 from sastsimi.contracts.records import RecordMeta
@@ -731,6 +735,20 @@ class EnvironmentRecipeStore:
                 raise ValueError("REPOSITORY_SECRET_FILE_DENIED")
             entries[path] = value
 
+        if dependency_bundle is None:
+            # Dynamic reproduction runs unattended end to end - a repository's
+            # declared dependencies are a fact about the repository, not a
+            # judgement call, so this fetches and vendors exactly what pip
+            # would resolve itself instead of stopping for a human to
+            # pre-approve an offline archive.
+            dependency_bundle = self._auto_fetch_dependency_bundle(
+                repository_profile=repository_profile,
+                entries=entries,
+                request_ref=request_ref,
+                profile_ref=profile_ref,
+                meta=meta,
+            )
+
         bundle_ref: StoredDataRef | None = None
         if dependency_bundle is not None:
             bundle_entries, bundle_ref = self._dependency_bundle_entries(
@@ -826,6 +844,146 @@ class EnvironmentRecipeStore:
             context_archive=archive,
             context_digest=hashlib.sha256(archive).hexdigest(),
             source_manifest=source_manifest,
+        )
+
+    def _auto_fetch_dependency_bundle(
+        self,
+        *,
+        repository_profile: RepositoryProfile,
+        entries: Mapping[str, tuple[bytes, int]],
+        request_ref: StoredDataRef,
+        profile_ref: StoredDataRef,
+        meta: RecordMeta,
+    ) -> DependencyBundle | None:
+        """Fetch and vendor a Python repository's own declared dependencies.
+
+        Wheels only (`--only-binary=:all:`): a source distribution can run
+        arbitrary code at build time, and this runs with real network access
+        on the host, before the offline (`--network none`) sandbox build
+        ever starts (`docker_adapter.py`). Node/`NPM_CACHE` is left to an
+        explicitly supplied bundle for now - `npm ci` has no equivalent
+        single-command wheels-only fetch, so an unattended default for it
+        needs its own separate treatment, not this one extended.
+        """
+        try:
+            family = self._repository_family(repository_profile)
+        except ValueError:
+            return None
+        if family != "PYTHON":
+            return None
+        requirement_paths = tuple(
+            item.path
+            for item in repository_profile.config_files
+            if item.kind == "REQUIREMENTS" and item.path in entries
+        )
+        pyproject_paths = tuple(
+            item.path
+            for item in repository_profile.config_files
+            if item.kind == "PYPROJECT" and item.path in entries
+        )
+        if len(requirement_paths) > 1 or (
+            not requirement_paths and len(pyproject_paths) > 1
+        ):
+            # Ambiguous manifest selection is its own confirmation gate
+            # (`_dependency_install`, same file) - fall through to it rather
+            # than guessing which file to fetch from.
+            return None
+        if requirement_paths and entries[requirement_paths[0]][0].strip():
+            spec = entries[requirement_paths[0]][0]
+        elif pyproject_paths:
+            try:
+                project = tomllib.loads(entries[pyproject_paths[0]][0].decode("utf-8"))
+            except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+                raise ValueError("DEPENDENCY_FILE_UNPARSEABLE") from error
+            declared = project.get("project", {}).get("dependencies", ())
+            build_requires = project.get("build-system", {}).get("requires", ())
+            if not (declared or build_requires):
+                return None
+            spec = "\n".join((*declared, *build_requires)).encode("utf-8")
+        else:
+            return None
+        if self._artifacts is None:
+            raise ValueError("RECIPE_ARTIFACT_STORE_REQUIRED")
+
+        with tempfile.TemporaryDirectory(prefix="sastsimi-dep-fetch-") as raw_tmp:
+            tmp = Path(raw_tmp)
+            spec_file = tmp / "requirements.txt"
+            spec_file.write_bytes(spec)
+            download_dir = tmp / "wheels"
+            download_dir.mkdir()
+            try:
+                subprocess.run(  # noqa: S603
+                    (
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "download",
+                        "--no-cache-dir",
+                        "--only-binary=:all:",
+                        "--dest",
+                        str(download_dir),
+                        "-r",
+                        str(spec_file),
+                    ),
+                    check=True,
+                    capture_output=True,
+                    timeout=120,
+                )
+            except (
+                subprocess.CalledProcessError,
+                subprocess.TimeoutExpired,
+                OSError,
+            ) as error:
+                raise ValueError("DEPENDENCY_AUTO_FETCH_FAILED") from error
+            wheels = sorted(download_dir.glob("*.whl"))
+            if not wheels:
+                raise ValueError("DEPENDENCY_AUTO_FETCH_FAILED")
+            wheel_entries = {
+                wheel.name: (wheel.read_bytes(), 0o644) for wheel in wheels
+            }
+
+        archive = self._archive(wheel_entries)
+        if len(archive) > _MAX_BUILD_CONTEXT_BYTES:
+            raise ValueError("RECIPE_BUILD_CONTEXT_LIMIT_EXCEEDED")
+        archive_digest = hashlib.sha256(archive).hexdigest()
+        staged = self._artifacts.stage_bytes(archive, "application/x-tar")
+        archive_ref = self._artifacts.commit(staged)
+        if archive_ref.content_hash != archive_digest:
+            raise ValueError("DEPENDENCY_BUNDLE_ARTIFACT_INVALID")
+        input_hash = dependency_input_hash(repository_profile)
+        target_hash = dependency_bundle_target_hash(
+            request_ref=request_ref,
+            ecosystem="PYTHON_WHEELS",
+            repository_profile_ref=profile_ref,
+            dependency_input_hash=input_hash,
+            archive_ref=archive_ref,
+            archive_digest=archive_digest,
+        )
+        bundle_meta = RecordMeta.model_validate(
+            meta.model_dump()
+            | {
+                "record_id": RecordId(f"dependency-bundle-{target_hash}"),
+                "logical_record_id": LogicalRecordId(
+                    f"dependency-bundle-{target_hash}"
+                ),
+                "record_type": "dependency_bundle",
+                "revision_number": 1,
+                "previous_record_id": None,
+            }
+        )
+        return DependencyBundle(
+            meta=bundle_meta,
+            request_ref=request_ref,
+            repository_profile_ref=profile_ref,
+            ecosystem="PYTHON_WHEELS",
+            dependency_input_hash=input_hash,
+            archive_ref=archive_ref,
+            archive_digest=archive_digest,
+            archive_format="TAR",
+            approval_target_hash=target_hash,
+            approved_by="sastsimi-automatic-dependency-fetch",
+            approved_by_role="AUTOMATIC",
+            approved_at=meta.created_at,
         )
 
     def _dependency_bundle_entries(

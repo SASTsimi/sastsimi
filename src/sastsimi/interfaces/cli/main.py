@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import re
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn, cast
 from uuid import uuid4
@@ -23,6 +22,7 @@ from sastsimi.interfaces.cli import result as result_command
 from sastsimi.interfaces.cli import status as status_command
 from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.output import emit_data, emit_result
+from sastsimi.runtime.system_support import SystemClock
 
 
 class _InputError(ValueError):
@@ -348,14 +348,14 @@ def main(
                     manifest_path=args.manifest,
                     evidence_paths=tuple(args.evidence),
                     repository_root=repository_root,
-                    clock=lambda: datetime.now(UTC),
+                    clock=SystemClock().now,
                 )
             else:
                 onboarding_result = onboarding_command.run_status(
                     config.data_dir,
                     profile=profile,
                     repository_root=repository_root,
-                    clock=lambda: datetime.now(UTC),
+                    clock=SystemClock().now,
                 )
             emit_data(
                 output_format,
