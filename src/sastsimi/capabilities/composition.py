@@ -201,6 +201,7 @@ def _build_production_engine(
         _UuidIds(),
         evidence=authority,
         capability_host_id=host_id,
+        protected_artifact_refs=store.evidence_refs,
     )
     operating_system, architecture = _host_platform()
     allowed_executables = frozenset({"git", "opengrep", "docker", "codeql"})

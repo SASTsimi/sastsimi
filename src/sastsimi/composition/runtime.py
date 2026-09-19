@@ -844,6 +844,7 @@ def _build_runtime(
     llm_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter] | None = None,
     capability_host_id: str | None = None,
     chaining_lineage: ChainingLineagePort | None = None,
+    protected_artifact_refs: Callable[[], tuple[StoredDataRef, ...]] | None = None,
     *,
     validator_factory: Callable[..., SQLiteRuntimeValidator],
     bind_sqlite_chaining_lineage: bool = False,
@@ -927,7 +928,13 @@ def _build_runtime(
         chaining_lineage=effective_chaining_lineage,
     )
     unit = SQLiteUnitOfWork(records, artifacts, transitions)
-    recovery = RecoveryService(SQLiteRecovery(transitions, recovery_identity_ref))
+    recovery = RecoveryService(
+        SQLiteRecovery(
+            transitions,
+            recovery_identity_ref,
+            protected_artifact_refs=protected_artifact_refs,
+        )
+    )
     recovery.recover()
     validator = RuntimeValidator(authorization)
     external = ExternalCallService(validator)
@@ -1010,6 +1017,7 @@ def build_runtime(
     llm_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter] | None = None,
     capability_host_id: str | None = None,
     chaining_lineage: ChainingLineagePort | None = None,
+    protected_artifact_refs: Callable[[], tuple[StoredDataRef, ...]] | None = None,
 ) -> RuntimeServices:
     """Compose the production runtime without fake output capabilities."""
     return _build_runtime(
@@ -1026,6 +1034,7 @@ def build_runtime(
         llm_adapters,
         capability_host_id,
         chaining_lineage,
+        protected_artifact_refs,
         validator_factory=SQLiteRuntimeValidator,
         bind_sqlite_chaining_lineage=True,
     )

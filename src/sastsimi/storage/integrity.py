@@ -2,7 +2,7 @@
 
 import hashlib
 import os
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 
 from pydantic import BaseModel
@@ -44,6 +44,7 @@ def verify(
     artifacts: LocalArtifactStore,
     *,
     quarantine: bool = True,
+    protected_artifact_refs: Iterable[StoredDataRef | RunStoredDataRef] = (),
 ) -> IntegrityReport:
     with records.database.engine.connect() as connection:
         connection.exec_driver_sql("BEGIN")
@@ -56,6 +57,10 @@ def verify(
                 != digest
             ):
                 raise ValueError("HASH_MISMATCH")
+        for protected_ref in protected_artifact_refs:
+            with artifacts.open_verified(protected_ref) as stream:
+                stream.read()
+            digests.add(protected_ref.content_hash)
         for wire in connection.execute(
             select(models.records.c.ref).join(models.record_revisions)
         ).scalars():

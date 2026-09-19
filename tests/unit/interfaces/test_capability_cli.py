@@ -2,12 +2,24 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from sastsimi.interfaces.cli.main import main
+
+
+def _run_isolated_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "sastsimi", *arguments],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 def test_capability_probe_and_list_emit_only_sanitized_structured_data(
@@ -106,6 +118,90 @@ def test_capability_approve_rejects_wrong_exact_target_hash_safely(
     }
     assert "APPROVAL_TARGET_MISMATCH" not in json.dumps(denied)
     assert "TEST_ONLY_PRIVATE_PATH" not in json.dumps(denied)
+
+
+def test_capability_probe_can_be_approved_by_a_separate_cli_process(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "TEST_ONLY_PRIVATE_PATH"
+    common = ("--data-dir", str(data_dir), "capability")
+
+    probed = _run_isolated_cli(
+        *common,
+        "probe",
+        "PYTHON_AST",
+        "--format",
+        "json",
+    )
+    assert probed.returncode == 0, probed.stderr
+    probe = json.loads(probed.stdout)["data"]
+
+    orphan = b"unreferenced-artifact"
+    orphan_hash = hashlib.sha256(orphan).hexdigest()
+    orphan_path = (
+        data_dir / "artifacts" / "sha256" / orphan_hash[:2] / orphan_hash[2:]
+    )
+    orphan_path.parent.mkdir(parents=True, exist_ok=True)
+    orphan_path.write_bytes(orphan)
+
+    approved = _run_isolated_cli(
+        *common,
+        "approve",
+        probe["probe_id"],
+        "--target-hash",
+        probe["approval_target_hash"],
+        "--format",
+        "json",
+    )
+    assert approved.returncode == 0, approved.stderr
+    activation = json.loads(approved.stdout)["data"]
+    assert activation["probe_id"] == probe["probe_id"]
+    assert activation["status"] == "ACTIVE"
+    assert activation["profile_ref"]["content_hash"]
+    assert "TEST_ONLY_PRIVATE_PATH" not in approved.stdout
+
+    listed = _run_isolated_cli(*common, "list", "--format", "json")
+    assert listed.returncode == 0, listed.stderr
+    saved = json.loads(listed.stdout)["data"]["probes"]
+    assert len(saved) == 1
+    assert saved[0]["approved_profile_ref"] == activation["profile_ref"]
+    assert not orphan_path.exists()
+    assert (data_dir / "quarantine" / orphan_hash).read_bytes() == orphan
+
+
+def test_capability_approval_rejects_corrupt_persisted_probe_evidence(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "TEST_ONLY_PRIVATE_PATH"
+    common = ("--data-dir", str(data_dir), "capability")
+    probed = _run_isolated_cli(
+        *common,
+        "probe",
+        "PYTHON_AST",
+        "--format",
+        "json",
+    )
+    assert probed.returncode == 0, probed.stderr
+    probe = json.loads(probed.stdout)["data"]
+    evidence_files = tuple((data_dir / "artifacts" / "sha256").glob("*/*"))
+    assert len(evidence_files) == 1
+    evidence_files[0].write_bytes(b"corrupt-evidence")
+
+    denied = _run_isolated_cli(
+        *common,
+        "approve",
+        probe["probe_id"],
+        "--target-hash",
+        probe["approval_target_hash"],
+        "--format",
+        "json",
+    )
+    assert denied.returncode == 4
+    assert denied.stdout == ""
+    response = json.loads(denied.stderr)
+    assert response["code"] == "CAPABILITY_UNSUPPORTED"
+    assert response["data"]["status"] == "BLOCKED"
+    assert "TEST_ONLY_PRIVATE_PATH" not in denied.stderr
 
 
 def test_codeql_capability_probe_requires_an_explicit_production_profile(
