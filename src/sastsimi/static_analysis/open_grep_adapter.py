@@ -1201,6 +1201,7 @@ class OpenGrepProcessAdapter:
             str(self.inputs.config_path),
             "--json",
             "--time",
+            "--no-rewrite-rule-ids",
             "--disable-version-check",
             "--",
         )

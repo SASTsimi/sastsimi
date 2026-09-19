@@ -1015,6 +1015,7 @@ class _CapabilityProbeEngine:
                     "--config",
                     str(rule),
                     "--json",
+                    "--no-rewrite-rule-ids",
                     "--disable-version-check",
                     str(python_source),
                     str(javascript_source),

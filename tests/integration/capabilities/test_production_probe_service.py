@@ -736,6 +736,12 @@ def test_activation_requires_actual_operations_not_only_version(
         command == "opengrep" and "scan" in arguments
         for command, arguments in flattened
     )
+    opengrep_scan = next(
+        arguments
+        for command, arguments in commands.calls
+        if command == "opengrep" and "scan" in arguments
+    )
+    assert "--no-rewrite-rule-ids" in opengrep_scan
     assert any(
         command == "docker" and "build" in arguments for command, arguments in flattened
     )

@@ -391,6 +391,7 @@ def _one_target_limit(value: dict[str, object]) -> int:
         str(value["config"]),
         "--json",
         "--time",
+        "--no-rewrite-rule-ids",
         "--disable-version-check",
         "--",
     )
@@ -755,16 +756,17 @@ async def test_scan_uses_fixed_options_explicit_targets_and_deterministic_batche
     assert result.status == "SUCCEEDED"
     flattened: list[str] = []
     for spec in scans:
-        assert spec.argv[1:8] == (
+        assert spec.argv[1:9] == (
             "scan",
             "--config",
             str(opengrep_fixture["config"]),
             "--json",
             "--time",
+            "--no-rewrite-rule-ids",
             "--disable-version-check",
             "--",
         )
-        flattened.extend(spec.argv[8:])
+        flattened.extend(spec.argv[9:])
         assert spec.deadline is scans[0].deadline
     assert flattened == sorted(request.action.file_paths)
     assert "-option.py" in flattened
@@ -1079,6 +1081,7 @@ async def test_one_target_that_cannot_fit_fails_before_probe_or_scan(
         str(opengrep_fixture["config"]),
         "--json",
         "--time",
+        "--no-rewrite-rule-ids",
         "--disable-version-check",
         "--",
     )
