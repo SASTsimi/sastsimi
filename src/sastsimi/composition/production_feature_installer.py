@@ -31,6 +31,7 @@ from sastsimi.composition.runtime import (
 )
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
+from sastsimi.contracts.budget import Purpose
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.dynamic import DependencyBundle, DynamicReproductionRequest
 from sastsimi.contracts.hypothesis import HypothesisProcessState
@@ -120,6 +121,14 @@ class PolicyProductionFeature:
     catalog: ProgramCatalog
     source: OfficialHttpPolicySource
     handler: PolicyWorkHandler
+
+
+@dataclass(frozen=True, slots=True)
+class LocalPolicyFeature:
+    """Run-scoped policy state for LOCAL_EVALUATION without official-policy claims."""
+
+    handler: WorkHandler
+    seeder: PostWorkspaceSeederPort
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,7 +236,7 @@ class CurrentRepositoryProfileT11Resolver:
 @dataclass(frozen=True, slots=True)
 class ProductionFeatureInputs:
     t08: T08ProductionFeature
-    policy: PolicyProductionFeature
+    policy: PolicyProductionFeature | LocalPolicyFeature
     dynamic: DynamicProductionFeature
     calls: ProductionCallPort
     verification_policy_ref: StoredDataRef
@@ -650,7 +659,7 @@ class ProductionFeatureInstaller:
             handlers=tuple(handlers.items()),
             seeder=CombinedPostWorkspaceSeeder(
                 self.inputs.t08.seeder,
-                OfficialPolicyPostWorkspaceSeeder(context, self.inputs.policy.catalog),
+                self._policy_seeder(context),
                 parent_resume.reconcile_pending,
             ),
             readiness=ExactProductionReadiness(
@@ -674,22 +683,9 @@ class ProductionFeatureInstaller:
                 != (context.scope.workspace_id, context.scope.commit_id)
                 for ref in refs
             )
-            or not isinstance(self.inputs.policy.source, OfficialHttpPolicySource)
-            or not isinstance(self.inputs.policy.handler, PolicyWorkHandler)
-            or getattr(
-                getattr(self.inputs.policy.handler, "_service", None),
-                "_source",
-                None,
-            )
-            is not self.inputs.policy.source
-            or getattr(
-                getattr(self.inputs.policy.handler, "_service", None),
-                "_catalog",
-                None,
-            )
-            is not self.inputs.policy.catalog
         ):
             raise ProductionCapabilityUnavailable("PRODUCTION_FEATURE_INPUT_NOT_EXACT")
+        _require_policy_feature(context, self.inputs.policy)
         for component in (
             self.inputs.t08.workspace_prep,
             self.inputs.t08.repository_profile,
@@ -710,6 +706,14 @@ class ProductionFeatureInstaller:
         if not self.inputs.dynamic.resource_journal_path.is_absolute():
             raise ProductionCapabilityUnavailable("PRODUCTION_DYNAMIC_CONFIG_INVALID")
 
+    def _policy_seeder(
+        self, context: ProductionInstallationContext
+    ) -> PostWorkspaceSeederPort:
+        policy = self.inputs.policy
+        if isinstance(policy, LocalPolicyFeature):
+            return policy.seeder
+        return OfficialPolicyPostWorkspaceSeeder(context, policy.catalog)
+
 
 def _stored_identity(
     context: ProductionInstallationContext, role: RequesterRole
@@ -718,6 +722,32 @@ def _stored_identity(
     if not isinstance(value, StoredDataRef):
         raise ProductionCapabilityUnavailable(f"{role.value}_IDENTITY_REQUIRED")
     return value
+
+
+def _require_policy_feature(
+    context: ProductionInstallationContext,
+    policy: PolicyProductionFeature | LocalPolicyFeature,
+) -> None:
+    if isinstance(policy, PolicyProductionFeature):
+        if (
+            context.request.purpose != Purpose.PRODUCTION
+            or not isinstance(policy.source, OfficialHttpPolicySource)
+            or not isinstance(policy.handler, PolicyWorkHandler)
+            or getattr(getattr(policy.handler, "_service", None), "_source", None)
+            is not policy.source
+            or getattr(getattr(policy.handler, "_service", None), "_catalog", None)
+            is not policy.catalog
+        ):
+            raise ProductionCapabilityUnavailable("PRODUCTION_FEATURE_INPUT_NOT_EXACT")
+        return
+    if (
+        context.request.purpose != Purpose.LOCAL_EVALUATION
+        or not callable(getattr(policy.handler, "execute", None))
+        or not callable(getattr(policy.seeder, "ensure_initial", None))
+        or "fake" in type(policy.handler).__module__.casefold()
+        or "fake" in type(policy.seeder).__module__.casefold()
+    ):
+        raise ProductionCapabilityUnavailable("LOCAL_POLICY_FEATURE_INVALID")
 
 
 def _stored_inputs(work: WorkExecutionState) -> tuple[StoredDataRef, ...]:
@@ -732,6 +762,7 @@ __all__ = [
     "CurrentRepositoryProfileT11Resolver",
     "DynamicProductionFeature",
     "ExactProductionReadiness",
+    "LocalPolicyFeature",
     "OfficialPolicyPostWorkspaceSeeder",
     "PolicyProductionFeature",
     "ProductionFeatureInputs",

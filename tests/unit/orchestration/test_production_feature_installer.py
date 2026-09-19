@@ -15,8 +15,11 @@ from sastsimi.composition.production_feature_installer import (
     CombinedPostWorkspaceSeeder,
     CurrentRepositoryProfileT11Resolver,
     ExactProductionReadiness,
+    LocalPolicyFeature,
+    _require_policy_feature,
 )
 from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
+from sastsimi.contracts.budget import Purpose
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.ids import (
     AnalysisId,
@@ -48,6 +51,11 @@ class _Seeder:
         del request, state, binding_ref
         self.calls += 1
         return (WorkExecutionState.model_construct(work_id=WorkId(self.work_id)),)
+
+
+class _PolicyHandler:
+    async def execute(self, context: object) -> object:
+        return context
 
 
 class _Records:
@@ -163,6 +171,25 @@ def test_combined_seeder_starts_static_and_official_policy_once() -> None:
         WorkId("official-policy"),
     )
     assert static.calls == policy.calls == 1
+
+
+def test_local_policy_feature_is_allowed_only_for_local_evaluation() -> None:
+    feature = LocalPolicyFeature(_PolicyHandler(), _Seeder("local-policy"))
+    local_context = cast(
+        Any,
+        SimpleNamespace(request=SimpleNamespace(purpose=Purpose.LOCAL_EVALUATION)),
+    )
+
+    _require_policy_feature(local_context, feature)
+
+    production_context = cast(
+        Any,
+        SimpleNamespace(request=SimpleNamespace(purpose=Purpose.PRODUCTION)),
+    )
+    with pytest.raises(
+        ProductionCapabilityUnavailable, match="LOCAL_POLICY_FEATURE_INVALID"
+    ):
+        _require_policy_feature(production_context, feature)
 
 
 def test_readiness_fails_closed_when_exact_commit_changes() -> None:
