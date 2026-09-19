@@ -8,6 +8,7 @@ No Fake adapter, fallback handler, or guessed capability is accepted.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -180,6 +181,27 @@ class DynamicProductionFeature:
     dependency_bundle: DependencyBundle | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class LocalUnavailableDynamicFeature:
+    """Explicit local boundary when no approved dedicated Docker target exists."""
+
+    sandbox_profile: Callable[[WorkExecutionState], StoredDataRef]
+    reason_code: str
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(r"[A-Z0-9_]{1,96}", self.reason_code) is None:
+            raise ValueError("LOCAL_DYNAMIC_REASON_INVALID")
+
+
+@dataclass(frozen=True, slots=True)
+class _UnavailableDynamicWorkHandler:
+    reason_code: str
+
+    async def execute(self, context: WorkContext) -> WorkHandlerResult:
+        del context
+        raise RuntimeError(self.reason_code)
+
+
 type T11Builder = Callable[[RepositoryProfile, Path], T11Services]
 
 
@@ -237,7 +259,7 @@ class CurrentRepositoryProfileT11Resolver:
 class ProductionFeatureInputs:
     t08: T08ProductionFeature
     policy: PolicyProductionFeature | LocalPolicyFeature
-    dynamic: DynamicProductionFeature
+    dynamic: DynamicProductionFeature | LocalUnavailableDynamicFeature
     calls: ProductionCallPort
     verification_policy_ref: StoredDataRef
     verification_playbook_ref: StoredDataRef
@@ -518,39 +540,45 @@ class ProductionFeatureInstaller:
             verification_identity_ref=verification_identity,
         )
 
-        def build_t11(profile: RepositoryProfile, root: Path) -> T11Services:
-            return build_t11_services(
-                runtime=runtime,
-                runner=runner,
-                clock=context.clock,
-                ids=context.ids,
-                workspace_root=root,
-                workspace_id=context.scope.workspace_id,
-                commit_id=context.scope.commit_id,
-                role_identity_refs=context.role_identity_refs,
-                sandbox_authorization=self.inputs.dynamic.sandbox_authorization,
-                dynamic_calls=self.inputs.calls,
-                max_execute_turns=self.inputs.dynamic.max_execute_turns,
-                verification=t10.verification,
-                repository_profile=profile,
-                resource_journal_path=self.inputs.dynamic.resource_journal_path,
-                docker_profile_ref=self.inputs.dynamic.docker_profile_ref,
-                docker_target_resolver=self.inputs.dynamic.docker_target_resolver,
-                dependency_bundle=self.inputs.dynamic.dependency_bundle,
+        dynamic = self.inputs.dynamic
+        if isinstance(dynamic, LocalUnavailableDynamicFeature):
+            dynamic_handler: WorkHandler = _UnavailableDynamicWorkHandler(
+                dynamic.reason_code
             )
+        else:
+            def build_t11(profile: RepositoryProfile, root: Path) -> T11Services:
+                return build_t11_services(
+                    runtime=runtime,
+                    runner=runner,
+                    clock=context.clock,
+                    ids=context.ids,
+                    workspace_root=root,
+                    workspace_id=context.scope.workspace_id,
+                    commit_id=context.scope.commit_id,
+                    role_identity_refs=context.role_identity_refs,
+                    sandbox_authorization=dynamic.sandbox_authorization,
+                    dynamic_calls=self.inputs.calls,
+                    max_execute_turns=dynamic.max_execute_turns,
+                    verification=t10.verification,
+                    repository_profile=profile,
+                    resource_journal_path=dynamic.resource_journal_path,
+                    docker_profile_ref=dynamic.docker_profile_ref,
+                    docker_target_resolver=dynamic.docker_target_resolver,
+                    dependency_bundle=dynamic.dependency_bundle,
+                )
 
-        dynamic_services = CurrentRepositoryProfileT11Resolver(
-            records=records,
-            queries=runtime.queries,
-            workspace_for=workspace_for,
-            workspace_locator=self.inputs.t08.workspace_locator,
-            build=build_t11,
-        )
-        dynamic_handler = DynamicReproductionWorkHandler(
-            records=records,
-            services_for=dynamic_services,
-            parent_resume=parent_resume,
-        )
+            dynamic_services = CurrentRepositoryProfileT11Resolver(
+                records=records,
+                queries=runtime.queries,
+                workspace_for=workspace_for,
+                workspace_locator=self.inputs.t08.workspace_locator,
+                build=build_t11,
+            )
+            dynamic_handler = DynamicReproductionWorkHandler(
+                records=records,
+                services_for=dynamic_services,
+                parent_resume=parent_resume,
+            )
         dynamic_handoff = ProductionDynamicVerificationHandoff(
             records=records,
             queries=runtime.queries,
@@ -561,7 +589,7 @@ class ProductionFeatureInstaller:
             dynamic_registration=runtime.dynamic_registration,
             verification_identity_ref=verification_identity,
             budget_scope=budget_scope,
-            sandbox_profile=self.inputs.dynamic.sandbox_profile,
+            sandbox_profile=dynamic.sandbox_profile,
         )
 
         verification = VerificationWorkHandler(
@@ -686,7 +714,7 @@ class ProductionFeatureInstaller:
         ):
             raise ProductionCapabilityUnavailable("PRODUCTION_FEATURE_INPUT_NOT_EXACT")
         _require_policy_feature(context, self.inputs.policy)
-        for component in (
+        components: tuple[object, ...] = (
             self.inputs.t08.workspace_prep,
             self.inputs.t08.repository_profile,
             self.inputs.t08.static_tool,
@@ -694,16 +722,25 @@ class ProductionFeatureInstaller:
             self.inputs.t08.context_retrieval,
             self.inputs.t08.seeder,
             self.inputs.t08.workspace_locator,
-            self.inputs.dynamic.sandbox_authorization,
-            self.inputs.dynamic.sandbox_profile,
-            self.inputs.dynamic.docker_target_resolver,
-            self.inputs.dynamic.docker,
             self.inputs.calls,
             self.inputs.external_cancellation,
-        ):
+        )
+        if isinstance(self.inputs.dynamic, DynamicProductionFeature):
+            components = (
+                *components,
+                self.inputs.dynamic.sandbox_authorization,
+                self.inputs.dynamic.sandbox_profile,
+                self.inputs.dynamic.docker_target_resolver,
+                self.inputs.dynamic.docker,
+            )
+        elif context.request.purpose != Purpose.LOCAL_EVALUATION:
+            raise ProductionCapabilityUnavailable("LOCAL_DYNAMIC_FEATURE_INVALID")
+        for component in components:
             if "fake" in type(component).__module__.casefold():
                 raise ProductionCapabilityUnavailable("FAKE_PRODUCTION_COMPONENT")
-        if not self.inputs.dynamic.resource_journal_path.is_absolute():
+        if isinstance(self.inputs.dynamic, DynamicProductionFeature) and not (
+            self.inputs.dynamic.resource_journal_path.is_absolute()
+        ):
             raise ProductionCapabilityUnavailable("PRODUCTION_DYNAMIC_CONFIG_INVALID")
 
     def _policy_seeder(
@@ -763,6 +800,7 @@ __all__ = [
     "DynamicProductionFeature",
     "ExactProductionReadiness",
     "LocalPolicyFeature",
+    "LocalUnavailableDynamicFeature",
     "OfficialPolicyPostWorkspaceSeeder",
     "PolicyProductionFeature",
     "ProductionFeatureInputs",

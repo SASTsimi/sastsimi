@@ -16,6 +16,7 @@ from sastsimi.composition.production_feature_installer import (
     CurrentRepositoryProfileT11Resolver,
     ExactProductionReadiness,
     LocalPolicyFeature,
+    LocalUnavailableDynamicFeature,
     _require_policy_feature,
 )
 from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
@@ -190,6 +191,20 @@ def test_local_policy_feature_is_allowed_only_for_local_evaluation() -> None:
         ProductionCapabilityUnavailable, match="LOCAL_POLICY_FEATURE_INVALID"
     ):
         _require_policy_feature(production_context, feature)
+
+
+def test_local_unavailable_dynamic_feature_requires_safe_reason() -> None:
+    with pytest.raises(ValueError, match="LOCAL_DYNAMIC_REASON_INVALID"):
+        LocalUnavailableDynamicFeature(
+            sandbox_profile=lambda _work: StoredDataRef.model_construct(),
+            reason_code="contains local path C:/secret",
+        )
+
+    feature = LocalUnavailableDynamicFeature(
+        sandbox_profile=lambda _work: StoredDataRef.model_construct(),
+        reason_code="LOCAL_DOCKER_CAPABILITY_BLOCKED",
+    )
+    assert feature.reason_code == "LOCAL_DOCKER_CAPABILITY_BLOCKED"
 
 
 def test_readiness_fails_closed_when_exact_commit_changes() -> None:
