@@ -37,7 +37,7 @@ from sastsimi.contracts.ids import (
 )
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
-from sastsimi.contracts.static import StaticToolProfile
+from sastsimi.contracts.static import CodeQLBoundaryCapability, StaticToolProfile
 from sastsimi.contracts.work import (
     SubjectType,
     WorkExecutionState,
@@ -56,6 +56,20 @@ from tests.integration.runtime_support import TestClock, TestIds
 from tests.integration.trusted_fixture import FixtureEvidence
 
 NOW = datetime(2026, 9, 12, tzinfo=UTC)
+
+
+def _codeql_boundary() -> CodeQLBoundaryCapability:
+    return CodeQLBoundaryCapability(
+        quota_backend_key="test-quota",
+        quota_enforcement_identity_sha256="1" * 64,
+        database_limit_bytes=8_192,
+        execution_limit_bytes=4_096,
+        database_provider_key="test-provider",
+        database_provider_revision="1",
+        database_provider_evidence_sha256="2" * 64,
+        supported_languages=("PYTHON", "JAVASCRIPT"),
+        prebuilt_database_only=True,
+    )
 
 
 def _placeholder_ref(host_id: str = "host-a") -> HostConfigurationRef:
@@ -213,11 +227,20 @@ def _approval(
             "execution_target_hash": (
                 profile.execution_target_hash
                 if isinstance(profile, RuntimeCapabilityProfile)
-                else None
+                else (
+                    content_hash(profile.codeql_boundary)
+                    if profile.codeql_boundary is not None
+                    else None
+                )
             ),
             "docker_build_capability": (
                 profile.docker_build_capability
                 if isinstance(profile, RuntimeCapabilityProfile)
+                else None
+            ),
+            "codeql_boundary": (
+                profile.codeql_boundary
+                if isinstance(profile, StaticToolProfile)
                 else None
             ),
             "operating_system": "windows",
@@ -378,6 +401,9 @@ def test_minimum_static_routes_are_representable(
             "executable_sha256": "d" * 64,
             "expected_version": "1.0.0",
             "capability_evidence_ref": _placeholder_ref(),
+            "codeql_boundary": (
+                _codeql_boundary() if adapter_key == "CODEQL" else None
+            ),
             "probe_timeout_ms": 1_000,
             "run_timeout_ms": 30_000,
             "stdout_limit_bytes": 1_024,
@@ -423,6 +449,9 @@ def test_minimum_static_capability_can_be_activated_and_resolved(
             "executable_sha256": "d" * 64,
             "expected_version": "1.0.0",
             "capability_evidence_ref": _placeholder_ref(),
+            "codeql_boundary": (
+                _codeql_boundary() if adapter_key == "CODEQL" else None
+            ),
             "probe_timeout_ms": 1_000,
             "run_timeout_ms": 30_000,
             "stdout_limit_bytes": 1_024,

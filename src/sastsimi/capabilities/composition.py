@@ -21,7 +21,10 @@ from sastsimi.contracts.capabilities import (
 from sastsimi.contracts.ids import CommitId, OpaqueId, WorkspaceId
 from sastsimi.contracts.refs import HostConfigurationRef
 from sastsimi.ports.dynamic_sandbox import TrustedDockerTarget
-from sastsimi.ports.static_tool import ProductionStaticOutputQuotaPort
+from sastsimi.ports.static_tool import (
+    PrebuiltCodeQLDatabasePort,
+    ProductionStaticOutputQuotaPort,
+)
 from sastsimi.runtime.system_support import SystemClock
 from sastsimi.storage.database import Database
 from sastsimi.storage.migrations import upgrade
@@ -101,6 +104,7 @@ class ProductionCapabilityProbeService:
         executable_paths: Mapping[str, Path],
         docker_host: str | None,
         static_output_quota: ProductionStaticOutputQuotaPort | None = None,
+        codeql_database_provider: PrebuiltCodeQLDatabasePort | None = None,
         codeql_database_limit_bytes: int | None = None,
     ) -> None:
         self.__engine = _build_production_engine(
@@ -109,6 +113,7 @@ class ProductionCapabilityProbeService:
             executable_paths=executable_paths,
             docker_host=docker_host,
             static_output_quota=static_output_quota,
+            codeql_database_provider=codeql_database_provider,
             codeql_database_limit_bytes=codeql_database_limit_bytes,
         )
 
@@ -172,6 +177,7 @@ def _build_production_engine(
     executable_paths: Mapping[str, Path],
     docker_host: str | None,
     static_output_quota: ProductionStaticOutputQuotaPort | None = None,
+    codeql_database_provider: PrebuiltCodeQLDatabasePort | None = None,
     codeql_database_limit_bytes: int | None = None,
 ) -> _CapabilityProbeEngine:
     if not host_id.strip():
@@ -240,6 +246,7 @@ def _build_production_engine(
         scratch_root=data_dir / "probe-scratch",
         docker_build_capability_probe=docker_boundary_probe,
         static_output_quota=static_output_quota,
+        codeql_database_provider=codeql_database_provider,
         codeql_database_limit_bytes=codeql_database_limit_bytes,
     )
 
@@ -251,6 +258,7 @@ def build_production_capability_probe_service(
     executable_paths: Mapping[str, Path],
     docker_host: str | None,
     static_output_quota: ProductionStaticOutputQuotaPort | None = None,
+    codeql_database_provider: PrebuiltCodeQLDatabasePort | None = None,
     codeql_database_limit_bytes: int | None = None,
 ) -> ProductionCapabilityProbeService:
     """Build the production API; unconfigured CodeQL remains non-activatable."""
@@ -261,6 +269,7 @@ def build_production_capability_probe_service(
         executable_paths=executable_paths,
         docker_host=docker_host,
         static_output_quota=static_output_quota,
+        codeql_database_provider=codeql_database_provider,
         codeql_database_limit_bytes=codeql_database_limit_bytes,
     )
 

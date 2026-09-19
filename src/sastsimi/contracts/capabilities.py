@@ -8,7 +8,7 @@ from ._domain import DomainRecord, SafeDiagnostic, unique
 from .base import ContractModel, NonEmptyStr, PositiveInt, Sha256
 from .canonical_json import content_hash
 from .refs import HostConfigurationRef, StoredDataRef, reference, require_record_ref
-from .static import StaticToolProfile
+from .static import CodeQLBoundaryCapability, StaticToolProfile
 
 type CapabilityKind = Literal[
     "GIT",
@@ -122,6 +122,7 @@ class CapabilityApprovalEvidence(DomainRecord):
     observed_sha256: Sha256
     execution_target_hash: Sha256 | None = None
     docker_build_capability: DockerBuildCapability | None = None
+    codeql_boundary: CodeQLBoundaryCapability | None = None
     operating_system: CapabilityOperatingSystem
     architecture: CapabilityArchitecture
     languages: tuple[CapabilityLanguage, ...]
@@ -170,11 +171,24 @@ class CapabilityApprovalEvidence(DomainRecord):
             if (
                 self.execution_target_hash is None
                 or self.docker_build_capability is None
+                or self.codeql_boundary is not None
             ):
                 raise ValueError("CAPABILITY_DOCKER_BOUNDARY_REQUIRED")
-        elif (
-            self.execution_target_hash is not None
-            or self.docker_build_capability is not None
+        elif self.capability_kind == "CODEQL":
+            if (
+                self.execution_target_hash is None
+                or self.codeql_boundary is None
+                or self.execution_target_hash != content_hash(self.codeql_boundary)
+                or self.docker_build_capability is not None
+            ):
+                raise ValueError("CAPABILITY_CODEQL_BOUNDARY_REQUIRED")
+        elif any(
+            value is not None
+            for value in (
+                self.execution_target_hash,
+                self.docker_build_capability,
+                self.codeql_boundary,
+            )
         ):
             raise ValueError("CAPABILITY_DOCKER_BOUNDARY_FORBIDDEN")
         return self

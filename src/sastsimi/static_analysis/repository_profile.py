@@ -769,6 +769,32 @@ class RepositoryExecutionSelector:
                 status="FAILED",
             )
         resolved_routes = {(adapter, language) for adapter, language, _ in resolved}
+        if all(
+            ("CODEQL", language) in resolved_routes
+            for language in ("PYTHON", "JAVASCRIPT")
+        ):
+            return RepositoryExecutionSelection(
+                meta=meta,
+                repository_profile_ref=repository_profile_ref,
+                git_clone_profile_ref=git_clone_profile_ref,
+                git_checkout_profile_ref=git_checkout_profile_ref,
+                languages=supported_languages,
+                selected_tools=(),
+                gaps=(
+                    self._gap(
+                        repository,
+                        code="CODEQL_MULTILANGUAGE_SPLIT_REQUIRED",
+                        description=(
+                            "CodeQL requires one language per work item; this "
+                            "repository must be split before static dispatch."
+                        ),
+                        languages=("PYTHON", "JAVASCRIPT"),
+                        reason="BLOCKED",
+                    ),
+                ),
+                errors=(),
+                status="BLOCKED",
+            )
         blocking_languages = tuple(
             language
             for language in supported_languages

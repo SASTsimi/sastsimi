@@ -41,6 +41,28 @@ def git_path(value: str) -> str:
 GitPath = Annotated[NonEmptyStr, AfterValidator(git_path)]
 
 
+class CodeQLBoundaryCapability(ContractModel):
+    """Exact prebuilt-database and hard-quota boundary approved for CodeQL."""
+
+    quota_backend_key: NonEmptyStr
+    quota_enforcement_identity_sha256: Sha256
+    database_limit_bytes: PositiveInt
+    execution_limit_bytes: PositiveInt
+    database_provider_key: NonEmptyStr
+    database_provider_revision: NonEmptyStr
+    database_provider_evidence_sha256: Sha256
+    supported_languages: tuple[Literal["PYTHON", "JAVASCRIPT"], ...]
+    prebuilt_database_only: Literal[True]
+
+    @model_validator(mode="after")
+    def closed_boundary(self) -> Self:
+        if not self.supported_languages or len(self.supported_languages) != len(
+            set(self.supported_languages)
+        ):
+            raise ValueError("CODEQL_BOUNDARY_LANGUAGE_INVALID")
+        return self
+
+
 class StaticToolProfile(DomainRecord):
     """Exact immutable configuration for one static-tool adapter revision."""
 
@@ -58,6 +80,7 @@ class StaticToolProfile(DomainRecord):
     executable_sha256: Sha256
     expected_version: NonEmptyStr
     capability_evidence_ref: HostConfigurationRef | None
+    codeql_boundary: CodeQLBoundaryCapability | None = None
     probe_timeout_ms: PositiveInt
     run_timeout_ms: PositiveInt
     stdout_limit_bytes: PositiveInt
@@ -75,6 +98,15 @@ class StaticToolProfile(DomainRecord):
         }
         if (self.adapter_key, self.tool_name, self.tool_kind) not in valid:
             raise ValueError("STATIC_TOOL_PROFILE_TUPLE_MISMATCH")
+        if self.adapter_key == "CODEQL" and self.status == "ACTIVE":
+            if (
+                self.codeql_boundary is None
+                or self.codeql_boundary.execution_limit_bytes
+                != self.max_attempt_output_bytes
+            ):
+                raise ValueError("CODEQL_BOUNDARY_REQUIRED")
+        elif self.codeql_boundary is not None:
+            raise ValueError("CODEQL_BOUNDARY_FORBIDDEN")
         if self.status == "ACTIVE":
             if (
                 self.purpose != "PRODUCTION"

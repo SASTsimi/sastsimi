@@ -104,6 +104,9 @@ type StaticOutputPurpose = Literal["DATABASE", "EXECUTION", "PROBE"]
 class ProductionStaticOutputQuotaPort(StaticOutputQuotaPort, Protocol):
     """Allocate attempt-scoped roots with a host-enforced write ceiling."""
 
+    backend_key: str
+    enforcement_identity_sha256: str
+
     def allocate(
         self,
         *,
@@ -141,6 +144,8 @@ class PrebuiltCodeQLDatabasePort(Protocol):
         tracked_manifest_sha256: str,
         profile_ref: HostConfigurationRef,
         quota_binding: StaticOutputQuotaBinding,
+        cancellation_requested: Callable[[], bool] | None = None,
+        deadline_ns: int | None = None,
     ) -> PrebuiltCodeQLDatabase | None: ...
 
 

@@ -11,7 +11,7 @@ from sastsimi.contracts.budget import (
     VerificationBudgetProfile,
     WorkBudgetProfile,
 )
-from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.capabilities import (
     CapabilityApprovalEvidence,
     CapabilityArchitecture,
@@ -414,6 +414,15 @@ class ConfigurationRegistry:
             and evidence.observed_version == profile.expected_version
             and evidence.observed_sha256 == profile.executable_sha256
             and operation in evidence.operations
+            and evidence.codeql_boundary == profile.codeql_boundary
+            and (
+                profile.adapter_key != "CODEQL"
+                or (
+                    profile.codeql_boundary is not None
+                    and evidence.execution_target_hash
+                    == content_hash(profile.codeql_boundary)
+                )
+            )
         )
 
     def register_production_static_tool_profile(
@@ -490,6 +499,7 @@ class ConfigurationRegistry:
             "executable_key",
             "executable_sha256",
             "expected_version",
+            "codeql_boundary",
             "probe_timeout_ms",
             "run_timeout_ms",
             "stdout_limit_bytes",

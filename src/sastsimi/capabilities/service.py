@@ -37,11 +37,15 @@ from sastsimi.contracts.ids import (
 )
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
-from sastsimi.contracts.static import StaticToolProfile
+from sastsimi.contracts.static import CodeQLBoundaryCapability, StaticToolProfile
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.dynamic_sandbox import TrustedDockerTarget
-from sastsimi.ports.static_tool import ProductionStaticOutputQuotaPort
+from sastsimi.ports.static_tool import (
+    PrebuiltCodeQLDatabasePort,
+    ProductionStaticOutputQuotaPort,
+)
 from sastsimi.runtime.configuration_registry import ConfigurationRegistry
+from sastsimi.static_analysis.quota_probe import prove_static_output_quota
 
 from .docker_build_boundary import DockerBuildBoundaryProbeResult
 from .models import CapabilityProbeReceipt, ProbeKind
@@ -74,6 +78,7 @@ _SYSTEM_DOCKER_HOSTS = frozenset(
     {"unix:///var/run/docker.sock", "unix:///run/docker.sock"}
 )
 _ROOTLESS_DOCKER_HOST = re.compile(r"^unix:///run/user/[1-9][0-9]*/docker\.sock$")
+_CODEQL_EXECUTION_LIMIT_BYTES = 8_388_608
 
 
 class SecretLookup(Protocol):
@@ -102,6 +107,7 @@ class _CapabilityProbeEngine:
         scratch_root: Path,
         docker_build_capability_probe: DockerBuildCapabilityProbe,
         static_output_quota: ProductionStaticOutputQuotaPort | None = None,
+        codeql_database_provider: PrebuiltCodeQLDatabasePort | None = None,
         codeql_database_limit_bytes: int | None = None,
     ) -> None:
         if store.host_id != host_id or _SAFE_IDENTIFIER.fullmatch(host_id) is None:
@@ -122,6 +128,7 @@ class _CapabilityProbeEngine:
         self._scratch_root = scratch_root
         self._docker_build_capability_probe = docker_build_capability_probe
         self._static_output_quota = static_output_quota
+        self._codeql_database_provider = codeql_database_provider
         self._codeql_database_limit_bytes = codeql_database_limit_bytes
 
     def probe(
@@ -144,6 +151,7 @@ class _CapabilityProbeEngine:
         controls: tuple[str, ...] = ()
         execution_target_hash: str | None = None
         docker_build_capability: DockerBuildCapability | None = None
+        codeql_boundary: CodeQLBoundaryCapability | None = None
         boundary_result: DockerBuildBoundaryProbeResult | None = None
         docker_build_boundary_code: str | None = None
         docker_build_storage_identity_hash: str | None = None
@@ -162,12 +170,75 @@ class _CapabilityProbeEngine:
                 status, activation_supported = "PASSED", True
                 summary = "Python AST parse probe passed"
         elif kind == "CODEQL":
-            # Production has neither a trusted prebuilt DB binding nor an
-            # approved quota backend. A supplied protocol object cannot enable it.
-            summary = (
-                "CodeQL production prebuilt database and hard quota binding "
-                "are unavailable"
-            )
+            executable = self._locate("codeql")
+            provider = self._codeql_database_provider
+            if executable is None:
+                summary = "CODEQL executable is unavailable"
+            elif provider is None:
+                summary = "CodeQL prebuilt database provider is unavailable"
+            else:
+                try:
+                    before_digest = sha256_file(executable)
+                    command_observation = self._commands.run(
+                        executable,
+                        ("version", "--format=terse"),
+                        timeout_ms=15_000,
+                    )
+                    normalized = self._safe_version(command_observation.safe_stdout)
+                    observed_digest = (
+                        sha256_file(executable)
+                        if command_observation.succeeded and normalized is not None
+                        else None
+                    )
+                    quota = prove_static_output_quota(
+                        self._static_output_quota,
+                        profile_ref=self._placeholder_codeql_profile_ref(),
+                        database_limit_bytes=self._codeql_database_limit_bytes,
+                        output_limit_bytes=_CODEQL_EXECUTION_LIMIT_BYTES,
+                    )
+                    provider_identity_valid = (
+                        bool(provider.provider_key)
+                        and bool(provider.provider_revision)
+                        and len(provider.provider_evidence_sha256) == 64
+                    )
+                    if (
+                        observed_digest is not None
+                        and before_digest == observed_digest
+                        and quota is not None
+                        and provider_identity_valid
+                    ):
+                        version = normalized
+                        digest = observed_digest
+                        profile_key = subject_key = "codeql"
+                        codeql_boundary = CodeQLBoundaryCapability(
+                            quota_backend_key=quota.backend_key,
+                            quota_enforcement_identity_sha256=(
+                                quota.enforcement_identity_sha256
+                            ),
+                            database_limit_bytes=quota.database_limit_bytes,
+                            execution_limit_bytes=quota.execution_limit_bytes,
+                            database_provider_key=provider.provider_key,
+                            database_provider_revision=provider.provider_revision,
+                            database_provider_evidence_sha256=(
+                                provider.provider_evidence_sha256
+                            ),
+                            supported_languages=("PYTHON", "JAVASCRIPT"),
+                            prebuilt_database_only=True,
+                        )
+                        execution_target_hash = content_hash(codeql_boundary)
+                        status, activation_supported = "PASSED", True
+                        controls = ("STATIC_WRITE_DENYING_QUOTA",)
+                        summary = (
+                            "CodeQL executable, prebuilt database provider, and "
+                            "hard quota boundary probe passed"
+                        )
+                    else:
+                        summary = (
+                            "CodeQL executable, prebuilt database provider, or "
+                            "hard quota boundary probe failed"
+                        )
+                except (OSError, subprocess.SubprocessError, ValueError):
+                    summary = "CodeQL production boundary probe failed"
         elif kind in {"GIT", "OPENGREP", "DOCKER"}:
             name = {
                 "GIT": "git",
@@ -311,6 +382,7 @@ class _CapabilityProbeEngine:
         if not activation_supported:
             execution_target_hash = None
             docker_build_capability = None
+            codeql_boundary = None
 
         evidence = {
             "schema_version": "1.0.0",
@@ -322,6 +394,7 @@ class _CapabilityProbeEngine:
             "observed_sha256": digest,
             "execution_target_hash": execution_target_hash,
             "docker_build_capability": docker_build_capability,
+            "codeql_boundary": codeql_boundary,
             "docker_build_boundary_code": docker_build_boundary_code,
             "docker_build_storage_identity_hash": (docker_build_storage_identity_hash),
             "operating_system": self._operating_system,
@@ -344,6 +417,7 @@ class _CapabilityProbeEngine:
                     digest=cast(str, digest),
                     execution_target_hash=execution_target_hash,
                     docker_build_capability=docker_build_capability,
+                    codeql_boundary=codeql_boundary,
                     evidence_ref=self._placeholder_evidence_ref(),
                 )
             )
@@ -359,6 +433,7 @@ class _CapabilityProbeEngine:
                 "observed_sha256": digest,
                 "execution_target_hash": execution_target_hash,
                 "docker_build_capability": docker_build_capability,
+                "codeql_boundary": codeql_boundary,
                 "docker_build_boundary_code": docker_build_boundary_code,
                 "docker_build_storage_identity_hash": (
                     docker_build_storage_identity_hash
@@ -482,8 +557,6 @@ class _CapabilityProbeEngine:
         """Publish ACTIVE only after a human confirms the exact probed target."""
 
         receipt = self._store.get(probe_id)
-        if receipt.kind == "CODEQL":
-            raise ValueError("PROBE_NOT_ACTIVATABLE")
         if receipt.approved_profile_ref is not None:
             self._registry.resolve_pinned_active_profile(receipt.approved_profile_ref)
             return receipt.approved_profile_ref
@@ -522,6 +595,35 @@ class _CapabilityProbeEngine:
             or self._docker_target_hash(resolved) != receipt.execution_target_hash
         ):
             raise ValueError("CAPABILITY_EXECUTION_TARGET_CHANGED")
+        if receipt.kind == "CODEQL":
+            boundary = receipt.codeql_boundary
+            provider = self._codeql_database_provider
+            quota = (
+                None
+                if boundary is None
+                else prove_static_output_quota(
+                    self._static_output_quota,
+                    profile_ref=self._placeholder_codeql_profile_ref(),
+                    database_limit_bytes=boundary.database_limit_bytes,
+                    output_limit_bytes=boundary.execution_limit_bytes,
+                )
+            )
+            if (
+                boundary is None
+                or provider is None
+                or quota is None
+                or receipt.execution_target_hash != content_hash(boundary)
+                or quota.backend_key != boundary.quota_backend_key
+                or quota.enforcement_identity_sha256
+                != boundary.quota_enforcement_identity_sha256
+                or quota.database_limit_bytes != boundary.database_limit_bytes
+                or quota.execution_limit_bytes != boundary.execution_limit_bytes
+                or provider.provider_key != boundary.database_provider_key
+                or provider.provider_revision != boundary.database_provider_revision
+                or provider.provider_evidence_sha256
+                != boundary.database_provider_evidence_sha256
+            ):
+                raise ValueError("CAPABILITY_EXECUTION_TARGET_CHANGED")
         profile_draft = self._profile(
             receipt.kind,
             profile_key=receipt.profile_key,
@@ -530,6 +632,7 @@ class _CapabilityProbeEngine:
             digest=receipt.observed_sha256,
             execution_target_hash=receipt.execution_target_hash,
             docker_build_capability=receipt.docker_build_capability,
+            codeql_boundary=receipt.codeql_boundary,
             evidence_ref=self._placeholder_evidence_ref(),
         )
         languages, operations = self._route(receipt.kind)
@@ -550,6 +653,7 @@ class _CapabilityProbeEngine:
                     "observed_sha256": receipt.observed_sha256,
                     "execution_target_hash": receipt.execution_target_hash,
                     "docker_build_capability": receipt.docker_build_capability,
+                    "codeql_boundary": receipt.codeql_boundary,
                     "operating_system": self._operating_system,
                     "architecture": self._architecture,
                     "languages": languages,
@@ -582,6 +686,7 @@ class _CapabilityProbeEngine:
             digest=receipt.observed_sha256,
             execution_target_hash=receipt.execution_target_hash,
             docker_build_capability=receipt.docker_build_capability,
+            codeql_boundary=receipt.codeql_boundary,
             evidence_ref=approval_ref,
             record_id=RecordId("profile-" + receipt.probe_id),
             created_at=approval.approved_at,
@@ -678,6 +783,18 @@ class _CapabilityProbeEngine:
             record_id=RecordId("pending-capability-approval"),
         )
 
+    def _placeholder_codeql_profile_ref(self) -> HostConfigurationRef:
+        return HostConfigurationRef(
+            stored_data_id=StoredDataId("pending-codeql-profile"),
+            data_kind="static_tool_profile",
+            content_hash="0" * 64,
+            host_id=self._host_id,
+            publication_analysis_id=_PUBLICATION_ANALYSIS,
+            publication_workspace_id=_PUBLICATION_WORKSPACE,
+            publication_commit_id=_PUBLICATION_COMMIT,
+            record_id=RecordId("pending-codeql-profile"),
+        )
+
     @staticmethod
     def _profile_ref(profile: CapabilityProfile) -> HostConfigurationRef:
         from sastsimi.contracts.refs import reference
@@ -698,6 +815,7 @@ class _CapabilityProbeEngine:
         evidence_ref: HostConfigurationRef,
         execution_target_hash: str | None = None,
         docker_build_capability: DockerBuildCapability | None = None,
+        codeql_boundary: CodeQLBoundaryCapability | None = None,
         record_id: RecordId | None = None,
         created_at: datetime | None = None,
     ) -> CapabilityProfile:
@@ -729,6 +847,7 @@ class _CapabilityProbeEngine:
                     "executable_sha256": digest,
                     "expected_version": version,
                     "capability_evidence_ref": evidence_ref,
+                    "codeql_boundary": codeql_boundary,
                     "probe_timeout_ms": 15_000,
                     "run_timeout_ms": 300_000,
                     "stdout_limit_bytes": 1_048_576,

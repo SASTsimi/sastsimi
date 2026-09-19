@@ -87,6 +87,16 @@ class StaticOutputQuotaBinding:
     breach_evidence: str | None
 
 
+@dataclass(frozen=True)
+class StaticOutputQuotaProof:
+    """Approved identity returned after a real cap-plus-one denial probe."""
+
+    backend_key: str
+    enforcement_identity_sha256: str
+    database_limit_bytes: int
+    execution_limit_bytes: int
+
+
 class AttemptOutputBudgetPort(Protocol):
     """Attempt-owned aggregate allocation across process invocations/streams."""
 

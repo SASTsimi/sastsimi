@@ -195,3 +195,45 @@ def test_provider_rejects_manifest_or_profile_substitution(tmp_path: Path) -> No
         )
 
     assert not (output / "database").exists()
+
+
+@pytest.mark.parametrize(
+    ("cancelled", "deadline_ns", "code"),
+    [
+        (True, None, "CODEQL_DATABASE_PROVISION_CANCELLED"),
+        (False, 0, "CODEQL_DATABASE_PROVISION_TIMED_OUT"),
+    ],
+)
+def test_provider_honors_cancellation_and_deadline_before_copy(
+    tmp_path: Path,
+    cancelled: bool,
+    deadline_ns: int | None,
+    code: str,
+) -> None:
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    output = tmp_path / "quota"
+    output.mkdir()
+    profile_ref = _profile_ref()
+    provider = FilesystemPrebuiltCodeQLDatabaseProvider(
+        registry_root=registry,
+        provider_key="filesystem-prebuilt-v1",
+        provider_revision="revision-1",
+        provider_evidence_sha256="e" * 64,
+        profile_ref=profile_ref,
+    )
+
+    with pytest.raises(ValueError, match=code):
+        provider.materialize(
+            workspace_id="workspace-one",
+            repository_url="https://example.invalid/org/repo.git",
+            commit_id="b" * 40,
+            language="python",
+            tracked_manifest_sha256="c" * 64,
+            profile_ref=profile_ref,
+            quota_binding=_quota(output, profile_ref),
+            cancellation_requested=lambda: cancelled,
+            deadline_ns=deadline_ns,
+        )
+
+    assert not any(output.iterdir())

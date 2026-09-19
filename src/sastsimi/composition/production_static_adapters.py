@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
 import stat
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -63,6 +65,17 @@ _JAVASCRIPT_SUFFIXES = frozenset(
 )
 
 type CodeQLLanguage = Literal["python", "javascript-typescript"]
+
+
+async def _settle_provisioning_task[ResultT](
+    task: asyncio.Task[ResultT],
+) -> ResultT:
+    while True:
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.done():
+                return task.result()
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,9 +166,11 @@ def classify_codeql_language(paths: tuple[str, ...]) -> CodeQLLanguage:
     """Resolve only a homogeneous Python or JavaScript/TypeScript request."""
 
     suffixes = {PurePosixPath(path).suffix.lower() for path in paths}
-    if suffixes and suffixes <= _PYTHON_SUFFIXES:
+    has_python = bool(suffixes & _PYTHON_SUFFIXES)
+    has_javascript = bool(suffixes & _JAVASCRIPT_SUFFIXES)
+    if has_python and not has_javascript:
         return "python"
-    if suffixes and suffixes <= _JAVASCRIPT_SUFFIXES:
+    if has_javascript and not has_python:
         return "javascript-typescript"
     raise ValueError("CODEQL_LANGUAGE_SCOPE_AMBIGUOUS")
 
@@ -866,6 +881,7 @@ class _LazyCodeQLAdapter:
         self._databases = database_provider
         self._database_limit_bytes = database_limit_bytes
         self._active: dict[str, CodeQLProcessAdapter] = {}
+        self._provisioning: dict[str, threading.Event] = {}
 
     def _empty_rules(self, reason: str) -> tuple[CandidateRule, ...]:
         selected = set(self._rules.selected_rule_ids)
@@ -965,6 +981,8 @@ class _LazyCodeQLAdapter:
         attempt_id: str,
         profile_ref: HostConfigurationRef,
         limit_bytes: int,
+        expected_backend_key: str,
+        expected_enforcement_identity_sha256: str,
     ) -> None:
         if not isinstance(binding, StaticOutputQuotaBinding):
             raise ValueError("CODEQL_OUTPUT_QUOTA_UNENFORCEABLE")
@@ -979,6 +997,9 @@ class _LazyCodeQLAdapter:
             or not binding.lease_id
             or not binding.backend_key
             or not binding.enforcement_evidence
+            or binding.backend_key != expected_backend_key
+            or hashlib.sha256(binding.enforcement_evidence.encode("utf-8")).hexdigest()
+            != expected_enforcement_identity_sha256
             or binding.action_id != action_id
             or binding.attempt_id != attempt_id
             or binding.profile_ref != profile_ref
@@ -1000,6 +1021,23 @@ class _LazyCodeQLAdapter:
             or exact_left.is_relative_to(exact_right)
             or exact_right.is_relative_to(exact_left)
         )
+
+    def _require_approved_boundary(self, profile: StaticToolProfile) -> None:
+        boundary = profile.codeql_boundary
+        if (
+            boundary is None
+            or boundary.database_limit_bytes != self._database_limit_bytes
+            or boundary.execution_limit_bytes != profile.max_attempt_output_bytes
+            or boundary.quota_backend_key != self._quota.backend_key
+            or boundary.quota_enforcement_identity_sha256
+            != self._quota.enforcement_identity_sha256
+            or boundary.database_provider_key != self._databases.provider_key
+            or boundary.database_provider_revision != self._databases.provider_revision
+            or boundary.database_provider_evidence_sha256
+            != self._databases.provider_evidence_sha256
+            or boundary.prebuilt_database_only is not True
+        ):
+            raise ValueError("CODEQL_APPROVED_BOUNDARY_MISMATCH")
 
     def _lower(
         self,
@@ -1042,8 +1080,10 @@ class _LazyCodeQLAdapter:
         deadline: MonotonicActionDeadline,
     ) -> StaticCapabilityObservation:
         profile_ref = reference(profile)
-        if not isinstance(profile_ref, HostConfigurationRef):
+        boundary = profile.codeql_boundary
+        if not isinstance(profile_ref, HostConfigurationRef) or boundary is None:
             raise ValueError("CODEQL_PRODUCTION_PROFILE_REQUIRED")
+        self._require_approved_boundary(profile)
         binding = self._quota.allocate(
             purpose="PROBE",
             action_id=deadline.action_id,
@@ -1059,6 +1099,10 @@ class _LazyCodeQLAdapter:
                 attempt_id=deadline.action_id,
                 profile_ref=profile_ref,
                 limit_bytes=profile.max_attempt_output_bytes,
+                expected_backend_key=boundary.quota_backend_key,
+                expected_enforcement_identity_sha256=(
+                    boundary.quota_enforcement_identity_sha256
+                ),
             )
             placeholder = _safe_root(self._output_root, "probes/codeql-placeholder")
             database_root = _safe_root(placeholder, "database")
@@ -1126,9 +1170,23 @@ class _LazyCodeQLAdapter:
             raise ValueError("CODEQL_REQUEST_BINDING_INVALID")
         attempt_id = str(meta.attempt_id)
         action_id = str(request.action.action_id)
-        if attempt_id in self._active:
+        if attempt_id in self._active or attempt_id in self._provisioning:
             raise ValueError("CODEQL_ATTEMPT_ALREADY_ACTIVE")
-        tracked = self._tracked_files_for(request.workspace)
+        self._require_approved_boundary(profile)
+        boundary = profile.codeql_boundary
+        if boundary is None:
+            raise ValueError("CODEQL_APPROVED_BOUNDARY_MISMATCH")
+        full_tracked = self._tracked_files_for(request.workspace)
+        authorized_paths = frozenset(str(path) for path in request.action.file_paths)
+        tracked = tuple(
+            item for item in full_tracked if item.git_path in authorized_paths
+        )
+        if (
+            not tracked
+            or len(tracked) != len(authorized_paths)
+            or {item.git_path for item in tracked} != authorized_paths
+        ):
+            raise ValueError("CODEQL_ACTION_PATH_BINDING_INVALID")
         try:
             language = classify_codeql_language(
                 tuple(item.git_path for item in tracked)
@@ -1141,6 +1199,11 @@ class _LazyCodeQLAdapter:
                 code="CODEQL_LANGUAGE_SCOPE_AMBIGUOUS",
                 reason="UNSUPPORTED",
             )
+        capability_language = (
+            "PYTHON" if language == "python" else "JAVASCRIPT"
+        )
+        if capability_language not in boundary.supported_languages:
+            raise ValueError("CODEQL_LANGUAGE_NOT_APPROVED")
         bindings = []
         outcome = "FAILED"
         try:
@@ -1158,6 +1221,10 @@ class _LazyCodeQLAdapter:
                 attempt_id=attempt_id,
                 profile_ref=profile_ref,
                 limit_bytes=self._database_limit_bytes,
+                expected_backend_key=boundary.quota_backend_key,
+                expected_enforcement_identity_sha256=(
+                    boundary.quota_enforcement_identity_sha256
+                ),
             )
             execution_binding = self._quota.allocate(
                 purpose="EXECUTION",
@@ -1173,6 +1240,10 @@ class _LazyCodeQLAdapter:
                 attempt_id=attempt_id,
                 profile_ref=profile_ref,
                 limit_bytes=profile.max_attempt_output_bytes,
+                expected_backend_key=boundary.quota_backend_key,
+                expected_enforcement_identity_sha256=(
+                    boundary.quota_enforcement_identity_sha256
+                ),
             )
             if (
                 database_binding.backend_key != execution_binding.backend_key
@@ -1185,15 +1256,33 @@ class _LazyCodeQLAdapter:
                 or self._paths_overlap(execution_binding.root, self._query_pack_root)
             ):
                 raise ValueError("CODEQL_OUTPUT_QUOTA_TOPOLOGY_INVALID")
-            database = self._databases.materialize(
-                workspace_id=str(request.workspace.workspace_id),
-                repository_url=str(request.workspace.repository_url),
-                commit_id=str(request.workspace.commit_id),
-                language=language,
-                tracked_manifest_sha256=self._tracked_manifest_sha256(tracked),
-                profile_ref=profile_ref,
-                quota_binding=database_binding,
+            cancellation = threading.Event()
+            self._provisioning[attempt_id] = cancellation
+            provision_task = asyncio.create_task(
+                asyncio.to_thread(
+                    self._databases.materialize,
+                    workspace_id=str(request.workspace.workspace_id),
+                    repository_url=str(request.workspace.repository_url),
+                    commit_id=str(request.workspace.commit_id),
+                    language=language,
+                    tracked_manifest_sha256=self._tracked_manifest_sha256(full_tracked),
+                    profile_ref=profile_ref,
+                    quota_binding=database_binding,
+                    cancellation_requested=cancellation.is_set,
+                    deadline_ns=deadline.expires_ns,
+                )
             )
+            try:
+                database = await asyncio.shield(provision_task)
+            except asyncio.CancelledError:
+                cancellation.set()
+                try:
+                    await _settle_provisioning_task(provision_task)
+                except (OSError, ValueError):
+                    pass
+                raise
+            finally:
+                self._provisioning.pop(attempt_id, None)
             if database is None:
                 outcome = "SKIPPED"
                 return self._failure(
@@ -1222,7 +1311,8 @@ class _LazyCodeQLAdapter:
                 )
                 or database_root == database_binding.root.resolve(strict=True)
                 or database_root.is_relative_to(workspace_root.resolve(strict=True))
-                or digest_path(database_root) != database.database_digest
+                or await asyncio.to_thread(digest_path, database_root)
+                != database.database_digest
             ):
                 raise ValueError("CODEQL_PREBUILT_DATABASE_BINDING_INVALID")
             placeholder = _safe_root(self._output_root, "probes/codeql-unused")
@@ -1240,7 +1330,28 @@ class _LazyCodeQLAdapter:
             observed = await lower.execute(request, workspace_root, profile, deadline)
             outcome = observed.status
             return observed
-        except (OSError, ValueError):
+        except ValueError as error:
+            code = str(error)
+            if code in {
+                "CODEQL_DATABASE_PROVISION_CANCELLED",
+                "CODEQL_DATABASE_PROVISION_TIMED_OUT",
+            }:
+                return self._failure(
+                    profile,
+                    tracked,
+                    status="FAILED",
+                    code=code,
+                    reason="BLOCKED",
+                    retryable=True,
+                )
+            return self._failure(
+                profile,
+                tracked,
+                status="FAILED",
+                code="CODEQL_PREBUILT_DATABASE_INVALID",
+                reason="FAILED",
+            )
+        except OSError:
             return self._failure(
                 profile,
                 tracked,
@@ -1250,10 +1361,22 @@ class _LazyCodeQLAdapter:
             )
         finally:
             self._active.pop(attempt_id, None)
+            finalize_errors: list[Exception] = []
             for binding in reversed(bindings):
-                self._quota.finalize(lease_id=binding.lease_id, outcome=outcome)
+                try:
+                    self._quota.finalize(lease_id=binding.lease_id, outcome=outcome)
+                except Exception as error:
+                    finalize_errors.append(error)
+            if finalize_errors:
+                raise ValueError(
+                    "CODEQL_OUTPUT_QUOTA_FINALIZE_FAILED"
+                ) from finalize_errors[0]
 
     async def cancel(self, attempt_id: str) -> CancellationResult:
+        provisioning = self._provisioning.get(attempt_id)
+        if provisioning is not None:
+            provisioning.set()
+            return CancellationResult(True, None)
         active = self._active.get(attempt_id)
         if active is None:
             return CancellationResult(False, "Attempt is not active")
@@ -1285,6 +1408,23 @@ class ProductionStaticAdapterFactory:
         return (
             self._output_quota is not None
             and self._codeql_database_provider is not None
+            and bool(getattr(self._output_quota, "backend_key", ""))
+            and len(
+                getattr(self._output_quota, "enforcement_identity_sha256", "")
+            )
+            == 64
+            and bool(getattr(self._codeql_database_provider, "provider_key", ""))
+            and bool(
+                getattr(self._codeql_database_provider, "provider_revision", "")
+            )
+            and len(
+                getattr(
+                    self._codeql_database_provider,
+                    "provider_evidence_sha256",
+                    "",
+                )
+            )
+            == 64
             and isinstance(self._codeql_database_limit_bytes, int)
             and not isinstance(self._codeql_database_limit_bytes, bool)
             and self._codeql_database_limit_bytes > 0
@@ -1387,6 +1527,24 @@ class ProductionStaticAdapterFactory:
                     or self._codeql_database_limit_bytes is None
                 ):
                     raise ValueError("PRODUCTION_CODEQL_MATERIAL_MISSING")
+                boundary = profile.codeql_boundary
+                if (
+                    boundary is None
+                    or boundary.database_limit_bytes
+                    != self._codeql_database_limit_bytes
+                    or boundary.execution_limit_bytes
+                    != profile.max_attempt_output_bytes
+                    or boundary.quota_backend_key != self._output_quota.backend_key
+                    or boundary.quota_enforcement_identity_sha256
+                    != self._output_quota.enforcement_identity_sha256
+                    or boundary.database_provider_key
+                    != self._codeql_database_provider.provider_key
+                    or boundary.database_provider_revision
+                    != self._codeql_database_provider.provider_revision
+                    or boundary.database_provider_evidence_sha256
+                    != self._codeql_database_provider.provider_evidence_sha256
+                ):
+                    raise ValueError("PRODUCTION_CODEQL_APPROVED_BOUNDARY_MISMATCH")
                 rules = _parse_rule_material(context, tool)
                 query_pack = _materialize_codeql_query_pack(
                     root=material_root,

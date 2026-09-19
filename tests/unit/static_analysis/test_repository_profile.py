@@ -11,6 +11,7 @@ from typing import cast
 
 import pytest
 
+from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.capabilities import (
     CapabilityApprovalEvidence,
     CapabilityControlEvidence,
@@ -180,6 +181,21 @@ def _static_selection(adapter: str, language: str) -> StaticToolCapabilitySelect
             "executable_sha256": "c" * 64,
             "expected_version": "1",
             "capability_evidence_ref": placeholder,
+            "codeql_boundary": (
+                {
+                    "quota_backend_key": "test-kernel-quota",
+                    "quota_enforcement_identity_sha256": "1" * 64,
+                    "database_limit_bytes": 2,
+                    "execution_limit_bytes": 1,
+                    "database_provider_key": "test-provider",
+                    "database_provider_revision": "1",
+                    "database_provider_evidence_sha256": "2" * 64,
+                    "supported_languages": ("PYTHON", "JAVASCRIPT"),
+                    "prebuilt_database_only": True,
+                }
+                if adapter == "CODEQL"
+                else None
+            ),
             "probe_timeout_ms": 1,
             "run_timeout_ms": 1,
             "stdout_limit_bytes": 1,
@@ -208,6 +224,10 @@ def _static_selection(adapter: str, language: str) -> StaticToolCapabilitySelect
             "subject_key": name,
             "observed_version": "1",
             "observed_sha256": "c" * 64,
+            "execution_target_hash": (
+                content_hash(profile.codeql_boundary) if adapter == "CODEQL" else None
+            ),
+            "codeql_boundary": profile.codeql_boundary,
             "operating_system": "windows",
             "architecture": "x86_64",
             "languages": (language,),
@@ -666,6 +686,43 @@ def test_tool_selection_blocks_when_no_sast_capability_is_active(
         "NO_ACTIVE_STATIC_CAPABILITY:OPENGREP:PYTHON",
         "NO_ACTIVE_SAST_CAPABILITY:PYTHON",
     }
+
+
+def test_codeql_mixed_language_repository_fails_closed_until_work_is_split(
+    tmp_path: Path,
+) -> None:
+    repository = _build(
+        tmp_path,
+        (
+            _write(tmp_path, "app.py", b"print('ok')\n"),
+            _write(tmp_path, "web.js", b"console.log('ok')\n"),
+            _write(tmp_path, "pyproject.toml", b"[project]\nname='mixed'\n"),
+            _write(
+                tmp_path,
+                "package.json",
+                b'{"scripts":{"start":"node web.js"}}',
+            ),
+            _write(tmp_path, "Dockerfile", b"FROM python:3.12-slim\n"),
+        ),
+    )
+    fake_resolver = _Resolver()
+    selector = RepositoryExecutionSelector(
+        cast(ProductionCapabilityResolverPort, fake_resolver),
+        operating_system="windows",
+        architecture="x86_64",
+    )
+
+    selection = selector.select(
+        repository,
+        meta=_selection_meta(),
+        repository_profile_ref=cast(StoredDataRef, reference(repository)),
+        git_clone_profile_ref=fake_resolver.git_ref,
+        git_checkout_profile_ref=fake_resolver.git_ref,
+    )
+
+    assert selection.status == "BLOCKED"
+    assert selection.selected_tools == ()
+    assert selection.gaps[0].code == "CODEQL_MULTILANGUAGE_SPLIT_REQUIRED"
 
 
 def test_registry_mismatch_fails_without_selecting_any_tool(tmp_path: Path) -> None:

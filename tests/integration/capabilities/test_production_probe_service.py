@@ -7,6 +7,7 @@ import sys
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -26,6 +27,7 @@ from sastsimi.config.secrets import SecretReference
 from sastsimi.contracts.capabilities import DockerBuildCapability
 from sastsimi.contracts.ids import CommitId, WorkspaceId
 from sastsimi.ports.static_tool import (
+    PrebuiltCodeQLDatabasePort,
     ProductionStaticOutputQuotaPort,
     StaticOutputPurpose,
 )
@@ -34,6 +36,15 @@ from sastsimi.storage.database import Database
 from sastsimi.storage.migrations import upgrade
 from tests.integration.runtime_support import TestClock, TestIds
 from tests.integration.static_quota_support import TestQuota
+
+
+class _CodeQLProviderIdentity:
+    provider_key = "test-provider"
+    provider_revision = "1"
+    provider_evidence_sha256 = "2" * 64
+
+    def materialize(self, **_kwargs: object) -> None:
+        raise AssertionError("capability probing must not materialize a database")
 
 
 class FakeCommands:
@@ -204,6 +215,7 @@ def _service(
         _VERIFIED_DOCKER_BUILD_CAPABILITY
     ),
     quota: ProductionStaticOutputQuotaPort | None = None,
+    codeql_provider: PrebuiltCodeQLDatabasePort | None = None,
 ) -> tuple[_CapabilityProbeEngine, RuntimeServices, _SQLiteCapabilityProbeStore]:
     binaries = tmp_path / "bin"
     binaries.mkdir(parents=True, exist_ok=True)
@@ -246,6 +258,7 @@ def _service(
         scratch_root=tmp_path / "scratch",
         docker_build_capability_probe=lambda: docker_build_capability,
         static_output_quota=quota,
+        codeql_database_provider=codeql_provider,
         codeql_database_limit_bytes=131072 if quota is not None else None,
     )
     return service, runtime, store
@@ -264,6 +277,54 @@ def test_codeql_test_quota_cannot_activate_production_without_prebuilt_binding(
     with pytest.raises(ValueError, match="PROBE_NOT_ACTIVATABLE"):
         service.approve(
             receipt.probe_id, expected_target_hash=receipt.approval_target_hash or ""
+        )
+
+
+def test_codeql_exact_provider_and_hard_quota_can_be_approved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quota = TestQuota(tmp_path / "quota", monkeypatch)
+    provider = cast(PrebuiltCodeQLDatabasePort, _CodeQLProviderIdentity())
+    service, runtime, _store = _service(
+        tmp_path,
+        available={"codeql"},
+        quota=quota,
+        codeql_provider=provider,
+    )
+
+    receipt = service.probe("CODEQL")
+
+    assert receipt.status == "PASSED"
+    assert receipt.activation_supported is True
+    assert receipt.codeql_boundary is not None
+    approved = service.approve(
+        receipt.probe_id,
+        expected_target_hash=receipt.approval_target_hash or "",
+    )
+    profile = runtime.configuration.resolve_pinned_active_profile(approved)
+    assert profile.codeql_boundary == receipt.codeql_boundary
+
+
+def test_codeql_provider_identity_change_blocks_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quota = TestQuota(tmp_path / "quota", monkeypatch)
+    provider = _CodeQLProviderIdentity()
+    service, _runtime, _store = _service(
+        tmp_path,
+        available={"codeql"},
+        quota=quota,
+        codeql_provider=cast(PrebuiltCodeQLDatabasePort, provider),
+    )
+    receipt = service.probe("CODEQL")
+    provider.provider_revision = "2"
+
+    with pytest.raises(ValueError, match="CAPABILITY_EXECUTION_TARGET_CHANGED"):
+        service.approve(
+            receipt.probe_id,
+            expected_target_hash=receipt.approval_target_hash or "",
         )
 
 
@@ -354,10 +415,7 @@ def test_real_probe_receipts_require_exact_human_approval_before_active(
         "BLOCKED",
     ]
     assert openai.activation_supported is False
-    assert (
-        "prebuilt database and hard quota binding are unavailable"
-        in codeql.safe_summary
-    )
+    assert "prebuilt database provider is unavailable" in codeql.safe_summary
     with pytest.raises(LookupError, match="CAPABILITY_ROUTE_NOT_ACTIVE"):
         runtime.configuration.resolve_active_capability(
             capability_kind="GIT",
@@ -540,6 +598,7 @@ def test_public_facade_accepts_only_trusted_quota_configuration_not_probe_result
         "executable_paths",
         "docker_host",
         "static_output_quota",
+        "codeql_database_provider",
         "codeql_database_limit_bytes",
     }
 
@@ -552,6 +611,7 @@ def test_public_facade_accepts_only_trusted_quota_configuration_not_probe_result
         "executable_paths",
         "docker_host",
         "static_output_quota",
+        "codeql_database_provider",
         "codeql_database_limit_bytes",
     }
     assert (

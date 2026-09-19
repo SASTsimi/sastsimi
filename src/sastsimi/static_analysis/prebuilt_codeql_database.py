@@ -6,16 +6,69 @@ import hashlib
 import json
 import shutil
 import stat
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import HostConfigurationRef
 from sastsimi.ports.dto import PrebuiltCodeQLDatabase, StaticOutputQuotaBinding
-from sastsimi.static_analysis.codeql_adapter import digest_path
 
 _MANIFEST_NAME = "sastsimi-codeql-database.json"
 _MAX_MANIFEST_BYTES = 64 * 1024
 _REPARSE_POINT = 0x400
+
+
+def _require_active(
+    cancellation_requested: Callable[[], bool] | None,
+    deadline_ns: int | None,
+) -> None:
+    if cancellation_requested is not None and cancellation_requested():
+        raise ValueError("CODEQL_DATABASE_PROVISION_CANCELLED")
+    if deadline_ns is not None and time.monotonic_ns() >= deadline_ns:
+        raise ValueError("CODEQL_DATABASE_PROVISION_TIMED_OUT")
+
+
+def _digest_path_interruptible(
+    root: Path,
+    cancellation_requested: Callable[[], bool] | None,
+    deadline_ns: int | None,
+) -> str:
+    entries: list[tuple[str, int, str]] = []
+    for candidate in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+        _require_active(cancellation_requested, deadline_ns)
+        if candidate.is_dir():
+            continue
+        digest = hashlib.sha256()
+        size = 0
+        with candidate.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                _require_active(cancellation_requested, deadline_ns)
+                size += len(chunk)
+                digest.update(chunk)
+        entries.append(
+            (candidate.relative_to(root).as_posix(), size, digest.hexdigest())
+        )
+    return hashlib.sha256(canonical_bytes(entries)).hexdigest()
+
+
+def _copy_file_interruptible(
+    source: str,
+    destination: str,
+    *,
+    cancellation_requested: Callable[[], bool] | None,
+    deadline_ns: int | None,
+) -> str:
+    _require_active(cancellation_requested, deadline_ns)
+    source_path = Path(source)
+    destination_path = Path(destination)
+    with source_path.open("rb") as reader, destination_path.open("xb") as writer:
+        while chunk := reader.read(1024 * 1024):
+            _require_active(cancellation_requested, deadline_ns)
+            writer.write(chunk)
+    shutil.copystat(source_path, destination_path, follow_symlinks=False)
+    _require_active(cancellation_requested, deadline_ns)
+    return str(destination_path)
 
 
 def codeql_database_artifact_key(
@@ -156,7 +209,10 @@ class FilesystemPrebuiltCodeQLDatabaseProvider:
         tracked_manifest_sha256: str,
         profile_ref: HostConfigurationRef,
         quota_binding: StaticOutputQuotaBinding,
+        cancellation_requested: Callable[[], bool] | None = None,
+        deadline_ns: int | None = None,
     ) -> PrebuiltCodeQLDatabase | None:
+        _require_active(cancellation_requested, deadline_ns)
         if (
             not workspace_id
             or not repository_url
@@ -205,19 +261,37 @@ class FilesystemPrebuiltCodeQLDatabaseProvider:
         if not isinstance(declared_digest, str) or len(declared_digest) != 64:
             raise ValueError("CODEQL_DATABASE_MANIFEST_INVALID")
         _require_safe_tree(database_source)
-        source_digest_before = digest_path(database_source)
+        source_digest_before = _digest_path_interruptible(
+            database_source, cancellation_requested, deadline_ns
+        )
         if source_digest_before != declared_digest:
             raise ValueError("CODEQL_DATABASE_DIGEST_MISMATCH")
         destination = destination_parent / "database"
         try:
-            shutil.copytree(database_source, destination, copy_function=shutil.copy2)
+            shutil.copytree(
+                database_source,
+                destination,
+                copy_function=lambda source, target: _copy_file_interruptible(
+                    source,
+                    target,
+                    cancellation_requested=cancellation_requested,
+                    deadline_ns=deadline_ns,
+                ),
+            )
         except OSError as error:
             raise ValueError("CODEQL_DATABASE_COPY_FAILED") from error
+        _require_active(cancellation_requested, deadline_ns)
         _require_safe_tree(database_source)
         _require_safe_tree(destination)
         if (
-            digest_path(database_source) != source_digest_before
-            or digest_path(destination) != source_digest_before
+            _digest_path_interruptible(
+                database_source, cancellation_requested, deadline_ns
+            )
+            != source_digest_before
+            or _digest_path_interruptible(
+                destination, cancellation_requested, deadline_ns
+            )
+            != source_digest_before
         ):
             raise ValueError("CODEQL_DATABASE_CHANGED_DURING_COPY")
         return PrebuiltCodeQLDatabase(
