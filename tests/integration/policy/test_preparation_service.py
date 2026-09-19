@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from sqlalchemy import select
@@ -66,12 +66,14 @@ class _Parser:
         parsed_ref: StoredDataRef,
         parser_name: str,
         parser_version: str,
+        document_status: str = "FOUND",
     ) -> None:
         self.runner = runner
         self.invocation_ref = invocation_ref
         self.parsed_ref = parsed_ref
         self.parser_name = parser_name
         self.parser_version = parser_version
+        self.document_status = document_status
         self.calls = 0
 
     async def parse(
@@ -97,9 +99,9 @@ class _Parser:
             )
         )
         content = ParsedPolicyContent(
-            document_status="FOUND",
+            document_status=self.document_status,
             policy_version="2026-09",
-            in_scope_assets=(
+            in_scope_assets=() if self.document_status == "ABSENT_CONFIRMED" else (
                 PolicyItemContent(
                     item_key="asset-main",
                     value="example.test",
@@ -155,7 +157,11 @@ def _runner_with_output_approval(h: Any, runtime: Any) -> WorkflowRunner:
 
 
 def _subject(
-    tmp_path: Path, source_failure: Exception | None = None
+    tmp_path: Path,
+    source_failure: Exception | None = None,
+    *,
+    source_status: Literal["VERIFIED", "UNVERIFIED"] = "VERIFIED",
+    document_status: str = "FOUND",
 ) -> tuple[Any, ...]:
     h, runtime, _, work, *_ = prepared_policy_parser(
         tmp_path,
@@ -186,8 +192,8 @@ def _subject(
                 source_ref=source_ref,
                 source_url="https://policy.example.test/program",
                 publisher="Example Security",
-                status="VERIFIED",
-                evidence_refs=(evidence_ref,),
+                status=source_status,
+                evidence_refs=(evidence_ref,) if source_status == "VERIFIED" else (),
                 checked_at=h.clock.now(),
             ),
             b'{"scope":{"in":["example.test"]}}',
@@ -216,6 +222,7 @@ def _subject(
         parsed_ref=parsed_ref,
         parser_name=preparing.parser_name,
         parser_version=preparing.parser_version,
+        document_status=document_status,
     )
     cache = PolicyCacheService(runtime=runtime.policy, records=h.records)
     collector = PolicyCollector(
@@ -272,6 +279,32 @@ async def test_found_policy_freezes_while_static_work_remains_independent(
     assert parser.calls == 1
     assert runtime.work.get(str(static.work_id)).status == "READY"
     assert result.output_refs == runtime.work.get(str(work.work_id)).output_refs
+
+
+@pytest.mark.asyncio
+async def test_unverified_absence_never_becomes_current_policy_or_cache(
+    tmp_path: Path,
+) -> None:
+    h, runtime, _, work, _, source, parser, service = _subject(
+        tmp_path,
+        source_status="UNVERIFIED",
+        document_status="ABSENT_CONFIRMED",
+    )
+
+    await PolicyWorkHandler(service).execute(WorkContext(work, _attempt(h, work)))
+
+    final = runtime.policy.current_state(str(work.meta.analysis_id))
+    assert final is not None
+    assert final.status == "UNVERIFIED"
+    assert final.policy_record_ref is None
+    assert final.policy_cache_ref is None
+    assert final.collection_result_ref is not None
+    collection = h.records.get_exact(final.collection_result_ref)
+    assert collection.status == "ABSENT_CONFIRMED"
+    assert collection.policy_record_ref is None
+    assert not collection.error_ids
+    assert source.calls == 1
+    assert parser.calls == 1
 
 
 @pytest.mark.asyncio
