@@ -1,5 +1,6 @@
 """Family-specific trusted configuration registries with exact closure."""
 
+import json
 from collections.abc import Callable
 from typing import cast
 
@@ -869,6 +870,30 @@ class ConfigurationRegistry:
         approved = self.records.evidence.llm_configuration_approved
         return self._publish(record, approved, self._bind_provider_validation)
 
+    def register_local_provider_validation(
+        self,
+        record: ProviderValidationEvidence,
+        *,
+        local_evidence_ref: StoredDataRef,
+    ) -> StoredDataRef:
+        """Publish only the bounded LOCAL_EVALUATION Codex probe identity."""
+
+        record = ProviderValidationEvidence.model_validate(record)
+        evidence = self._local_codex_evidence(local_evidence_ref, record)
+        experimental = evidence.get("experimental_provider_profile_ref")
+        if (
+            record.checked_by != "LOCAL_EVALUATION_OPERATOR"
+            or record.tests
+            or not isinstance(experimental, dict)
+            or record.provider != "OPENAI"
+            or record.product != "CODEX"
+            or record.transport != "CODEX_CLIENT"
+            or record.auth_mode != "SUBSCRIPTION_LOGIN"
+            or evidence.get("model") != record.model
+        ):
+            raise ValueError("LOCAL_PROVIDER_VALIDATION_EVIDENCE_MISMATCH")
+        return self._publish(record, self.records.evidence.llm_configuration_approved)
+
     def _bind_provider_validation(
         self, connection: Connection, record: ProviderValidationEvidence
     ) -> None:
@@ -1021,6 +1046,110 @@ class ConfigurationRegistry:
         approved = self.records.evidence.llm_configuration_approved
         return self._publish(record, approved)
 
+    def register_local_provider_profile(
+        self,
+        record: ProviderProfile,
+        *,
+        local_evidence_ref: StoredDataRef,
+    ) -> StoredDataRef:
+        """Publish an experimental/supported local revision without PVD authority."""
+
+        record = ProviderProfile.model_validate(record)
+        evidence = self._local_codex_evidence(local_evidence_ref, record)
+        experimental_data = evidence.get("experimental_provider_profile_ref")
+        if not isinstance(experimental_data, dict):
+            raise ValueError("LOCAL_PROVIDER_PROFILE_EVIDENCE_MISMATCH")
+        try:
+            experimental_ref = StoredDataRef.model_validate(experimental_data)
+        except ValueError:
+            raise ValueError("LOCAL_PROVIDER_PROFILE_EVIDENCE_MISMATCH") from None
+        exact_ref = reference(record)
+        supported = record.support_status == "SUPPORTED"
+        required_supported = (
+            "non_interactive",
+            "structured_output",
+            "new_session",
+            "parallel_calls",
+            "timeout_detection",
+            "auth_expiry_detection",
+            "session_metadata",
+        )
+        if (
+            record.provider != "OPENAI"
+            or record.product != "CODEX"
+            or record.transport != "CODEX_CLIENT"
+            or record.model != evidence.get("model")
+            or record.auth_mode != "SUBSCRIPTION_LOGIN"
+            or record.credential_source != "OFFICIAL_CLIENT_SESSION"
+            or record.environment != "PERSONAL_LOCAL"
+            or "LOCAL_EVALUATION_ONLY" not in record.limitations
+            or "PRODUCTION_APPROVAL_NOT_GRANTED" not in record.limitations
+            or record.capabilities.resume_session != "UNSUPPORTED"
+            or record.capabilities.runtime_tool_loop != "UNSUPPORTED"
+            or (
+                supported
+                and (
+                    str(record.meta.logical_record_id)
+                    != evidence.get("provider_profile_logical_record_id")
+                    or record.meta.revision_number
+                    != evidence.get("supported_revision_number")
+                    or record.meta.previous_record_id != experimental_ref.record_id
+                    or any(
+                        getattr(record.capabilities, name) != "SUPPORTED"
+                        for name in required_supported
+                    )
+                    or "LOCAL_VALIDATION_NOT_PRODUCTION_PVD" not in record.limitations
+                )
+            )
+            or (not supported and record.support_status != "EXPERIMENTAL")
+            or (not supported and exact_ref != experimental_ref)
+        ):
+            raise ValueError("LOCAL_PROVIDER_PROFILE_EVIDENCE_MISMATCH")
+        with self.records.database.engine.connect() as connection:
+            client_ref = record.client_execution_profile_ref
+            if not isinstance(client_ref, StoredDataRef):
+                raise ValueError("LOCAL_PROVIDER_PROFILE_EVIDENCE_MISMATCH")
+            try:
+                validation = self.records.resolve(
+                    connection, record.validation_evidence_ref
+                )
+                client = self.records.resolve(connection, client_ref)
+                experimental_record = (
+                    self.records.resolve(connection, experimental_ref)
+                    if supported
+                    else record
+                )
+            except (LookupError, ValueError):
+                raise ValueError("LOCAL_PROVIDER_PROFILE_EVIDENCE_MISMATCH") from None
+            if (
+                not isinstance(validation, ProviderValidationEvidence)
+                or validation.checked_by != "LOCAL_EVALUATION_OPERATOR"
+                or validation.tests
+                or not isinstance(client, ClientExecutionProfile)
+                or client.verification_evidence_ref != record.validation_evidence_ref
+                or not isinstance(experimental_record, ProviderProfile)
+                or experimental_record.support_status != "EXPERIMENTAL"
+                or any(
+                    getattr(record, field) != getattr(experimental_record, field)
+                    for field in (
+                        "profile_key",
+                        "provider",
+                        "product",
+                        "transport",
+                        "model",
+                        "environment",
+                        "auth_mode",
+                        "client_name",
+                        "client_version",
+                        "credential_source",
+                        "validation_evidence_ref",
+                        "client_execution_profile_ref",
+                    )
+                )
+            ):
+                raise ValueError("LOCAL_PROVIDER_PROFILE_EVIDENCE_MISMATCH")
+        return self._publish(record, self.records.evidence.llm_configuration_approved)
+
     def _llm_leaf[
         T: (
             ClientExecutionProfile,
@@ -1041,6 +1170,76 @@ class ConfigurationRegistry:
         record = ClientExecutionProfile.model_validate(record)
         approved = self.records.evidence.llm_configuration_approved
         return self._publish(record, approved, self._bind_client_execution)
+
+    def register_local_client_execution(
+        self,
+        record: ClientExecutionProfile,
+        *,
+        local_evidence_ref: StoredDataRef,
+    ) -> StoredDataRef:
+        record = ClientExecutionProfile.model_validate(record)
+        evidence = self._local_codex_evidence(local_evidence_ref, record)
+        experimental = evidence.get("experimental_provider_profile_ref")
+        if (
+            not isinstance(experimental, dict)
+            or record.working_directory_mode != "ISOLATED_EMPTY"
+            or record.filesystem_mode != "NO_REPOSITORY_ACCESS"
+            or record.tool_mode != "DISABLED"
+            or record.mcp_mode != "DISABLED"
+            or record.hooks_mode != "DISABLED"
+            or record.plugin_mode != "DISABLED"
+            or record.instruction_sources != "EXPLICIT_SASTSIMI_PAYLOAD_ONLY"
+            or record.provider_fallback != "DISABLED"
+        ):
+            raise ValueError("LOCAL_CLIENT_EXECUTION_EVIDENCE_MISMATCH")
+        with self.records.database.engine.connect() as connection:
+            try:
+                validation = self.records.resolve(
+                    connection, record.verification_evidence_ref
+                )
+            except (LookupError, ValueError):
+                raise ValueError("LOCAL_CLIENT_EXECUTION_EVIDENCE_MISMATCH") from None
+            if (
+                not isinstance(validation, ProviderValidationEvidence)
+                or validation.checked_by != "LOCAL_EVALUATION_OPERATOR"
+                or validation.tests
+                or validation.model != evidence.get("model")
+            ):
+                raise ValueError("LOCAL_CLIENT_EXECUTION_EVIDENCE_MISMATCH")
+        return self._publish(record, self.records.evidence.llm_configuration_approved)
+
+    def _local_codex_evidence(
+        self,
+        evidence_ref: StoredDataRef,
+        owner: ProviderValidationEvidence | ProviderProfile | ClientExecutionProfile,
+    ) -> dict[str, object]:
+        if (
+            evidence_ref.record_id is not None
+            or evidence_ref.data_kind != "artifact"
+            or evidence_ref.workspace_id != owner.meta.workspace_id
+            or evidence_ref.commit_id != owner.meta.commit_id
+        ):
+            raise ValueError("LOCAL_PROVIDER_EVIDENCE_INVALID")
+        try:
+            with self.artifacts.open_verified(evidence_ref) as stream:
+                raw = stream.read()
+            value = json.loads(raw)
+        except (LookupError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+            raise ValueError("LOCAL_PROVIDER_EVIDENCE_INVALID") from None
+        checks = value.get("checks") if isinstance(value, dict) else None
+        if (
+            not isinstance(value, dict)
+            or canonical_bytes(value) != raw
+            or value.get("purpose") != "LOCAL_EVALUATION"
+            or value.get("evidence_kind") != "local_codex_live_probe"
+            or value.get("production_pvd") is not False
+            or value.get("production_approval") is not False
+            or not isinstance(checks, dict)
+            or not checks
+            or any(result != "PASS" for result in checks.values())
+        ):
+            raise ValueError("LOCAL_PROVIDER_EVIDENCE_INVALID")
+        return cast(dict[str, object], value)
 
     def _bind_client_execution(
         self, connection: Connection, record: ClientExecutionProfile
