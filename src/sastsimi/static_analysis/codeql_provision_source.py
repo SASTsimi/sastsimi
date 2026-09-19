@@ -123,6 +123,16 @@ def _unchanged(runner: SafeProcessRunner, repository: Path) -> None:
     _git(runner, repository, "diff", "--quiet", "HEAD", "--")
 
 
+def _make_container_readable(root: Path) -> None:
+    """Allow the fixed non-root CodeQL user to read the private staging tree."""
+
+    if os.name != "posix":
+        return
+    for candidate in sorted(root.rglob("*")):
+        candidate.chmod(0o755 if candidate.is_dir() else 0o444)
+    root.chmod(0o755)
+
+
 def prepare_exact_source(
     *,
     git_executable: Path,
@@ -210,6 +220,7 @@ def prepare_exact_source(
         )
         if second != tracked:
             raise ValueError("CODEQL_PROVISION_SOURCE_MISMATCH")
+        _make_container_readable(target)
     return PreparedCodeQLSource(
         root=target,
         tracked_manifest_sha256=_manifest_digest(tracked),

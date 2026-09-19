@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from sastsimi.config.codeql_container import CodeQLContainerRuntimeConfig
 from sastsimi.interfaces.cli.codeql import run_inspect, run_provision, run_register
 from sastsimi.interfaces.cli.exit_codes import ExitCode
@@ -12,6 +14,7 @@ from sastsimi.static_analysis.codeql_provision_source import PreparedCodeQLSourc
 from sastsimi.static_analysis.container_codeql_provision import (
     CodeQLProvisionResult,
     CodeQLProvisionStatus,
+    ContainerCodeQLProvisionSpec,
 )
 
 COMMIT_ID = "a" * 40
@@ -310,6 +313,56 @@ def test_provision_builds_and_publishes_one_exact_python_database(
         "status",
     }
     assert tuple(config.database_registry_root.iterdir())
+
+
+def test_provision_resolves_relative_repository_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    executable = Path(__file__).resolve()
+    observed: dict[str, Path] = {}
+
+    def prepare(**kwargs: object) -> PreparedCodeQLSource:
+        repository_root = kwargs["repository_root"]
+        destination = kwargs["destination"]
+        assert isinstance(repository_root, Path)
+        assert isinstance(destination, Path)
+        observed["repository_root"] = repository_root
+        return PreparedCodeQLSource(
+            root=destination.resolve(),
+            tracked_manifest_sha256=TRACKED_MANIFEST_SHA256,
+        )
+
+    async def provision(**kwargs: object) -> CodeQLProvisionResult:
+        spec = kwargs["spec"]
+        assert isinstance(spec, ContainerCodeQLProvisionSpec)
+        spec.database_destination.joinpath("codeql-database.yml").write_text(
+            "primaryLanguage: python\n", encoding="utf-8"
+        )
+        return CodeQLProvisionResult(
+            CodeQLProvisionStatus.SUCCEEDED,
+            None,
+            spec.database_destination,
+        )
+
+    monkeypatch.chdir(tmp_path)
+    result = run_provision(
+        config=config,
+        repository_url="https://example.invalid/owner/repository.git",
+        commit_id=COMMIT_ID,
+        language="python",
+        repository_root=Path("repository"),
+        git_executable=executable,
+        docker_executable=executable,
+        source_preparer=prepare,
+        docker_port_factory=lambda _path: object(),
+        provision_runner=provision,
+    )
+
+    assert result.code == ExitCode.OK
+    assert observed["repository_root"] == repository.resolve(strict=True)
 
 
 def test_provision_failure_never_registers_a_partial_database(tmp_path: Path) -> None:

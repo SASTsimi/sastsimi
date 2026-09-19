@@ -189,6 +189,7 @@ def provision_database(
     if config.nano_cpus % 1_000_000 != 0:
         return _blocked("CONFIG_ERROR", "CODEQL_PROVISION_CPU_LIMIT_INVALID")
     try:
+        exact_repository_root = repository_root.resolve(strict=True)
         staging_root = config.database_registry_root.parent
         with TemporaryDirectory(
             prefix="sastsimi-codeql-source-", dir=staging_root
@@ -200,7 +201,7 @@ def provision_database(
                 database_root = Path(db_name).resolve(strict=True)
                 prepared = source_preparer(
                     git_executable=git_executable,
-                    repository_root=repository_root,
+                    repository_root=exact_repository_root,
                     commit_id=commit_id,
                     destination=source_root,
                 )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -84,6 +85,9 @@ def test_prepared_source_contains_only_safe_files_from_the_exact_commit(
     ) == (".gitignore", "app.py")
     assert not (destination / ".git").exists()
     assert (destination / "app.py").read_text(encoding="utf-8") == "print('exact')\n"
+    if os.name == "posix":
+        assert destination.stat().st_mode & 0o005 == 0o005
+        assert (destination / "app.py").stat().st_mode & 0o004 == 0o004
 
 
 def test_prepared_source_rejects_wrong_commit_or_modified_tracked_content(
