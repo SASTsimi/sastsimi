@@ -428,7 +428,9 @@ def build_production_t08_feature(
 ) -> T08ProductionFeature:
     """Build all five T08 handlers from exact approved configuration only."""
 
-    if "CODEQL" in inputs.static.enabled_tools:
+    if "CODEQL" in inputs.static.enabled_tools and not bool(
+        getattr(inputs.build_static_adapters, "codeql_safe_prerequisites_ready", False)
+    ):
         raise ProductionAnalyzeUnavailable(
             "PRODUCTION_CODEQL_SAFE_PREREQUISITES_UNAVAILABLE"
         )

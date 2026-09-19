@@ -82,6 +82,7 @@ from sastsimi.ports.dto import StaticRuleMapping
 from sastsimi.ports.llm_provider import LLMProviderAdapter
 from sastsimi.ports.production_analysis import ProductionAnalyzeUnavailable
 from sastsimi.ports.scheduler import ExternalCancellationPort
+from sastsimi.ports.static_tool import PrebuiltCodeQLDatabasePort
 from sastsimi.providers.storage_io import InvocationMetadataFactory
 from sastsimi.runtime.system_support import SystemClock, UUIDIds
 from sastsimi.storage.context_lineage import ContextLineageReader
@@ -107,6 +108,7 @@ class ProductionStaticRuntimePorts:
     dispatch_state: StaticDispatchStateReader
     attempt_dispatch: StaticAttemptDispatchReader
     output_quota: ProductionStaticOutputQuotaPort | None = None
+    codeql_database_provider: PrebuiltCodeQLDatabasePort | None = None
     codeql_database_limit_bytes: int | None = None
 
 
@@ -546,7 +548,13 @@ def _reserved_cost(context: ProductionInstallationContext) -> int:
 def _require_static_runtime_ports(
     ports: ProductionStaticRuntimePorts, static: StaticAnalysisProvisioning
 ) -> None:
-    if "CODEQL" in static.enabled_tools:
+    if "CODEQL" in static.enabled_tools and (
+        ports.output_quota is None
+        or ports.codeql_database_provider is None
+        or not isinstance(ports.codeql_database_limit_bytes, int)
+        or isinstance(ports.codeql_database_limit_bytes, bool)
+        or ports.codeql_database_limit_bytes <= 0
+    ):
         raise ProductionAnalyzeUnavailable(
             "PRODUCTION_CODEQL_SAFE_PREREQUISITES_UNAVAILABLE"
         )
@@ -603,6 +611,7 @@ def _t08_inputs(
         python_ast_worker=worker,
         python_ast_worker_sha256=_sha256_file(worker),
         output_quota=ports.output_quota,
+        codeql_database_provider=ports.codeql_database_provider,
         codeql_database_limit_bytes=ports.codeql_database_limit_bytes,
     )
     return ProductionT08Inputs(

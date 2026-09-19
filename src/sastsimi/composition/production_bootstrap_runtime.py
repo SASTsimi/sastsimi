@@ -68,7 +68,10 @@ from sastsimi.ports.dynamic_sandbox import (
 )
 from sastsimi.ports.llm_provider import LLMProviderAdapter
 from sastsimi.ports.scheduler import ExternalCancellationPort
-from sastsimi.ports.static_tool import ProductionStaticOutputQuotaPort
+from sastsimi.ports.static_tool import (
+    PrebuiltCodeQLDatabasePort,
+    ProductionStaticOutputQuotaPort,
+)
 from sastsimi.storage import models
 from sastsimi.storage.codec import REF_ADAPTER
 from sastsimi.storage.repositories import SQLiteRecordStore
@@ -142,6 +145,7 @@ class ProductionStaticRuntimeFactory:
     """Bind durable SQLite dispatch state and process receipt evidence."""
 
     output_quota: ProductionStaticOutputQuotaPort | None = None
+    codeql_database_provider: PrebuiltCodeQLDatabasePort | None = None
     codeql_database_limit_bytes: int | None = None
 
     def __call__(
@@ -154,6 +158,7 @@ class ProductionStaticRuntimeFactory:
             dispatch_state=runtime.dispatch_state,
             attempt_dispatch=runtime.attempt_dispatch,
             output_quota=self.output_quota,
+            codeql_database_provider=self.codeql_database_provider,
             codeql_database_limit_bytes=self.codeql_database_limit_bytes,
         )
 
@@ -234,6 +239,7 @@ def build_production_bootstrap_assembler(
     repository_root: Path,
     docker_resolver_factory: DockerTargetResolverFactory | None = None,
     static_output_quota: ProductionStaticOutputQuotaPort | None = None,
+    codeql_database_provider: PrebuiltCodeQLDatabasePort | None = None,
     codeql_database_limit_bytes: int | None = None,
 ) -> ProductionBundleAssemblyPort:
     """Build the real default T08-T13 assembler used by ``sastsimi analyze``."""
@@ -242,6 +248,7 @@ def build_production_bootstrap_assembler(
         repository_root=repository_root,
         static_runtime_factory=ProductionStaticRuntimeFactory(
             output_quota=static_output_quota,
+            codeql_database_provider=codeql_database_provider,
             codeql_database_limit_bytes=codeql_database_limit_bytes,
         ),
         dynamic_feature_factory=ProductionDynamicRuntimeFactory(

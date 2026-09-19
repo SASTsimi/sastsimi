@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import stat
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -18,7 +19,11 @@ from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef, referen
 from sastsimi.contracts.static import CodeWorkspace, StaticToolProfile
 from sastsimi.ports.dto import (
     CancellationResult,
+    CandidateError,
+    CandidateGap,
+    CandidateRule,
     MonotonicActionDeadline,
+    PrebuiltCodeQLDatabase,
     StaticCapabilityObservation,
     StaticRuleMapping,
     StaticToolObservation,
@@ -27,12 +32,20 @@ from sastsimi.ports.dto import (
 )
 from sastsimi.ports.production_analysis import ProductionAnalyzeUnavailable
 from sastsimi.ports.static_tool import (
+    PrebuiltCodeQLDatabasePort,
+    StaticProcessAdapter,
+)
+from sastsimi.ports.static_tool import (
     ProductionStaticOutputQuotaPort as ProductionStaticOutputQuotaPort,
 )
 from sastsimi.ports.static_tool import StaticOutputPurpose as StaticOutputPurpose
-from sastsimi.ports.static_tool import StaticProcessAdapter
 from sastsimi.ports.workspace import WorkspaceLocatorPort
 from sastsimi.static_analysis.ast_adapter import PythonAstProcessAdapter
+from sastsimi.static_analysis.codeql_adapter import (
+    CodeQLExecutionInputs,
+    CodeQLProcessAdapter,
+    digest_path,
+)
 from sastsimi.static_analysis.open_grep_adapter import (
     OpenGrepExecutionInputs,
     OpenGrepProcessAdapter,
@@ -367,6 +380,45 @@ def _materialize_file(
     except (OSError, ValueError) as error:
         raise ValueError("STATIC_MATERIAL_DIGEST_MISMATCH") from error
     return path.resolve(strict=True)
+
+
+def _materialize_codeql_query_pack(
+    *,
+    root: Path,
+    material: _CodeQLMaterial,
+    evidence: Mapping[str, bytes],
+    rules: _RuleMaterial,
+) -> Path:
+    # ``root`` is already keyed by the immutable analysis-config digest. Keep
+    # the child name short enough for native Windows path limits.
+    pack = _safe_root(root, "codeql/query-pack")
+    for item in material.files:
+        _materialize_file(
+            pack,
+            item.relative_path,
+            _payload_for(
+                evidence,
+                item.content_sha256,
+                "CODEQL_QUERY_EVIDENCE_INVALID",
+            ),
+            item.content_sha256,
+        )
+    selection = canonical_bytes(
+        {
+            "schema_version": 1,
+            "rule_ids": list(rules.selected_rule_ids),
+            "rule_packs": list(rules.selected_rule_packs),
+        }
+    )
+    _materialize_file(
+        pack,
+        "sastsimi-selection.json",
+        selection,
+        hashlib.sha256(selection).hexdigest(),
+    )
+    if digest_path(pack) != material.query_pack_sha256:
+        raise ValueError("CODEQL_QUERY_PACK_DIGEST_MISMATCH")
+    return pack
 
 
 def _is_link_like(path: Path) -> bool:
@@ -781,6 +833,341 @@ class _LazyOpenGrepAdapter:
         return await active.cancel(attempt_id)
 
 
+class _LazyCodeQLAdapter:
+    """Resolve one exact prebuilt database only after the attempt is known."""
+
+    def __init__(
+        self,
+        *,
+        executable: Path,
+        query_pack_root: Path,
+        query_pack_digest: str,
+        route_analysis_config_ref: StoredDataRef,
+        route_rule_catalog_ref: StoredDataRef,
+        rule_material: _RuleMaterial,
+        output_root: Path,
+        workspace_locator: WorkspaceLocatorPort,
+        tracked_files_for: Callable[[CodeWorkspace], tuple[TrackedFile, ...]],
+        output_quota: ProductionStaticOutputQuotaPort,
+        database_provider: PrebuiltCodeQLDatabasePort,
+        database_limit_bytes: int,
+    ) -> None:
+        self.executable = executable
+        self._query_pack_root = query_pack_root
+        self._query_pack_digest = query_pack_digest
+        self._analysis_config_ref = route_analysis_config_ref
+        self._rule_catalog_ref = route_rule_catalog_ref
+        self._rules = rule_material
+        self._output_root = output_root
+        self._workspace_locator = workspace_locator
+        self._tracked_files_for = tracked_files_for
+        self._quota = output_quota
+        self._databases = database_provider
+        self._database_limit_bytes = database_limit_bytes
+        self._active: dict[str, CodeQLProcessAdapter] = {}
+
+    def _empty_rules(self, reason: str) -> tuple[CandidateRule, ...]:
+        selected = set(self._rules.selected_rule_ids)
+        return tuple(
+            CandidateRule(
+                item.rule_id,
+                "SELECTED" if item.rule_id in selected else "NOT_SELECTED",
+                "NOT_EXECUTED",
+                None,
+                reason if item.rule_id in selected else "NOT_SELECTED",
+                None,
+            )
+            for item in sorted(self._rules.mappings, key=lambda item: item.rule_id)
+        )
+
+    def _failure(
+        self,
+        profile: StaticToolProfile,
+        tracked: tuple[TrackedFile, ...],
+        *,
+        status: Literal["FAILED", "SKIPPED"],
+        code: str,
+        reason: Literal["FAILED", "UNSUPPORTED", "BLOCKED"],
+        retryable: bool = False,
+    ) -> StaticToolObservation:
+        now = time.monotonic_ns() // 1_000_000
+        return StaticToolObservation(
+            tool_name="CODEQL",
+            tool_version=profile.expected_version,
+            tool_kind="RULE_BASED",
+            status=status,
+            raw_output=None,
+            raw_media_type=None,
+            analyzed_paths=(),
+            skipped_paths=tuple(sorted(item.git_path for item in tracked)),
+            analyzed_languages=(),
+            skipped_languages=(),
+            notes=("Exact prebuilt CodeQL database was not analyzed.",),
+            selected_rule_packs=self._rules.selected_rule_packs,
+            rules=self._empty_rules(
+                "UNSUPPORTED" if status == "SKIPPED" else "TOOL_FAILURE"
+            ),
+            symbols=(),
+            facts=(),
+            relations=(),
+            gaps=(
+                CandidateGap(
+                    stage="STATIC_ANALYSIS",
+                    code=code,
+                    reason=reason,
+                    description=(
+                        "CodeQL could not use the exact approved prebuilt database."
+                    ),
+                    affected_paths=(),
+                    affected_languages=(),
+                    affected_locations=(),
+                    retryable=retryable,
+                ),
+            ),
+            errors=(
+                ()
+                if status == "SKIPPED"
+                else (
+                    CandidateError(
+                        stage="STATIC_ANALYSIS",
+                        code=code,
+                        safe_message="CodeQL database provisioning failed.",
+                        retryable=retryable,
+                    ),
+                )
+            ),
+            started_monotonic_ms=now,
+            finished_monotonic_ms=now,
+        )
+
+    @staticmethod
+    def _tracked_manifest_sha256(tracked: tuple[TrackedFile, ...]) -> str:
+        return hashlib.sha256(
+            canonical_bytes(
+                [
+                    {
+                        "git_path": item.git_path,
+                        "git_mode": item.git_mode,
+                        "blob_id": item.blob_id,
+                        "size_bytes": item.size_bytes,
+                    }
+                    for item in sorted(tracked, key=lambda item: item.git_path)
+                ]
+            )
+        ).hexdigest()
+
+    def _lower(
+        self,
+        *,
+        profile: StaticToolProfile,
+        database: PrebuiltCodeQLDatabase,
+        tracked: tuple[TrackedFile, ...],
+        attempt_root: Path,
+        attempt_id: str,
+        execution_lease_id: str,
+        probe_root: Path,
+        probe_lease_id: str,
+    ) -> CodeQLProcessAdapter:
+        return CodeQLProcessAdapter(
+            executable=self.executable,
+            executable_key=str(profile.executable_key),
+            inputs=CodeQLExecutionInputs(
+                database=database,
+                query_pack_root=self._query_pack_root,
+                query_pack_digest=self._query_pack_digest,
+                analysis_config_ref=self._analysis_config_ref,
+                rule_catalog_ref=self._rule_catalog_ref,
+                rule_catalog=self._rules.mappings,
+                selected_rule_ids=self._rules.selected_rule_ids,
+                selected_rule_packs=self._rules.selected_rule_packs,
+                tracked_files=tracked,
+                attempt_root=attempt_root,
+                attempt_id=attempt_id,
+                output_quota_lease_id=execution_lease_id,
+                probe_root=probe_root,
+                probe_output_quota_lease_id=probe_lease_id,
+                output_quota=self._quota,
+            ),
+            runner_factory=_runner,
+        )
+
+    async def probe(
+        self,
+        profile: StaticToolProfile,
+        deadline: MonotonicActionDeadline,
+    ) -> StaticCapabilityObservation:
+        profile_ref = reference(profile)
+        if not isinstance(profile_ref, HostConfigurationRef):
+            raise ValueError("CODEQL_PRODUCTION_PROFILE_REQUIRED")
+        binding = self._quota.allocate(
+            purpose="PROBE",
+            action_id=deadline.action_id,
+            attempt_id=deadline.action_id,
+            profile_ref=profile_ref,
+            limit_bytes=profile.max_attempt_output_bytes,
+        )
+        placeholder = _safe_root(self._output_root, "probes/codeql-placeholder")
+        database_root = _safe_root(placeholder, "database")
+        attempt_root = _safe_root(placeholder, "execution")
+        database = PrebuiltCodeQLDatabase(
+            workspace_id="probe-workspace",
+            commit_id="probe-commit",
+            language="python",
+            database_root=database_root,
+            database_digest=digest_path(database_root),
+        )
+        lower = self._lower(
+            profile=profile,
+            database=database,
+            tracked=(),
+            attempt_root=attempt_root,
+            attempt_id=deadline.action_id,
+            execution_lease_id="unused-execution-" + binding.lease_id,
+            probe_root=binding.root,
+            probe_lease_id=binding.lease_id,
+        )
+        self._active[deadline.action_id] = lower
+        outcome = "PROBE_FAILED"
+        try:
+            observed = await lower.probe(profile, deadline)
+            outcome = "PROBE_SUCCEEDED" if observed.available else "PROBE_FAILED"
+            return observed
+        finally:
+            self._active.pop(deadline.action_id, None)
+            self._quota.finalize(lease_id=binding.lease_id, outcome=outcome)
+
+    async def execute(
+        self,
+        request: StaticToolRequest,
+        workspace_root: Path,
+        profile: StaticToolProfile,
+        deadline: MonotonicActionDeadline,
+    ) -> StaticToolObservation:
+        meta = request.action.meta
+        profile_ref = request.tool_profile_ref
+        if (
+            not isinstance(meta, RecordMeta)
+            or meta.attempt_id is None
+            or not isinstance(profile_ref, HostConfigurationRef)
+            or profile_ref != reference(profile)
+            or request.analysis_config_ref != self._analysis_config_ref
+            or request.rule_catalog_ref != self._rule_catalog_ref
+            or request.workspace.commit_id is None
+            or workspace_root.resolve(strict=True)
+            != self._workspace_locator.root_for(request.workspace).resolve(strict=True)
+        ):
+            raise ValueError("CODEQL_REQUEST_BINDING_INVALID")
+        attempt_id = str(meta.attempt_id)
+        action_id = str(request.action.action_id)
+        if attempt_id in self._active:
+            raise ValueError("CODEQL_ATTEMPT_ALREADY_ACTIVE")
+        tracked = self._tracked_files_for(request.workspace)
+        try:
+            language = classify_codeql_language(
+                tuple(item.git_path for item in tracked)
+            )
+        except ValueError:
+            return self._failure(
+                profile,
+                tracked,
+                status="SKIPPED",
+                code="CODEQL_LANGUAGE_SCOPE_AMBIGUOUS",
+                reason="UNSUPPORTED",
+            )
+        bindings = []
+        outcome = "FAILED"
+        try:
+            database_binding = self._quota.allocate(
+                purpose="DATABASE",
+                action_id=action_id,
+                attempt_id=attempt_id,
+                profile_ref=profile_ref,
+                limit_bytes=self._database_limit_bytes,
+            )
+            bindings.append(database_binding)
+            execution_binding = self._quota.allocate(
+                purpose="EXECUTION",
+                action_id=action_id,
+                attempt_id=attempt_id,
+                profile_ref=profile_ref,
+                limit_bytes=profile.max_attempt_output_bytes,
+            )
+            bindings.append(execution_binding)
+            database = self._databases.materialize(
+                workspace_id=str(request.workspace.workspace_id),
+                repository_url=str(request.workspace.repository_url),
+                commit_id=str(request.workspace.commit_id),
+                language=language,
+                tracked_manifest_sha256=self._tracked_manifest_sha256(tracked),
+                profile_ref=profile_ref,
+                quota_binding=database_binding,
+            )
+            if database is None:
+                outcome = "SKIPPED"
+                return self._failure(
+                    profile,
+                    tracked,
+                    status="SKIPPED",
+                    code="CODEQL_PREBUILT_DATABASE_UNAVAILABLE",
+                    reason="UNSUPPORTED",
+                )
+            verified_database = self._quota.verify(
+                lease_id=database_binding.lease_id,
+                action_id=action_id,
+                attempt_id=attempt_id,
+                profile_ref=profile_ref,
+                root=database_binding.root,
+                limit_bytes=self._database_limit_bytes,
+            )
+            database_root = database.database_root.resolve(strict=True)
+            if (
+                verified_database.limit_breached
+                or database.workspace_id != str(request.workspace.workspace_id)
+                or database.commit_id != str(request.workspace.commit_id)
+                or database.language != language
+                or not database_root.is_relative_to(
+                    database_binding.root.resolve(strict=True)
+                )
+                or database_root == database_binding.root.resolve(strict=True)
+                or database_root.is_relative_to(workspace_root.resolve(strict=True))
+                or digest_path(database_root) != database.database_digest
+            ):
+                raise ValueError("CODEQL_PREBUILT_DATABASE_BINDING_INVALID")
+            placeholder = _safe_root(self._output_root, "probes/codeql-unused")
+            lower = self._lower(
+                profile=profile,
+                database=database,
+                tracked=tracked,
+                attempt_root=execution_binding.root,
+                attempt_id=attempt_id,
+                execution_lease_id=execution_binding.lease_id,
+                probe_root=placeholder,
+                probe_lease_id="unused-probe-" + execution_binding.lease_id,
+            )
+            self._active[attempt_id] = lower
+            observed = await lower.execute(request, workspace_root, profile, deadline)
+            outcome = observed.status
+            return observed
+        except (OSError, ValueError):
+            return self._failure(
+                profile,
+                tracked,
+                status="FAILED",
+                code="CODEQL_PREBUILT_DATABASE_INVALID",
+                reason="FAILED",
+            )
+        finally:
+            self._active.pop(attempt_id, None)
+            for binding in reversed(bindings):
+                self._quota.finalize(lease_id=binding.lease_id, outcome=outcome)
+
+    async def cancel(self, attempt_id: str) -> CancellationResult:
+        active = self._active.get(attempt_id)
+        if active is None:
+            return CancellationResult(False, "Attempt is not active")
+        return await active.cancel(attempt_id)
+
+
 class ProductionStaticAdapterFactory:
     """Build only configured real adapters; unsupported closures fail closed."""
 
@@ -791,23 +1178,34 @@ class ProductionStaticAdapterFactory:
         python_ast_worker: Path,
         python_ast_worker_sha256: str,
         output_quota: ProductionStaticOutputQuotaPort | None = None,
+        codeql_database_provider: PrebuiltCodeQLDatabasePort | None = None,
         codeql_database_limit_bytes: int | None = None,
     ) -> None:
         self._executables = MappingProxyType(dict(executables))
         self._worker = python_ast_worker
         self._worker_sha256 = python_ast_worker_sha256
         self._output_quota = output_quota
+        self._codeql_database_provider = codeql_database_provider
         self._codeql_database_limit_bytes = codeql_database_limit_bytes
+
+    @property
+    def codeql_safe_prerequisites_ready(self) -> bool:
+        return (
+            self._output_quota is not None
+            and self._codeql_database_provider is not None
+            and isinstance(self._codeql_database_limit_bytes, int)
+            and not isinstance(self._codeql_database_limit_bytes, bool)
+            and self._codeql_database_limit_bytes > 0
+        )
 
     def __call__(
         self,
         context: StaticAdapterBuildContext,
     ) -> Mapping[str, StaticProcessAdapter]:
-        # No production backend or exact prebuilt database binding exists yet.
-        # Reject even an injected quota object before filesystem or process work.
-        if "CODEQL" in context.routes or any(
+        codeql_requested = "CODEQL" in context.routes or any(
             profile.adapter_key == "CODEQL" for profile in context.profiles.values()
-        ):
+        )
+        if codeql_requested and not self.codeql_safe_prerequisites_ready:
             raise ProductionAnalyzeUnavailable(
                 "PRODUCTION_CODEQL_SAFE_PREREQUISITES_UNAVAILABLE"
             )
@@ -884,6 +1282,39 @@ class ProductionStaticAdapterFactory:
                     output_root=output_root,
                     workspace_locator=context.workspace_locator,
                     tracked_files_for=context.tracked_files_for,
+                )
+                continue
+            if profile.adapter_key == "CODEQL":
+                if (
+                    material is None
+                    or material_root is None
+                    or material.codeql is None
+                    or route.rule_catalog_ref is None
+                    or self._output_quota is None
+                    or self._codeql_database_provider is None
+                    or self._codeql_database_limit_bytes is None
+                ):
+                    raise ValueError("PRODUCTION_CODEQL_MATERIAL_MISSING")
+                rules = _parse_rule_material(context, tool)
+                query_pack = _materialize_codeql_query_pack(
+                    root=material_root,
+                    material=material.codeql,
+                    evidence=context.evidence,
+                    rules=rules,
+                )
+                adapters[profile.adapter_key] = _LazyCodeQLAdapter(
+                    executable=executable,
+                    query_pack_root=query_pack,
+                    query_pack_digest=material.codeql.query_pack_sha256,
+                    route_analysis_config_ref=route.analysis_config_ref,
+                    route_rule_catalog_ref=route.rule_catalog_ref,
+                    rule_material=rules,
+                    output_root=output_root,
+                    workspace_locator=context.workspace_locator,
+                    tracked_files_for=context.tracked_files_for,
+                    output_quota=self._output_quota,
+                    database_provider=self._codeql_database_provider,
+                    database_limit_bytes=self._codeql_database_limit_bytes,
                 )
                 continue
             raise ValueError("PRODUCTION_STATIC_ADAPTER_NOT_CONFIGURED")

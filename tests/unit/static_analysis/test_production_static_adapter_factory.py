@@ -42,12 +42,15 @@ from sastsimi.ports.dto import (
 )
 from sastsimi.ports.production_analysis import ProductionAnalyzeUnavailable
 from sastsimi.ports.static_tool import (
+    PrebuiltCodeQLDatabasePort,
     ProductionStaticOutputQuotaPort,
     StaticProcessAdapter,
 )
 from sastsimi.ports.workspace import WorkspaceLocatorPort
 from sastsimi.static_analysis.ast_adapter import PythonAstProcessAdapter
+from sastsimi.static_analysis.codeql_adapter import digest_path
 from tests.contract.domain.fixtures import meta
+from tests.integration.static_quota_support import TestQuota
 from tests.unit.static_analysis.test_ast_adapter import _request
 
 
@@ -411,6 +414,84 @@ def test_codeql_activation_requires_production_prebuilt_and_quota_binding(
         factory(context)
     assert not (tmp_path / "static-execution").exists()
     assert not (tmp_path / "static-material").exists()
+
+
+def test_codeql_adapter_is_built_only_with_exact_database_and_quota_ports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "codeql.exe"
+    executable.write_bytes(b"trusted-codeql")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    locator = _Locator(workspace, ())
+    profile = _rule_profile(executable, "CODEQL")
+    profile_ref = cast(HostConfigurationRef, reference(profile))
+    query_file = b"name: approved/query-pack\n"
+    catalog, selection, mappings, closure = _rule_payloads()
+    expected_pack = tmp_path / "expected-pack"
+    expected_pack.mkdir()
+    (expected_pack / "qlpack.yml").write_bytes(query_file)
+    (expected_pack / "sastsimi-selection.json").write_bytes(selection)
+    query_pack_digest = digest_path(expected_pack)
+    manifest = canonical_bytes(
+        {
+            "schema_version": 1,
+            "tools": {
+                "CODEQL": {
+                    "query_pack_sha256": query_pack_digest,
+                    "files": [
+                        {
+                            "path": "qlpack.yml",
+                            "sha256": hashlib.sha256(query_file).hexdigest(),
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    manifest_ref = _artifact(manifest)
+    catalog_ref = _artifact(catalog)
+    evidence = {
+        hashlib.sha256(payload).hexdigest(): payload
+        for payload in (manifest, catalog, selection, mappings, query_file)
+    }
+    context = StaticAdapterBuildContext(
+        data_dir=tmp_path,
+        workspace_locator=cast(WorkspaceLocatorPort, locator),
+        tracked_files_for=locator.tracked_files_for,
+        routes={
+            "CODEQL": StaticToolRoute(
+                profile_ref,
+                manifest_ref,
+                catalog_ref,
+                closure.catalog_rule_ids,
+            )
+        },
+        profiles={"CODEQL": profile},
+        evidence=evidence,
+        rule_closures={"CODEQL": closure},
+    )
+
+    class Provider:
+        provider_key = "fixture-provider"
+        provider_revision = "1"
+        provider_evidence_sha256 = "e" * 64
+
+        def materialize(self, **_kwargs: object) -> object:
+            raise AssertionError("factory construction must stay lazy")
+
+    factory = ProductionStaticAdapterFactory(
+        executables={"CODEQL": executable},
+        python_ast_worker=executable,
+        python_ast_worker_sha256=_digest(executable),
+        output_quota=TestQuota(tmp_path / "quota", monkeypatch),
+        codeql_database_provider=cast(PrebuiltCodeQLDatabasePort, Provider()),
+        codeql_database_limit_bytes=4096,
+    )
+
+    adapters = factory(context)
+
+    assert set(adapters) == {"CODEQL"}
 
 
 @pytest.mark.asyncio
