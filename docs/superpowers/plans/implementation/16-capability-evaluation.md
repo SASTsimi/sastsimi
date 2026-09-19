@@ -59,3 +59,43 @@ integration tests. Run the complete repository CI once at the final integration
 PR SHA. Blocker/High failures are fixed immediately; Medium/Low cleanup is
 recorded for follow-up.
 
+## Pinned real-repository validation matrix
+
+The fake-free validation uses the following two repositories.  Each run uses
+the full commit SHA below; a moving branch name or abbreviated SHA is not an
+acceptable analysis input.
+
+### 1. Known-vulnerability path: OWASP PyGoat
+
+- Repository: `https://github.com/adeyosemanputra/pygoat.git`
+- Pinned commit: `19d17cc8874861142b330636d068bbde54e86b85`
+- Purpose: prove at least one known, authorized vulnerability can complete the
+  `Hypothesis -> Verification -> validated PoC -> two Gates -> Finding ->
+  Markdown report` path.
+- Static requirement: Python AST, OpenGrep, and CodeQL must all execute for the
+  exact commit.  A missing CodeQL database or failed CodeQL attempt blocks this
+  acceptance run; it cannot be reported as zero hits.
+- Dynamic requirement: reuse the repository's tracked Docker and dependency
+  declarations as inputs, but run the PoC only inside the approved Sandbox.
+  The repository's intentionally vulnerable behavior is not permission to
+  access external targets or widen network policy.
+
+### 2. Small real-project path: ItsDangerous 2.2.0
+
+- Repository: `https://github.com/pallets/itsdangerous.git`
+- Release tag: `2.2.0`
+- Pinned commit: `096c8d42545d3b68ea21a4f890fb2b2d8979c0bd`
+- Purpose: exercise the same AST + OpenGrep + CodeQL + LLM path on a small,
+  real Python security library that was not created as a vulnerable lab.
+- Acceptance focus: preserve honest zero-hit, FALSE, HOLD, BLOCKED, and tool
+  failure distinctions; do not require a TRUE finding merely to make the run
+  appear successful.
+- Dynamic reproduction and PoC are required only if Verification reaches the
+  normal dynamic-request conditions.  A final TRUE still requires a validated
+  PoC under the common contract.
+
+For both repositories, record the exact Provider profile, model, prompt
+revisions, static-tool capability revisions, CodeQL database digest, Sandbox
+profile, analysis ID, and report path.  Compare detection quality separately;
+PyGoat is the positive-path target, while ItsDangerous is the realistic
+small-project and false-positive-control target.
