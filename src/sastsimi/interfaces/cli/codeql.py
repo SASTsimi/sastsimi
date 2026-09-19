@@ -177,8 +177,13 @@ def run_provision(
     if config.nano_cpus % 1_000_000 != 0:
         return _blocked(ExitCode.CONFIG_ERROR, "CODEQL_PROVISION_CPU_LIMIT_INVALID")
     try:
-        with TemporaryDirectory(prefix="sastsimi-codeql-source-") as source_name:
-            with TemporaryDirectory(prefix="sastsimi-codeql-database-") as db_name:
+        staging_root = config.database_registry_root.parent
+        with TemporaryDirectory(
+            prefix="sastsimi-codeql-source-", dir=staging_root
+        ) as source_name:
+            with TemporaryDirectory(
+                prefix="sastsimi-codeql-database-", dir=staging_root
+            ) as db_name:
                 source_root = Path(source_name).resolve(strict=True)
                 database_root = Path(db_name).resolve(strict=True)
                 prepared = source_preparer(

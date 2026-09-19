@@ -291,6 +291,16 @@ def test_provision_builds_and_publishes_one_exact_python_database(
     )
 
     assert result.code == ExitCode.OK
+    prepare_call = observed["prepare"]
+    assert isinstance(prepare_call, dict)
+    source_destination = prepare_call["destination"]
+    provision_spec = observed["spec"]
+    assert isinstance(source_destination, Path)
+    assert source_destination.parent == config.database_registry_root.parent
+    assert (
+        provision_spec.database_destination.parent
+        == config.database_registry_root.parent
+    )
     assert result.data["status"] == "REGISTERED"
     assert result.data["tracked_manifest_sha256"] == TRACKED_MANIFEST_SHA256
     assert set(result.data) == {
