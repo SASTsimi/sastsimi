@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from pathlib import Path
@@ -62,7 +63,7 @@ class FindingDisplayIdStore:
                 (analysis_id, finding_ref.content_hash),
             ).fetchone()
             if row is not None:
-                if StoredDataRef.model_validate_json(row[1]) != finding_ref:
+                if json.loads(row[1]) != finding_ref.model_dump(mode="json"):
                     raise ValueError("FINDING_DISPLAY_REFERENCE_CONFLICT")
                 connection.commit()
                 return self._format(int(row[0]))
@@ -106,6 +107,39 @@ class FindingDisplayIdStore:
         if match is None:
             raise ValueError("FINDING_DISPLAY_ID_INVALID")
         connection = self._connect()
+        try:
+            row = connection.execute(
+                """
+                SELECT finding_ref_json
+                FROM finding_display_ids
+                WHERE analysis_id = ? AND display_number = ?
+                """,
+                (analysis_id, int(match.group(1))),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise LookupError("FINDING_DISPLAY_ID_NOT_FOUND")
+        return StoredDataRef.model_validate_json(row[0])
+
+    @classmethod
+    def resolve_existing(
+        cls,
+        database_path: str | Path,
+        analysis_id: str,
+        display_id: str,
+    ) -> StoredDataRef:
+        """Resolve through a read-only connection without creating schema."""
+
+        cls._validate_analysis_id(analysis_id)
+        match = _DISPLAY_ID.fullmatch(display_id)
+        if match is None:
+            raise ValueError("FINDING_DISPLAY_ID_INVALID")
+        path = Path(database_path).resolve()
+        connection = sqlite3.connect(
+            f"file:{path.as_posix()}?mode=ro",
+            uri=True,
+        )
         try:
             row = connection.execute(
                 """
