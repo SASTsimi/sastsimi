@@ -856,6 +856,8 @@ async def test_production_executor_fails_closed_for_invalid_stage_authority(
     assert port.failure.status == "FAILED"  # type: ignore[attr-defined]
     assert port.failure.hypothesis_outcome == "INCONCLUSIVE"  # type: ignore[attr-defined]
     assert port.failure.poc_ref is None  # type: ignore[attr-defined]
+    if resolver_error is not None:
+        assert port.failure.failure_reason == resolver_error  # type: ignore[attr-defined]
     assert port.verdict_calls == 0
     assert port.gate_calls == 0
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, TypeGuard
 
@@ -1403,7 +1404,7 @@ class DynamicReproductionWorkflowService:
                 session=session,
                 failure=error.failure,
             )
-        except Exception:
+        except Exception as error:
             if session is not None and session.allowed:
                 session = await self._workflow.cleanup(session)
             return self._workflow.finalize_failure(
@@ -1414,7 +1415,7 @@ class DynamicReproductionWorkflowService:
                 failure=DynamicWorkflowFailure(
                     status="FAILED",
                     failure_category="INTERNAL",
-                    failure_reason="Unexpected dynamic workflow failure",
+                    failure_reason=_safe_internal_failure_reason(error),
                 ),
             )
 
@@ -1455,3 +1456,13 @@ def _require_stage_record[T](
             "FAILED", category, "LLM stage did not produce a usable result"
         )
     return outcome.record
+
+
+def _safe_internal_failure_reason(error: Exception) -> str:
+    code = getattr(error, "code", None)
+    if isinstance(code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{2,127}", code):
+        return code
+    message = str(error)
+    if re.fullmatch(r"[A-Z][A-Z0-9_]{2,127}", message):
+        return message
+    return "Unexpected dynamic workflow failure"
