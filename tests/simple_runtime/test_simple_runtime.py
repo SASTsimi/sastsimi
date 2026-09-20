@@ -16,6 +16,7 @@ from sastsimi.simple_runtime.models import (
     StageStatus,
     input_reference_hash,
 )
+from sastsimi.simple_runtime.poc import PoCCandidateRejected, validate_candidate
 from sastsimi.simple_runtime.runner import (
     SimpleRuntimeRunner,
     StageBlocked,
@@ -171,3 +172,41 @@ async def test_failed_transaction_never_publishes_success_or_false(tmp_path) -> 
     assert resumable_store.validated_poc(_identity()) is None
     assert resumable_store.get(_identity(), SimpleStage.TECH_GATE_DONE) is None
     assert resumable_store.get(_identity(), SimpleStage.REPORT_DONE) is None
+
+    with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
+        validate_candidate(
+            b'#!/bin/sh\n: "${POC_URL:?required}"\n',
+            allowed_environment_names=frozenset(),
+        )
+
+    assert validate_candidate(
+        b"#!/bin/sh\nset -eu\npython - <<'PY'\nprint('supported')\nPY\n",
+        allowed_environment_names=frozenset(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_false_stops_before_cwe_gate_and_report(tmp_path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "terminal" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.POC_EXECUTION_DONE)
+    calls: list[SimpleStage] = []
+
+    async def final_verification(
+        _checkpoint: StageCheckpoint,
+        _prior: object,
+    ) -> StageResult:
+        calls.append(SimpleStage.VERIFICATION_FINAL_DONE)
+        return StageResult(
+            output_refs=(_ref("final-false"),),
+            verdict="FALSE",
+        )
+
+    handlers = _recording_handlers(calls)
+    handlers[SimpleStage.VERIFICATION_FINAL_DONE] = final_verification
+    outcome = await SimpleRuntimeRunner(store, handlers).resume_analysis(_identity())
+
+    assert outcome.status is StageStatus.SUCCEEDED
+    assert outcome.current_stage is SimpleStage.VERIFICATION_FINAL_DONE
+    assert store.verdict(_identity()) == "FALSE"
+    assert store.get(_identity(), SimpleStage.CWE_DONE) is None
+    assert store.get(_identity(), SimpleStage.REPORT_DONE) is None

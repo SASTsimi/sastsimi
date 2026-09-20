@@ -119,7 +119,7 @@ REQUIRED_PRODUCTION_PROMPT_ROUTES = (
         "DYNAMIC_REPRODUCTION",
         "CREATE_POC_CANDIDATE",
         "poc_candidate",
-        "src/sastsimi/prompts/templates/dynamic-reproduction/create-poc-candidate/1.0.1.md",
+        "src/sastsimi/prompts/templates/dynamic-reproduction/create-poc-candidate/1.0.2.md",
     ),
     _required(
         "DYNAMIC_REPRODUCTION",

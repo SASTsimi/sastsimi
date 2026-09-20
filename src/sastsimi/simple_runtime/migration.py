@@ -79,6 +79,7 @@ def _checkpoint(
     attempt_id: str | None = None,
     recipe_ref: StoredDataRef | None = None,
     image_digest: str | None = None,
+    container_id: str | None = None,
     validated_poc_ref: StoredDataRef | None = None,
 ) -> StageCheckpoint:
     return StageCheckpoint(
@@ -91,6 +92,7 @@ def _checkpoint(
         attempt_id=attempt_id,
         recipe_ref=recipe_ref,
         image_digest=image_digest,
+        container_id=container_id,
         validated_poc_ref=validated_poc_ref,
     )
 
@@ -189,7 +191,16 @@ def import_existing_analysis(
         request = _newest(
             by_kind_hypothesis[("dynamic_reproduction_request", hypothesis_id)]
         )
-        initial_outputs = (initial[1],) + ((request[1],) if request else ())
+        context = _newest(
+            by_kind_hypothesis[("code_context_response", hypothesis_id)]
+        )
+        plan = _newest(by_kind_hypothesis[("reproduction_plan", hypothesis_id)])
+        initial_outputs = (
+            (initial[1],)
+            + ((request[1],) if request else ())
+            + ((plan[1],) if plan else ())
+            + ((context[1],) if context else ())
+        )
         store.save_checkpoint(
             _checkpoint(
                 identity,
@@ -205,6 +216,8 @@ def import_existing_analysis(
             entry for entry in recipes if entry[0].get("built_image_digest")
         ]
         recipe = _newest(built_recipes)
+        environments = by_kind_hypothesis[("sandbox_environment", hypothesis_id)]
+        environment = _newest(environments)
         if recipe is not None:
             store.save_checkpoint(
                 _checkpoint(
@@ -215,6 +228,11 @@ def import_existing_analysis(
                     status=StageStatus.PENDING,
                     recipe_ref=recipe[1],
                     image_digest=recipe[0].get("built_image_digest"),
+                    container_id=(
+                        environment[0].get("container_instance_id")
+                        if environment is not None
+                        else None
+                    ),
                 )
             )
 

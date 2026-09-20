@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -68,7 +68,7 @@ class StageCheckpoint(ContractModel):
     report_ref: StoredDataRef | None = None
     verdict: Literal["TRUE", "FALSE", "HOLD"] | None = None
     markdown_path: str | None = None
-    updated_at: datetime = datetime.now(UTC)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @model_validator(mode="after")
     def require_exact_input_hash(self) -> StageCheckpoint:
@@ -92,3 +92,5 @@ class StageFailure(ContractModel):
     code: str
     retryable: bool
     safe_message: str
+    invalid_field: str | None = None
+    evidence_refs: tuple[StoredDataRef, ...] = ()

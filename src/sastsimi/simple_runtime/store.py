@@ -4,6 +4,7 @@ import sqlite3
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from sastsimi.contracts.refs import StoredDataRef
 
@@ -169,6 +170,7 @@ class SimpleCheckpointStore:
         failed = checkpoint.model_copy(
             update={
                 "status": status,
+                "output_refs": failure.evidence_refs,
                 "error_code": failure.code,
                 "retryable": failure.retryable,
                 "updated_at": datetime.now(UTC),
@@ -298,7 +300,7 @@ class SimpleCheckpointStore:
                 continue
             value = getattr(checkpoint, field)
             if value is not None:
-                return value
+                return cast(object, value)
         return None
 
     def validated_poc(self, identity: CheckpointIdentity) -> StoredDataRef | None:
