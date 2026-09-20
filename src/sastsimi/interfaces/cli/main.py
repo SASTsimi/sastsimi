@@ -5,7 +5,7 @@ import asyncio
 import re
 import sys
 from pathlib import Path
-from typing import NoReturn, cast
+from typing import Any, NoReturn, cast
 from uuid import uuid4
 
 from sastsimi import bootstrap
@@ -13,15 +13,22 @@ from sastsimi.config.production_profile import load_production_profile
 from sastsimi.interfaces.cli import analyze as analyze_command
 from sastsimi.interfaces.cli import cancel as cancel_command
 from sastsimi.interfaces.cli import capability as capability_command
+from sastsimi.interfaces.cli import codeql as codeql_command
 from sastsimi.interfaces.cli import commands
+from sastsimi.interfaces.cli import dashboard as dashboard_command
 from sastsimi.interfaces.cli import demo as demo_command
+from sastsimi.interfaces.cli import local_evaluation as local_evaluation_command
 from sastsimi.interfaces.cli import onboarding as onboarding_command
 from sastsimi.interfaces.cli import report as report_command
 from sastsimi.interfaces.cli import reports as reports_command
 from sastsimi.interfaces.cli import result as result_command
+from sastsimi.interfaces.cli import simple_evaluation as simple_evaluation_command
 from sastsimi.interfaces.cli import status as status_command
 from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.output import emit_data, emit_result
+from sastsimi.orchestration.production_onboarding_builder import (
+    ApprovedProbeResolver,
+)
 from sastsimi.runtime.system_support import SystemClock
 
 
@@ -49,11 +56,55 @@ def _exact_commit(value: str) -> str:
     return value
 
 
+def _approved_probe_resolver(
+    data_dir: Path,
+    profile: Any,
+    docker_host: str | None,
+) -> ApprovedProbeResolver:
+    """Resolve only already-approved, still-current probe revisions."""
+
+    lookup = capability_command.build_service(
+        data_dir,
+        kind=None,
+        host_id=profile.host_id,
+        docker_host=None,
+    )
+    receipts = {item.probe_id: item for item in lookup.list()}
+
+    def resolve(probe_id: str) -> tuple[str, Any]:
+        receipt = receipts.get(probe_id)
+        if (
+            receipt is None
+            or receipt.approved_profile_ref is None
+            or receipt.approval_target_hash is None
+        ):
+            raise ValueError("CAPABILITY_PROBE_NOT_APPROVED")
+        service = capability_command.build_service(
+            data_dir,
+            kind=receipt.kind,
+            host_id=profile.host_id,
+            docker_host=docker_host,
+            codeql_container_config=profile.codeql_container,
+        )
+        current = service.require_approved_current(
+            receipt.probe_id,
+            receipt.approved_profile_ref,
+        )
+        if current != receipt.approved_profile_ref:
+            raise ValueError("CAPABILITY_APPROVED_REFERENCE_CHANGED")
+        return str(receipt.kind), current
+
+    return resolve
+
+
 def main(
     argv: list[str] | None = None,
     *,
     production_analyze: analyze_command.ProductionAnalyzeEntrypoint | None = None,
     production_query: analyze_command.ProductionQueryEntrypoint | None = None,
+    local_evaluation_analyze: (
+        local_evaluation_command.LocalEvaluationAnalyzeEntrypoint | None
+    ) = None,
 ) -> int:
     _configure_standard_streams()
     output_format = "text"
@@ -83,6 +134,13 @@ def main(
     downgrade_parser = db_commands.add_parser("downgrade", allow_abbrev=False)
     downgrade_parser.add_argument("revision")
     downgrade_parser.add_argument("--format", choices=["text", "json"])
+    dashboard_parser = subparsers.add_parser(
+        "dashboard",
+        help="serve a local read-only analysis dashboard",
+        allow_abbrev=False,
+    )
+    dashboard_parser.add_argument("--host", default="127.0.0.1")
+    dashboard_parser.add_argument("--port", type=int, default=8765)
     analyze_parser = subparsers.add_parser(
         "analyze", help="run a production repository analysis", allow_abbrev=False
     )
@@ -90,6 +148,30 @@ def main(
     analyze_parser.add_argument("--commit", required=True, type=_exact_commit)
     analyze_parser.add_argument("--profile", required=True, type=Path)
     analyze_parser.add_argument("--format", choices=["text", "json"])
+    evaluate_parser = subparsers.add_parser(
+        "evaluate",
+        help="run explicitly non-production local evaluation",
+        allow_abbrev=False,
+    )
+    evaluate_commands = evaluate_parser.add_subparsers(
+        dest="evaluate_command", required=True
+    )
+    evaluate_analyze = evaluate_commands.add_parser("analyze", allow_abbrev=False)
+    evaluate_analyze.add_argument("--repo", required=True)
+    evaluate_analyze.add_argument("--commit", required=True, type=_exact_commit)
+    evaluate_analyze.add_argument("--profile", required=True, type=Path)
+    evaluate_analyze.add_argument("--format", choices=["text", "json"])
+    evaluate_resume = evaluate_commands.add_parser("resume", allow_abbrev=False)
+    evaluate_resume.add_argument("analysis_id")
+    evaluate_resume.add_argument("--profile", required=True, type=Path)
+    evaluate_resume.add_argument("--format", choices=["text", "json"])
+    evaluate_simple_resume = evaluate_commands.add_parser(
+        "simple-resume", allow_abbrev=False
+    )
+    evaluate_simple_resume.add_argument("analysis_id")
+    evaluate_simple_resume.add_argument("--hypothesis-id")
+    evaluate_simple_resume.add_argument("--profile", required=True, type=Path)
+    evaluate_simple_resume.add_argument("--format", choices=["text", "json"])
     demo_parser = subparsers.add_parser(
         "demo", help="run deterministic local scenarios", allow_abbrev=False
     )
@@ -160,9 +242,25 @@ def main(
     )
     onboarding_requirements.add_argument("--profile", type=Path, required=True)
     onboarding_requirements.add_argument("--format", choices=["text", "json"])
+    onboarding_compose = onboarding_commands.add_parser("compose", allow_abbrev=False)
+    onboarding_compose.add_argument("--profile", type=Path, required=True)
+    onboarding_compose.add_argument("--approval-input", type=Path, required=True)
+    onboarding_compose.add_argument(
+        "--slot-template", type=Path, action="append", required=True
+    )
+    onboarding_compose.add_argument(
+        "--evidence", type=Path, action="append", default=[]
+    )
+    onboarding_compose.add_argument("--output-dir", type=Path, required=True)
+    onboarding_compose.add_argument("--docker-host")
+    onboarding_compose.add_argument("--format", choices=["text", "json"])
     onboarding_prepare = onboarding_commands.add_parser("prepare", allow_abbrev=False)
     onboarding_prepare.add_argument("--profile", type=Path, required=True)
-    onboarding_prepare.add_argument("--manifest", type=Path, required=True)
+    onboarding_prepare_input = onboarding_prepare.add_mutually_exclusive_group(
+        required=True
+    )
+    onboarding_prepare_input.add_argument("--manifest", type=Path)
+    onboarding_prepare_input.add_argument("--bundle-dir", type=Path)
     onboarding_prepare.add_argument(
         "--evidence", type=Path, action="append", default=[]
     )
@@ -182,11 +280,20 @@ def main(
     capability_probe = capability_commands.add_parser("probe", allow_abbrev=False)
     capability_probe.add_argument(
         "kind",
-        choices=["GIT", "PYTHON_AST", "OPENGREP", "DOCKER", "OPENAI_API", "CODEQL"],
+        choices=[
+            "GIT",
+            "PYTHON_AST",
+            "PYTHON_RUNTIME",
+            "OPENGREP",
+            "DOCKER",
+            "OPENAI_API",
+            "CODEQL",
+        ],
     )
     capability_probe.add_argument("--model")
     capability_probe.add_argument("--credential-ref")
     capability_probe.add_argument("--docker-host")
+    capability_probe.add_argument("--profile", type=Path)
     capability_probe.add_argument("--format", choices=["text", "json"])
     capability_list = capability_commands.add_parser("list", allow_abbrev=False)
     capability_list.add_argument("--format", choices=["text", "json"])
@@ -194,7 +301,35 @@ def main(
     capability_approve.add_argument("probe_id")
     capability_approve.add_argument("--target-hash", required=True)
     capability_approve.add_argument("--docker-host")
+    capability_approve.add_argument("--profile", type=Path)
     capability_approve.add_argument("--format", choices=["text", "json"])
+    codeql_parser = subparsers.add_parser(
+        "codeql",
+        help="provision, register, or inspect controlled CodeQL databases",
+        allow_abbrev=False,
+    )
+    codeql_commands = codeql_parser.add_subparsers(dest="codeql_command", required=True)
+    codeql_register = codeql_commands.add_parser("register", allow_abbrev=False)
+    codeql_inspect = codeql_commands.add_parser("inspect", allow_abbrev=False)
+    codeql_provision = codeql_commands.add_parser("provision", allow_abbrev=False)
+    for codeql_action in (codeql_register, codeql_inspect):
+        codeql_action.add_argument("--profile", type=Path, required=True)
+        codeql_action.add_argument("--repo", required=True)
+        codeql_action.add_argument("--commit", type=_exact_commit, required=True)
+        codeql_action.add_argument(
+            "--language",
+            choices=["python", "javascript-typescript"],
+            required=True,
+        )
+        codeql_action.add_argument("--tracked-manifest-sha256", required=True)
+        codeql_action.add_argument("--format", choices=["text", "json"])
+    codeql_register.add_argument("--database-root", type=Path, required=True)
+    codeql_provision.add_argument("--profile", type=Path, required=True)
+    codeql_provision.add_argument("--repo", required=True)
+    codeql_provision.add_argument("--commit", type=_exact_commit, required=True)
+    codeql_provision.add_argument("--language", choices=["python"], required=True)
+    codeql_provision.add_argument("--repository-root", type=Path, required=True)
+    codeql_provision.add_argument("--format", choices=["text", "json"])
     try:
         args = parser.parse_args(argv)
         requested_output = getattr(args, "format", None)
@@ -224,6 +359,10 @@ def main(
                 revision=revision,
             )
             return int(ExitCode.OK)
+        if args.command == "dashboard":
+            command_name = "dashboard"
+            dashboard_command.run(config.data_dir, args.host, args.port)
+            return int(ExitCode.OK)
         if args.command == "analyze":
             command_name = "analyze"
             if production_analyze is None:
@@ -248,6 +387,71 @@ def main(
                 code=analyze_result.code,
             )
             return int(analyze_result.code)
+        if args.command == "evaluate":
+            command_name = "evaluate " + args.evaluate_command
+            if args.evaluate_command == "simple-resume":
+                simple_data = asyncio.run(
+                    simple_evaluation_command.resume(
+                        data_dir=config.data_dir,
+                        analysis_id=args.analysis_id,
+                        profile_path=args.profile,
+                        hypothesis_id=args.hypothesis_id,
+                    )
+                )
+                simple_status = simple_data["status"]
+                simple_code = (
+                    ExitCode.RUN_FAILED
+                    if simple_status == "FAILED"
+                    else ExitCode.BLOCKED
+                    if simple_status == "BLOCKED"
+                    else ExitCode.OK
+                )
+                emit_data(
+                    output_format,
+                    sys.stdout if simple_code == ExitCode.OK else sys.stderr,
+                    command=command_name,
+                    data=simple_data,
+                    code=simple_code,
+                )
+                return int(simple_code)
+            if local_evaluation_analyze is None:
+                local_evaluation_analyze = cast(
+                    local_evaluation_command.LocalEvaluationAnalyzeEntrypoint,
+                    bootstrap.build_local_evaluation_analyze(),
+                )
+            if args.evaluate_command == "analyze":
+                analyze_request = (
+                    local_evaluation_command.LocalEvaluationAnalyzeRequest(
+                        data_dir=config.data_dir,
+                        repository=args.repo,
+                        commit=args.commit,
+                        profile=args.profile,
+                    )
+                )
+                evaluation_result = asyncio.run(
+                    local_evaluation_command.run(
+                        local_evaluation_analyze, analyze_request
+                    )
+                )
+            else:
+                resume_request = local_evaluation_command.LocalEvaluationResumeRequest(
+                    data_dir=config.data_dir,
+                    analysis_id=args.analysis_id,
+                    profile=args.profile,
+                )
+                evaluation_result = asyncio.run(
+                    local_evaluation_command.resume(
+                        local_evaluation_analyze, resume_request
+                    )
+                )
+            emit_data(
+                output_format,
+                sys.stdout if evaluation_result.code == ExitCode.OK else sys.stderr,
+                command=command_name,
+                data=evaluation_result.data,
+                code=evaluation_result.code,
+            )
+            return int(evaluation_result.code)
         if args.command == "demo":
             command_name = "demo " + args.demo_command
             if args.demo_command == "analyze":
@@ -341,15 +545,40 @@ def main(
                 onboarding_result = onboarding_command.run_requirements(
                     profile, repository_root=repository_root
                 )
-            elif args.onboarding_command == "prepare":
-                onboarding_result = onboarding_command.run_prepare(
+            elif args.onboarding_command == "compose":
+                onboarding_result = onboarding_command.run_compose(
                     config.data_dir,
                     profile=profile,
-                    manifest_path=args.manifest,
+                    approval_input_path=args.approval_input,
+                    slot_template_paths=tuple(args.slot_template),
                     evidence_paths=tuple(args.evidence),
+                    output_dir=args.output_dir,
                     repository_root=repository_root,
                     clock=SystemClock().now,
+                    resolve_probe=_approved_probe_resolver(
+                        config.data_dir, profile, args.docker_host
+                    ),
                 )
+            elif args.onboarding_command == "prepare":
+                if args.bundle_dir is not None:
+                    if args.evidence:
+                        raise _InputError
+                    onboarding_result = onboarding_command.run_prepare_bundle(
+                        config.data_dir,
+                        profile=profile,
+                        bundle_dir=args.bundle_dir,
+                        repository_root=repository_root,
+                        clock=SystemClock().now,
+                    )
+                else:
+                    onboarding_result = onboarding_command.run_prepare(
+                        config.data_dir,
+                        profile=profile,
+                        manifest_path=args.manifest,
+                        evidence_paths=tuple(args.evidence),
+                        repository_root=repository_root,
+                        clock=SystemClock().now,
+                    )
             else:
                 onboarding_result = onboarding_command.run_status(
                     config.data_dir,
@@ -366,6 +595,16 @@ def main(
             return int(onboarding_result.code)
         if args.command == "capability":
             command_name = "capability " + args.capability_command
+            codeql_config = None
+            profile_path = getattr(args, "profile", None)
+            if args.capability_command == "probe" and args.kind == "CODEQL":
+                if profile_path is None:
+                    raise _InputError
+                codeql_config = load_production_profile(profile_path).codeql_container
+                if codeql_config is None:
+                    raise bootstrap.ProductionProfileError("CODEQL_CONTAINER_REQUIRED")
+            elif profile_path is not None:
+                codeql_config = load_production_profile(profile_path).codeql_container
             if args.capability_command == "probe":
                 outcome = capability_command.run_probe(
                     config.data_dir,
@@ -374,6 +613,7 @@ def main(
                     credential_ref=args.credential_ref,
                     host_id=args.host_id,
                     docker_host=args.docker_host,
+                    codeql_container_config=codeql_config,
                 )
             elif args.capability_command == "list":
                 outcome = capability_command.run_list(
@@ -387,6 +627,58 @@ def main(
                     target_hash=args.target_hash,
                     host_id=args.host_id,
                     docker_host=args.docker_host,
+                    codeql_container_config=codeql_config,
+                )
+            emit_data(
+                output_format,
+                sys.stdout if outcome.code == ExitCode.OK else sys.stderr,
+                command=command_name,
+                data=outcome.data,
+                code=outcome.code,
+            )
+            return int(outcome.code)
+        if args.command == "codeql":
+            command_name = "codeql " + args.codeql_command
+            profile = load_production_profile(args.profile)
+            codeql_config = profile.codeql_container
+            if codeql_config is None:
+                emit_result(
+                    ExitCode.CONFIG_ERROR,
+                    output_format,
+                    sys.stderr,
+                    command=command_name,
+                )
+                return int(ExitCode.CONFIG_ERROR)
+            if args.codeql_command == "register":
+                outcome = codeql_command.run_register(
+                    config=codeql_config,
+                    repository_url=args.repo,
+                    commit_id=args.commit,
+                    language=args.language,
+                    tracked_manifest_sha256=args.tracked_manifest_sha256,
+                    database_root=args.database_root,
+                )
+            elif args.codeql_command == "provision":
+                outcome = codeql_command.run_provision(
+                    config=codeql_config,
+                    repository_url=args.repo,
+                    commit_id=args.commit,
+                    language=args.language,
+                    repository_root=args.repository_root,
+                    git_executable=codeql_command.resolve_operator_executable(
+                        profile.tools.git
+                    ),
+                    docker_executable=codeql_command.resolve_operator_executable(
+                        profile.tools.docker
+                    ),
+                )
+            else:
+                outcome = codeql_command.run_inspect(
+                    config=codeql_config,
+                    repository_url=args.repo,
+                    commit_id=args.commit,
+                    language=args.language,
+                    tracked_manifest_sha256=args.tracked_manifest_sha256,
                 )
             emit_data(
                 output_format,
@@ -408,10 +700,13 @@ def main(
         code = ExitCode.INPUT_ERROR
     except bootstrap.ConfigError:
         code = ExitCode.CONFIG_ERROR
+    except bootstrap.ProductionProfileError:
+        code = ExitCode.CONFIG_ERROR
     except bootstrap.MigrationRequired:
         code = ExitCode.CONFIG_ERROR
     except (
         analyze_command.ProductionAnalyzeUnavailable,
+        local_evaluation_command.LocalEvaluationUnavailable,
         bootstrap.ProductionResumeUnavailable,
     ) as error:
         emit_result(

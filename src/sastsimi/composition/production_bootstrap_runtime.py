@@ -68,7 +68,10 @@ from sastsimi.ports.dynamic_sandbox import (
 )
 from sastsimi.ports.llm_provider import LLMProviderAdapter
 from sastsimi.ports.scheduler import ExternalCancellationPort
-from sastsimi.ports.static_tool import ProductionStaticOutputQuotaPort
+from sastsimi.ports.static_tool import (
+    PrebuiltCodeQLDatabasePort,
+    ProductionStaticOutputQuotaPort,
+)
 from sastsimi.storage import models
 from sastsimi.storage.codec import REF_ADAPTER
 from sastsimi.storage.repositories import SQLiteRecordStore
@@ -76,6 +79,8 @@ from sastsimi.storage.repositories import SQLiteRecordStore
 _PROCESS_RECEIPT = TypeAdapter(ProcessReceipt)
 _MAX_RECEIPT_BYTES = 64 * 1024
 _MAX_PROCESS_STREAM_BYTES = 64 * 1024 * 1024
+_MAX_STATIC_RECEIPT_DIRECTORIES = 256
+_MAX_STATIC_RECEIPT_FILES = 4096
 _REPARSE_POINT = 0x400
 type StaticDispatchPhase = Literal["PREPARED", "DISPATCHED", "RETURNED"]
 
@@ -142,6 +147,7 @@ class ProductionStaticRuntimeFactory:
     """Bind durable SQLite dispatch state and process receipt evidence."""
 
     output_quota: ProductionStaticOutputQuotaPort | None = None
+    codeql_database_provider: PrebuiltCodeQLDatabasePort | None = None
     codeql_database_limit_bytes: int | None = None
 
     def __call__(
@@ -154,6 +160,7 @@ class ProductionStaticRuntimeFactory:
             dispatch_state=runtime.dispatch_state,
             attempt_dispatch=runtime.attempt_dispatch,
             output_quota=self.output_quota,
+            codeql_database_provider=self.codeql_database_provider,
             codeql_database_limit_bytes=self.codeql_database_limit_bytes,
         )
 
@@ -234,6 +241,7 @@ def build_production_bootstrap_assembler(
     repository_root: Path,
     docker_resolver_factory: DockerTargetResolverFactory | None = None,
     static_output_quota: ProductionStaticOutputQuotaPort | None = None,
+    codeql_database_provider: PrebuiltCodeQLDatabasePort | None = None,
     codeql_database_limit_bytes: int | None = None,
 ) -> ProductionBundleAssemblyPort:
     """Build the real default T08-T13 assembler used by ``sastsimi analyze``."""
@@ -242,6 +250,7 @@ def build_production_bootstrap_assembler(
         repository_root=repository_root,
         static_runtime_factory=ProductionStaticRuntimeFactory(
             output_quota=static_output_quota,
+            codeql_database_provider=codeql_database_provider,
             codeql_database_limit_bytes=codeql_database_limit_bytes,
         ),
         dynamic_feature_factory=ProductionDynamicRuntimeFactory(
@@ -301,7 +310,7 @@ class _SQLiteStaticRuntime:
             raise ValueError("STATIC_PROCESS_RECEIPT_BINDING_INVALID")
         receipts = tuple(
             self._read_process_receipt(path, action_id, attempt_id)
-            for path in sorted(matches[0].glob("*.receipt.json"))
+            for path in _nested_process_receipts(matches[0])
         )
         return tuple(sorted(receipts, key=lambda item: item.invocation_id)) or None
 
@@ -507,6 +516,41 @@ def _children(path: Path) -> tuple[Path, ...]:
         return tuple(sorted(path.iterdir(), key=lambda item: item.name))
     except OSError:
         raise ValueError("STATIC_PROCESS_RECEIPT_ROOT_INVALID") from None
+
+
+def _nested_process_receipts(attempt_root: Path) -> tuple[Path, ...]:
+    """Find adapter receipts below one exact attempt without following links."""
+
+    pending = [attempt_root]
+    directories = 0
+    files = 0
+    receipts: list[Path] = []
+    while pending:
+        current = pending.pop()
+        _require_safe_directory(current, "STATIC_PROCESS_RECEIPT_ROOT_INVALID")
+        directories += 1
+        if directories > _MAX_STATIC_RECEIPT_DIRECTORIES:
+            raise ValueError("STATIC_PROCESS_RECEIPT_ROOT_INVALID")
+        for child in _children(current):
+            try:
+                info = child.lstat()
+            except OSError:
+                raise ValueError("STATIC_PROCESS_RECEIPT_ROOT_INVALID") from None
+            if child.is_symlink() or bool(
+                getattr(info, "st_file_attributes", 0) & _REPARSE_POINT
+            ):
+                raise ValueError("STATIC_PROCESS_RECEIPT_ROOT_INVALID")
+            if stat.S_ISDIR(info.st_mode):
+                pending.append(child)
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("STATIC_PROCESS_RECEIPT_ROOT_INVALID")
+            files += 1
+            if files > _MAX_STATIC_RECEIPT_FILES:
+                raise ValueError("STATIC_PROCESS_RECEIPT_ROOT_INVALID")
+            if child.name.endswith(".receipt.json"):
+                receipts.append(child)
+    return tuple(sorted(receipts, key=lambda item: item.as_posix()))
 
 
 def _require_safe_directory(path: Path, code: str) -> None:

@@ -157,6 +157,16 @@ class ConfigurationRegistry:
     ) -> StoredDataRef:
         return self.registry.register_provider_validation(record)
 
+    def register_local_provider_validation(
+        self,
+        record: ProviderValidationEvidence,
+        *,
+        local_evidence_ref: StoredDataRef,
+    ) -> StoredDataRef:
+        return self.registry.register_local_provider_validation(
+            record, local_evidence_ref=local_evidence_ref
+        )
+
     def derive_provider_capabilities(
         self, record: ProviderValidationEvidence
     ) -> ProviderCapabilities:
@@ -167,10 +177,30 @@ class ConfigurationRegistry:
     ) -> StoredDataRef:
         return self.registry.register_provider_profile(record, probe)
 
+    def register_local_provider_profile(
+        self,
+        record: ProviderProfile,
+        *,
+        local_evidence_ref: StoredDataRef,
+    ) -> StoredDataRef:
+        return self.registry.register_local_provider_profile(
+            record, local_evidence_ref=local_evidence_ref
+        )
+
     def register_client_execution(
         self, record: ClientExecutionProfile
     ) -> StoredDataRef:
         return self.registry.register_client_execution(record)
+
+    def register_local_client_execution(
+        self,
+        record: ClientExecutionProfile,
+        *,
+        local_evidence_ref: StoredDataRef,
+    ) -> StoredDataRef:
+        return self.registry.register_local_client_execution(
+            record, local_evidence_ref=local_evidence_ref
+        )
 
     def register_execution_limits(self, record: ExecutionLimits) -> StoredDataRef:
         return self.registry.register_execution_limits(record)

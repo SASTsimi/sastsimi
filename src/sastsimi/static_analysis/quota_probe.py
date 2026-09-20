@@ -16,7 +16,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from sastsimi.contracts.refs import HostConfigurationRef
-from sastsimi.ports.dto import StaticOutputQuotaBinding
+from sastsimi.ports.dto import StaticOutputQuotaBinding, StaticOutputQuotaProof
 from sastsimi.ports.static_tool import (
     ProductionStaticOutputQuotaPort,
     StaticOutputPurpose,
@@ -29,17 +29,19 @@ def prove_static_output_quota(
     profile_ref: HostConfigurationRef,
     database_limit_bytes: int | None,
     output_limit_bytes: int,
-) -> bool:
+) -> StaticOutputQuotaProof | None:
     """Prove denial and sticky evidence, then exact DB/execution allocations."""
 
     if (
         port is None
+        or not getattr(port, "backend_key", "")
+        or len(getattr(port, "enforcement_identity_sha256", "")) != 64
         or not isinstance(database_limit_bytes, int)
         or isinstance(database_limit_bytes, bool)
         or database_limit_bytes <= 0
         or output_limit_bytes <= 0
     ):
-        return False
+        return None
     action_id = "quota-probe-" + str(uuid4())
     bindings: list[StaticOutputQuotaBinding] = []
     purposes: tuple[tuple[StaticOutputPurpose, int], ...] = (
@@ -72,9 +74,15 @@ def prove_static_output_quota(
                     or binding.attempt_id != action_id
                     or binding.profile_ref != profile_ref
                     or binding.effective_limit_bytes != limit
+                    or binding.backend_key != port.backend_key
+                    or hashlib_compare_identity(
+                        binding.enforcement_evidence,
+                        port.enforcement_identity_sha256,
+                    )
+                    is False
                     or _verify(port, binding) != binding
                 ):
-                    return False
+                    return None
                 _safe_root(binding.root)
                 if any(
                     previous.lease_id == binding.lease_id
@@ -84,14 +92,30 @@ def prove_static_output_quota(
                     or previous.backend_key != binding.backend_key
                     for previous in bindings
                 ):
-                    return False
+                    return None
                 bindings.append(binding)
                 if purpose == "PROBE" and not _write_denial(port, binding):
-                    return False
-        return True
+                    return None
+        backend_keys = {binding.backend_key for binding in bindings}
+        if len(backend_keys) != 1:
+            return None
+        return StaticOutputQuotaProof(
+            backend_key=backend_keys.pop(),
+            enforcement_identity_sha256=port.enforcement_identity_sha256,
+            database_limit_bytes=database_limit_bytes,
+            execution_limit_bytes=output_limit_bytes,
+        )
     except Exception:
         # Backend, filesystem, or cleanup failure cannot become activation.
-        return False
+        return None
+
+
+def hashlib_compare_identity(evidence: str, expected_sha256: str) -> bool:
+    """Bind every lease to the approved backend identity without storing secrets."""
+
+    import hashlib
+
+    return hashlib.sha256(evidence.encode("utf-8")).hexdigest() == expected_sha256
 
 
 def _safe_root(root: Path) -> None:

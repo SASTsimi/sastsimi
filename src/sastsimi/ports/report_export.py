@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from sastsimi.contracts.actions import ActionDecision, ActionRequest
+from sastsimi.contracts.budget import Purpose
 from sastsimi.contracts.dynamic import (
     AgentLog,
     DynamicReproductionResult,
@@ -43,6 +44,7 @@ class CurrentReport:
     poc_text: str
     report_action: ActionRequest
     report_decision: ActionDecision
+    purpose: Purpose = Purpose.PRODUCTION
 
     @property
     def analysis_id(self) -> str:

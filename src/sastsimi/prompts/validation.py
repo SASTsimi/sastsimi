@@ -48,6 +48,57 @@ _RESULT_RUNTIME_OWNED_FIELDS: Mapping[str, frozenset[str]] = {
     "hypothesis_proposal": frozenset({"proposal_id", "question_id", "validation_id"}),
 }
 
+# Hypothesis content must quote exact structures from StaticFactBundle.  Those
+# structures legitimately contain runtime-owned scope and provenance fields;
+# HypothesisAgent validates every quoted value against the current bundle before
+# it allocates or persists a proposal.  Only these schema-bound citation fields
+# cross that second, exact-match boundary.
+_HYPOTHESIS_STATIC_CITATION_FIELDS = frozenset(
+    {
+        "target_entities",
+        "target_locations",
+        "suspected_path",
+        "observed_facts",
+        "restrictions",
+    }
+)
+
+# Pro and Con may quote exact durable references and code locations inside an
+# evidence claim.  The trusted evidence finalizer subsequently checks those
+# references against the current debate input closure.  The exemption is
+# deliberately path-bound: the same runtime-owned fields remain forbidden at
+# the result root or anywhere outside ``evidence[*]`` citations.
+_EVIDENCE_CITATION_RESULT_KINDS = frozenset(
+    {"pro_evidence_result", "con_evidence_result"}
+)
+_EVIDENCE_CITATION_FIELDS = frozenset({"evidence_refs", "code_locations"})
+
+
+def _trusted_finalizer_citation_fields(
+    result_kind: str, path: tuple[str | int, ...]
+) -> frozenset[str]:
+    """Return schema-bound citations that a later trusted finalizer verifies."""
+
+    if result_kind == "verification_initial_assessment" and not path:
+        return frozenset({"evidence_refs"})
+    if (
+        result_kind == "verification_result"
+        and len(path) == 2
+        and isinstance(path[1], int)
+        and path[0]
+        in {
+            "falsification_results",
+            "validation_results",
+            "required_primitive_candidates",
+            "provided_primitive_candidates",
+        }
+    ):
+        return frozenset({"evidence_refs", "entity_refs"})
+    if result_kind == "report_draft" and not path:
+        return frozenset({"citations"})
+    return frozenset()
+
+
 _ROLE_RESULT_KINDS: Mapping[str, frozenset[str]] = {
     "HYPOTHESIS": frozenset({"hypothesis_proposal", "hypothesis_duplicate_review"}),
     "PRO": frozenset({"pro_evidence_result"}),
@@ -444,7 +495,12 @@ def _reject_runtime_owned_output(
 
     result_owned = _RESULT_RUNTIME_OWNED_FIELDS.get(result_kind, frozenset())
 
-    def reject_metadata(item: JsonValue) -> None:
+    def reject_metadata(
+        item: JsonValue,
+        *,
+        path: tuple[str | int, ...] = (),
+        exact_static_citation: bool = False,
+    ) -> None:
         if isinstance(item, dict):
             is_reference = {
                 "stored_data_id",
@@ -452,20 +508,51 @@ def _reject_runtime_owned_output(
                 "content_hash",
                 "record_id",
             }.issubset(item)
-            if is_reference or any(
-                key in _RUNTIME_OWNED_FIELDS
-                or key in result_owned
-                or key == "ref"
-                or key.endswith("_ref")
-                or key.endswith("_refs")
-                for key in item
+            evidence_citation_fields = (
+                _EVIDENCE_CITATION_FIELDS
+                if result_kind in _EVIDENCE_CITATION_RESULT_KINDS
+                and len(path) == 2
+                and path[0] == "evidence"
+                and isinstance(path[1], int)
+                else frozenset()
+            )
+            allowed_citation_fields = (
+                evidence_citation_fields
+                | _trusted_finalizer_citation_fields(result_kind, path)
+            )
+            if not exact_static_citation and (
+                is_reference
+                or any(
+                    (
+                        key in _RUNTIME_OWNED_FIELDS
+                        or key in result_owned
+                        or key == "ref"
+                        or key.endswith("_ref")
+                        or key.endswith("_refs")
+                    )
+                    and key not in allowed_citation_fields
+                    for key in item
+                )
             ):
                 raise ValueError("PROMPT_OUTPUT_AUTHORITY_DENIED")
-            for nested in item.values():
-                reject_metadata(nested)
+            for key, nested in item.items():
+                reject_metadata(
+                    nested,
+                    path=(*path, key),
+                    exact_static_citation=exact_static_citation
+                    or (
+                        result_kind == "hypothesis_proposal"
+                        and key in _HYPOTHESIS_STATIC_CITATION_FIELDS
+                    )
+                    or key in allowed_citation_fields,
+                )
         elif isinstance(item, list):
-            for nested in item:
-                reject_metadata(nested)
+            for index, nested in enumerate(item):
+                reject_metadata(
+                    nested,
+                    path=(*path, index),
+                    exact_static_citation=exact_static_citation,
+                )
 
     reject_metadata(value)
 

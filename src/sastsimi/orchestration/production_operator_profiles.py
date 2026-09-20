@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import RLock
 from types import MappingProxyType
-from typing import Protocol
+from typing import Protocol, TypeVar, cast
 
 from sastsimi.config.production_profile import ProductionBudgetSettings
 from sastsimi.contracts.actions import ActionRequest, CheckType, RequesterRole
@@ -40,6 +40,7 @@ from sastsimi.contracts.records import RecordMeta, RunMeta
 from sastsimi.contracts.refs import (
     BudgetScopeRef,
     RecordRef,
+    ReferencedRecord,
     RunStoredDataRef,
     StoredDataRef,
     reference,
@@ -51,6 +52,8 @@ from sastsimi.ports.trusted_evidence import UnprovenEvidence
 
 from .run_initialization import ActiveBudgetProfilesPort
 from .run_scope_plan import PlannedRunScope
+
+_RecordT = TypeVar("_RecordT")
 
 
 class BudgetConfigurationPublisher(Protocol):
@@ -78,6 +81,8 @@ class _OutputApproval:
 
 class ProductionOperatorProfiles(ActiveBudgetProfilesPort):
     """Create one immutable budget/identity catalog from trusted CLI config."""
+
+    _purpose = Purpose.PRODUCTION
 
     def __init__(
         self,
@@ -136,6 +141,8 @@ class ProductionOperatorProfiles(ActiveBudgetProfilesPort):
     def authority_catalog(
         self, profile_ref: RunStoredDataRef, onboarding_ref: RunStoredDataRef
     ) -> ProductionAuthorityCatalog:
+        if self._purpose != Purpose.PRODUCTION:
+            raise ValueError("LOCAL_EVALUATION_AUTHORITY_UNAVAILABLE")
         return ProductionAuthorityCatalog(
             schema_version="1",
             artifact_scope="ANALYSIS_OPERATOR_AUTHORITY",
@@ -143,7 +150,7 @@ class ProductionOperatorProfiles(ActiveBudgetProfilesPort):
             workspace_id=self.scope.workspace_id,
             commit_id=self.scope.commit_id,
             program_id=self.program_id,
-            purpose="PRODUCTION",
+            purpose=Purpose.PRODUCTION.value,
             production_profile_ref=profile_ref,
             production_onboarding_ref=onboarding_ref,
             execution_budget_profile_ref=self.binding.execution_budget_profile_ref,
@@ -194,7 +201,7 @@ class ProductionOperatorProfiles(ActiveBudgetProfilesPort):
             or state.workspace_id != self.scope.workspace_id
             or state.commit_id != self.scope.commit_id
             or state.program_id != self.program_id
-            or state.purpose != Purpose.PRODUCTION
+            or state.purpose != self._purpose
             or state.status != "RUNNING"
             or state.execution_budget_profile_ref != execution_ref
             or state.budget_binding_ref is not None
@@ -212,7 +219,7 @@ class ProductionOperatorProfiles(ActiveBudgetProfilesPort):
             request.repository_ref != self.scope.repository_ref
             or request.requested_git_ref.lower() != str(self.scope.commit_id)
             or request.program_id != self.program_id
-            or request.purpose != Purpose.PRODUCTION
+            or request.purpose != self._purpose
         ):
             raise ValueError("OPERATOR_PROFILE_SCOPE_MISMATCH")
 
@@ -285,7 +292,7 @@ class ProductionOperatorProfiles(ActiveBudgetProfilesPort):
         return ExecutionBudgetProfile(
             meta=self._run_meta("execution_budget_profile"),
             profile_key=values.profile_key,
-            purpose=Purpose.PRODUCTION,
+            purpose=self._purpose,
             max_analysis_elapsed_ms=values.max_analysis_elapsed_ms,
             max_total_cost_minor_units=values.max_total_cost_minor_units,
             currency=values.currency,
@@ -333,7 +340,7 @@ class ProductionOperatorProfiles(ActiveBudgetProfilesPort):
         return WorkBudgetProfile(
             meta=self._record_meta("work_budget_profile"),
             profile_key=profile_key,
-            purpose=Purpose.PRODUCTION,
+            purpose=self._purpose,
             limits=self._limits(),
             unlisted_operation="DENY",
             status=ProfileStatus.ACTIVE,
@@ -377,7 +384,7 @@ class ProductionOperatorProfiles(ActiveBudgetProfilesPort):
         return BudgetProfileBinding(
             meta=self._record_meta("budget_profile_binding"),
             binding_key=f"{self.settings.profile_key}-binding",
-            purpose=Purpose.PRODUCTION,
+            purpose=self._purpose,
             execution_budget_profile_ref=execution_ref,
             work_budget_profile_ref=work_ref,
             verification_budget_profile_ref=verification_ref,
@@ -387,6 +394,131 @@ class ProductionOperatorProfiles(ActiveBudgetProfilesPort):
             approved_at=self._approved_at,
             status=ProfileStatus.ACTIVE,
         )
+
+
+class LocalEvaluationOperatorProfiles(ProductionOperatorProfiles):
+    """Budget and identity catalog permanently locked to LOCAL_EVALUATION."""
+
+    _purpose = Purpose.LOCAL_EVALUATION
+
+    @classmethod
+    def restore(
+        cls,
+        *,
+        scope: PlannedRunScope,
+        program_id: str,
+        settings: ProductionBudgetSettings,
+        clock: Clock,
+        ids: IdGenerator,
+        run_state: AnalysisRunState,
+        published_records: Iterable[object],
+    ) -> LocalEvaluationOperatorProfiles:
+        """Restore exact run-owned budgets and identities after process restart."""
+
+        if (
+            run_state.meta.analysis_id != scope.analysis_id
+            or run_state.workspace_id != scope.workspace_id
+            or run_state.commit_id != scope.commit_id
+            or run_state.program_id != ProgramId(program_id)
+            or run_state.purpose != Purpose.LOCAL_EVALUATION
+            or run_state.execution_budget_profile_ref is None
+            or run_state.budget_binding_ref is None
+        ):
+            raise ValueError("LOCAL_OPERATOR_RESUME_SCOPE_MISMATCH")
+        published = tuple(published_records)
+        indexed: dict[tuple[str, str], object] = {}
+        for item in published:
+            meta = getattr(item, "meta", None)
+            if isinstance(meta, (RecordMeta, RunMeta)):
+                indexed[(str(meta.record_id), meta.record_type)] = item
+
+        def exact(ref: BudgetScopeRef, expected_type: type[_RecordT]) -> _RecordT:
+            value = indexed.get((str(ref.record_id), ref.data_kind))
+            if (
+                not isinstance(value, expected_type)
+                or reference(cast(ReferencedRecord, value)) != ref
+            ):
+                raise ValueError("LOCAL_OPERATOR_RESUME_CONFIGURATION_INCOMPLETE")
+            return value
+
+        execution = exact(
+            run_state.execution_budget_profile_ref, ExecutionBudgetProfile
+        )
+        binding = exact(run_state.budget_binding_ref, BudgetProfileBinding)
+        assert isinstance(execution, ExecutionBudgetProfile)
+        assert isinstance(binding, BudgetProfileBinding)
+        work = exact(binding.work_budget_profile_ref, WorkBudgetProfile)
+        verification = exact(
+            binding.verification_budget_profile_ref, VerificationBudgetProfile
+        )
+        dynamic = exact(
+            binding.dynamic_lifecycle_profile_ref,
+            DynamicReproductionLifecycleProfile,
+        )
+        assert isinstance(work, WorkBudgetProfile)
+        assert isinstance(verification, VerificationBudgetProfile)
+        assert isinstance(dynamic, DynamicReproductionLifecycleProfile)
+        if (
+            execution.profile_key != settings.profile_key
+            or execution.currency != settings.currency
+            or binding.execution_budget_profile_ref
+            != run_state.execution_budget_profile_ref
+            or any(
+                value.status != ProfileStatus.ACTIVE
+                for value in (execution, binding, work, verification, dynamic)
+            )
+        ):
+            raise ValueError("LOCAL_OPERATOR_RESUME_CONFIGURATION_MISMATCH")
+
+        role_profiles: dict[RequesterRole, WorkBudgetProfile] = {}
+        for role in RequesterRole:
+            if role == RequesterRole.REPOSITORY_LOADER:
+                continue
+            expected_key = f"{settings.profile_key}-identity-{role.value.lower()}"
+            candidates = sorted(
+                (
+                    item
+                    for item in published
+                    if isinstance(item, WorkBudgetProfile)
+                    and item.profile_key == expected_key
+                    and item.meta.analysis_id == scope.analysis_id
+                    and item.meta.workspace_id == scope.workspace_id
+                    and item.meta.commit_id == scope.commit_id
+                    and item.purpose == Purpose.LOCAL_EVALUATION
+                    and item.status == ProfileStatus.ACTIVE
+                ),
+                key=lambda item: (item.meta.created_at, str(item.meta.record_id)),
+            )
+            if not candidates:
+                raise ValueError("LOCAL_OPERATOR_RESUME_CONFIGURATION_INCOMPLETE")
+            role_profiles[role] = candidates[0]
+
+        restored = cls(
+            scope=scope,
+            program_id=program_id,
+            settings=settings,
+            clock=clock,
+            ids=ids,
+        )
+        if (
+            execution.approved_at is None
+            or not isinstance(execution.approval_ref, RunStoredDataRef)
+            or not isinstance(binding.approval_ref, StoredDataRef)
+            or not isinstance(execution.pricing_revision_ref, RunStoredDataRef)
+        ):
+            raise ValueError("LOCAL_OPERATOR_RESUME_CONFIGURATION_INCOMPLETE")
+        restored._approved_at = execution.approved_at
+        restored._execution_approval_ref = execution.approval_ref
+        restored._binding_approval_ref = binding.approval_ref
+        restored._pricing_ref = execution.pricing_revision_ref
+        restored.execution_profile = execution
+        restored.work_profile = work
+        restored.verification_profile = verification
+        restored.dynamic_profile = dynamic
+        restored._role_profiles = MappingProxyType(role_profiles)
+        restored.binding = binding
+        restored._published = False
+        return restored
 
 
 class ProductionTrustedEvidence(UnprovenEvidence):
@@ -504,6 +636,7 @@ class ProductionTrustedEvidence(UnprovenEvidence):
 
 __all__ = [
     "BudgetConfigurationPublisher",
+    "LocalEvaluationOperatorProfiles",
     "ProductionOperatorProfiles",
     "ProductionTrustedEvidence",
 ]

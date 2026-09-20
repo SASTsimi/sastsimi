@@ -48,11 +48,30 @@ _PRIVATE_KEY_HEADER = re.compile(
     r"-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----",
     re.IGNORECASE,
 )
-_WINDOWS_PATH = re.compile(r"(?i)(?<![\w])(?:[A-Z]:[\\/]|\\\\)[^\r\n,;\"'<>]+")
+_WINDOWS_PATH = re.compile(
+    r"(?i)(?<![\w])(?:[A-Z]:[\\/]|\\\\(?![\\\"]))[^\r\n,;\"'<>]+"
+)
 _POSIX_HOST_PATH = re.compile(
     r"(?<![\w/])/(?:root|home|Users|tmp|etc|var|opt|srv|usr|private)"
     r"(?:/|\b)[^\r\n,;\"'<>]*"
 )
+_SAFE_SANDBOX_PATHS = {"/tmp/sastsimi-poc-candidate": "SASTSIMI_SAFE_POC_RUNTIME_PATH"}
+_POC_SANDBOX_ABSOLUTE_PATH = re.compile(
+    r"(?<![\w/])/(?:workspace|tmp|etc|var|opt|srv|usr)(?:/|\b)"
+    r"[^\s\r\n,;\"'<>]*"
+)
+
+
+def _protect_safe_sandbox_paths(value: str) -> str:
+    for path, marker in _SAFE_SANDBOX_PATHS.items():
+        value = value.replace(path, marker)
+    return value
+
+
+def _restore_safe_sandbox_paths(value: str) -> str:
+    for path, marker in _SAFE_SANDBOX_PATHS.items():
+        value = value.replace(marker, path)
+    return value
 
 
 @dataclass(frozen=True)
@@ -65,7 +84,7 @@ def _replace_string(value: str) -> tuple[str, set[str]]:
     if _PRIVATE_KEY.search(value) or _PRIVATE_KEY_HEADER.search(value):
         return "[REDACTED:CREDENTIAL]", {"CREDENTIAL"}
 
-    result = value
+    result = _protect_safe_sandbox_paths(value)
     categories: set[str] = set()
     for pattern, category in (
         (_COOKIE_ASSIGNMENT, "COOKIE"),
@@ -83,7 +102,7 @@ def _replace_string(value: str) -> tuple[str, set[str]]:
     result, posix_count = _POSIX_HOST_PATH.subn("[REDACTED:HOST_ABSOLUTE_PATH]", result)
     if windows_count or posix_count:
         categories.add("HOST_ABSOLUTE_PATH")
-    return result, categories
+    return _restore_safe_sandbox_paths(result), categories
 
 
 def _redact(value: object) -> tuple[object, set[str]]:
@@ -129,6 +148,7 @@ def _has_sensitive_string(value: object) -> bool:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return any(_has_sensitive_string(item) for item in value)
     if isinstance(value, str):
+        value = _protect_safe_sandbox_paths(value)
         return bool(
             _OPAQUE_TOKEN.search(value)
             or _COOKIE_ASSIGNMENT.search(value)
@@ -152,6 +172,42 @@ def redact_projected_json(data: bytes) -> RedactionResult:
     if _has_sensitive_string(redacted):
         raise ValueError("PROMPT_REDACTION_FAILED")
     return RedactionResult(encoded, tuple(sorted(categories)))
+
+
+def inspect_poc_candidate_json(data: bytes) -> RedactionResult:
+    """Inspect one PoC candidate while preserving sandbox-local POSIX paths.
+
+    PoC candidate content executes only inside the prepared Sandbox.  A script
+    may therefore use ordinary container paths needed by the reproduction
+    without exposing a host path.  User-home paths, Windows host paths, and all
+    secret categories remain subject to the fail-closed checks.
+    """
+
+    try:
+        value = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("PROMPT_REDACTION_FAILED") from error
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"content"}
+        or not isinstance(value["content"], str)
+    ):
+        raise ValueError("PROMPT_REDACTION_FAILED")
+    protected_paths: list[tuple[bytes, bytes]] = []
+
+    def protect_path(match: re.Match[str]) -> str:
+        marker = f"SASTSIMI_SANDBOX_ABSOLUTE_PATH_{len(protected_paths)}"
+        protected_paths.append((marker.encode("utf-8"), match.group(0).encode("utf-8")))
+        return marker
+
+    protected = {
+        "content": _POC_SANDBOX_ABSOLUTE_PATH.sub(protect_path, value["content"])
+    }
+    inspected = redact_projected_json(canonical_bytes(protected))
+    restored = inspected.data
+    for marker, path in protected_paths:
+        restored = restored.replace(marker, path)
+    return RedactionResult(restored, inspected.categories)
 
 
 def redact_untrusted_text(data: bytes) -> RedactionResult:

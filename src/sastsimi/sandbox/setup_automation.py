@@ -55,7 +55,10 @@ from .recipe_store import (
 )
 
 _CLEANUP_TIMEOUT_SECONDS = 10.0
-_SUPPORTED_INITIAL_CHECKS = frozenset({"VERSION", "HEALTH_CHECK"})
+# Agent-managed declarations that cannot be checked deterministically remain
+# visible as NOT_CHECKED but must not prevent the first PoC command from
+# running. A VERSION check that can actually run remains a readiness gate.
+_RUNTIME_CHECKED_REQUIREMENTS = frozenset({"VERSION"})
 
 
 class DockerLifecyclePort(Protocol):
@@ -142,18 +145,6 @@ class ReproductionSetupAutomation:
         dependency_bundle: DependencyBundle | None = None,
     ) -> PreparedRecipeSource:
         """Read and validate recipe files without touching Docker."""
-
-        unsupported = sorted(
-            {
-                item.kind
-                for item in requirements.items
-                if item.required and item.kind not in _SUPPORTED_INITIAL_CHECKS
-            }
-        )
-        if unsupported:
-            kinds = ",".join(unsupported)
-            raise ValueError(f"ENVIRONMENT_REQUIREMENT_CONFIRMATION_REQUIRED:{kinds}")
-
         return self._recipes.preflight(
             context=workspace_root,
             request_ref=self._exact_ref(request),
@@ -171,10 +162,19 @@ class ReproductionSetupAutomation:
         request: DynamicReproductionRequest,
         requirements: EnvironmentRequirements,
         meta: RecordMeta,
+        baseline: EnvironmentRecipe | None = None,
     ) -> EnvironmentRecipe:
         """Inspect and build only after the exact source boundary is approved."""
 
         spec = self._validate_build(approval, source, request, requirements, meta)
+        if baseline is not None:
+            return await self._reuse_baseline(
+                baseline=baseline,
+                source=source,
+                request=request,
+                requirements=requirements,
+                meta=meta,
+            )
         labels = self._image_labels(meta)
         image_tag = DockerAdapter.runtime_image_tag(labels)
         async with self._resources.creation_fence(labels):
@@ -208,12 +208,31 @@ class ReproductionSetupAutomation:
                     failure.add_note("DOCKER_BUILD_RECONCILIATION_REQUIRED")
                 raise
             if recipe.build_disposition == "BUILT":
-                image_ref = self._resources.register_reserved_image(
-                    image_digest=recipe.built_image_digest,
-                    image_tag=image_tag,
-                    meta=meta,
-                    preservation_reason="REUSABLE_BASELINE",
-                )
+                try:
+                    image_ref = self._resources.register_reserved_image(
+                        image_digest=recipe.built_image_digest,
+                        image_tag=image_tag,
+                        meta=meta,
+                        preservation_reason="REUSABLE_BASELINE",
+                    )
+                except ValueError as error:
+                    if str(error) != "SANDBOX_OWNERSHIP_INTENT_REQUIRED":
+                        raise
+                    observed = await self._docker.inspect_image_tag(image_tag)
+                    if (
+                        observed.status != "PRESENT"
+                        or observed.state is None
+                        or observed.state.image_digest != recipe.built_image_digest
+                        or dict(observed.state.labels) != dict(labels)
+                    ):
+                        raise
+                    image_ref = self._resources.register_image(
+                        image_digest=recipe.built_image_digest,
+                        image_tag=image_tag,
+                        labels=labels,
+                        meta=meta,
+                        preservation_reason="REUSABLE_BASELINE",
+                    )
             else:
                 self._resources.forget_image_intent(image_tag)
                 preserved_ref = self._resources.preserved_image_ref(
@@ -222,6 +241,47 @@ class ReproductionSetupAutomation:
                 if preserved_ref is None:
                     raise ValueError("REUSABLE_BASELINE_OWNERSHIP_REQUIRED")
                 image_ref = preserved_ref
+        self._recipe_resources[canonical_bytes(self._exact_ref(recipe))] = (image_ref,)
+        return recipe
+
+    async def _reuse_baseline(
+        self,
+        *,
+        baseline: EnvironmentRecipe,
+        source: PreparedRecipeSourceView,
+        request: DynamicReproductionRequest,
+        requirements: EnvironmentRequirements,
+        meta: RecordMeta,
+    ) -> EnvironmentRecipe:
+        request_ref = self._exact_ref(request)
+        if (
+            baseline.build_disposition != "BUILT"
+            or baseline.baseline_recipe_ref is not None
+            or baseline.meta.analysis_id != meta.analysis_id
+            or baseline.meta.workspace_id != meta.workspace_id
+            or baseline.meta.commit_id != meta.commit_id
+            or baseline.recipe_source_ref != source.recipe_source_ref
+            or baseline.source_refs != source.source_refs
+            or baseline.source_manifest != source.source_manifest
+        ):
+            raise ValueError("BASELINE_RECIPE_SOURCE_MISMATCH")
+        image_ref = self._resources.preserved_image_ref(baseline.built_image_digest)
+        if image_ref is None:
+            raise ValueError("REUSABLE_BASELINE_OWNERSHIP_REQUIRED")
+        owned = self._resources.exact(image_ref)
+        if owned is None or owned.resource_kind != "IMAGE":
+            raise ValueError("REUSABLE_BASELINE_OWNERSHIP_REQUIRED")
+        observed = await self._docker.inspect_owned_image(baseline.built_image_digest)
+        if observed.image_digest != baseline.built_image_digest or dict(
+            observed.labels
+        ) != dict(owned.labels):
+            raise ValueError("REUSABLE_BASELINE_OWNERSHIP_MISMATCH")
+        recipe = self._recipes.bind_existing(
+            baseline=baseline,
+            request_ref=request_ref,
+            requirements=requirements,
+            meta=meta,
+        )
         self._recipe_resources[canonical_bytes(self._exact_ref(recipe))] = (image_ref,)
         return recipe
 
@@ -692,8 +752,14 @@ class ReproductionSetupAutomation:
         checks: tuple[EnvironmentCheck, ...],
         meta: RecordMeta,
     ) -> SandboxEnvironment:
-        required = {item.requirement_id for item in requirements.items if item.required}
         status_by_id = {check.requirement_id: check.status for check in checks}
+        required = {
+            item.requirement_id
+            for item in requirements.items
+            if item.required
+            and item.kind in _RUNTIME_CHECKED_REQUIREMENTS
+            and status_by_id.get(item.requirement_id) != "NOT_CHECKED"
+        }
         status: Literal["READY", "MISMATCH", "ERROR"] = (
             "ERROR"
             if any(status_by_id[item] == "ERROR" for item in required)

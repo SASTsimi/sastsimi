@@ -13,7 +13,7 @@ from typing import Protocol, cast
 from sastsimi.contracts.actions import ActionRequest, ActionType, RequesterRole
 from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
-from sastsimi.contracts.hypothesis import HypothesisProposal
+from sastsimi.contracts.hypothesis import HypothesisProposal, VulnerabilityHypothesis
 from sastsimi.contracts.records import RecordMeta, RecordMetadata
 from sastsimi.contracts.refs import (
     BudgetScopeRef,
@@ -1010,6 +1010,17 @@ class ExactContextRetrievalCallResolver:
             raise ValueError("CONTEXT_CALL_INVALID")
         proposal = self.runner.runtime.unit_of_work.records.get_exact(proposals[0])
         bundle = self.runner.runtime.unit_of_work.records.get_exact(bundles[0])
+        hypotheses = tuple(
+            ref
+            for ref in work.input_refs
+            if isinstance(ref, StoredDataRef)
+            and ref.data_kind == VulnerabilityHypothesis.KIND
+        )
+        hypothesis = (
+            self.runner.runtime.unit_of_work.records.get_exact(hypotheses[0])
+            if len(hypotheses) == 1
+            else None
+        )
         state = self.runner.runtime.budget_registry.current_state(
             str(work.meta.analysis_id)
         )
@@ -1024,7 +1035,15 @@ class ExactContextRetrievalCallResolver:
             not isinstance(proposal, HypothesisProposal)
             or reference(proposal) != proposals[0]
             or not isinstance(work.meta, RecordMeta)
-            or proposal.meta.hypothesis_id != work.meta.hypothesis_id
+            or not (
+                proposal.meta.hypothesis_id == work.meta.hypothesis_id
+                or (
+                    isinstance(hypothesis, VulnerabilityHypothesis)
+                    and reference(hypothesis) == hypotheses[0]
+                    and hypothesis.meta.hypothesis_id == work.meta.hypothesis_id
+                    and hypothesis.proposal_ref == proposals[0]
+                )
+            )
             or not isinstance(bundle, StaticFactBundle)
             or reference(bundle) != bundles[0]
             or not isinstance(workspace, CodeWorkspace)

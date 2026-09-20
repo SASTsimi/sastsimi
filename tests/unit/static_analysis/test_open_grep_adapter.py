@@ -257,6 +257,105 @@ def _finding(rule_id: str, path: str, line: int = 1) -> dict[str, object]:
     }
 
 
+@pytest.mark.asyncio
+async def test_current_opengrep_zero_findings_shape_is_complete_execution(
+    opengrep_fixture: dict[str, object],
+) -> None:
+    """OpenGrep 1.16 omits an empty skipped list and emits rule ids as strings."""
+
+    raw = canonical_bytes(
+        {
+            "version": "1.8.0",
+            "results": [],
+            "errors": [],
+            "paths": {"scanned": ["src/a.py"]},
+            "time": {"rules": ["R1", "R2"]},
+        }
+    )
+    runner = FakeRunner([{"stdout": raw}])
+    adapter = _adapter(opengrep_fixture, runner)
+    request = cast(StaticToolRequest, opengrep_fixture["request"])
+    request = replace(
+        request, action=request.action.model_copy(update={"file_paths": ("src/a.py",)})
+    )
+
+    result = await adapter.execute(
+        request,
+        cast(Path, opengrep_fixture["root"]),
+        cast(StaticToolProfile, opengrep_fixture["profile"]),
+        _deadline(str(request.action.action_id)),
+    )
+
+    assert result.status == "SUCCEEDED"
+    rules = {item.rule_id: item for item in result.rules}
+    assert rules["R1"].execution_status == "EXECUTED"
+    assert rules["R1"].hit_count == 0
+    assert rules["R2"].execution_status == "EXECUTED"
+    assert rules["R2"].hit_count == 0
+
+
+@pytest.mark.asyncio
+async def test_current_opengrep_verbose_skips_are_exact_partial_coverage(
+    opengrep_fixture: dict[str, object],
+) -> None:
+    root = cast(Path, opengrep_fixture["root"])
+    skipped_target = root / "tests" / "test_a.py"
+    skipped_target.parent.mkdir()
+    skipped_target.write_text("assert True\n", encoding="utf-8")
+    inputs = cast(Any, opengrep_fixture["inputs"])
+    opengrep_fixture["inputs"] = replace(
+        inputs,
+        tracked_files=inputs.tracked_files
+        + (
+            TrackedFile(
+                "tests/test_a.py",
+                "100644",
+                "blob-test-a",
+                skipped_target.stat().st_size,
+            ),
+        ),
+    )
+    raw = canonical_bytes(
+        {
+            "version": "1.8.0",
+            "results": [],
+            "errors": [],
+            "paths": {
+                "scanned": ["src/a.py"],
+                "skipped": [
+                    {
+                        "path": "tests/test_a.py",
+                        "reason": "semgrepignore_patterns_match",
+                    }
+                ],
+            },
+            "time": {"rules": ["R1", "R2"]},
+        }
+    )
+    runner = FakeRunner([{"stdout": raw}])
+    adapter = _adapter(opengrep_fixture, runner)
+    request = cast(StaticToolRequest, opengrep_fixture["request"])
+    request = replace(
+        request,
+        action=request.action.model_copy(
+            update={"file_paths": ("src/a.py", "tests/test_a.py")}
+        ),
+    )
+
+    result = await adapter.execute(
+        request,
+        root,
+        cast(StaticToolProfile, opengrep_fixture["profile"]),
+        _deadline(str(request.action.action_id)),
+    )
+
+    assert result.status == "PARTIAL"
+    assert result.analyzed_paths == ("src/a.py",)
+    assert result.skipped_paths == ("tests/test_a.py",)
+    assert any(gap.code == "STATIC_COVERAGE_MISSING" for gap in result.gaps)
+    assert "--verbose" in runner.calls[1].argv
+
+
 @pytest.fixture
 def opengrep_fixture(tmp_path: Path) -> dict[str, object]:
     from sastsimi.static_analysis.open_grep_adapter import OpenGrepExecutionInputs
@@ -391,6 +490,8 @@ def _one_target_limit(value: dict[str, object]) -> int:
         str(value["config"]),
         "--json",
         "--time",
+        "--verbose",
+        "--no-rewrite-rule-ids",
         "--disable-version-check",
         "--",
     )
@@ -755,16 +856,18 @@ async def test_scan_uses_fixed_options_explicit_targets_and_deterministic_batche
     assert result.status == "SUCCEEDED"
     flattened: list[str] = []
     for spec in scans:
-        assert spec.argv[1:8] == (
+        assert spec.argv[1:10] == (
             "scan",
             "--config",
             str(opengrep_fixture["config"]),
             "--json",
             "--time",
+            "--verbose",
+            "--no-rewrite-rule-ids",
             "--disable-version-check",
             "--",
         )
-        flattened.extend(spec.argv[8:])
+        flattened.extend(spec.argv[10:])
         assert spec.deadline is scans[0].deadline
     assert flattened == sorted(request.action.file_paths)
     assert "-option.py" in flattened
@@ -1079,6 +1182,8 @@ async def test_one_target_that_cannot_fit_fails_before_probe_or_scan(
         str(opengrep_fixture["config"]),
         "--json",
         "--time",
+        "--verbose",
+        "--no-rewrite-rule-ids",
         "--disable-version-check",
         "--",
     )

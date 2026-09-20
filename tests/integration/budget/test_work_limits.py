@@ -12,10 +12,83 @@ from sastsimi.contracts.budget import (
 from sastsimi.contracts.refs import RunStoredDataRef
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import BudgetReservationRequest
+from sastsimi.storage.budget_limits import (
+    LOCAL_MANUAL_REPAIR_ATTEMPTS,
+    LOCAL_MANUAL_REPAIR_CALLS,
+    allows_local_manual_repair_scope,
+    local_manual_repair_call_allowance,
+)
 from sastsimi.storage.budget_registry import BudgetProfileRegistry
-from sastsimi.storage.budget_service import BudgetService
+from sastsimi.storage.budget_service import (
+    BudgetService,
+    _allows_local_manual_repair_attempt,
+)
 from tests.integration.runtime_support import Harness, metadata
 from tests.unit.contracts.test_core_models import action, work
+
+
+def test_local_manual_resume_allows_bounded_repair_attempts() -> None:
+    assert LOCAL_MANUAL_REPAIR_ATTEMPTS == 11
+    assert _allows_local_manual_repair_attempt(
+        purpose="LOCAL_EVALUATION",
+        action_type="START_ATTEMPT",
+        action_reason="Claim exact READY work",
+        work_status="READY",
+        transition_cause="USER_RESUME",
+    )
+    assert allows_local_manual_repair_scope(
+        purpose="LOCAL_EVALUATION",
+        work_status="RUNNING",
+        transition_cause="STARTED",
+        attempt_trigger="RESUME",
+    )
+
+
+def test_local_manual_resume_preserves_one_complete_dynamic_call_sequence() -> None:
+    assert LOCAL_MANUAL_REPAIR_CALLS == 12
+    assert (
+        local_manual_repair_call_allowance(
+            purpose="LOCAL_EVALUATION",
+            action_type="CALL_LLM",
+            work_status="RUNNING",
+            transition_cause="STARTED",
+            attempt_trigger="RESUME",
+        )
+        == LOCAL_MANUAL_REPAIR_CALLS
+    )
+
+
+def test_repair_attempt_remains_closed_outside_local_manual_resume() -> None:
+    assert not _allows_local_manual_repair_attempt(
+        purpose="PRODUCTION",
+        action_type="START_ATTEMPT",
+        action_reason="Claim exact READY work",
+        work_status="READY",
+        transition_cause="USER_RESUME",
+    )
+    assert not _allows_local_manual_repair_attempt(
+        purpose="LOCAL_EVALUATION",
+        action_type="START_ATTEMPT",
+        action_reason="Claim exact READY work",
+        work_status="READY",
+        transition_cause=None,
+    )
+    assert not allows_local_manual_repair_scope(
+        purpose="PRODUCTION",
+        work_status="RUNNING",
+        transition_cause="STARTED",
+        attempt_trigger="RESUME",
+    )
+    assert (
+        local_manual_repair_call_allowance(
+            purpose="PRODUCTION",
+            action_type="CALL_LLM",
+            work_status="RUNNING",
+            transition_cause="STARTED",
+            attempt_trigger="RESUME",
+        )
+        == 0
+    )
 
 
 @pytest.mark.parametrize(
@@ -83,3 +156,6 @@ def test_zero_work_limit_denies_operation(
                 BudgetReservation.model_validate_json(json.dumps(initial))
             )
         )
+
+
+# mypy: disable-error-code="attr-defined"

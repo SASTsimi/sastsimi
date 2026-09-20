@@ -5,12 +5,20 @@ from typing import Literal, Self
 from pydantic import AwareDatetime, model_validator
 
 from sastsimi.contracts.base import ContractModel, NonEmptyStr, Sha256
+from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.capabilities import DockerBuildCapability
 from sastsimi.contracts.domain import SafeDiagnostic
 from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
+from sastsimi.contracts.static import CodeQLBoundaryCapability
 
 type ProbeKind = Literal[
-    "GIT", "PYTHON_AST", "OPENGREP", "DOCKER", "OPENAI_API", "CODEQL"
+    "GIT",
+    "PYTHON_AST",
+    "PYTHON_RUNTIME",
+    "OPENGREP",
+    "DOCKER",
+    "OPENAI_API",
+    "CODEQL",
 ]
 
 
@@ -27,6 +35,7 @@ class CapabilityProbeReceipt(ContractModel):
     observed_sha256: Sha256 | None
     execution_target_hash: Sha256 | None = None
     docker_build_capability: DockerBuildCapability | None = None
+    codeql_boundary: CodeQLBoundaryCapability | None = None
     docker_build_boundary_code: NonEmptyStr | None = None
     docker_build_storage_identity_hash: Sha256 | None = None
     operating_system: Literal["windows", "linux", "macos"]
@@ -59,17 +68,35 @@ class CapabilityProbeReceipt(ContractModel):
             if (
                 self.execution_target_hash is None
                 or self.docker_build_capability is None
+                or self.codeql_boundary is not None
                 or self.docker_build_boundary_code
                 != "DOCKER_BUILD_BOUNDARY_PRECHECK_PASSED"
                 or self.docker_build_storage_identity_hash
                 != self.docker_build_capability.external_build_storage_identity_hash
             ):
                 raise ValueError("PROBE_DOCKER_BOUNDARY_REQUIRED")
-        elif self.kind != "DOCKER" and any(
+        elif self.kind == "CODEQL" and self.activation_supported:
+            if (
+                self.execution_target_hash is None
+                or self.codeql_boundary is None
+                or self.execution_target_hash != content_hash(self.codeql_boundary)
+                or self.docker_build_capability is not None
+            ):
+                raise ValueError("PROBE_CODEQL_BOUNDARY_REQUIRED")
+        elif self.kind not in {"DOCKER", "CODEQL"} and any(
             value is not None
             for value in (
                 self.execution_target_hash,
                 self.docker_build_capability,
+                self.codeql_boundary,
+                self.docker_build_boundary_code,
+                self.docker_build_storage_identity_hash,
+            )
+        ):
+            raise ValueError("PROBE_DOCKER_BOUNDARY_FORBIDDEN")
+        elif self.kind == "CODEQL" and any(
+            value is not None
+            for value in (
                 self.docker_build_boundary_code,
                 self.docker_build_storage_identity_hash,
             )

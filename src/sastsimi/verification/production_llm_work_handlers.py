@@ -16,6 +16,14 @@ from sastsimi.agents.verification import (
     VerificationAgentOutcome,
     VerificationCallRefs,
 )
+from sastsimi.contracts.actions import (
+    ActionDecision,
+    ActionType,
+    Decision,
+    UseStatus,
+    validate_decision_for_action,
+    validate_decision_revision,
+)
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.domain import same_scope
 from sastsimi.contracts.dynamic import (
@@ -245,11 +253,41 @@ class ProductionDynamicStageCallResolver:
             or call.decision_ref != authorization.decision_ref
             or call.reservation_ref != authorization.reservation_ref
             or invocation.request.call_spec_ref != authorization.call_spec_ref
-            or invocation.request.action_decision_ref != authorization.decision_ref
+            or not self._claimed_decision_matches(
+                call.decision_ref, invocation.request.action_decision_ref
+            )
             or invocation.request.agent_role != "DYNAMIC_REPRODUCTION"
         ):
             raise ValueError("DYNAMIC_LLM_SETTLEMENT_MISMATCH")
         self.calls.settle(call, invocation)
+
+    def _claimed_decision_matches(
+        self, issued_ref: StoredDataRef, claimed_ref: StoredDataRef
+    ) -> bool:
+        if self.records is None:
+            return issued_ref == claimed_ref
+        try:
+            issued = self.records.get_exact(issued_ref)
+            claimed = self.records.get_exact(claimed_ref)
+            if (
+                not isinstance(issued, ActionDecision)
+                or not isinstance(claimed, ActionDecision)
+                or reference(issued) != issued_ref
+                or reference(claimed) != claimed_ref
+                or issued.decision != Decision.ALLOW
+                or issued.use_status != UseStatus.UNUSED
+                or issued.outcome_refs
+                or claimed.decision != Decision.ALLOW
+                or claimed.use_status != UseStatus.USED
+                or claimed.outcome_refs
+            ):
+                return False
+            validate_decision_for_action(issued, ActionType.CALL_LLM)
+            validate_decision_for_action(claimed, ActionType.CALL_LLM)
+            validate_decision_revision(issued, claimed)
+        except (LookupError, ValueError):
+            return False
+        return True
 
 
 class HypothesisWorkflowPort(Protocol):

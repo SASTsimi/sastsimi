@@ -144,6 +144,10 @@ class WorkerPool:
         )
         if heartbeat.pulse() != "ACTIVE":
             return
+        # renew_lease publishes a new immutable WorkAttempt revision.  The
+        # handler must receive that exact current revision rather than the
+        # pre-heartbeat claim returned by try_claim_ready.
+        context = heartbeat.context
 
         handler = self._registry.resolve(context.work.work_type)
         handler_task = asyncio.create_task(handler.execute(context))
@@ -166,7 +170,7 @@ class WorkerPool:
             except Exception:
                 heartbeat.stop()
                 await heartbeat_task
-                self._record_failure(context)
+                self._record_failure(heartbeat.context)
                 return
 
             heartbeat.stop()
@@ -176,7 +180,7 @@ class WorkerPool:
             try:
                 self._works.accept_handler_result(context, result)
             except HandlerDidNotFinalizeError:
-                self._record_failure(context)
+                self._record_failure(heartbeat.context)
             except (LookupError, ValueError):
                 # An exact later attempt/current revision owns any such result.
                 return

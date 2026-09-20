@@ -395,7 +395,7 @@ class StaticExternalRunner:
             work,
             binding_ref,
             action,
-            self.runner.units(elapsed_ms=approved_timeout),
+            self.runner.units(elapsed_ms=approved_timeout, cost_minor_units=1),
         )
         decision_ref = self.runner.authorize(work, action, reservation)
         decision = records.get_exact(decision_ref)
@@ -486,7 +486,10 @@ class StaticExternalRunner:
         self.checkpoint("STATIC_RETURNED")
         if elapsed_ms is None:
             raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
-        self._account_once(reservation, self.runner.units(elapsed_ms=elapsed_ms))
+        self._account_once(
+            reservation,
+            self.runner.units(elapsed_ms=elapsed_ms, cost_minor_units=1),
+        )
         self.checkpoint("STATIC_ACCOUNTED")
         return self.static_publisher.publish(request, observation).result
 
@@ -582,7 +585,8 @@ class StaticExternalRunner:
         if dispatch.state == "DISPATCHED":
             self.runner.runtime.validator.mark_returned(decision_ref)
         self._account_once(
-            reservation, self.runner.units(elapsed_ms=receipt.elapsed_ms)
+            reservation,
+            self.runner.units(elapsed_ms=receipt.elapsed_ms, cost_minor_units=1),
         )
         return self.static_publisher.publish(request, observation).result
 
@@ -676,7 +680,10 @@ class StaticExternalRunner:
             if dispatch is not None and dispatch.state == "DISPATCHED":
                 self._block_uncertain(work)
             raise
-        self._account_once(reservation, self.runner.units(elapsed_ms=elapsed_ms))
+        self._account_once(
+            reservation,
+            self.runner.units(elapsed_ms=elapsed_ms, cost_minor_units=1),
+        )
         return self.static_publisher.publish(request, observation).result
 
     def _verified_policy(
@@ -1083,7 +1090,9 @@ class StaticExternalRunner:
         approved_timeout = profile.run_timeout_ms
         if limit.timeout_ms is not None:
             approved_timeout = min(approved_timeout, limit.timeout_ms)
-        expected_units = self.runner.units(elapsed_ms=approved_timeout)
+        expected_units = self.runner.units(
+            elapsed_ms=approved_timeout, cost_minor_units=1
+        )
         if (
             state.budget_binding_ref != reservation.budget_binding_ref
             or state.workspace_ref != reference(request.workspace)
@@ -1715,10 +1724,16 @@ class StaticExternalRunner:
                 )
                 if canonical_bytes(asdict(receipt)) != raw:
                     raise ValueError
+                # Repository and static-tool receipts intentionally share the
+                # same durable directory.  Their exact readers own the
+                # operation-specific observation checks; repository recovery
+                # must not reinterpret a valid tool/context receipt as a clone
+                # receipt.
+                if receipt.operation_kind != "REPOSITORY_PREPARE":
+                    continue
                 prefix = hashlib.sha256(receipt.action_id.encode()).hexdigest()[:24]
                 if (
-                    receipt.operation_kind != "REPOSITORY_PREPARE"
-                    or target.name != prefix + ".receipt.json"
+                    target.name != prefix + ".receipt.json"
                     or receipt.observation_name != prefix + ".repository.json"
                     or not re.fullmatch(r"[0-9a-f]{64}", receipt.input_fingerprint)
                     or any(

@@ -43,6 +43,7 @@ from sastsimi.ports.dto import Record, WorkHandlerResult
 from sastsimi.ports.dynamic_sandbox import (
     DockerCommandOutcomeView,
     DynamicDockerExecutionPort,
+    PreparedRecipeSourceView,
     PreparedSandbox,
     ReproductionSetupPort,
     SandboxControllerPort,
@@ -92,6 +93,20 @@ type DynamicSandboxAuthorizationResolver = Callable[
         tuple[StoredDataRef, ...],
     ],
     DynamicSandboxAuthorization,
+]
+
+type DynamicInitialStageResolver = Callable[
+    [WorkExecutionState, StoredDataRef],
+    tuple[
+        EnvironmentRequirements,
+        StoredDataRef,
+        ReproductionPlan,
+        StoredDataRef,
+    ]
+    | None,
+]
+type DynamicBaselineRecipeResolver = Callable[
+    [WorkExecutionState, PreparedRecipeSourceView], EnvironmentRecipe | None
 ]
 
 
@@ -200,6 +215,8 @@ class ProductionDynamicWorkflow:
         ids: IdGenerator,
         sink: DynamicRecordSink,
         authorization: DynamicSandboxAuthorizationResolver,
+        initial_stage_resolver: DynamicInitialStageResolver | None = None,
+        baseline_recipe_resolver: DynamicBaselineRecipeResolver | None = None,
         repository_profile: RepositoryProfile | None = None,
         dependency_bundle: DependencyBundle | None = None,
     ) -> None:
@@ -213,6 +230,8 @@ class ProductionDynamicWorkflow:
         self._ids = ids
         self._sink = sink
         self._authorization = authorization
+        self._initial_stage_resolver = initial_stage_resolver
+        self._baseline_recipe_resolver = baseline_recipe_resolver
         self._repository_profile = repository_profile
         self._dependency_bundle = dependency_bundle
         self._records: dict[str, Record] = {}
@@ -231,6 +250,66 @@ class ProductionDynamicWorkflow:
         self._selected_poc: _MaterializedPoC | None = None
         self._current_recipe: EnvironmentRecipe | None = None
         self._started_at = clock.now()
+
+    def restore_initial_stages(
+        self,
+        *,
+        work: WorkExecutionState,
+        request: DynamicReproductionRequest,
+        request_ref: StoredDataRef,
+    ) -> (
+        tuple[
+            EnvironmentRequirements,
+            StoredDataRef,
+            ReproductionPlan,
+            StoredDataRef,
+        ]
+        | None
+    ):
+        """Re-publish exact prior successful setup stages for one RESUME attempt."""
+
+        self._require_work(work, request, request_ref)
+        if self._initial_stage_resolver is None:
+            return None
+        prior = self._initial_stage_resolver(work, request_ref)
+        if prior is None:
+            return None
+        prior_requirements, prior_requirements_ref, prior_plan, prior_plan_ref = prior
+        current_attempt = work.active_attempt_id
+        if (
+            current_attempt is None
+            or reference(prior_requirements) != prior_requirements_ref
+            or reference(prior_plan) != prior_plan_ref
+            or prior_requirements.request_ref != request_ref
+            or prior_plan.request_ref != request_ref
+            or prior_plan.environment_requirements_ref != prior_requirements_ref
+            or prior_requirements.meta.attempt_id is None
+            or prior_requirements.meta.attempt_id == current_attempt
+            or prior_plan.meta.attempt_id != prior_requirements.meta.attempt_id
+        ):
+            raise ValueError("DYNAMIC_INITIAL_STAGE_HISTORY_MISMATCH")
+        requirements = EnvironmentRequirements.model_validate(
+            prior_requirements.model_dump()
+            | {"meta": self._meta("environment_requirements")}
+        )
+        requirements_ref = self._publish(
+            requirements,
+            RequesterRole.DYNAMIC_REPRODUCTION,
+            (*self._work_inputs(), prior_requirements_ref),
+        )
+        plan = ReproductionPlan.model_validate(
+            prior_plan.model_dump()
+            | {
+                "meta": self._meta("reproduction_plan"),
+                "environment_requirements_ref": requirements_ref,
+            }
+        )
+        plan_ref = self._publish(
+            plan,
+            RequesterRole.DYNAMIC_REPRODUCTION,
+            (*self._work_inputs(), requirements_ref, prior_plan_ref),
+        )
+        return requirements, requirements_ref, plan, plan_ref
 
     def publish(
         self, record: Record, invocation: PersistedLLMInvocation
@@ -360,14 +439,30 @@ class ProductionDynamicWorkflow:
                 policy_ref=build_policy_ref,
                 log_ref=self._log_ref(),
             )
+        baseline = (
+            self._baseline_recipe_resolver(work, source)
+            if self._baseline_recipe_resolver is not None
+            else None
+        )
         try:
-            recipe = await self._setup.build(
-                approval=build_outcome,
-                source=source,
-                request=request,
-                requirements=requirements,
-                meta=self._meta("environment_recipe"),
-            )
+            recipe_meta = self._meta("environment_recipe")
+            if baseline is None:
+                recipe = await self._setup.build(
+                    approval=build_outcome,
+                    source=source,
+                    request=request,
+                    requirements=requirements,
+                    meta=recipe_meta,
+                )
+            else:
+                recipe = await self._setup.build(
+                    approval=build_outcome,
+                    source=source,
+                    request=request,
+                    requirements=requirements,
+                    meta=recipe_meta,
+                    baseline=baseline,
+                )
         except asyncio.CancelledError:
             self._start_log(
                 request_ref,

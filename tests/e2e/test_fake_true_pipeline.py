@@ -101,7 +101,9 @@ def test_true_pipeline_closes_exact_report_without_submission(tmp_path: Path) ->
         current_report.poc.execution_action_id
     )
     assert f"AgentLog ref: `{current_report.poc.agent_log_ref.record_id}`" in markdown
-    assert "### 실제 실행 방법" in markdown
+    for heading in ("### Summary", "### Details", "### PoC", "### Impact"):
+        assert heading in markdown
+    assert "**실제 실행 방법**" in markdown
     published = pipeline.runtime.queries.published_records("fake-analysis")
     published_by_ref = {reference(item): item for item in published}
     report_decision = published_by_ref[report.action_decision_ref]

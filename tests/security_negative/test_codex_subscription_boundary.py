@@ -517,6 +517,28 @@ def test_array_schema_gets_only_transport_envelope() -> None:
     }
 
 
+def test_array_schema_hoists_definitions_for_root_references() -> None:
+    schema: dict[str, JsonValue] = {
+        "$defs": {
+            "Entry": {
+                "type": "object",
+                "properties": {"value": {"type": "string"}},
+                "required": ["value"],
+                "additionalProperties": False,
+            }
+        },
+        "type": "array",
+        "items": {"$ref": "#/$defs/Entry"},
+    }
+
+    adapted = _codex_output_schema(schema)
+
+    assert adapted["$defs"] == schema["$defs"]
+    assert adapted["properties"] == {
+        "items": {"type": "array", "items": {"$ref": "#/$defs/Entry"}}
+    }
+
+
 @pytest.mark.parametrize(
     "event_stream",
     [

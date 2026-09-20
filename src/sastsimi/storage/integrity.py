@@ -2,7 +2,7 @@
 
 import hashlib
 import os
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 
 from pydantic import BaseModel
@@ -26,7 +26,7 @@ class IntegrityReport:
 
 def artifact_hashes(value: object) -> Iterator[str]:
     if isinstance(value, (StoredDataRef, RunStoredDataRef)):
-        if value.record_id is None:
+        if value.record_id is None and value.data_kind == "artifact":
             yield value.content_hash
     elif isinstance(value, BaseModel):
         for name in type(value).model_fields:
@@ -44,6 +44,7 @@ def verify(
     artifacts: LocalArtifactStore,
     *,
     quarantine: bool = True,
+    protected_artifact_refs: Iterable[StoredDataRef | RunStoredDataRef] = (),
 ) -> IntegrityReport:
     with records.database.engine.connect() as connection:
         connection.exec_driver_sql("BEGIN")
@@ -56,6 +57,22 @@ def verify(
                 != digest
             ):
                 raise ValueError("HASH_MISMATCH")
+        for protected_ref in protected_artifact_refs:
+            if (
+                protected_ref.record_id is not None
+                or protected_ref.data_kind != "artifact"
+                or str(protected_ref.stored_data_id) != protected_ref.content_hash
+            ):
+                raise ValueError("PROTECTED_ARTIFACT_REFERENCE_MISMATCH")
+            protected_bytes = artifacts.path_for(
+                protected_ref.content_hash
+            ).read_bytes()
+            if (
+                hashlib.sha256(protected_bytes).hexdigest()
+                != protected_ref.content_hash
+            ):
+                raise ValueError("HASH_MISMATCH: protected artifact")
+            digests.add(protected_ref.content_hash)
         for wire in connection.execute(
             select(models.records.c.ref).join(models.record_revisions)
         ).scalars():

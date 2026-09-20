@@ -1,0 +1,6 @@
+library: false
+name: sastsimi/python-security-candidate
+version: 1.0.0
+defaultSuiteFile: python-security.qls
+dependencies:
+  codeql/python-queries: 1.8.10

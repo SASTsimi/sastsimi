@@ -9,10 +9,12 @@ import os
 import signal
 import subprocess
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 from typing import Literal, cast
 
 from pydantic import JsonValue
@@ -30,6 +32,7 @@ from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.ports.dto import CancellationResult, CapabilityProbeResult
 
 from .base import (
+    CODEX_PVD_RUNNER_MARKER,
     Clock,
     CodexProcessRequest,
     CodexProcessResult,
@@ -56,6 +59,7 @@ _MAX_FINAL_MESSAGE_BYTES = 1_048_576
 _TREE_KILLER_TIMEOUT_SECONDS = 2.0
 _ARRAY_ENVELOPE_KEY = "items"
 _CHATGPT_LOGIN_STATUS = "Logged in using ChatGPT"
+_PROCESS_LOCK = Lock()
 _RATE_LIMIT_MARKERS = (
     b"rate limit",
     b"rate_limit",
@@ -72,6 +76,24 @@ _AUTH_FAILURE_MARKERS = (
     b"login required",
     b"401",
 )
+
+
+@asynccontextmanager
+async def _codex_process_lock() -> AsyncIterator[None]:
+    """Serialize subscription processes across every worker event loop."""
+
+    acquired = False
+    try:
+        while not acquired:
+            acquired = _PROCESS_LOCK.acquire(blocking=False)
+            if not acquired:
+                await asyncio.sleep(0.01)
+        yield
+    finally:
+        if acquired:
+            _PROCESS_LOCK.release()
+
+
 _CHILD_ENVIRONMENT_ALLOWLIST = (
     "CODEX_HOME",
     "SYSTEMROOT",
@@ -480,6 +502,11 @@ class CodexSubscriptionAdapter:
     ) -> CapabilityProbeResult:
         if self.probe_runner is not None:
             observed = await self.probe_runner.run(candidate, self)
+            if (
+                getattr(self.probe_runner, "trusted_runner_marker", None)
+                is CODEX_PVD_RUNNER_MARKER
+            ):
+                return CapabilityProbeResult(evidence=observed.evidence)
             return CapabilityProbeResult(
                 evidence=_fail_unobservable_model_test(observed.evidence)
             )
@@ -570,16 +597,17 @@ class CodexSubscriptionAdapter:
     ) -> LLMInvocationResult:
         try:
             resolved, schema = await self._prepare(request)
-            process_result = await self.process_runner.execute(
-                CodexProcessRequest(
-                    invocation_id=request.llm_call_id,
-                    provider_profile_ref=request.provider_profile_ref,
-                    model=request.model,
-                    prompt=resolved.rendered_prompt_bytes,
-                    output_schema=resolved.output_schema_bytes,
-                    timeout_ms=request.timeout_ms,
+            async with _codex_process_lock():
+                process_result = await self.process_runner.execute(
+                    CodexProcessRequest(
+                        invocation_id=request.llm_call_id,
+                        provider_profile_ref=request.provider_profile_ref,
+                        model=request.model,
+                        prompt=resolved.rendered_prompt_bytes,
+                        output_schema=resolved.output_schema_bytes,
+                        timeout_ms=request.timeout_ms,
+                    )
                 )
-            )
             if process_result.status != "SUCCEEDED":
                 outcome = self._failure_outcome(
                     request,
@@ -644,8 +672,16 @@ class CodexSubscriptionAdapter:
                 output_schema=resolved.output_schema,
                 request=request,
             )
-            if canonical_bytes(validated_output) != raw_output:
+            validated_bytes = canonical_bytes(validated_output)
+            poc_content_repair = (
+                request.agent_role,
+                request.task_kind,
+            ) == ("DYNAMIC_REPRODUCTION", "CREATE_POC_CANDIDATE")
+            if validated_bytes != raw_output and not poc_content_repair:
                 raise ProviderInvalidOutputError
+            if poc_content_repair:
+                raw_output = validated_bytes
+                parsed = validated_output
         except ProviderInvalidOutputError:
             raise
         except Exception as error:
@@ -1206,15 +1242,17 @@ def _codex_output_schema(
     """Adapt only array roots to Codex's structured-output object transport."""
     if provider_neutral_schema.get("type") != "array":
         return provider_neutral_schema
-    return cast(
-        dict[str, JsonValue],
-        {
-            "type": "object",
-            "properties": {_ARRAY_ENVELOPE_KEY: provider_neutral_schema},
-            "required": [_ARRAY_ENVELOPE_KEY],
-            "additionalProperties": False,
-        },
-    )
+    array_schema = dict(provider_neutral_schema)
+    definitions = array_schema.pop("$defs", None)
+    adapted: dict[str, JsonValue] = {
+        "type": "object",
+        "properties": {_ARRAY_ENVELOPE_KEY: cast(JsonValue, array_schema)},
+        "required": [_ARRAY_ENVELOPE_KEY],
+        "additionalProperties": False,
+    }
+    if definitions is not None:
+        adapted["$defs"] = definitions
+    return adapted
 
 
 def _unwrap_codex_output(

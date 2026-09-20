@@ -48,6 +48,7 @@ from sastsimi.ports.runtime_query import RuntimeQueryPort
 from sastsimi.prompts.production import ProductionLLMConfigurationService
 from sastsimi.prompts.production_calls import ConfiguredProductionCallResolver
 from sastsimi.prompts.validation import validate_output
+from sastsimi.providers.codex_pvd import build_fail_closed_codex_pvd_runner
 from sastsimi.providers.codex_subscription import (
     ApprovedCodexExecutable,
     ApprovedCodexExecutionBinding,
@@ -398,16 +399,17 @@ def _build_codex_adapter(
     request_semantic_validators: Mapping[tuple[LLMRole, str], RequestSemanticValidator],
     queries: RuntimeQueryPort,
 ) -> CodexSubscriptionAdapter:
+    process_runner = CodexCliProcessRunner(
+        binding=binding,
+        binding_validator=lambda current: _require_codex_binding_current(
+            current, queries
+        ),
+    )
     return CodexSubscriptionAdapter(
         provider_profile_ref=provider_profile_ref,
         model=model,
         prompt_resolver=StoredPromptInputResolver(records, artifacts),
-        process_runner=CodexCliProcessRunner(
-            binding=binding,
-            binding_validator=lambda current: _require_codex_binding_current(
-                current, queries
-            ),
-        ),
+        process_runner=process_runner,
         session_store=StoredProviderSessionStore(artifacts),
         output_schema_validator=StoredOutputValidator(
             records,
@@ -419,6 +421,11 @@ def _build_codex_adapter(
             records, artifacts, metadata_factory
         ),
         clock=clock,
+        probe_runner=build_fail_closed_codex_pvd_runner(
+            artifacts=artifacts,
+            clock=clock,
+            executable_sha256=binding.executable.sha256,
+        ),
     )
 
 

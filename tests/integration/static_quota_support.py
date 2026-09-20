@@ -1,6 +1,7 @@
 """A kernel-write boundary double; all probe files and engine logic remain real."""
 
 import errno
+import hashlib
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -14,6 +15,8 @@ from sastsimi.ports.static_tool import StaticOutputPurpose
 
 class TestQuota:
     __test__ = False
+    backend_key = "test-kernel-quota"
+    enforcement_identity_sha256 = hashlib.sha256(b"test-enforcement").hexdigest()
 
     def __init__(
         self,
@@ -31,6 +34,7 @@ class TestQuota:
         self.sticky = sticky
         self.unbounded_purpose = unbounded_purpose
         self.reset_when_empty = reset_when_empty
+        self.finalized: list[tuple[str, str]] = []
         write = os.write
 
         def bounded_write(fd: int, data: bytes) -> int:
@@ -99,4 +103,4 @@ class TestQuota:
         return binding
 
     def finalize(self, *, lease_id: str, outcome: str) -> None:
-        pass
+        self.finalized.append((lease_id, outcome))

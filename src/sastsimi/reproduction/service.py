@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, TypeGuard
 
@@ -1182,43 +1183,54 @@ class DynamicReproductionWorkflowService:
     ) -> WorkHandlerResult:
         session: DynamicSandboxSession | None = None
         try:
-            derive_authorization = self._resolve_call(
-                work=work,
-                task_kind="DERIVE_ENVIRONMENT",
-                context_refs=(request_ref,),
-                fallback=(
-                    authorizations.derive if authorizations is not None else None
-                ),
+            restore = getattr(self._workflow, "restore_initial_stages", None)
+            restored = (
+                restore(work=work, request=request, request_ref=request_ref)
+                if callable(restore)
+                else None
             )
-            requirements_outcome = await self._agent.derive_environment(
-                work=work,
-                authorization=derive_authorization,
-                request=request,
-                request_ref=request_ref,
-            )
-            self._settle_call(derive_authorization, requirements_outcome.invocation)
-            requirements = _require_stage_record(requirements_outcome, "AGENT")
-            requirements_ref = self._workflow.publish(
-                requirements, requirements_outcome.invocation
-            )
+            if restored is None:
+                derive_authorization = self._resolve_call(
+                    work=work,
+                    task_kind="DERIVE_ENVIRONMENT",
+                    context_refs=(request_ref,),
+                    fallback=(
+                        authorizations.derive if authorizations is not None else None
+                    ),
+                )
+                requirements_outcome = await self._agent.derive_environment(
+                    work=work,
+                    authorization=derive_authorization,
+                    request=request,
+                    request_ref=request_ref,
+                )
+                self._settle_call(derive_authorization, requirements_outcome.invocation)
+                requirements = _require_stage_record(requirements_outcome, "AGENT")
+                requirements_ref = self._workflow.publish(
+                    requirements, requirements_outcome.invocation
+                )
 
-            plan_authorization = self._resolve_call(
-                work=work,
-                task_kind="PLAN_REPRODUCTION",
-                context_refs=(request_ref, requirements_ref),
-                fallback=(authorizations.plan if authorizations is not None else None),
-            )
-            plan_outcome = await self._agent.plan_reproduction(
-                work=work,
-                authorization=plan_authorization,
-                request=request,
-                request_ref=request_ref,
-                requirements=requirements,
-                requirements_ref=requirements_ref,
-            )
-            self._settle_call(plan_authorization, plan_outcome.invocation)
-            plan = _require_stage_record(plan_outcome, "PLAN")
-            plan_ref = self._workflow.publish(plan, plan_outcome.invocation)
+                plan_authorization = self._resolve_call(
+                    work=work,
+                    task_kind="PLAN_REPRODUCTION",
+                    context_refs=(request_ref, requirements_ref),
+                    fallback=(
+                        authorizations.plan if authorizations is not None else None
+                    ),
+                )
+                plan_outcome = await self._agent.plan_reproduction(
+                    work=work,
+                    authorization=plan_authorization,
+                    request=request,
+                    request_ref=request_ref,
+                    requirements=requirements,
+                    requirements_ref=requirements_ref,
+                )
+                self._settle_call(plan_authorization, plan_outcome.invocation)
+                plan = _require_stage_record(plan_outcome, "PLAN")
+                plan_ref = self._workflow.publish(plan, plan_outcome.invocation)
+            else:
+                requirements, requirements_ref, plan, plan_ref = restored
 
             session = await self._workflow.open_session(
                 work=work,
@@ -1236,6 +1248,12 @@ class DynamicReproductionWorkflowService:
             assert session.environment is not None
             assert session.environment_ref is not None
             assert session.log is not None
+            if session.environment.status != "READY":
+                raise DynamicOperationalError(
+                    "BLOCKED",
+                    "ENVIRONMENT_SETUP",
+                    "Sandbox environment is not ready",
+                )
             candidate_authorization = self._resolve_call(
                 work=work,
                 task_kind="CREATE_POC_CANDIDATE",
@@ -1403,7 +1421,7 @@ class DynamicReproductionWorkflowService:
                 session=session,
                 failure=error.failure,
             )
-        except Exception:
+        except Exception as error:
             if session is not None and session.allowed:
                 session = await self._workflow.cleanup(session)
             return self._workflow.finalize_failure(
@@ -1414,7 +1432,7 @@ class DynamicReproductionWorkflowService:
                 failure=DynamicWorkflowFailure(
                     status="FAILED",
                     failure_category="INTERNAL",
-                    failure_reason="Unexpected dynamic workflow failure",
+                    failure_reason=_safe_internal_failure_reason(error),
                 ),
             )
 
@@ -1452,6 +1470,16 @@ def _require_stage_record[T](
 ) -> T:
     if outcome.record is None:
         raise DynamicOperationalError(
-            "FAILED", category, "LLM stage did not produce a usable result"
+            "BLOCKED", category, "LLM stage did not produce a usable result"
         )
     return outcome.record
+
+
+def _safe_internal_failure_reason(error: Exception) -> str:
+    code = getattr(error, "code", None)
+    if isinstance(code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{2,127}", code):
+        return code
+    message = str(error)
+    if re.fullmatch(r"[A-Z][A-Z0-9_]{2,127}", message):
+        return message
+    return "Unexpected dynamic workflow failure"

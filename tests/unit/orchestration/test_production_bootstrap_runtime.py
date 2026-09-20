@@ -32,19 +32,18 @@ def test_static_runtime_supplies_configured_codeql_quota_to_default_assembler(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     quota = TestQuota(tmp_path / "quota", monkeypatch)
+    provider = cast(Any, object())
     context = cast(Any, SimpleNamespace(data_dir=tmp_path))
     ports = ProductionStaticRuntimeFactory(
         output_quota=quota,
+        codeql_database_provider=provider,
         codeql_database_limit_bytes=131072,
     )(context)
-    with pytest.raises(
-        ProductionAnalyzeUnavailable,
-        match="PRODUCTION_CODEQL_SAFE_PREREQUISITES_UNAVAILABLE",
-    ):
-        _require_static_runtime_ports(
-            ports, cast(Any, SimpleNamespace(enabled_tools=("CODEQL",)))
-        )
+    _require_static_runtime_ports(
+        ports, cast(Any, SimpleNamespace(enabled_tools=("CODEQL",)))
+    )
     assert ports.output_quota is quota
+    assert ports.codeql_database_provider is provider
     assert ports.codeql_database_limit_bytes == 131072
 
 
@@ -114,6 +113,18 @@ def _ports(data_dir: Path) -> object:
 
 def test_static_runtime_reads_the_exact_attempt_process_receipt(tmp_path: Path) -> None:
     receipt, _attempt = _write_process_receipt(tmp_path)
+
+    ports = cast(Any, _ports(tmp_path))
+
+    assert ports.process_receipts("action-1", "attempt-1") == (receipt,)
+
+
+def test_static_runtime_reads_an_exact_nested_adapter_receipt(tmp_path: Path) -> None:
+    receipt, attempt = _write_process_receipt(tmp_path)
+    nested = attempt / "adapter-run"
+    nested.mkdir()
+    for name in ("stdout.bin", "stderr.bin", "invocation.receipt.json"):
+        (attempt / name).replace(nested / name)
 
     ports = cast(Any, _ports(tmp_path))
 

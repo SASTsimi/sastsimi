@@ -1,0 +1,14 @@
+- description: SASTSIMI candidate Python security data-flow queries
+  queries: .
+  from: codeql/python-queries
+  include:
+    id:
+      - py/code-injection
+      - py/command-line-injection
+      - py/nosql-injection
+      - py/path-injection
+      - py/reflective-xss
+      - py/shell-command-constructed-from-input
+      - py/sql-injection
+      - py/url-redirection
+      - py/xpath-injection

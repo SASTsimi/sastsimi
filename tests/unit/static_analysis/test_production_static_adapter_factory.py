@@ -22,7 +22,8 @@ from sastsimi.composition.production_t08_builder import (
     ApprovedStaticRuleClosure,
     StaticAdapterBuildContext,
 )
-from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.config.codeql_container import CodeQLContainerRuntimeConfig
+from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.ids import (
     AnalysisId,
     CommitId,
@@ -36,18 +37,24 @@ from sastsimi.orchestration.static_work_handlers import StaticToolRoute
 from sastsimi.ports.dto import (
     CancellationResult,
     MonotonicActionDeadline,
+    PrebuiltCodeQLDatabase,
     ProcessReceipt,
+    StaticOutputQuotaBinding,
     StaticRuleMapping,
+    StaticToolObservation,
     TrackedFile,
 )
 from sastsimi.ports.production_analysis import ProductionAnalyzeUnavailable
 from sastsimi.ports.static_tool import (
+    PrebuiltCodeQLDatabasePort,
     ProductionStaticOutputQuotaPort,
     StaticProcessAdapter,
 )
 from sastsimi.ports.workspace import WorkspaceLocatorPort
 from sastsimi.static_analysis.ast_adapter import PythonAstProcessAdapter
+from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter, digest_path
 from tests.contract.domain.fixtures import meta
+from tests.integration.static_quota_support import TestQuota
 from tests.unit.static_analysis.test_ast_adapter import _request
 
 
@@ -139,6 +146,7 @@ def _ast_profile(executable: Path) -> StaticToolProfile:
 
 
 def _rule_profile(executable: Path, tool: str) -> StaticToolProfile:
+    values: dict[str, object]
     if tool == "OPENGREP":
         values = {
             "adapter_key": "OPENGREP",
@@ -152,10 +160,32 @@ def _rule_profile(executable: Path, tool: str) -> StaticToolProfile:
             "adapter_key": "CODEQL",
             "tool_name": "CODEQL",
             "tool_kind": "RULE_BASED",
-            "executable_key": "codeql",
+            "executable_key": "docker",
             "expected_version": "2.0.0",
+            "codeql_boundary": {
+                "quota_backend_key": "test-kernel-quota",
+                "quota_enforcement_identity_sha256": hashlib.sha256(
+                    b"test-enforcement"
+                ).hexdigest(),
+                "database_limit_bytes": 4096,
+                "execution_limit_bytes": 1_000_000,
+                "database_provider_key": "fixture-provider",
+                "database_provider_revision": "1",
+                "database_provider_evidence_sha256": "e" * 64,
+                "image_digest": "sha256:" + "d" * 64,
+                "expected_codeql_version": "2.0.0",
+                "query_pack_sha256": "f" * 64,
+                "container_user": "65532:65532",
+                "pids_limit": 64,
+                "memory_limit_bytes": 536_870_912,
+                "nano_cpus": 500_000_000,
+                "supported_languages": ("PYTHON", "JAVASCRIPT"),
+                "prebuilt_database_only": True,
+            },
         }
-    return _ast_profile(executable).model_copy(update=values)
+    return StaticToolProfile.model_validate(
+        _ast_profile(executable).model_dump(mode="python") | values
+    )
 
 
 class _Locator:
@@ -277,6 +307,13 @@ def test_codeql_database_create_is_forbidden_on_the_host(tmp_path: Path) -> None
 def test_codeql_language_scope_never_guesses_a_mixed_request() -> None:
     with pytest.raises(ValueError, match="CODEQL_LANGUAGE_SCOPE_AMBIGUOUS"):
         classify_codeql_language(("src/app.py", "web/app.js"))
+
+
+def test_codeql_language_scope_ignores_non_source_repository_files() -> None:
+    assert (
+        classify_codeql_language(("README.md", "pyproject.toml", "src/app.py"))
+        == "python"
+    )
 
 
 def test_opengrep_material_is_bound_to_exact_approved_evidence(
@@ -411,6 +448,344 @@ def test_codeql_activation_requires_production_prebuilt_and_quota_binding(
         factory(context)
     assert not (tmp_path / "static-execution").exists()
     assert not (tmp_path / "static-material").exists()
+
+
+def test_codeql_adapter_is_built_only_with_exact_database_and_quota_ports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "codeql.exe"
+    executable.write_bytes(b"trusted-codeql")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    locator = _Locator(workspace, ())
+    profile = _rule_profile(executable, "CODEQL")
+    profile_ref = cast(HostConfigurationRef, reference(profile))
+    query_file = b"name: approved/query-pack\n"
+    catalog, selection, mappings, closure = _rule_payloads()
+    expected_pack = tmp_path / "expected-pack"
+    expected_pack.mkdir()
+    (expected_pack / "qlpack.yml").write_bytes(query_file)
+    (expected_pack / "sastsimi-selection.json").write_bytes(selection)
+    query_pack_digest = digest_path(expected_pack)
+    manifest = canonical_bytes(
+        {
+            "schema_version": 1,
+            "tools": {
+                "CODEQL": {
+                    "query_pack_sha256": query_pack_digest,
+                    "files": [
+                        {
+                            "path": "qlpack.yml",
+                            "sha256": hashlib.sha256(query_file).hexdigest(),
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    manifest_ref = _artifact(manifest)
+    catalog_ref = _artifact(catalog)
+    evidence = {
+        hashlib.sha256(payload).hexdigest(): payload
+        for payload in (manifest, catalog, selection, mappings, query_file)
+    }
+    context = StaticAdapterBuildContext(
+        data_dir=tmp_path,
+        workspace_locator=cast(WorkspaceLocatorPort, locator),
+        tracked_files_for=locator.tracked_files_for,
+        routes={
+            "CODEQL": StaticToolRoute(
+                profile_ref,
+                manifest_ref,
+                catalog_ref,
+                closure.catalog_rule_ids,
+            )
+        },
+        profiles={"CODEQL": profile},
+        evidence=evidence,
+        rule_closures={"CODEQL": closure},
+    )
+
+    class Provider:
+        provider_key = "fixture-provider"
+        provider_revision = "1"
+        provider_evidence_sha256 = "e" * 64
+
+        def materialize(self, **_kwargs: object) -> object:
+            raise AssertionError("factory construction must stay lazy")
+
+    factory = ProductionStaticAdapterFactory(
+        executables={"CODEQL": executable},
+        python_ast_worker=executable,
+        python_ast_worker_sha256=_digest(executable),
+        output_quota=TestQuota(tmp_path / "quota", monkeypatch),
+        codeql_database_provider=cast(PrebuiltCodeQLDatabasePort, Provider()),
+        codeql_database_limit_bytes=4096,
+    )
+
+    adapters = factory(context)
+
+    assert set(adapters) == {"CODEQL"}
+
+
+def test_container_codeql_factory_needs_no_legacy_host_quota_or_database_port(
+    tmp_path: Path,
+) -> None:
+    docker = tmp_path / "docker.exe"
+    docker.write_bytes(b"trusted-docker")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    locator = _Locator(workspace, ())
+    profile = _rule_profile(docker, "CODEQL")
+    query_file = b"name: approved/query-pack\n"
+    catalog, selection, mappings, closure = _rule_payloads()
+    approved_pack = tmp_path / "approved-pack"
+    approved_pack.mkdir()
+    (approved_pack / "qlpack.yml").write_bytes(query_file)
+    (approved_pack / "sastsimi-selection.json").write_bytes(selection)
+    query_pack_digest = digest_path(approved_pack)
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    config = CodeQLContainerRuntimeConfig.model_validate(
+        {
+            "schema_version": 1,
+            "image": "sastsimi/codeql@sha256:" + "d" * 64,
+            "expected_codeql_version": "2.0.0",
+            "database_registry_root": registry,
+            "query_pack_root": approved_pack,
+            "query_pack_sha256": query_pack_digest,
+            "database_provider_key": "fixture-provider",
+            "database_provider_revision": "1",
+            "database_provider_evidence_sha256": "e" * 64,
+            "database_limit_bytes": 4096,
+            "output_limit_bytes": 1_000_000,
+            "pids_limit": 64,
+            "memory_limit_bytes": 536_870_912,
+            "nano_cpus": 500_000_000,
+            "container_uid": 65532,
+            "container_gid": 65532,
+        }
+    )
+    assert profile.codeql_boundary is not None
+    enforcement_identity = content_hash(
+        {
+            "image_digest": config.image.split("@", 1)[1],
+            "user": config.container_user,
+            "pids_limit": config.pids_limit,
+            "memory_limit_bytes": config.memory_limit_bytes,
+            "nano_cpus": config.nano_cpus,
+            "database_limit_bytes": config.database_limit_bytes,
+            "output_limit_bytes": config.output_limit_bytes,
+        }
+    )
+    profile = StaticToolProfile.model_validate(
+        profile.model_dump(mode="python")
+        | {
+            "codeql_boundary": profile.codeql_boundary.model_dump(mode="python")
+            | {
+                "query_pack_sha256": query_pack_digest,
+                "image_digest": config.image.split("@", 1)[1],
+                "quota_backend_key": "CONTAINER_TMPFS_CAP_PLUS_ONE",
+                "quota_enforcement_identity_sha256": enforcement_identity,
+            }
+        }
+    )
+    profile_ref = cast(HostConfigurationRef, reference(profile))
+    manifest = canonical_bytes(
+        {
+            "schema_version": 1,
+            "tools": {
+                "CODEQL": {
+                    "query_pack_sha256": query_pack_digest,
+                    "files": [
+                        {
+                            "path": "qlpack.yml",
+                            "sha256": hashlib.sha256(query_file).hexdigest(),
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    manifest_ref = _artifact(manifest)
+    catalog_ref = _artifact(catalog)
+    evidence = {
+        hashlib.sha256(payload).hexdigest(): payload
+        for payload in (manifest, catalog, selection, mappings, query_file)
+    }
+    context = StaticAdapterBuildContext(
+        data_dir=tmp_path,
+        workspace_locator=cast(WorkspaceLocatorPort, locator),
+        tracked_files_for=locator.tracked_files_for,
+        routes={
+            "CODEQL": StaticToolRoute(
+                profile_ref,
+                manifest_ref,
+                catalog_ref,
+                closure.catalog_rule_ids,
+            )
+        },
+        profiles={"CODEQL": profile},
+        evidence=evidence,
+        rule_closures={"CODEQL": closure},
+    )
+    factory = ProductionStaticAdapterFactory(
+        executables={"CODEQL": docker},
+        python_ast_worker=docker,
+        python_ast_worker_sha256=_digest(docker),
+        codeql_container_config=config,
+    )
+
+    adapters = factory(context)
+
+    assert set(adapters) == {"CODEQL"}
+
+
+@pytest.mark.asyncio
+async def test_codeql_execution_uses_only_action_paths_and_finalizes_both_leases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "codeql.exe"
+    executable.write_bytes(b"trusted-codeql")
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    (workspace_root / "README.md").write_text("docs\n", encoding="utf-8")
+    tracked = (
+        TrackedFile("app.py", "100644", "blob-app", 12),
+        TrackedFile("README.md", "100644", "blob-readme", 5),
+    )
+    locator = _Locator(workspace_root, tracked)
+    profile = _rule_profile(executable, "CODEQL")
+    profile_ref = cast(HostConfigurationRef, reference(profile))
+    query_file = b"name: approved/query-pack\n"
+    catalog, selection, mappings, closure = _rule_payloads()
+    pack = tmp_path / "expected-pack"
+    pack.mkdir()
+    (pack / "qlpack.yml").write_bytes(query_file)
+    (pack / "sastsimi-selection.json").write_bytes(selection)
+    manifest = canonical_bytes(
+        {
+            "schema_version": 1,
+            "tools": {
+                "CODEQL": {
+                    "query_pack_sha256": digest_path(pack),
+                    "files": [
+                        {
+                            "path": "qlpack.yml",
+                            "sha256": hashlib.sha256(query_file).hexdigest(),
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    manifest_ref = _artifact(manifest)
+    catalog_ref = _artifact(catalog)
+    evidence = {
+        hashlib.sha256(payload).hexdigest(): payload
+        for payload in (manifest, catalog, selection, mappings, query_file)
+    }
+    provider_calls: list[dict[str, object]] = []
+
+    class Provider:
+        provider_key = "fixture-provider"
+        provider_revision = "1"
+        provider_evidence_sha256 = "e" * 64
+
+        def materialize(self, **kwargs: object) -> PrebuiltCodeQLDatabase:
+            provider_calls.append(kwargs)
+            binding = cast(StaticOutputQuotaBinding, kwargs["quota_binding"])
+            database_root = binding.root / "database"
+            database_root.mkdir()
+            (database_root / "codeql-database.yml").write_text(
+                "primaryLanguage: python\n", encoding="utf-8"
+            )
+            return PrebuiltCodeQLDatabase(
+                workspace_id=cast(str, kwargs["workspace_id"]),
+                commit_id=cast(str, kwargs["commit_id"]),
+                language=cast(str, kwargs["language"]),
+                database_root=database_root,
+                database_digest=digest_path(database_root),
+            )
+
+    async def execute(
+        self: CodeQLProcessAdapter,
+        *_args: object,
+        **_kwargs: object,
+    ) -> StaticToolObservation:
+        assert tuple(item.git_path for item in self.inputs.tracked_files) == ("app.py",)
+        now = time.monotonic_ns() // 1_000_000
+        return StaticToolObservation(
+            tool_name="CODEQL",
+            tool_version="2.0.0",
+            tool_kind="RULE_BASED",
+            status="SUCCEEDED",
+            raw_output=b"{}",
+            raw_media_type="application/sarif+json",
+            analyzed_paths=("app.py",),
+            skipped_paths=(),
+            analyzed_languages=("python",),
+            skipped_languages=(),
+            notes=(),
+            selected_rule_packs=("web",),
+            rules=(),
+            symbols=(),
+            facts=(),
+            relations=(),
+            gaps=(),
+            errors=(),
+            started_monotonic_ms=now,
+            finished_monotonic_ms=now,
+        )
+
+    monkeypatch.setattr(CodeQLProcessAdapter, "execute", execute)
+    quota = TestQuota(tmp_path / "quota", monkeypatch)
+    factory = ProductionStaticAdapterFactory(
+        executables={"CODEQL": executable},
+        python_ast_worker=executable,
+        python_ast_worker_sha256=_digest(executable),
+        output_quota=quota,
+        codeql_database_provider=cast(PrebuiltCodeQLDatabasePort, Provider()),
+        codeql_database_limit_bytes=4096,
+    )
+    context = StaticAdapterBuildContext(
+        data_dir=tmp_path,
+        workspace_locator=cast(WorkspaceLocatorPort, locator),
+        tracked_files_for=locator.tracked_files_for,
+        routes={
+            "CODEQL": StaticToolRoute(
+                profile_ref, manifest_ref, catalog_ref, closure.catalog_rule_ids
+            )
+        },
+        profiles={"CODEQL": profile},
+        evidence=evidence,
+        rule_closures={"CODEQL": closure},
+    )
+    adapter = factory(context)["CODEQL"]
+    base = _request(("app.py",))
+    action = base.action.model_copy(
+        update={"tool_name": "CODEQL", "file_paths": ("app.py",)}
+    )
+    request = replace(
+        base,
+        action=action,
+        tool_profile_ref=profile_ref,
+        analysis_config_ref=manifest_ref,
+        rule_catalog_ref=catalog_ref,
+    )
+    deadline = MonotonicActionDeadline(
+        action_id="ast-action",
+        started_ns=time.monotonic_ns(),
+        expires_ns=time.monotonic_ns() + 10_000_000_000,
+    )
+
+    observed = await adapter.execute(request, workspace_root, profile, deadline)
+
+    assert observed.status == "SUCCEEDED"
+    assert provider_calls[0]["language"] == "python"
+    assert len(cast(str, provider_calls[0]["tracked_manifest_sha256"])) == 64
+    assert len(quota.finalized) == 2
 
 
 @pytest.mark.asyncio

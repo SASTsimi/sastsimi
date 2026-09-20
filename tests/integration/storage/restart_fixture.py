@@ -18,7 +18,7 @@ from sastsimi.contracts.dynamic import (
 from sastsimi.contracts.hypothesis import HypothesisProcessState, VerificationAssignment
 from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
-from sastsimi.contracts.work import WorkAttempt, WorkExecutionState
+from sastsimi.contracts.work import StateTransition, WorkAttempt, WorkExecutionState
 from sastsimi.ports.dto import BudgetReservationRequest
 from sastsimi.storage import models
 from sastsimi.storage.codec import reference
@@ -85,6 +85,30 @@ def restart_fixture(
     h.publish(request)
 
     def running(name: str, kind: str, parent: Any = None) -> WorkExecutionState:
+        attempt_id = name + "-attempt"
+        transition = StateTransition.model_validate_json(
+            json.dumps(
+                dict(
+                    meta=metadata("state_transition", name + "-transition", code=True)
+                    | {"hypothesis_id": "h1", "attempt_id": attempt_id},
+                    transition_id=name + "-transition",
+                    work_id=name,
+                    action_decision_ref=ref("action_decision", True),
+                    from_status="READY",
+                    to_status="RUNNING",
+                    expected_state_version=1,
+                    new_state_version=2,
+                    attempt_id=attempt_id,
+                    cause="INITIAL",
+                    output_refs=[],
+                    gap_ids=[],
+                    error_ids=[],
+                    dedupe_key=content_hash(name + "-transition"),
+                    created_at="2026-09-07T00:00:00Z",
+                )
+            )
+        )
+        transition_ref = h.publish(transition)
         data = work(
             meta=metadata("work_execution_state", name, code=True)
             | {"hypothesis_id": "h1"},
@@ -95,8 +119,8 @@ def restart_fixture(
             parent_work_ref=parent,
             status="RUNNING",
             state_version=2,
-            last_transition_ref=ref("state_transition", True),
-            active_attempt_id=name + "-attempt",
+            last_transition_ref=transition_ref,
+            active_attempt_id=attempt_id,
             started_at="2026-09-07T00:00:00Z",
             input_refs=[reference(request).model_dump(mode="json")]
             if kind == "DYNAMIC_REPRO"

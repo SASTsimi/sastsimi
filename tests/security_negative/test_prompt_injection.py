@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.prompt_redaction import inspect_poc_candidate_json
 from sastsimi.prompts.loader import PromptLoader
 from sastsimi.prompts.redaction import redact_projected_json, render_provider_prompt
 
@@ -113,3 +114,41 @@ def test_database_credentials_private_keys_and_spaced_paths_never_survive() -> N
 def test_sensitive_trusted_template_is_rejected(template: bytes) -> None:
     with pytest.raises(ValueError, match="PROMPT_REDACTION_FAILED"):
         render_provider_prompt(template, ())
+
+
+def test_fixed_container_poc_path_is_not_treated_as_a_host_path() -> None:
+    rendered = render_provider_prompt(
+        b"Run /bin/sh /tmp/sastsimi-poc-candidate inside /workspace.", ()
+    )
+
+    assert b"/tmp/sastsimi-poc-candidate" in rendered
+    with pytest.raises(ValueError, match="PROMPT_REDACTION_FAILED"):
+        render_provider_prompt(b"Read /tmp/unapproved-host-file", ())
+
+
+def test_poc_candidate_allows_sandbox_paths_but_not_host_or_secret_values() -> None:
+    candidate = canonical_bytes(
+        {
+            "content": (
+                '#!/bin/sh\nwork="${TMPDIR:-/tmp}/poc"\n'
+                '/usr/bin/id\ncat /etc/passwd\necho "$work"'
+            )
+        }
+    )
+
+    assert inspect_poc_candidate_json(candidate).categories == ()
+    assert b"/tmp" in inspect_poc_candidate_json(candidate).data
+    assert b"/usr/bin/id" in inspect_poc_candidate_json(candidate).data
+    assert b"/etc/passwd" in inspect_poc_candidate_json(candidate).data
+
+    rejected_host = inspect_poc_candidate_json(
+        canonical_bytes({"content": "#!/bin/sh\ncat /home/operator/secret"})
+    )
+    assert rejected_host.categories == ("HOST_ABSOLUTE_PATH",)
+
+    rejected_secret = inspect_poc_candidate_json(
+        canonical_bytes({"content": "#!/bin/sh\ntoken=sk-secretvalue"})
+    )
+    assert rejected_secret.categories == ("TOKEN",)
+    assert b"sk-secretvalue" not in rejected_secret.data
+    assert b"[REDACTED:TOKEN]" in rejected_secret.data

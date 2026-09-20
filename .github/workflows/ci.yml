@@ -36,6 +36,7 @@ jobs:
         run: |
           $shardPaths = @(
             'tests/unit',
+            'tests/simple_runtime',
             'tests/contract',
             'tests/integration/static_analysis',
             'tests/integration/providers',
@@ -51,6 +52,7 @@ jobs:
             'tests/integration/storage',
             'tests/integration/recovery',
             'tests/integration/sandbox',
+            'tests/integration/dashboard',
             'tests/integration/test_cli.py',
             'tests/integration/cli',
             'tests/security_negative',
@@ -143,7 +145,7 @@ jobs:
         os: [ubuntu-24.04, windows-2022]
         shard:
           - name: unit
-            paths: tests/unit
+            paths: tests/unit tests/simple_runtime
             optional_paths: ''
           - name: contract
             paths: tests/contract
@@ -159,7 +161,7 @@ jobs:
             optional_paths: ''
           - name: integration-sandbox
             paths: tests/integration/sandbox tests/integration/test_cli.py
-            optional_paths: tests/integration/cli
+            optional_paths: tests/integration/cli tests/integration/dashboard
           - name: security-negative
             paths: tests/security_negative
             optional_paths: ''

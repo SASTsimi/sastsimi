@@ -109,14 +109,32 @@ class ConfigurationRegistryPort(Protocol):
     def register_provider_validation(
         self, record: ProviderValidationEvidence
     ) -> StoredDataRef: ...
+    def register_local_provider_validation(
+        self,
+        record: ProviderValidationEvidence,
+        *,
+        local_evidence_ref: StoredDataRef,
+    ) -> StoredDataRef: ...
     def derive_provider_capabilities(
         self, record: ProviderValidationEvidence
     ) -> ProviderCapabilities: ...
     def register_provider_profile(
         self, record: ProviderProfile, probe: CapabilityProbeResult
     ) -> StoredDataRef: ...
+    def register_local_provider_profile(
+        self,
+        record: ProviderProfile,
+        *,
+        local_evidence_ref: StoredDataRef,
+    ) -> StoredDataRef: ...
     def register_client_execution(
         self, record: ClientExecutionProfile
+    ) -> StoredDataRef: ...
+    def register_local_client_execution(
+        self,
+        record: ClientExecutionProfile,
+        *,
+        local_evidence_ref: StoredDataRef,
     ) -> StoredDataRef: ...
     def register_execution_limits(self, record: ExecutionLimits) -> StoredDataRef: ...
     def register_retry_policy(self, record: LLMRetryPolicy) -> StoredDataRef: ...

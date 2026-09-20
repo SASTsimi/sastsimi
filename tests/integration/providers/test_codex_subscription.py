@@ -1,4 +1,6 @@
 import asyncio
+import json
+import threading
 from dataclasses import dataclass
 
 import pytest
@@ -9,6 +11,7 @@ from sastsimi.contracts.llm import (
     ProviderValidationEvidence,
     ProviderValidationTest,
 )
+from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.ports.dto import CapabilityProbeResult
 from sastsimi.providers.base import (
     CodexProcessRequest,
@@ -26,9 +29,12 @@ from tests.integration.providers.test_openai_api import (
     ResultBuilder,
     SchemaPromptResolver,
     SessionStore,
+    output_schema_record,
+    prompt_payload_record,
     request,
     request_for_schema,
     resolved_prompt,
+    validated_output_ref,
 )
 
 
@@ -44,11 +50,72 @@ class FakeCodexProcessRunner:
         return self.result
 
 
+class SerialObservationRunner:
+    def __init__(self) -> None:
+        self.requests: list[CodexProcessRequest] = []
+        self.first_started = asyncio.Event()
+        self.release_first = asyncio.Event()
+        self.active = 0
+        self.max_active = 0
+
+    async def execute(self, value: CodexProcessRequest) -> CodexProcessResult:
+        self.requests.append(value)
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            if len(self.requests) == 1:
+                self.first_started.set()
+                await self.release_first.wait()
+            return CodexProcessResult(
+                status="SUCCEEDED",
+                final_message=b'{"decision":"accept"}',
+                provider_session_id=f"provider-{value.invocation_id}",
+            )
+        finally:
+            self.active -= 1
+
+
+class CrossThreadSerialObservationRunner:
+    def __init__(self) -> None:
+        self.requests: list[CodexProcessRequest] = []
+        self.first_started = threading.Event()
+        self.release_first = threading.Event()
+        self.guard = threading.Lock()
+        self.active = 0
+        self.max_active = 0
+
+    async def execute(self, value: CodexProcessRequest) -> CodexProcessResult:
+        with self.guard:
+            self.requests.append(value)
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            first = len(self.requests) == 1
+        try:
+            if first:
+                self.first_started.set()
+                await asyncio.to_thread(self.release_first.wait)
+            return CodexProcessResult(
+                status="SUCCEEDED",
+                final_message=b'{"decision":"accept"}',
+                provider_session_id=f"provider-{value.invocation_id}",
+            )
+        finally:
+            with self.guard:
+                self.active -= 1
+
+
 class PassingProbeRunner:
     async def run(
         self, candidate: ProviderValidationEvidence, _adapter: object
     ) -> CapabilityProbeResult:
         return CapabilityProbeResult(candidate)
+
+
+class PoCContentRepairValidator(OutputSchemaValidator):
+    def validate(self, raw: bytes, **_kwargs: object) -> object:
+        value = json.loads(raw)
+        assert value == {"decision": "contains-sensitive-placeholder"}
+        return {"decision": "accept"}
 
 
 def adapter(
@@ -69,6 +136,130 @@ def adapter(
         ),
         sessions,
     )
+
+
+@pytest.mark.asyncio
+async def test_subscription_processes_are_serialized_per_adapter() -> None:
+    first = request()
+    second = first.model_copy(update={"llm_call_id": "llm-call-serial-second"})
+    runner = SerialObservationRunner()
+    provider, _sessions = adapter(first, runner)
+
+    first_task = asyncio.create_task(provider.invoke(first))
+    await asyncio.wait_for(runner.first_started.wait(), timeout=1)
+    second_task = asyncio.create_task(provider.invoke(second))
+    await asyncio.sleep(0.05)
+
+    assert len(runner.requests) == 1
+    runner.release_first.set()
+    first_result, second_result = await asyncio.gather(first_task, second_task)
+
+    assert first_result.status == second_result.status == "SUCCEEDED"
+    assert len(runner.requests) == 2
+    assert runner.max_active == 1
+
+
+@pytest.mark.asyncio
+async def test_subscription_processes_are_serialized_across_adapters() -> None:
+    first = request()
+    second = first.model_copy(update={"llm_call_id": "llm-call-other-adapter"})
+    runner = SerialObservationRunner()
+    first_provider, _first_sessions = adapter(first, runner)
+    second_provider, _second_sessions = adapter(second, runner)
+
+    first_task = asyncio.create_task(first_provider.invoke(first))
+    await asyncio.wait_for(runner.first_started.wait(), timeout=1)
+    second_task = asyncio.create_task(second_provider.invoke(second))
+    await asyncio.sleep(0.05)
+
+    assert len(runner.requests) == 1
+    runner.release_first.set()
+    first_result, second_result = await asyncio.gather(first_task, second_task)
+
+    assert first_result.status == second_result.status == "SUCCEEDED"
+    assert len(runner.requests) == 2
+    assert runner.max_active == 1
+
+
+@pytest.mark.asyncio
+async def test_subscription_processes_are_serialized_across_worker_threads() -> None:
+    first = request()
+    second = first.model_copy(update={"llm_call_id": "llm-call-worker-thread"})
+    runner = CrossThreadSerialObservationRunner()
+    first_provider, _first_sessions = adapter(first, runner)
+    second_provider, _second_sessions = adapter(second, runner)
+
+    first_task = asyncio.create_task(
+        asyncio.to_thread(asyncio.run, first_provider.invoke(first))
+    )
+    assert await asyncio.to_thread(runner.first_started.wait, 1)
+    second_task = asyncio.create_task(
+        asyncio.to_thread(asyncio.run, second_provider.invoke(second))
+    )
+    await asyncio.sleep(0.05)
+
+    try:
+        assert len(runner.requests) == 1
+    finally:
+        runner.release_first.set()
+    first_result, second_result = await asyncio.gather(first_task, second_task)
+
+    assert first_result.status == second_result.status == "SUCCEEDED"
+    assert len(runner.requests) == 2
+    assert runner.max_active == 1
+
+
+@pytest.mark.asyncio
+async def test_poc_content_may_use_the_validator_redacted_field_value() -> None:
+    seed = request().model_copy(
+        update={
+            "agent_role": "DYNAMIC_REPRODUCTION",
+            "task_kind": "CREATE_POC_CANDIDATE",
+        }
+    )
+    schema_ref = reference(output_schema_record(seed))
+    payload_ref = reference(prompt_payload_record(seed))
+    assert isinstance(schema_ref, StoredDataRef)
+    assert isinstance(payload_ref, StoredDataRef)
+    invocation = seed.model_copy(
+        update={"output_schema_ref": schema_ref, "prompt_payload_ref": payload_ref}
+    )
+    runner = FakeCodexProcessRunner(
+        CodexProcessResult(
+            status="SUCCEEDED",
+            final_message=b'{"decision":"contains-sensitive-placeholder"}',
+            provider_session_id="provider-poc-repair",
+        )
+    )
+    provider, _sessions = adapter(invocation, runner)
+    provider.output_schema_validator = PoCContentRepairValidator()
+
+    result = await provider.invoke(invocation)
+
+    assert result.status == "SUCCEEDED"
+    assert result.parsed_output_ref == validated_output_ref(
+        invocation, {"decision": "accept"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_non_poc_output_cannot_be_rewritten_by_the_validator() -> None:
+    invocation = request()
+    runner = FakeCodexProcessRunner(
+        CodexProcessResult(
+            status="SUCCEEDED",
+            final_message=b'{"decision":"contains-sensitive-placeholder"}',
+            provider_session_id="provider-non-poc-repair",
+        )
+    )
+    provider, sessions = adapter(invocation, runner)
+    provider.output_schema_validator = PoCContentRepairValidator()
+
+    result = await provider.invoke(invocation)
+
+    assert result.status == "INVALID_OUTPUT"
+    assert result.parsed_output_ref is None
+    assert sessions.registered == []
 
 
 @pytest.mark.asyncio
@@ -328,3 +519,6 @@ async def test_codex_unwraps_array_transport_before_validation_and_storage() -> 
     expected = [{"decision": "accept"}, {"decision": "reject"}]
     assert result.status == "SUCCEEDED"
     assert validator.values == [expected]
+
+
+# mypy: disable-error-code="assignment,override"

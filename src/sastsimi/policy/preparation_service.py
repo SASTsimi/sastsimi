@@ -10,7 +10,7 @@ from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.ids import ErrorId
 from sastsimi.contracts.policy import RunPolicyState
 from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
-from sastsimi.contracts.work import WorkAttempt, WorkExecutionState
+from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import (
     OfficialPolicyFetchRequest,
     OfficialPolicySource,
@@ -73,11 +73,18 @@ class PolicyPreparationService:
         self._require_context(context)
         preparing = self._require_preparing(work)
         entry = self._catalog.resolve_policy_entry(preparing.program_id)
+        declared_source_refs = work.input_refs[1:]
         if (
             entry.source_config_ref != preparing.source_config_ref
             or entry.parser_name != preparing.parser_name
             or entry.parser_version != preparing.parser_version
-            or work.input_refs != (entry.source_config_ref,)
+            or not work.input_refs
+            or work.input_refs[0] != entry.source_config_ref
+            or len(declared_source_refs) > 1
+            or any(
+                ref.data_kind != "artifact" or ref.record_id is not None
+                for ref in declared_source_refs
+            )
         ):
             raise ValueError("POLICY_CATALOG_WORK_MISMATCH")
         run = self._runtime.budget_registry.current_state(str(work.meta.analysis_id))
@@ -126,6 +133,11 @@ class PolicyPreparationService:
                 run_started_at=run.started_at,
             )
             return self._complete(work, records, status="BLOCKED")
+
+        if declared_source_refs and declared_source_refs != (
+            official.source_check.source_ref,
+        ):
+            raise ValueError("POLICY_SOURCE_INPUT_MISMATCH")
 
         parser_outcome = await self._parser.parse(
             work=work,
@@ -254,16 +266,8 @@ class PolicyPreparationService:
     def _require_context(self, context: WorkContext) -> None:
         work, attempt = context.work, context.attempt
         current = self._runtime.work.get(str(work.work_id))
-        current_attempts = tuple(
-            value
-            for value in self._runtime.queries.published_records(
-                str(work.meta.analysis_id)
-            )
-            if isinstance(value, WorkAttempt)
-            and value.work_id == work.work_id
-            and value.attempt_id == work.active_attempt_id
-            and value.status == "RUNNING"
-        )
+        attempts = self._runtime.work.store.attempts_for_work(str(work.work_id))
+        latest_attempt = attempts[-1] if attempts else None
         if (
             current != work
             or work.status != "RUNNING"
@@ -273,7 +277,7 @@ class PolicyPreparationService:
             or attempt.work_id != work.work_id
             or attempt.attempt_id != work.active_attempt_id
             or attempt.input_hash != work.input_hash
-            or current_attempts != (attempt,)
+            or latest_attempt != attempt
         ):
             raise ValueError("POLICY_WORK_CONTEXT_MISMATCH")
 

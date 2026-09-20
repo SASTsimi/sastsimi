@@ -123,11 +123,18 @@ class SandboxHealthChecker:
         timeout_ms: int,
         requirement_id: str,
     ) -> EnvironmentCheck:
+        expected_versions = {
+            match.group(1)
+            for value in expected
+            for match in (_VERSION.search(value),)
+            if match is not None
+        }
         if (
             execute is None
             or timeout_ms <= 0
             or _SAFE_EXECUTABLE.fullmatch(name) is None
             or not expected
+            or not expected_versions
         ):
             return EnvironmentCheck(
                 requirement_id=requirement_id,
@@ -163,12 +170,6 @@ class SandboxHealthChecker:
             output = ""
         observed_match = _VERSION.search(output)
         observed = observed_match.group(1) if observed_match is not None else None
-        expected_versions = {
-            match.group(1)
-            for value in expected
-            for match in (_VERSION.search(value),)
-            if match is not None
-        }
         matched = observed is not None and any(
             observed == value or observed.startswith(value + ".")
             for value in expected_versions

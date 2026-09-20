@@ -61,6 +61,35 @@ uv run sastsimi --data-dir <data-dir> report show <finding_id>
 uv run sastsimi --data-dir <data-dir> report export <finding_id> --format markdown
 ```
 
+## WSL 실시간 분석 화면
+
+실제 LLM·OpenGrep·Docker E2E의 기준 환경은 **WSL2 Linux**입니다.
+Windows 터미널에서 대시보드 조회 기능은 실행할 수 있지만, Windows
+native 환경의 전체 분석 E2E는 지원 완료로 표시하지 않습니다.
+
+WSL 터미널 두 개를 열어 하나에서 대시보드를 실행하고, 다른
+터미널에서 분석을 시작하거나 재개합니다.
+
+```text
+# 터미널 1: 읽기 전용 대시보드
+uv run sastsimi --data-dir <data-dir> dashboard --host 127.0.0.1 --port 8765
+
+# 터미널 2: 실제 분석 또는 실패 단계 재개
+uv run sastsimi --data-dir <data-dir> analyze --repo <URL-or-local-path> --commit <exact-SHA> --profile <production-profile.toml> --format json
+uv run sastsimi --data-dir <data-dir> evaluate simple-resume <analysis_id> --profile <evaluation-profile.toml> --format json
+```
+
+Windows 브라우저에서 `http://localhost:8765`를 엽니다. 화면은 저장된
+현재 단계, 성공·실패·차단 상태, 가설별 진행, Agent의 근거·행동·
+판단 요약과 `F-001.md` 형태의 보고서 링크를 2초마다 새로 조회합니다.
+숨겨진 LLM 사고 원문, 전체 프롬프트, 민감한 코드, 세션·토큰과 호스트
+절대 경로는 표시하지 않습니다. 대시보드는 `GET`/`HEAD`만 허용하는
+읽기 전용 화면이며, 대시보드가 종료되어도 분석은 계속됩니다.
+
+새 Markdown 보고서는 `Summary`, `Details`, `PoC`, `Impact` 네 구역으로
+나오며, 검증된 PoC 코드·실행 명령·실행 결과와 두 Gate 판단을
+한국어로 확인할 수 있습니다.
+
 준비되지 않은 production 입력은 Fake로 대체하지 않고 `BLOCKED` 또는 오류로
 종료됩니다. 설치 확인용 Fake 시나리오는 별도 명령으로 실행합니다.
 

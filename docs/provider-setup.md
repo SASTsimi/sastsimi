@@ -50,6 +50,20 @@ codex login status
 - repository, shell, web, MCP, hook, plugin과 ambient secret을 사용하지 않는 no-tools 경계
 - PVD-01~PVD-15와 필요한 경우 PVD-16
 - 정확한 model identity, 구조화 출력, 새 독립 session, timeout·취소·사용량 기록
+
+Codex CLI의 JSON event stream은 현재 provider가 실제 사용한 model identity를 별도
+필드로 보고하지 않습니다. 따라서 이 제한을 숨긴 채 `PVD-02`를 통과시키지 않습니다.
+`PVD-02=PASS`는 같은 실행에서 승인된 공식 CLI 실행 파일의 exact SHA-256을 다시
+확인하고, 요청 model이 명시적인 `--model` 인자로 들어갔으며, 잘못된 model의 negative
+control이 거절되고, 요청 model로 엄격한 structured output 호출이 성공한 경우에만
+허용합니다. 근거에는 `provider_model_reported=false`와 이 제한 설명을 함께 남깁니다.
+이 조건은 provider가 model을 응답으로 확인해 주었다는 뜻이 아니라, 현재 공식 client
+경계에서 검증 가능한 가장 좁은 binding임을 뜻합니다. 이 제한을 수용할지는 사람의
+Provider 승인 단계에서 별도로 판단해야 합니다.
+
+`PVD-15`는 호출 성공으로 자동 통과하지 않습니다. 검토자가 현재 공식 약관 URL,
+계정 범위와 내부 분석 목적을 직접 확인하고 명시적으로 승인한 입력이 있어야만 PASS
+근거를 만들 수 있습니다.
 - R8 평가와 사람의 production 승인
 
 ## 4. onboarding 명령의 역할
@@ -77,15 +91,19 @@ uv run sastsimi --data-dir <data-dir> onboarding requirements --profile <product
 - R8 평가 결과와 `ACCEPT_FOR_PRODUCTION` 추천
 - 각 route의 정확한 Prompt template hash와 사람 승인
 - 공식 정책 원문의 안전한 artifact와 SHA-256
-- 위 값을 묶은 secret 없는 `ProductionOnboardingManifest` JSON
+- 위 승인값을 담은 secret 없는 `approval-input.json`
+- 이미 승인된 capability probe ID와 일곱 provisioning slot template
 
-현재 CLI에는 이 근거를 자동으로 만들어 승인하는 명령이 없습니다. 값을 추측해 manifest를 작성하거나 다른 실행의 근거를 재사용하면 안 됩니다. 필드 의미와 안전한 작성 순서는 [운영 onboarding manifest와 근거 작성 안내](./onboarding-evidence.md)를 따릅니다.
+CLI는 이 근거를 자동으로 PASS 또는 승인하지 않습니다. `onboarding compose`는 이미 승인된 probe·PVD·R8·Prompt·사람 결정을 정확한 hash로 묶을 뿐입니다. 값을 추측하거나 다른 실행의 근거를 재사용하면 안 됩니다. 필드 의미와 안전한 작성 순서는 [운영 onboarding manifest와 근거 작성 안내](./onboarding-evidence.md)를 따릅니다.
 
-준비한 manifest와 그 안에서 참조하는 모든 근거 파일을 가져옵니다. `--evidence`는 필요한 파일 수만큼 반복합니다.
+준비한 승인 입력, 일곱 slot template과 그 안에서 참조하는 모든 근거를 원자적 bundle로 조립합니다. `--slot-template`과 `--evidence`는 필요한 파일 수만큼 반복합니다.
 
 ```text
-uv run sastsimi --data-dir <data-dir> onboarding prepare --profile <production-profile.toml> --manifest <approval-manifest.json> --evidence <evidence-1.json> --evidence <evidence-2.json> --format json
+uv run sastsimi --data-dir <data-dir> onboarding compose --profile <production-profile.toml> --approval-input <approval-input.json> --slot-template <slot-1.json> --slot-template <slot-2.json> --evidence <approved-evidence-1> --evidence <approved-evidence-2> --output-dir <onboarding-bundle-dir> --format json
+uv run sastsimi --data-dir <data-dir> onboarding prepare --profile <production-profile.toml> --bundle-dir <onboarding-bundle-dir> --format json
 ```
+
+조립 중 누락·hash 불일치·승인되지 않은 probe·민감정보가 발견되면 bundle을 일부만 남기지 않고 실패합니다. 이미 완성된 manifest를 직접 가져오는 기존 `prepare --manifest ... --evidence ...` 경로도 유지됩니다.
 
 마지막으로 현재 시각에도 모든 승인이 유효한지 다시 확인합니다.
 

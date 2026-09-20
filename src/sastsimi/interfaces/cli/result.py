@@ -65,6 +65,8 @@ def project(
             error_codes=[item.code for item in result.errors],
             gap_codes=[item.code for item in result.gaps],
         )
+    if result.purpose == "LOCAL_EVALUATION":
+        base.update(purpose="LOCAL_EVALUATION", production_ready=False)
     return base
 
 

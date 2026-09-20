@@ -21,6 +21,7 @@ from sastsimi.contracts.llm import (
 )
 from sastsimi.contracts.prompt_redaction import (
     assert_safe_provider_text,
+    inspect_poc_candidate_json,
     redact_projected_json,
     render_provider_prompt,
 )
@@ -227,10 +228,19 @@ class StoredOutputValidator(OutputSchemaValidator):
             )
             if semantic_validator is None:
                 raise ProviderInvalidOutputError
-            if redact_projected_json(raw).categories:
+            poc_candidate = (
+                request.agent_role,
+                request.task_kind,
+            ) == ("DYNAMIC_REPRODUCTION", "CREATE_POC_CANDIDATE")
+            inspected = (
+                inspect_poc_candidate_json(raw)
+                if poc_candidate
+                else redact_projected_json(raw)
+            )
+            if inspected.categories and not poc_candidate:
                 raise ProviderInvalidOutputError
             validated = self._validate_structured_output(
-                raw,
+                inspected.data,
                 json_schema=cast(Mapping[str, object], schema),
                 result_kind=output_schema.result_kind,
                 agent_role=request.agent_role,

@@ -12,6 +12,7 @@ from typing import Protocol, cast
 from uuid import uuid4
 
 from sastsimi.composition.runtime import build_runtime
+from sastsimi.config.codeql_container import CodeQLContainerRuntimeConfig
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.config.secrets import SecretReference
 from sastsimi.contracts.capabilities import (
@@ -19,9 +20,13 @@ from sastsimi.contracts.capabilities import (
     CapabilityOperatingSystem,
 )
 from sastsimi.contracts.ids import CommitId, OpaqueId, WorkspaceId
-from sastsimi.contracts.refs import HostConfigurationRef
+from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
 from sastsimi.ports.dynamic_sandbox import TrustedDockerTarget
-from sastsimi.ports.static_tool import ProductionStaticOutputQuotaPort
+from sastsimi.ports.static_tool import (
+    PrebuiltCodeQLDatabasePort,
+    ProductionStaticOutputQuotaPort,
+)
+from sastsimi.ports.trusted_evidence import TrustedEvidencePort
 from sastsimi.runtime.system_support import SystemClock
 from sastsimi.storage.database import Database
 from sastsimi.storage.migrations import upgrade
@@ -101,15 +106,19 @@ class ProductionCapabilityProbeService:
         executable_paths: Mapping[str, Path],
         docker_host: str | None,
         static_output_quota: ProductionStaticOutputQuotaPort | None = None,
+        codeql_database_provider: PrebuiltCodeQLDatabasePort | None = None,
         codeql_database_limit_bytes: int | None = None,
+        codeql_container_config: CodeQLContainerRuntimeConfig | None = None,
     ) -> None:
-        self.__engine = _build_production_engine(
+        self.__engine, self.__evidence = _build_production_engine(
             data_dir,
             host_id=host_id,
             executable_paths=executable_paths,
             docker_host=docker_host,
             static_output_quota=static_output_quota,
+            codeql_database_provider=codeql_database_provider,
             codeql_database_limit_bytes=codeql_database_limit_bytes,
+            codeql_container_config=codeql_container_config,
         )
 
     def probe(
@@ -145,6 +154,23 @@ class ProductionCapabilityProbeService:
     def require_current(self, target: TrustedDockerTarget) -> None:
         self.__engine.require_current(target)
 
+    def require_approved_current(
+        self,
+        probe_id: str,
+        expected_ref: HostConfigurationRef,
+    ) -> HostConfigurationRef:
+        return self.__engine.require_approved_current(probe_id, expected_ref)
+
+    def trusted_evidence(self) -> TrustedEvidencePort:
+        """Return the read-only authority for this exact durable probe store."""
+
+        return self.__evidence
+
+    def evidence_refs(self) -> tuple[StoredDataRef, ...]:
+        """Return capability evidence roots that other runtimes must not quarantine."""
+
+        return self.__engine.evidence_refs()
+
 
 def _host_platform() -> tuple[CapabilityOperatingSystem, CapabilityArchitecture]:
     operating_system = {
@@ -172,8 +198,10 @@ def _build_production_engine(
     executable_paths: Mapping[str, Path],
     docker_host: str | None,
     static_output_quota: ProductionStaticOutputQuotaPort | None = None,
+    codeql_database_provider: PrebuiltCodeQLDatabasePort | None = None,
     codeql_database_limit_bytes: int | None = None,
-) -> _CapabilityProbeEngine:
+    codeql_container_config: CodeQLContainerRuntimeConfig | None = None,
+) -> tuple[_CapabilityProbeEngine, TrustedEvidencePort]:
     if not host_id.strip():
         raise ValueError("CAPABILITY_HOST_REQUIRED")
     paths = RuntimePaths(data_dir)
@@ -191,12 +219,25 @@ def _build_production_engine(
         _UuidIds(),
         evidence=authority,
         capability_host_id=host_id,
+        protected_artifact_refs=store.evidence_refs,
+        recover_expired_leases=False,
     )
     operating_system, architecture = _host_platform()
     allowed_executables = frozenset({"git", "opengrep", "docker", "codeql"})
     if not set(executable_paths) <= allowed_executables:
         raise ValueError("CAPABILITY_EXECUTABLE_KEY_UNSUPPORTED")
-    if ("docker" in executable_paths) != (docker_host is not None):
+    effective_docker_host = docker_host
+    if (
+        codeql_container_config is not None
+        and "docker" in executable_paths
+        and effective_docker_host is None
+    ):
+        effective_docker_host = (
+            "npipe:////./pipe/docker_engine"
+            if os.name == "nt"
+            else "unix:///var/run/docker.sock"
+        )
+    if ("docker" in executable_paths) != (effective_docker_host is not None):
         raise ValueError("DOCKER_HOST_CONFIGURATION_MISMATCH")
     executable_registry = ProductionExecutableRegistry(
         {"python": Path(sys.executable), **dict(executable_paths)},
@@ -218,12 +259,12 @@ def _build_production_engine(
     docker_boundary_probe = ProductionDockerBuildBoundaryProbe(
         operating_system=operating_system,
         docker_executable=executable_registry.resolve("docker"),
-        docker_host=docker_host,
+        docker_host=effective_docker_host,
         command_runner=command_runner,
         data_root_inspector=inspect_local_docker_data_root,
         effective_user_id=effective_user_id,
     )
-    return _CapabilityProbeEngine(
+    engine = _CapabilityProbeEngine(
         registry=runtime.configuration,
         artifacts=runtime.unit_of_work.artifacts,
         store=store,
@@ -233,15 +274,18 @@ def _build_production_engine(
         clock=clock.now,
         executable_locator=executable_registry.resolve,
         command_runner=command_runner,
-        docker_host=docker_host,
+        docker_host=effective_docker_host,
         approval_identity=_NativeApprovalIdentity(),
         secret_resolver=EnvironmentSecretLookup(),
         openai_probe=OpenAIResponsesProbe(),
         scratch_root=data_dir / "probe-scratch",
         docker_build_capability_probe=docker_boundary_probe,
         static_output_quota=static_output_quota,
+        codeql_database_provider=codeql_database_provider,
         codeql_database_limit_bytes=codeql_database_limit_bytes,
+        codeql_container_config=codeql_container_config,
     )
+    return engine, authority
 
 
 def build_production_capability_probe_service(
@@ -251,7 +295,9 @@ def build_production_capability_probe_service(
     executable_paths: Mapping[str, Path],
     docker_host: str | None,
     static_output_quota: ProductionStaticOutputQuotaPort | None = None,
+    codeql_database_provider: PrebuiltCodeQLDatabasePort | None = None,
     codeql_database_limit_bytes: int | None = None,
+    codeql_container_config: CodeQLContainerRuntimeConfig | None = None,
 ) -> ProductionCapabilityProbeService:
     """Build the production API; unconfigured CodeQL remains non-activatable."""
 
@@ -261,7 +307,9 @@ def build_production_capability_probe_service(
         executable_paths=executable_paths,
         docker_host=docker_host,
         static_output_quota=static_output_quota,
+        codeql_database_provider=codeql_database_provider,
         codeql_database_limit_bytes=codeql_database_limit_bytes,
+        codeql_container_config=codeql_container_config,
     )
 
 

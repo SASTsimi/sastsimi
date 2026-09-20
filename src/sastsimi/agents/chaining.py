@@ -7,6 +7,7 @@ from typing import BinaryIO, Literal, Protocol
 
 from pydantic import ValidationError
 
+from sastsimi.chaining.service import chaining_prompt_input_bytes
 from sastsimi.contracts.actions import (
     ActionDecision,
     ActionRequest,
@@ -15,6 +16,8 @@ from sastsimi.contracts.actions import (
 )
 from sastsimi.contracts.base import ContractModel, NonEmptyStr
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.llm import LLMCallSpec
+from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
 from sastsimi.contracts.work import (
     AttemptStatus,
@@ -119,14 +122,20 @@ class ChainingAgent:
     ) -> ChainingAgentOutcome:
         self._require_context(context)
         requester = self._requester(decision_ref, context)
+        spec = self._records.get_exact(call_spec_ref)
+        if not isinstance(spec, LLMCallSpec) or reference(spec) != call_spec_ref:
+            raise ValueError("CHAINING_PROMPT_CONTENT_MISMATCH")
+        required_context = _validated_chaining_context(
+            spec=spec,
+            context=context,
+            content=content,
+            artifacts=self._artifacts,
+        )
         invocation = await self._llm_calls.invoke(
             work=context.work,
             decision_ref=decision_ref,
             reservation_ref=reservation_ref,
             call_spec_ref=call_spec_ref,
-        )
-        required_context = tuple(
-            ref for ref in context.work.input_refs if isinstance(ref, StoredDataRef)
         )
         self._validate_provenance(
             records=self._records,
@@ -197,6 +206,46 @@ class ChainingAgent:
             or attempt.input_hash != work.input_hash
         ):
             raise ValueError("CHAINING_WORK_CONTEXT_MISMATCH")
+
+
+def _validated_chaining_context(
+    *,
+    spec: LLMCallSpec,
+    context: WorkContext,
+    content: ChainingAgentInput,
+    artifacts: ArtifactReader,
+) -> tuple[StoredDataRef, ...]:
+    work = context.work
+    stored_inputs = tuple(
+        ref for ref in work.input_refs if isinstance(ref, StoredDataRef)
+    )
+    if (
+        len(stored_inputs) != len(work.input_refs)
+        or spec.agent_role != "CHAINING"
+        or spec.task_kind != "MATCH_PRIMITIVES"
+        or len(spec.context_refs) != len(stored_inputs) + 1
+        or tuple(spec.context_refs[:-1]) != stored_inputs
+    ):
+        raise ValueError("CHAINING_PROMPT_CONTENT_MISMATCH")
+    prepared_ref = spec.context_refs[-1]
+    if (
+        not isinstance(prepared_ref, StoredDataRef)
+        or prepared_ref.data_kind != "artifact"
+        or prepared_ref.record_id is not None
+        or str(prepared_ref.stored_data_id) != prepared_ref.content_hash
+        or not isinstance(work.meta, RecordMeta)
+        or (prepared_ref.workspace_id, prepared_ref.commit_id)
+        != (work.meta.workspace_id, work.meta.commit_id)
+    ):
+        raise ValueError("CHAINING_PROMPT_CONTENT_MISMATCH")
+    try:
+        with artifacts.open_verified(prepared_ref) as stream:
+            raw = stream.read()
+    except (KeyError, LookupError, OSError, ValueError) as error:
+        raise ValueError("CHAINING_PROMPT_CONTENT_MISMATCH") from error
+    if raw != chaining_prompt_input_bytes(work, content):
+        raise ValueError("CHAINING_PROMPT_CONTENT_MISMATCH")
+    return tuple(spec.context_refs)
 
 
 def parse_chaining_output(

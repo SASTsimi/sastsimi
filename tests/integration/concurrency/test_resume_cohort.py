@@ -17,6 +17,7 @@ from sastsimi.storage import models
 from sastsimi.storage.records import next_meta
 from sastsimi.storage.run_control import RunControlStore
 from sastsimi.storage.run_states import save_run
+from sastsimi.storage.work_dispatch import _resume_reason_is_resolvable
 from tests.integration.concurrency.test_atomic_dispatch import (
     _block_for_resume,
     _dispatch,
@@ -25,6 +26,34 @@ from tests.integration.concurrency.test_atomic_dispatch import (
     _start_attempt_rows,
 )
 from tests.integration.runtime_support import NOW
+
+
+def test_local_dynamic_provider_input_failure_is_resumable() -> None:
+    work = type(
+        "BlockedWork",
+        (),
+        {
+            "work_type": "DYNAMIC_REPRO",
+            "stop_reason": "WORK_HANDLER_FAILED",
+            "waiting_for": ("INPUT",),
+        },
+    )()
+
+    assert _resume_reason_is_resolvable("LOCAL_EVALUATION", work)
+
+
+def test_production_dynamic_provider_input_failure_stays_blocked() -> None:
+    work = type(
+        "BlockedWork",
+        (),
+        {
+            "work_type": "DYNAMIC_REPRO",
+            "stop_reason": "WORK_HANDLER_FAILED",
+            "waiting_for": ("INPUT",),
+        },
+    )()
+
+    assert not _resume_reason_is_resolvable("PRODUCTION", work)
 
 
 @pytest.mark.parametrize(
@@ -388,3 +417,6 @@ def test_cancellation_committed_before_resume_admission_wins(
         with pytest.raises(ValueError, match="RUN_CANCELLED"):
             future.result(timeout=5)
     assert runtime.work.get(str(blocked.work_id)) == blocked
+
+
+# mypy: disable-error-code="arg-type"

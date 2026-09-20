@@ -8,6 +8,7 @@ No Fake adapter, fallback handler, or guessed capability is accepted.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,7 +18,12 @@ from sastsimi.agents.cwe_labeling import CWECallRefs
 from sastsimi.agents.policy_parser import PolicyParserAgent
 from sastsimi.agents.reporter import ReporterCallRefs
 from sastsimi.agents.rule_scope_gate import RuleScopeCallRefs
-from sastsimi.chaining.service import ChainingCallRefs, ChainingCallResolver
+from sastsimi.chaining.service import (
+    ChainingCallRefs,
+    ChainingCallResolver,
+    chaining_input_hash,
+    chaining_prompt_input_bytes,
+)
 from sastsimi.composition.production_cancellation import (
     AttemptCancellationPort,
     SandboxCancellationDockerPort,
@@ -31,7 +37,8 @@ from sastsimi.composition.runtime import (
 )
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
-from sastsimi.contracts.canonical_json import content_hash
+from sastsimi.contracts.budget import Purpose
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.dynamic import DependencyBundle, DynamicReproductionRequest
 from sastsimi.contracts.hypothesis import HypothesisProcessState
 from sastsimi.contracts.ids import WorkId
@@ -44,7 +51,11 @@ from sastsimi.contracts.refs import (
     StoredDataRef,
     reference,
 )
-from sastsimi.contracts.static import CodeWorkspace, RepositoryProfile
+from sastsimi.contracts.static import (
+    CodeWorkspace,
+    ContextRetrievalLimits,
+    RepositoryProfile,
+)
 from sastsimi.contracts.work import SubjectType, WorkExecutionState, WorkType
 from sastsimi.orchestration.production_context import (
     InstalledProductionServices,
@@ -65,6 +76,7 @@ from sastsimi.policy.collector import PolicyCollector
 from sastsimi.policy.preparation_service import PolicyPreparationService
 from sastsimi.policy.program_catalog import ProgramCatalog
 from sastsimi.policy.work_handler import PolicyWorkHandler
+from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.authorized_llm_call import AuthorizedLLMCall
 from sastsimi.ports.chaining import ChainingAgentInput
 from sastsimi.ports.dto import WorkContext, WorkHandlerResult
@@ -123,6 +135,14 @@ class PolicyProductionFeature:
 
 
 @dataclass(frozen=True, slots=True)
+class LocalPolicyFeature:
+    """Run-scoped policy state for LOCAL_EVALUATION without official-policy claims."""
+
+    handler: WorkHandler
+    seeder: PostWorkspaceSeederPort
+
+
+@dataclass(frozen=True, slots=True)
 class OfficialPolicyPostWorkspaceSeeder:
     """Register the exact ProgramCatalog policy work after workspace commit."""
 
@@ -169,6 +189,28 @@ class DynamicProductionFeature:
     docker_target_resolver: TrustedDockerTargetResolverPort
     docker: SandboxCancellationDockerPort
     dependency_bundle: DependencyBundle | None = None
+    allow_repository_build_network: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class LocalUnavailableDynamicFeature:
+    """Explicit local boundary when no approved dedicated Docker target exists."""
+
+    sandbox_profile: Callable[[WorkExecutionState], StoredDataRef]
+    reason_code: str
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(r"[A-Z0-9_]{1,96}", self.reason_code) is None:
+            raise ValueError("LOCAL_DYNAMIC_REASON_INVALID")
+
+
+@dataclass(frozen=True, slots=True)
+class _UnavailableDynamicWorkHandler:
+    reason_code: str
+
+    async def execute(self, context: WorkContext) -> WorkHandlerResult:
+        del context
+        raise RuntimeError(self.reason_code)
 
 
 type T11Builder = Callable[[RepositoryProfile, Path], T11Services]
@@ -227,8 +269,8 @@ class CurrentRepositoryProfileT11Resolver:
 @dataclass(frozen=True, slots=True)
 class ProductionFeatureInputs:
     t08: T08ProductionFeature
-    policy: PolicyProductionFeature
-    dynamic: DynamicProductionFeature
+    policy: PolicyProductionFeature | LocalPolicyFeature
+    dynamic: DynamicProductionFeature | LocalUnavailableDynamicFeature
     calls: ProductionCallPort
     verification_policy_ref: StoredDataRef
     verification_playbook_ref: StoredDataRef
@@ -306,8 +348,9 @@ class SubjectDispatchWorkHandler:
 
 
 class _CallAdapters:
-    def __init__(self, calls: ProductionCallPort) -> None:
+    def __init__(self, calls: ProductionCallPort, artifacts: ArtifactStore) -> None:
         self.calls = calls
+        self.artifacts = artifacts
 
     def cwe(self, context: WorkContext) -> GateCallRefs:
         call = self._resolve(context, "CWE_LABELING", "CLASSIFY_CWE")
@@ -332,14 +375,26 @@ class _CallAdapters:
     def chaining(
         self, context: WorkContext, value: ChainingAgentInput
     ) -> tuple[ChainingCallRefs, str]:
-        refs = _stored_inputs(context.work)
+        work = context.work
+        if not isinstance(work.meta, RecordMeta) or work.active_attempt_id is None:
+            raise ValueError("CHAINING_PROMPT_SCOPE_MISMATCH")
+        raw = chaining_prompt_input_bytes(work, value)
+        prepared_input_ref = self.artifacts.commit(
+            self.artifacts.stage_bytes(raw, "application/json")
+        )
+        if (
+            prepared_input_ref.workspace_id != work.meta.workspace_id
+            or prepared_input_ref.commit_id != work.meta.commit_id
+        ):
+            raise ValueError("CHAINING_PROMPT_SCOPE_MISMATCH")
+        refs = (*_stored_inputs(work), prepared_input_ref)
         call = self.calls.resolve(
-            work=context.work,
+            work=work,
             role="CHAINING",
             task_kind="MATCH_PRIMITIVES",
             source_refs=refs,
         )
-        return cast(ChainingCallRefs, call), content_hash(value)
+        return cast(ChainingCallRefs, call), chaining_input_hash(value)
 
     def _resolve(
         self, context: WorkContext, role: LLMRole, task: str
@@ -430,7 +485,7 @@ class ProductionFeatureInstaller:
         self._require_inputs(context)
         runtime, runner = context.runtime, context.runner
         records = runtime.unit_of_work.records
-        calls = _CallAdapters(self.inputs.calls)
+        calls = _CallAdapters(self.inputs.calls, runtime.unit_of_work.artifacts)
         t10 = build_t10_services(
             runtime=runtime,
             runner=runner,
@@ -508,40 +563,74 @@ class ProductionFeatureInstaller:
             runner=runner,
             verification_identity_ref=verification_identity,
         )
+        context_limits = ContextRetrievalLimits(
+            max_depth=5,
+            max_fragments=32,
+            max_bytes=262_144,
+            max_requests_per_hypothesis=24,
+            timeout_ms=45_000,
+        )
+        context_ceiling_raw = canonical_bytes(
+            {
+                "kind": "context_ceiling_profile",
+                "schema_version": "1.0",
+                **context_limits.model_dump(),
+            }
+        )
 
-        def build_t11(profile: RepositoryProfile, root: Path) -> T11Services:
-            return build_t11_services(
-                runtime=runtime,
-                runner=runner,
-                clock=context.clock,
-                ids=context.ids,
-                workspace_root=root,
-                workspace_id=context.scope.workspace_id,
-                commit_id=context.scope.commit_id,
-                role_identity_refs=context.role_identity_refs,
-                sandbox_authorization=self.inputs.dynamic.sandbox_authorization,
-                dynamic_calls=self.inputs.calls,
-                max_execute_turns=self.inputs.dynamic.max_execute_turns,
-                verification=t10.verification,
-                repository_profile=profile,
-                resource_journal_path=self.inputs.dynamic.resource_journal_path,
-                docker_profile_ref=self.inputs.dynamic.docker_profile_ref,
-                docker_target_resolver=self.inputs.dynamic.docker_target_resolver,
-                dependency_bundle=self.inputs.dynamic.dependency_bundle,
+        def context_ceiling() -> StoredDataRef:
+            """Persist the ceiling immediately before its owning work starts."""
+
+            return runtime.unit_of_work.artifacts.commit(
+                runtime.unit_of_work.artifacts.stage_bytes(
+                    context_ceiling_raw,
+                    "application/json",
+                )
             )
 
-        dynamic_services = CurrentRepositoryProfileT11Resolver(
-            records=records,
-            queries=runtime.queries,
-            workspace_for=workspace_for,
-            workspace_locator=self.inputs.t08.workspace_locator,
-            build=build_t11,
-        )
-        dynamic_handler = DynamicReproductionWorkHandler(
-            records=records,
-            services_for=dynamic_services,
-            parent_resume=parent_resume,
-        )
+        dynamic = self.inputs.dynamic
+        if isinstance(dynamic, LocalUnavailableDynamicFeature):
+            dynamic_handler: WorkHandler = _UnavailableDynamicWorkHandler(
+                dynamic.reason_code
+            )
+        else:
+
+            def build_t11(profile: RepositoryProfile, root: Path) -> T11Services:
+                return build_t11_services(
+                    runtime=runtime,
+                    runner=runner,
+                    clock=context.clock,
+                    ids=context.ids,
+                    workspace_root=root,
+                    workspace_id=context.scope.workspace_id,
+                    commit_id=context.scope.commit_id,
+                    role_identity_refs=context.role_identity_refs,
+                    sandbox_authorization=dynamic.sandbox_authorization,
+                    dynamic_calls=self.inputs.calls,
+                    max_execute_turns=dynamic.max_execute_turns,
+                    verification=t10.verification,
+                    repository_profile=profile,
+                    resource_journal_path=dynamic.resource_journal_path,
+                    docker_profile_ref=dynamic.docker_profile_ref,
+                    docker_target_resolver=dynamic.docker_target_resolver,
+                    dependency_bundle=dynamic.dependency_bundle,
+                    allow_repository_build_network=(
+                        dynamic.allow_repository_build_network
+                    ),
+                )
+
+            dynamic_services = CurrentRepositoryProfileT11Resolver(
+                records=records,
+                queries=runtime.queries,
+                workspace_for=workspace_for,
+                workspace_locator=self.inputs.t08.workspace_locator,
+                build=build_t11,
+            )
+            dynamic_handler = DynamicReproductionWorkHandler(
+                records=records,
+                services_for=dynamic_services,
+                parent_resume=parent_resume,
+            )
         dynamic_handoff = ProductionDynamicVerificationHandoff(
             records=records,
             queries=runtime.queries,
@@ -552,7 +641,9 @@ class ProductionFeatureInstaller:
             dynamic_registration=runtime.dynamic_registration,
             verification_identity_ref=verification_identity,
             budget_scope=budget_scope,
-            sandbox_profile=self.inputs.dynamic.sandbox_profile,
+            sandbox_profile=dynamic.sandbox_profile,
+            context_retrieval=self.inputs.t08.context_retrieval,
+            context_ceiling=context_ceiling,
         )
 
         verification = VerificationWorkHandler(
@@ -650,7 +741,7 @@ class ProductionFeatureInstaller:
             handlers=tuple(handlers.items()),
             seeder=CombinedPostWorkspaceSeeder(
                 self.inputs.t08.seeder,
-                OfficialPolicyPostWorkspaceSeeder(context, self.inputs.policy.catalog),
+                self._policy_seeder(context),
                 parent_resume.reconcile_pending,
             ),
             readiness=ExactProductionReadiness(
@@ -667,30 +758,14 @@ class ProductionFeatureInstaller:
             self.inputs.verification_policy_ref,
             self.inputs.verification_playbook_ref,
         )
-        if (
-            not self.inputs.taxonomy_version.strip()
-            or any(
-                (ref.workspace_id, ref.commit_id)
-                != (context.scope.workspace_id, context.scope.commit_id)
-                for ref in refs
-            )
-            or not isinstance(self.inputs.policy.source, OfficialHttpPolicySource)
-            or not isinstance(self.inputs.policy.handler, PolicyWorkHandler)
-            or getattr(
-                getattr(self.inputs.policy.handler, "_service", None),
-                "_source",
-                None,
-            )
-            is not self.inputs.policy.source
-            or getattr(
-                getattr(self.inputs.policy.handler, "_service", None),
-                "_catalog",
-                None,
-            )
-            is not self.inputs.policy.catalog
+        if not self.inputs.taxonomy_version.strip() or any(
+            (ref.workspace_id, ref.commit_id)
+            != (context.scope.workspace_id, context.scope.commit_id)
+            for ref in refs
         ):
             raise ProductionCapabilityUnavailable("PRODUCTION_FEATURE_INPUT_NOT_EXACT")
-        for component in (
+        _require_policy_feature(context, self.inputs.policy)
+        components: tuple[object, ...] = (
             self.inputs.t08.workspace_prep,
             self.inputs.t08.repository_profile,
             self.inputs.t08.static_tool,
@@ -698,17 +773,34 @@ class ProductionFeatureInstaller:
             self.inputs.t08.context_retrieval,
             self.inputs.t08.seeder,
             self.inputs.t08.workspace_locator,
-            self.inputs.dynamic.sandbox_authorization,
-            self.inputs.dynamic.sandbox_profile,
-            self.inputs.dynamic.docker_target_resolver,
-            self.inputs.dynamic.docker,
             self.inputs.calls,
             self.inputs.external_cancellation,
-        ):
+        )
+        if isinstance(self.inputs.dynamic, DynamicProductionFeature):
+            components = (
+                *components,
+                self.inputs.dynamic.sandbox_authorization,
+                self.inputs.dynamic.sandbox_profile,
+                self.inputs.dynamic.docker_target_resolver,
+                self.inputs.dynamic.docker,
+            )
+        elif context.request.purpose != Purpose.LOCAL_EVALUATION:
+            raise ProductionCapabilityUnavailable("LOCAL_DYNAMIC_FEATURE_INVALID")
+        for component in components:
             if "fake" in type(component).__module__.casefold():
                 raise ProductionCapabilityUnavailable("FAKE_PRODUCTION_COMPONENT")
-        if not self.inputs.dynamic.resource_journal_path.is_absolute():
+        if isinstance(self.inputs.dynamic, DynamicProductionFeature) and not (
+            self.inputs.dynamic.resource_journal_path.is_absolute()
+        ):
             raise ProductionCapabilityUnavailable("PRODUCTION_DYNAMIC_CONFIG_INVALID")
+
+    def _policy_seeder(
+        self, context: ProductionInstallationContext
+    ) -> PostWorkspaceSeederPort:
+        policy = self.inputs.policy
+        if isinstance(policy, LocalPolicyFeature):
+            return policy.seeder
+        return OfficialPolicyPostWorkspaceSeeder(context, policy.catalog)
 
 
 def _stored_identity(
@@ -718,6 +810,32 @@ def _stored_identity(
     if not isinstance(value, StoredDataRef):
         raise ProductionCapabilityUnavailable(f"{role.value}_IDENTITY_REQUIRED")
     return value
+
+
+def _require_policy_feature(
+    context: ProductionInstallationContext,
+    policy: PolicyProductionFeature | LocalPolicyFeature,
+) -> None:
+    if isinstance(policy, PolicyProductionFeature):
+        if (
+            context.request.purpose != Purpose.PRODUCTION
+            or not isinstance(policy.source, OfficialHttpPolicySource)
+            or not isinstance(policy.handler, PolicyWorkHandler)
+            or getattr(getattr(policy.handler, "_service", None), "_source", None)
+            is not policy.source
+            or getattr(getattr(policy.handler, "_service", None), "_catalog", None)
+            is not policy.catalog
+        ):
+            raise ProductionCapabilityUnavailable("PRODUCTION_FEATURE_INPUT_NOT_EXACT")
+        return
+    if (
+        context.request.purpose != Purpose.LOCAL_EVALUATION
+        or not callable(getattr(policy.handler, "execute", None))
+        or not callable(getattr(policy.seeder, "ensure_initial", None))
+        or "fake" in type(policy.handler).__module__.casefold()
+        or "fake" in type(policy.seeder).__module__.casefold()
+    ):
+        raise ProductionCapabilityUnavailable("LOCAL_POLICY_FEATURE_INVALID")
 
 
 def _stored_inputs(work: WorkExecutionState) -> tuple[StoredDataRef, ...]:
@@ -732,6 +850,8 @@ __all__ = [
     "CurrentRepositoryProfileT11Resolver",
     "DynamicProductionFeature",
     "ExactProductionReadiness",
+    "LocalPolicyFeature",
+    "LocalUnavailableDynamicFeature",
     "OfficialPolicyPostWorkspaceSeeder",
     "PolicyProductionFeature",
     "ProductionFeatureInputs",

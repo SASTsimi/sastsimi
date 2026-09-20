@@ -98,11 +98,16 @@ class DockerAdapter:
         self,
         target: TrustedDockerTarget | None = None,
         resolver: TrustedDockerTargetResolverPort | None = None,
+        *,
+        build_network: Literal["none", "default"] = "none",
     ) -> None:
         if (target is None) != (resolver is None):
             raise ValueError("DOCKER_TRUSTED_TARGET_INCOMPLETE")
         self._target = target
         self._resolver = resolver
+        if build_network not in ("none", "default"):
+            raise ValueError("DOCKER_BUILD_NETWORK_INVALID")
+        self._build_network = build_network
         if target is not None:
             self._validate_target(target)
 
@@ -111,11 +116,13 @@ class DockerAdapter:
         cls,
         profile_ref: HostConfigurationRef,
         resolver: TrustedDockerTargetResolverPort,
+        *,
+        build_network: Literal["none", "default"] = "none",
     ) -> DockerAdapter:
         target = resolver.resolve_current(profile_ref)
         if target.profile_ref != profile_ref:
             raise ValueError("DOCKER_CAPABILITY_PROFILE_MISMATCH")
-        return cls(target, resolver)
+        return cls(target, resolver, build_network=build_network)
 
     async def build(
         self,
@@ -135,7 +142,7 @@ class DockerAdapter:
             *self._build_output_args(),
             "--pull=false",
             "--network",
-            "none",
+            self._build_network,
             *self._build_limit_args(spec),
             *label_args,
             "--tag",
@@ -187,7 +194,7 @@ class DockerAdapter:
             *self._build_output_args(),
             "--pull=false",
             "--network",
-            "none",
+            self._build_network,
             *self._build_limit_args(spec),
             *self._label_args(labels),
             "--tag",
@@ -299,6 +306,20 @@ class DockerAdapter:
             ("image", "inspect", "--format", "{{json .RepoDigests}}", image),
             timeout_ms=timeout_ms,
         )
+        if (
+            not outcome.timed_out
+            and outcome.exit_code != 0
+            and self._build_network == "default"
+        ):
+            pulled = await self._run(
+                ("image", "pull", image),
+                timeout_ms=timeout_ms,
+            )
+            self._require_success("DOCKER_IMAGE_PULL_FAILED", pulled)
+            outcome = await self._run(
+                ("image", "inspect", "--format", "{{json .RepoDigests}}", image),
+                timeout_ms=timeout_ms,
+            )
         self._require_success("DOCKER_IMAGE_INSPECT_FAILED", outcome)
         try:
             repo_digests = json.loads(outcome.stdout.decode("ascii", errors="strict"))

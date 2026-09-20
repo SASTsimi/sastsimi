@@ -7,7 +7,7 @@ import platform
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 from uuid import getnode
 
 from sastsimi.capabilities import (
@@ -46,10 +46,11 @@ class CapabilityCommandResult:
 _EXECUTABLE_BY_KIND: dict[ProbeKind, tuple[str, str] | None] = {
     "GIT": ("git", "git"),
     "PYTHON_AST": None,
+    "PYTHON_RUNTIME": None,
     "OPENGREP": ("opengrep", "opengrep"),
     "DOCKER": ("docker", "docker"),
     "OPENAI_API": None,
-    "CODEQL": ("codeql", "codeql"),
+    "CODEQL": ("docker", "docker"),
 }
 
 
@@ -59,6 +60,7 @@ def build_service(
     kind: ProbeKind | None,
     host_id: str | None,
     docker_host: str | None,
+    codeql_container_config: Any | None = None,
 ) -> ProductionCapabilityProbeService:
     """Compose only the executable needed by this operator action."""
 
@@ -77,6 +79,7 @@ def build_service(
         host_id=host_id or _default_host_id(),
         executable_paths=executable_paths,
         docker_host=selected_docker_host,
+        codeql_container_config=codeql_container_config,
     )
 
 
@@ -88,6 +91,7 @@ def run_probe(
     credential_ref: str | None,
     host_id: str | None,
     docker_host: str | None,
+    codeql_container_config: Any | None = None,
 ) -> CapabilityCommandResult:
     probe_kind = cast(ProbeKind, kind)
     try:
@@ -101,6 +105,7 @@ def run_probe(
             kind=probe_kind,
             host_id=host_id,
             docker_host=docker_host,
+            codeql_container_config=codeql_container_config,
         )
         receipt = service.probe(
             probe_kind,
@@ -143,6 +148,7 @@ def run_approve(
     target_hash: str,
     host_id: str | None,
     docker_host: str | None,
+    codeql_container_config: Any | None = None,
 ) -> CapabilityCommandResult:
     try:
         lookup = build_service(
@@ -155,11 +161,14 @@ def run_approve(
         if len(matches) != 1:
             raise LookupError("CAPABILITY_PROBE_NOT_FOUND")
         receipt = matches[0]
+        if receipt.kind == "CODEQL" and codeql_container_config is None:
+            raise ValueError("CODEQL_PRODUCTION_PROFILE_REQUIRED")
         service = build_service(
             data_dir,
             kind=receipt.kind,
             host_id=host_id,
             docker_host=docker_host,
+            codeql_container_config=codeql_container_config,
         )
         profile_ref = service.approve(
             probe_id,

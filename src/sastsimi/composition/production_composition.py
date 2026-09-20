@@ -277,7 +277,7 @@ class ConcreteProductionApplicationFactory:
             budgets=runtime.budget_registry,
             ready_work=runner,
             work_query=scheduler_store,
-            workspace_identity_ref=identities[RequesterRole.REPOSITORY_LOADER],
+            workspace_identity_ref=identities[RequesterRole.ORCHESTRATION],
             workspace_dependency_refs=resolved.workspace_dependency_refs,
             seeder=installation.seeder,
         )

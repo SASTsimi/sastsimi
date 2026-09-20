@@ -36,6 +36,7 @@ class ConAgent:
         evidence_work: WorkExecutionState,
         debate_input_hash: str,
         allowed_evidence_refs: tuple[StoredDataRef, ...],
+        allowed_claim_evidence_refs: tuple[StoredDataRef, ...],
     ) -> ConEvidenceResult:
         return ConEvidenceResult.model_validate(
             self._finalizer.content(
@@ -44,6 +45,7 @@ class ConAgent:
                 evidence_work=evidence_work,
                 debate_input_hash=debate_input_hash,
                 allowed_evidence_refs=allowed_evidence_refs,
+                allowed_claim_evidence_refs=allowed_claim_evidence_refs,
             )
         )
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.capabilities import CapabilityApprovalEvidence
-from sastsimi.contracts.refs import HostConfigurationRef
+from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
 from sastsimi.ports.trusted_evidence import UnprovenEvidence
 
 from .models import CapabilityProbeReceipt
@@ -102,6 +102,11 @@ class _SQLiteCapabilityProbeStore:
                 )
             )
         return tuple(self.get(probe_id) for probe_id in ids)
+
+    def evidence_refs(self) -> tuple[StoredDataRef, ...]:
+        """Return the exact durable evidence roots owned by saved receipts."""
+
+        return tuple(receipt.evidence_ref for receipt in self.list())
 
     def authorize(self, evidence: CapabilityApprovalEvidence, probe_id: str) -> None:
         receipt = self.get(probe_id)

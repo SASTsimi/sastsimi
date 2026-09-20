@@ -154,7 +154,7 @@ uv run sastsimi --data-dir <data-dir> report export <finding_id> --format markdo
 기본 위치는 다음과 같습니다.
 
 ```text
-<data-dir>/reports/<analysis_id>/<finding_id>.md
+<data-dir>/reports/<analysis_id>/F-001.md
 ```
 
 Markdown은 current ReportDraft, Finding, VerificationResult, CWELabel, validated PoC와 두 Gate 결과만 사용합니다. Reporter가 새 보안 사실을 만들지 않습니다. 선행 근거가 바뀌었거나 민감정보 제거와 exact reference를 확인하지 못하면 `show`와 `export`는 차단됩니다.
@@ -171,3 +171,16 @@ uv run sastsimi --data-dir <demo-data-dir> demo results --format json
 ```
 
 Fake 결과는 실제 clone, LLM, CodeQL·OpenGrep·Docker capability나 출시 완료의 증거가 아닙니다. production 준비가 실패했을 때 Fake로 자동 대체하지 않습니다.
+
+## 9. 실시간 진행 화면 (WSL2)
+
+분석과 별도의 WSL 터미널에서 읽기 전용 대시보드를 실행합니다.
+
+```text
+uv run sastsimi --data-dir <data-dir> dashboard --host 127.0.0.1 --port 8765
+```
+
+Windows 브라우저에서 `http://localhost:8765`를 엽니다. 이 화면은 실제로
+저장된 단계 상태와 Agent의 근거·도구·판단 요약만 읽습니다. 취소,
+재시도, 판정 변경과 공개 승인은 할 수 없습니다. Windows native 전체
+E2E는 아직 지원 완료 범위가 아니며, WSL2 Linux를 기준으로 사용합니다.

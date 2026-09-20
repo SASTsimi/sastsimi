@@ -177,16 +177,31 @@ PVD-01부터 PVD-15까지 각각 결과가 필요합니다. API Provider의 PVD-
 
 위 JSON은 반복 구조를 한 항목만 보여 주는 최소 설명 예시이므로 그대로 제출하면 안 됩니다. `tests`에는 requirements가 요구한 PVD-01~PVD-15 전체를 넣고, `route_approvals`에는 `required_routes`가 출력한 모든 route를 정확히 한 번씩 넣습니다. profile의 Provider/model/client/version/credential reference와 한 글자라도 다르면 stale로 거부됩니다. `credential_ref`에는 `env:NAME`만 쓰며 실제 값은 쓰지 않습니다.
 
-## 5. 가져오기와 `READY` 확인
+## 5. 승인 입력 조립, 가져오기와 `READY` 확인
 
-onboarding manifest가 참조하는 모든 파일을 `--evidence`로 전달합니다. 최소한 공식 정책 원문, PVD 근거, R8 평가·추천, provisioning manifest와 일곱 provisioning slot 파일이 포함됩니다.
+`compose`는 이미 승인된 자료를 정확한 hash로 묶는 명령입니다. PVD를 실행하거나 R8 추천·사람 승인을 새로 만들지 않습니다. `approval-input.json`에는 다음 값만 넣습니다.
+
+- `schema_version=1`, 승인 생성·만료 시각과 `approved_by`
+- 공식 정책 원문의 `policy_artifact_sha256`
+- slot별 이미 승인된 `probe_id`를 담은 `capability_probes`
+- 완성된 `provider_approvals`와 `route_approvals`
+
+`capability_probes`의 최소 slot은 `GIT_CLONE`, `GIT_CHECKOUT`, `PYTHON_RUNTIME`, `AST`입니다. 실제 사용하는 `CODEQL`, `OPENGREP`, `DOCKER`만 추가합니다. probe가 아직 승인되지 않았거나 현재 ACTIVE exact revision과 다르면 조립은 실패합니다. `profile_hash`와 provisioning hash는 CLI가 현재 profile과 실제 파일 bytes에서 계산하므로 사람이 입력하지 않습니다.
+
+일곱 `--slot-template`과 그 template이 참조하는 record·정책·정적 규칙 파일, PVD·R8 근거를 `--evidence`로 반복해 전달합니다. 누락 또는 참조되지 않은 추가 파일, 민감정보, host 절대 경로, slot/profile/host 불일치가 있으면 출력 디렉터리를 게시하지 않습니다.
 
 ```text
-uv run sastsimi --data-dir <data-dir> onboarding prepare --profile <production-profile.toml> --manifest <production-onboarding.json> --evidence <policy-artifact> --evidence <pvd-evidence> --evidence <evaluation-evidence> --evidence <recommendation-evidence> --evidence <production-provisioning.json> --evidence <slot-document> --format json
+uv run sastsimi --data-dir <data-dir> onboarding compose --profile <production-profile.toml> --approval-input <approval-input.json> --slot-template <workspace-storage.json> --slot-template <static-analysis.json> --slot-template <verification-playbooks.json> --slot-template <sandbox-profile.json> --slot-template <policy-catalog.json> --slot-template <provider-configuration.json> --slot-template <prompt-routes.json> --evidence <approved-evidence-1> --evidence <approved-evidence-2> --output-dir <onboarding-bundle-dir> --format json
+```
+
+성공한 bundle에는 경로나 secret이 없는 `bundle-index.json`, 두 manifest와 content-addressed evidence만 들어 있습니다. 전체 bundle hash를 다시 검사하며 가져오려면 다음 명령을 사용합니다.
+
+```text
+uv run sastsimi --data-dir <data-dir> onboarding prepare --profile <production-profile.toml> --bundle-dir <onboarding-bundle-dir> --format json
 uv run sastsimi --data-dir <data-dir> onboarding status --profile <production-profile.toml> --format json
 ```
 
-여러 PVD·route·slot 파일은 `--evidence`를 반복해 모두 전달합니다. `status=READY`는 현재 profile과 가져온 승인 근거가 일치한다는 뜻입니다. 실제 분석 시작 때는 capability reference와 일곱 slot 문서도 다시 해석하므로, 임의 reference나 잘못된 slot 내용은 분석 전에 `BLOCKED`됩니다.
+기존처럼 완성한 `ProductionOnboardingManifest`와 모든 근거를 `prepare --manifest ... --evidence ...`로 직접 가져올 수도 있습니다. 두 방식 모두 `status=READY`는 현재 profile과 가져온 승인 근거가 일치한다는 뜻일 뿐, 누락된 평가나 승인을 만들어 주지 않습니다. 실제 분석 시작 때는 capability reference와 일곱 slot 문서도 다시 해석하므로, 임의 reference나 잘못된 slot 내용은 분석 전에 `BLOCKED`됩니다.
 
 다음 변경이 생기면 새 hash와 새 승인이 필요합니다.
 

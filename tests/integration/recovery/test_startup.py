@@ -73,3 +73,23 @@ def test_expired_undispatched_lease_preserves_reservation_and_allows_retry(
             ).scalar()
             == 2
         )
+
+
+def test_integrity_only_startup_does_not_claim_analysis_lease(tmp_path: Path) -> None:
+    from sqlalchemy import text
+
+    from sastsimi.storage.recovery_service import RecoveryService
+
+    h, transitions, _request = completion(tmp_path)
+    with h.database.write() as connection:
+        connection.execute(
+            text("UPDATE work_states SET lease_expires_at='2026-09-06T00:00:00+00:00'")
+        )
+
+    report = RecoveryService(
+        transitions,
+        recover_expired_leases=False,
+    ).recover()
+
+    assert report.blocked_work == 0
+    assert transitions.works.get("reserve-work").status == "RUNNING"

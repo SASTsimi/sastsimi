@@ -367,9 +367,9 @@ def _approved_hypothesis_route(
         records,
         artifacts,
         template_path=Path(
-            "src/sastsimi/prompts/templates/hypothesis/generate-initial/1.0.0.md"
+            "src/sastsimi/prompts/templates/hypothesis/generate-initial/1.0.1.md"
         ),
-        template_version="1.0.0",
+        template_version="1.0.1",
         role="HYPOTHESIS",
         task_kind="GENERATE_INITIAL",
         result_kind="hypothesis_proposal",
@@ -460,9 +460,9 @@ def _approved_candidate_route(
         artifacts,
         template_path=Path(
             "src/sastsimi/prompts/templates/dynamic-reproduction/"
-            "create-poc-candidate/1.0.1.md"
+            "create-poc-candidate/1.0.2.md"
         ),
-        template_version="1.0.1",
+        template_version="1.0.2",
         role="DYNAMIC_REPRODUCTION",
         task_kind="CREATE_POC_CANDIDATE",
         result_kind="poc_candidate",
@@ -517,11 +517,16 @@ def test_approved_route_creates_active_entry_and_attempt_call(tmp_path: Path) ->
     )
 
     assert prepared.payload.agent_role == "HYPOTHESIS"
+    assert prepared.payload.template_version == "1.0.1"
     assert prepared.call_spec.model == "approved-model"
     assert prepared.call_spec.context_refs == (facts_ref,)
     assert records.get_exact(prepared.payload_ref) == prepared.payload
     assert records.get_exact(prepared.call_spec_ref) == prepared.call_spec
     assert content_hash(prepared.payload) == prepared.payload_ref.content_hash
+    with artifacts.open_verified(prepared.payload.rendered_prompt_ref) as stream:
+        rendered = stream.read()
+    assert b"copy complete objects exactly, field-for-field" in rendered
+    assert b"Never synthesize a code range" in rendered
 
 
 def test_every_production_route_has_a_loadable_canonical_template() -> None:
@@ -530,6 +535,34 @@ def test_every_production_route_has_a_loadable_canonical_template() -> None:
         assert all(f"# {section}" in text for section in REQUIRED_TEMPLATE_SECTIONS), (
             route.template_path
         )
+
+
+def test_evidence_templates_require_exact_visible_reference_objects() -> None:
+    routes = {
+        route.role: route
+        for route in REQUIRED_PRODUCTION_PROMPT_ROUTES
+        if route.role in {"PRO", "CON"}
+    }
+
+    assert set(routes) == {"PRO", "CON"}
+    for route in routes.values():
+        assert route.template_path.name == "1.0.1.md"
+        text = route.template_path.read_text(encoding="utf-8")
+        assert "Copy one complete reference object exactly" in text
+        assert "Never assemble a reference" in text
+
+
+def test_final_verdict_template_defines_completed_check_semantics() -> None:
+    route = next(
+        route
+        for route in REQUIRED_PRODUCTION_PROMPT_ROUTES
+        if route.role == "VERIFICATION" and route.task_kind == "FINAL_VERDICT"
+    )
+
+    assert route.template_path.name == "1.0.1.md"
+    text = route.template_path.read_text(encoding="utf-8")
+    assert "records whether you completed the assessment" in text
+    assert "use INCOMPLETE merely because" in text
 
 
 @pytest.mark.parametrize(

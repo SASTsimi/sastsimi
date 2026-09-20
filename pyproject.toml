@@ -47,5 +47,6 @@ strict = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
+addopts = ["--import-mode=importlib"]
 asyncio_default_fixture_loop_scope = "function"

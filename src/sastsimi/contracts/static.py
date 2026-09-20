@@ -41,6 +41,45 @@ def git_path(value: str) -> str:
 GitPath = Annotated[NonEmptyStr, AfterValidator(git_path)]
 
 
+class CodeQLBoundaryCapability(ContractModel):
+    """Exact prebuilt-database and hard-quota boundary approved for CodeQL."""
+
+    quota_backend_key: NonEmptyStr
+    quota_enforcement_identity_sha256: Sha256
+    database_limit_bytes: PositiveInt
+    execution_limit_bytes: PositiveInt
+    database_provider_key: NonEmptyStr
+    database_provider_revision: NonEmptyStr
+    database_provider_evidence_sha256: Sha256
+    image_digest: str
+    expected_codeql_version: NonEmptyStr
+    query_pack_sha256: Sha256
+    container_user: NonEmptyStr
+    pids_limit: PositiveInt
+    memory_limit_bytes: PositiveInt
+    nano_cpus: PositiveInt
+    supported_languages: tuple[Literal["PYTHON", "JAVASCRIPT"], ...]
+    prebuilt_database_only: Literal[True]
+
+    @model_validator(mode="after")
+    def closed_boundary(self) -> Self:
+        if not self.supported_languages or len(self.supported_languages) != len(
+            set(self.supported_languages)
+        ):
+            raise ValueError("CODEQL_BOUNDARY_LANGUAGE_INVALID")
+        if (
+            re.fullmatch(r"sha256:[0-9a-f]{64}", self.image_digest) is None
+            or re.fullmatch(
+                r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?",
+                self.expected_codeql_version,
+            )
+            is None
+            or re.fullmatch(r"[1-9][0-9]*:[1-9][0-9]*", self.container_user) is None
+        ):
+            raise ValueError("CODEQL_CONTAINER_BOUNDARY_INVALID")
+        return self
+
+
 class StaticToolProfile(DomainRecord):
     """Exact immutable configuration for one static-tool adapter revision."""
 
@@ -49,7 +88,7 @@ class StaticToolProfile(DomainRecord):
     ATTEMPT = False
     host_id: NonEmptyStr | None = None
     profile_key: NonEmptyStr
-    purpose: Literal["FIXTURE", "EVALUATION", "PRODUCTION"]
+    purpose: Literal["FIXTURE", "EVALUATION", "PRODUCTION", "LOCAL_EVALUATION"]
     status: Literal["DRAFT", "APPROVED", "ACTIVE", "RETIRED"]
     adapter_key: Literal["PYTHON_AST", "CODEQL", "OPENGREP"]
     tool_name: Literal["AST", "CODEQL", "OPENGREP"]
@@ -58,6 +97,7 @@ class StaticToolProfile(DomainRecord):
     executable_sha256: Sha256
     expected_version: NonEmptyStr
     capability_evidence_ref: HostConfigurationRef | None
+    codeql_boundary: CodeQLBoundaryCapability | None = None
     probe_timeout_ms: PositiveInt
     run_timeout_ms: PositiveInt
     stdout_limit_bytes: PositiveInt
@@ -75,6 +115,16 @@ class StaticToolProfile(DomainRecord):
         }
         if (self.adapter_key, self.tool_name, self.tool_kind) not in valid:
             raise ValueError("STATIC_TOOL_PROFILE_TUPLE_MISMATCH")
+        if self.adapter_key == "CODEQL" and self.status == "ACTIVE":
+            if (
+                self.codeql_boundary is None
+                or self.executable_key != "docker"
+                or self.codeql_boundary.execution_limit_bytes
+                != self.max_attempt_output_bytes
+            ):
+                raise ValueError("CODEQL_BOUNDARY_REQUIRED")
+        elif self.codeql_boundary is not None:
+            raise ValueError("CODEQL_BOUNDARY_FORBIDDEN")
         if self.status == "ACTIVE":
             if (
                 self.purpose != "PRODUCTION"
@@ -481,7 +531,16 @@ class RepositoryExecutionSelection(DomainRecord):
                 or not has_required_structure
                 or not has_sast
                 or represented_missing_routes != missing_routes
-                or any(gap.reason != "MISSING" for gap in self.gaps)
+                or any(
+                    gap.reason not in {"MISSING", "UNSUPPORTED"}
+                    or (
+                        gap.reason == "UNSUPPORTED"
+                        and not gap.code.startswith(
+                            "NO_ACTIVE_STATIC_CAPABILITY:CODEQL:"
+                        )
+                    )
+                    for gap in self.gaps
+                )
             ):
                 raise ValueError("REPOSITORY_EXECUTION_SELECTION_INCOMPLETE")
         elif self.status == "BLOCKED":

@@ -17,13 +17,19 @@ import sastsimi.interfaces.cli.run as run_command
 import sastsimi.interfaces.cli.status as status_command
 from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
 from sastsimi.contracts.evaluation import AnalysisRunResult
+from sastsimi.contracts.ids import WorkId
 from sastsimi.contracts.refs import (
     RecordRef,
     RunStoredDataRef,
     StoredDataRef,
     reference,
 )
-from sastsimi.contracts.work import WorkAttempt, WorkExecutionState
+from sastsimi.contracts.work import (
+    WaitingFor,
+    WorkAttempt,
+    WorkExecutionState,
+    WorkType,
+)
 from sastsimi.ports.dto import WorkContext
 from sastsimi.ports.runtime_store import RecoveryReport
 from sastsimi.ports.scheduler import (
@@ -502,8 +508,12 @@ class _Resumer:
                             },
                             "status": "READY",
                             "state_version": item.state_version + 1,
+                            "output_refs": (),
+                            "gap_ids": (),
+                            "error_ids": (),
                             "waiting_for": (),
                             "stop_reason": None,
+                            "finished_at": None,
                         }
                     )
                 )
@@ -595,6 +605,71 @@ def test_production_run_resume_status_and_result_cli_projections() -> None:
     exact = result_command.run(terminal, "a1", output_format="json")
     assert "repository_url" not in exact
     assert exact["program_id"] == "program"
+
+
+def test_resume_retries_failed_child_without_reopening_dependency_parent() -> None:
+    retry = _work("BLOCKED").model_copy(
+        update={
+            "waiting_for": (WaitingFor.RETRY,),
+            "stop_reason": "LEASE_EXPIRED",
+        }
+    )
+    dependency = _work("BLOCKED").model_copy(
+        update={
+            "work_id": WorkId("dependency-parent"),
+            "waiting_for": (WaitingFor.DEPENDENCY,),
+            "stop_reason": "WAITING_FOR_DYNAMIC_REPRO",
+        }
+    )
+    store = _SchedulerStore((retry, dependency))
+    store.attempts[str(retry.work_id)] = (_attempt(retry, status="CANCELLED"),)
+    service, resumer = _service(store=store)
+
+    assert asyncio.run(service.resume("a1")).disposition == "BLOCKED"
+    assert resumer.resumed == [str(retry.work_id)]
+
+
+def test_local_evaluation_resume_includes_failed_dynamic_work() -> None:
+    failed = WorkExecutionState.model_validate_json(
+        json.dumps(
+            _work("FAILED").model_dump(mode="json")
+            | {
+                "meta": meta(True),
+                "work_type": WorkType.DYNAMIC_REPRO,
+                "last_transition_ref": ref("state_transition", True),
+                "parent_work_ref": ref("work_execution_state", True),
+                "output_refs": (ref("dynamic_reproduction_result", True),),
+            }
+        )
+    )
+    store = _SchedulerStore((failed,))
+    store.attempts[str(failed.work_id)] = (_attempt(failed, status="FAILED"),)
+    local_run = _run_state().model_copy(update={"purpose": "LOCAL_EVALUATION"})
+    service, resumer = _service(store=store, run_state=local_run)
+
+    assert asyncio.run(service.resume("a1")).disposition == "BLOCKED"
+    assert resumer.resumed == [str(failed.work_id)]
+
+
+def test_production_resume_does_not_reopen_failed_dynamic_work() -> None:
+    failed = WorkExecutionState.model_validate_json(
+        json.dumps(
+            _work("FAILED").model_dump(mode="json")
+            | {
+                "meta": meta(True),
+                "work_type": WorkType.DYNAMIC_REPRO,
+                "last_transition_ref": ref("state_transition", True),
+                "parent_work_ref": ref("work_execution_state", True),
+                "output_refs": (ref("dynamic_reproduction_result", True),),
+            }
+        )
+    )
+    store = _SchedulerStore((failed,))
+    store.attempts[str(failed.work_id)] = (_attempt(failed, status="FAILED"),)
+    service, resumer = _service(store=store)
+
+    assert asyncio.run(service.resume("a1")).disposition == "BLOCKED"
+    assert resumer.resumed == []
 
 
 @pytest.mark.parametrize("interrupt", [asyncio.CancelledError(), KeyboardInterrupt()])

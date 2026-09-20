@@ -7,6 +7,7 @@ import sys
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -22,10 +23,15 @@ from sastsimi.capabilities.store import (
     _CapabilityProbeEvidenceAuthority,
     _SQLiteCapabilityProbeStore,
 )
+from sastsimi.config.codeql_container import CodeQLContainerRuntimeConfig
 from sastsimi.config.secrets import SecretReference
-from sastsimi.contracts.capabilities import DockerBuildCapability
+from sastsimi.contracts.capabilities import (
+    DockerBuildCapability,
+    RuntimeCapabilityProfile,
+)
 from sastsimi.contracts.ids import CommitId, WorkspaceId
 from sastsimi.ports.static_tool import (
+    PrebuiltCodeQLDatabasePort,
     ProductionStaticOutputQuotaPort,
     StaticOutputPurpose,
 )
@@ -34,6 +40,15 @@ from sastsimi.storage.database import Database
 from sastsimi.storage.migrations import upgrade
 from tests.integration.runtime_support import TestClock, TestIds
 from tests.integration.static_quota_support import TestQuota
+
+
+class _CodeQLProviderIdentity:
+    provider_key = "test-provider"
+    provider_revision = "1"
+    provider_evidence_sha256 = "2" * 64
+
+    def materialize(self, **_kwargs: object) -> None:
+        raise AssertionError("capability probing must not materialize a database")
 
 
 class FakeCommands:
@@ -120,6 +135,11 @@ class FakeCommands:
             )
         if command == "codeql":
             return CommandObservation(True, "2.23.1")
+        if command.startswith("python"):
+            assert effective_arguments[:3] == ("-I", "-S", "-c")
+            return CommandObservation(
+                True, ".".join(str(part) for part in sys.version_info[:3])
+            )
         if command == "docker":
             if effective_arguments[0] == "version":
                 if self.docker_daemon:
@@ -204,6 +224,8 @@ def _service(
         _VERIFIED_DOCKER_BUILD_CAPABILITY
     ),
     quota: ProductionStaticOutputQuotaPort | None = None,
+    codeql_provider: PrebuiltCodeQLDatabasePort | None = None,
+    codeql_container_config: CodeQLContainerRuntimeConfig | None = None,
 ) -> tuple[_CapabilityProbeEngine, RuntimeServices, _SQLiteCapabilityProbeStore]:
     binaries = tmp_path / "bin"
     binaries.mkdir(parents=True, exist_ok=True)
@@ -246,9 +268,97 @@ def _service(
         scratch_root=tmp_path / "scratch",
         docker_build_capability_probe=lambda: docker_build_capability,
         static_output_quota=quota,
+        codeql_database_provider=codeql_provider,
         codeql_database_limit_bytes=131072 if quota is not None else None,
+        codeql_container_config=codeql_container_config,
     )
     return service, runtime, store
+
+
+def test_codeql_container_probe_binds_the_docker_boundary_not_host_codeql(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catches a host ``codeql version`` substitution during capability approval."""
+
+    from sastsimi.static_analysis.codeql_adapter import digest_path
+    from sastsimi.static_analysis.container_codeql import ContainerCodeQLSpec
+    from sastsimi.static_analysis.container_codeql_runtime import (
+        CodeQLContainerRunStatus,
+        ContainerCodeQLProbeResult,
+    )
+
+    registry = tmp_path / "codeql-databases"
+    query_pack = tmp_path / "codeql-query-pack"
+    registry.mkdir()
+    query_pack.mkdir()
+    (query_pack / "probe.ql").write_text("// query\n", encoding="utf-8")
+    config = CodeQLContainerRuntimeConfig.model_validate(
+        {
+            "schema_version": 1,
+            "image": "registry.example/sastsimi/codeql@sha256:" + "a" * 64,
+            "expected_codeql_version": "2.27.0",
+            "database_registry_root": registry,
+            "query_pack_root": query_pack,
+            "query_pack_sha256": digest_path(query_pack),
+            "database_provider_key": "approved-provider",
+            "database_provider_revision": "2026-09-19.1",
+            "database_provider_evidence_sha256": "b" * 64,
+            "database_limit_bytes": 8_192,
+            "output_limit_bytes": 4_096,
+            "pids_limit": 64,
+            "memory_limit_bytes": 67_108_864,
+            "nano_cpus": 500_000_000,
+            "container_uid": 65532,
+            "container_gid": 65532,
+        }
+    )
+    observed: list[object] = []
+
+    async def probe_boundary(**kwargs: object) -> ContainerCodeQLProbeResult:
+        observed.append(kwargs["spec"])
+        spec = cast(ContainerCodeQLSpec, kwargs["spec"])
+        return ContainerCodeQLProbeResult(
+            status=CodeQLContainerRunStatus.SUCCEEDED,
+            reason=None,
+            image_digest=spec.image_digest,
+            codeql_version="2.27.0",
+        )
+
+    monkeypatch.setattr(
+        "sastsimi.capabilities.service.probe_container_codeql_boundary",
+        probe_boundary,
+    )
+    service, runtime, _store = _service(
+        tmp_path,
+        available={"docker"},
+        codeql_container_config=config,
+    )
+
+    receipt = service.probe("CODEQL")
+    approved = service.approve(
+        receipt.probe_id,
+        expected_target_hash=receipt.approval_target_hash or "",
+    )
+    profile = runtime.configuration.resolve_pinned_active_profile(approved)
+
+    assert receipt.status == "PASSED"
+    spec = cast(ContainerCodeQLSpec, observed[0])
+    assert spec.user == "65532:65532"
+    assert spec.pids_limit == 64
+    assert spec.output_limit_bytes == 4_096
+    assert profile.executable_key == "docker"
+    assert profile.expected_version == "2.27.0"
+    assert receipt.codeql_boundary is not None
+    assert receipt.codeql_boundary.supported_languages == ("PYTHON",)
+    assert receipt.codeql_boundary.query_pack_sha256 == digest_path(query_pack)
+    assert service._commands.calls == []
+    service._codeql_container_config = config.model_copy(update={"pids_limit": 65})
+    with pytest.raises(ValueError, match="CAPABILITY_EXECUTION_TARGET_CHANGED"):
+        service.approve(
+            receipt.probe_id,
+            expected_target_hash=receipt.approval_target_hash or "",
+        )
 
 
 def test_codeql_test_quota_cannot_activate_production_without_prebuilt_binding(
@@ -264,6 +374,52 @@ def test_codeql_test_quota_cannot_activate_production_without_prebuilt_binding(
     with pytest.raises(ValueError, match="PROBE_NOT_ACTIVATABLE"):
         service.approve(
             receipt.probe_id, expected_target_hash=receipt.approval_target_hash or ""
+        )
+
+
+def test_codeql_legacy_provider_and_host_quota_cannot_activate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quota = TestQuota(tmp_path / "quota", monkeypatch)
+    provider = cast(PrebuiltCodeQLDatabasePort, _CodeQLProviderIdentity())
+    service, runtime, _store = _service(
+        tmp_path,
+        available={"codeql"},
+        quota=quota,
+        codeql_provider=provider,
+    )
+
+    receipt = service.probe("CODEQL")
+
+    assert receipt.status == "BLOCKED"
+    assert receipt.activation_supported is False
+    with pytest.raises(ValueError, match="PROBE_NOT_ACTIVATABLE"):
+        service.approve(
+            receipt.probe_id,
+            expected_target_hash=receipt.approval_target_hash or "",
+        )
+
+
+def test_codeql_legacy_provider_change_cannot_reactivate_a_blocked_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quota = TestQuota(tmp_path / "quota", monkeypatch)
+    provider = _CodeQLProviderIdentity()
+    service, _runtime, _store = _service(
+        tmp_path,
+        available={"codeql"},
+        quota=quota,
+        codeql_provider=cast(PrebuiltCodeQLDatabasePort, provider),
+    )
+    receipt = service.probe("CODEQL")
+    provider.provider_revision = "2"
+
+    with pytest.raises(ValueError, match="PROBE_NOT_ACTIVATABLE"):
+        service.approve(
+            receipt.probe_id,
+            expected_target_hash=receipt.approval_target_hash or "",
         )
 
 
@@ -354,10 +510,7 @@ def test_real_probe_receipts_require_exact_human_approval_before_active(
         "BLOCKED",
     ]
     assert openai.activation_supported is False
-    assert (
-        "prebuilt database and hard quota binding are unavailable"
-        in codeql.safe_summary
-    )
+    assert codeql.safe_summary == "CodeQL container boundary probe failed"
     with pytest.raises(LookupError, match="CAPABILITY_ROUTE_NOT_ACTIVE"):
         runtime.configuration.resolve_active_capability(
             capability_kind="GIT",
@@ -401,6 +554,18 @@ def test_real_probe_receipts_require_exact_human_approval_before_active(
     docker_ref = service.approve(
         docker.probe_id,
         expected_target_hash=docker.approval_target_hash or "",
+    )
+    assert (
+        runtime.configuration.resolve_pinned_active_profile(
+            python_ref
+        ).stdout_limit_bytes
+        == 8_388_608
+    )
+    assert (
+        runtime.configuration.resolve_pinned_active_profile(
+            opengrep_ref
+        ).stdout_limit_bytes
+        == 8_388_608
     )
     assert (
         runtime.configuration.resolve_active_static_tool(
@@ -481,6 +646,45 @@ def test_python_ast_approval_accepts_exact_running_interpreter_symlink(
     assert service.resolve_executable(profile_ref) == interpreter.resolve(strict=True)
 
 
+def test_python_runtime_probe_runs_and_approves_exact_current_interpreter(
+    tmp_path: Path,
+) -> None:
+    """Catches a version-only check or PYTHON_AST profile substitution."""
+
+    service, runtime, _store = _service(tmp_path, available=set())
+
+    receipt = service.probe("PYTHON_RUNTIME")
+    profile_ref = service.approve(
+        receipt.probe_id,
+        expected_target_hash=receipt.approval_target_hash or "",
+    )
+    profile = runtime.configuration.resolve_pinned_active_profile(profile_ref)
+
+    assert receipt.status == "PASSED"
+    assert receipt.activation_supported is True
+    assert isinstance(profile, RuntimeCapabilityProfile)
+    assert profile.capability_kind == "PYTHON_RUNTIME"
+    assert profile.languages == ("PYTHON",)
+    assert profile.operations == ("START",)
+    assert service.resolve_executable(profile_ref) == Path(sys.executable).resolve(
+        strict=True
+    )
+    assert service._commands.calls == [
+        (
+            Path(sys.executable).resolve(strict=True).stem.lower(),
+            (
+                "-I",
+                "-S",
+                "-c",
+                (
+                    "import sys; "
+                    "print('.'.join(str(part) for part in sys.version_info[:3]))"
+                ),
+            ),
+        )
+    ]
+
+
 @pytest.mark.parametrize(
     ("kind", "available", "docker_daemon", "openai_passed"),
     [
@@ -540,7 +744,9 @@ def test_public_facade_accepts_only_trusted_quota_configuration_not_probe_result
         "executable_paths",
         "docker_host",
         "static_output_quota",
+        "codeql_database_provider",
         "codeql_database_limit_bytes",
+        "codeql_container_config",
     }
 
     assert "command_runner" not in build_parameters
@@ -552,7 +758,9 @@ def test_public_facade_accepts_only_trusted_quota_configuration_not_probe_result
         "executable_paths",
         "docker_host",
         "static_output_quota",
+        "codeql_database_provider",
         "codeql_database_limit_bytes",
+        "codeql_container_config",
     }
     assert (
         "approved_by"
@@ -588,6 +796,12 @@ def test_activation_requires_actual_operations_not_only_version(
         command == "opengrep" and "scan" in arguments
         for command, arguments in flattened
     )
+    opengrep_scan = next(
+        arguments
+        for command, arguments in commands.calls
+        if command == "opengrep" and "scan" in arguments
+    )
+    assert "--no-rewrite-rule-ids" in opengrep_scan
     assert any(
         command == "docker" and "build" in arguments for command, arguments in flattened
     )
@@ -867,3 +1081,6 @@ def test_registry_publish_precedes_idempotent_probe_marker_reconciliation(
     assert runtime.configuration.resolve_pinned_active_profile(recovered).status == (
         "ACTIVE"
     )
+
+
+# mypy: disable-error-code="attr-defined,union-attr"

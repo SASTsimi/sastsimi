@@ -1,0 +1,28 @@
+{
+  "production_ready": false,
+  "rule_pack_id": "sastsimi/opengrep-web-candidate@1.0.0",
+  "schema_version": 1,
+  "selected_rule_ids": [
+    "sastsimi.javascript.auth-check",
+    "sastsimi.javascript.command-sink",
+    "sastsimi.javascript.dom-xss-sink",
+    "sastsimi.javascript.permission-check",
+    "sastsimi.javascript.request-source",
+    "sastsimi.javascript.sanitizer",
+    "sastsimi.javascript.sql-sink",
+    "sastsimi.javascript.validator",
+    "sastsimi.python.auth-check",
+    "sastsimi.python.command-sink",
+    "sastsimi.python.html-sink",
+    "sastsimi.python.http-client-sink",
+    "sastsimi.python.path-sink",
+    "sastsimi.python.permission-check",
+    "sastsimi.python.request-source",
+    "sastsimi.python.sanitizer",
+    "sastsimi.python.sql-sink",
+    "sastsimi.python.validator"
+  ],
+  "selected_rule_packs": ["sastsimi/opengrep-web-candidate@1.0.0"],
+  "status": "CANDIDATE",
+  "tool": "OPENGREP"
+}

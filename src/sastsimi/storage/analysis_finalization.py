@@ -23,6 +23,7 @@ from sastsimi.contracts.evaluation import (
     RUN_INVENTORY_KINDS,
     AnalysisRunResult,
     ResolvedAnalysisInventory,
+    canonical_usage_refs,
     validate_analysis_current,
 )
 from sastsimi.contracts.gates import TechnicalEvidenceReview
@@ -470,8 +471,8 @@ class AnalysisFinalizationService:
         for field, expected in expected_resources.items():
             if getattr(result.resources, field) != expected:
                 raise ValueError("ANALYSIS_RESOURCE_SUMMARY_MISMATCH")
-        expected_usage_refs = tuple(
-            dict.fromkeys(ref for item in ledger for ref in item.usage_refs)
+        expected_usage_refs = canonical_usage_refs(
+            ref for item in ledger for ref in item.usage_refs
         )
         execution = self.records.resolve(connection, state.execution_budget_profile_ref)
         if not isinstance(execution, ExecutionBudgetProfile):

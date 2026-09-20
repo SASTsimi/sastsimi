@@ -121,6 +121,11 @@ class FixedOutputRunner:
         return CancellationResult(cancelled=False, reason="NOT_RUNNING")
 
 
+class TruncatedOutputRunner(FixedOutputRunner):
+    async def run(self, spec: ProcessSpec) -> ProcessResult:
+        return replace(await super().run(spec), stdout_truncated=True)
+
+
 class FixedRunnerFactory:
     def __init__(self, runner: Any) -> None:
         self.runner = runner
@@ -545,6 +550,42 @@ async def test_untracked_request_path_never_reaches_worker(tmp_path: Path) -> No
     assert any(item.code == "STATIC_MANIFEST_MISMATCH" for item in observation.gaps)
     assert observation.raw_output is not None
     assert json.loads(observation.raw_output)["files"] == ["tracked.py"]
+
+
+@pytest.mark.asyncio
+async def test_truncated_output_skips_only_the_requested_manifest(
+    tmp_path: Path,
+) -> None:
+    from sastsimi.static_analysis.ast_adapter import PythonAstProcessAdapter
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "requested.py").write_text("value = 1\n", encoding="utf-8")
+    (root / "unrelated.py").write_text("value = 2\n", encoding="utf-8")
+    executable = Path(sys.executable)
+    runner = TruncatedOutputRunner(root, _empty_worker_payload(("requested.py",)))
+    adapter = PythonAstProcessAdapter(
+        executable=executable,
+        worker_path=Path(__file__).parents[3]
+        / "src"
+        / "sastsimi"
+        / "static_analysis"
+        / "python_ast_worker.py",
+        process_runner=runner,
+        probe_runner_factory=FixedRunnerFactory(runner),
+        probe_root=runner.output_root,
+        workspace_locator=FixedWorkspaceLocator(root),
+        tracked_files=_manifest(root, ("requested.py", "unrelated.py")),
+        monotonic_ns=time.monotonic_ns,
+    )
+
+    observation = await adapter.execute(
+        _request(("requested.py",)), root, _profile(executable), _deadline()
+    )
+
+    assert observation.status == "FAILED"
+    assert observation.analyzed_paths == ()
+    assert observation.skipped_paths == ("requested.py",)
 
 
 @pytest.mark.asyncio

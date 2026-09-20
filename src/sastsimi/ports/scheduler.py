@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Literal, Protocol
 
 from sastsimi.contracts.analysis import AnalysisStartRequest
+from sastsimi.contracts.budget import Purpose
 from sastsimi.contracts.evaluation import AnalysisRunResult
 from sastsimi.contracts.refs import RecordRef, RunStoredDataRef, StoredDataRef
 from sastsimi.contracts.work import WorkAttempt, WorkExecutionState, WorkType
@@ -94,6 +95,7 @@ class AnalysisStatusView:
     waiting_for: tuple[str, ...]
     result_ref: RunStoredDataRef | None
     failures: tuple[WorkFailureView, ...] = ()
+    purpose: Purpose = Purpose.PRODUCTION
 
 
 class SchedulerStorePort(Protocol):

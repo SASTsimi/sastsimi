@@ -78,6 +78,9 @@ def test_source_cli_and_onboarding_contract_are_documented() -> None:
     assert "ProductionProvisioningManifest" in combined
     assert "PVDObservation" in combined
     assert "onboarding init --profile" in combined
+    assert "onboarding compose --profile" in combined
+    assert "onboarding prepare --profile" in combined
+    assert "--bundle-dir" in combined
     for field in (
         "provisioning_manifest_sha256",
         "policy_artifact_sha256",

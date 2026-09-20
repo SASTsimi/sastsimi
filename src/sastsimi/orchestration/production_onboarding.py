@@ -406,6 +406,11 @@ class OnboardedProductionCapabilityBundleLoader:
             raise ProductionOnboardingUnavailable(
                 "PRODUCTION_PROVIDER_APPROVAL_INCOMPLETE"
             )
+        dynamic_providers = {
+            (route.provider_profile_key, route.model)
+            for route in profile.llm_routes
+            if route.role == "DYNAMIC_REPRODUCTION"
+        }
         for key, provider_approval in approvals.items():
             connection = configured_providers[key]
             if (
@@ -422,6 +427,12 @@ class OnboardedProductionCapabilityBundleLoader:
                 )
             if now >= provider_approval.terms_valid_until:
                 raise ProductionOnboardingUnavailable("PROVIDER_TERMS_APPROVAL_STALE")
+            if key in dynamic_providers and "PVD-16" not in {
+                str(observation.test_id) for observation in provider_approval.tests
+            }:
+                raise ProductionOnboardingUnavailable(
+                    "PRODUCTION_PROVIDER_DYNAMIC_APPROVAL_INCOMPLETE"
+                )
         expected_routes = {
             (item.role, item.task_kind): item for item in profile.llm_routes
         }

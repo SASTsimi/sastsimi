@@ -801,11 +801,17 @@ class StaticNormalizationPublisher:
             if isinstance(item, WorkAttempt)
             and item.work_id == work.work_id
             and item.attempt_id == work.active_attempt_id
-            and item.status == "RUNNING"
         )
-        if len(attempts) != 1:
+        logical_ids = {str(item.meta.logical_record_id) for item in attempts}
+        if not attempts or len(logical_ids) != 1:
             raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
-        return attempts[0]
+        revision = max(item.meta.revision_number for item in attempts)
+        latest = tuple(
+            item for item in attempts if item.meta.revision_number == revision
+        )
+        if len(latest) != 1 or latest[0].status != "RUNNING":
+            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+        return latest[0]
 
     @staticmethod
     def _rule_context(

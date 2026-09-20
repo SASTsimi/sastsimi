@@ -183,6 +183,7 @@ OpenGrep 실행 파일의 설치·`PATH` 확인과 profile 설정은
 ```text
 uv run sastsimi --data-dir <data-dir> capability probe GIT --format json
 uv run sastsimi --data-dir <data-dir> capability probe PYTHON_AST --format json
+uv run sastsimi --data-dir <data-dir> capability probe PYTHON_RUNTIME --format json
 uv run sastsimi --data-dir <data-dir> capability probe OPENGREP --format json
 uv run sastsimi --data-dir <data-dir> capability probe DOCKER --docker-host <승인된-daemon-주소> --format json
 uv run sastsimi --data-dir <data-dir> capability list --format json
@@ -234,7 +235,8 @@ uv run sastsimi --data-dir <data-dir> report show <finding_id>
 uv run sastsimi --data-dir <data-dir> report export <finding_id> --format markdown
 ```
 
-기본 export 경로는 `<data-dir>/reports/<analysis_id>/<finding_id>.md`입니다. 실패하면
+기본 export 경로는 `<data-dir>/reports/<analysis_id>/F-001.md`와 같은
+분석별 표시 번호 경로입니다. 실패하면
 [`docs/troubleshooting.md`](../troubleshooting.md)를 확인하고 오래된 Markdown이나
 다른 분석의 결과를 복사해 우회하지 않습니다.
 

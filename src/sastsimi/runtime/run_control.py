@@ -118,6 +118,7 @@ class ProductionRunControl:
             cancel_requested=cancel_requested,
             waiting_for=waiting_for,
             result_ref=state.analysis_result_ref,
+            purpose=state.purpose,
         )
 
     async def cancel(self, analysis_id: str) -> AnalysisStatusView:
@@ -132,9 +133,30 @@ class ProductionRunControl:
         works = self._scheduler_store.work_for_run(analysis_id)
         if any(item.status in {"PENDING", "READY", "RUNNING"} for item in works):
             raise ValueError("RUN_NOT_QUIESCENT")
-        blocked = tuple(item for item in works if item.status == "BLOCKED")
+        blocked = tuple(
+            item
+            for item in works
+            if item.status == "BLOCKED" and item.waiting_for != ("DEPENDENCY",)
+        )
+        failed = (
+            tuple(
+                item
+                for item in works
+                if item.status == "FAILED" and item.work_type == "DYNAMIC_REPRO"
+            )
+            if state.purpose == "LOCAL_EVALUATION"
+            else ()
+        )
+        dynamic_blocked = (
+            tuple(item for item in blocked if item.work_type == "DYNAMIC_REPRO")
+            if state.purpose == "LOCAL_EVALUATION"
+            else ()
+        )
         candidates: list[tuple[WorkExecutionState, WorkAttempt]] = []
-        for item in blocked:
+        # Repair the failed dynamic cohort first. Unrelated BLOCKED work stays
+        # untouched until those exact hypotheses have durable terminal output.
+        selected = failed or dynamic_blocked or blocked
+        for item in selected:
             attempts = self._scheduler_store.attempts_for_work(str(item.work_id))
             if not attempts:
                 raise ValueError("RESUME_ATTEMPT_HISTORY_REQUIRED")

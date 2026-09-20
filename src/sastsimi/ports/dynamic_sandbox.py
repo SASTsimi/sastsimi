@@ -123,6 +123,9 @@ class PreparedRecipeSourceView(Protocol):
     def dependency_bundle_ref(self) -> StoredDataRef | None: ...
 
     @property
+    def dependency_manifest_path(self) -> str | None: ...
+
+    @property
     def dockerfile_origin(self) -> Literal["REPOSITORY", "GENERATED"]: ...
 
     @property
@@ -238,6 +241,7 @@ class ReproductionSetupPort(Protocol):
         request: DynamicReproductionRequest,
         requirements: EnvironmentRequirements,
         meta: RecordMeta,
+        baseline: EnvironmentRecipe | None = None,
     ) -> EnvironmentRecipe: ...
 
     def recipe_resource_refs(

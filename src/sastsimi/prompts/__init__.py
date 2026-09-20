@@ -1,6 +1,7 @@
 """Provider-neutral prompt registry, loading, building, redaction and validation."""
 
 from .builder import ArtifactPromptSource as ArtifactPromptSource
+from .builder import ProjectedPromptSource as ProjectedPromptSource
 from .builder import PromptBuilder as PromptBuilder
 from .builder import PromptSource as PromptSource
 from .dynamic_reproduction import (

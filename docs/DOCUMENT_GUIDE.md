@@ -32,7 +32,7 @@
 | [`docs/installation.md`](./installation.md) | Python·Git·CodeQL·OpenGrep·Docker 설치와 운영 capability 확인 방법을 설명합니다. | 설치·운영 담당자 | 운영 안내 |
 | [`docs/provider-setup.md`](./provider-setup.md) | API key와 공식 회원 로그인 경로를 secret 노출 없이 연결하고 승인 여부를 확인하는 방법을 설명합니다. | Provider·운영 담당자 | 운영 안내 |
 | [`docs/onboarding-evidence.md`](./onboarding-evidence.md) | PVD·provisioning·onboarding 근거 파일의 실제 필드와 READY 확인 순서를 secret 없는 예시로 설명합니다. | Provider·운영·승인 담당자 | 운영 안내 |
-| [`docs/usage.md`](./usage.md) | 실제 저장소 분석 시작, 상태·결과 조회와 Markdown 보고서 내보내기 순서를 설명합니다. | 도구 사용자·운영 담당자 | 운영 안내 |
+| [`docs/usage.md`](./usage.md) | 실제 저장소 분석 시작, 상태·결과 조회, 읽기 전용 대시보드와 Markdown 보고서 확인 순서를 설명합니다. | 도구 사용자·운영 담당자 | 운영 안내 |
 | [`docs/troubleshooting.md`](./troubleshooting.md) | capability·인증·정적 도구·Docker·보고서 오류를 verdict와 섞지 않고 처리하는 방법을 설명합니다. | 도구 사용자·운영 담당자 | 운영 안내 |
 | [`docs/handoff/T17_IMPLEMENTATION_HANDOFF.md`](./handoff/T17_IMPLEMENTATION_HANDOFF.md) | T17 병합 기준 구현 상태, 실제 실행 흐름, 다시 만들면 안 되는 기능과 다음 작업 순서를 설명합니다. | 다음 구현 담당자·PM·검토자 | 구현 인계 기준 |
 | [`docs/release-follow-ups.md`](./release-follow-ups.md) | 첫 실행 버전에서 의도적으로 미룬 Medium/Low 확장 항목을 기록합니다. | PM·후속 구현 담당자 | 후속 목록 |

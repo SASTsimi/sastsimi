@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import BinaryIO, Literal, Protocol, cast
+from typing import BinaryIO, Literal, Protocol, Self, cast
+
+from pydantic import model_validator
 
 from sastsimi.contracts.actions import SessionMode
 from sastsimi.contracts.base import ContractModel, NonEmptyStr
@@ -195,6 +197,18 @@ class _FinalContent(ContractModel):
     required_primitive_candidates: tuple[_PrimitiveDraftContent, ...]
     provided_primitive_candidates: tuple[_PrimitiveDraftContent, ...]
     unresolved_conditions: tuple[NonEmptyStr, ...]
+
+    @model_validator(mode="after")
+    def primitive_candidates_cite_evidence(self) -> Self:
+        if any(
+            not candidate.evidence_refs
+            for candidate in (
+                *self.required_primitive_candidates,
+                *self.provided_primitive_candidates,
+            )
+        ):
+            raise ValueError("VERIFICATION_EVIDENCE_CLOSURE_MISMATCH")
+        return self
 
 
 class VerificationAgent:
@@ -904,6 +918,8 @@ class VerificationAgent:
 
         evidence_roots = (
             generation.evidence_ref,
+            cast(StoredDataRef, reference(pro)),
+            cast(StoredDataRef, reference(con)),
             *(
                 ref
                 for restriction in proposal.restrictions
@@ -1231,6 +1247,7 @@ class VerificationAgent:
             pro_ref,
             con_ref,
             generation.evidence_ref,
+            *generation.context_refs,
         )
 
     @staticmethod
@@ -1244,6 +1261,9 @@ class VerificationAgent:
     ) -> None:
         allowed = {
             generation.evidence_ref,
+            *generation.context_refs,
+            reference(pro),
+            reference(con),
             *(
                 ref
                 for claim in (*pro.evidence, *con.evidence)

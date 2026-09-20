@@ -43,9 +43,9 @@ DYNAMIC_REPRODUCTION_PROMPTS = (
         "poc_candidate",
         Path(
             "src/sastsimi/prompts/templates/dynamic-reproduction/"
-            "create-poc-candidate/1.0.1.md"
+            "create-poc-candidate/1.0.2.md"
         ),
-        "28a97b219360d759afa8b9e874c279627732be70669fef826d910c436965c4b2",
+        "5cc12666e396f49f7bd2cec86486554ca515cd0be9d172a7dc4498cbc63389f6",
         "NEW",
         False,
     ),

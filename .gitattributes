@@ -6,6 +6,8 @@
 *.yml text eol=lf
 *.toml text eol=lf
 *.lock text eol=lf
+*.ql text eol=lf
+*.qls text eol=lf
 *.ps1 text eol=lf
 .gitignore text eol=lf
 .gitattributes text eol=lf

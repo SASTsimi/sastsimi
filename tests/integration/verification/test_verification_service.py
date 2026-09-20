@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from io import BytesIO
 from typing import Literal
@@ -9,7 +10,7 @@ import pytest
 from sastsimi.agents.verification import VerificationAgent, VerificationCallRefs
 from sastsimi.contracts._domain import DomainRecord
 from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.dynamic import DynamicReproductionResult
+from sastsimi.contracts.dynamic import DynamicReproductionResult, SandboxProfile
 from sastsimi.contracts.hypothesis import (
     FalsificationQuestion,
     HypothesisProposal,
@@ -839,6 +840,37 @@ async def test_false_requires_named_disproof_and_complete_checks() -> None:
 
 
 @pytest.mark.asyncio
+async def test_initial_assessment_may_cite_exact_current_pro_and_con_results() -> None:
+    fixture = _Fixture()
+    payload = fixture.assessment_payload(
+        "TRUE", next_step="POC_CONFIRMATION", unresolved=("PoC required",)
+    )
+    payload["evidence_refs"] = [
+        fixture.evidence_ref.model_dump(mode="json"),
+        fixture.pro_ref.model_dump(mode="json"),
+        fixture.con_ref.model_dump(mode="json"),
+    ]
+    fixture.queue(
+        payload,
+        task_kind="ASSESS_INITIAL",
+        context_refs=fixture.assessment_context(),
+    )
+
+    assessment = await fixture.service.assess_initial(
+        generation=fixture.generation,
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+
+    assert assessment.evidence_refs == (
+        fixture.evidence_ref,
+        fixture.pro_ref,
+        fixture.con_ref,
+    )
+
+
+@pytest.mark.asyncio
 async def test_false_without_named_disproof_is_rejected() -> None:
     fixture = _Fixture()
     fixture.queue(
@@ -942,6 +974,49 @@ async def test_hold_preserves_required_primitive_content_with_trusted_id() -> No
     )
     assert result.required_primitive_candidates[0].draft_id == "runtime-draft-1"
     assert result.provided_primitive_candidates == ()
+
+
+@pytest.mark.asyncio
+async def test_hold_primitive_may_cite_exact_current_con_result() -> None:
+    fixture = _Fixture()
+    fixture.queue(
+        fixture.assessment_payload("HOLD", unresolved=("Need dynamic test",)),
+        task_kind="ASSESS_INITIAL",
+        context_refs=fixture.assessment_context(),
+    )
+    assessment = await fixture.service.assess_initial(
+        generation=fixture.generation,
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+    assessment_ref = reference(assessment)
+    assert isinstance(assessment_ref, StoredDataRef)
+    fixture.queue(
+        fixture.final_payload(
+            "HOLD",
+            outcome="INCONCLUSIVE",
+            unresolved=("Need dynamic test",),
+            required=(
+                fixture.primitive_content(
+                    "Dynamic falsification result required",
+                    evidence_ref=fixture.con_ref,
+                ),
+            ),
+        ),
+        task_kind="FINAL_VERDICT",
+        context_refs=(*fixture.assessment_context(), assessment_ref),
+    )
+
+    result = await fixture.service.finalize_without_dynamic(
+        generation=fixture.generation,
+        assessment_ref=assessment_ref,
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+
+    assert result.required_primitive_candidates[0].evidence_refs == (fixture.con_ref,)
 
 
 @pytest.mark.asyncio
@@ -1265,6 +1340,68 @@ async def test_initial_true_waits_for_t11_instead_of_creating_final_true() -> No
             call=fixture.call,
         )
     assert fixture.llm.outcomes == []
+
+
+@pytest.mark.asyncio
+async def test_dynamic_request_preserves_exact_retrieved_code_context() -> None:
+    """Dropping the runtime-retrieved code response must break this test."""
+    fixture = _Fixture()
+    fixture.queue(
+        fixture.assessment_payload("TRUE", next_step="POC_CONFIRMATION"),
+        task_kind="ASSESS_INITIAL",
+        context_refs=fixture.assessment_context(),
+    )
+    assessment = await fixture.service.assess_initial(
+        generation=fixture.generation,
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+    assessment_ref = reference(assessment)
+    assert isinstance(assessment_ref, StoredDataRef)
+
+    context_ref = fixture._opaque_record("code_context_response", "dynamic-code")
+    sandbox = SandboxProfile.model_validate(
+        {
+            "meta": _meta(
+                "sandbox_profile", suffix="dynamic-sandbox", attempt=None
+            ).model_copy(update={"hypothesis_id": None}),
+            "network_mode": "DEFAULT_DENY",
+            "allowed_egress_refs": (),
+            "isolation_policy_refs": (),
+            "cpu_limit_millicores": 1000,
+            "memory_limit_bytes": 536870912,
+            "disk_limit_bytes": 1073741824,
+            "pid_limit": 128,
+            "max_requested_execution_ms": 60000,
+            "created_at": NOW,
+        }
+    )
+    sandbox_ref = fixture.records.add(sandbox)
+    generation = replace(fixture.generation, context_refs=(context_ref,))
+    fixture.queue(
+        {"goal": "Confirm the exact hypothesis", "environment_needs": []},
+        task_kind="CREATE_DYNAMIC_REQUEST",
+        context_refs=(
+            *fixture.assessment_context(),
+            context_ref,
+            assessment_ref,
+            sandbox_ref,
+        ),
+    )
+
+    outcome = await fixture.service.create_dynamic_request_with_invocation(
+        generation=generation,
+        assessment_ref=assessment_ref,
+        verification_assignment_ref=fixture._opaque_record(
+            "verification_assignment", "dynamic-assignment"
+        ),
+        sandbox_profile_ref=sandbox_ref,
+        call=fixture.call,
+    )
+
+    assert outcome.record.code_refs == (context_ref,)
+    assert context_ref in outcome.invocation.request.context_refs
 
 
 @pytest.mark.asyncio

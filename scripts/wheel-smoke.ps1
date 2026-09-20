@@ -129,12 +129,16 @@ try {
         throw 'Expected exactly one current report'
     }
     $findingId = [string]$reports.data.reports[0].finding_id
+    $displayId = [string]$reports.data.reports[0].display_id
+    if ($displayId -notmatch '^F-[0-9]{3,}$') {
+        throw "Report list did not return a stable display id: $displayId"
+    }
     $shown = (Invoke-Native $cli '--data-dir' $data 'report' 'show' $findingId) -join "`n"
     if ($shown -notmatch '^# ') {
         throw 'Report show did not return Markdown'
     }
     Invoke-Native $cli '--data-dir' $data 'report' 'export' $findingId '--format' 'markdown' | Out-Null
-    $reportPath = Join-Path $data "reports/$analysisId/$findingId.md"
+    $reportPath = Join-Path $data "reports/$analysisId/$displayId.md"
     if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
         throw "Markdown report was not exported to the exact expected path: $reportPath"
     }

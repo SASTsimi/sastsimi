@@ -33,7 +33,7 @@ type InvocationStatus = Literal[
     "AUTH_REQUIRED",
     "CANCELLED",
 ]
-type Purpose = Literal["EVALUATION", "PRODUCTION"]
+type Purpose = Literal["EVALUATION", "PRODUCTION", "LOCAL_EVALUATION"]
 type SessionPolicy = Literal["NEW", "RESUME", "AUTO"]
 type Provider = Literal["OPENAI", "ANTHROPIC"]
 type Product = Literal["OPENAI_API", "CODEX", "ANTHROPIC_API", "CLAUDE_CODE"]

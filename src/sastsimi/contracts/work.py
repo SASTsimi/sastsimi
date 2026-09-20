@@ -131,6 +131,10 @@ _ALLOWED_TRANSITIONS = {
     WorkStatus.BLOCKED: frozenset(
         {WorkStatus.READY, WorkStatus.FAILED, WorkStatus.CANCELLED}
     ),
+    # Storage admits FAILED -> READY only for an exact LOCAL_EVALUATION
+    # DYNAMIC_REPRO repair cohort. The contract permits that checked boundary;
+    # production dispatch never selects terminal work for reopening.
+    WorkStatus.FAILED: frozenset({WorkStatus.READY}),
 }
 
 

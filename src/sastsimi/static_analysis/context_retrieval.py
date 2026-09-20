@@ -422,7 +422,21 @@ def plan_context_retrieval(
     for path in paths:
         _safe_git_path(path)
     lineage_refs = _unique_sorted(raw_lineage_refs)
-    intent_hash = context_intent_hash(intent)
+    # The durable READ_CODE action and CodeContextRequest bind the expanded
+    # targets below, not only the caller's graph seed.  Hash that exact
+    # authorized execution intent so the storage boundary compares like with
+    # like while plan recomputation still proves it came from the original
+    # seed and immutable StaticFactBundle.
+    bound_intent = ContextRetrievalIntent(
+        proposal_ref=intent.proposal_ref,
+        bundle_ref=intent.bundle_ref,
+        requested_entities=final_entities,
+        requested_locations=final_locations,
+        relation_query=intent.relation_query,
+        reason=intent.reason,
+        requested_limits=intent.requested_limits,
+    )
+    intent_hash = context_intent_hash(bound_intent)
     return ContextReadPlan(
         intent_hash=intent_hash,
         workspace_id=str(workspace.workspace_id),

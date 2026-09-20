@@ -12,6 +12,122 @@
       "title": "AttemptId",
       "type": "string"
     },
+    "CodeQLBoundaryCapability": {
+      "additionalProperties": false,
+      "description": "Exact prebuilt-database and hard-quota boundary approved for CodeQL.",
+      "properties": {
+        "container_user": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Container User",
+          "type": "string"
+        },
+        "database_limit_bytes": {
+          "minimum": 1,
+          "title": "Database Limit Bytes",
+          "type": "integer"
+        },
+        "database_provider_evidence_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Database Provider Evidence Sha256",
+          "type": "string"
+        },
+        "database_provider_key": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Database Provider Key",
+          "type": "string"
+        },
+        "database_provider_revision": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Database Provider Revision",
+          "type": "string"
+        },
+        "execution_limit_bytes": {
+          "minimum": 1,
+          "title": "Execution Limit Bytes",
+          "type": "integer"
+        },
+        "expected_codeql_version": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Expected Codeql Version",
+          "type": "string"
+        },
+        "image_digest": {
+          "title": "Image Digest",
+          "type": "string"
+        },
+        "memory_limit_bytes": {
+          "minimum": 1,
+          "title": "Memory Limit Bytes",
+          "type": "integer"
+        },
+        "nano_cpus": {
+          "minimum": 1,
+          "title": "Nano Cpus",
+          "type": "integer"
+        },
+        "pids_limit": {
+          "minimum": 1,
+          "title": "Pids Limit",
+          "type": "integer"
+        },
+        "prebuilt_database_only": {
+          "const": true,
+          "title": "Prebuilt Database Only",
+          "type": "boolean"
+        },
+        "query_pack_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Query Pack Sha256",
+          "type": "string"
+        },
+        "quota_backend_key": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Quota Backend Key",
+          "type": "string"
+        },
+        "quota_enforcement_identity_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Quota Enforcement Identity Sha256",
+          "type": "string"
+        },
+        "supported_languages": {
+          "items": {
+            "enum": [
+              "PYTHON",
+              "JAVASCRIPT"
+            ],
+            "type": "string"
+          },
+          "title": "Supported Languages",
+          "type": "array"
+        }
+      },
+      "required": [
+        "quota_backend_key",
+        "quota_enforcement_identity_sha256",
+        "database_limit_bytes",
+        "execution_limit_bytes",
+        "database_provider_key",
+        "database_provider_revision",
+        "database_provider_evidence_sha256",
+        "image_digest",
+        "expected_codeql_version",
+        "query_pack_sha256",
+        "container_user",
+        "pids_limit",
+        "memory_limit_bytes",
+        "nano_cpus",
+        "supported_languages",
+        "prebuilt_database_only"
+      ],
+      "title": "CodeQLBoundaryCapability",
+      "type": "object"
+    },
     "CommitId": {
       "minLength": 1,
       "pattern": "\\S",
@@ -215,6 +331,17 @@
         }
       ]
     },
+    "codeql_boundary": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CodeQLBoundaryCapability"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "executable_key": {
       "minLength": 1,
       "pattern": "\\S",
@@ -279,7 +406,8 @@
       "enum": [
         "FIXTURE",
         "EVALUATION",
-        "PRODUCTION"
+        "PRODUCTION",
+        "LOCAL_EVALUATION"
       ],
       "title": "Purpose",
       "type": "string"

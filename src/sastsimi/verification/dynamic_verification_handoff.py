@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol, cast
 
 from sastsimi.contracts.dynamic import (
@@ -14,6 +14,7 @@ from sastsimi.contracts.dynamic import (
 )
 from sastsimi.contracts.hypothesis import (
     HypothesisProcessState,
+    HypothesisProposal,
     VulnerabilityHypothesis,
 )
 from sastsimi.contracts.llm import (
@@ -28,7 +29,7 @@ from sastsimi.contracts.refs import (
     StoredDataRef,
     reference,
 )
-from sastsimi.contracts.static import StaticFactBundle
+from sastsimi.contracts.static import CodeContextResponse, StaticFactBundle
 from sastsimi.contracts.verification import (
     ConEvidenceResult,
     PlaybookApplication,
@@ -43,6 +44,7 @@ from sastsimi.ports.llm_invocation import PersistedLLMInvocation
 from sastsimi.ports.record_store import RecordStore
 from sastsimi.ports.runtime_query import RuntimeQueryPort
 from sastsimi.ports.verification_assembly import VerificationGenerationInputs
+from sastsimi.ports.work_handler import WorkHandler
 from sastsimi.runtime.claimed_context import require_claimed_context
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.verification.completion import VerificationCompletionCoordinator
@@ -54,6 +56,7 @@ from sastsimi.verification.service import VerificationService
 
 type BudgetScopeResolver = Callable[[str], BudgetScopeRef]
 type SandboxProfileResolver = Callable[[WorkExecutionState], StoredDataRef]
+type ContextCeilingResolver = Callable[[], StoredDataRef]
 
 
 class DynamicExecutor(Protocol):
@@ -84,6 +87,8 @@ class ProductionDynamicVerificationHandoff:
     verification_identity_ref: BudgetScopeRef
     budget_scope: BudgetScopeResolver
     sandbox_profile: SandboxProfileResolver
+    context_retrieval: WorkHandler
+    context_ceiling: ContextCeilingResolver
 
     async def complete_dynamic(
         self,
@@ -99,6 +104,7 @@ class ProductionDynamicVerificationHandoff:
         assignment_ref = process.verification_assignment_ref
         if assignment_ref is None:
             raise ValueError("VERIFICATION_ASSIGNMENT_REQUIRED")
+        generation = await self._with_dynamic_context(context, generation)
         profile_ref = self.sandbox_profile(work)
         profile = self._exact(profile_ref, SandboxProfile)
         if profile_ref != reference(profile):
@@ -187,6 +193,7 @@ class ProductionDynamicVerificationHandoff:
             public_input_refs,
             assessment.pro_evidence_ref,
             assessment.con_evidence_ref,
+            context_refs=request.code_refs,
         )
         initial_refs = self._initial_source_refs(generation)
         final_refs = (
@@ -273,6 +280,7 @@ class ProductionDynamicVerificationHandoff:
         public_refs: tuple[StoredDataRef, ...],
         pro_ref: StoredDataRef,
         con_ref: StoredDataRef,
+        context_refs: tuple[StoredDataRef, ...] = (),
     ) -> VerificationGenerationInputs:
         hypothesis = self._one(
             public_refs, VulnerabilityHypothesis.KIND, VulnerabilityHypothesis
@@ -308,7 +316,96 @@ class ProductionDynamicVerificationHandoff:
             validation_ids=tuple(
                 str(item.validation_id) for item in hypothesis.validation_checks
             ),
+            context_refs=context_refs,
         )
+
+    async def _with_dynamic_context(
+        self,
+        context: WorkContext,
+        generation: VerificationGenerationInputs,
+    ) -> VerificationGenerationInputs:
+        """Run one bounded exact-code read before asking the LLM for a PoC."""
+
+        if generation.context_refs:
+            self._validate_context_refs(context.work, generation.context_refs)
+            return generation
+        work = context.work
+        if not isinstance(work.meta, RecordMeta) or work.meta.hypothesis_id is None:
+            raise ValueError("DYNAMIC_CODE_CONTEXT_REQUIRED")
+        hypothesis = self._exact(generation.hypothesis_ref, VulnerabilityHypothesis)
+        proposal = self._exact(hypothesis.proposal_ref, HypothesisProposal)
+        proposal_ref = reference(proposal)
+        if not isinstance(proposal_ref, StoredDataRef):
+            raise ValueError("DYNAMIC_CODE_CONTEXT_REQUIRED")
+        context_ceiling_ref = self.context_ceiling()
+        inputs = (
+            generation.hypothesis_ref,
+            proposal_ref,
+            generation.evidence_ref,
+            context_ceiling_ref,
+        )
+        existing = tuple(
+            candidate
+            for candidate in self.runner.runtime.work.store.work_for_run(
+                str(work.meta.analysis_id)
+            )
+            if candidate.work_type == WorkType.CONTEXT_RETRIEVAL
+            and candidate.work_generation == work.work_generation
+            and isinstance(candidate.meta, RecordMeta)
+            and candidate.meta.hypothesis_id == work.meta.hypothesis_id
+            and candidate.input_refs == inputs
+            and candidate.status == WorkStatus.SUCCEEDED
+        )
+        if len(existing) > 1:
+            raise ValueError("DYNAMIC_CODE_CONTEXT_AMBIGUOUS")
+        if existing:
+            refs = cast(tuple[StoredDataRef, ...], existing[0].output_refs)
+            self._validate_context_refs(work, refs)
+            return replace(generation, context_refs=refs)
+
+        child = self.runner.start(
+            self.budget_scope(str(work.meta.analysis_id)),
+            work.meta,
+            WorkType.CONTEXT_RETRIEVAL,
+            "HYPOTHESIS",
+            str(work.meta.hypothesis_id),
+            self.verification_identity_ref,
+            role="VERIFICATION",
+            inputs=inputs,
+            generation=work.work_generation,
+        )
+        attempts = self.runner.runtime.work.store.attempts_for_work(str(child.work_id))
+        if not attempts:
+            raise ValueError("DYNAMIC_CODE_CONTEXT_REQUIRED")
+        child_context = WorkContext(child, attempts[-1])
+        result = await self.context_retrieval.execute(child_context)
+        completed = self.runner.runtime.work.accept_handler_result(
+            child_context, result
+        )
+        refs = cast(tuple[StoredDataRef, ...], completed.output_refs)
+        self._validate_context_refs(work, refs)
+        return replace(generation, context_refs=refs)
+
+    def _validate_context_refs(
+        self,
+        work: WorkExecutionState,
+        refs: tuple[StoredDataRef, ...],
+    ) -> None:
+        if (
+            not isinstance(work.meta, RecordMeta)
+            or work.meta.hypothesis_id is None
+            or len(refs) != 1
+        ):
+            raise ValueError("DYNAMIC_CODE_CONTEXT_REQUIRED")
+        response = self._exact(refs[0], CodeContextResponse)
+        if (
+            response.meta.analysis_id != work.meta.analysis_id
+            or response.meta.workspace_id != work.meta.workspace_id
+            or response.meta.commit_id != work.meta.commit_id
+            or response.meta.hypothesis_id != work.meta.hypothesis_id
+            or not response.code_fragment_refs
+        ):
+            raise ValueError("DYNAMIC_CODE_CONTEXT_REQUIRED")
 
     def _assessment(self, work: WorkExecutionState) -> VerificationInitialAssessment:
         candidates = tuple(
@@ -393,6 +490,7 @@ class ProductionDynamicVerificationHandoff:
             generation.pro_ref,
             generation.con_ref,
             generation.evidence_ref,
+            *generation.context_refs,
         )
 
 

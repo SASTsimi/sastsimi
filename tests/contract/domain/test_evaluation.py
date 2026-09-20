@@ -1,7 +1,7 @@
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from .fixtures import meta, mutations, ref, wire
 
@@ -152,3 +152,84 @@ def test_failed_hypotheses_cannot_be_complete_run() -> None:
     ):
         with pytest.raises(ValidationError):
             wire(AnalysisRunResult, value | patch)
+
+
+def test_local_evaluation_result_is_distinct_from_production_and_corpus_evaluation() -> (  # noqa: E501
+    None
+):
+    from sastsimi.contracts.evaluation import AnalysisRunResult
+
+    value: dict[str, Any] = dict(
+        meta=meta("analysis_run_result", run=True),
+        purpose="LOCAL_EVALUATION",
+        repository_url="https://example.org/repo",
+        program_id="program1",
+        workspace_id=None,
+        commit_id=None,
+        workspace_ref=None,
+        status="FAILED",
+        hypothesis_counts={},
+        failed_hypothesis_count=0,
+        verdict_counts={},
+        gate_counts={},
+        run_policy_state_ref=None,
+        stop_reasons=["PROVIDER_AUTH_REQUIRED"],
+        errors=[],
+        gaps=[],
+        resources=dict(
+            elapsed_ms=1,
+            work_count=1,
+            attempt_count=1,
+            retry_count=0,
+            llm_call_count=0,
+            dynamic_attempt_count=0,
+            cost_minor_units=None,
+            currency=None,
+            pricing_revision_refs=[],
+            usage_measurement_refs=[],
+            usage_complete=False,
+            unavailable_reasons=["PROVIDER_USAGE_UNAVAILABLE"],
+        ),
+        started_at="2026-09-08T00:00:00Z",
+        finished_at="2026-09-08T00:00:01Z",
+        elapsed_ms=1000,
+        debug_trace_ref=dict(
+            stored_data_id="trace",
+            data_kind="debug_trace",
+            record_id=None,
+            content_hash="a" * 64,
+            analysis_id="a1",
+        ),
+    )
+    for name in (
+        "hypothesis_duplicate_review_refs finding_refs verification_refs "
+        "cwe_label_refs technical_review_refs rule_scope_review_refs "
+        "policy_cache_refs policy_collection_result_refs policy_parser_result_refs "
+        "policy_record_refs dynamic_request_refs dynamic_result_refs "
+        "environment_recipe_refs sandbox_environment_refs agent_log_refs "
+        "dynamic_reproduction_conclusion_refs sandbox_policy_decision_refs "
+        "cleanup_result_refs primitive_and_chaining_refs poc_candidate_refs "
+        "poc_refs report_draft_refs llm_invocation_log_refs action_decision_refs "
+        "work_state_refs work_attempt_refs transition_commit_refs eval_config_refs"
+    ).split():
+        value[name] = []
+
+    result = wire(AnalysisRunResult, value)
+
+    assert result.purpose == "LOCAL_EVALUATION"
+    assert result.eval_config_refs == ()
+
+
+def test_local_evaluation_is_available_to_llm_and_static_profiles() -> None:
+    from sastsimi.contracts.llm import Purpose as LLMPurpose
+    from sastsimi.contracts.static import StaticToolProfile
+
+    assert (
+        TypeAdapter(LLMPurpose).validate_python("LOCAL_EVALUATION")
+        == "LOCAL_EVALUATION"
+    )
+    static_purpose = StaticToolProfile.model_fields["purpose"].annotation
+    assert (
+        TypeAdapter(static_purpose).validate_python("LOCAL_EVALUATION")
+        == "LOCAL_EVALUATION"
+    )

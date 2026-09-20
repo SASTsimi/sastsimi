@@ -42,7 +42,12 @@ from sastsimi.ports.prompt_registry import PromptRegistryPort
 from sastsimi.ports.record_store import RecordStore
 from sastsimi.ports.runtime_query import RuntimeQueryPort
 
-from .builder import ArtifactPromptSource, PromptBuilder, PromptSource
+from .builder import (
+    ArtifactPromptSource,
+    ProjectedPromptSource,
+    PromptBuilder,
+    PromptSource,
+)
 from .loader import PromptLoader
 from .registry import LoadedPromptDefinition
 
@@ -66,19 +71,19 @@ REQUIRED_PRODUCTION_PROMPT_ROUTES = (
         "HYPOTHESIS",
         "GENERATE_INITIAL",
         "hypothesis_proposal",
-        "src/sastsimi/prompts/templates/hypothesis/generate-initial/1.0.0.md",
+        "src/sastsimi/prompts/templates/hypothesis/generate-initial/1.0.1.md",
     ),
     _required(
         "PRO",
         "COLLECT_SUPPORT",
         "pro_evidence_result",
-        "src/sastsimi/prompts/templates/pro/collect-support/1.0.0.md",
+        "src/sastsimi/prompts/templates/pro/collect-support/1.0.1.md",
     ),
     _required(
         "CON",
         "COLLECT_COUNTEREVIDENCE",
         "con_evidence_result",
-        "src/sastsimi/prompts/templates/con-agent/collect-counterevidence/1.0.0.md",
+        "src/sastsimi/prompts/templates/con-agent/collect-counterevidence/1.0.1.md",
     ),
     _required(
         "VERIFICATION",
@@ -96,7 +101,7 @@ REQUIRED_PRODUCTION_PROMPT_ROUTES = (
         "VERIFICATION",
         "FINAL_VERDICT",
         "verification_result",
-        "src/sastsimi/prompts/templates/verification/final-verdict/1.0.0.md",
+        "src/sastsimi/prompts/templates/verification/final-verdict/1.0.1.md",
     ),
     _required(
         "DYNAMIC_REPRODUCTION",
@@ -114,7 +119,7 @@ REQUIRED_PRODUCTION_PROMPT_ROUTES = (
         "DYNAMIC_REPRODUCTION",
         "CREATE_POC_CANDIDATE",
         "poc_candidate",
-        "src/sastsimi/prompts/templates/dynamic-reproduction/create-poc-candidate/1.0.1.md",
+        "src/sastsimi/prompts/templates/dynamic-reproduction/create-poc-candidate/1.0.2.md",
     ),
     _required(
         "DYNAMIC_REPRODUCTION",
@@ -174,6 +179,14 @@ _CANDIDATE_ARTIFACT_SLOT = (
     "artifact",
     ("/redacted_body",),
     "REQUIRED_MANY",
+    "UNTRUSTED_DATA",
+)
+_CHAINING_TASK = "MATCH_PRIMITIVES"
+_CHAINING_ARTIFACT_SLOT = (
+    "prepared_input",
+    "artifact",
+    ("/redacted_body",),
+    "REQUIRED_ONE",
     "UNTRUSTED_DATA",
 )
 _REQUIRED_REDACTIONS = frozenset(
@@ -335,7 +348,9 @@ class ProductionLLMConfigurationService:
         route: ProductionRoute,
         approval: ApprovedProductionRoute,
         work: WorkExecutionState,
-        sources: tuple[PromptSource | ArtifactPromptSource, ...],
+        sources: tuple[
+            PromptSource | ProjectedPromptSource | ArtifactPromptSource, ...
+        ],
         parent_session_ref: str | None = None,
     ) -> PreparedProductionCall:
         if (
@@ -518,7 +533,11 @@ class ProductionLLMConfigurationService:
         required: RequiredProductionPromptRoute,
         entry: PromptRegistryEntry,
     ) -> None:
-        if required.task_kind != _CANDIDATE_TASK:
+        expected = {
+            _CANDIDATE_TASK: _CANDIDATE_ARTIFACT_SLOT,
+            _CHAINING_TASK: _CHAINING_ARTIFACT_SLOT,
+        }.get(required.task_kind)
+        if expected is None:
             return
         artifact_slots = tuple(
             slot for slot in entry.input_slots if slot.data_kind == "artifact"
@@ -533,7 +552,7 @@ class ProductionLLMConfigurationService:
             slot.cardinality,
             slot.trust_class,
         )
-        if actual != _CANDIDATE_ARTIFACT_SLOT:
+        if actual != expected:
             raise ValueError("PRODUCTION_PROMPT_ROUTE_MISMATCH")
 
     def _required(self, route: ProductionRoute) -> RequiredProductionPromptRoute:

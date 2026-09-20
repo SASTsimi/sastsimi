@@ -165,10 +165,6 @@ def _runtime_request(
     assert isinstance(workspace, CodeWorkspace)
     assert workspace in runtime.queries.current_records("a1", "code_workspace")
     runner = WorkflowRunner(runtime, h.clock, h.ids)
-    original_units = runner.units
-    cast(Any, runner).units = lambda **values: original_units(
-        **(values | {"cost_minor_units": 1})
-    )
     profile = StaticToolProfile.model_validate_json(
         canonical_bytes(
             {

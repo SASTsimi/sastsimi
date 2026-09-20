@@ -1,5 +1,6 @@
 """SQLite adapter: Startup verification and conservative local lease recovery."""
 
+from collections.abc import Callable, Iterable
 from datetime import datetime
 
 from sqlalchemy import select
@@ -18,7 +19,7 @@ from sastsimi.contracts.ids import (
     TransitionCommitId,
     TransitionId,
 )
-from sastsimi.contracts.refs import BudgetScopeRef
+from sastsimi.contracts.refs import BudgetScopeRef, RunStoredDataRef, StoredDataRef
 from sastsimi.contracts.work import (
     CommitState,
     CommitTargetStatus,
@@ -43,24 +44,46 @@ class RecoveryService:
         self,
         transitions: TransitionService,
         recovery_identity_ref: BudgetScopeRef | None = None,
+        protected_artifact_refs: Callable[
+            [], Iterable[StoredDataRef | RunStoredDataRef]
+        ]
+        | None = None,
+        *,
+        recover_expired_leases: bool = True,
     ) -> None:
         self.transitions, self.recovery_identity_ref = (
             transitions,
             recovery_identity_ref,
         )
+        self.protected_artifact_refs = protected_artifact_refs or (lambda: ())
+        self.recover_expired_leases = recover_expired_leases
 
     def recover(self) -> RecoveryReport:
         service = self.transitions.works
         database = service.records.database
         try:
+            protected_artifact_refs = tuple(self.protected_artifact_refs())
             database.check_ready()
-            verify(service.records, self.transitions.artifacts, quarantine=False)
+            verify(
+                service.records,
+                self.transitions.artifacts,
+                quarantine=False,
+                protected_artifact_refs=protected_artifact_refs,
+            )
             database.recovery_failed = False
             # Replay before orphan handling so renamed PREPARED files stay available.
             self.transitions.recover_prepared()
-            integrity = verify(service.records, self.transitions.artifacts)
-            blocked = self.expired_leases()
-            verify(service.records, self.transitions.artifacts)
+            integrity = verify(
+                service.records,
+                self.transitions.artifacts,
+                protected_artifact_refs=protected_artifact_refs,
+            )
+            blocked = self.expired_leases() if self.recover_expired_leases else 0
+            verify(
+                service.records,
+                self.transitions.artifacts,
+                protected_artifact_refs=protected_artifact_refs,
+            )
             database.recovery_failed = False
             return RecoveryReport(
                 integrity.checked_artifacts, integrity.quarantined_artifacts, blocked

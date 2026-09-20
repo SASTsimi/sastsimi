@@ -1,0 +1,202 @@
+#!/bin/sh
+set -eu
+
+umask 077
+EXPECTED_CODEQL_VERSION="2.27.0"
+MAX_PROBE_BYTES="8589934593"
+
+fail() {
+    printf '%s\n' "$1" >&2
+    exit 64
+}
+
+require_positive_bounded_decimal() {
+    value="$1"
+    case "$value" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "${#value}" -le 10 ] || return 1
+    [ "$value" -gt 0 ] 2>/dev/null || return 1
+    [ "$value" -le "$MAX_PROBE_BYTES" ] 2>/dev/null || return 1
+}
+
+analyze() {
+    [ "$#" -eq 0 ] || fail "ANALYZE_ARGUMENTS_INVALID"
+    [ -d /input/database ] || fail "DATABASE_INPUT_MISSING"
+    [ -d /input/query-pack ] || fail "QUERY_PACK_INPUT_MISSING"
+    [ -f /input/query-pack/python-security.qls ] \
+        || fail "QUERY_SUITE_INPUT_MISSING"
+    [ -d /work/database ] || fail "DATABASE_TMPFS_MISSING"
+    [ -d /work/output ] || fail "OUTPUT_TMPFS_MISSING"
+    [ ! -e /work/output/result.sarif ] || fail "OUTPUT_NOT_CLEAN"
+
+    mkdir -p \
+        /work/database/codeql-db \
+        /work/database/runtime/home \
+        /work/database/runtime/tmp
+    cp -R /input/database/. /work/database/codeql-db/
+    export HOME=/work/database/runtime/home
+    export TMPDIR=/work/database/runtime/tmp
+    export TMP=/work/database/runtime/tmp
+    export TEMP=/work/database/runtime/tmp
+    export JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=/work/database/runtime/tmp"
+
+    /opt/codeql/codeql database analyze \
+        /work/database/codeql-db \
+        /input/query-pack/python-security.qls \
+        --format=sarifv2.1.0 \
+        --output=/work/output/result.sarif \
+        --threads=1 \
+        --ram=1024 \
+        1>&2
+
+    [ -s /work/output/result.sarif ] || fail "SARIF_OUTPUT_MISSING"
+    cat /work/output/result.sarif
+}
+
+provision_python() {
+    [ "$#" -eq 0 ] || fail "PROVISION_ARGUMENTS_INVALID"
+    [ -d /input/repository ] || fail "REPOSITORY_INPUT_MISSING"
+    [ -d /work/database ] || fail "DATABASE_TMPFS_MISSING"
+    [ ! -e /work/database/codeql-db ] || fail "DATABASE_OUTPUT_NOT_CLEAN"
+
+    mkdir -p /work/database/runtime/home /work/database/runtime/tmp
+    export HOME=/work/database/runtime/home
+    export TMPDIR=/work/database/runtime/tmp
+
+    /opt/codeql/codeql database create \
+        /work/database/codeql-db \
+        --language=python \
+        --source-root=/input/repository \
+        --threads=1 \
+        --ram=1024 \
+        1>&2
+
+    [ -s /work/database/codeql-db/codeql-database.yml ] \
+        || fail "DATABASE_OUTPUT_MISSING"
+    printf '%s\n' 'CODEQL_PROVISION_READY'
+    while :; do
+        sleep 3600
+    done
+}
+
+probe_one() {
+    target="$1"
+    attempted_bytes="$2"
+    data_file="$3"
+    diagnostic_file="$4"
+    limit_bytes=$((attempted_bytes - 1))
+    whole_blocks=$((attempted_bytes / 1048576))
+    trailing_bytes=$((attempted_bytes % 1048576))
+    denied="0"
+
+    : > "$data_file"
+    : > "$diagnostic_file"
+    if [ "$whole_blocks" -gt 0 ]; then
+        if dd if=/dev/zero of="$data_file" bs=1048576 count="$whole_blocks" \
+            conv=fsync status=none 2>"$diagnostic_file"; then
+            :
+        else
+            denied="1"
+        fi
+    fi
+    if [ "$denied" -eq 0 ] && [ "$trailing_bytes" -gt 0 ]; then
+        if dd if=/dev/zero of="$data_file" bs="$trailing_bytes" count=1 \
+            oflag=append conv=notrunc,fsync status=none \
+            2>"$diagnostic_file"; then
+            :
+        else
+            denied="1"
+        fi
+    fi
+
+    written_bytes=$(wc -c < "$data_file")
+    denial_code=""
+    if grep -Fq "No space left on device" "$diagnostic_file"; then
+        denial_code="ENOSPC"
+    elif grep -Fq "Disk quota exceeded" "$diagnostic_file"; then
+        denial_code="EDQUOT"
+    fi
+    rm -f "$data_file" "$diagnostic_file"
+
+    [ "$denied" -eq 1 ] || fail "PROBE_DENIAL_NOT_OBSERVED"
+    [ -n "$denial_code" ] || fail "PROBE_DENIAL_NOT_OBSERVED"
+    [ "$written_bytes" -le "$limit_bytes" ] 2>/dev/null \
+        || fail "PROBE_LIMIT_EXCEEDED"
+
+    PROBE_TARGET="$target"
+    PROBE_LIMIT_BYTES="$limit_bytes"
+    PROBE_ATTEMPTED_BYTES="$attempted_bytes"
+    PROBE_WRITTEN_BYTES="$written_bytes"
+    PROBE_DENIAL_CODE="$denial_code"
+}
+
+probe() {
+    [ "$#" -eq 2 ] || fail "PROBE_ARGUMENTS_INVALID"
+    case "$1" in
+        ''|*[!0-9]*) fail "PROBE_ARGUMENTS_INVALID" ;;
+    esac
+    case "$2" in
+        ''|*[!0-9]*) fail "PROBE_ARGUMENTS_INVALID" ;;
+    esac
+    require_positive_bounded_decimal "$1" || fail "PROBE_ARGUMENTS_INVALID"
+    require_positive_bounded_decimal "$2" || fail "PROBE_ARGUMENTS_INVALID"
+
+    [ -d /work/database ] || fail "DATABASE_TMPFS_MISSING"
+    [ -d /work/output ] || fail "OUTPUT_TMPFS_MISSING"
+    mkdir -p /work/database/.probe-runtime/home /work/database/.probe-runtime/tmp
+    export HOME=/work/database/.probe-runtime/home
+    export TMPDIR=/work/database/.probe-runtime/tmp
+    version_diagnostic=/work/output/.version.err
+    if version=$(/opt/codeql/codeql version --format=terse 2>"$version_diagnostic"); then
+        :
+    else
+        rm -rf /work/database/.probe-runtime
+        rm -f "$version_diagnostic"
+        fail "CODEQL_VERSION_PROBE_FAILED"
+    fi
+    rm -rf /work/database/.probe-runtime
+    rm -f "$version_diagnostic"
+    [ "$version" = "$EXPECTED_CODEQL_VERSION" ] \
+        || fail "CODEQL_VERSION_MISMATCH"
+
+    probe_one \
+        "/work/database" "$1" \
+        "/work/database/.quota-probe" "/work/output/.database-probe.err"
+    database_limit="$PROBE_LIMIT_BYTES"
+    database_attempted="$PROBE_ATTEMPTED_BYTES"
+    database_written="$PROBE_WRITTEN_BYTES"
+    database_denial="$PROBE_DENIAL_CODE"
+
+    probe_one \
+        "/work/output" "$2" \
+        "/work/output/.quota-probe" "/work/database/.output-probe.err"
+    output_limit="$PROBE_LIMIT_BYTES"
+    output_attempted="$PROBE_ATTEMPTED_BYTES"
+    output_written="$PROBE_WRITTEN_BYTES"
+    output_denial="$PROBE_DENIAL_CODE"
+
+    printf '{"schema_version":1,"codeql_version":"%s","database":{"target":"/work/database","limit_bytes":%s,"attempted_bytes":%s,"bytes_written":%s,"denial_code":"%s"},"output":{"target":"/work/output","limit_bytes":%s,"attempted_bytes":%s,"bytes_written":%s,"denial_code":"%s"}}\n' \
+        "$version" \
+        "$database_limit" "$database_attempted" "$database_written" "$database_denial" \
+        "$output_limit" "$output_attempted" "$output_written" "$output_denial"
+}
+
+[ "$#" -ge 1 ] || fail "MODE_REQUIRED"
+case "$1" in
+    analyze)
+        shift
+        analyze "$@"
+        ;;
+    probe)
+        shift
+        probe "$@"
+        ;;
+    provision-python)
+        shift
+        provision_python "$@"
+        ;;
+    *)
+        fail "UNKNOWN_MODE"
+        ;;
+esac

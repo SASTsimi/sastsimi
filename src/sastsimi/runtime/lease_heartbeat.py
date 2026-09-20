@@ -45,6 +45,12 @@ class LeaseHeartbeat:
         self._initial_elapsed_ms = context.attempt.elapsed_ms
         self._stopped = asyncio.Event()
 
+    @property
+    def context(self) -> WorkContext:
+        """Return the exact attempt revision owned by the latest heartbeat."""
+
+        return self._context
+
     def pulse(self) -> HeartbeatStatus:
         analysis_id = str(self._context.work.meta.analysis_id)
         if self._run_control.cancel_requested(analysis_id):

@@ -1,0 +1,188 @@
+rules:
+  - id: sastsimi.javascript.auth-check
+    languages: [javascript]
+    message: Candidate authentication check; not a vulnerability verdict.
+    severity: INFO
+    pattern-either:
+      - pattern: $APP.use($AUTH)
+      - pattern: $ROUTER.use($AUTH)
+      - pattern: $AUTH($REQ, $RES, $NEXT)
+
+  - id: sastsimi.javascript.command-sink
+    languages: [javascript]
+    message: Candidate command-execution sink; not a vulnerability verdict.
+    severity: INFO
+    pattern-either:
+      - pattern: child_process.exec(...)
+      - pattern: child_process.execFile(...)
+      - pattern: child_process.spawn(...)
+      - pattern: $CP.exec(...)
+      - pattern: $CP.execFile(...)
+      - pattern: $CP.spawn(...)
+
+  - id: sastsimi.javascript.dom-xss-sink
+    languages: [javascript]
+    message: Candidate browser HTML sink; not a vulnerability verdict.
+    severity: INFO
+    pattern-either:
+      - pattern: $EL.innerHTML = $VALUE
+      - pattern: document.write(...)
+      - pattern: document.writeln(...)
+
+  - id: sastsimi.javascript.permission-check
+    languages: [javascript]
+    message: Candidate permission check; not a vulnerability verdict.
+    severity: INFO
+    pattern-either:
+      - pattern: $USER.hasPermission(...)
+      - pattern: $USER.hasRole(...)
+      - pattern: $AUTHZ.can(...)
+      - pattern: $AUTHZ.authorize(...)
+
+  - id: sastsimi.javascript.request-source
+    languages: [javascript]
+    message: Candidate web-request source; not a vulnerability verdict.
+    severity: INFO
+    pattern-either:
+      - pattern: $REQ.body
+      - pattern: $REQ.body.$FIELD
+      - pattern: $REQ.query
+      - pattern: $REQ.query.$FIELD
+      - pattern: $REQ.params
+      - pattern: $REQ.params.$FIELD
+      - pattern: $REQ.headers[$KEY]
+
+  - id: sastsimi.javascript.sanitizer
+    languages: [javascript]
+    message: Candidate output sanitizer; effectiveness requires verification.
+    severity: INFO
+    pattern-either:
+      - pattern: encodeURIComponent(...)
+      - pattern: $SANITIZER.sanitize(...)
+      - pattern: $ESCAPE(...)
+
+  - id: sastsimi.javascript.sql-sink
+    languages: [javascript]
+    message: Candidate database-query sink; not a vulnerability verdict.
+    severity: INFO
+    pattern-either:
+      - pattern: $DB.query(...)
+      - pattern: $DB.execute(...)
+      - pattern: $CONNECTION.query(...)
+      - pattern: $CONNECTION.execute(...)
+
+  - id: sastsimi.javascript.validator
+    languages: [javascript]
+    message: Candidate input validator; effectiveness requires verification.
+    severity: INFO
+    pattern-either:
+      - pattern: $SCHEMA.validate(...)
+      - pattern: $VALIDATOR.isValid(...)
+      - pattern: $VALIDATOR.matches(...)
+
+  - id: sastsimi.python.auth-check
+    languages: [python]
+    message: Candidate authentication check; not a vulnerability verdict.
+    severity: INFO
+    pattern-either:
+      - pattern: login_required(...)
+      - pattern: authenticate(...)
+      - pattern: $BACKEND.authenticate(...)
+      - pattern: $REQUEST.user.is_authenticated
+
+  - id: sastsimi.python.command-sink
+    languages: [python]
+    message: Candidate command-execution sink; not a vulnerability verdict.
+    severity: INFO
+    pattern-either:
+      - pattern: os.system(...)
+      - pattern: os.popen(...)
+      - pattern: subprocess.run(...)
+      - pattern: subprocess.call(...)
+      - pattern: subprocess.Popen(...)
+      - pattern: subprocess.check_call(...)
+      - pattern: subprocess.check_output(...)
+
+  - id: sastsimi.python.html-sink
+    languages: [python]
+    message: Candidate server-side HTML sink; not a vulnerability verdict.
+    severity: INFO
+    pattern-either:
+      - pattern: mark_safe(...)
+      - pattern: django.utils.safestring.mark_safe(...)
+      - pattern: render_template_string(...)
+
+  - id: sastsimi.python.http-client-sink
+    languages: [python]
+    message: Candidate outbound HTTP sink; not a vulnerability verdict.
+    severity: INFO
+    pattern-either:
+      - pattern: requests.get(...)
+      - pattern: requests.post(...)
+      - pattern: requests.put(...)
+      - pattern: requests.patch(...)
+      - pattern: requests.delete(...)
+      - pattern: $SESSION.request(...)
+
+  - id: sastsimi.python.path-sink
+    languages: [python]
+    message: Candidate filesystem-path sink; not a vulnerability verdict.
+    severity: INFO
+    pattern-either:
+      - pattern: open(...)
+      - pattern: pathlib.Path(...).open(...)
+      - pattern: send_file(...)
+
+  - id: sastsimi.python.permission-check
+    languages: [python]
+    message: Candidate permission check; not a vulnerability verdict.
+    severity: INFO
+    pattern-either:
+      - pattern: permission_required(...)
+      - pattern: $USER.has_perm(...)
+      - pattern: $USER.has_perms(...)
+      - pattern: $REQUEST.user.has_perm(...)
+
+  - id: sastsimi.python.request-source
+    languages: [python]
+    message: Candidate web-request source; not a vulnerability verdict.
+    severity: INFO
+    pattern-either:
+      - pattern: request.args.get(...)
+      - pattern: request.form.get(...)
+      - pattern: request.values.get(...)
+      - pattern: request.json
+      - pattern: $REQUEST.GET.get(...)
+      - pattern: $REQUEST.POST.get(...)
+      - pattern: $REQUEST.GET[$KEY]
+      - pattern: $REQUEST.POST[$KEY]
+
+  - id: sastsimi.python.sanitizer
+    languages: [python]
+    message: Candidate output sanitizer; effectiveness requires verification.
+    severity: INFO
+    pattern-either:
+      - pattern: escape(...)
+      - pattern: html.escape(...)
+      - pattern: django.utils.html.escape(...)
+      - pattern: bleach.clean(...)
+
+  - id: sastsimi.python.sql-sink
+    languages: [python]
+    message: Candidate database-query sink; not a vulnerability verdict.
+    severity: INFO
+    pattern-either:
+      - pattern: $CURSOR.execute(...)
+      - pattern: $CURSOR.executemany(...)
+      - pattern: $MODEL.objects.raw(...)
+      - pattern: $CONNECTION.execute(...)
+
+  - id: sastsimi.python.validator
+    languages: [python]
+    message: Candidate input validator; effectiveness requires verification.
+    severity: INFO
+    pattern-either:
+      - pattern: re.fullmatch(...)
+      - pattern: $REGEX.fullmatch(...)
+      - pattern: $SCHEMA.validate(...)
+      - pattern: $FORM.is_valid(...)

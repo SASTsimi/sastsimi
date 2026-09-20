@@ -15,8 +15,12 @@ from sastsimi.composition.production_feature_installer import (
     CombinedPostWorkspaceSeeder,
     CurrentRepositoryProfileT11Resolver,
     ExactProductionReadiness,
+    LocalPolicyFeature,
+    LocalUnavailableDynamicFeature,
+    _require_policy_feature,
 )
 from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
+from sastsimi.contracts.budget import Purpose
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.ids import (
     AnalysisId,
@@ -48,6 +52,11 @@ class _Seeder:
         del request, state, binding_ref
         self.calls += 1
         return (WorkExecutionState.model_construct(work_id=WorkId(self.work_id)),)
+
+
+class _PolicyHandler:
+    async def execute(self, context: object) -> object:
+        return context
 
 
 class _Records:
@@ -165,6 +174,39 @@ def test_combined_seeder_starts_static_and_official_policy_once() -> None:
     assert static.calls == policy.calls == 1
 
 
+def test_local_policy_feature_is_allowed_only_for_local_evaluation() -> None:
+    feature = LocalPolicyFeature(_PolicyHandler(), _Seeder("local-policy"))
+    local_context = cast(
+        Any,
+        SimpleNamespace(request=SimpleNamespace(purpose=Purpose.LOCAL_EVALUATION)),
+    )
+
+    _require_policy_feature(local_context, feature)
+
+    production_context = cast(
+        Any,
+        SimpleNamespace(request=SimpleNamespace(purpose=Purpose.PRODUCTION)),
+    )
+    with pytest.raises(
+        ProductionCapabilityUnavailable, match="LOCAL_POLICY_FEATURE_INVALID"
+    ):
+        _require_policy_feature(production_context, feature)
+
+
+def test_local_unavailable_dynamic_feature_requires_safe_reason() -> None:
+    with pytest.raises(ValueError, match="LOCAL_DYNAMIC_REASON_INVALID"):
+        LocalUnavailableDynamicFeature(
+            sandbox_profile=lambda _work: StoredDataRef.model_construct(),
+            reason_code="contains local path C:/secret",
+        )
+
+    feature = LocalUnavailableDynamicFeature(
+        sandbox_profile=lambda _work: StoredDataRef.model_construct(),
+        reason_code="LOCAL_DOCKER_CAPABILITY_BLOCKED",
+    )
+    assert feature.reason_code == "LOCAL_DOCKER_CAPABILITY_BLOCKED"
+
+
 def test_readiness_fails_closed_when_exact_commit_changes() -> None:
     checked: list[str] = []
     readiness = ExactProductionReadiness(
@@ -227,3 +269,6 @@ def test_t11_fails_closed_before_build_when_current_profile_is_missing() -> None
         resolver(work)
 
     assert built == []
+
+
+# mypy: disable-error-code="arg-type"

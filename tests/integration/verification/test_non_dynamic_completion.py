@@ -180,6 +180,78 @@ async def test_non_dynamic_hold_commits_before_ready_primitive_handoff() -> None
 
 
 @pytest.mark.asyncio
+async def test_non_dynamic_local_evaluation_invocation_completes() -> None:
+    fixture, assessment_ref = await _ready_hold()
+    _persist_final_invocation(fixture, purpose="LOCAL_EVALUATION")
+    runner = _RecordingRunner()
+    scope = fixture._opaque_record("budget_profile_binding", "scope-local")
+    identity = fixture._opaque_record("agent_identity", "verification-local")
+
+    def current_records(_analysis_id: str, kind: str) -> tuple[object, ...]:
+        if not runner.calls:
+            return (_process(fixture),) if kind == "hypothesis_process_state" else ()
+        result = runner.calls[-1]["outputs"][0]
+        result_ref = reference(result)
+        assert isinstance(result_ref, StoredDataRef)
+        if kind == "hypothesis_process_state":
+            return (_process(fixture, result_ref=result_ref),)
+        if kind == "primitive_index_state":
+            return (
+                PrimitiveIndexState.model_construct(
+                    meta=_meta(
+                        "primitive_index_state", suffix="current-local", attempt=None
+                    ),
+                    current_verification_ref=result_ref,
+                    primitive_refs=(),
+                    updated_at=fixture.work.meta.created_at,
+                ),
+            )
+        return ()
+
+    def enqueue_hold(**kwargs: object) -> WorkExecutionState:
+        closure = kwargs["closure"]
+        assert isinstance(closure, HoldPrimitiveAdmissionClosure)
+        return fixture.work.model_copy(
+            update={
+                "work_type": WorkType.PRIMITIVE_UPDATE,
+                "status": WorkStatus.READY,
+                "active_attempt_id": None,
+                "input_refs": closure.input_refs(),
+            }
+        )
+
+    coordinator = NonDynamicVerificationCompletionCoordinator(
+        verification=fixture.service,
+        runner=runner,
+        records=fixture.records,
+        work_resolver=lambda _: fixture.work,
+        current=cast(
+            Any,
+            SimpleNamespace(current_records=current_records),
+        ),
+        budget_scope=lambda _analysis_id: scope,
+        hold_handoff=cast(
+            Any,
+            SimpleNamespace(enqueue_hold=enqueue_hold),
+        ),
+        verification_identity_ref=identity,
+        orchestration_identity_ref=fixture._opaque_record(
+            "agent_identity", "orchestration-local"
+        ),
+    )
+
+    completed = await coordinator.complete_without_dynamic(
+        generation=fixture.generation,
+        assessment_ref=assessment_ref,
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+
+    assert completed.outcome.record.verdict == "HOLD"
+
+
+@pytest.mark.asyncio
 async def test_non_dynamic_stale_generation_fails_before_final_verdict_call() -> None:
     fixture, assessment_ref = await _ready_hold()
     runner = _RecordingRunner()

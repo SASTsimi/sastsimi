@@ -119,6 +119,7 @@ Docker probe는 CLI와 daemon 연결뿐 아니라 실제 image build, container 
 ```text
 uv run sastsimi --data-dir <data-dir> capability probe GIT --format json
 uv run sastsimi --data-dir <data-dir> capability probe PYTHON_AST --format json
+uv run sastsimi --data-dir <data-dir> capability probe PYTHON_RUNTIME --format json
 uv run sastsimi --data-dir <data-dir> capability probe OPENGREP --format json
 uv run sastsimi --data-dir <data-dir> capability probe DOCKER --docker-host <승인된-daemon-주소> --format json
 uv run sastsimi --data-dir <data-dir> capability list --format json

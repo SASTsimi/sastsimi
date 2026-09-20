@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TypedDict
 
 from sastsimi.config.production_profile import ProductionProfile
@@ -23,11 +25,24 @@ from sastsimi.orchestration.production_onboarding import (
     ProductionOnboardingUnavailable,
     read_builtin_prompt,
 )
+from sastsimi.orchestration.production_onboarding_builder import (
+    ApprovedProbeResolver,
+    ProductionOnboardingBundleIndex,
+    compose_production_onboarding,
+    safe_evidence_digest,
+)
 from sastsimi.prompts.production import REQUIRED_PRODUCTION_PROMPT_ROUTES
 
 _MAX_INPUT_BYTES = 4 * 1024 * 1024
 _PLAN_NAME = "onboarding-plan.json"
-_HOST_PROBE_KINDS = ("GIT", "PYTHON_AST", "CODEQL", "OPENGREP", "DOCKER")
+_HOST_PROBE_KINDS = (
+    "GIT",
+    "PYTHON_AST",
+    "PYTHON_RUNTIME",
+    "CODEQL",
+    "OPENGREP",
+    "DOCKER",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,9 +218,14 @@ def _requirements(
     ]
     if len(routes) != len(REQUIRED_PRODUCTION_PROMPT_ROUTES):
         raise ValueError("PRODUCTION_PROMPT_ROUTE_SET_INCOMPLETE")
+    last_pvd = (
+        16
+        if any(route.role == "DYNAMIC_REPRODUCTION" for route in profile.llm_routes)
+        else 15
+    )
     return {
         "profile_hash": production_profile_hash(profile),
-        "required_pvd_tests": [f"PVD-{index:02d}" for index in range(1, 16)],
+        "required_pvd_tests": [f"PVD-{index:02d}" for index in range(1, last_pvd + 1)],
         "required_routes": routes,
     }
 
@@ -248,9 +268,16 @@ def run_prepare(
     try:
         manifest_data = _read_bounded(manifest_path)
         manifest = ProductionOnboardingManifest.model_validate_json(manifest_data)
+        evidence = tuple(_read_bounded(path) for path in evidence_paths)
+        with TemporaryDirectory(prefix="sastsimi-onboarding-stage-") as stage:
+            staged_store = FilesystemProductionOnboardingStore(Path(stage))
+            for data in evidence:
+                staged_store.put_evidence(data)
+            staged_store.save(manifest)
+            _validator(staged_store, repository_root, clock).load_for_profile(profile)
         store = FilesystemProductionOnboardingStore(data_dir)
-        for path in evidence_paths:
-            store.put_evidence(_read_bounded(path))
+        for data in evidence:
+            store.put_evidence(data)
         store.save(manifest)
         _validator(store, repository_root, clock).load_for_profile(profile)
     except ProductionOnboardingUnavailable as error:
@@ -258,6 +285,151 @@ def run_prepare(
     except (OSError, ValueError):
         return _blocked("PRODUCTION_ONBOARDING_INPUT_INVALID")
     return _ready(profile)
+
+
+def run_compose(
+    data_dir: Path,
+    *,
+    profile: ProductionProfile,
+    approval_input_path: Path,
+    slot_template_paths: tuple[Path, ...],
+    evidence_paths: tuple[Path, ...],
+    output_dir: Path,
+    repository_root: Path,
+    clock: Callable[[], datetime],
+    resolve_probe: ApprovedProbeResolver,
+) -> OnboardingCommandResult:
+    """Atomically compose already-approved exact inputs into a portable bundle."""
+
+    del data_dir
+    try:
+        if output_dir.exists() or output_dir.is_symlink():
+            raise ValueError("ONBOARDING_BUNDLE_ALREADY_EXISTS")
+        parent = output_dir.parent.resolve()
+        parent.mkdir(parents=True, exist_ok=True)
+        approval_input = _read_bounded(approval_input_path)
+        slot_templates = tuple(_read_bounded(path) for path in slot_template_paths)
+        evidence = _read_evidence(evidence_paths)
+        composed = compose_production_onboarding(
+            approval_input=approval_input,
+            slot_templates=slot_templates,
+            evidence=evidence,
+            profile_hash=production_profile_hash(profile),
+            host_id=profile.host_id,
+            resolve_probe=resolve_probe,
+        )
+        with TemporaryDirectory(
+            prefix=".sastsimi-onboarding-compose-", dir=parent
+        ) as temporary:
+            stage = Path(temporary) / "bundle"
+            stage.mkdir()
+            _write_file(stage / "production-onboarding.json", composed.onboarding_bytes)
+            _write_file(
+                stage / "production-provisioning.json", composed.provisioning_bytes
+            )
+            _write_file(stage / "bundle-index.json", composed.index_bytes)
+            for digest, data in composed.evidence.items():
+                _write_file(
+                    stage / "evidence" / "sha256" / digest[:2] / digest[2:], data
+                )
+
+            # Keep the validation CAS outside the staged output path.  Besides
+            # ensuring validation cannot mutate the bundle, this avoids the
+            # legacy Windows path limit after adding two SHA-256 directories.
+            with TemporaryDirectory(prefix="sastsimi-onboarding-validate-") as valid:
+                validation_store = FilesystemProductionOnboardingStore(Path(valid))
+                for data in composed.evidence.values():
+                    validation_store.put_evidence(data)
+                validation_store.save(composed.onboarding)
+                _validator(validation_store, repository_root, clock).load_for_profile(
+                    profile
+                )
+            os.replace(stage, output_dir)
+    except ProductionOnboardingUnavailable as error:
+        return _blocked(str(error))
+    except (OSError, ValueError):
+        return _blocked("PRODUCTION_ONBOARDING_COMPOSE_INVALID")
+    return OnboardingCommandResult(
+        ExitCode.OK,
+        {
+            "evidence_count": len(composed.evidence),
+            "onboarding_manifest_sha256": composed.index.onboarding_manifest_sha256,
+            "profile_hash": production_profile_hash(profile),
+            "provisioning_manifest_sha256": (
+                composed.index.provisioning_manifest_sha256
+            ),
+            "status": "COMPOSED",
+        },
+    )
+
+
+def run_prepare_bundle(
+    data_dir: Path,
+    *,
+    profile: ProductionProfile,
+    bundle_dir: Path,
+    repository_root: Path,
+    clock: Callable[[], datetime],
+) -> OnboardingCommandResult:
+    """Import one composed bundle only when its hash index is exact and complete."""
+
+    try:
+        if not bundle_dir.is_dir() or bundle_dir.is_symlink():
+            raise ValueError("ONBOARDING_BUNDLE_PATH_INVALID")
+        index = ProductionOnboardingBundleIndex.model_validate_json(
+            _read_bounded(bundle_dir / "bundle-index.json")
+        )
+        manifest_path = bundle_dir / "production-onboarding.json"
+        manifest_data = _read_bounded(manifest_path)
+        if (
+            hashlib.sha256(manifest_data).hexdigest()
+            != index.onboarding_manifest_sha256
+        ):
+            raise ValueError("ONBOARDING_BUNDLE_MANIFEST_STALE")
+        evidence_paths = tuple(
+            bundle_dir / "evidence" / "sha256" / digest[:2] / digest[2:]
+            for digest in index.evidence_sha256
+        )
+        expected_files = {
+            bundle_dir / "bundle-index.json",
+            manifest_path,
+            bundle_dir / "production-provisioning.json",
+            *evidence_paths,
+        }
+        discovered_files: set[Path] = set()
+        for path in bundle_dir.rglob("*"):
+            if path.is_symlink():
+                raise ValueError("ONBOARDING_BUNDLE_PATH_INVALID")
+            if path.is_file():
+                discovered_files.add(path)
+            elif not path.is_dir():
+                raise ValueError("ONBOARDING_BUNDLE_PATH_INVALID")
+        if discovered_files != expected_files:
+            raise ValueError("ONBOARDING_BUNDLE_FILE_SET_MISMATCH")
+        for digest, path in zip(index.evidence_sha256, evidence_paths, strict=True):
+            if hashlib.sha256(_read_bounded(path)).hexdigest() != digest:
+                raise ValueError("ONBOARDING_BUNDLE_EVIDENCE_STALE")
+        provisioning_path = (
+            bundle_dir
+            / "evidence"
+            / "sha256"
+            / index.provisioning_manifest_sha256[:2]
+            / index.provisioning_manifest_sha256[2:]
+        )
+        if _read_bounded(bundle_dir / "production-provisioning.json") != _read_bounded(
+            provisioning_path
+        ):
+            raise ValueError("ONBOARDING_BUNDLE_PROVISIONING_STALE")
+    except (OSError, ValueError):
+        return _blocked("PRODUCTION_ONBOARDING_BUNDLE_INVALID")
+    return run_prepare(
+        data_dir,
+        profile=profile,
+        manifest_path=manifest_path,
+        evidence_paths=evidence_paths,
+        repository_root=repository_root,
+        clock=clock,
+    )
 
 
 def run_status(
@@ -306,6 +478,25 @@ def _read_bounded(path: Path) -> bytes:
     return data
 
 
+def _read_evidence(paths: tuple[Path, ...]) -> dict[str, bytes]:
+    evidence: dict[str, bytes] = {}
+    for path in paths:
+        data = _read_bounded(path)
+        digest = safe_evidence_digest(data)
+        previous = evidence.setdefault(digest, data)
+        if previous != data:
+            raise ValueError("ONBOARDING_EVIDENCE_HASH_MISMATCH")
+    return evidence
+
+
+def _write_file(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("xb") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
 def _ready(profile: ProductionProfile) -> OnboardingCommandResult:
     return OnboardingCommandResult(
         ExitCode.OK,
@@ -329,8 +520,10 @@ def _blocked_with_code(reason_code: str, code: ExitCode) -> OnboardingCommandRes
 
 __all__ = [
     "OnboardingCommandResult",
+    "run_compose",
     "run_init",
     "run_prepare",
+    "run_prepare_bundle",
     "run_requirements",
     "run_status",
 ]

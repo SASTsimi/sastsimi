@@ -27,6 +27,7 @@ from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import (
     BudgetScopeRef,
     HostConfigurationRef,
+    RunStoredDataRef,
     StoredDataRef,
     reference,
 )
@@ -844,9 +845,12 @@ def _build_runtime(
     llm_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter] | None = None,
     capability_host_id: str | None = None,
     chaining_lineage: ChainingLineagePort | None = None,
+    protected_artifact_refs: Callable[[], tuple[StoredDataRef | RunStoredDataRef, ...]]
+    | None = None,
     *,
     validator_factory: Callable[..., SQLiteRuntimeValidator],
     bind_sqlite_chaining_lineage: bool = False,
+    recover_expired_leases: bool = True,
 ) -> RuntimeServices:
     from sastsimi.runtime.action_validator import RuntimeValidator
     from sastsimi.runtime.analysis_finalization import AnalysisFinalizationService
@@ -927,7 +931,14 @@ def _build_runtime(
         chaining_lineage=effective_chaining_lineage,
     )
     unit = SQLiteUnitOfWork(records, artifacts, transitions)
-    recovery = RecoveryService(SQLiteRecovery(transitions, recovery_identity_ref))
+    recovery = RecoveryService(
+        SQLiteRecovery(
+            transitions,
+            recovery_identity_ref,
+            protected_artifact_refs=protected_artifact_refs,
+            recover_expired_leases=recover_expired_leases,
+        )
+    )
     recovery.recover()
     validator = RuntimeValidator(authorization)
     external = ExternalCallService(validator)
@@ -1010,6 +1021,10 @@ def build_runtime(
     llm_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter] | None = None,
     capability_host_id: str | None = None,
     chaining_lineage: ChainingLineagePort | None = None,
+    protected_artifact_refs: Callable[[], tuple[StoredDataRef | RunStoredDataRef, ...]]
+    | None = None,
+    *,
+    recover_expired_leases: bool = True,
 ) -> RuntimeServices:
     """Compose the production runtime without fake output capabilities."""
     return _build_runtime(
@@ -1026,8 +1041,10 @@ def build_runtime(
         llm_adapters,
         capability_host_id,
         chaining_lineage,
+        protected_artifact_refs,
         validator_factory=SQLiteRuntimeValidator,
         bind_sqlite_chaining_lineage=True,
+        recover_expired_leases=recover_expired_leases,
     )
 
 
@@ -1243,13 +1260,21 @@ def build_t11_services(
     docker_profile_ref: HostConfigurationRef,
     docker_target_resolver: TrustedDockerTargetResolverPort,
     dependency_bundle: DependencyBundle | None = None,
+    allow_repository_build_network: bool = False,
 ) -> T11Services:
     """Build the real local-Docker T11 slice after trusted config resolution."""
 
     from sastsimi.agents.dynamic_reproduction import DynamicReproductionAgent
+    from sastsimi.contracts.dynamic import (
+        EnvironmentRecipe,
+        EnvironmentRequirements,
+        ReproductionPlan,
+    )
     from sastsimi.contracts.ids import WorkId
+    from sastsimi.contracts.work import AttemptTrigger
     from sastsimi.ports.dynamic_sandbox import (
         DynamicDockerExecutionPort,
+        PreparedRecipeSourceView,
         ReproductionSetupPort,
         SandboxControllerPort,
     )
@@ -1275,7 +1300,11 @@ def build_t11_services(
     )
 
     artifacts = runtime.unit_of_work.artifacts
-    docker = DockerAdapter.from_profile(docker_profile_ref, docker_target_resolver)
+    docker = DockerAdapter.from_profile(
+        docker_profile_ref,
+        docker_target_resolver,
+        build_network="default" if allow_repository_build_network else "none",
+    )
     record_store = cast(SQLiteRecordStore, runtime.unit_of_work.records)
     controls = RunControlStore(record_store.database, clock)
     resources = OwnedResourceRegistry(
@@ -1284,7 +1313,10 @@ def build_t11_services(
     )
     setup = ReproductionSetupAutomation(
         docker=docker,
-        recipes=EnvironmentRecipeStore(artifacts=artifacts),
+        recipes=EnvironmentRecipeStore(
+            artifacts=artifacts,
+            allow_repository_build_network=allow_repository_build_network,
+        ),
         health=SandboxHealthChecker(),
         resources=resources,
     )
@@ -1315,6 +1347,122 @@ def build_t11_services(
     if verification_identity is None:
         raise ValueError("VERIFICATION_IDENTITY_REQUIRED")
 
+    def initial_stage_resolver(
+        work: WorkExecutionState, request_ref: StoredDataRef
+    ) -> (
+        tuple[
+            EnvironmentRequirements,
+            StoredDataRef,
+            ReproductionPlan,
+            StoredDataRef,
+        ]
+        | None
+    ):
+        attempts = runtime.work.attempts_for_work(str(work.work_id))
+        current = next(
+            (
+                attempt
+                for attempt in attempts
+                if attempt.attempt_id == work.active_attempt_id
+            ),
+            None,
+        )
+        if current is None or current.trigger not in {
+            AttemptTrigger.RESUME,
+            AttemptTrigger.RETRY,
+        }:
+            return None
+        attempt_numbers = {
+            attempt.attempt_id: attempt.attempt_number
+            for attempt in attempts
+            if attempt.attempt_number < current.attempt_number
+        }
+        requirements = tuple(
+            item
+            for item in runtime.queries.current_records(
+                str(work.meta.analysis_id), EnvironmentRequirements.KIND
+            )
+            if isinstance(item, EnvironmentRequirements)
+            and item.request_ref == request_ref
+            and item.meta.attempt_id in attempt_numbers
+        )
+        plans = tuple(
+            item
+            for item in runtime.queries.current_records(
+                str(work.meta.analysis_id), ReproductionPlan.KIND
+            )
+            if isinstance(item, ReproductionPlan)
+            and item.request_ref == request_ref
+            and item.meta.attempt_id in attempt_numbers
+        )
+        pairs: list[
+            tuple[
+                int,
+                EnvironmentRequirements,
+                StoredDataRef,
+                ReproductionPlan,
+                StoredDataRef,
+            ]
+        ] = []
+        for requirement in requirements:
+            attempt_id = requirement.meta.attempt_id
+            if attempt_id is None:
+                continue
+            requirement_ref = reference(requirement)
+            if not isinstance(requirement_ref, StoredDataRef):
+                continue
+            for plan in plans:
+                plan_ref = reference(plan)
+                if (
+                    isinstance(plan_ref, StoredDataRef)
+                    and plan.meta.attempt_id == attempt_id
+                    and plan.environment_requirements_ref == requirement_ref
+                ):
+                    pairs.append(
+                        (
+                            attempt_numbers[attempt_id],
+                            requirement,
+                            requirement_ref,
+                            plan,
+                            plan_ref,
+                        )
+                    )
+        if not pairs:
+            return None
+        latest_number = max(item[0] for item in pairs)
+        latest = tuple(item for item in pairs if item[0] == latest_number)
+        if len(latest) != 1:
+            raise ValueError("DYNAMIC_INITIAL_STAGE_HISTORY_AMBIGUOUS")
+        _, requirement, requirement_ref, plan, plan_ref = latest[0]
+        return requirement, requirement_ref, plan, plan_ref
+
+    def baseline_recipe_resolver(
+        work: WorkExecutionState, source: PreparedRecipeSourceView
+    ) -> EnvironmentRecipe | None:
+        if not isinstance(work.meta, RecordMeta):
+            raise ValueError("DYNAMIC_BASELINE_WORK_SCOPE_INVALID")
+        candidates = tuple(
+            item
+            for item in runtime.queries.current_records(
+                str(work.meta.analysis_id), EnvironmentRecipe.KIND
+            )
+            if isinstance(item, EnvironmentRecipe)
+            and item.build_disposition == "BUILT"
+            and item.baseline_recipe_ref is None
+            and item.meta.analysis_id == work.meta.analysis_id
+            and item.meta.workspace_id == work.meta.workspace_id
+            and item.meta.commit_id == work.meta.commit_id
+            and item.recipe_source_ref == source.recipe_source_ref
+            and item.source_refs == source.source_refs
+            and item.source_manifest == source.source_manifest
+        )
+        if not candidates:
+            return None
+        digests = {item.built_image_digest for item in candidates}
+        if len(digests) != 1:
+            raise ValueError("DYNAMIC_BASELINE_RECIPE_AMBIGUOUS")
+        return min(candidates, key=lambda item: str(item.meta.record_id))
+
     def workflow_factory(work: WorkExecutionState) -> ProductionDynamicWorkflow:
         return ProductionDynamicWorkflow(
             work=work,
@@ -1327,6 +1475,8 @@ def build_t11_services(
             ids=ids,
             sink=sink,
             authorization=sandbox_authorization,
+            initial_stage_resolver=initial_stage_resolver,
+            baseline_recipe_resolver=baseline_recipe_resolver,
             repository_profile=repository_profile,
             dependency_bundle=dependency_bundle,
         )

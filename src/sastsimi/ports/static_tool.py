@@ -17,6 +17,7 @@ from sastsimi.contracts.work import WorkExecutionState
 from .dto import (
     CancellationResult,
     MonotonicActionDeadline,
+    PrebuiltCodeQLDatabase,
     PublishedStaticToolMaterial,
     StaticCapabilityObservation,
     StaticOutputQuotaBinding,
@@ -103,6 +104,9 @@ type StaticOutputPurpose = Literal["DATABASE", "EXECUTION", "PROBE"]
 class ProductionStaticOutputQuotaPort(StaticOutputQuotaPort, Protocol):
     """Allocate attempt-scoped roots with a host-enforced write ceiling."""
 
+    backend_key: str
+    enforcement_identity_sha256: str
+
     def allocate(
         self,
         *,
@@ -114,6 +118,35 @@ class ProductionStaticOutputQuotaPort(StaticOutputQuotaPort, Protocol):
     ) -> StaticOutputQuotaBinding: ...
 
     def finalize(self, *, lease_id: str, outcome: str) -> None: ...
+
+
+class PrebuiltCodeQLDatabasePort(Protocol):
+    """Materialize one already-built, approval-bound CodeQL database.
+
+    Implementations are provisioning boundaries, not CodeQL runners.  They may
+    only copy or extract an immutable database whose repository, commit,
+    language, tracked manifest, provider identity, and capability evidence all
+    match this request.  Database creation, builds, package installation, and
+    repository execution are outside this port.
+    """
+
+    provider_key: str
+    provider_revision: str
+    provider_evidence_sha256: str
+
+    def materialize(
+        self,
+        *,
+        workspace_id: str,
+        repository_url: str,
+        commit_id: str,
+        language: Literal["python", "javascript-typescript"],
+        tracked_manifest_sha256: str,
+        profile_ref: HostConfigurationRef,
+        quota_binding: StaticOutputQuotaBinding,
+        cancellation_requested: Callable[[], bool] | None = None,
+        deadline_ns: int | None = None,
+    ) -> PrebuiltCodeQLDatabase | None: ...
 
 
 class StaticExternalExecutionPort(Protocol):

@@ -75,7 +75,11 @@ class DynamicReproductionState(DomainRecord):
             )
         ):
             raise ValueError("DYNAMIC_STATE_EXECUTION_REQUIRED")
-        if (self.status == "RUNNING") != (self.dynamic_result_ref is None):
+        if self.status == "RUNNING" and self.dynamic_result_ref is not None:
+            raise ValueError("DYNAMIC_STATE_RESULT_REQUIRED")
+        if self.status in {"SUCCEEDED", "PARTIAL", "FAILED", "CANCELLED"} and (
+            self.dynamic_result_ref is None
+        ):
             raise ValueError("DYNAMIC_STATE_RESULT_REQUIRED")
         if (self.status in {"SUCCEEDED", "PARTIAL", "FAILED", "CANCELLED"}) != (
             self.finished_at is not None
@@ -212,16 +216,7 @@ def dependency_bundle_target_hash(
 
 
 class DependencyBundle(DynamicRecord):
-    """Offline dependency archive vendored for one exact attempt.
-
-    A repository's declared dependencies are a fact about the repository,
-    not a judgement call, so most bundles are `AUTOMATIC` - fetched and
-    packaged unattended from what the repository itself declares
-    (`sandbox/recipe_store.py::EnvironmentRecipeStore._auto_fetch_
-    dependency_bundle`). `HUMAN` stays available for a bundle an operator
-    hand-supplies instead, e.g. to cover a dependency this repository's
-    declared metadata does not name.
-    """
+    """Pre-approved offline dependency archive for one exact attempt."""
 
     KIND = "dependency_bundle"
     repository_profile_ref: StoredDataRef
@@ -232,7 +227,7 @@ class DependencyBundle(DynamicRecord):
     archive_format: Literal["TAR"]
     approval_target_hash: Sha256
     approved_by: NonEmptyStr
-    approved_by_role: Literal["HUMAN", "AUTOMATIC"]
+    approved_by_role: Literal["HUMAN"]
     approved_at: AwareDatetime
 
     @model_validator(mode="after")
@@ -296,6 +291,7 @@ class EnvironmentRecipeSourceManifest(ContractModel):
     dockerfile_digest: Sha256
     context_digest: Sha256
     dependency_bundle_ref: StoredDataRef | None = None
+    dependency_manifest_path: NonEmptyStr | None = None
 
     @model_validator(mode="after")
     def exact_sources(self) -> Self:
@@ -328,6 +324,15 @@ class EnvironmentRecipeSourceManifest(ContractModel):
                 self.repository_profile_ref.commit_id,
             ):
                 raise ValueError("RECIPE_SOURCE_MANIFEST_SCOPE_MISMATCH")
+            if self.dependency_manifest_path is None:
+                raise ValueError("DEPENDENCY_MANIFEST_PATH_REQUIRED")
+        if self.dependency_manifest_path is not None and (
+            self.dependency_manifest_path.startswith(("/", "\\"))
+            or "\\" in self.dependency_manifest_path
+            or ".." in self.dependency_manifest_path.replace("\\", "/").split("/")
+            or any(character in self.dependency_manifest_path for character in "\r\n\0")
+        ):
+            raise ValueError("DEPENDENCY_MANIFEST_PATH_INVALID")
         return self
 
 
@@ -357,6 +362,11 @@ class EnvironmentRecipe(DynamicRecord):
                 self.source_manifest.repository_profile_ref,
                 self.source_manifest.dockerfile_ref,
                 self.source_manifest.build_context_ref,
+                *(
+                    (self.source_manifest.dependency_bundle_ref,)
+                    if self.source_manifest.dependency_bundle_ref is not None
+                    else ()
+                ),
             )
             if repository_refs != (self.source_manifest.repository_profile_ref,) or set(
                 manifest_refs
