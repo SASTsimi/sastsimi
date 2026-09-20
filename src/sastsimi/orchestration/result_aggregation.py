@@ -15,6 +15,7 @@ from sastsimi.contracts.evaluation import (
     RUN_INVENTORY_KINDS,
     AnalysisRunResult,
     ResourceUsageSummary,
+    canonical_usage_refs,
 )
 from sastsimi.contracts.gates import TechnicalEvidenceReview
 from sastsimi.contracts.hypothesis import (
@@ -346,7 +347,7 @@ class ResultAggregationService:
             ),
             currency=execution.currency if ledgers else None,
             pricing_revision_refs=(execution.pricing_revision_ref,) if ledgers else (),
-            usage_measurement_refs=_unique(
+            usage_measurement_refs=canonical_usage_refs(
                 ref for item in ledgers for ref in item.usage_refs
             ),
             usage_complete=bool(ledgers),

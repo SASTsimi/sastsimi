@@ -1,7 +1,7 @@
 """Evaluation provenance, safe usage and terminal run summaries (§08.9.1/11)."""
 
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Annotated, Literal, Self, cast
@@ -142,6 +142,24 @@ FrozenProviderUnits = Annotated[
     AfterValidator(freeze_provider_units),
     PlainSerializer(thaw_json),
 ]
+
+
+def canonical_usage_refs(
+    refs: Iterable[BudgetScopeRef],
+) -> tuple[BudgetScopeRef, ...]:
+    """Deduplicate usage evidence in one storage-order-independent order."""
+
+    return tuple(
+        sorted(
+            dict.fromkeys(refs),
+            key=lambda ref: (
+                ref.data_kind,
+                str(ref.record_id),
+                str(ref.stored_data_id),
+                ref.content_hash,
+            ),
+        )
+    )
 
 
 class UsageMeasurement(ContractModel):
