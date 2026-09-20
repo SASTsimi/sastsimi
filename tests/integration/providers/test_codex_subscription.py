@@ -44,6 +44,31 @@ class FakeCodexProcessRunner:
         return self.result
 
 
+class SerialObservationRunner:
+    def __init__(self) -> None:
+        self.requests: list[CodexProcessRequest] = []
+        self.first_started = asyncio.Event()
+        self.release_first = asyncio.Event()
+        self.active = 0
+        self.max_active = 0
+
+    async def execute(self, value: CodexProcessRequest) -> CodexProcessResult:
+        self.requests.append(value)
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            if len(self.requests) == 1:
+                self.first_started.set()
+                await self.release_first.wait()
+            return CodexProcessResult(
+                status="SUCCEEDED",
+                final_message=b'{"decision":"accept"}',
+                provider_session_id=f"provider-{value.invocation_id}",
+            )
+        finally:
+            self.active -= 1
+
+
 class PassingProbeRunner:
     async def run(
         self, candidate: ProviderValidationEvidence, _adapter: object
@@ -69,6 +94,27 @@ def adapter(
         ),
         sessions,
     )
+
+
+@pytest.mark.asyncio
+async def test_subscription_processes_are_serialized_per_adapter() -> None:
+    first = request()
+    second = first.model_copy(update={"llm_call_id": "llm-call-serial-second"})
+    runner = SerialObservationRunner()
+    provider, _sessions = adapter(first, runner)
+
+    first_task = asyncio.create_task(provider.invoke(first))
+    await asyncio.wait_for(runner.first_started.wait(), timeout=1)
+    second_task = asyncio.create_task(provider.invoke(second))
+    await asyncio.sleep(0)
+
+    assert len(runner.requests) == 1
+    runner.release_first.set()
+    first_result, second_result = await asyncio.gather(first_task, second_task)
+
+    assert first_result.status == second_result.status == "SUCCEEDED"
+    assert len(runner.requests) == 2
+    assert runner.max_active == 1
 
 
 @pytest.mark.asyncio

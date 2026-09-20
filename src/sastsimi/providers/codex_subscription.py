@@ -475,6 +475,7 @@ class CodexSubscriptionAdapter:
         self._active: dict[str, asyncio.Task[LLMInvocationResult]] = {}
         self._cancel_events: dict[str, asyncio.Event] = {}
         self._active_lock = asyncio.Lock()
+        self._process_lock = asyncio.Lock()
 
     async def probe(
         self, candidate: ProviderValidationEvidence
@@ -576,16 +577,17 @@ class CodexSubscriptionAdapter:
     ) -> LLMInvocationResult:
         try:
             resolved, schema = await self._prepare(request)
-            process_result = await self.process_runner.execute(
-                CodexProcessRequest(
-                    invocation_id=request.llm_call_id,
-                    provider_profile_ref=request.provider_profile_ref,
-                    model=request.model,
-                    prompt=resolved.rendered_prompt_bytes,
-                    output_schema=resolved.output_schema_bytes,
-                    timeout_ms=request.timeout_ms,
+            async with self._process_lock:
+                process_result = await self.process_runner.execute(
+                    CodexProcessRequest(
+                        invocation_id=request.llm_call_id,
+                        provider_profile_ref=request.provider_profile_ref,
+                        model=request.model,
+                        prompt=resolved.rendered_prompt_bytes,
+                        output_schema=resolved.output_schema_bytes,
+                        timeout_ms=request.timeout_ms,
+                    )
                 )
-            )
             if process_result.status != "SUCCEEDED":
                 outcome = self._failure_outcome(
                     request,
@@ -1212,15 +1214,17 @@ def _codex_output_schema(
     """Adapt only array roots to Codex's structured-output object transport."""
     if provider_neutral_schema.get("type") != "array":
         return provider_neutral_schema
-    return cast(
-        dict[str, JsonValue],
-        {
-            "type": "object",
-            "properties": {_ARRAY_ENVELOPE_KEY: provider_neutral_schema},
-            "required": [_ARRAY_ENVELOPE_KEY],
-            "additionalProperties": False,
-        },
-    )
+    array_schema = dict(provider_neutral_schema)
+    definitions = array_schema.pop("$defs", None)
+    adapted: dict[str, JsonValue] = {
+        "type": "object",
+        "properties": {_ARRAY_ENVELOPE_KEY: cast(JsonValue, array_schema)},
+        "required": [_ARRAY_ENVELOPE_KEY],
+        "additionalProperties": False,
+    }
+    if definitions is not None:
+        adapted["$defs"] = definitions
+    return adapted
 
 
 def _unwrap_codex_output(

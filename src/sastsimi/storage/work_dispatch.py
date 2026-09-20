@@ -58,6 +58,24 @@ from .run_states import get_run
 from .work_service import WorkService
 
 
+def _resume_reason_is_resolvable(
+    purpose: Purpose, work: WorkExecutionState
+) -> bool:
+    allowed_waiting = {
+        "WAITING_FOR_INPUT": ("INPUT",),
+        "LEASE_EXPIRED": ("RETRY",),
+        "WORK_HANDLER_FAILED": ("RETRY",),
+    }
+    if allowed_waiting.get(work.stop_reason or "") == work.waiting_for:
+        return True
+    return (
+        purpose == Purpose.LOCAL_EVALUATION
+        and work.work_type == "DYNAMIC_REPRO"
+        and work.stop_reason == "WORK_HANDLER_FAILED"
+        and work.waiting_for == ("INPUT",)
+    )
+
+
 class WorkDispatchStore:
     """The sole production READY-to-RUNNING storage boundary."""
 
@@ -312,14 +330,8 @@ class WorkDispatchStore:
                     self._require_local_failed_dynamic_repair(
                         run.purpose, connection, work, previous_attempt
                     )
-                else:
-                    allowed_waiting = {
-                        "WAITING_FOR_INPUT": ("INPUT",),
-                        "LEASE_EXPIRED": ("RETRY",),
-                        "WORK_HANDLER_FAILED": ("RETRY",),
-                    }
-                    if allowed_waiting.get(work.stop_reason or "") != work.waiting_for:
-                        raise ValueError("RESUME_REASON_NOT_RESOLVABLE")
+                elif not _resume_reason_is_resolvable(run.purpose, work):
+                    raise ValueError("RESUME_REASON_NOT_RESOLVABLE")
 
                 reject_uncertain(connection, str(work.work_id))
                 action = self._resume_action(work, registration)
