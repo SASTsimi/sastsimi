@@ -1126,6 +1126,8 @@ class EnvironmentRecipeStore:
                     None,
                     dependency_manifest_path=dependency_manifest_path,
                 )
+            else:
+                dockerfile = self._repair_archived_debian_sources(dockerfile)
             return selected, dockerfile, "REPOSITORY", dependency_manifest_path
 
         family = self._repository_family(
@@ -1161,6 +1163,33 @@ class EnvironmentRecipeStore:
             'CMD ["sleep", "infinity"]\n'
         ).encode()
         return "Dockerfile", dockerfile, "GENERATED", dependency_manifest_path
+
+    @staticmethod
+    def _repair_archived_debian_sources(dockerfile: bytes) -> bytes:
+        """Keep an opted-in legacy repository recipe buildable without editing code."""
+
+        if (
+            b"archive.debian.org/debian" in dockerfile
+            or re.search(rb"(?im)^FROM\s+\S*buster(?:\s+AS\s+\S+)?\s*$", dockerfile)
+            is None
+            or b"apt-get" not in dockerfile
+        ):
+            return dockerfile
+        lines = dockerfile.splitlines(keepends=True)
+        marker = (
+            b"RUN sed -i "
+            b"-e 's|deb.debian.org/debian|archive.debian.org/debian|g' "
+            b"-e 's|security.debian.org/debian-security|"
+            b"archive.debian.org/debian-security|g' "
+            b"-e '/buster-updates/d' /etc/apt/sources.list "
+            b"&& printf 'Acquire::Check-Valid-Until \"false\";\\n' "
+            b"> /etc/apt/apt.conf.d/99sastsimi-archive\n"
+        )
+        for index, line in enumerate(lines):
+            if line.lstrip().upper().startswith(b"FROM "):
+                lines.insert(index + 1, marker)
+                return b"".join(lines)
+        return dockerfile
 
     @staticmethod
     def _dependency_install(

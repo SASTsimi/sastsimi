@@ -2050,6 +2050,47 @@ async def test_opted_in_repository_dockerfile_may_resolve_dependencies(
 
 
 @pytest.mark.asyncio
+async def test_opted_in_repository_dockerfile_repairs_archived_debian_sources(
+    tmp_path: Path,
+) -> None:
+    files = {
+        "Dockerfile": (
+            b"FROM python:3.11.0b1-buster\n"
+            b"RUN apt-get update && apt-get install -y python3-dev\n"
+            b"COPY . /app\n"
+        ),
+        "requirements.txt": b"django==4.2\n",
+        "app.py": b"import django\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    request, requirements, _ = _dynamic_records()
+    setup = ReproductionSetupAutomation(
+        docker=FakeDockerAdapter(),
+        recipes=EnvironmentRecipeStore(
+            artifacts=_MemoryArtifacts(),
+            allow_repository_build_network=True,
+        ),
+        health=SandboxHealthChecker(),
+        resources=OwnedResourceRegistry(),
+    )
+
+    source = await setup.preflight(
+        workspace_root=tmp_path,
+        repository_profile=_repository_profile(files),
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "archived-debian-source"),
+    )
+
+    assert b"archive.debian.org/debian" in source.dockerfile
+    assert b"Acquire::Check-Valid-Until" in source.dockerfile
+    assert source.dockerfile.index(b"archive.debian.org") < source.dockerfile.index(
+        b"apt-get update"
+    )
+
+
+@pytest.mark.asyncio
 async def test_prepare_creates_clean_non_root_default_deny_container(
     tmp_path: Path,
 ) -> None:
@@ -3200,6 +3241,48 @@ async def test_docker_image_inspection_uses_approved_timeout(
             10_000,
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_network_enabled_image_inspection_pulls_a_missing_base_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[str, ...], int | None]] = []
+    outcomes = iter(
+        (
+            DockerCommandOutcome(1, b"", b"missing", False),
+            DockerCommandOutcome(0, b"pulled", b"", False),
+            DockerCommandOutcome(
+                0,
+                json.dumps([f"python@{IMAGE_DIGEST}"]).encode(),
+                b"",
+                False,
+            ),
+        )
+    )
+
+    async def run(
+        argv: tuple[str, ...],
+        *,
+        timeout_ms: int | None = None,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        assert input_bytes is None
+        calls.append((argv, timeout_ms))
+        return next(outcomes)
+
+    adapter = DockerAdapter(build_network="default")
+    monkeypatch.setattr(adapter, "_run", run)
+
+    digest = await adapter.inspect_image("python:3.11-slim", timeout_ms=10_000)
+
+    assert digest == IMAGE_DIGEST
+    assert [item[0][:2] for item in calls] == [
+        ("image", "inspect"),
+        ("image", "pull"),
+        ("image", "inspect"),
+    ]
+    assert all(timeout == 10_000 for _argv, timeout in calls)
 
 
 @pytest.mark.asyncio

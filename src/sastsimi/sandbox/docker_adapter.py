@@ -306,6 +306,20 @@ class DockerAdapter:
             ("image", "inspect", "--format", "{{json .RepoDigests}}", image),
             timeout_ms=timeout_ms,
         )
+        if (
+            not outcome.timed_out
+            and outcome.exit_code != 0
+            and self._build_network == "default"
+        ):
+            pulled = await self._run(
+                ("image", "pull", image),
+                timeout_ms=timeout_ms,
+            )
+            self._require_success("DOCKER_IMAGE_PULL_FAILED", pulled)
+            outcome = await self._run(
+                ("image", "inspect", "--format", "{{json .RepoDigests}}", image),
+                timeout_ms=timeout_ms,
+            )
         self._require_success("DOCKER_IMAGE_INSPECT_FAILED", outcome)
         try:
             repo_digests = json.loads(outcome.stdout.decode("ascii", errors="strict"))
