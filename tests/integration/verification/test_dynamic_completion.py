@@ -109,6 +109,7 @@ def _persist_final_invocation(
     fixture: _Fixture,
     *,
     claimed_variant: str = "valid",
+    purpose: str = "PRODUCTION",
 ) -> PersistedLLMInvocation:
     invocation = fixture.llm.outcomes[0]
     provider_ref = fixture._opaque_record("provider_profile", "final-provider")
@@ -276,18 +277,24 @@ def _persist_final_invocation(
                 "output_schema": "verification-result",
                 "token_budget": 100,
                 "timeout_ms": 1_000,
+                "purpose": purpose,
             }
         )
     )
     result = LLMInvocationResult.model_construct(
-        **invocation.result.__dict__,
-        provider="fake",
-        model="fake-model",
-        actual_session_mode="NEW",
-        session_ref="session-final",
-        started_at=fixture.work.meta.created_at,
-        finished_at=fixture.work.meta.created_at,
-        safe_error=None,
+        **(
+            invocation.result.__dict__
+            | {
+                "provider": "fake",
+                "model": "fake-model",
+                "actual_session_mode": "NEW",
+                "session_ref": "session-final",
+                "started_at": fixture.work.meta.created_at,
+                "finished_at": fixture.work.meta.created_at,
+                "safe_error": None,
+                "purpose": purpose,
+            }
+        )
     )
     request_ref = fixture.records.add(request)
     result_ref = fixture.records.add(result)
@@ -298,7 +305,7 @@ def _persist_final_invocation(
         call_spec_ref=request.call_spec_ref,
         agent_role="VERIFICATION",
         task_kind="FINAL_VERDICT",
-        purpose="PRODUCTION",
+        purpose=purpose,
         provider_profile_ref=request.provider_profile_ref,
         provider="fake",
         model="fake-model",

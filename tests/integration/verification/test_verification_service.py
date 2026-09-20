@@ -976,6 +976,51 @@ async def test_hold_preserves_required_primitive_content_with_trusted_id() -> No
 
 
 @pytest.mark.asyncio
+async def test_hold_primitive_may_cite_exact_current_con_result() -> None:
+    fixture = _Fixture()
+    fixture.queue(
+        fixture.assessment_payload("HOLD", unresolved=("Need dynamic test",)),
+        task_kind="ASSESS_INITIAL",
+        context_refs=fixture.assessment_context(),
+    )
+    assessment = await fixture.service.assess_initial(
+        generation=fixture.generation,
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+    assessment_ref = reference(assessment)
+    assert isinstance(assessment_ref, StoredDataRef)
+    fixture.queue(
+        fixture.final_payload(
+            "HOLD",
+            outcome="INCONCLUSIVE",
+            unresolved=("Need dynamic test",),
+            required=(
+                fixture.primitive_content(
+                    "Dynamic falsification result required",
+                    evidence_ref=fixture.con_ref,
+                ),
+            ),
+        ),
+        task_kind="FINAL_VERDICT",
+        context_refs=(*fixture.assessment_context(), assessment_ref),
+    )
+
+    result = await fixture.service.finalize_without_dynamic(
+        generation=fixture.generation,
+        assessment_ref=assessment_ref,
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+
+    assert result.required_primitive_candidates[0].evidence_refs == (
+        fixture.con_ref,
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("privilege_level", "accepted"),
     [("handle_request", True), ("fabricated-admin", False)],

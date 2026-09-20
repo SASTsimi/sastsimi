@@ -434,6 +434,7 @@ def _verification_invocation_refs(
     persisted_result = records.get_exact(result_ref)
     persisted_log = records.get_exact(invocation.log_ref)
     parsed_output_ref = invocation.result.parsed_output_ref
+    purpose = invocation.request.purpose
     claimed_ref = invocation.request.action_decision_ref
     issued = records.get_exact(call.decision_ref)
     claimed = records.get_exact(claimed_ref)
@@ -470,7 +471,7 @@ def _verification_invocation_refs(
         or invocation.request.call_spec_ref != call.call_spec_ref
         or invocation.request.agent_role != "VERIFICATION"
         or invocation.request.task_kind != "FINAL_VERDICT"
-        or invocation.request.purpose != "PRODUCTION"
+        or purpose not in {"PRODUCTION", "LOCAL_EVALUATION"}
         or invocation.result.llm_call_id != invocation.request.llm_call_id
         or invocation.result.purpose != invocation.request.purpose
         or invocation.result.status != "SUCCEEDED"
@@ -480,7 +481,7 @@ def _verification_invocation_refs(
         or persisted_log.call_spec_ref != call.call_spec_ref
         or persisted_log.agent_role != "VERIFICATION"
         or persisted_log.task_kind != "FINAL_VERDICT"
-        or persisted_log.purpose != "PRODUCTION"
+        or persisted_log.purpose != purpose
         or persisted_log.context_refs != invocation.request.context_refs
         or persisted_log.parsed_output_ref != parsed_output_ref
         or persisted_log.status != "SUCCEEDED"

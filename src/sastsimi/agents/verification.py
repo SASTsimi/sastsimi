@@ -904,6 +904,8 @@ class VerificationAgent:
 
         evidence_roots = (
             generation.evidence_ref,
+            cast(StoredDataRef, reference(pro)),
+            cast(StoredDataRef, reference(con)),
             *(
                 ref
                 for restriction in proposal.restrictions
