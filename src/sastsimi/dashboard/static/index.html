@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>SASTSIMI 분석 현황</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">LOCAL READ-ONLY DASHBOARD</p>
+      <h1>SASTSIMI 분석 현황</h1>
+      <p>실제로 저장된 단계와 Agent 활동만 표시합니다.</p>
+    </div>
+    <div id="connection" class="connection">연결 확인 중</div>
+  </header>
+  <main>
+    <aside>
+      <h2>분석 목록</h2>
+      <div id="analyses" class="stack"></div>
+    </aside>
+    <section class="content">
+      <div id="overview" class="panel empty">분석을 선택하세요.</div>
+      <div class="grid">
+        <section class="panel"><h2>가설 진행 상태</h2><div id="hypotheses" class="stack"></div></section>
+        <section class="panel"><h2>Agent 활동</h2><div id="events" class="timeline"></div></section>
+      </div>
+      <section class="panel"><h2>보고서</h2><div id="reports" class="reports"></div></section>
+    </section>
+  </main>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
