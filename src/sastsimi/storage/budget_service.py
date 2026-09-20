@@ -11,6 +11,7 @@ from sastsimi.contracts.budget import (
     BudgetRemaining,
     BudgetReservation,
     BudgetUnits,
+    Purpose,
     ReservationStatus,
     WorkBudgetProfile,
     select_work_limit,
@@ -18,7 +19,12 @@ from sastsimi.contracts.budget import (
 )
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import BudgetScopeRef
-from sastsimi.contracts.work import WorkExecutionState, WorkType
+from sastsimi.contracts.work import (
+    StateTransition,
+    WorkExecutionState,
+    WorkStatus,
+    WorkType,
+)
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.dto import (
     BudgetCommitRequest,
@@ -34,6 +40,7 @@ from .budget_hierarchy import check_hierarchy
 from .budget_limits import EXTERNAL_ACTIONS, operation
 from .budget_registry import BudgetProfileRegistry
 from .records import next_meta
+from .run_states import get_run
 
 UNIT_FIELDS = (
     "elapsed_ms",
@@ -42,6 +49,29 @@ UNIT_FIELDS = (
     "retry_count",
     "cost_minor_units",
 )
+
+
+def _allows_local_manual_repair_attempt(
+    *,
+    purpose: Purpose | str,
+    action_type: ActionType | str,
+    action_reason: str,
+    work_status: WorkStatus | str,
+    transition_cause: str | None,
+) -> bool:
+    """Allow one audited repair slot only for an explicit local manual resume."""
+
+    if (
+        purpose != Purpose.LOCAL_EVALUATION
+        or action_type != ActionType.START_ATTEMPT
+        or action_reason != "Claim exact READY work"
+    ):
+        return False
+    if work_status == WorkStatus.BLOCKED:
+        # Atomic resume admission validates the exhausted attempt before it
+        # publishes the USER_RESUME transition.
+        return True
+    return work_status == WorkStatus.READY and transition_cause == "USER_RESUME"
 
 
 class BudgetService:
@@ -272,6 +302,23 @@ class BudgetService:
             }
         else:
             ceiling, kinds = None, set()
+        if action.action_type == ActionType.START_ATTEMPT and ceiling is not None:
+            transition_cause: str | None = None
+            if work.last_transition_ref is not None:
+                transition = self.records.resolve(
+                    connection, work.last_transition_ref, candidate=True
+                )
+                if isinstance(transition, StateTransition):
+                    transition_cause = transition.cause
+            run = get_run(connection, str(work.meta.analysis_id))
+            if _allows_local_manual_repair_attempt(
+                purpose=run.purpose,
+                action_type=action.action_type,
+                action_reason=action.reason,
+                work_status=work.status,
+                transition_cause=transition_cause,
+            ):
+                ceiling += 1
         if kinds:
             if ceiling is None:
                 raise ValueError("BUDGET unavailable: operation limit is unspecified")

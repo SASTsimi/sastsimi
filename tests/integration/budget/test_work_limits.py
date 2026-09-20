@@ -13,9 +13,39 @@ from sastsimi.contracts.refs import RunStoredDataRef
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import BudgetReservationRequest
 from sastsimi.storage.budget_registry import BudgetProfileRegistry
-from sastsimi.storage.budget_service import BudgetService
+from sastsimi.storage.budget_service import (
+    BudgetService,
+    _allows_local_manual_repair_attempt,
+)
 from tests.integration.runtime_support import Harness, metadata
 from tests.unit.contracts.test_core_models import action, work
+
+
+def test_local_manual_resume_allows_one_repair_attempt() -> None:
+    assert _allows_local_manual_repair_attempt(
+        purpose="LOCAL_EVALUATION",
+        action_type="START_ATTEMPT",
+        action_reason="Claim exact READY work",
+        work_status="READY",
+        transition_cause="USER_RESUME",
+    )
+
+
+def test_repair_attempt_remains_closed_outside_local_manual_resume() -> None:
+    assert not _allows_local_manual_repair_attempt(
+        purpose="PRODUCTION",
+        action_type="START_ATTEMPT",
+        action_reason="Claim exact READY work",
+        work_status="READY",
+        transition_cause="USER_RESUME",
+    )
+    assert not _allows_local_manual_repair_attempt(
+        purpose="LOCAL_EVALUATION",
+        action_type="START_ATTEMPT",
+        action_reason="Claim exact READY work",
+        work_status="READY",
+        transition_cause=None,
+    )
 
 
 @pytest.mark.parametrize(
