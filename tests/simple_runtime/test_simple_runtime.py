@@ -21,6 +21,7 @@ from sastsimi.simple_runtime.runner import (
     SimpleRuntimeRunner,
     StageBlocked,
 )
+from sastsimi.simple_runtime.stages import internal_report_status
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
@@ -214,3 +215,15 @@ async def test_false_stops_before_cwe_gate_and_report(tmp_path) -> None:
     assert store.verdict(_identity()) == "FALSE"
     assert store.get(_identity(), SimpleStage.CWE_DONE) is None
     assert store.get(_identity(), SimpleStage.REPORT_DONE) is None
+
+
+def test_scope_denial_creates_only_a_restricted_internal_report() -> None:
+    assert internal_report_status("ALLOW") == ("CONFIRMED", True)
+    assert internal_report_status("DENY") == ("CONFIRMED_RESTRICTED", False)
+    assert internal_report_status("UNCERTAIN") == (
+        "CONFIRMED_RESTRICTED",
+        False,
+    )
+
+    with pytest.raises(ValueError, match="RULE_SCOPE_STATUS_INVALID"):
+        internal_report_status("REVISE")

@@ -78,6 +78,16 @@ def _raise_provider_failure(failure: StageFailure) -> NoReturn:
     raise StageFailed(failure)
 
 
+def internal_report_status(scope_status: str) -> tuple[str, bool]:
+    """Map a policy result to internal reporting state without changing it."""
+
+    if scope_status == "ALLOW":
+        return "CONFIRMED", True
+    if scope_status in {"DENY", "UNCERTAIN"}:
+        return "CONFIRMED_RESTRICTED", False
+    raise ValueError("RULE_SCOPE_STATUS_INVALID")
+
+
 class PoCCandidateStage:
     def __init__(
         self,
@@ -625,15 +635,7 @@ policy is UNCERTAIN, never ALLOW. Do not alter the technical verdict.
             checkpoint,
             _unique_refs(_prior_refs(prior) + policy_refs),
         )
-        if result.value["status"] != "ALLOW":
-            raise StageBlocked(
-                StageFailure(
-                    code="RULE_SCOPE_NOT_ALLOWED",
-                    retryable=False,
-                    safe_message="Rule Scope Gate did not allow reporting",
-                    evidence_refs=(output_ref,),
-                )
-            )
+        internal_report_status(str(result.value["status"]))
         return StageResult(output_refs=(output_ref,))
 
 
@@ -654,7 +656,9 @@ class FindingStage:
             or verification.verdict != "TRUE"
             or verification.validated_poc_ref is None
             or technical is None
+            or not technical.output_refs
             or scope is None
+            or not scope.output_refs
         ):
             raise StageFailed(
                 StageFailure(
@@ -663,11 +667,16 @@ class FindingStage:
                     safe_message="Finding requires TRUE, validated PoC, and both Gates",
                 )
             )
+        scope_result = self._result(scope.output_refs[0])
+        scope_status = str(scope_result.get("status", ""))
+        finding_status, disclosure_allowed = internal_report_status(scope_status)
         source_refs = _prior_refs(prior)
         finding_ref = self._artifacts.put_json(
             {
                 "kind": "simple_finding",
-                "status": "CONFIRMED",
+                "status": finding_status,
+                "external_disclosure_allowed": disclosure_allowed,
+                "scope_gate_status": scope_status,
                 "analysis_id": checkpoint.identity.analysis_id,
                 "hypothesis_id": checkpoint.identity.hypothesis_id,
                 "validated_poc_ref": verification.validated_poc_ref.model_dump(
@@ -681,6 +690,11 @@ class FindingStage:
             validated_poc_ref=verification.validated_poc_ref,
             verdict="TRUE",
         )
+
+    def _result(self, ref: StoredDataRef) -> dict[str, JsonValue]:
+        value = json.loads(self._artifacts.read(ref))
+        result = value.get("result", {})
+        return cast(dict[str, JsonValue], result)
 
 
 class ReporterStage:
@@ -775,6 +789,8 @@ technical details, remediation guidance, limitations, and human review items.
         cwe = self._result(prior[SimpleStage.CWE_DONE].output_refs[0])
         technical = self._result(prior[SimpleStage.TECH_GATE_DONE].output_refs[0])
         scope = self._result(prior[SimpleStage.SCOPE_GATE_DONE].output_refs[0])
+        scope_status = str(scope.get("status", ""))
+        report_status, disclosure_allowed = internal_report_status(scope_status)
         verification = self._result(
             prior[SimpleStage.VERIFICATION_FINAL_DONE].output_refs[0]
         )
@@ -784,7 +800,8 @@ technical details, remediation guidance, limitations, and human review items.
         lines = [
             f"# {value['title']}",
             "",
-            "- 상태: CONFIRMED",
+            f"- 상태: {report_status}",
+            f"- 외부 제출·공개 허용: {'예' if disclosure_allowed else '아니요'}",
             f"- Analysis: `{checkpoint.identity.analysis_id}`",
             f"- Hypothesis: `{checkpoint.identity.hypothesis_id}`",
             f"- Finding: `{finding_ref.content_hash}`",
@@ -816,6 +833,18 @@ technical details, remediation guidance, limitations, and human review items.
             "",
             f"- Technical Gate: {technical.get('status')}",
             f"- Rule Scope Gate: {scope.get('status')}",
+            *(
+                [
+                    "- 공개 제한: Rule Scope Gate가 허용하지 않았으므로 이 문서는 ",
+                    "  내부 기술 검토용이며 외부 제출·공개에 사용할 수 없습니다.",
+                ]
+                if not disclosure_allowed
+                else ["- 공개 제한: 외부 공개에는 사람의 최종 승인이 필요합니다."]
+            ),
+            *[
+                f"- 정책 제한: {item}"
+                for item in cast(list[str], scope.get("restrictions", []))
+            ],
             "",
             "## 권장 조치",
             "",
@@ -875,4 +904,5 @@ __all__ = [
     "SimpleContainerFactory",
     "TechnicalGateStage",
     "build_stage_handlers",
+    "internal_report_status",
 ]

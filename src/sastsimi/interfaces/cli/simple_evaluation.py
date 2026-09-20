@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from sastsimi.composition.local_codex_binding import build_local_codex_binding
@@ -19,6 +20,7 @@ from sastsimi.simple_runtime.container import (
 from sastsimi.simple_runtime.migration import import_existing_analysis
 from sastsimi.simple_runtime.models import (
     SimpleStage,
+    StageResult,
     StageStatus,
     input_reference_hash,
 )
@@ -64,6 +66,24 @@ async def resume(
                 force=True,
             )
     identities = import_existing_analysis(data_dir, analysis_id, store)
+    for identity in identities:
+        scope_gate = store.get(identity, SimpleStage.SCOPE_GATE_DONE)
+        if (
+            scope_gate is not None
+            and scope_gate.status is StageStatus.BLOCKED
+            and scope_gate.error_code == "RULE_SCOPE_NOT_ALLOWED"
+            and len(scope_gate.output_refs) == 1
+        ):
+            artifacts = SimpleArtifactRepository(data_dir, identity)
+            gate_record = artifacts.read(scope_gate.output_refs[0])
+            gate_status = str(
+                json.loads(gate_record).get("result", {}).get("status", "")
+            )
+            if gate_status in {"DENY", "UNCERTAIN"}:
+                store.complete(
+                    scope_gate,
+                    StageResult(output_refs=scope_gate.output_refs),
+                )
     for identity in identities:
         exact_inputs = repair_inputs.get(identity.hypothesis_id or "")
         candidate = store.get(identity, SimpleStage.POC_CANDIDATE_DONE)
