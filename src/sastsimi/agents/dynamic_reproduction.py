@@ -551,7 +551,16 @@ class DynamicReproductionAgent:
             or request.task_kind != task_kind
             or request.session_policy != expected_session_policy
             or (task_kind != _TASK_EXECUTE and request.parent_session_ref is not None)
-            or request.action_decision_ref != authorization.decision_ref
+            or request.action_decision_ref.data_kind != "action_decision"
+            or authorization.decision_ref.data_kind != "action_decision"
+            or (
+                request.action_decision_ref.workspace_id,
+                request.action_decision_ref.commit_id,
+            )
+            != (
+                authorization.decision_ref.workspace_id,
+                authorization.decision_ref.commit_id,
+            )
             or request.call_spec_ref != authorization.call_spec_ref
             or request.context_refs != context_refs
             or request.meta.attempt_id != work.active_attempt_id

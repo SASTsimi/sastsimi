@@ -579,6 +579,55 @@ async def test_runtime_owned_provider_fields_are_rejected() -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_dynamic_agent_accepts_claimed_decision_revision() -> None:
+    artifacts = MemoryArtifacts()
+    request = reproduction_request()
+    request_ref = cast(StoredDataRef, reference(request))
+    work = dynamic_work(request_ref)
+    derive = invocation(
+        artifacts,
+        work,
+        task="DERIVE_ENVIRONMENT",
+        contexts=(request_ref,),
+        content={
+            "items": [
+                {
+                    "source_need_index": 0,
+                    "kind": "DATABASE",
+                    "name": "sqlite",
+                    "required": True,
+                    "expected": "SQLite available in the isolated image",
+                    "alternatives": [],
+                }
+            ]
+        },
+        sequence=91,
+    )
+    issued = stored_ref("action_decision", "issued-before-claim")
+    authorization = DynamicAgentInvocation(
+        decision_ref=issued,
+        reservation_ref=stored_ref("budget_reservation", "derive-budget"),
+        call_spec_ref=derive.request.call_spec_ref,
+        context_refs=(request_ref,),
+    )
+    agent = DynamicReproductionAgent(
+        llm_calls=QueuedCalls([derive], []),
+        artifacts=artifacts,
+        ids=FakeIds(),
+        clock=FakeClock(),
+    )
+
+    outcome = await agent.derive_environment(
+        work=work,
+        authorization=authorization,
+        request=request,
+        request_ref=request_ref,
+    )
+
+    assert isinstance(outcome.record, EnvironmentRequirements)
+
+
 @dataclass
 class FakeWorkflowPort:
     session: DynamicSandboxSession
