@@ -4,6 +4,8 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Mapping
+from datetime import UTC, datetime
+from time import monotonic
 from typing import Any
 from uuid import uuid4
 
@@ -21,6 +23,12 @@ class SimpleLLMCallResult(ContractModel):
     value: dict[str, JsonValue]
     prompt_digest: str
     output_digest: str
+    invocation_id: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    elapsed_ms: int | None = None
 
 
 def _matches_type(value: object, expected: str) -> bool:
@@ -87,16 +95,21 @@ class SimpleCodexClient:
         timeout_ms: int,
     ) -> SimpleLLMCallResult | StageFailure:
         prompt_digest = hashlib.sha256(prompt).hexdigest()
+        invocation_id = f"simple-{uuid4().hex}"
         request = CodexProcessRequest(
-            invocation_id=f"simple-{uuid4().hex}",
+            invocation_id=invocation_id,
             provider_profile_ref=self._provider_profile_ref,
             model=self._model,
             prompt=prompt,
             output_schema=canonical_bytes(output_schema),
             timeout_ms=timeout_ms,
         )
+        started_at = datetime.now(UTC)
+        started = monotonic()
         async with self._lock:
             result = await self._runner.execute(request)
+        finished_at = datetime.now(UTC)
+        elapsed_ms = max(0, int((monotonic() - started) * 1000))
         if result.status != "SUCCEEDED" or result.final_message is None:
             return StageFailure(
                 code=result.status,
@@ -127,6 +140,12 @@ class SimpleCodexClient:
             value=value,
             prompt_digest=prompt_digest,
             output_digest=hashlib.sha256(canonical).hexdigest(),
+            invocation_id=invocation_id,
+            provider="codex-cli",
+            model=self._model,
+            started_at=started_at,
+            finished_at=finished_at,
+            elapsed_ms=elapsed_ms,
         )
 
 

@@ -10,6 +10,7 @@ from pydantic import Field, model_validator
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.observability.agent_activity import AgentActivityEvent
 
 
 class SimpleStage(StrEnum):
@@ -91,6 +92,7 @@ class StageResult(ContractModel):
     image_digest: str | None = None
     container_id: str | None = None
     markdown_path: str | None = None
+    activity_events: tuple[AgentActivityEvent, ...] = ()
 
 
 class StageFailure(ContractModel):

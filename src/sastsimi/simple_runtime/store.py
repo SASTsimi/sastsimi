@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -7,6 +8,11 @@ from pathlib import Path
 from typing import cast
 
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.observability.agent_activity import (
+    ActivityKind,
+    AgentActivityEvent,
+)
+from sastsimi.storage.agent_activity import AgentActivityStore
 
 from .models import (
     STAGE_ORDER,
@@ -19,6 +25,21 @@ from .models import (
     StageStatus,
     input_reference_hash,
 )
+
+ROLE_BY_STAGE: dict[SimpleStage, str] = {
+    SimpleStage.STATIC_DONE: "Static Analysis Runtime",
+    SimpleStage.HYPOTHESIS_DONE: "Hypothesis Agent",
+    SimpleStage.PRO_CON_DONE: "Pro·Con Agents",
+    SimpleStage.VERIFICATION_INITIAL_DONE: "Verification Agent",
+    SimpleStage.POC_CANDIDATE_DONE: "Dynamic Reproduction Agent",
+    SimpleStage.POC_EXECUTION_DONE: "Reproduction Runtime",
+    SimpleStage.VERIFICATION_FINAL_DONE: "Verification Agent",
+    SimpleStage.CWE_DONE: "CWE Labeling Agent",
+    SimpleStage.TECH_GATE_DONE: "Technical Gate Agent",
+    SimpleStage.SCOPE_GATE_DONE: "Rule Scope Gate Agent",
+    SimpleStage.FINDING_DONE: "Finding Runtime",
+    SimpleStage.REPORT_DONE: "Reporter Agent",
+}
 
 
 class SimpleCheckpointStore:
@@ -50,6 +71,7 @@ class SimpleCheckpointStore:
                 )
                 """
             )
+            AgentActivityStore.initialize_connection(connection)
 
     @staticmethod
     def _hypothesis_key(identity: CheckpointIdentity) -> str:
@@ -111,7 +133,32 @@ class SimpleCheckpointStore:
         return completed
 
     def save_checkpoint(self, checkpoint: StageCheckpoint) -> None:
-        self._write(checkpoint)
+        event: AgentActivityEvent | None = None
+        if (
+            checkpoint.status is StageStatus.SUCCEEDED
+            and checkpoint.stage is SimpleStage.PRO_CON_DONE
+        ):
+            event = self._lifecycle_event(
+                checkpoint,
+                ActivityKind.EVIDENCE_RECORDED,
+                sequence=self._stage_sequence(checkpoint.stage, 10),
+                status=StageStatus.SUCCEEDED,
+                summary_ko="Pro·Con Agent의 찬성·반대 근거를 연결했습니다.",
+                output_refs=checkpoint.output_refs,
+            )
+        elif (
+            checkpoint.status is StageStatus.SUCCEEDED
+            and checkpoint.stage is SimpleStage.VERIFICATION_INITIAL_DONE
+        ):
+            event = self._lifecycle_event(
+                checkpoint,
+                ActivityKind.DECISION_RECORDED,
+                sequence=self._stage_sequence(checkpoint.stage, 10),
+                status=StageStatus.SUCCEEDED,
+                summary_ko="초기 검증 판정과 필요한 동적 재현 목적을 연결했습니다.",
+                output_refs=checkpoint.output_refs,
+            )
+        self._write(checkpoint, activity_events=((event,) if event else ()))
 
     def mark_running(
         self,
@@ -137,7 +184,18 @@ class SimpleCheckpointStore:
             image_digest=reusable_state.image_digest if reusable_state else None,
             container_id=reusable_state.container_id if reusable_state else None,
         )
-        self._write(checkpoint)
+        self._write(
+            checkpoint,
+            activity_events=(
+                self._lifecycle_event(
+                    checkpoint,
+                    ActivityKind.STAGE_STARTED,
+                    sequence=self._stage_sequence(stage, 1),
+                    status=StageStatus.RUNNING,
+                    summary_ko="단계 실행을 시작했습니다.",
+                ),
+            ),
+        )
         return checkpoint
 
     def complete(
@@ -161,7 +219,24 @@ class SimpleCheckpointStore:
                 "updated_at": datetime.now(UTC),
             }
         )
-        self._write(completed)
+        final_sequence = max(
+            (event.sequence for event in result.activity_events),
+            default=self._stage_sequence(checkpoint.stage, 1),
+        ) + 1
+        self._write(
+            completed,
+            activity_events=(
+                *result.activity_events,
+                self._lifecycle_event(
+                    completed,
+                    ActivityKind.STAGE_COMPLETED,
+                    sequence=final_sequence,
+                    status=StageStatus.SUCCEEDED,
+                    summary_ko="단계 결과를 저장했습니다.",
+                    output_refs=result.output_refs,
+                ),
+            ),
+        )
         return completed
 
     def mark_failure(
@@ -181,7 +256,25 @@ class SimpleCheckpointStore:
                 "updated_at": datetime.now(UTC),
             }
         )
-        self._write(failed)
+        kind = (
+            ActivityKind.STAGE_BLOCKED
+            if status is StageStatus.BLOCKED
+            else ActivityKind.STAGE_FAILED
+        )
+        self._write(
+            failed,
+            activity_events=(
+                self._lifecycle_event(
+                    failed,
+                    kind,
+                    sequence=self._stage_sequence(checkpoint.stage, 99),
+                    status=status,
+                    summary_ko="단계가 완료되지 않아 중단했습니다.",
+                    output_refs=failure.evidence_refs,
+                    error_code=failure.code,
+                ),
+            ),
+        )
         return failed
 
     def require(
@@ -227,6 +320,7 @@ class SimpleCheckpointStore:
         checkpoint: StageCheckpoint,
         *,
         fail_before_commit: bool = False,
+        activity_events: tuple[AgentActivityEvent, ...] = (),
     ) -> None:
         connection = self._connect()
         try:
@@ -255,6 +349,8 @@ class SimpleCheckpointStore:
                     checkpoint.updated_at.isoformat(),
                 ),
             )
+            for event in activity_events:
+                AgentActivityStore.append_connection(connection, event)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
@@ -263,6 +359,55 @@ class SimpleCheckpointStore:
             raise
         finally:
             connection.close()
+
+    @staticmethod
+    def _stage_sequence(stage: SimpleStage, offset: int) -> int:
+        return (STAGE_ORDER.index(stage) + 1) * 100 + offset
+
+    @staticmethod
+    def _lifecycle_event(
+        checkpoint: StageCheckpoint,
+        kind: ActivityKind,
+        *,
+        sequence: int,
+        status: StageStatus,
+        summary_ko: str,
+        output_refs: tuple[StoredDataRef, ...] = (),
+        error_code: str | None = None,
+    ) -> AgentActivityEvent:
+        attempt_id = checkpoint.attempt_id or "checkpoint"
+        event_key = ":".join(
+            (
+                checkpoint.identity.analysis_id,
+                checkpoint.identity.hypothesis_id or "",
+                attempt_id,
+                str(sequence),
+                kind.value,
+            )
+        )
+        return AgentActivityEvent(
+            event_id=hashlib.sha256(event_key.encode("utf-8")).hexdigest(),
+            analysis_id=checkpoint.identity.analysis_id,
+            workspace_id=checkpoint.identity.workspace_id,
+            commit_id=checkpoint.identity.commit_id,
+            hypothesis_id=checkpoint.identity.hypothesis_id,
+            stage=checkpoint.stage.value,
+            agent_role=ROLE_BY_STAGE[checkpoint.stage],
+            attempt_id=attempt_id,
+            sequence=sequence,
+            kind=kind,
+            status=status.value,
+            summary_ko=summary_ko,
+            input_refs=checkpoint.input_refs,
+            output_refs=output_refs,
+            error_code=error_code,
+            started_at=checkpoint.updated_at,
+            finished_at=(
+                checkpoint.updated_at
+                if kind is not ActivityKind.STAGE_STARTED
+                else None
+            ),
+        )
 
     def invalidate_from(
         self,
