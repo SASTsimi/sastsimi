@@ -671,7 +671,7 @@ def test_python_runtime_probe_runs_and_approves_exact_current_interpreter(
     )
     assert service._commands.calls == [
         (
-            Path(sys.executable).stem.lower(),
+            Path(sys.executable).resolve(strict=True).stem.lower(),
             (
                 "-I",
                 "-S",
