@@ -113,3 +113,13 @@ def test_database_credentials_private_keys_and_spaced_paths_never_survive() -> N
 def test_sensitive_trusted_template_is_rejected(template: bytes) -> None:
     with pytest.raises(ValueError, match="PROMPT_REDACTION_FAILED"):
         render_provider_prompt(template, ())
+
+
+def test_fixed_container_poc_path_is_not_treated_as_a_host_path() -> None:
+    rendered = render_provider_prompt(
+        b"Run /bin/sh /tmp/sastsimi-poc-candidate inside /workspace.", ()
+    )
+
+    assert b"/tmp/sastsimi-poc-candidate" in rendered
+    with pytest.raises(ValueError, match="PROMPT_REDACTION_FAILED"):
+        render_provider_prompt(b"Read /tmp/unapproved-host-file", ())

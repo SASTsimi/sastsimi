@@ -55,6 +55,21 @@ _POSIX_HOST_PATH = re.compile(
     r"(?<![\w/])/(?:root|home|Users|tmp|etc|var|opt|srv|usr|private)"
     r"(?:/|\b)[^\r\n,;\"'<>]*"
 )
+_SAFE_SANDBOX_PATHS = {
+    "/tmp/sastsimi-poc-candidate": "SASTSIMI_SAFE_POC_RUNTIME_PATH"
+}
+
+
+def _protect_safe_sandbox_paths(value: str) -> str:
+    for path, marker in _SAFE_SANDBOX_PATHS.items():
+        value = value.replace(path, marker)
+    return value
+
+
+def _restore_safe_sandbox_paths(value: str) -> str:
+    for path, marker in _SAFE_SANDBOX_PATHS.items():
+        value = value.replace(marker, path)
+    return value
 
 
 @dataclass(frozen=True)
@@ -67,7 +82,7 @@ def _replace_string(value: str) -> tuple[str, set[str]]:
     if _PRIVATE_KEY.search(value) or _PRIVATE_KEY_HEADER.search(value):
         return "[REDACTED:CREDENTIAL]", {"CREDENTIAL"}
 
-    result = value
+    result = _protect_safe_sandbox_paths(value)
     categories: set[str] = set()
     for pattern, category in (
         (_COOKIE_ASSIGNMENT, "COOKIE"),
@@ -85,7 +100,7 @@ def _replace_string(value: str) -> tuple[str, set[str]]:
     result, posix_count = _POSIX_HOST_PATH.subn("[REDACTED:HOST_ABSOLUTE_PATH]", result)
     if windows_count or posix_count:
         categories.add("HOST_ABSOLUTE_PATH")
-    return result, categories
+    return _restore_safe_sandbox_paths(result), categories
 
 
 def _redact(value: object) -> tuple[object, set[str]]:
@@ -131,6 +146,7 @@ def _has_sensitive_string(value: object) -> bool:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return any(_has_sensitive_string(item) for item in value)
     if isinstance(value, str):
+        value = _protect_safe_sandbox_paths(value)
         return bool(
             _OPAQUE_TOKEN.search(value)
             or _COOKIE_ASSIGNMENT.search(value)
