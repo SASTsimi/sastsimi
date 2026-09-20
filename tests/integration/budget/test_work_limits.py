@@ -26,7 +26,7 @@ from tests.unit.contracts.test_core_models import action, work
 
 
 def test_local_manual_resume_allows_bounded_repair_attempts() -> None:
-    assert LOCAL_MANUAL_REPAIR_ATTEMPTS == 8
+    assert LOCAL_MANUAL_REPAIR_ATTEMPTS == 9
     assert _allows_local_manual_repair_attempt(
         purpose="LOCAL_EVALUATION",
         action_type="START_ATTEMPT",

@@ -58,7 +58,10 @@ _POSIX_HOST_PATH = re.compile(
 _SAFE_SANDBOX_PATHS = {
     "/tmp/sastsimi-poc-candidate": "SASTSIMI_SAFE_POC_RUNTIME_PATH"
 }
-_SANDBOX_TEMP_MARKER = "SASTSIMI_SANDBOX_TEMP_PATH"
+_POC_SANDBOX_ABSOLUTE_PATH = re.compile(
+    r"(?<![\w/])/(?:workspace|tmp|etc|var|opt|srv|usr)(?:/|\b)"
+    r"[^\s\r\n,;\"'<>]*"
+)
 
 
 def _protect_safe_sandbox_paths(value: str) -> str:
@@ -174,12 +177,12 @@ def redact_projected_json(data: bytes) -> RedactionResult:
 
 
 def inspect_poc_candidate_json(data: bytes) -> RedactionResult:
-    """Inspect one PoC candidate while treating ``/tmp`` as container-local.
+    """Inspect one PoC candidate while preserving sandbox-local POSIX paths.
 
     PoC candidate content executes only inside the prepared Sandbox.  A script
-    may therefore use the container's ordinary ``/tmp`` tree without exposing
-    a host path.  This exception is deliberately shape- and task-specific;
-    every other absolute host path and every secret category remains rejected.
+    may therefore use ordinary container paths needed by the reproduction
+    without exposing a host path.  User-home paths, Windows host paths, and all
+    secret categories remain subject to the fail-closed checks.
     """
 
     try:
@@ -190,17 +193,20 @@ def inspect_poc_candidate_json(data: bytes) -> RedactionResult:
         value["content"], str
     ):
         raise ValueError("PROMPT_REDACTION_FAILED")
+    protected_paths: list[tuple[bytes, bytes]] = []
+
+    def protect_path(match: re.Match[str]) -> str:
+        marker = f"SASTSIMI_SANDBOX_ABSOLUTE_PATH_{len(protected_paths)}"
+        protected_paths.append((marker.encode("utf-8"), match.group(0).encode("utf-8")))
+        return marker
+
     protected = {
-        "content": re.sub(
-            r"(?<![A-Za-z0-9_])(/tmp)(?=/|\b)",
-            _SANDBOX_TEMP_MARKER,
-            value["content"],
-        )
+        "content": _POC_SANDBOX_ABSOLUTE_PATH.sub(protect_path, value["content"])
     }
     inspected = redact_projected_json(canonical_bytes(protected))
-    restored = inspected.data.replace(
-        _SANDBOX_TEMP_MARKER.encode("utf-8"), b"/tmp"
-    )
+    restored = inspected.data
+    for marker, path in protected_paths:
+        restored = restored.replace(marker, path)
     return RedactionResult(restored, inspected.categories)
 
 

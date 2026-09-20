@@ -23,7 +23,7 @@ EXTERNAL_ACTIONS = frozenset(
 )
 
 OPERATIONS = WORK_OPERATIONS
-LOCAL_MANUAL_REPAIR_ATTEMPTS = 8
+LOCAL_MANUAL_REPAIR_ATTEMPTS = 9
 
 
 def allows_local_manual_repair_attempt(

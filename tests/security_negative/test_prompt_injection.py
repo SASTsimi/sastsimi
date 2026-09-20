@@ -126,15 +126,27 @@ def test_fixed_container_poc_path_is_not_treated_as_a_host_path() -> None:
         render_provider_prompt(b"Read /tmp/unapproved-host-file", ())
 
 
-def test_poc_candidate_allows_container_tmp_but_not_other_absolute_paths() -> None:
+def test_poc_candidate_allows_sandbox_paths_but_not_host_or_secret_values() -> None:
     candidate = canonical_bytes(
-        {"content": '#!/bin/sh\nwork="${TMPDIR:-/tmp}/poc"\necho "$work"'}
+        {
+            "content": (
+                '#!/bin/sh\nwork="${TMPDIR:-/tmp}/poc"\n'
+                "/usr/bin/id\ncat /etc/passwd\necho \"$work\""
+            )
+        }
     )
 
     assert inspect_poc_candidate_json(candidate).categories == ()
     assert b"/tmp" in inspect_poc_candidate_json(candidate).data
+    assert b"/usr/bin/id" in inspect_poc_candidate_json(candidate).data
+    assert b"/etc/passwd" in inspect_poc_candidate_json(candidate).data
 
-    rejected = inspect_poc_candidate_json(
+    rejected_host = inspect_poc_candidate_json(
         canonical_bytes({"content": "#!/bin/sh\ncat /home/operator/secret"})
     )
-    assert rejected.categories == ("HOST_ABSOLUTE_PATH",)
+    assert rejected_host.categories == ("HOST_ABSOLUTE_PATH",)
+
+    rejected_secret = inspect_poc_candidate_json(
+        canonical_bytes({"content": "#!/bin/sh\ntoken=sk-secretvalue"})
+    )
+    assert rejected_secret.categories == ("TOKEN",)
