@@ -1280,6 +1280,107 @@ async def test_built_image_has_exact_attempt_owner_and_explicit_baseline_reason(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("labels_match", [True, False])
+async def test_exact_persisted_baseline_is_reused_after_store_restart(
+    tmp_path: Path, labels_match: bool
+) -> None:
+    files = {"Dockerfile": b"FROM scratch\n", "app.py": b"pass\n"}
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    artifacts = _MemoryArtifacts()
+    journal = tmp_path / "owned.json"
+    request, requirements, _ = _dynamic_records()
+    docker = FakeDockerAdapter()
+    first_setup = ReproductionSetupAutomation(
+        docker=docker,
+        recipes=EnvironmentRecipeStore(artifacts=artifacts),
+        health=SandboxHealthChecker(),
+        resources=OwnedResourceRegistry(journal_path=journal),
+    )
+    first_source = await first_setup.preflight(
+        workspace_root=tmp_path,
+        repository_profile=_repository_profile(files),
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "baseline-source"),
+    )
+    baseline = await first_setup.build(
+        approval=_build_approval(tmp_path, request, first_source),
+        source=first_source,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "baseline-recipe"),
+    )
+    baseline_resource_ref = first_setup.recipe_resource_refs(baseline)[0]
+    baseline_resource = OwnedResourceRegistry(journal_path=journal).exact(
+        baseline_resource_ref
+    )
+    assert baseline_resource is not None
+    observed_labels = dict(baseline_resource.labels)
+    if not labels_match:
+        observed_labels["sastsimi.attempt-id"] = "foreign-attempt"
+    docker.image_labels[baseline.built_image_digest] = observed_labels
+
+    restarted_setup = ReproductionSetupAutomation(
+        docker=docker,
+        recipes=EnvironmentRecipeStore(artifacts=artifacts),
+        health=SandboxHealthChecker(),
+        resources=OwnedResourceRegistry(journal_path=journal),
+    )
+    resumed_meta = _meta(
+        "environment_recipe",
+        "resumed-recipe",
+        attempt_id="dynamic-attempt-2",
+    )
+    resumed_requirements = requirements.model_copy(
+        update={
+            "meta": _meta(
+                "environment_requirements",
+                "resumed-requirements",
+                attempt_id="dynamic-attempt-2",
+            )
+        }
+    )
+    resumed_source = await restarted_setup.preflight(
+        workspace_root=tmp_path,
+        repository_profile=_repository_profile(files),
+        request=request,
+        requirements=resumed_requirements,
+        meta=resumed_meta,
+    )
+    if not labels_match:
+        with pytest.raises(
+            ValueError, match="REUSABLE_BASELINE_OWNERSHIP_MISMATCH"
+        ):
+            await restarted_setup.build(
+                approval=_build_approval(tmp_path, request, resumed_source),
+                source=resumed_source,
+                request=request,
+                requirements=resumed_requirements,
+                meta=resumed_meta,
+                baseline=baseline,
+            )
+        assert len(docker.built_contexts) == 1
+        return
+
+    reused = await restarted_setup.build(
+        approval=_build_approval(tmp_path, request, resumed_source),
+        source=resumed_source,
+        request=request,
+        requirements=resumed_requirements,
+        meta=resumed_meta,
+        baseline=baseline,
+    )
+
+    assert reused.build_disposition == "REUSED"
+    assert reused.built_image_digest == baseline.built_image_digest
+    assert reused.baseline_recipe_ref == reference(baseline)
+    assert str(reused.meta.attempt_id) == "dynamic-attempt-2"
+    assert restarted_setup.recipe_resource_refs(reused) == (baseline_resource_ref,)
+    assert len(docker.built_contexts) == 1
+
+
+@pytest.mark.asyncio
 async def test_persisted_recipe_can_rebuild_after_store_restart(tmp_path: Path) -> None:
     files = {
         "app.py": b"print('ready')\n",
@@ -2019,6 +2120,60 @@ async def test_required_runtime_version_is_checked_inside_container() -> None:
 
 
 @pytest.mark.asyncio
+async def test_descriptive_version_requirement_is_left_for_agent_observation() -> None:
+    request, requirements, _ = _dynamic_records()
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
+    requirements = requirements.model_copy(
+        update={
+            "items": (
+                EnvironmentRequirement(
+                    requirement_id="dependency-versions",
+                    kind="VERSION",
+                    name="python-framework-database-driver-dependency-versions",
+                    required=True,
+                    expected=None,
+                    expected_ref=None,
+                    alternatives=("Use versions declared by the repository",),
+                    check_ref=None,
+                    secret_ref=None,
+                    source_refs=(request_ref,),
+                ),
+            )
+        }
+    )
+    state = DockerContainerState(
+        container_id="owned-container",
+        image_digest=IMAGE_DIGEST,
+        user="65532:65532",
+        network_mode="none",
+        privileged=False,
+        read_only_rootfs=True,
+        running=True,
+        exit_code=0,
+        health_status=None,
+        labels={},
+    )
+
+    async def must_not_execute(
+        container_id: str,
+        argv: tuple[str, ...],
+        timeout_ms: int,
+        working_directory: str,
+    ) -> DockerCommandOutcome:
+        raise AssertionError((container_id, argv, timeout_ms, working_directory))
+
+    checks = await SandboxHealthChecker().requirement_checks(
+        requirements=requirements,
+        state=state,
+        evidence_ref=_ref("sandbox_resource", "descriptive-version-container"),
+        execute=must_not_execute,
+    )
+
+    assert checks[0].status == "NOT_CHECKED"
+
+
+@pytest.mark.asyncio
 async def test_repository_profile_keeps_equal_file_refs_distinct(
     tmp_path: Path,
 ) -> None:
@@ -2147,6 +2302,7 @@ async def test_opted_in_repository_dockerfile_repairs_archived_debian_sources(
     files = {
         "Dockerfile": (
             b"FROM python:3.11.0b1-buster\n"
+            b"WORKDIR /app\n"
             b"RUN apt-get update && apt-get install -y python3-dev\n"
             b"COPY . /app\n"
         ),
@@ -2179,6 +2335,43 @@ async def test_opted_in_repository_dockerfile_repairs_archived_debian_sources(
     assert source.dockerfile.index(b"archive.debian.org") < source.dockerfile.index(
         b"apt-get update"
     )
+    assert b"ln -s /app /workspace" in source.dockerfile
+    assert source.dockerfile.endswith(b"WORKDIR /workspace\n")
+
+
+@pytest.mark.asyncio
+async def test_repository_dockerfile_without_workdir_requires_confirmation(
+    tmp_path: Path,
+) -> None:
+    files = {
+        "Dockerfile": b"FROM python:3.12-slim\nCOPY . /app\n",
+        "requirements.txt": b"django==5.1.1\n",
+        "app.py": b"import django\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    request, requirements, _ = _dynamic_records()
+    setup = ReproductionSetupAutomation(
+        docker=FakeDockerAdapter(),
+        recipes=EnvironmentRecipeStore(
+            artifacts=_MemoryArtifacts(),
+            allow_repository_build_network=True,
+        ),
+        health=SandboxHealthChecker(),
+        resources=OwnedResourceRegistry(),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="DOCKERFILE_WORKDIR_CONFIRMATION_REQUIRED",
+    ):
+        await setup.preflight(
+            workspace_root=tmp_path,
+            repository_profile=_repository_profile(files),
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "missing-workdir-source"),
+        )
 
 
 @pytest.mark.asyncio

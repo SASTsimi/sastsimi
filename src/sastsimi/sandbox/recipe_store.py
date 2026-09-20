@@ -414,15 +414,28 @@ class EnvironmentRecipeStore:
         self,
         *,
         baseline: EnvironmentRecipe,
+        request_ref: StoredDataRef,
         requirements: EnvironmentRequirements,
         meta: RecordMeta,
     ) -> EnvironmentRecipe:
         requirements_ref = reference(requirements)
         if not isinstance(requirements_ref, StoredDataRef):
             raise ValueError("CODE_SCOPED_REFERENCE_REQUIRED")
+        if (
+            baseline.meta.analysis_id != meta.analysis_id
+            or baseline.meta.workspace_id != meta.workspace_id
+            or baseline.meta.commit_id != meta.commit_id
+            or request_ref.workspace_id != meta.workspace_id
+            or request_ref.commit_id != meta.commit_id
+            or requirements.request_ref != request_ref
+            or requirements.meta.analysis_id != meta.analysis_id
+            or requirements.meta.workspace_id != meta.workspace_id
+            or requirements.meta.commit_id != meta.commit_id
+        ):
+            raise ValueError("BASELINE_RECIPE_SCOPE_MISMATCH")
         return EnvironmentRecipe(
             meta=fresh_record_meta(meta, "environment_recipe"),
-            request_ref=baseline.request_ref,
+            request_ref=request_ref,
             environment_requirements_ref=requirements_ref,
             recipe_source_ref=baseline.recipe_source_ref,
             source_refs=baseline.source_refs,
@@ -1128,6 +1141,7 @@ class EnvironmentRecipeStore:
                 )
             else:
                 dockerfile = self._repair_archived_debian_sources(dockerfile)
+            dockerfile = self._ensure_runtime_workspace(dockerfile)
             return selected, dockerfile, "REPOSITORY", dependency_manifest_path
 
         family = self._repository_family(
@@ -1163,6 +1177,30 @@ class EnvironmentRecipeStore:
             'CMD ["sleep", "infinity"]\n'
         ).encode()
         return "Dockerfile", dockerfile, "GENERATED", dependency_manifest_path
+
+    @staticmethod
+    def _ensure_runtime_workspace(dockerfile: bytes) -> bytes:
+        """Expose a repository image's source root at the runtime contract path."""
+
+        workdirs = re.findall(rb"(?im)^\s*WORKDIR\s+([^\s#]+)\s*$", dockerfile)
+        if not workdirs:
+            raise ValueError("DOCKERFILE_WORKDIR_CONFIRMATION_REQUIRED")
+        source = workdirs[-1]
+        if source == b"/workspace":
+            return dockerfile
+        if re.fullmatch(rb"/[A-Za-z0-9._/-]+", source) is None:
+            raise ValueError("DOCKERFILE_WORKDIR_CONFIRMATION_REQUIRED")
+        return (
+            dockerfile.rstrip()
+            + b"\n\n# SASTSIMI runtime contract: expose baked source at /workspace.\n"
+            + b"USER root\n"
+            + b"RUN test -d "
+            + source
+            + b" && test ! -e /workspace && ln -s "
+            + source
+            + b" /workspace\n"
+            + b"WORKDIR /workspace\n"
+        )
 
     @staticmethod
     def _repair_archived_debian_sources(dockerfile: bytes) -> bytes:

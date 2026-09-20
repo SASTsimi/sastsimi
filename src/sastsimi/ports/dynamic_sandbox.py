@@ -241,6 +241,7 @@ class ReproductionSetupPort(Protocol):
         request: DynamicReproductionRequest,
         requirements: EnvironmentRequirements,
         meta: RecordMeta,
+        baseline: EnvironmentRecipe | None = None,
     ) -> EnvironmentRecipe: ...
 
     def recipe_resource_refs(

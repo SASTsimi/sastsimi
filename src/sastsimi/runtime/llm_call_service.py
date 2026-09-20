@@ -205,7 +205,7 @@ class LLMCallService:
                 "UNRESOLVED"
                 if provider_started
                 and (
-                    provider_status in {"FAILED", "TIMED_OUT", "CANCELLED"}
+                    provider_status in {"TIMED_OUT", "CANCELLED"}
                     or (
                         provider_status is None
                         and result.status in {"FAILED", "TIMED_OUT", "CANCELLED"}

@@ -155,7 +155,18 @@ def _validate_repository_profile(
         or selection.meta.commit_id != candidate.meta.commit_id
         or selection.repository_profile_ref != reference(candidate)
         or target_status != expected_status
-        or (candidate.status == "NEEDS_CONFIRMATION" and selection.status != "BLOCKED")
+        or (
+            candidate.status == "NEEDS_CONFIRMATION"
+            and selection.status != "BLOCKED"
+            and (
+                candidate.confirmation_reasons
+                != ("BUILD_OR_START_UNCONFIRMED",)
+                or not any(
+                    gap.code == "BUILD_OR_START_UNCONFIRMED"
+                    for gap in selection.gaps
+                )
+            )
+        )
         or (
             candidate.status == "READY"
             and selection.status == "BLOCKED"
@@ -806,15 +817,23 @@ class TransitionService:
             terminal = request.commit.target_status.value != "BLOCKED"
             waiting = WaitingFor.INPUT
             action = records.resolve(connection, claimed.action_ref)
+            no_unknown_external_effect = not uncertain(connection, previous)
             if (
                 isinstance(action, ActionRequest)
                 and action.requested_by == RequesterRole.RECOVERY
             ):
-                if not uncertain(connection, previous):
+                if no_unknown_external_effect:
                     waiting = WaitingFor.RETRY
-                    retire_undispatched(
-                        connection, self.works.validator.budget, previous
-                    )
+            if no_unknown_external_effect and (
+                terminal
+                or (
+                    isinstance(action, ActionRequest)
+                    and action.requested_by == RequesterRole.RECOVERY
+                )
+            ):
+                retire_undispatched(
+                    connection, self.works.validator.budget, previous
+                )
             work = WorkExecutionState.model_validate(
                 previous.model_dump()
                 | dict(

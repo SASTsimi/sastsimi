@@ -1035,7 +1035,9 @@ async def test_timeout_stays_unresolved_and_blocks_duplicate_resume() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", ["AUTH_REQUIRED", "TIMED_OUT", "INVALID_OUTPUT"])
+@pytest.mark.parametrize(
+    "status", ["AUTH_REQUIRED", "TIMED_OUT", "INVALID_OUTPUT", "FAILED"]
+)
 async def test_provider_failure_is_persisted_without_domain_output(
     status: InvocationStatus,
 ) -> None:
@@ -1054,6 +1056,9 @@ async def test_provider_failure_is_persisted_without_domain_output(
     assert outcome.result.parsed_output_ref is None
     assert outcome.result.response_ref is None
     assert outcome.result.safe_error == f"{status}: safe provider failure"
+    assert outcome.dispatch_state == (
+        "UNRESOLVED" if status == "TIMED_OUT" else "RETURNED"
+    )
     assert len(authorization.invocations) == 1
     request, result, log = authorization.invocations[0]
     assert ref_key(reference(request)) in data.records.staged

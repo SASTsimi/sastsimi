@@ -17,8 +17,10 @@ from sastsimi.contracts.budget import (
     BudgetLedgerEntry,
     BudgetReservation,
     BudgetUnits,
+    Purpose,
 )
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
+from sastsimi.contracts.dynamic import DynamicReproductionResult
 from sastsimi.contracts.ids import (
     ActionId,
     AttemptId,
@@ -117,14 +119,45 @@ class WorkDispatchStore:
                 .all()
             )
             cohort_ids = set(work_ids)
-            blocked_ids = {
-                row["work_id"] for row in all_rows if row["status"] == "BLOCKED"
+            blocked_works = {
+                row["work_id"]: WorkExecutionState.model_validate_json(row["payload"])
+                for row in all_rows
+                if row["status"] == "BLOCKED"
             }
+            resumable_blocked_ids = {
+                work_id
+                for work_id, blocked_work in blocked_works.items()
+                if blocked_work.waiting_for != ("DEPENDENCY",)
+            }
+            repairable_failed_ids = {
+                row["work_id"]
+                for row in all_rows
+                if run.purpose == "LOCAL_EVALUATION"
+                and row["status"] == "FAILED"
+                and WorkExecutionState.model_validate_json(row["payload"]).work_type
+                == "DYNAMIC_REPRO"
+            }
+            resumable_ids = resumable_blocked_ids | repairable_failed_ids
+            repairable_dynamic_blocked_ids = {
+                work_id
+                for work_id, blocked_work in blocked_works.items()
+                if blocked_work.waiting_for != ("DEPENDENCY",)
+                and blocked_work.work_type == "DYNAMIC_REPRO"
+            }
+            preferred_local_repair_ids = (
+                repairable_failed_ids
+                if repairable_failed_ids
+                else repairable_dynamic_blocked_ids
+            )
+            local_dynamic_repair = (
+                bool(preferred_local_repair_ids)
+                and cohort_ids == preferred_local_repair_ids
+            )
             ready_ids = {row["work_id"] for row in all_rows if row["status"] == "READY"}
-            replay = not blocked_ids and ready_ids == cohort_ids
+            replay = not resumable_ids and ready_ids == cohort_ids
             # The only READY exception is an exact replay of this cohort's own
             # USER_RESUME revisions, checked below without writing more records.
-            if not replay and blocked_ids != cohort_ids:
+            if not replay and not local_dynamic_repair and resumable_ids != cohort_ids:
                 raise ValueError("RESUME_COHORT_MISMATCH")
             if any(
                 row["status"] in {"PENDING", "RUNNING"}
@@ -251,7 +284,7 @@ class WorkDispatchStore:
                     if (
                         not isinstance(transition, StateTransition)
                         or transition.cause != "USER_RESUME"
-                        or transition.from_status != "BLOCKED"
+                        or transition.from_status not in {"BLOCKED", "FAILED"}
                         or transition.expected_state_version
                         != supplied_work.state_version
                         or work.meta.previous_record_id != supplied_work.meta.record_id
@@ -265,7 +298,7 @@ class WorkDispatchStore:
                 if (
                     work != supplied_work
                     or previous_attempt != supplied_attempt
-                    or work.status != WorkStatus.BLOCKED
+                    or work.status not in {WorkStatus.BLOCKED, WorkStatus.FAILED}
                     or work.active_attempt_id is not None
                     or row["active_attempt_id"] is not None
                     or row["worker_id"] is not None
@@ -275,12 +308,18 @@ class WorkDispatchStore:
                     or previous_attempt.input_hash != work.input_hash
                 ):
                     raise ValueError("RESUME_CANDIDATE_NOT_CURRENT")
-                allowed_waiting = {
-                    "WAITING_FOR_INPUT": ("INPUT",),
-                    "LEASE_EXPIRED": ("RETRY",),
-                }
-                if allowed_waiting.get(work.stop_reason or "") != work.waiting_for:
-                    raise ValueError("RESUME_REASON_NOT_RESOLVABLE")
+                if work.status == WorkStatus.FAILED:
+                    self._require_local_failed_dynamic_repair(
+                        run.purpose, connection, work, previous_attempt
+                    )
+                else:
+                    allowed_waiting = {
+                        "WAITING_FOR_INPUT": ("INPUT",),
+                        "LEASE_EXPIRED": ("RETRY",),
+                        "WORK_HANDLER_FAILED": ("RETRY",),
+                    }
+                    if allowed_waiting.get(work.stop_reason or "") != work.waiting_for:
+                        raise ValueError("RESUME_REASON_NOT_RESOLVABLE")
 
                 reject_uncertain(connection, str(work.work_id))
                 action = self._resume_action(work, registration)
@@ -321,8 +360,11 @@ class WorkDispatchStore:
                         "state_version": transition.new_state_version,
                         "last_transition_ref": transition_ref,
                         "output_refs": (),
+                        "gap_ids": (),
+                        "error_ids": (),
                         "waiting_for": (),
                         "stop_reason": None,
+                        "finished_at": None,
                     }
                 )
                 self.works.save(connection, work, ready)
@@ -760,6 +802,52 @@ class WorkDispatchStore:
             raise ValueError("RESUME_ATTEMPT_HISTORY_REQUIRED")
         budget.validate_operation(connection, reservation, work, action)
 
+    def _require_local_failed_dynamic_repair(
+        self,
+        purpose: Purpose,
+        connection: Connection,
+        work: WorkExecutionState,
+        previous_attempt: WorkAttempt,
+    ) -> None:
+        if (
+            purpose != Purpose.LOCAL_EVALUATION
+            or work.work_type != "DYNAMIC_REPRO"
+            or work.stop_reason != "FAILED"
+            or work.waiting_for
+            or previous_attempt.status != "FAILED"
+            or len(work.output_refs) != 1
+        ):
+            raise ValueError("FAILED_WORK_NOT_REPAIRABLE")
+        result = self.works.records.resolve(connection, work.output_refs[0])
+        repairable_pre_boundary_failure = isinstance(
+            result, DynamicReproductionResult
+        ) and (
+            result.failure_category == "INTERNAL"
+            or (
+                result.failure_category == "ENVIRONMENT_SETUP"
+                and result.failure_reason
+                in {
+                    "SANDBOX_OWNERSHIP_INTENT_REQUIRED",
+                    "REUSABLE_BASELINE_OWNERSHIP_REQUIRED",
+                }
+            )
+        )
+        if (
+            not isinstance(result, DynamicReproductionResult)
+            or result.status != "FAILED"
+            or not repairable_pre_boundary_failure
+            or (
+                result.failure_category == "INTERNAL"
+                and result.action_decision_ref is not None
+            )
+            or result.agent_invoked
+            or result.environment_ref is not None
+            or result.poc_candidate_ref is not None
+            or result.poc_ref is not None
+            or result.hypothesis_outcome != "INCONCLUSIVE"
+        ):
+            raise ValueError("FAILED_WORK_NOT_REPAIRABLE")
+
     def _resume_action(
         self, work: WorkExecutionState, registration: ActionRequest
     ) -> ActionRequest:
@@ -792,7 +880,7 @@ class WorkDispatchStore:
                     "image_digest": None,
                     "network_targets": (),
                     "resource_limits": None,
-                    "reason": "Resume exact blocked work",
+                    "reason": "Resume exact local repair work",
                     "requested_at": self.works.clock.now(),
                 }
             )
@@ -808,7 +896,7 @@ class WorkDispatchStore:
                     "transition_id": self.works.ids.new(TransitionId),
                     "work_id": work.work_id,
                     "action_decision_ref": reference(decision),
-                    "from_status": WorkStatus.BLOCKED,
+                    "from_status": work.status,
                     "to_status": TransitionTargetStatus.READY,
                     "expected_state_version": work.state_version,
                     "new_state_version": work.state_version + 1,

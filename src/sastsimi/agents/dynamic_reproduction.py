@@ -537,7 +537,9 @@ class DynamicReproductionAgent:
         request, result = invocation.request, invocation.result
         if not isinstance(work.meta, RecordMeta):
             raise ValueError("DYNAMIC_INVOCATION_MISMATCH")
-        expected_session_policy = "AUTO" if task_kind == _TASK_EXECUTE else "NEW"
+        allowed_session_policies = (
+            {"AUTO", "NEW"} if task_kind == _TASK_EXECUTE else {"NEW"}
+        )
         expected_mode = "RESUMED" if request.parent_session_ref is not None else "NEW"
         scope = (
             "analysis_id",
@@ -549,7 +551,11 @@ class DynamicReproductionAgent:
         if (
             request.agent_role != "DYNAMIC_REPRODUCTION"
             or request.task_kind != task_kind
-            or request.session_policy != expected_session_policy
+            or request.session_policy not in allowed_session_policies
+            or (
+                request.parent_session_ref is not None
+                and request.session_policy != "AUTO"
+            )
             or (task_kind != _TASK_EXECUTE and request.parent_session_ref is not None)
             or request.action_decision_ref.data_kind != "action_decision"
             or authorization.decision_ref.data_kind != "action_decision"
