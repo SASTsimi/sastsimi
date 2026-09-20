@@ -6,6 +6,7 @@ import pytest
 
 from sastsimi.contracts.analysis import AnalysisStartRequest
 from sastsimi.contracts.budget import Purpose
+from sastsimi.contracts.ids import ProgramId
 from sastsimi.orchestration.local_evaluation_entrypoint import (
     LocalEvaluationAnalyzeService,
     LocalEvaluationApplicationFactory,
@@ -126,8 +127,8 @@ async def test_local_evaluation_allocates_exact_scope_without_production_manifes
 
 
 @pytest.mark.asyncio
-async def test_local_evaluation_resumes_blocked_work_without_new_run() -> None:
-    factory = _Factory(["BLOCKED", "BLOCKED", "TERMINAL"])
+async def test_local_evaluation_returns_blocked_without_automatic_retry() -> None:
+    factory = _Factory(["BLOCKED"])
     service = LocalEvaluationAnalyzeService(
         ids=UUIDIds(),
         load_profile=lambda _path: _Profile(),
@@ -147,10 +148,56 @@ async def test_local_evaluation_resumes_blocked_work_without_new_run() -> None:
         )()
     )
 
-    assert outcome.disposition == "TERMINAL"
+    assert outcome.disposition == "BLOCKED"
     assert factory.application is not None
-    assert factory.application.resume_calls == 2
+    assert factory.application.resume_calls == 0
     assert factory.application.shutdown_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_local_evaluation_explicit_resume_runs_one_blocked_cohort() -> None:
+    factory = _Factory(["BLOCKED"])
+    scope = _scope_for_resume()
+    request = AnalysisStartRequest(
+        repository_ref=scope.repository_ref,
+        requested_git_ref=str(scope.commit_id),
+        program_id=ProgramId("local-program"),
+        purpose=Purpose.LOCAL_EVALUATION,
+    )
+    service = LocalEvaluationAnalyzeService(
+        ids=UUIDIds(),
+        load_profile=lambda _path: _Profile(),
+        factory=factory,
+        load_resume_scope=lambda _data, _analysis: (request, scope),
+    )
+
+    outcome = await service.resume(
+        type(
+            "ResumeCommand",
+            (),
+            {
+                "data_dir": Path("data"),
+                "analysis_id": str(scope.analysis_id),
+                "profile": Path("local-evaluation.toml"),
+            },
+        )()
+    )
+
+    assert outcome.disposition == "BLOCKED"
+    assert factory.application is not None
+    assert factory.application.resume_calls == 1
+    assert factory.application.shutdown_calls == 1
+
+
+def _scope_for_resume() -> PlannedRunScope:
+    from sastsimi.contracts.ids import AnalysisId, CommitId, WorkspaceId
+
+    return PlannedRunScope(
+        analysis_id=AnalysisId("analysis-resume"),
+        workspace_id=WorkspaceId("workspace-resume"),
+        commit_id=CommitId("f" * 40),
+        repository_ref="https://example.invalid/repository.git",
+    )
 
 
 @pytest.mark.asyncio

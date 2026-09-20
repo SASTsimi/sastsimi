@@ -152,6 +152,10 @@ def main(
     evaluate_analyze.add_argument("--commit", required=True, type=_exact_commit)
     evaluate_analyze.add_argument("--profile", required=True, type=Path)
     evaluate_analyze.add_argument("--format", choices=["text", "json"])
+    evaluate_resume = evaluate_commands.add_parser("resume", allow_abbrev=False)
+    evaluate_resume.add_argument("analysis_id")
+    evaluate_resume.add_argument("--profile", required=True, type=Path)
+    evaluate_resume.add_argument("--format", choices=["text", "json"])
     demo_parser = subparsers.add_parser(
         "demo", help="run deterministic local scenarios", allow_abbrev=False
     )
@@ -365,26 +369,38 @@ def main(
             return int(analyze_result.code)
         if args.command == "evaluate":
             command_name = "evaluate " + args.evaluate_command
-            if args.evaluate_command != "analyze":
-                raise _InputError
             if local_evaluation_analyze is None:
                 local_evaluation_analyze = cast(
                     local_evaluation_command.LocalEvaluationAnalyzeEntrypoint,
                     bootstrap.build_local_evaluation_analyze(),
                 )
-            evaluation_request = (
-                local_evaluation_command.LocalEvaluationAnalyzeRequest(
-                    data_dir=config.data_dir,
-                    repository=args.repo,
-                    commit=args.commit,
-                    profile=args.profile,
+            if args.evaluate_command == "analyze":
+                evaluation_request = (
+                    local_evaluation_command.LocalEvaluationAnalyzeRequest(
+                        data_dir=config.data_dir,
+                        repository=args.repo,
+                        commit=args.commit,
+                        profile=args.profile,
+                    )
                 )
-            )
-            evaluation_result = asyncio.run(
-                local_evaluation_command.run(
-                    local_evaluation_analyze, evaluation_request
+                evaluation_result = asyncio.run(
+                    local_evaluation_command.run(
+                        local_evaluation_analyze, evaluation_request
+                    )
                 )
-            )
+            else:
+                evaluation_request = (
+                    local_evaluation_command.LocalEvaluationResumeRequest(
+                        data_dir=config.data_dir,
+                        analysis_id=args.analysis_id,
+                        profile=args.profile,
+                    )
+                )
+                evaluation_result = asyncio.run(
+                    local_evaluation_command.resume(
+                        local_evaluation_analyze, evaluation_request
+                    )
+                )
             emit_data(
                 output_format,
                 sys.stdout

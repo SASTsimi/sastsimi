@@ -58,6 +58,7 @@ _POSIX_HOST_PATH = re.compile(
 _SAFE_SANDBOX_PATHS = {
     "/tmp/sastsimi-poc-candidate": "SASTSIMI_SAFE_POC_RUNTIME_PATH"
 }
+_SANDBOX_TEMP_MARKER = "SASTSIMI_SANDBOX_TEMP_PATH"
 
 
 def _protect_safe_sandbox_paths(value: str) -> str:
@@ -170,6 +171,37 @@ def redact_projected_json(data: bytes) -> RedactionResult:
     if _has_sensitive_string(redacted):
         raise ValueError("PROMPT_REDACTION_FAILED")
     return RedactionResult(encoded, tuple(sorted(categories)))
+
+
+def inspect_poc_candidate_json(data: bytes) -> RedactionResult:
+    """Inspect one PoC candidate while treating ``/tmp`` as container-local.
+
+    PoC candidate content executes only inside the prepared Sandbox.  A script
+    may therefore use the container's ordinary ``/tmp`` tree without exposing
+    a host path.  This exception is deliberately shape- and task-specific;
+    every other absolute host path and every secret category remains rejected.
+    """
+
+    try:
+        value = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("PROMPT_REDACTION_FAILED") from error
+    if not isinstance(value, dict) or set(value) != {"content"} or not isinstance(
+        value["content"], str
+    ):
+        raise ValueError("PROMPT_REDACTION_FAILED")
+    protected = {
+        "content": re.sub(
+            r"(?<![A-Za-z0-9_])(/tmp)(?=/|\b)",
+            _SANDBOX_TEMP_MARKER,
+            value["content"],
+        )
+    }
+    inspected = redact_projected_json(canonical_bytes(protected))
+    restored = inspected.data.replace(
+        _SANDBOX_TEMP_MARKER.encode("utf-8"), b"/tmp"
+    )
+    return RedactionResult(restored, inspected.categories)
 
 
 def redact_untrusted_text(data: bytes) -> RedactionResult:

@@ -28,6 +28,15 @@ class LocalEvaluationAnalyzeRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class LocalEvaluationResumeRequest:
+    """Resume one persisted LOCAL_EVALUATION run from its blocked cohort."""
+
+    data_dir: Path
+    analysis_id: str
+    profile: Path
+
+
+@dataclass(frozen=True, slots=True)
 class LocalEvaluationCommandResult:
     code: ExitCode
     data: dict[str, object]
@@ -56,6 +65,10 @@ class LocalEvaluationAnalyzeEntrypoint(Protocol):
         self, request: LocalEvaluationAnalyzeRequest
     ) -> LocalEvaluationRunOutcome: ...
 
+    async def resume(
+        self, request: LocalEvaluationResumeRequest
+    ) -> LocalEvaluationRunOutcome: ...
+
 
 async def run(
     entrypoint: LocalEvaluationAnalyzeEntrypoint | None,
@@ -82,11 +95,41 @@ async def run(
     return LocalEvaluationCommandResult(code=exit_code, data=data)
 
 
+async def resume(
+    entrypoint: LocalEvaluationAnalyzeEntrypoint | None,
+    request: LocalEvaluationResumeRequest,
+) -> LocalEvaluationCommandResult:
+    if entrypoint is None:
+        raise LocalEvaluationUnavailable()
+    outcome = await entrypoint.resume(request)
+    exit_code = {
+        "TERMINAL": ExitCode.OK,
+        "BLOCKED": ExitCode.BLOCKED,
+        "FAILED": ExitCode.RUN_FAILED,
+        "CANCELLED": ExitCode.RUN_CANCELLED,
+    }[outcome.disposition]
+    return LocalEvaluationCommandResult(
+        code=exit_code,
+        data={
+            "analysis_id": outcome.analysis_id,
+            "status": outcome.disposition,
+            "result_record_id": str(outcome.result_ref.record_id)
+            if outcome.result_ref is not None
+            else None,
+            "purpose": "LOCAL_EVALUATION",
+            "production_ready": False,
+            "resume_mode": "FAILED_COHORT_ONLY",
+        },
+    )
+
+
 __all__ = [
     "LocalEvaluationAnalyzeEntrypoint",
     "LocalEvaluationAnalyzeRequest",
     "LocalEvaluationCommandResult",
+    "LocalEvaluationResumeRequest",
     "LocalEvaluationRunOutcome",
     "LocalEvaluationUnavailable",
     "run",
+    "resume",
 ]

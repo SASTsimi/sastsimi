@@ -19,6 +19,7 @@ from sastsimi.ports.scheduler import AnalysisStatusView, RunOutcome
 class _Entrypoint:
     def __init__(self) -> None:
         self.calls: list[command.LocalEvaluationAnalyzeRequest] = []
+        self.resume_calls: list[command.LocalEvaluationResumeRequest] = []
 
     async def __call__(
         self, request: command.LocalEvaluationAnalyzeRequest
@@ -26,6 +27,11 @@ class _Entrypoint:
         self.calls.append(request)
         return RunOutcome("analysis-local-1", "TERMINAL", None)
 
+    async def resume(
+        self, request: command.LocalEvaluationResumeRequest
+    ) -> RunOutcome:
+        self.resume_calls.append(request)
+        return RunOutcome(request.analysis_id, "BLOCKED", None)
 
 def test_local_evaluation_uses_shipped_composition_when_not_injected(
     tmp_path: Path,
@@ -147,6 +153,44 @@ def test_local_evaluation_rejects_non_exact_commit_before_calling_entrypoint(
     )
     assert entrypoint.calls == []
     assert capsys.readouterr().out == ""  # type: ignore[attr-defined]
+
+
+def test_local_evaluation_resume_is_explicit_and_single_shot(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    entrypoint = _Entrypoint()
+    profile = tmp_path / "local-evaluation.toml"
+
+    assert (
+        main(
+            [
+                "--data-dir",
+                str(tmp_path / "data"),
+                "evaluate",
+                "resume",
+                "analysis-local-1",
+                "--profile",
+                str(profile),
+                "--format",
+                "json",
+            ],
+            local_evaluation_analyze=entrypoint,
+        )
+        == 5
+    )
+
+    output = json.loads(capsys.readouterr().err)  # type: ignore[attr-defined]
+    assert output["command"] == "evaluate resume"
+    assert output["data"]["status"] == "BLOCKED"
+    assert output["data"]["resume_mode"] == "FAILED_COHORT_ONLY"
+    assert entrypoint.resume_calls == [
+        command.LocalEvaluationResumeRequest(
+            data_dir=tmp_path / "data",
+            analysis_id="analysis-local-1",
+            profile=profile,
+        )
+    ]
 
 
 def test_local_evaluation_status_and_results_remain_clearly_labelled() -> None:

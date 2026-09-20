@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.prompt_redaction import inspect_poc_candidate_json
 from sastsimi.prompts.loader import PromptLoader
 from sastsimi.prompts.redaction import redact_projected_json, render_provider_prompt
 
@@ -123,3 +124,17 @@ def test_fixed_container_poc_path_is_not_treated_as_a_host_path() -> None:
     assert b"/tmp/sastsimi-poc-candidate" in rendered
     with pytest.raises(ValueError, match="PROMPT_REDACTION_FAILED"):
         render_provider_prompt(b"Read /tmp/unapproved-host-file", ())
+
+
+def test_poc_candidate_allows_container_tmp_but_not_other_absolute_paths() -> None:
+    candidate = canonical_bytes(
+        {"content": '#!/bin/sh\nwork="${TMPDIR:-/tmp}/poc"\necho "$work"'}
+    )
+
+    assert inspect_poc_candidate_json(candidate).categories == ()
+    assert b"/tmp" in inspect_poc_candidate_json(candidate).data
+
+    rejected = inspect_poc_candidate_json(
+        canonical_bytes({"content": "#!/bin/sh\ncat /home/operator/secret"})
+    )
+    assert rejected.categories == ("HOST_ABSOLUTE_PATH",)
