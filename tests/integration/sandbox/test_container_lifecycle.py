@@ -1193,6 +1193,49 @@ async def test_agent_managed_environment_need_reaches_clean_sandbox(
 
 
 @pytest.mark.asyncio
+async def test_uncheckable_agent_managed_version_does_not_block_first_poc(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "Dockerfile").write_bytes(b"FROM scratch\n")
+    request, requirements, plan = _dynamic_records()
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
+    requirements = requirements.model_copy(
+        update={
+            "items": (
+                EnvironmentRequirement(
+                    requirement_id="application-revision",
+                    kind="VERSION",
+                    name="assessed application revision",
+                    required=True,
+                    expected=None,
+                    expected_ref=None,
+                    alternatives=(),
+                    check_ref=None,
+                    secret_ref=None,
+                    source_refs=(request_ref,),
+                ),
+            )
+        }
+    )
+    requirements_ref = reference(requirements)
+    assert isinstance(requirements_ref, StoredDataRef)
+    plan = plan.model_copy(update={"environment_requirements_ref": requirements_ref})
+
+    prepared = await _prepare(
+        _setup(FakeDockerAdapter()),
+        tmp_path,
+        request=request,
+        requirements=requirements,
+        plan=plan,
+        meta=_meta("sandbox_environment", "agent-managed-version"),
+    )
+
+    assert prepared.environment.checks[0].status == "NOT_CHECKED"
+    assert prepared.environment.status == "READY"
+
+
+@pytest.mark.asyncio
 async def test_built_image_has_exact_attempt_owner_and_explicit_baseline_reason(
     tmp_path: Path,
 ) -> None:

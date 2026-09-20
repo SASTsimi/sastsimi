@@ -55,9 +55,9 @@ from .recipe_store import (
 )
 
 _CLEANUP_TIMEOUT_SECONDS = 10.0
-# A repository is not required to declare a Docker HEALTHCHECK. A declared
-# health failure remains observable to the reproduction session, but an absent
-# declaration (NOT_CHECKED) must not prevent its first PoC command from running.
+# Agent-managed declarations that cannot be checked deterministically remain
+# visible as NOT_CHECKED but must not prevent the first PoC command from
+# running. A VERSION check that can actually run remains a readiness gate.
 _RUNTIME_CHECKED_REQUIREMENTS = frozenset({"VERSION"})
 
 
@@ -683,12 +683,14 @@ class ReproductionSetupAutomation:
         checks: tuple[EnvironmentCheck, ...],
         meta: RecordMeta,
     ) -> SandboxEnvironment:
+        status_by_id = {check.requirement_id: check.status for check in checks}
         required = {
             item.requirement_id
             for item in requirements.items
-            if item.required and item.kind in _RUNTIME_CHECKED_REQUIREMENTS
+            if item.required
+            and item.kind in _RUNTIME_CHECKED_REQUIREMENTS
+            and status_by_id.get(item.requirement_id) != "NOT_CHECKED"
         }
-        status_by_id = {check.requirement_id: check.status for check in checks}
         status: Literal["READY", "MISMATCH", "ERROR"] = (
             "ERROR"
             if any(status_by_id[item] == "ERROR" for item in required)
