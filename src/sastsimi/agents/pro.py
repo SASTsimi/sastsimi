@@ -34,6 +34,30 @@ _EVIDENCE_TASK_BY_ROLE = {
 }
 
 
+def _exact_runtime_evidence_ref(
+    claimed: StoredDataRef,
+    allowed: tuple[StoredDataRef, ...],
+) -> StoredDataRef:
+    """Resolve only an exact persisted revision from the runtime-owned closure."""
+    if claimed in allowed:
+        return claimed
+    if claimed.record_id is None:
+        raise ValueError("CROSS_ROLE_INPUT_DENIED")
+    matches = tuple(
+        candidate
+        for candidate in allowed
+        if candidate.record_id is not None
+        and candidate.data_kind == claimed.data_kind
+        and candidate.record_id == claimed.record_id
+        and candidate.content_hash == claimed.content_hash
+        and candidate.workspace_id == claimed.workspace_id
+        and candidate.commit_id == claimed.commit_id
+    )
+    if len(matches) != 1:
+        raise ValueError("CROSS_ROLE_INPUT_DENIED")
+    return matches[0]
+
+
 class _EvidenceClaimContent(ContractModel):
     statement: NonEmptyStr
     evidence_refs: tuple[StoredDataRef, ...]
@@ -143,13 +167,13 @@ class _EvidenceAgentFinalizer:
             raise
         except Exception as error:
             raise ValueError("EVIDENCE_OUTPUT_ARTIFACT_INVALID") from error
-        allowed = set(allowed_claim_evidence_refs)
-        if any(
-            ref not in allowed
+        normalized_claim_refs = tuple(
+            tuple(
+                _exact_runtime_evidence_ref(ref, allowed_claim_evidence_refs)
+                for ref in claim.evidence_refs
+            )
             for claim in output.evidence
-            for ref in claim.evidence_refs
-        ):
-            raise ValueError("CROSS_ROLE_INPUT_DENIED")
+        )
         if any(
             location.workspace_id != evidence_work.meta.workspace_id
             or location.commit_id != evidence_work.meta.commit_id
@@ -175,11 +199,13 @@ class _EvidenceAgentFinalizer:
                 claim_id=self.claim_id_factory(self.role),
                 statement=claim.statement,
                 source_role=self.role,
-                evidence_refs=claim.evidence_refs,
+                evidence_refs=evidence_refs,
                 code_locations=claim.code_locations,
                 limitations=claim.limitations,
             )
-            for claim in output.evidence
+            for claim, evidence_refs in zip(
+                output.evidence, normalized_claim_refs, strict=True
+            )
         )
         return {
             "meta": meta,

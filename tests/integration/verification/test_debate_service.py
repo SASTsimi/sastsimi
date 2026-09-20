@@ -550,6 +550,80 @@ async def test_budget_limit_rejects_zero_and_allows_parallel_new_sessions() -> N
 
 
 @pytest.mark.asyncio
+async def test_claim_ref_uses_runtime_identity_when_exact_record_revision_matches() -> None:
+    """A redundant LLM-owned stored_data_id cannot replace exact record identity."""
+    public_inputs = tuple(
+        sorted(
+            (
+                _ref("static_fact_bundle", "facts"),
+                _ref("playbook_application", "application"),
+            ),
+            key=canonical_bytes,
+        )
+    )
+    parent = _work("VERIFICATION", public_inputs)
+    pro_work = _work("PRO", public_inputs, parent=parent)
+    records, artifacts = MemoryRecords(), MemoryArtifacts()
+    call = _authorized_call(records, "PRO", pro_work, public_inputs)
+    exact_ref = public_inputs[0]
+    output = _output("PRO", exact_ref)
+    output["evidence"][0]["evidence_refs"][0]["stored_data_id"] = (
+        "llm-invented-redundant-id"
+    )
+    calls = ConcurrentLLMCalls(records, artifacts, {"PRO": output})
+    publisher = RecordingPublisher(records)
+    service = DebateService(
+        records=records,
+        artifacts=artifacts,
+        llm_calls=calls,
+        metadata_factory=MetadataFactory(),
+        claim_id_factory=ClaimIds(),
+        publish_result=publisher,
+        parallel_limit=lambda _work: 1,
+    )
+
+    result = await service.run_branch(
+        parent_work=parent,
+        public_input_refs=public_inputs,
+        call=call,
+        role="PRO",
+    )
+
+    assert result.record.evidence[0].evidence_refs == (exact_ref,)
+
+
+@pytest.mark.asyncio
+async def test_claim_ref_rejects_changed_record_content() -> None:
+    public_inputs = (_ref("static_fact_bundle", "facts"),)
+    parent = _work("VERIFICATION", public_inputs)
+    pro_work = _work("PRO", public_inputs, parent=parent)
+    records, artifacts = MemoryRecords(), MemoryArtifacts()
+    call = _authorized_call(records, "PRO", pro_work, public_inputs)
+    output = _output("PRO", public_inputs[0])
+    output["evidence"][0]["evidence_refs"][0]["stored_data_id"] = "invented"
+    output["evidence"][0]["evidence_refs"][0]["content_hash"] = hashlib.sha256(
+        b"different-content"
+    ).hexdigest()
+    service = DebateService(
+        records=records,
+        artifacts=artifacts,
+        llm_calls=ConcurrentLLMCalls(records, artifacts, {"PRO": output}),
+        metadata_factory=MetadataFactory(),
+        claim_id_factory=ClaimIds(),
+        publish_result=RecordingPublisher(records),
+        parallel_limit=lambda _work: 1,
+    )
+
+    with pytest.raises(ValueError, match="CROSS_ROLE_INPUT_DENIED"):
+        await service.run_branch(
+            parent_work=parent,
+            public_input_refs=public_inputs,
+            call=call,
+            role="PRO",
+        )
+
+
+@pytest.mark.asyncio
 async def test_evidence_code_location_cannot_escape_current_workspace_or_commit() -> None:
     public_inputs = tuple(
         sorted(
