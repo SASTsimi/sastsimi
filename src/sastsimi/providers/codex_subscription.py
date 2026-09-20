@@ -9,13 +9,13 @@ import os
 import signal
 import subprocess
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
 from typing import Literal, cast
-from weakref import WeakKeyDictionary
 
 from pydantic import JsonValue
 
@@ -59,10 +59,7 @@ _MAX_FINAL_MESSAGE_BYTES = 1_048_576
 _TREE_KILLER_TIMEOUT_SECONDS = 2.0
 _ARRAY_ENVELOPE_KEY = "items"
 _CHATGPT_LOGIN_STATUS = "Logged in using ChatGPT"
-_PROCESS_LOCKS: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
-    WeakKeyDictionary()
-)
-_PROCESS_LOCKS_GUARD = Lock()
+_PROCESS_LOCK = Lock()
 _RATE_LIMIT_MARKERS = (
     b"rate limit",
     b"rate_limit",
@@ -81,16 +78,20 @@ _AUTH_FAILURE_MARKERS = (
 )
 
 
-def _codex_process_lock() -> asyncio.Lock:
-    """Serialize subscription processes shared by every adapter on one loop."""
+@asynccontextmanager
+async def _codex_process_lock() -> AsyncIterator[None]:
+    """Serialize subscription processes across every worker event loop."""
 
-    loop = asyncio.get_running_loop()
-    with _PROCESS_LOCKS_GUARD:
-        lock = _PROCESS_LOCKS.get(loop)
-        if lock is None:
-            lock = asyncio.Lock()
-            _PROCESS_LOCKS[loop] = lock
-        return lock
+    acquired = False
+    try:
+        while not acquired:
+            acquired = _PROCESS_LOCK.acquire(blocking=False)
+            if not acquired:
+                await asyncio.sleep(0.01)
+        yield
+    finally:
+        if acquired:
+            _PROCESS_LOCK.release()
 _CHILD_ENVIRONMENT_ALLOWLIST = (
     "CODEX_HOME",
     "SYSTEMROOT",

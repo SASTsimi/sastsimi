@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from dataclasses import dataclass
 
 import pytest
@@ -69,6 +70,35 @@ class SerialObservationRunner:
             self.active -= 1
 
 
+class CrossThreadSerialObservationRunner:
+    def __init__(self) -> None:
+        self.requests: list[CodexProcessRequest] = []
+        self.first_started = threading.Event()
+        self.release_first = threading.Event()
+        self.guard = threading.Lock()
+        self.active = 0
+        self.max_active = 0
+
+    async def execute(self, value: CodexProcessRequest) -> CodexProcessResult:
+        with self.guard:
+            self.requests.append(value)
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            first = len(self.requests) == 1
+        try:
+            if first:
+                self.first_started.set()
+                await asyncio.to_thread(self.release_first.wait)
+            return CodexProcessResult(
+                status="SUCCEEDED",
+                final_message=b'{"decision":"accept"}',
+                provider_session_id=f"provider-{value.invocation_id}",
+            )
+        finally:
+            with self.guard:
+                self.active -= 1
+
+
 class PassingProbeRunner:
     async def run(
         self, candidate: ProviderValidationEvidence, _adapter: object
@@ -132,6 +162,34 @@ async def test_subscription_processes_are_serialized_across_adapters() -> None:
 
     assert len(runner.requests) == 1
     runner.release_first.set()
+    first_result, second_result = await asyncio.gather(first_task, second_task)
+
+    assert first_result.status == second_result.status == "SUCCEEDED"
+    assert len(runner.requests) == 2
+    assert runner.max_active == 1
+
+
+@pytest.mark.asyncio
+async def test_subscription_processes_are_serialized_across_worker_threads() -> None:
+    first = request()
+    second = first.model_copy(update={"llm_call_id": "llm-call-worker-thread"})
+    runner = CrossThreadSerialObservationRunner()
+    first_provider, _first_sessions = adapter(first, runner)
+    second_provider, _second_sessions = adapter(second, runner)
+
+    first_task = asyncio.create_task(
+        asyncio.to_thread(asyncio.run, first_provider.invoke(first))
+    )
+    assert await asyncio.to_thread(runner.first_started.wait, 1)
+    second_task = asyncio.create_task(
+        asyncio.to_thread(asyncio.run, second_provider.invoke(second))
+    )
+    await asyncio.sleep(0.05)
+
+    try:
+        assert len(runner.requests) == 1
+    finally:
+        runner.release_first.set()
     first_result, second_result = await asyncio.gather(first_task, second_task)
 
     assert first_result.status == second_result.status == "SUCCEEDED"
