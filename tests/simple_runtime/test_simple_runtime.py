@@ -183,6 +183,10 @@ async def test_failed_transaction_never_publishes_success_or_false(tmp_path) -> 
         b"#!/bin/sh\nset -eu\npython - <<'PY'\nprint('supported')\nPY\n",
         allowed_environment_names=frozenset(),
     )
+    assert validate_candidate(
+        b"#!/bin/sh\nset -eu\nfixture=/tmp/input\nprintf x > \"$fixture\"\n",
+        allowed_environment_names=frozenset(),
+    )
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,10 @@ _SHELL_VARIABLE = re.compile(
     rb"\$(?:\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::[-=?+][^}]*)?\}|"
     rb"(?P<plain>[A-Za-z_][A-Za-z0-9_]*))"
 )
+_SHELL_ASSIGNMENT = re.compile(
+    rb"(?m)^[ \t]*(?:export[ \t]+|readonly[ \t]+)?"
+    rb"(?P<name>[A-Za-z_][A-Za-z0-9_]*)="
+)
 _URL = re.compile(rb"https?://[^\s'\"<>]+", re.IGNORECASE)
 _WINDOWS_PATH = re.compile(rb"(?:[A-Za-z]:[\\/]|\\\\)[^\r\n]+")
 _FORBIDDEN_HOST_PATHS = (
@@ -48,7 +52,11 @@ def validate_candidate(
         host = (urlsplit(match.group().decode("utf-8")).hostname or "").lower()
         if host not in {"127.0.0.1", "localhost", "0.0.0.0"}:
             raise PoCCandidateRejected("POC_EXTERNAL_URL_FORBIDDEN")
-    allowed = _SAFE_PROCESS_VARIABLES | allowed_environment_names
+    declared = {
+        match.group("name").decode("ascii")
+        for match in _SHELL_ASSIGNMENT.finditer(content)
+    }
+    allowed = _SAFE_PROCESS_VARIABLES | allowed_environment_names | declared
     variables = {
         (match.group("braced") or match.group("plain")).decode("ascii")
         for match in _SHELL_VARIABLE.finditer(content)

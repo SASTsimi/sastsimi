@@ -118,8 +118,10 @@ class SimpleCheckpointStore:
         input_refs: tuple[StoredDataRef, ...],
         *,
         attempt_id: str,
+        inherit_from: StageCheckpoint | None = None,
     ) -> StageCheckpoint:
         previous = self.get(identity, stage)
+        reusable_state = previous or inherit_from
         checkpoint = StageCheckpoint(
             identity=identity,
             stage=stage,
@@ -128,9 +130,9 @@ class SimpleCheckpointStore:
             input_hash=input_reference_hash(input_refs),
             attempt_id=attempt_id,
             attempt_number=(previous.attempt_number if previous else 0) + 1,
-            recipe_ref=previous.recipe_ref if previous else None,
-            image_digest=previous.image_digest if previous else None,
-            container_id=previous.container_id if previous else None,
+            recipe_ref=reusable_state.recipe_ref if reusable_state else None,
+            image_digest=reusable_state.image_digest if reusable_state else None,
+            container_id=reusable_state.container_id if reusable_state else None,
         )
         self._write(checkpoint)
         return checkpoint
@@ -265,8 +267,9 @@ class SimpleCheckpointStore:
         stage: SimpleStage,
         *,
         new_inputs: tuple[StoredDataRef, ...],
+        force: bool = False,
     ) -> None:
-        if self.reusable(identity, stage, new_inputs):
+        if not force and self.reusable(identity, stage, new_inputs):
             return
         first_index = STAGE_ORDER.index(stage)
         stages = tuple(item.value for item in STAGE_ORDER[first_index:])

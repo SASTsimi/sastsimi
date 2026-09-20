@@ -97,6 +97,32 @@ def _checkpoint(
     )
 
 
+def _save_imported_once(
+    store: SimpleCheckpointStore,
+    checkpoint: StageCheckpoint,
+) -> None:
+    """Never replace progress already produced by SimpleRuntime."""
+
+    existing = store.get(checkpoint.identity, checkpoint.stage)
+    if existing is None:
+        store.save_checkpoint(checkpoint)
+        return
+    if (
+        existing.recipe_ref is None
+        and checkpoint.recipe_ref is not None
+        and checkpoint.image_digest is not None
+    ):
+        store.save_checkpoint(
+            existing.model_copy(
+                update={
+                    "recipe_ref": checkpoint.recipe_ref,
+                    "image_digest": checkpoint.image_digest,
+                    "container_id": checkpoint.container_id,
+                }
+            )
+        )
+
+
 def import_existing_analysis(
     data_dir: str | Path,
     analysis_id: str,
@@ -136,7 +162,8 @@ def import_existing_analysis(
         hypothesis_id=None,
     )
     profile_refs = (profile_entry[1],) if profile_entry else ()
-    store.save_checkpoint(
+    _save_imported_once(
+        store,
         _checkpoint(
             analysis_identity,
             SimpleStage.STATIC_DONE,
@@ -153,7 +180,8 @@ def import_existing_analysis(
         current = newest_hypotheses.get(hypothesis_id)
         if current is None or _newest([current, entry]) == entry:
             newest_hypotheses[hypothesis_id] = entry
-    store.save_checkpoint(
+    _save_imported_once(
+        store,
         _checkpoint(
             analysis_identity,
             SimpleStage.HYPOTHESIS_DONE,
@@ -180,7 +208,8 @@ def import_existing_analysis(
         )
         if pro is None or con is None or initial is None:
             continue
-        store.save_checkpoint(
+        _save_imported_once(
+            store,
             _checkpoint(
                 identity,
                 SimpleStage.PRO_CON_DONE,
@@ -201,7 +230,8 @@ def import_existing_analysis(
             + ((plan[1],) if plan else ())
             + ((context[1],) if context else ())
         )
-        store.save_checkpoint(
+        _save_imported_once(
+            store,
             _checkpoint(
                 identity,
                 SimpleStage.VERIFICATION_INITIAL_DONE,
@@ -219,7 +249,8 @@ def import_existing_analysis(
         environments = by_kind_hypothesis[("sandbox_environment", hypothesis_id)]
         environment = _newest(environments)
         if recipe is not None:
-            store.save_checkpoint(
+            _save_imported_once(
+                store,
                 _checkpoint(
                     identity,
                     SimpleStage.POC_CANDIDATE_DONE,
@@ -254,7 +285,8 @@ def import_existing_analysis(
             )
             poc_ref = StoredDataRef.model_validate(dynamic_payload["poc_ref"])
             attempt_id = dynamic_payload["meta"].get("attempt_id")
-            store.save_checkpoint(
+            _save_imported_once(
+                store,
                 _checkpoint(
                     identity,
                     SimpleStage.POC_CANDIDATE_DONE,
@@ -267,7 +299,8 @@ def import_existing_analysis(
                     ),
                 )
             )
-            store.save_checkpoint(
+            _save_imported_once(
+                store,
                 _checkpoint(
                     identity,
                     SimpleStage.POC_EXECUTION_DONE,

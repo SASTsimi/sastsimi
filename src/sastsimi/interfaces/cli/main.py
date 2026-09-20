@@ -21,6 +21,7 @@ from sastsimi.interfaces.cli import onboarding as onboarding_command
 from sastsimi.interfaces.cli import report as report_command
 from sastsimi.interfaces.cli import reports as reports_command
 from sastsimi.interfaces.cli import result as result_command
+from sastsimi.interfaces.cli import simple_evaluation as simple_evaluation_command
 from sastsimi.interfaces.cli import status as status_command
 from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.output import emit_data, emit_result
@@ -156,6 +157,13 @@ def main(
     evaluate_resume.add_argument("analysis_id")
     evaluate_resume.add_argument("--profile", required=True, type=Path)
     evaluate_resume.add_argument("--format", choices=["text", "json"])
+    evaluate_simple_resume = evaluate_commands.add_parser(
+        "simple-resume", allow_abbrev=False
+    )
+    evaluate_simple_resume.add_argument("analysis_id")
+    evaluate_simple_resume.add_argument("--hypothesis-id")
+    evaluate_simple_resume.add_argument("--profile", required=True, type=Path)
+    evaluate_simple_resume.add_argument("--format", choices=["text", "json"])
     demo_parser = subparsers.add_parser(
         "demo", help="run deterministic local scenarios", allow_abbrev=False
     )
@@ -369,6 +377,31 @@ def main(
             return int(analyze_result.code)
         if args.command == "evaluate":
             command_name = "evaluate " + args.evaluate_command
+            if args.evaluate_command == "simple-resume":
+                simple_data = asyncio.run(
+                    simple_evaluation_command.resume(
+                        data_dir=config.data_dir,
+                        analysis_id=args.analysis_id,
+                        profile_path=args.profile,
+                        hypothesis_id=args.hypothesis_id,
+                    )
+                )
+                simple_status = simple_data["status"]
+                simple_code = (
+                    ExitCode.RUN_FAILED
+                    if simple_status == "FAILED"
+                    else ExitCode.BLOCKED
+                    if simple_status == "BLOCKED"
+                    else ExitCode.OK
+                )
+                emit_data(
+                    output_format,
+                    sys.stdout if simple_code == ExitCode.OK else sys.stderr,
+                    command=command_name,
+                    data=simple_data,
+                    code=simple_code,
+                )
+                return int(simple_code)
             if local_evaluation_analyze is None:
                 local_evaluation_analyze = cast(
                     local_evaluation_command.LocalEvaluationAnalyzeEntrypoint,
