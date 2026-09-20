@@ -184,7 +184,11 @@ def build_local_shared_dynamic_feature(
         / str(context.scope.analysis_id)
         / "resources.json"
     ).resolve(strict=False)
-    docker = DockerAdapter.from_profile(profile_ref, target_resolver)
+    docker = DockerAdapter.from_profile(
+        profile_ref,
+        target_resolver,
+        build_network="default",
+    )
     return DynamicProductionFeature(
         sandbox_authorization=authorization,
         sandbox_profile=lambda _work: _sandbox_ref(sandbox_profile),
@@ -194,6 +198,7 @@ def build_local_shared_dynamic_feature(
         docker_target_resolver=target_resolver,
         docker=docker,
         dependency_bundle=dependency_bundle,
+        allow_repository_build_network=True,
     )
 
 

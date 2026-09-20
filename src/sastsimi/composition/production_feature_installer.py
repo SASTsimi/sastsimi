@@ -184,6 +184,7 @@ class DynamicProductionFeature:
     docker_target_resolver: TrustedDockerTargetResolverPort
     docker: SandboxCancellationDockerPort
     dependency_bundle: DependencyBundle | None = None
+    allow_repository_build_network: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -583,6 +584,9 @@ class ProductionFeatureInstaller:
                     docker_profile_ref=dynamic.docker_profile_ref,
                     docker_target_resolver=dynamic.docker_target_resolver,
                     dependency_bundle=dynamic.dependency_bundle,
+                    allow_repository_build_network=(
+                        dynamic.allow_repository_build_network
+                    ),
                 )
 
             dynamic_services = CurrentRepositoryProfileT11Resolver(

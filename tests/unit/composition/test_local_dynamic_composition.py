@@ -94,6 +94,7 @@ def test_builds_local_dynamic_feature_for_the_current_shared_daemon(
     assert target.subject_sha256 == hashlib.sha256(b"local docker cli").hexdigest()
     assert target.external_build_disk_limit_bytes == _sandbox().disk_limit_bytes
     assert feature.sandbox_authorization.container_user == "65532:65532"
+    assert feature.allow_repository_build_network is True
 
 
 def test_local_target_rejects_an_executable_changed_after_composition(

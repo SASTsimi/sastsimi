@@ -460,6 +460,7 @@ def build_current_repository_t11_resolver(
             docker_profile_ref=feature.docker_profile_ref,
             docker_target_resolver=feature.docker_target_resolver,
             dependency_bundle=feature.dependency_bundle,
+            allow_repository_build_network=feature.allow_repository_build_network,
         )
 
     return CurrentRepositoryProfileT11Resolver(

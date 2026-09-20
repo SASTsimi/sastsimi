@@ -1252,6 +1252,7 @@ def build_t11_services(
     docker_profile_ref: HostConfigurationRef,
     docker_target_resolver: TrustedDockerTargetResolverPort,
     dependency_bundle: DependencyBundle | None = None,
+    allow_repository_build_network: bool = False,
 ) -> T11Services:
     """Build the real local-Docker T11 slice after trusted config resolution."""
 
@@ -1284,7 +1285,11 @@ def build_t11_services(
     )
 
     artifacts = runtime.unit_of_work.artifacts
-    docker = DockerAdapter.from_profile(docker_profile_ref, docker_target_resolver)
+    docker = DockerAdapter.from_profile(
+        docker_profile_ref,
+        docker_target_resolver,
+        build_network="default" if allow_repository_build_network else "none",
+    )
     record_store = cast(SQLiteRecordStore, runtime.unit_of_work.records)
     controls = RunControlStore(record_store.database, clock)
     resources = OwnedResourceRegistry(
@@ -1293,7 +1298,10 @@ def build_t11_services(
     )
     setup = ReproductionSetupAutomation(
         docker=docker,
-        recipes=EnvironmentRecipeStore(artifacts=artifacts),
+        recipes=EnvironmentRecipeStore(
+            artifacts=artifacts,
+            allow_repository_build_network=allow_repository_build_network,
+        ),
         health=SandboxHealthChecker(),
         resources=resources,
     )

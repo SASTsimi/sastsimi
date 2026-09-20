@@ -261,10 +261,16 @@ def fresh_record_meta(source: RecordMeta, kind: str) -> RecordMeta:
 class EnvironmentRecipeStore:
     """Build once per exact code-scoped recipe source and bind reuse explicitly."""
 
-    def __init__(self, *, artifacts: ArtifactStore | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        artifacts: ArtifactStore | None = None,
+        allow_repository_build_network: bool = False,
+    ) -> None:
         self._baselines: dict[tuple[str, str, str], EnvironmentRecipe] = {}
         self._lock = asyncio.Lock()
         self._artifacts = artifacts
+        self._allow_repository_build_network = allow_repository_build_network
 
     def preflight(
         self,
@@ -1070,9 +1076,8 @@ class EnvironmentRecipeStore:
                 os.close(descriptor)
         return raw
 
-    @classmethod
     def _select_dockerfile(
-        cls,
+        self,
         entries: Mapping[str, tuple[bytes, int]],
         profile: RepositoryProfile,
         requirements: EnvironmentRequirements,
@@ -1089,32 +1094,32 @@ class EnvironmentRecipeStore:
                 dockerfile = entries[selected][0]
             except KeyError as error:
                 raise ValueError("REPOSITORY_MANIFEST_MISMATCH") from error
-            family = cls._repository_family(
+            family = self._repository_family(
                 profile,
                 requirements=requirements,
                 dockerfile=dockerfile,
             )
-            cls._validate_dependency_bundle_family(dependency_bundle, family)
-            dependency_manifest_path = cls._dependency_manifest_path(
+            self._validate_dependency_bundle_family(dependency_bundle, family)
+            dependency_manifest_path = self._dependency_manifest_path(
                 entries,
                 profile,
                 family,
                 dockerfile=dockerfile,
             )
             if dependency_bundle is not None:
-                cls._dependency_install(
+                self._dependency_install(
                     entries,
                     profile,
                     family,
                     dependency_bundle,
                     dependency_manifest_path=dependency_manifest_path,
                 )
-                dockerfile = cls._inject_offline_dependency_environment(
+                dockerfile = self._inject_offline_dependency_environment(
                     dockerfile,
                     family,
                 )
-            else:
-                cls._dependency_install(
+            elif not self._allow_repository_build_network:
+                self._dependency_install(
                     entries,
                     profile,
                     family,
@@ -1123,25 +1128,25 @@ class EnvironmentRecipeStore:
                 )
             return selected, dockerfile, "REPOSITORY", dependency_manifest_path
 
-        family = cls._repository_family(
+        family = self._repository_family(
             profile,
             requirements=requirements,
             dockerfile=None,
         )
-        cls._validate_dependency_bundle_family(dependency_bundle, family)
-        dependency_manifest_path = cls._dependency_manifest_path(
+        self._validate_dependency_bundle_family(dependency_bundle, family)
+        dependency_manifest_path = self._dependency_manifest_path(
             entries,
             profile,
             family,
             dockerfile=None,
         )
-        version = cls._runtime_version(requirements, family)
+        version = self._runtime_version(requirements, family)
         if version is None:
             raise ValueError("ENVIRONMENT_VERSION_CONFIRMATION_REQUIRED")
         image = (
             f"python:{version}-slim" if family == "PYTHON" else f"node:{version}-slim"
         )
-        install = cls._dependency_install(
+        install = self._dependency_install(
             entries,
             profile,
             family,

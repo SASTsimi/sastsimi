@@ -2010,6 +2010,46 @@ async def test_repository_profile_prefers_existing_dockerfile(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_opted_in_repository_dockerfile_may_resolve_dependencies(
+    tmp_path: Path,
+) -> None:
+    files = {
+        "Dockerfile": (
+            b"FROM python:3.12-slim\n"
+            b"COPY requirements.txt /workspace/requirements.txt\n"
+            b"RUN python -m pip install -r /workspace/requirements.txt\n"
+            b"COPY . /workspace\n"
+        ),
+        "requirements.txt": b"django==5.1.1\n",
+        "app.py": b"import django\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    request, requirements, _ = _dynamic_records()
+    setup = ReproductionSetupAutomation(
+        docker=FakeDockerAdapter(),
+        recipes=EnvironmentRecipeStore(
+            artifacts=_MemoryArtifacts(),
+            allow_repository_build_network=True,
+        ),
+        health=SandboxHealthChecker(),
+        resources=OwnedResourceRegistry(),
+    )
+
+    source = await setup.preflight(
+        workspace_root=tmp_path,
+        repository_profile=_repository_profile(files),
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "network-opt-in-source"),
+    )
+
+    assert source.dockerfile_origin == "REPOSITORY"
+    assert source.dependency_bundle_ref is None
+    assert source.dependency_manifest_path == "requirements.txt"
+
+
+@pytest.mark.asyncio
 async def test_prepare_creates_clean_non_root_default_deny_container(
     tmp_path: Path,
 ) -> None:
@@ -2727,9 +2767,15 @@ async def test_owned_image_inspection_ignores_unrelated_image_labels(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("build_network", "expected_network"),
+    (("none", "none"), ("default", "default")),
+)
 async def test_docker_build_uses_stdin_empty_context_and_approved_timeout(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    build_network: str,
+    expected_network: str,
 ) -> None:
     calls: list[tuple[tuple[str, ...], int | None, bytes | None]] = []
 
@@ -2752,7 +2798,12 @@ async def test_docker_build_uses_stdin_empty_context_and_approved_timeout(
         "sastsimi.resource-kind": "image",
         "sastsimi.resource-id": "image-runtime-1",
     }
-    adapter, _ = _trusted_docker_adapter(tmp_path)
+    _, resolver = _trusted_docker_adapter(tmp_path)
+    adapter = DockerAdapter.from_profile(
+        resolver.target.profile_ref,
+        resolver,
+        build_network=build_network,
+    )
     monkeypatch.setattr(adapter, "_run", run)
     dockerfile = b"FROM scratch\nRUN true\n"
     request, _, _ = _dynamic_records()
@@ -2775,7 +2826,7 @@ async def test_docker_build_uses_stdin_empty_context_and_approved_timeout(
         "--quiet",
         "--pull=false",
         "--network",
-        "none",
+        expected_network,
     )
     assert "--label" in argv
     assert ("--tag", DockerAdapter.runtime_image_tag(labels)) == argv[
@@ -3031,9 +3082,15 @@ async def test_docker_context_build_rejects_link_member_before_daemon(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("build_network", "expected_network"),
+    (("none", "none"), ("default", "default")),
+)
 async def test_docker_context_build_streams_tar_without_host_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    build_network: str,
+    expected_network: str,
 ) -> None:
     archive = EnvironmentRecipeStore._archive(
         {"Dockerfile": (b"FROM scratch\n", 0o644), "app.py": (b"pass\n", 0o644)}
@@ -3059,7 +3116,12 @@ async def test_docker_context_build_streams_tar_without_host_path(
         "sastsimi.resource-kind": "image",
         "sastsimi.resource-id": "image-runtime-1",
     }
-    adapter, _ = _trusted_docker_adapter(tmp_path)
+    _, resolver = _trusted_docker_adapter(tmp_path)
+    adapter = DockerAdapter.from_profile(
+        resolver.target.profile_ref,
+        resolver,
+        build_network=build_network,
+    )
     monkeypatch.setattr(adapter, "_run", run)
 
     digest = await adapter.build_context(
@@ -3092,6 +3154,8 @@ async def test_docker_context_build_streams_tar_without_host_path(
     assert len(calls) == 1
     argv, timeout_ms, input_bytes = calls[0]
     assert argv[-3:] == ("--file", "Dockerfile", "-")
+    network_index = argv.index("--network")
+    assert argv[network_index + 1] == expected_network
     assert timeout_ms == 10_000
     assert input_bytes == archive
     assert all(str(Path.cwd()) not in item for item in argv)
