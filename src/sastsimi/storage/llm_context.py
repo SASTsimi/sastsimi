@@ -3,7 +3,7 @@
 from sqlalchemy import Connection, select
 
 from sastsimi.contracts.actions import ActionDecision, ActionRequest
-from sastsimi.contracts.dynamic import SandboxProfile
+from sastsimi.contracts.dynamic import DynamicReproductionRequest, SandboxProfile
 from sastsimi.contracts.llm import (
     LLMCallSpec,
     PromptPayload,
@@ -12,7 +12,8 @@ from sastsimi.contracts.llm import (
 )
 from sastsimi.contracts.llm_closure import llm_action_input_refs
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import RecordRef
+from sastsimi.contracts.refs import RecordRef, StoredDataRef
+from sastsimi.contracts.static import CodeContextResponse
 from sastsimi.contracts.work import WorkExecutionState
 
 from . import models
@@ -79,6 +80,107 @@ def _chaining_prepared_input_refs(
     ):
         raise ValueError("LLM_CONTEXT_WORK_MISMATCH: chaining prepared_input")
     return {source}
+
+
+def _dynamic_poc_context_refs(
+    records: SQLiteRecordStore,
+    connection: Connection,
+    *,
+    spec: LLMCallSpec,
+    work: WorkExecutionState,
+) -> set[RecordRef]:
+    """Admit only code transitively pinned by this dynamic request.
+
+    A dynamic work owns the exact ``DynamicReproductionRequest`` as its direct
+    input.  The request in turn pins the context responses that Verification
+    selected, and every response pins immutable code-fragment artifacts.  PoC
+    generation needs those records, but they must not become a general escape
+    from work-input ownership.
+    """
+
+    if not (
+        work.work_type == "DYNAMIC_REPRO"
+        and spec.agent_role == "DYNAMIC_REPRODUCTION"
+        and spec.task_kind == "CREATE_POC_CANDIDATE"
+    ):
+        return set()
+    if (
+        not isinstance(work.meta, RecordMeta)
+        or len(work.input_refs) != 1
+        or work.input_refs[0].data_kind != DynamicReproductionRequest.KIND
+        or len(spec.context_refs) < 5
+        or tuple(ref.data_kind for ref in spec.context_refs[:3])
+        != (
+            DynamicReproductionRequest.KIND,
+            "reproduction_plan",
+            "sandbox_environment",
+        )
+        or spec.context_refs[0] != work.input_refs[0]
+    ):
+        raise ValueError("LLM_CONTEXT_WORK_MISMATCH: dynamic PoC context")
+
+    request_ref = work.input_refs[0]
+    request = records.resolve(connection, request_ref)
+    if (
+        not isinstance(request, DynamicReproductionRequest)
+        or reference(request) != request_ref
+        or request.verification_generation != work.work_generation
+        or (
+            request.meta.analysis_id,
+            request.meta.workspace_id,
+            request.meta.commit_id,
+            request.meta.hypothesis_id,
+        )
+        != (
+            work.meta.analysis_id,
+            work.meta.workspace_id,
+            work.meta.commit_id,
+            work.meta.hypothesis_id,
+        )
+        or not request.code_refs
+        or len(request.code_refs) != len(set(request.code_refs))
+    ):
+        raise ValueError("LLM_CONTEXT_WORK_MISMATCH: dynamic PoC context")
+
+    fragment_refs: list[StoredDataRef] = []
+    for response_ref in request.code_refs:
+        response = records.resolve(connection, response_ref)
+        if (
+            response_ref.data_kind != CodeContextResponse.KIND
+            or not isinstance(response, CodeContextResponse)
+            or reference(response) != response_ref
+            or (
+                response.meta.analysis_id,
+                response.meta.workspace_id,
+                response.meta.commit_id,
+                response.meta.hypothesis_id,
+            )
+            != (
+                work.meta.analysis_id,
+                work.meta.workspace_id,
+                work.meta.commit_id,
+                work.meta.hypothesis_id,
+            )
+            or not response.code_fragment_refs
+        ):
+            raise ValueError("LLM_CONTEXT_WORK_MISMATCH: dynamic PoC context")
+        for fragment_ref in response.code_fragment_refs:
+            if (
+                fragment_ref.data_kind != "artifact"
+                or fragment_ref.record_id is not None
+                or str(fragment_ref.stored_data_id) != fragment_ref.content_hash
+                or (fragment_ref.workspace_id, fragment_ref.commit_id)
+                != (work.meta.workspace_id, work.meta.commit_id)
+            ):
+                raise ValueError("LLM_CONTEXT_WORK_MISMATCH: dynamic PoC context")
+            fragment_refs.append(fragment_ref)
+
+    if len(fragment_refs) != len(set(fragment_refs)):
+        raise ValueError("LLM_CONTEXT_WORK_MISMATCH: dynamic PoC context")
+    expected_tail: tuple[RecordRef, ...] = (*request.code_refs, *fragment_refs)
+    if tuple(spec.context_refs[3:]) != expected_tail:
+        raise ValueError("LLM_CONTEXT_WORK_MISMATCH: dynamic PoC context")
+    return set(expected_tail)
 
 
 def check_llm_context(
@@ -157,6 +259,14 @@ def check_llm_context(
     allowed: set[RecordRef] = set(work.input_refs)
     allowed.update(
         _chaining_prepared_input_refs(payload=payload, spec=spec, work=work)
+    )
+    allowed.update(
+        _dynamic_poc_context_refs(
+            records,
+            connection,
+            spec=spec,
+            work=work,
+        )
     )
     if work.work_type == "VERIFICATION":
         process = current_process(records, connection, work)
