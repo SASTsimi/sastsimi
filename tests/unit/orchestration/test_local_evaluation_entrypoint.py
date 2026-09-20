@@ -21,24 +21,37 @@ class _Profile:
 
 
 class _Application:
-    def __init__(self, expected: AnalysisStartRequest, scope: PlannedRunScope) -> None:
+    def __init__(
+        self,
+        expected: AnalysisStartRequest,
+        scope: PlannedRunScope,
+        outcomes: list[str] | None = None,
+    ) -> None:
         self.expected = expected
         self.scope = scope
         self.shutdown_calls = 0
+        self.resume_calls = 0
+        self.outcomes = outcomes or ["TERMINAL"]
 
     async def run(self, request: AnalysisStartRequest) -> RunOutcome:
         assert request == self.expected
-        return RunOutcome(str(self.scope.analysis_id), "TERMINAL", None)
+        return RunOutcome(str(self.scope.analysis_id), self.outcomes.pop(0), None)  # type: ignore[arg-type]
+
+    async def resume(self, analysis_id: str) -> RunOutcome:
+        assert analysis_id == str(self.scope.analysis_id)
+        self.resume_calls += 1
+        return RunOutcome(str(self.scope.analysis_id), self.outcomes.pop(0), None)  # type: ignore[arg-type]
 
     async def shutdown(self) -> None:
         self.shutdown_calls += 1
 
 
 class _Factory:
-    def __init__(self) -> None:
+    def __init__(self, outcomes: list[str] | None = None) -> None:
         self.request: AnalysisStartRequest | None = None
         self.scope: PlannedRunScope | None = None
         self.application: _Application | None = None
+        self.outcomes = outcomes
 
     def build(
         self,
@@ -52,7 +65,7 @@ class _Factory:
         assert profile.program_id == _Profile.program_id
         self.request = request
         self.scope = scope
-        self.application = _Application(request, scope)
+        self.application = _Application(request, scope, self.outcomes)
         return self.application
 
 
@@ -109,6 +122,34 @@ async def test_local_evaluation_allocates_exact_scope_without_production_manifes
     assert factory.scope.repository_ref == factory.request.repository_ref
     assert str(factory.scope.commit_id) == "b" * 40
     assert factory.application is not None
+    assert factory.application.shutdown_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_local_evaluation_resumes_blocked_work_without_new_run() -> None:
+    factory = _Factory(["BLOCKED", "BLOCKED", "TERMINAL"])
+    service = LocalEvaluationAnalyzeService(
+        ids=UUIDIds(),
+        load_profile=lambda _path: _Profile(),
+        factory=factory,
+    )
+
+    outcome = await service(
+        type(
+            "Command",
+            (),
+            {
+                "data_dir": Path("data"),
+                "repository": "https://example.invalid/repository.git",
+                "commit": "E" * 40,
+                "profile": Path("local-evaluation.toml"),
+            },
+        )()
+    )
+
+    assert outcome.disposition == "TERMINAL"
+    assert factory.application is not None
+    assert factory.application.resume_calls == 2
     assert factory.application.shutdown_calls == 1
 
 

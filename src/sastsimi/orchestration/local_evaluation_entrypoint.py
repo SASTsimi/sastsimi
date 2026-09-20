@@ -39,6 +39,8 @@ class LocalEvaluationProfile(Protocol):
 class ScopeOwnedLocalEvaluationApplication(Protocol):
     async def run(self, request: AnalysisStartRequest) -> RunOutcome: ...
 
+    async def resume(self, analysis_id: str) -> RunOutcome: ...
+
     async def shutdown(self) -> None: ...
 
 
@@ -68,6 +70,8 @@ class LocalEvaluationApplicationPreflight(Protocol):
 
 class LocalEvaluationAnalyzeService:
     """Allocate an exact run labelled LOCAL_EVALUATION, never PRODUCTION."""
+
+    _MAX_AUTOMATIC_RESUMES = 16
 
     def __init__(
         self,
@@ -109,6 +113,13 @@ class LocalEvaluationAnalyzeService:
         )
         try:
             outcome = await application.run(request)
+            resume_count = 0
+            while (
+                outcome.disposition == "BLOCKED"
+                and resume_count < self._MAX_AUTOMATIC_RESUMES
+            ):
+                outcome = await application.resume(str(scope.analysis_id))
+                resume_count += 1
             if outcome.analysis_id != str(scope.analysis_id) or (
                 outcome.result_ref is not None
                 and outcome.result_ref.analysis_id != scope.analysis_id
