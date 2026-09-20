@@ -12,7 +12,10 @@ from sastsimi.contracts.budget import (
 from sastsimi.contracts.refs import RunStoredDataRef
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import BudgetReservationRequest
-from sastsimi.storage.budget_limits import allows_local_manual_repair_scope
+from sastsimi.storage.budget_limits import (
+    LOCAL_MANUAL_REPAIR_ATTEMPTS,
+    allows_local_manual_repair_scope,
+)
 from sastsimi.storage.budget_registry import BudgetProfileRegistry
 from sastsimi.storage.budget_service import (
     BudgetService,
@@ -23,6 +26,7 @@ from tests.unit.contracts.test_core_models import action, work
 
 
 def test_local_manual_resume_allows_bounded_repair_attempts() -> None:
+    assert LOCAL_MANUAL_REPAIR_ATTEMPTS == 8
     assert _allows_local_manual_repair_attempt(
         purpose="LOCAL_EVALUATION",
         action_type="START_ATTEMPT",
