@@ -13,7 +13,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 from typing import Literal, cast
+from weakref import WeakKeyDictionary
 
 from pydantic import JsonValue
 
@@ -57,6 +59,10 @@ _MAX_FINAL_MESSAGE_BYTES = 1_048_576
 _TREE_KILLER_TIMEOUT_SECONDS = 2.0
 _ARRAY_ENVELOPE_KEY = "items"
 _CHATGPT_LOGIN_STATUS = "Logged in using ChatGPT"
+_PROCESS_LOCKS: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
+    WeakKeyDictionary()
+)
+_PROCESS_LOCKS_GUARD = Lock()
 _RATE_LIMIT_MARKERS = (
     b"rate limit",
     b"rate_limit",
@@ -73,6 +79,18 @@ _AUTH_FAILURE_MARKERS = (
     b"login required",
     b"401",
 )
+
+
+def _codex_process_lock() -> asyncio.Lock:
+    """Serialize subscription processes shared by every adapter on one loop."""
+
+    loop = asyncio.get_running_loop()
+    with _PROCESS_LOCKS_GUARD:
+        lock = _PROCESS_LOCKS.get(loop)
+        if lock is None:
+            lock = asyncio.Lock()
+            _PROCESS_LOCKS[loop] = lock
+        return lock
 _CHILD_ENVIRONMENT_ALLOWLIST = (
     "CODEX_HOME",
     "SYSTEMROOT",
@@ -475,7 +493,6 @@ class CodexSubscriptionAdapter:
         self._active: dict[str, asyncio.Task[LLMInvocationResult]] = {}
         self._cancel_events: dict[str, asyncio.Event] = {}
         self._active_lock = asyncio.Lock()
-        self._process_lock = asyncio.Lock()
 
     async def probe(
         self, candidate: ProviderValidationEvidence
@@ -577,7 +594,7 @@ class CodexSubscriptionAdapter:
     ) -> LLMInvocationResult:
         try:
             resolved, schema = await self._prepare(request)
-            async with self._process_lock:
+            async with _codex_process_lock():
                 process_result = await self.process_runner.execute(
                     CodexProcessRequest(
                         invocation_id=request.llm_call_id,

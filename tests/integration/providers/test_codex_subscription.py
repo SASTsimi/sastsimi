@@ -106,7 +106,29 @@ async def test_subscription_processes_are_serialized_per_adapter() -> None:
     first_task = asyncio.create_task(provider.invoke(first))
     await asyncio.wait_for(runner.first_started.wait(), timeout=1)
     second_task = asyncio.create_task(provider.invoke(second))
-    await asyncio.sleep(0)
+    await asyncio.sleep(0.05)
+
+    assert len(runner.requests) == 1
+    runner.release_first.set()
+    first_result, second_result = await asyncio.gather(first_task, second_task)
+
+    assert first_result.status == second_result.status == "SUCCEEDED"
+    assert len(runner.requests) == 2
+    assert runner.max_active == 1
+
+
+@pytest.mark.asyncio
+async def test_subscription_processes_are_serialized_across_adapters() -> None:
+    first = request()
+    second = first.model_copy(update={"llm_call_id": "llm-call-other-adapter"})
+    runner = SerialObservationRunner()
+    first_provider, _first_sessions = adapter(first, runner)
+    second_provider, _second_sessions = adapter(second, runner)
+
+    first_task = asyncio.create_task(first_provider.invoke(first))
+    await asyncio.wait_for(runner.first_started.wait(), timeout=1)
+    second_task = asyncio.create_task(second_provider.invoke(second))
+    await asyncio.sleep(0.05)
 
     assert len(runner.requests) == 1
     runner.release_first.set()
