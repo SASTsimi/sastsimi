@@ -1239,7 +1239,10 @@ async def test_uncheckable_agent_managed_version_does_not_block_first_poc(
 async def test_built_image_has_exact_attempt_owner_and_explicit_baseline_reason(
     tmp_path: Path,
 ) -> None:
-    files = {"Dockerfile": b"FROM scratch\n", "app.py": b"pass\n"}
+    files = {
+        "Dockerfile": b"FROM scratch\nWORKDIR /workspace\n",
+        "app.py": b"pass\n",
+    }
     for name, raw in files.items():
         (tmp_path / name).write_bytes(raw)
     request, requirements, _ = _dynamic_records()
@@ -1277,6 +1280,63 @@ async def test_built_image_has_exact_attempt_owner_and_explicit_baseline_reason(
     assert owned.labels["sastsimi.analysis-id"] == "analysis-1"
     assert owned.labels["sastsimi.hypothesis-id"] == "hypothesis-1"
     assert owned.labels["sastsimi.attempt-id"] == "dynamic-attempt-1"
+
+
+@pytest.mark.asyncio
+async def test_built_image_recovers_lost_intent_from_exact_docker_labels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = {
+        "Dockerfile": b"FROM scratch\nWORKDIR /workspace\n",
+        "app.py": b"pass\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    request, requirements, _ = _dynamic_records()
+    docker = FakeDockerAdapter()
+    registry = OwnedResourceRegistry(journal_path=tmp_path / "owned.json")
+    original = registry.register_reserved_image
+
+    def lose_intent(**kwargs: object) -> StoredDataRef:
+        image_tag = str(kwargs["image_tag"])
+        image_digest = str(kwargs["image_digest"])
+        intent = registry._image_intents[image_tag]
+        docker.image_tags[image_tag] = DockerImageState(
+            image_digest, dict(intent.labels)
+        )
+        docker.image_labels[image_digest] = dict(intent.labels)
+        registry._image_intents.clear()
+        registry._persist()
+        return original(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(registry, "register_reserved_image", lose_intent)
+    setup = ReproductionSetupAutomation(
+        docker=docker,
+        recipes=EnvironmentRecipeStore(artifacts=_MemoryArtifacts()),
+        health=SandboxHealthChecker(),
+        resources=registry,
+    )
+    source = await setup.preflight(
+        workspace_root=tmp_path,
+        repository_profile=_repository_profile(files),
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "lost-intent-source"),
+    )
+
+    recipe = await setup.build(
+        approval=_build_approval(tmp_path, request, source),
+        source=source,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "lost-intent-recipe"),
+    )
+
+    resource_ref = setup.recipe_resource_refs(recipe)[0]
+    owned = registry.exact(resource_ref)
+    assert owned is not None
+    assert owned.resource_id == recipe.built_image_digest
+    assert owned.labels == docker.image_labels[recipe.built_image_digest]
 
 
 @pytest.mark.asyncio

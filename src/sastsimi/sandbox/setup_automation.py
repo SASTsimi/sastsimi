@@ -208,12 +208,31 @@ class ReproductionSetupAutomation:
                     failure.add_note("DOCKER_BUILD_RECONCILIATION_REQUIRED")
                 raise
             if recipe.build_disposition == "BUILT":
-                image_ref = self._resources.register_reserved_image(
-                    image_digest=recipe.built_image_digest,
-                    image_tag=image_tag,
-                    meta=meta,
-                    preservation_reason="REUSABLE_BASELINE",
-                )
+                try:
+                    image_ref = self._resources.register_reserved_image(
+                        image_digest=recipe.built_image_digest,
+                        image_tag=image_tag,
+                        meta=meta,
+                        preservation_reason="REUSABLE_BASELINE",
+                    )
+                except ValueError as error:
+                    if str(error) != "SANDBOX_OWNERSHIP_INTENT_REQUIRED":
+                        raise
+                    observed = await self._docker.inspect_image_tag(image_tag)
+                    if (
+                        observed.status != "PRESENT"
+                        or observed.state is None
+                        or observed.state.image_digest != recipe.built_image_digest
+                        or dict(observed.state.labels) != dict(labels)
+                    ):
+                        raise
+                    image_ref = self._resources.register_image(
+                        image_digest=recipe.built_image_digest,
+                        image_tag=image_tag,
+                        labels=labels,
+                        meta=meta,
+                        preservation_reason="REUSABLE_BASELINE",
+                    )
             else:
                 self._resources.forget_image_intent(image_tag)
                 preserved_ref = self._resources.preserved_image_ref(
