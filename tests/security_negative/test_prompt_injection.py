@@ -150,3 +150,5 @@ def test_poc_candidate_allows_sandbox_paths_but_not_host_or_secret_values() -> N
         canonical_bytes({"content": "#!/bin/sh\ntoken=sk-secretvalue"})
     )
     assert rejected_secret.categories == ("TOKEN",)
+    assert b"sk-secretvalue" not in rejected_secret.data
+    assert b"[REDACTED:TOKEN]" in rejected_secret.data

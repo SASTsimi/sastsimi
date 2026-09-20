@@ -670,8 +670,16 @@ class CodexSubscriptionAdapter:
                 output_schema=resolved.output_schema,
                 request=request,
             )
-            if canonical_bytes(validated_output) != raw_output:
+            validated_bytes = canonical_bytes(validated_output)
+            poc_content_repair = (
+                request.agent_role,
+                request.task_kind,
+            ) == ("DYNAMIC_REPRODUCTION", "CREATE_POC_CANDIDATE")
+            if validated_bytes != raw_output and not poc_content_repair:
                 raise ProviderInvalidOutputError
+            if poc_content_repair:
+                raw_output = validated_bytes
+                parsed = validated_output
         except ProviderInvalidOutputError:
             raise
         except Exception as error:

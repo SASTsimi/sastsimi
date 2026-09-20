@@ -1,4 +1,5 @@
 import asyncio
+import json
 import threading
 from dataclasses import dataclass
 
@@ -10,6 +11,7 @@ from sastsimi.contracts.llm import (
     ProviderValidationEvidence,
     ProviderValidationTest,
 )
+from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.ports.dto import CapabilityProbeResult
 from sastsimi.providers.base import (
     CodexProcessRequest,
@@ -27,9 +29,12 @@ from tests.integration.providers.test_openai_api import (
     ResultBuilder,
     SchemaPromptResolver,
     SessionStore,
+    output_schema_record,
+    prompt_payload_record,
     request,
     request_for_schema,
     resolved_prompt,
+    validated_output_ref,
 )
 
 
@@ -104,6 +109,13 @@ class PassingProbeRunner:
         self, candidate: ProviderValidationEvidence, _adapter: object
     ) -> CapabilityProbeResult:
         return CapabilityProbeResult(candidate)
+
+
+class PoCContentRepairValidator(OutputSchemaValidator):
+    def validate(self, raw: bytes, **_kwargs: object) -> object:
+        value = json.loads(raw)
+        assert value == {"decision": "contains-sensitive-placeholder"}
+        return {"decision": "accept"}
 
 
 def adapter(
@@ -195,6 +207,59 @@ async def test_subscription_processes_are_serialized_across_worker_threads() -> 
     assert first_result.status == second_result.status == "SUCCEEDED"
     assert len(runner.requests) == 2
     assert runner.max_active == 1
+
+
+@pytest.mark.asyncio
+async def test_poc_content_may_use_the_validator_redacted_field_value() -> None:
+    seed = request().model_copy(
+        update={
+            "agent_role": "DYNAMIC_REPRODUCTION",
+            "task_kind": "CREATE_POC_CANDIDATE",
+        }
+    )
+    schema_ref = reference(output_schema_record(seed))
+    payload_ref = reference(prompt_payload_record(seed))
+    assert isinstance(schema_ref, StoredDataRef)
+    assert isinstance(payload_ref, StoredDataRef)
+    invocation = seed.model_copy(
+        update={"output_schema_ref": schema_ref, "prompt_payload_ref": payload_ref}
+    )
+    runner = FakeCodexProcessRunner(
+        CodexProcessResult(
+            status="SUCCEEDED",
+            final_message=b'{"decision":"contains-sensitive-placeholder"}',
+            provider_session_id="provider-poc-repair",
+        )
+    )
+    provider, _sessions = adapter(invocation, runner)
+    provider.output_schema_validator = PoCContentRepairValidator()
+
+    result = await provider.invoke(invocation)
+
+    assert result.status == "SUCCEEDED"
+    assert result.parsed_output_ref == validated_output_ref(
+        invocation, {"decision": "accept"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_non_poc_output_cannot_be_rewritten_by_the_validator() -> None:
+    invocation = request()
+    runner = FakeCodexProcessRunner(
+        CodexProcessResult(
+            status="SUCCEEDED",
+            final_message=b'{"decision":"contains-sensitive-placeholder"}',
+            provider_session_id="provider-non-poc-repair",
+        )
+    )
+    provider, sessions = adapter(invocation, runner)
+    provider.output_schema_validator = PoCContentRepairValidator()
+
+    result = await provider.invoke(invocation)
+
+    assert result.status == "INVALID_OUTPUT"
+    assert result.parsed_output_ref is None
+    assert sessions.registered == []
 
 
 @pytest.mark.asyncio
