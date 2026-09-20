@@ -29,6 +29,10 @@ class SimpleStage(StrEnum):
 
 STAGE_ORDER: tuple[SimpleStage, ...] = tuple(SimpleStage)
 HYPOTHESIS_STAGES: tuple[SimpleStage, ...] = STAGE_ORDER[2:]
+STAGE_VERSION: dict[SimpleStage, str] = {
+    stage: "2" if stage is SimpleStage.REPORT_DONE else "1"
+    for stage in STAGE_ORDER
+}
 
 
 class StageStatus(StrEnum):
@@ -53,6 +57,7 @@ def input_reference_hash(refs: tuple[StoredDataRef, ...]) -> str:
 class StageCheckpoint(ContractModel):
     identity: CheckpointIdentity
     stage: SimpleStage
+    stage_version: str = "1"
     status: StageStatus
     input_refs: tuple[StoredDataRef, ...]
     input_hash: str

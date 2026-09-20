@@ -10,6 +10,7 @@ from sastsimi.contracts.refs import StoredDataRef
 
 from .models import (
     STAGE_ORDER,
+    STAGE_VERSION,
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
@@ -85,6 +86,7 @@ class SimpleCheckpointStore:
         return bool(
             checkpoint is not None
             and checkpoint.status is StageStatus.SUCCEEDED
+            and checkpoint.stage_version == STAGE_VERSION[stage]
             and checkpoint.input_refs == input_refs
             and checkpoint.input_hash == input_reference_hash(input_refs)
         )
@@ -125,6 +127,7 @@ class SimpleCheckpointStore:
         checkpoint = StageCheckpoint(
             identity=identity,
             stage=stage,
+            stage_version=STAGE_VERSION[stage],
             status=StageStatus.RUNNING,
             input_refs=input_refs,
             input_hash=input_reference_hash(input_refs),

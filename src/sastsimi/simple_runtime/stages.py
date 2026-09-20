@@ -4,13 +4,18 @@ import hashlib
 import json
 import os
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Literal, NoReturn, Protocol, cast
 
 from pydantic import JsonValue
 
 from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.prompt_redaction import redact_projected_json
+from sastsimi.contracts.prompt_redaction import (
+    redact_projected_json,
+    redact_untrusted_text,
+)
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.sandbox.docker_adapter import DockerAdapter, DockerOperationError
 
 from .artifacts import SimpleArtifactRepository
@@ -86,6 +91,17 @@ def internal_report_status(scope_status: str) -> tuple[str, bool]:
     if scope_status in {"DENY", "UNCERTAIN"}:
         return "CONFIRMED_RESTRICTED", False
     raise ValueError("RULE_SCOPE_STATUS_INVALID")
+
+
+@dataclass(frozen=True)
+class RenderedPoC:
+    content: str
+    command: str
+    stdout: str
+    stderr: str
+    exit_code: int
+    execution_ref: StoredDataRef
+    validated_ref: StoredDataRef
 
 
 class PoCCandidateStage:
@@ -708,17 +724,18 @@ class ReporterStage:
             client=client,
             artifacts=artifacts,
             instructions="""
-You are the Reporter Agent. Write an internal draft using only supplied exact
-Finding, verification, CWE, validated PoC, and Gate results. Do not create new
-facts. Preserve limitations and uncertainty. Return concise title, summary,
-technical details, remediation guidance, limitations, and human review items.
+You are the Reporter Agent. Write every field in Korean using only supplied
+exact Finding, verification, CWE, validated PoC, and Gate results. Do not
+create new facts. Preserve limitations and uncertainty. Return a concise
+title, summary, technical details, security impact, limitations, and items a
+human must review.
 """,
             schema=_object_schema(
                 {
                     "title": _string(),
                     "summary": _string(),
                     "details": _string(),
-                    "recommendation": _string(),
+                    "impact": _string(),
                     "limitations": _string_array(),
                     "review_items": _string_array(),
                 },
@@ -726,7 +743,7 @@ technical details, remediation guidance, limitations, and human review items.
                     "title",
                     "summary",
                     "details",
-                    "recommendation",
+                    "impact",
                     "limitations",
                     "review_items",
                 ],
@@ -748,6 +765,9 @@ technical details, remediation guidance, limitations, and human review items.
                     safe_message="Reporter accepts confirmed Findings only",
                 )
             )
+        dynamic = prior.get(SimpleStage.POC_EXECUTION_DONE)
+        if dynamic is None or dynamic.validated_poc_ref is None:
+            raise ValueError("REPORT_VALIDATED_POC_MISSING")
         result, draft_ref = await self._stage.call(checkpoint, _prior_refs(prior))
         rendered = self._render(result.value, checkpoint, prior, finding.output_refs[0])
         inspected = redact_projected_json(
@@ -766,7 +786,10 @@ technical details, remediation guidance, limitations, and human review items.
             self._artifacts.paths.reports / checkpoint.identity.analysis_id
         )
         report_dir.mkdir(parents=True, exist_ok=True)
-        report_path = report_dir / f"{finding.output_refs[0].content_hash}.md"
+        display_id = FindingDisplayIdStore(
+            self._artifacts.paths.database
+        ).get_or_allocate(checkpoint.identity.analysis_id, finding.output_refs[0])
+        report_path = report_dir / f"{display_id}.md"
         temporary = report_path.with_suffix(".md.next")
         temporary.write_bytes(rendered)
         os.replace(temporary, report_path)
@@ -786,6 +809,7 @@ technical details, remediation guidance, limitations, and human review items.
         prior: Mapping[SimpleStage, StageCheckpoint],
         finding_ref: StoredDataRef,
     ) -> bytes:
+        poc = self._validated_poc(prior)
         cwe = self._result(prior[SimpleStage.CWE_DONE].output_refs[0])
         technical = self._result(prior[SimpleStage.TECH_GATE_DONE].output_refs[0])
         scope = self._result(prior[SimpleStage.SCOPE_GATE_DONE].output_refs[0])
@@ -794,11 +818,10 @@ technical details, remediation guidance, limitations, and human review items.
         verification = self._result(
             prior[SimpleStage.VERIFICATION_FINAL_DONE].output_refs[0]
         )
-        dynamic = prior[SimpleStage.POC_EXECUTION_DONE]
-        if dynamic.validated_poc_ref is None:
-            raise ValueError("REPORT_VALIDATED_POC_MISSING")
         lines = [
             f"# {value['title']}",
+            "",
+            "### Summary",
             "",
             f"- 상태: {report_status}",
             f"- 외부 제출·공개 허용: {'예' if disclosure_allowed else '아니요'}",
@@ -807,36 +830,18 @@ technical details, remediation guidance, limitations, and human review items.
             f"- Finding: `{finding_ref.content_hash}`",
             f"- CWE: `{cwe.get('primary_cwe', 'UNCLASSIFIED')}`",
             "",
-            "## 취약점 요약",
-            "",
             str(value["summary"]),
             "",
-            "## 코드 흐름과 정적·Pro·Con 근거",
+            "### Details",
             "",
             str(value["details"]),
             "",
-            "## 최종 검증 판단",
-            "",
-            str(verification.get("rationale", "")),
-            "",
-            "## 동적 재현 및 검증된 PoC",
-            "",
-            f"Validated PoC reference: `{dynamic.validated_poc_ref.content_hash}`",
-            "실행 방법: 준비된 Sandbox에서 저장된 PoC candidate를 ",
-            "`/bin/sh`로 실행합니다.",
-            "",
-            "## 영향도와 제한사항",
-            "",
-            *[f"- {item}" for item in cast(list[str], value["limitations"])],
-            "",
-            "## Gate 결과",
-            "",
+            f"- 최종 판단 이유: {verification.get('rationale', '')}",
             f"- Technical Gate: {technical.get('status')}",
             f"- Rule Scope Gate: {scope.get('status')}",
             *(
                 [
-                    "- 공개 제한: Rule Scope Gate가 허용하지 않았으므로 이 문서는 ",
-                    "  내부 기술 검토용이며 외부 제출·공개에 사용할 수 없습니다.",
+                    "- 공개 제한: 외부 제출·공개 금지. 내부 기술 검토용입니다.",
                 ]
                 if not disclosure_allowed
                 else ["- 공개 제한: 외부 공개에는 사람의 최종 승인이 필요합니다."]
@@ -846,16 +851,109 @@ technical details, remediation guidance, limitations, and human review items.
                 for item in cast(list[str], scope.get("restrictions", []))
             ],
             "",
-            "## 권장 조치",
+            "### PoC",
             "",
-            str(value["recommendation"]),
+            f"- validated PoC: `{poc.validated_ref.content_hash}`",
+            f"- 실행 근거: `{poc.execution_ref.content_hash}`",
+            f"- 실행 명령: `{poc.command}`",
+            f"- 종료 코드: `{poc.exit_code}`",
             "",
-            "## 사람이 추가로 확인할 내용",
+            "검증된 PoC 코드:",
             "",
+            "```sh",
+            poc.content.rstrip(),
+            "```",
+            "",
+            "실행 결과(stdout):",
+            "",
+            "```text",
+            poc.stdout.rstrip(),
+            "```",
+            *(
+                ["", "실행 결과(stderr):", "", "```text", poc.stderr.rstrip(), "```"]
+                if poc.stderr
+                else []
+            ),
+            "",
+            "### Impact",
+            "",
+            str(value["impact"]),
+            "",
+            "제한사항:",
+            *[f"- {item}" for item in cast(list[str], value["limitations"])],
+            "",
+            "사람이 추가로 확인할 내용:",
             *[f"- {item}" for item in cast(list[str], value["review_items"])],
             "",
         ]
         return "\n".join(lines).encode("utf-8")
+
+    def _validated_poc(
+        self,
+        prior: Mapping[SimpleStage, StageCheckpoint],
+    ) -> RenderedPoC:
+        candidate = prior.get(SimpleStage.POC_CANDIDATE_DONE)
+        dynamic = prior.get(SimpleStage.POC_EXECUTION_DONE)
+        if (
+            candidate is None
+            or len(candidate.output_refs) < 2
+            or dynamic is None
+            or not dynamic.output_refs
+            or dynamic.validated_poc_ref is None
+        ):
+            raise ValueError("REPORT_VALIDATED_POC_MISSING")
+        candidate_ref, content_ref = candidate.output_refs[:2]
+        execution_ref = dynamic.output_refs[0]
+        validated_ref = dynamic.validated_poc_ref
+        candidate_value = cast(
+            dict[str, JsonValue], json.loads(self._artifacts.read(candidate_ref))
+        )
+        execution_value = cast(
+            dict[str, JsonValue], json.loads(self._artifacts.read(execution_ref))
+        )
+        validated_value = cast(
+            dict[str, JsonValue], json.loads(self._artifacts.read(validated_ref))
+        )
+        expected = {
+            "candidate_ref": candidate_ref,
+            "content_ref": content_ref,
+            "execution_ref": execution_ref,
+        }
+        for field, ref in expected.items():
+            raw = validated_value.get(field)
+            if raw is None or StoredDataRef.model_validate(raw) != ref:
+                raise ValueError("REPORT_POC_REFERENCE_MISMATCH")
+        if (
+            StoredDataRef.model_validate(candidate_value.get("content_ref"))
+            != content_ref
+            or StoredDataRef.model_validate(execution_value.get("candidate_ref"))
+            != candidate_ref
+            or StoredDataRef.model_validate(execution_value.get("content_ref"))
+            != content_ref
+        ):
+            raise ValueError("REPORT_POC_REFERENCE_MISMATCH")
+        if (
+            candidate_value.get("attempt_id") != candidate.attempt_id
+            or execution_value.get("attempt_id") != dynamic.attempt_id
+            or validated_value.get("attempt_id") != dynamic.attempt_id
+        ):
+            raise ValueError("REPORT_POC_ATTEMPT_MISMATCH")
+        stdout_ref = StoredDataRef.model_validate(execution_value.get("stdout_ref"))
+        stderr_ref = StoredDataRef.model_validate(execution_value.get("stderr_ref"))
+        return RenderedPoC(
+            content=self._safe_text(content_ref),
+            command="/bin/sh /tmp/sastsimi-poc-candidate",
+            stdout=self._safe_text(stdout_ref),
+            stderr=self._safe_text(stderr_ref),
+            exit_code=int(cast(int, execution_value.get("exit_code", -1))),
+            execution_ref=execution_ref,
+            validated_ref=validated_ref,
+        )
+
+    def _safe_text(self, ref: StoredDataRef) -> str:
+        return redact_untrusted_text(self._artifacts.read(ref)).data.decode(
+            "utf-8", errors="replace"
+        )
 
     def _result(self, ref: StoredDataRef) -> dict[str, JsonValue]:
         value = json.loads(self._artifacts.read(ref))

@@ -144,6 +144,24 @@ async def test_resume_reuses_exact_success_and_invalidates_changed_downstream(
     assert outcome.current_stage is SimpleStage.REPORT_DONE
 
 
+def test_report_format_upgrade_reuses_earlier_stages_but_not_old_report(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    inputs = (_ref("finding"),)
+    store.save_success(
+        _checkpoint(SimpleStage.REPORT_DONE, inputs=inputs),
+        outputs=(_ref("old-report"),),
+    )
+    store.save_success(
+        _checkpoint(SimpleStage.FINDING_DONE, inputs=inputs),
+        outputs=(_ref("finding-output"),),
+    )
+
+    assert not store.reusable(_identity(), SimpleStage.REPORT_DONE, inputs)
+    assert store.reusable(_identity(), SimpleStage.FINDING_DONE, inputs)
+
+
 @pytest.mark.asyncio
 async def test_failed_transaction_never_publishes_success_or_false(tmp_path) -> None:
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")

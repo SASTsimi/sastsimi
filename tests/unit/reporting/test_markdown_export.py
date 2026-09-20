@@ -237,29 +237,16 @@ def test_markdown_export_contains_human_review_sections_and_exact_path(
     markdown = service.show(report.finding_id)
     path = service.export(report.finding_id)
 
-    assert path == tmp_path / "reports" / "analysis-1" / "finding-1.md"
+    assert path == tmp_path / "reports" / "analysis-1" / "F-001.md"
     assert path.read_text(encoding="utf-8") == markdown
     assert "- AgentLog ref: `agent-log-1`" in markdown
     assert "- 실제 실행 action_id: `execute`" in markdown
-    assert "### 실제 실행 방법" in markdown
+    assert "**실제 실행 방법**" in markdown
     assert "command=/bin/sh '<validated-poc-candidate>'" in markdown
-    assert "### validated PoC candidate 내용" in markdown
-    for heading in (
-        "# Validated vulnerability finding",
-        "## 취약점 요약",
-        "## CWE 분류",
-        "## 영향받는 코드 위치",
-        "## source → propagation → sink 흐름",
-        "## 정적 분석 근거",
-        "## Pro·Con 검증 근거와 최종 판단 이유",
-        "## 동적 재현 결과",
-        "## 검증된 PoC와 실행 방법",
-        "## 영향도와 제한사항",
-        "## Gate 결과",
-        "## 사람이 추가로 확인해야 할 내용",
-        "## 생성 및 식별 정보",
-    ):
-        assert heading in markdown
+    assert "python poc.py --target local-test" in markdown
+    for heading in ("### Summary", "### Details", "### PoC", "### Impact"):
+        assert markdown.count(heading) == 1
+    assert "## 취약점 요약" not in markdown
 
 
 def test_local_evaluation_report_is_never_presented_as_production_ready(

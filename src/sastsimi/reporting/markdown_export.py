@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Protocol, cast
 from uuid import uuid4
 
+from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.actions import (
     ActionType,
     CheckResult,
@@ -34,6 +35,7 @@ from sastsimi.ports.report_export import (
     CurrentReportSource,
     ReportUnavailable,
 )
+from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 
 _SAFE_PATH_SEGMENT = re.compile(r"[a-z0-9][a-z0-9_-]{0,127}\Z")
 _WINDOWS_RESERVED_STEMS = frozenset(
@@ -51,6 +53,9 @@ class ReportMarkdownService:
         self._data_dir = data_dir.resolve()
         self._data_dir_identity = _capture_directory_identity(self._data_dir)
         self._source = source
+        self._display_ids = FindingDisplayIdStore(
+            RuntimePaths(self._data_dir).database
+        )
 
     def summaries(self, analysis_id: str) -> tuple[dict[str, str], ...]:
         summaries: list[dict[str, str]] = []
@@ -61,6 +66,7 @@ class ReportMarkdownService:
             summary = {
                 "analysis_id": report.analysis_id,
                 "finding_id": report.finding_id,
+                "display_id": self._display_id(report),
                 "hypothesis_id": report.hypothesis_id,
                 "title": report.content.title,
                 "status": "DRAFTED_CURRENT",
@@ -80,13 +86,14 @@ class ReportMarkdownService:
         return tuple(summaries)
 
     def show(self, finding_id: str) -> str:
-        return render_markdown(self._source.get_current(finding_id))
+        report = self._source.get_current(finding_id)
+        return render_markdown(report, display_id=self._display_id(report))
 
     def export(self, finding_id: str) -> Path:
         report = self._source.get_current(finding_id)
         expected_identity = _report_identity(report)
-        markdown = render_markdown(report)
         destination = self._destination(report)
+        markdown = render_markdown(report, display_id=self._display_id(report))
 
         def assert_still_current() -> None:
             current = self._source.get_current(finding_id)
@@ -117,7 +124,13 @@ class ReportMarkdownService:
         parent = expected_parent.resolve()
         if parent != expected_parent or parent.parent != root:
             raise ReportUnavailable("UNSAFE_REPORT_PATH_ID")
-        return parent / f"{report.finding_id}.md"
+        return parent / f"{self._display_id(report)}.md"
+
+    def _display_id(self, report: CurrentReport) -> str:
+        return self._display_ids.get_or_allocate(
+            report.analysis_id,
+            report.draft.finding_ref,
+        )
 
 
 def validate_redaction_authority(report: CurrentReport) -> None:
@@ -144,7 +157,7 @@ def validate_redaction_authority(report: CurrentReport) -> None:
         raise ReportUnavailable("REPORT_REDACTION_NOT_PROVEN")
 
 
-def render_markdown(report: CurrentReport) -> str:
+def render_markdown(report: CurrentReport, *, display_id: str | None = None) -> str:
     """Render existing record values without creating new security claims."""
 
     validate_redaction_authority(report)
@@ -169,8 +182,11 @@ def render_markdown(report: CurrentReport) -> str:
     )
     if report.draft.poc_ref is None:
         raise ReportUnavailable("REPORT_TRUE_CLOSURE_MISSING")
+    visible_id = display_id or report.finding_id
     lines = [
         f"# {report.content.title}",
+        "",
+        "### Summary",
         "",
         "- 현재 상태: `DRAFTED / CURRENT`",
         f"- 실행 목적: `{report.purpose}`",
@@ -181,43 +197,45 @@ def render_markdown(report: CurrentReport) -> str:
         ),
         f"- final Verification 판정: `{report.verification.verdict}`",
         "",
-        "## 취약점 요약",
+        "**취약점 요약**",
         "",
         report.content.summary,
         "",
-        "## CWE 분류",
+        "### Details",
+        "",
+        "**CWE 분류**",
         "",
         f"- Primary: `{report.cwe.primary or 'UNCLASSIFIED'}`",
         f"- Alternatives: {_inline(report.cwe.alternatives)}",
         f"- Taxonomy: `{report.cwe.taxonomy_version}`",
         f"- 근거: {report.cwe.rationale}",
         "",
-        "## 영향받는 코드 위치",
+        "**영향받는 코드 위치**",
         "",
         *_location_lines(locations),
         "",
-        "## source → propagation → sink 흐름",
+        "**source → propagation → sink 흐름**",
         "",
         report.content.details,
         "",
-        "## 정적 분석 근거",
+        "**정적 분석 근거**",
         "",
         *_claim_lines(static_claims),
         f"- Finding evidence refs: {_refs(report.finding.evidence_refs)}",
         "",
-        "## Pro·Con 검증 근거와 최종 판단 이유",
+        "**Pro·Con 검증 근거와 최종 판단 이유**",
         "",
-        "### Pro",
+        "**Pro**",
         "",
         *_claim_lines(pro),
         "",
-        "### Con",
+        "**Con**",
         "",
         *_claim_lines(con),
         "",
         f"- 최종 판단 이유: {report.verification.verdict_rationale}",
         "",
-        "## 동적 재현 결과",
+        "**동적 재현 결과**",
         "",
         f"- 목적: `{report.dynamic.purpose}`",
         f"- 실행 상태: `{report.dynamic.status}`",
@@ -225,7 +243,7 @@ def render_markdown(report: CurrentReport) -> str:
         f"- 가설 연결 설명: {report.dynamic.hypothesis_linkage}",
         f"- 관찰 refs: {_refs(report.dynamic.observation_refs)}",
         "",
-        "## 검증된 PoC와 실행 방법",
+        "### PoC",
         "",
         f"- validated PoC ref: `{report.draft.poc_ref.record_id}`",
         f"- candidate digest: `{report.poc.candidate_digest}`",
@@ -234,15 +252,15 @@ def render_markdown(report: CurrentReport) -> str:
         f"- 실제 실행 action_id: `{report.poc.execution_action_id}`",
         f"- 실제 실행 command digest: `{report.execution_command.command_digest}`",
         "",
-        "### 실제 실행 방법",
+        "**실제 실행 방법**",
         "",
         *_indented(_execution_method(report.execution_command)),
         "",
-        "### validated PoC candidate 내용",
+        "**validated PoC candidate 내용**",
         "",
         *_indented(report.poc_text),
         "",
-        "## 영향도와 제한사항",
+        "### Impact",
         "",
         f"- 정책상 보안 영향: `{report.rule_scope.security_impact}`",
         "- 제한사항: "
@@ -250,7 +268,7 @@ def render_markdown(report: CurrentReport) -> str:
         "- 제약: "
         + _inline(tuple(item.statement for item in report.draft.restrictions)),
         "",
-        "## Gate 결과",
+        "**Gate 결과**",
         "",
         f"- Technical Gate: `{report.technical.status}` — {report.technical.rationale}",
         f"- Rule Scope Gate: `{report.rule_scope.review_status}`",
@@ -260,17 +278,18 @@ def render_markdown(report: CurrentReport) -> str:
         f"- report permission: `{report.rule_scope.report_permission}`",
         f"- 정책 검토 이유: {_inline(report.rule_scope.reasons)}",
         "",
-        "## 사람이 추가로 확인해야 할 내용",
+        "**사람이 추가로 확인해야 할 내용**",
         "",
         f"- 미해결 조건: {_inline(report.draft.unresolved_conditions)}",
         f"- 권고 사항: {report.content.recommendation}",
         "",
-        "## 생성 및 식별 정보",
+        "**생성 및 식별 정보**",
         "",
         f"- 생성 시각: `{report.draft.meta.created_at.isoformat()}`",
         f"- analysis_id: `{report.analysis_id}`",
         f"- hypothesis_id: `{report.hypothesis_id}`",
         f"- finding_id: `{report.finding_id}`",
+        f"- 보고서 표시 번호: `{visible_id}`",
         f"- ReportDraft record_id: `{report.draft.meta.record_id}`",
         "",
     ]
