@@ -40,7 +40,7 @@ def test_report_show_and_export_cli(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    exported = tmp_path / "reports" / "analysis-1" / "finding-1.md"
+    exported = tmp_path / "reports" / "analysis-1" / "F-001.md"
     exported.parent.mkdir(parents=True)
     exported.write_text("# Current report\n", encoding="utf-8")
     requested_analyses: list[str] = []
@@ -94,7 +94,7 @@ def test_report_show_and_export_cli(
     )
     assert json.loads(capsys.readouterr().out) == {
         "finding_id": "finding-1",
-        "path": "reports/analysis-1/finding-1.md",
+        "path": "reports/analysis-1/F-001.md",
     }
 
 

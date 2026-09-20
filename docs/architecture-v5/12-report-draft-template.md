@@ -240,7 +240,8 @@ access/session token, password, private key, credential, cookie·authorization s
 ## 14. 사람이 읽는 Markdown 출력
 
 `ReportDraft`는 내부 JSON record로만 두지 않고, 사람이 검토할 수 있는 Markdown 파일로 내보낸다.
-기본 경로는 `<data-dir>/reports/<analysis_id>/<finding_id>.md`다. 이 파일은 새 보안 사실을
+기본 경로는 `<data-dir>/reports/<analysis_id>/F-001.md`와 같은 분석별
+안정적 표시 번호를 사용한다. 이 파일은 새 보안 사실을
 만드는 record가 아니라 current `ReportDraft`와 그 exact upstream record를 읽기 쉽게 표현한
 출력물이다.
 

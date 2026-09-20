@@ -491,7 +491,7 @@ worker pool을 선행 조건으로 요구하지 않는다.
 - [ ] testing restriction과 다른 scope·impact 값을 Primitive 결정으로 선저장하지 않고 exact Rule Scope 결과로 Task 13에 넘긴다.
 - [ ] 다른 scope·impact 실패는 Finding을 보존하고 Reporter만 차단한다.
 - [ ] ReportDraft의 모든 `path:line`을 EvidenceClaim 위치와 대조한다.
-- [x] current exact ReportDraft closure와 redaction 증거만 사용해 `<data-dir>/reports/<analysis_id>/<finding_id>.md`로 원자적 Markdown 출력하고, `reports`, `report show`, `report export --format markdown` CLI를 제공한다.
+- [x] current exact ReportDraft closure와 redaction 증거만 사용해 `<data-dir>/reports/<analysis_id>/F-001.md`와 같은 안정적 표시 번호로 원자적 Markdown 출력하고, `reports`, `report show`, `report export --format markdown` CLI를 제공한다.
 - [ ] R5·R3·R4·R6·R8 검토 뒤 PR을 병합한다.
 
 #### T12 production follow-up — Issue #166
@@ -502,7 +502,7 @@ stale·redaction·경로 검사를 통과한 결과만 저장·조회한다. #16
 production `reports`와 `report export`를 조합하기 전에 반드시 병합한다.
 
 - [ ] `reports <analysis-id>`, `report show <finding-id>`, `report export <finding-id> --format markdown` public service와 CLI 경계를 제공한다.
-- [ ] `<data-dir>/reports/<analysis_id>/<finding_id>.md` 밖으로 나가는 경로, stale upstream, redaction 미승인과 실제 실행에 묶이지 않은 PoC를 차단한다.
+- [ ] `<data-dir>/reports/<analysis_id>/F-###.md` 밖으로 나가는 경로, stale upstream, redaction 미승인과 실제 실행에 묶이지 않은 PoC를 차단한다.
 - [ ] T14 production composition이나 worker pool을 직접 구현하지 않고, T14가 나중에 등록할 public reporting service만 생산한다.
 
 ### Task 13: Primitive and Chaining

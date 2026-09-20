@@ -15,6 +15,7 @@ from sastsimi.interfaces.cli import cancel as cancel_command
 from sastsimi.interfaces.cli import capability as capability_command
 from sastsimi.interfaces.cli import codeql as codeql_command
 from sastsimi.interfaces.cli import commands
+from sastsimi.interfaces.cli import dashboard as dashboard_command
 from sastsimi.interfaces.cli import demo as demo_command
 from sastsimi.interfaces.cli import local_evaluation as local_evaluation_command
 from sastsimi.interfaces.cli import onboarding as onboarding_command
@@ -133,6 +134,13 @@ def main(
     downgrade_parser = db_commands.add_parser("downgrade", allow_abbrev=False)
     downgrade_parser.add_argument("revision")
     downgrade_parser.add_argument("--format", choices=["text", "json"])
+    dashboard_parser = subparsers.add_parser(
+        "dashboard",
+        help="serve a local read-only analysis dashboard",
+        allow_abbrev=False,
+    )
+    dashboard_parser.add_argument("--host", default="127.0.0.1")
+    dashboard_parser.add_argument("--port", type=int, default=8765)
     analyze_parser = subparsers.add_parser(
         "analyze", help="run a production repository analysis", allow_abbrev=False
     )
@@ -350,6 +358,10 @@ def main(
                 command=command_name,
                 revision=revision,
             )
+            return int(ExitCode.OK)
+        if args.command == "dashboard":
+            command_name = "dashboard"
+            dashboard_command.run(config.data_dir, args.host, args.port)
             return int(ExitCode.OK)
         if args.command == "analyze":
             command_name = "analyze"

@@ -235,7 +235,8 @@ uv run sastsimi --data-dir <data-dir> report show <finding_id>
 uv run sastsimi --data-dir <data-dir> report export <finding_id> --format markdown
 ```
 
-기본 export 경로는 `<data-dir>/reports/<analysis_id>/<finding_id>.md`입니다. 실패하면
+기본 export 경로는 `<data-dir>/reports/<analysis_id>/F-001.md`와 같은
+분석별 표시 번호 경로입니다. 실패하면
 [`docs/troubleshooting.md`](../troubleshooting.md)를 확인하고 오래된 Markdown이나
 다른 분석의 결과를 복사해 우회하지 않습니다.
 

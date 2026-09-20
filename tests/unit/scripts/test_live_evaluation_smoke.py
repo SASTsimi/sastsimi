@@ -96,7 +96,7 @@ def test_missing_local_profile_returns_safe_reason(tmp_path: Path) -> None:
 
 
 def test_validate_run_accepts_exported_local_pygoat_report(tmp_path: Path) -> None:
-    report = tmp_path / "reports" / "analysis-pygoat" / "finding-1.md"
+    report = tmp_path / "reports" / "analysis-pygoat" / "F-001.md"
     report.parent.mkdir(parents=True)
     report.write_text(
         "# SQL injection\n\n"
@@ -165,7 +165,7 @@ def test_validate_run_accepts_exported_local_pygoat_report(tmp_path: Path) -> No
         "commit": "19d17cc8874861142b330636d068bbde54e86b85",
         "finding_count": 1,
         "report_count": 1,
-        "reports": ["reports/analysis-pygoat/finding-1.md"],
+        "reports": ["reports/analysis-pygoat/F-001.md"],
         "repository": "https://github.com/adeyosemanputra/pygoat.git",
         "result_status": "COMPLETE",
         "target": "pygoat",
@@ -265,7 +265,7 @@ def test_run_target_queries_results_and_exports_every_report(tmp_path: Path) -> 
                     ],
                 },
             }
-        report = data_dir / "reports" / "analysis-pygoat" / "finding-1.md"
+        report = data_dir / "reports" / "analysis-pygoat" / "F-001.md"
         report.parent.mkdir(parents=True)
         report.write_text(
             "# Finding\n\n"
@@ -275,7 +275,7 @@ def test_run_target_queries_results_and_exports_every_report(tmp_path: Path) -> 
         )
         return {
             "finding_id": "finding-1",
-            "path": "reports/analysis-pygoat/finding-1.md",
+            "path": "reports/analysis-pygoat/F-001.md",
         }
 
     summary = smoke.run_target(
