@@ -173,6 +173,48 @@ async def durable_repository_crash(tmp_path: Path) -> tuple[Any, ...]:
     return runtime, runner, work, identity, policy_ref, lease_root
 
 
+@pytest.mark.asyncio
+async def test_repository_recovery_ignores_valid_static_tool_receipt(
+    tmp_path: Path,
+) -> None:
+    (
+        runtime,
+        runner,
+        work,
+        identity,
+        policy_ref,
+        lease_root,
+    ) = await durable_repository_crash(tmp_path)
+    receipt_root = tmp_path / "receipts"
+    other = json.loads(next(receipt_root.glob("*.receipt.json")).read_bytes())
+    other.update(
+        action_id="static-action",
+        attempt_id="static-attempt",
+        operation_kind="STATIC_TOOL",
+        observation_name="static-action.static.json",
+        lease_id=None,
+    )
+    prefix = hashlib.sha256(b"static-action").hexdigest()[:24]
+    (receipt_root / f"{prefix}.receipt.json").write_bytes(canonical_bytes(other))
+    validator = AcceptingRecoveryValidator()
+
+    completed = await StaticExternalRunner(
+        runner,
+        receipt_root,
+        canonicalize_repository_source,
+        decode_workspace_storage_policy,
+        lease_root_resolver=lambda _lease_id: lease_root,
+        recovery_validator=validator,
+    ).recover_repository(
+        work=runtime.work.get(str(work.work_id)),
+        identity=identity,
+        policy_ref=policy_ref,
+    )
+
+    assert completed.workspace.status == "READY"
+    assert validator.calls == 1
+
+
 def rewrite_observation(receipt_root: Path, payload: dict[str, Any]) -> None:
     receipt_path = next(receipt_root.glob("*.receipt.json"))
     receipt = json.loads(receipt_path.read_bytes())

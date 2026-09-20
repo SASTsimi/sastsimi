@@ -1715,10 +1715,16 @@ class StaticExternalRunner:
                 )
                 if canonical_bytes(asdict(receipt)) != raw:
                     raise ValueError
+                # Repository and static-tool receipts intentionally share the
+                # same durable directory.  Their exact readers own the
+                # operation-specific observation checks; repository recovery
+                # must not reinterpret a valid tool/context receipt as a clone
+                # receipt.
+                if receipt.operation_kind != "REPOSITORY_PREPARE":
+                    continue
                 prefix = hashlib.sha256(receipt.action_id.encode()).hexdigest()[:24]
                 if (
-                    receipt.operation_kind != "REPOSITORY_PREPARE"
-                    or target.name != prefix + ".receipt.json"
+                    target.name != prefix + ".receipt.json"
                     or receipt.observation_name != prefix + ".repository.json"
                     or not re.fullmatch(r"[0-9a-f]{64}", receipt.input_fingerprint)
                     or any(
