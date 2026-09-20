@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from sqlalchemy import update
 
 from sastsimi.bootstrap import build_fake_pipeline
 from sastsimi.contracts.actions import RequesterRole
@@ -11,7 +12,7 @@ from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.static import CodeWorkspace, StaticFactBundle
-from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.contracts.work import WorkAttempt, WorkExecutionState
 from sastsimi.orchestration.fake_setup import FakeSetupDependencies, FakeSetupStages
 from sastsimi.orchestration.static_publication import (
     StaticAttemptPublisher,
@@ -29,6 +30,9 @@ from sastsimi.ports.dto import (
 from sastsimi.runtime.fake_support import ANALYSIS_ID
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.static_analysis.normalizer import StaticNormalizer, decoder_key
+from sastsimi.storage import models
+from sastsimi.storage.codec import encode
+from sastsimi.storage.records import next_meta
 from tests.unit.static_analysis.test_normalizer import _material, meta
 
 
@@ -340,6 +344,33 @@ def test_real_runtime_publication_and_terminal_replay_validate_expected_runs(
         orchestrator,
         inputs=(workspace_ref, *tool_work_refs, config_ref, catalog_ref),
     )
+    current_attempts = tuple(
+        item
+        for item in runtime.queries.published_records(str(workspace.analysis_id))
+        if isinstance(item, WorkAttempt)
+        and item.work_id == normalization.work_id
+        and item.attempt_id == normalization.active_attempt_id
+    )
+    assert len(current_attempts) == 1
+    initial_attempt = current_attempts[0]
+    renewed_attempt = initial_attempt.model_copy(
+        update={
+            "meta": next_meta(initial_attempt.meta, scenario.clock, scenario.ids),
+            "elapsed_ms": initial_attempt.elapsed_ms + 1,
+        }
+    )
+    record_store = runtime.unit_of_work.records
+    with record_store.database.write() as connection:
+        record_store.publish(
+            connection, record_store.stage(connection, renewed_attempt)
+        )
+        connection.execute(
+            update(models.work_attempts)
+            .where(
+                models.work_attempts.c.attempt_id == str(initial_attempt.attempt_id)
+            )
+            .values(payload=encode(renewed_attempt))
+        )
     sources = (
         StaticNormalizationSource(
             cast(StoredDataRef, tool_work_refs[0]),

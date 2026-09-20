@@ -227,6 +227,11 @@ class ProductionProfile(ContractModel):
             )
         ):
             raise ValueError("PRODUCTION_LLM_ROUTE_INVALID")
+        # Each claimed Verification parent starts two separately tracked child
+        # works (Pro and Con).  If all worker slots can consume the whole work
+        # budget, no parent can start its evidence branches and the run stalls.
+        if self.budget.max_parallel_work < self.worker.max_workers + 2:
+            raise ValueError("PRODUCTION_PARALLEL_BUDGET_DEADLOCK")
         return self
 
 

@@ -7,10 +7,10 @@ PVD, or Production prompt entry is created here.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TypeVar, cast
 
 from sastsimi.composition.local_codex_binding import LocalCodexBindingRecords
 from sastsimi.config.package_resources import resolve_builtin_resource
@@ -29,7 +29,7 @@ from sastsimi.contracts.llm import (
     SemanticValidatorSpec,
 )
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.refs import ReferencedRecord, StoredDataRef, reference
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.configuration_registry import ConfigurationRegistryPort
@@ -45,9 +45,15 @@ from sastsimi.prompts.local_evaluation import (
     ApprovedLocalEvaluationRoute,
     LocalEvaluationRoute,
 )
-from sastsimi.providers.local_codex_validation import LocalCodexValidationResult
+from sastsimi.providers.codex_subscription import ApprovedCodexExecutionBinding
+from sastsimi.providers.local_codex_validation import (
+    LocalCodexValidationResult,
+    LocalValidatedCodexExecutionBinding,
+)
 
 type SemanticValidator = Callable[[object], None]
+
+_RecordT = TypeVar("_RecordT")
 
 _REDACTIONS: tuple[
     Literal[
@@ -358,6 +364,161 @@ def build_local_prompt_configuration_plan(
     )
 
 
+def restore_local_prompt_configuration_plan(
+    *,
+    published_records: Iterable[object],
+    current_records: Iterable[object],
+    binding_records: LocalCodexBindingRecords,
+    validation: LocalCodexValidationResult,
+) -> tuple[LocalPromptConfigurationPlan, LocalCodexValidationResult] | None:
+    """Restore one analysis' exact prompt graph instead of publishing duplicates.
+
+    A resumed analysis keeps the prompt/provider revisions referenced by its
+    completed calls.  The caller still performs a bounded live Provider probe;
+    this function attaches that fresh proof to the persisted route.  New bundled
+    prompt revisions therefore apply to new analyses without rewriting an
+    in-progress analysis' provenance.
+    """
+
+    published = tuple(published_records)
+    current = tuple(current_records)
+    active = tuple(
+        item
+        for item in current
+        if isinstance(item, PromptRegistryEntry)
+        and item.status == "ACTIVE"
+        and item.purpose == "LOCAL_EVALUATION"
+    )
+    if not active:
+        return None
+    by_key = {(str(item.agent_role), item.task_kind): item for item in active}
+    expected = {
+        (str(spec.role), spec.task_kind) for spec in LOCAL_EVALUATION_PROMPT_SPECS
+    }
+    if len(by_key) != len(active) or set(by_key) != expected:
+        raise ValueError("LOCAL_PROMPT_RESUME_CONFIGURATION_INCOMPLETE")
+
+    indexed: dict[tuple[str, str], object] = {}
+    for item in published:
+        meta = getattr(item, "meta", None)
+        if isinstance(meta, RecordMeta):
+            indexed[(str(meta.record_id), meta.record_type)] = item
+
+    def exact(ref: StoredDataRef, expected_type: type[_RecordT]) -> _RecordT:
+        value = indexed.get((str(ref.record_id), ref.data_kind))
+        if not isinstance(value, expected_type) or reference(
+            cast(ReferencedRecord, value)
+        ) != ref:
+            raise ValueError("LOCAL_PROMPT_RESUME_CONFIGURATION_INCOMPLETE")
+        return value
+
+    entries = tuple(
+        by_key[(str(spec.role), spec.task_kind)]
+        for spec in LOCAL_EVALUATION_PROMPT_SPECS
+    )
+    provider_refs = {entry.provider_profile_refs for entry in entries}
+    if len(provider_refs) != 1:
+        raise ValueError("LOCAL_PROMPT_RESUME_CONFIGURATION_INCOMPLETE")
+    provider_ref = next(iter(provider_refs))[0]
+    supported = exact(provider_ref, ProviderProfile)
+    assert isinstance(supported, ProviderProfile)
+    previous_id = supported.meta.previous_record_id
+    if previous_id is None:
+        raise ValueError("LOCAL_PROMPT_RESUME_CONFIGURATION_INCOMPLETE")
+    experimental = indexed.get((str(previous_id), ProviderProfile.KIND))
+    if not isinstance(experimental, ProviderProfile):
+        raise ValueError("LOCAL_PROMPT_RESUME_CONFIGURATION_INCOMPLETE")
+    if experimental.client_execution_profile_ref is None:
+        raise ValueError("LOCAL_PROMPT_RESUME_CONFIGURATION_INCOMPLETE")
+    client = exact(experimental.client_execution_profile_ref, ClientExecutionProfile)
+    validation_evidence = exact(
+        experimental.validation_evidence_ref, ProviderValidationEvidence
+    )
+    assert isinstance(client, ClientExecutionProfile)
+    assert isinstance(validation_evidence, ProviderValidationEvidence)
+    if (
+        supported.profile_key != validation.provider.profile_key
+        or supported.model != validation.provider.model
+        or experimental.profile_key != binding_records.provider.profile_key
+        or experimental.model != binding_records.provider.model
+    ):
+        raise ValueError("LOCAL_PROMPT_RESUME_PROVIDER_MISMATCH")
+
+    restored_binding = LocalValidatedCodexExecutionBinding(
+        experimental_binding=ApprovedCodexExecutionBinding(
+            provider_profile=experimental,
+            client_execution_profile=client,
+            executable=binding_records.binding.executable,
+            codex_home=binding_records.binding.codex_home,
+            runtime_environment=binding_records.binding.runtime_environment,
+            provider_validation_evidence=None,
+        ),
+        provider_profile=supported,
+        local_evidence_ref=validation.evidence_ref,
+    )
+    restored_validation = LocalCodexValidationResult(
+        provider=supported,
+        evidence_ref=validation.evidence_ref,
+        binding=restored_binding,
+    )
+
+    limits = exact(entries[0].execution_limits_ref, ExecutionLimits)
+    retry = exact(entries[0].retry_policy_ref, LLMRetryPolicy)
+    tools = exact(entries[0].tool_policy_ref, LLMToolPolicy)
+    redaction = exact(entries[0].redaction_policy_ref, PromptRedactionPolicy)
+    schemas = tuple(
+        exact(entry.output_schema_ref, OutputSchemaSpec) for entry in entries
+    )
+    validators = tuple(
+        exact(entry.semantic_validator_ref, SemanticValidatorSpec)
+        for entry in entries
+    )
+    shared_refs = (
+        "execution_limits_ref",
+        "retry_policy_ref",
+        "tool_policy_ref",
+        "redaction_policy_ref",
+    )
+    if any(
+        getattr(entry, name) != getattr(entries[0], name)
+        for entry in entries[1:]
+        for name in shared_refs
+    ):
+        raise ValueError("LOCAL_PROMPT_RESUME_CONFIGURATION_INCOMPLETE")
+    assert isinstance(limits, ExecutionLimits)
+    assert isinstance(retry, LLMRetryPolicy)
+    assert isinstance(tools, LLMToolPolicy)
+    assert isinstance(redaction, PromptRedactionPolicy)
+    routes = tuple(
+        LocalEvaluationRoute(
+            role=entry.agent_role,
+            task_kind=entry.task_kind,
+            provider_profile_key=str(supported.profile_key),
+            model=str(supported.model),
+            prompt_key=entry.prompt_key,
+        )
+        for entry in entries
+    )
+    return (
+        LocalPromptConfigurationPlan(
+            validation_evidence=validation_evidence,
+            client_execution=client,
+            experimental_provider=experimental,
+            supported_provider=supported,
+            local_evidence_ref=validation.evidence_ref,
+            execution_limits=limits,
+            retry_policy=retry,
+            tool_policy=tools,
+            redaction_policy=redaction,
+            output_schemas=tuple(schemas),
+            semantic_validators=tuple(validators),
+            prompt_entries=entries,
+            routes=routes,
+        ),
+        restored_validation,
+    )
+
+
 def publish_local_prompt_configuration(
     *,
     plan: LocalPromptConfigurationPlan,
@@ -436,10 +597,51 @@ def publish_local_prompt_configuration(
     )
 
 
+def reuse_local_prompt_configuration(
+    *, plan: LocalPromptConfigurationPlan
+) -> PublishedLocalPromptConfiguration:
+    """Bind an already-published exact graph without republishing any record."""
+
+    semantic_bindings: dict[StoredDataRef, SemanticValidator] = {}
+    for spec, validator_record in zip(
+        LOCAL_EVALUATION_PROMPT_SPECS, plan.semantic_validators, strict=True
+    ):
+        exact_ref = _ref(validator_record)
+
+        def validate(
+            value: object,
+            *,
+            role: str = str(spec.role),
+            task: str = spec.task_kind,
+        ) -> None:
+            validate_local_output(role, task, value)
+
+        semantic_bindings[exact_ref] = validate
+    provider_ref = _ref(plan.supported_provider)
+    bindings = tuple(
+        LocalEvaluationRouteBinding(
+            analysis_id=str(entry.meta.analysis_id),
+            route=route,
+            approval=ApprovedLocalEvaluationRoute(
+                active_prompt_ref=_ref(entry),
+                provider_profile_ref=provider_ref,
+            ),
+        )
+        for route, entry in zip(plan.routes, plan.prompt_entries, strict=True)
+    )
+    return PublishedLocalPromptConfiguration(
+        provider_profile_ref=provider_ref,
+        bindings=bindings,
+        semantic_validators=semantic_bindings,
+    )
+
+
 __all__ = [
     "LocalPromptConfigurationPlan",
     "LocalPromptConfigurationPublisher",
     "PublishedLocalPromptConfiguration",
     "build_local_prompt_configuration_plan",
     "publish_local_prompt_configuration",
+    "reuse_local_prompt_configuration",
+    "restore_local_prompt_configuration_plan",
 ]

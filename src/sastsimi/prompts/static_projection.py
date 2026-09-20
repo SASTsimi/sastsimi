@@ -85,7 +85,11 @@ def _projection(
     tool_runs = raw["tool_runs"]
     gaps = raw["gaps"]
     errors = raw["errors"]
-    if not all(isinstance(items, list) for items in (tool_runs, gaps, errors)):
+    if (
+        not isinstance(tool_runs, list)
+        or not isinstance(gaps, list)
+        or not isinstance(errors, list)
+    ):
         raise ValueError("HYPOTHESIS_STATIC_PROJECTION_INVALID")
     included["tool_run_summary"] = cast(
         JsonValue,

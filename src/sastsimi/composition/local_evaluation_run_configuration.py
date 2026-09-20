@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import TypeVar, cast
 
 from sastsimi.config.local_evaluation_profile import LocalEvaluationProfile
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.dynamic import SandboxProfile
 from sastsimi.contracts.ids import LogicalRecordId, RecordId
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
+from sastsimi.contracts.refs import (
+    ReferencedRecord,
+    RunStoredDataRef,
+    StoredDataRef,
+    reference,
+)
 from sastsimi.contracts.verification import (
+    PlaybookApplication,
     PlaybookPolicy,
     PlaybookQuestionTemplate,
     VerificationPlaybook,
@@ -19,6 +27,8 @@ from sastsimi.orchestration.run_scope_plan import PlannedRunScope
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
+
+_RecordT = TypeVar("_RecordT")
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,7 +192,89 @@ def build_local_evaluation_run_configuration(
     )
 
 
+def restore_local_evaluation_run_configuration(
+    *,
+    published_records: Iterable[object],
+    current_records: Iterable[object],
+    fresh: LocalEvaluationRunConfiguration,
+) -> LocalEvaluationRunConfiguration:
+    """Reuse exact playbook and Sandbox records already bound to an analysis."""
+
+    published = tuple(published_records)
+    current = tuple(current_records)
+    indexed: dict[tuple[str, str], object] = {}
+    for item in published:
+        meta = getattr(item, "meta", None)
+        if isinstance(meta, RecordMeta):
+            indexed[(str(meta.record_id), meta.record_type)] = item
+
+    def exact(ref: StoredDataRef, expected_type: type[_RecordT]) -> _RecordT:
+        value = indexed.get((str(ref.record_id), ref.data_kind))
+        if not isinstance(value, expected_type) or reference(
+            cast(ReferencedRecord, value)
+        ) != ref:
+            raise ValueError("LOCAL_RUN_RESUME_CONFIGURATION_INCOMPLETE")
+        return value
+
+    applications = tuple(
+        item for item in current if isinstance(item, PlaybookApplication)
+    )
+    if applications:
+        policy_refs = {item.policy_ref for item in applications}
+        playbook_refs = {item.playbook_ref for item in applications}
+        if len(policy_refs) != 1 or len(playbook_refs) != 1:
+            raise ValueError("LOCAL_RUN_RESUME_CONFIGURATION_AMBIGUOUS")
+        policy_ref = next(iter(policy_refs))
+        playbook_ref = next(iter(playbook_refs))
+    else:
+        policies = sorted(
+            (item for item in current if isinstance(item, PlaybookPolicy)),
+            key=lambda item: (item.meta.created_at, str(item.meta.record_id)),
+        )
+        if not policies:
+            return fresh
+        policy_ref = _stored_ref(policies[0])
+        playbook_ref = policies[0].common_playbook_ref
+    policy = exact(policy_ref, PlaybookPolicy)
+    playbook = exact(playbook_ref, VerificationPlaybook)
+    assert isinstance(policy, PlaybookPolicy)
+    assert isinstance(playbook, VerificationPlaybook)
+
+    from sastsimi.contracts.dynamic import DynamicReproductionRequest
+
+    requests = tuple(
+        item for item in current if isinstance(item, DynamicReproductionRequest)
+    )
+    if requests:
+        sandbox_refs = {item.sandbox_profile_ref for item in requests}
+        if len(sandbox_refs) != 1:
+            raise ValueError("LOCAL_RUN_RESUME_CONFIGURATION_AMBIGUOUS")
+        sandbox_ref = next(iter(sandbox_refs))
+        sandbox = exact(sandbox_ref, SandboxProfile)
+        assert isinstance(sandbox, SandboxProfile)
+    else:
+        sandboxes = sorted(
+            (item for item in current if isinstance(item, SandboxProfile)),
+            key=lambda item: (item.meta.created_at, str(item.meta.record_id)),
+        )
+        if not sandboxes:
+            return fresh
+        sandbox = sandboxes[0]
+        sandbox_ref = _stored_ref(sandbox)
+
+    return LocalEvaluationRunConfiguration(
+        playbook=playbook,
+        playbook_ref=playbook_ref,
+        playbook_policy=policy,
+        playbook_policy_ref=policy_ref,
+        sandbox_profile=sandbox,
+        sandbox_profile_ref=sandbox_ref,
+        workspace_policy_ref=fresh.workspace_policy_ref,
+    )
+
+
 __all__ = [
     "LocalEvaluationRunConfiguration",
     "build_local_evaluation_run_configuration",
+    "restore_local_evaluation_run_configuration",
 ]

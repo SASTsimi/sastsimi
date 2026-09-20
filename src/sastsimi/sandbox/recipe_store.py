@@ -1182,7 +1182,9 @@ class EnvironmentRecipeStore:
     def _ensure_runtime_workspace(dockerfile: bytes) -> bytes:
         """Expose a repository image's source root at the runtime contract path."""
 
-        workdirs = re.findall(rb"(?im)^\s*WORKDIR\s+([^\s#]+)\s*$", dockerfile)
+        workdirs: list[bytes] = re.findall(
+            rb"(?im)^\s*WORKDIR\s+([^\s#]+)\s*$", dockerfile
+        )
         if not workdirs:
             raise ValueError("DOCKERFILE_WORKDIR_CONFIRMATION_REQUIRED")
         source = workdirs[-1]

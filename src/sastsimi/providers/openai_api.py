@@ -621,15 +621,17 @@ def _openai_output_schema(
 
     if provider_neutral_schema.get("type") != "array":
         return provider_neutral_schema
-    return cast(
-        dict[str, JsonValue],
-        {
-            "type": "object",
-            "properties": {_ARRAY_ENVELOPE_KEY: provider_neutral_schema},
-            "required": [_ARRAY_ENVELOPE_KEY],
-            "additionalProperties": False,
-        },
-    )
+    array_schema = dict(provider_neutral_schema)
+    definitions = array_schema.pop("$defs", None)
+    adapted: dict[str, JsonValue] = {
+        "type": "object",
+        "properties": {_ARRAY_ENVELOPE_KEY: cast(JsonValue, array_schema)},
+        "required": [_ARRAY_ENVELOPE_KEY],
+        "additionalProperties": False,
+    }
+    if definitions is not None:
+        adapted["$defs"] = definitions
+    return adapted
 
 
 def _unwrap_provider_output(

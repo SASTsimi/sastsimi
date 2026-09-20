@@ -550,7 +550,8 @@ async def test_budget_limit_rejects_zero_and_allows_parallel_new_sessions() -> N
 
 
 @pytest.mark.asyncio
-async def test_claim_ref_uses_runtime_identity_when_exact_record_revision_matches() -> None:
+async def test_claim_ref_uses_runtime_identity_when_exact_record_revision_matches(
+) -> None:
     """A redundant LLM-owned stored_data_id cannot replace exact record identity."""
     public_inputs = tuple(
         sorted(
@@ -624,7 +625,8 @@ async def test_claim_ref_rejects_changed_record_content() -> None:
 
 
 @pytest.mark.asyncio
-async def test_evidence_code_location_cannot_escape_current_workspace_or_commit() -> None:
+async def test_evidence_code_location_cannot_escape_current_workspace_or_commit(
+) -> None:
     public_inputs = tuple(
         sorted(
             (

@@ -5,8 +5,7 @@ import json
 from dataclasses import dataclass
 from typing import cast
 
-from pydantic import BaseModel
-from pydantic import JsonValue
+from pydantic import BaseModel, JsonValue
 
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes

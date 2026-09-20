@@ -191,6 +191,24 @@ def test_rejects_budget_that_can_exceed_its_parent_limit(tmp_path: Path) -> None
         load_local_evaluation_profile(path)
 
 
+def test_rejects_parallel_budget_that_cannot_start_pro_and_con_children(
+    tmp_path: Path,
+) -> None:
+    from sastsimi.config.local_evaluation_profile import (
+        LocalEvaluationProfileError,
+        load_local_evaluation_profile,
+    )
+
+    source = _profile_text(tmp_path).replace(
+        "max_parallel_work = 4", "max_parallel_work = 3"
+    )
+    path = tmp_path / "deadlocking-parallel-budget.toml"
+    path.write_text(source, encoding="utf-8")
+
+    with pytest.raises(LocalEvaluationProfileError):
+        load_local_evaluation_profile(path)
+
+
 def test_rejects_production_approval_fields_from_local_budget_without_echo(
     tmp_path: Path,
 ) -> None:

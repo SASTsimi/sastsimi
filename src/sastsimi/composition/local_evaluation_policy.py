@@ -24,6 +24,7 @@ from sastsimi.contracts.budget import Purpose
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import ProgramId
 from sastsimi.contracts.policy import PolicySourceCheck
+from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.orchestration.run_initialization import PostWorkspaceSeederPort
@@ -183,6 +184,7 @@ class LocalEvaluationPolicyPostWorkspaceSeeder(PostWorkspaceSeederPort):
 
     runner: WorkflowRunner
     orchestration_identity_ref: BudgetScopeRef
+    boundary_ref: StoredDataRef
     parser_name: str = _PARSER_NAME
     parser_version: str = _PARSER_VERSION
 
@@ -206,12 +208,22 @@ class LocalEvaluationPolicyPostWorkspaceSeeder(PostWorkspaceSeederPort):
             or state.commit_id != binding_ref.commit_id
         ):
             raise ValueError("LOCAL_POLICY_RUN_SCOPE_MISMATCH")
+        binding = self.runner.runtime.unit_of_work.records.get_exact(binding_ref)
+        binding_meta = getattr(binding, "meta", None)
+        if (
+            not isinstance(binding_meta, RecordMeta)
+            or binding_meta.analysis_id != state.meta.analysis_id
+            or binding_meta.workspace_id != state.workspace_id
+            or binding_meta.commit_id != state.commit_id
+        ):
+            raise ValueError("LOCAL_POLICY_RUN_SCOPE_MISMATCH")
         prepared = self.runner.begin_policy(
             binding_ref,
-            state.meta,
+            binding_meta,
             self.orchestration_identity_ref,
             program_id=str(request.program_id),
             source_config_ref=binding_ref,
+            source_input_refs=(self.boundary_ref,),
             parser_name=self.parser_name,
             parser_version=self.parser_version,
         )
@@ -260,7 +272,11 @@ class _LocalPolicyParserInvocation:
 
 
 def build_local_evaluation_policy_feature(
-    *, context: _LocalPolicyContext, calls: ProductionCallPort
+    *,
+    context: _LocalPolicyContext,
+    calls: ProductionCallPort,
+    boundary_ref: StoredDataRef,
+    boundary_bytes: bytes,
 ) -> LocalPolicyFeature:
     """Build local policy preparation without weakening Production policy I/O."""
 
@@ -271,11 +287,11 @@ def build_local_evaluation_policy_feature(
         program_id=context.request.program_id,
     )
     artifacts: ArtifactStore = context.runtime.unit_of_work.artifacts
-    boundary_ref = artifacts.commit(
-        artifacts.stage_bytes(raw, "application/json")
-    )
     if (
-        boundary_ref.workspace_id != context.scope.workspace_id
+        boundary_bytes != raw
+        or boundary_ref.data_kind != "artifact"
+        or boundary_ref.record_id is not None
+        or boundary_ref.workspace_id != context.scope.workspace_id
         or boundary_ref.commit_id != context.scope.commit_id
     ):
         raise ValueError("LOCAL_POLICY_RUN_SCOPE_MISMATCH")
@@ -340,6 +356,7 @@ def build_local_evaluation_policy_feature(
             orchestration_identity_ref=context.role_identity_refs[
                 RequesterRole.ORCHESTRATION
             ],
+            boundary_ref=boundary_ref,
         ),
     )
 

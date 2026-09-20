@@ -729,6 +729,8 @@ class WorkDispatchStore:
                 and reservation.requested_units.work_count == 1
             )
             if direct_registration or dynamic_handoff_registration:
+                if not isinstance(action, ActionRequest):
+                    raise ValueError("WORK_REGISTRATION_ACTION_INVALID")
                 matches.append((reservation.budget_binding_ref, action))
         if len(matches) != 1:
             raise ValueError("WORK_REGISTRATION_SCOPE_MISSING")

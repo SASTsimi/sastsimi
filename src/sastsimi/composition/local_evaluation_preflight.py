@@ -29,6 +29,7 @@ from sastsimi.composition.local_evaluation_composition import (
 from sastsimi.composition.local_static_materials import LocalStaticMaterialSet
 from sastsimi.config.local_evaluation_profile import LocalEvaluationProfile
 from sastsimi.contracts.analysis import AnalysisStartRequest
+from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import (
     HostConfigurationRef,
     RunStoredDataRef,
@@ -320,9 +321,11 @@ class ConcreteLocalEvaluationPreflight:
                 continue
             logical_id = str(meta.logical_record_id)
             existing = latest_by_logical.get(logical_id)
+            existing_meta = getattr(existing, "meta", None)
             if (
                 existing is None
-                or meta.revision_number > existing.meta.revision_number
+                or not isinstance(existing_meta, RecordMeta)
+                or meta.revision_number > existing_meta.revision_number
             ):
                 latest_by_logical[logical_id] = item
         current_records = tuple(latest_by_logical.values())

@@ -48,12 +48,15 @@ class RecoveryService:
             [], Iterable[StoredDataRef | RunStoredDataRef]
         ]
         | None = None,
+        *,
+        recover_expired_leases: bool = True,
     ) -> None:
         self.transitions, self.recovery_identity_ref = (
             transitions,
             recovery_identity_ref,
         )
         self.protected_artifact_refs = protected_artifact_refs or (lambda: ())
+        self.recover_expired_leases = recover_expired_leases
 
     def recover(self) -> RecoveryReport:
         service = self.transitions.works
@@ -75,7 +78,7 @@ class RecoveryService:
                 self.transitions.artifacts,
                 protected_artifact_refs=protected_artifact_refs,
             )
-            blocked = self.expired_leases()
+            blocked = self.expired_leases() if self.recover_expired_leases else 0
             verify(
                 service.records,
                 self.transitions.artifacts,

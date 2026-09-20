@@ -460,9 +460,9 @@ def _approved_candidate_route(
         artifacts,
         template_path=Path(
             "src/sastsimi/prompts/templates/dynamic-reproduction/"
-            "create-poc-candidate/1.0.1.md"
+            "create-poc-candidate/1.0.2.md"
         ),
-        template_version="1.0.1",
+        template_version="1.0.2",
         role="DYNAMIC_REPRODUCTION",
         task_kind="CREATE_POC_CANDIDATE",
         result_kind="poc_candidate",

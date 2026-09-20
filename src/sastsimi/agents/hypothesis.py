@@ -38,7 +38,7 @@ from sastsimi.ports.clock import Clock
 from sastsimi.ports.hypothesis_agent import HypothesisAgentOutcome
 from sastsimi.ports.id_generator import IdGenerator
 from sastsimi.ports.llm_invocation import PersistedLLMInvocation
-from sastsimi.prompts.builder import PromptBuilder, ProjectedPromptSource
+from sastsimi.prompts.builder import ProjectedPromptSource, PromptBuilder
 from sastsimi.prompts.registry import LoadedPromptDefinition
 from sastsimi.prompts.static_projection import project_hypothesis_static_bundle
 

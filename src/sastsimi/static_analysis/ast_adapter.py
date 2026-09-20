@@ -632,6 +632,7 @@ class PythonAstProcessAdapter:
             request.action.file_paths, workspace_root
         )
         worker_paths = tuple(item.git_path for item in worker_manifest)
+        requested_paths = tuple(sorted(request.action.file_paths))
         if not worker_paths:
             await self.workspace_locator.assert_unchanged(
                 request.workspace,
@@ -683,7 +684,9 @@ class PythonAstProcessAdapter:
                 attempt_id=self.process_runner.attempt_id,
                 check_id="post-execute",
             )
-            return self._process_failure(profile, result, preflight_gaps, started)
+            return self._process_failure(
+                profile, result, requested_paths, preflight_gaps, started
+            )
         try:
             self._assert_bound_manifest(worker_manifest, workspace_root)
             decoded = self._decode(result.stdout, worker_manifest)
@@ -694,7 +697,9 @@ class PythonAstProcessAdapter:
                 attempt_id=self.process_runner.attempt_id,
                 check_id="post-execute",
             )
-            return self._decode_failure(profile, result.stdout, preflight_gaps, started)
+            return self._decode_failure(
+                profile, result.stdout, requested_paths, preflight_gaps, started
+            )
         if decoded["parser_version"] != profile.expected_version:
             await self.workspace_locator.assert_unchanged(
                 request.workspace,
@@ -702,7 +707,9 @@ class PythonAstProcessAdapter:
                 attempt_id=self.process_runner.attempt_id,
                 check_id="post-execute",
             )
-            return self._decode_failure(profile, result.stdout, preflight_gaps, started)
+            return self._decode_failure(
+                profile, result.stdout, requested_paths, preflight_gaps, started
+            )
         await self.workspace_locator.assert_unchanged(
             request.workspace,
             deadline,
@@ -712,7 +719,9 @@ class PythonAstProcessAdapter:
         try:
             self._assert_bound_manifest(worker_manifest, workspace_root)
         except ValueError:
-            return self._decode_failure(profile, result.stdout, preflight_gaps, started)
+            return self._decode_failure(
+                profile, result.stdout, requested_paths, preflight_gaps, started
+            )
         gaps = (*preflight_gaps, *cast(tuple[CandidateGap, ...], decoded["gaps"]))
         analyzed = cast(tuple[str, ...], decoded["analyzed_paths"])
         skipped = tuple(
@@ -941,6 +950,7 @@ class PythonAstProcessAdapter:
         self,
         profile: StaticToolProfile,
         result: ProcessResult,
+        requested_paths: tuple[str, ...],
         existing_gaps: tuple[CandidateGap, ...],
         started: int,
     ) -> StaticToolObservation:
@@ -955,7 +965,7 @@ class PythonAstProcessAdapter:
             status="SKIPPED" if result.outcome == "CANCELLED" else "FAILED",
             raw=None,
             analyzed=(),
-            skipped=tuple(sorted(self.tracked_files)),
+            skipped=requested_paths,
             symbols=(),
             facts=(),
             relations=(),
@@ -968,6 +978,7 @@ class PythonAstProcessAdapter:
         self,
         profile: StaticToolProfile,
         raw: bytes,
+        requested_paths: tuple[str, ...],
         existing_gaps: tuple[CandidateGap, ...],
         started: int,
     ) -> StaticToolObservation:
@@ -976,7 +987,7 @@ class PythonAstProcessAdapter:
             status="FAILED",
             raw=raw,
             analyzed=(),
-            skipped=tuple(sorted(self.tracked_files)),
+            skipped=requested_paths,
             symbols=(),
             facts=(),
             relations=(),

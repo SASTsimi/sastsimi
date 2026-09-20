@@ -187,6 +187,12 @@ class LocalEvaluationProfile(ContractModel):
             or workspace in executable.parents
         ):
             raise ValueError("LOCAL_EVALUATION_CREDENTIAL_PATH_OVERLAP")
+        # A claimed Verification work keeps one running slot while it starts
+        # the independently tracked Pro and Con children.  Preserve two spare
+        # slots even when every foreground worker has claimed a parent, or the
+        # configured limits can deadlock before either evidence branch starts.
+        if self.budget.max_parallel_work < self.worker.max_workers + 2:
+            raise ValueError("LOCAL_EVALUATION_PARALLEL_BUDGET_DEADLOCK")
         return self
 
 

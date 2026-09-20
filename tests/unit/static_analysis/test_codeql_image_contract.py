@@ -41,6 +41,7 @@ def test_dockerfile_is_offline_pinned_and_installs_only_verified_local_inputs() 
         "8e870433e5c80d0e916c3c1aa9005fc88aab990bcdcc649fade9dfc4d7e94305" in dockerfile
     )
     assert "tar -xzf /tmp/codeql-bundle-linux64.tar.gz -C /opt" in dockerfile
+    assert "chmod -R a+rX /opt/codeql" in dockerfile
     assert (
         "COPY --chmod=0555 sastsimi-codeql /usr/local/bin/sastsimi-codeql" in dockerfile
     )

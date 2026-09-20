@@ -11,10 +11,6 @@ def test_facade_exposes_the_exact_read_only_evidence_authority() -> None:
         ProductionCapabilityProbeService
     )
     authority = object()
-    setattr(
-        service,
-        "_ProductionCapabilityProbeService__evidence",
-        authority,
-    )
+    service._ProductionCapabilityProbeService__evidence = authority
 
     assert service.trusted_evidence() is cast(TrustedEvidencePort, authority)

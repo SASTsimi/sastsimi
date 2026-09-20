@@ -18,7 +18,7 @@ from sastsimi.contracts.ids import (
     StoredDataId,
     WorkspaceId,
 )
-from sastsimi.contracts.refs import HostConfigurationRef
+from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
 
 
 def _ref(kind: str, name: str) -> HostConfigurationRef:
@@ -72,6 +72,18 @@ class _Service:
     def trusted_evidence(self) -> _Evidence:
         return _Evidence()
 
+    def evidence_refs(self) -> tuple[StoredDataRef, ...]:
+        return (
+            StoredDataRef(
+                stored_data_id=StoredDataId("b" * 64),
+                data_kind="artifact",
+                content_hash="b" * 64,
+                workspace_id=WorkspaceId("host-configuration"),
+                commit_id=CommitId("host-configuration-v1"),
+                record_id=None,
+            ),
+        )
+
 
 def _profile() -> SimpleNamespace:
     return SimpleNamespace(
@@ -119,6 +131,7 @@ def test_resolves_each_exact_approved_current_profile_and_executable() -> None:
 
     assert resolved.git_profile_ref == receipts[0].approved_profile_ref
     assert resolved.python_runtime_profile_ref == receipts[1].approved_profile_ref
+    assert resolved.workspace_dependency_refs == (receipts[0].approved_profile_ref,)
     assert resolved.static_profile_refs == {
         "AST": receipts[2].approved_profile_ref,
         "OPENGREP": receipts[3].approved_profile_ref,
@@ -126,6 +139,7 @@ def test_resolves_each_exact_approved_current_profile_and_executable() -> None:
     }
     assert resolved.executables["GIT"] == Path("/tools/git")
     assert resolved.executables["CODEQL"] == Path("/tools/codeql")
+    assert resolved.protected_artifact_refs == services[None].evidence_refs()
     assert all(services[kind].checked for kind in (
         "GIT", "PYTHON_RUNTIME", "PYTHON_AST", "OPENGREP", "CODEQL"
     ))

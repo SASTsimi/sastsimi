@@ -1006,6 +1006,14 @@ class CancelledAfterOpenAgent(BlockedFlowAgent):
         raise asyncio.CancelledError
 
 
+@dataclass
+class InvalidCandidateAgent(BlockedFlowAgent):
+    async def create_poc_candidate(
+        self, **_: object
+    ) -> DynamicAgentOutcome[PoCCandidate]:
+        return DynamicAgentOutcome(self.invocation, None)
+
+
 @pytest.mark.asyncio
 async def test_operational_failure_has_no_r6_verdict_or_gate() -> None:
     artifacts = MemoryArtifacts()
@@ -1072,6 +1080,121 @@ async def test_operational_failure_has_no_r6_verdict_or_gate() -> None:
     assert port.failure.poc_ref is None  # type: ignore[attr-defined]
     assert port.verdict_calls == 0
     assert port.gate_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_environment_error_blocks_before_poc_generation() -> None:
+    artifacts = MemoryArtifacts()
+    request = reproduction_request()
+    request_ref = cast(StoredDataRef, reference(request))
+    work = dynamic_work(request_ref)
+    persisted_invocation = invocation(
+        artifacts,
+        work,
+        task="DERIVE_ENVIRONMENT",
+        contexts=(request_ref,),
+        content={"items": []},
+        sequence=41,
+    )
+    requirements_ref = stored_ref(
+        "environment_requirements", "blocked-requirements"
+    )
+    plan_ref = stored_ref("reproduction_plan", "blocked-plan")
+    failed_environment = environment(
+        request_ref,
+        plan_ref,
+        requirements_ref,
+    ).model_copy(update={"status": "ERROR"})
+    log = agent_log(request_ref)
+    port = FakeWorkflowPort(
+        DynamicSandboxSession(
+            allowed=True,
+            policy_ref=stored_ref("sandbox_policy_decision", "allowed-policy"),
+            log_ref=cast(StoredDataRef, reference(log)),
+            environment=failed_environment,
+            environment_ref=cast(StoredDataRef, reference(failed_environment)),
+            log=log,
+        )
+    )
+    service = DynamicReproductionWorkflowService(
+        agent=BlockedFlowAgent(persisted_invocation),
+        workflow=port,
+    )
+    authorization = auth(persisted_invocation)
+
+    completed = await service.execute(
+        work=work,
+        request=request,
+        request_ref=request_ref,
+        authorizations=DynamicStageAuthorizations(
+            derive=authorization,
+            plan=authorization,
+            candidate=None,
+            execute=(),
+            interpret=None,
+        ),
+    )
+
+    assert completed.output_refs
+    assert port.cleanup_calls == 1
+    assert port.failure is not None
+    assert port.failure.status == "BLOCKED"  # type: ignore[attr-defined]
+    assert port.failure.failure_category == "ENVIRONMENT_SETUP"  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_invalid_poc_candidate_output_is_retryable_blocked_work() -> None:
+    artifacts = MemoryArtifacts()
+    request = reproduction_request()
+    request_ref = cast(StoredDataRef, reference(request))
+    work = dynamic_work(request_ref)
+    persisted_invocation = invocation(
+        artifacts,
+        work,
+        task="CREATE_POC_CANDIDATE",
+        contexts=(request_ref,),
+        content=None,
+        status="INVALID_OUTPUT",
+        sequence=42,
+    )
+    requirements_ref = stored_ref(
+        "environment_requirements", "blocked-requirements"
+    )
+    plan_ref = stored_ref("reproduction_plan", "blocked-plan")
+    ready_environment = environment(request_ref, plan_ref, requirements_ref)
+    log = agent_log(request_ref)
+    port = FakeWorkflowPort(
+        DynamicSandboxSession(
+            allowed=True,
+            policy_ref=stored_ref("sandbox_policy_decision", "allowed-policy"),
+            log_ref=cast(StoredDataRef, reference(log)),
+            environment=ready_environment,
+            environment_ref=cast(StoredDataRef, reference(ready_environment)),
+            log=log,
+        )
+    )
+    service = DynamicReproductionWorkflowService(
+        agent=InvalidCandidateAgent(persisted_invocation),
+        workflow=port,
+    )
+    authorization = auth(persisted_invocation)
+
+    await service.execute(
+        work=work,
+        request=request,
+        request_ref=request_ref,
+        authorizations=DynamicStageAuthorizations(
+            derive=authorization,
+            plan=authorization,
+            candidate=authorization,
+            execute=(),
+            interpret=None,
+        ),
+    )
+
+    assert port.failure is not None
+    assert port.failure.status == "BLOCKED"  # type: ignore[attr-defined]
+    assert port.failure.failure_category == "AGENT"  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio

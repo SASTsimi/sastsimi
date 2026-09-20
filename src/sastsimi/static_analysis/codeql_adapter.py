@@ -754,10 +754,19 @@ def _decode_sarif(
         run = runs[0]
         tool = run.get("tool")
         driver = tool.get("driver") if isinstance(tool, dict) else None
+        driver_version = None
+        if isinstance(driver, dict):
+            version = driver.get("version")
+            semantic_version = driver.get("semanticVersion")
+            if version is not None and semantic_version is not None:
+                if not isinstance(version, str) or version != semantic_version:
+                    raise _MalformedSarif
+            driver_version = version if version is not None else semantic_version
         if (
             not isinstance(driver, dict)
             or driver.get("name") != "CodeQL"
-            or driver.get("version") != expected_version
+            or not isinstance(driver_version, str)
+            or driver_version != expected_version
         ):
             raise _MalformedSarif
         metadata_raw = driver.get("rules")

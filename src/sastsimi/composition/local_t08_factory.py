@@ -12,7 +12,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import cast
+from typing import Literal, cast
 
 from sastsimi.composition.local_evaluation_composition import (
     LocalEvaluationInstallationContext,
@@ -38,7 +38,9 @@ from sastsimi.contracts.refs import HostConfigurationRef, reference
 from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.orchestration.production_context import ProductionInstallationContext
 from sastsimi.orchestration.production_provisioning import (
+    StaticAdapterKey,
     StaticAnalysisProvisioning,
+    StaticDecoderKey,
     StaticRouteProvisioning,
     WorkspaceStorageProvisioning,
 )
@@ -223,21 +225,21 @@ def _static_provisioning(
         routes.append(
             StaticRouteProvisioning(
                 tool=tool,
-                adapter_key={
+                adapter_key=cast(StaticAdapterKey, {
                     "AST": "PYTHON_AST",
                     "OPENGREP": "OPENGREP",
                     "CODEQL": "CODEQL",
-                }[tool],
-                executable_slot={
+                }[tool]),
+                executable_slot=cast(Literal["PYTHON_RUNTIME", "CODEQL", "OPENGREP"], {
                     "AST": "PYTHON_RUNTIME",
                     "OPENGREP": "OPENGREP",
                     "CODEQL": "CODEQL",
-                }[tool],
-                decoder_key={
+                }[tool]),
+                decoder_key=cast(StaticDecoderKey, {
                     "AST": "PYTHON_AST_JSON_V1",
                     "OPENGREP": "OPENGREP_JSON_V1",
                     "CODEQL": "CODEQL_SARIF_V1",
-                }[tool],
+                }[tool]),
                 analysis_config_sha256=materials.analysis_config_sha256,
                 rule_catalog_sha256=rules[0],
                 rule_selection_sha256=rules[1],

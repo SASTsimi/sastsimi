@@ -247,7 +247,10 @@ class _Scheduler:
     ) -> WorkExecutionState:
         assert reason_code == "WORK_HANDLER_FAILED"
         work_id = str(context.work.work_id)
-        if self.works[work_id] != context.work:
+        if (
+            self.works[work_id] != context.work
+            or self.attempts[work_id][-1] != context.attempt
+        ):
             raise ValueError("ATTEMPT_NOT_ACTIVE")
         blocked = context.work.model_copy(
             update={
@@ -273,26 +276,33 @@ class _Handler:
         *,
         barrier: asyncio.Barrier | None = None,
         failures: frozenset[str] = frozenset(),
+        delayed_failures: frozenset[str] = frozenset(),
         wait_forever: frozenset[str] = frozenset(),
         unfinalized: frozenset[str] = frozenset(),
     ) -> None:
         self.store = store
         self.barrier = barrier
         self.failures = failures
+        self.delayed_failures = delayed_failures
         self.wait_forever = wait_forever
         self.unfinalized = unfinalized
         self.active = 0
         self.max_active = 0
         self.started = asyncio.Event()
+        self.received_elapsed_ms: list[int] = []
 
     async def execute(self, context: WorkContext) -> WorkHandlerResult:
         work_id = str(context.work.work_id)
+        self.received_elapsed_ms.append(context.attempt.elapsed_ms)
         self.active += 1
         self.max_active = max(self.max_active, self.active)
         self.started.set()
         try:
             if work_id in self.failures:
                 raise RuntimeError("untrusted handler detail must not be persisted")
+            if work_id in self.delayed_failures:
+                await asyncio.sleep(0.02)
+                raise RuntimeError("untrusted delayed handler detail")
             if work_id in self.wait_forever:
                 await asyncio.Event().wait()
             if self.barrier is not None:
@@ -352,6 +362,30 @@ async def test_pool_runs_two_ready_work_items_concurrently_in_stable_order() -> 
     ]
     assert set(store.handler_publications) == {"work-a", "work-z"}
     assert pool.active_task_count == 0
+
+
+@pytest.mark.asyncio
+async def test_pool_passes_the_initially_renewed_attempt_to_the_handler() -> None:
+    store = _Scheduler((_work("work-a", WorkType.WORKSPACE_PREP),), cap=1)
+    handler = _Handler(store)
+    pool = _pool(store, handler, _RunControl())
+
+    outcome = await pool.drain("analysis-1")
+
+    assert outcome.disposition == "TERMINAL"
+    assert handler.received_elapsed_ms == [1]
+
+
+@pytest.mark.asyncio
+async def test_pool_records_failure_against_latest_heartbeat_revision() -> None:
+    store = _Scheduler((_work("work-a", WorkType.DYNAMIC_REPRO),), cap=1)
+    handler = _Handler(store, delayed_failures=frozenset({"work-a"}))
+    pool = _pool(store, handler, _RunControl())
+
+    outcome = await asyncio.wait_for(pool.drain("analysis-1"), timeout=1)
+
+    assert outcome.disposition == "BLOCKED"
+    assert store.failure_records == ["work-a"]
 
 
 @pytest.mark.asyncio

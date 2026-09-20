@@ -442,17 +442,24 @@ class ProductionDynamicWorkflow:
             else None
         )
         try:
-            build_kwargs = dict(
-                approval=build_outcome,
-                source=source,
-                request=request,
-                requirements=requirements,
-                meta=self._meta("environment_recipe"),
-            )
+            recipe_meta = self._meta("environment_recipe")
             if baseline is None:
-                recipe = await self._setup.build(**build_kwargs)
+                recipe = await self._setup.build(
+                    approval=build_outcome,
+                    source=source,
+                    request=request,
+                    requirements=requirements,
+                    meta=recipe_meta,
+                )
             else:
-                recipe = await self._setup.build(**build_kwargs, baseline=baseline)
+                recipe = await self._setup.build(
+                    approval=build_outcome,
+                    source=source,
+                    request=request,
+                    requirements=requirements,
+                    meta=recipe_meta,
+                    baseline=baseline,
+                )
         except asyncio.CancelledError:
             self._start_log(
                 request_ref,

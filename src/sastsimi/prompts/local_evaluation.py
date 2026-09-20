@@ -414,14 +414,20 @@ class LocalEvaluationLLMConfigurationService:
         required: RequiredLocalEvaluationPromptRoute,
         entry: PromptRegistryEntry,
     ) -> LoadedPromptDefinition:
+        try:
+            template_path = required.template_path.with_name(
+                f"{entry.template_version}.md"
+            )
+        except ValueError:
+            raise ValueError("LOCAL_EVALUATION_PROMPT_ROUTE_MISMATCH") from None
         if (
-            entry.template_version != required.template_path.stem
+            not entry.template_version.strip()
             or entry.template_ref.record_id is not None
             or entry.template_ref.data_kind != "artifact"
         ):
             raise ValueError("LOCAL_EVALUATION_PROMPT_ROUTE_MISMATCH")
         template = self._loader.load_template(
-            required.template_path, entry.template_ref.content_hash
+            template_path, entry.template_ref.content_hash
         )
         try:
             persisted = self._builder.read_artifact(entry.template_ref)
@@ -431,7 +437,7 @@ class LocalEvaluationLLMConfigurationService:
             raise ValueError("LOCAL_EVALUATION_PROMPT_ROUTE_MISMATCH")
         return LoadedPromptDefinition.from_bytes(
             entry=entry,
-            template_path=required.template_path,
+            template_path=template_path,
             template=template,
         )
 

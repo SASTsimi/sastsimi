@@ -219,6 +219,28 @@ def test_public_sarif_decoder_reuses_the_codeql_contract() -> None:
     assert gaps == ()
 
 
+def test_public_sarif_decoder_accepts_codeql_semantic_version() -> None:
+    payload = json.loads(_sarif())
+    driver = payload["runs"][0]["tool"]["driver"]
+    driver["semanticVersion"] = driver.pop("version")
+
+    rules, facts, relations, gaps = decode_codeql_sarif(
+        json.dumps(payload, separators=(",", ":")).encode(),
+        rule_catalog=(
+            StaticRuleMapping("R1", "SINK", "SOURCE", True),
+            StaticRuleMapping("R2", "VALIDATOR", None, False),
+        ),
+        selected_rule_ids=("R1", "R2"),
+        tracked_paths=("src/app.py", "src/mid.py", "src/sink.py"),
+        expected_version="2.20.0",
+    )
+
+    assert [(item.rule_id, item.hit_count) for item in rules] == [("R1", 0), ("R2", 1)]
+    assert [item.fact_kind for item in facts] == ["VALIDATOR"]
+    assert relations == ()
+    assert gaps == ()
+
+
 @pytest.fixture
 def adapter_fixture(tmp_path: Path) -> dict[str, Any]:
     docker = tmp_path / "docker-approved"
@@ -346,6 +368,40 @@ async def test_success_decodes_only_bound_sarif_into_static_observation(
 
 
 @pytest.mark.asyncio
+async def test_started_container_run_emits_one_exact_execution_receipt(
+    adapter_fixture: dict[str, Any],
+) -> None:
+    inputs = cast(ContainerCodeQLAdapterInputs, adapter_fixture["inputs"])
+    request = cast(StaticToolRequest, adapter_fixture["request"])
+    profile = cast(StaticToolProfile, adapter_fixture["profile"])
+    workspace_root = cast(Path, adapter_fixture["workspace_root"])
+    executable = cast(Path, adapter_fixture["executable"])
+    port = cast(FakeDockerPort, adapter_fixture["port"])
+    receipts: list[tuple[str, int]] = []
+    adapter = ContainerCodeQLProcessAdapter(
+        executable=executable,
+        executable_key="docker",
+        inputs=inputs,
+        port=port,
+        execution_receipt=lambda result, elapsed_ms: receipts.append(
+            (result.status.value, elapsed_ms)
+        ),
+    )
+
+    observed = await adapter.execute(
+        request,
+        workspace_root,
+        profile,
+        _deadline(str(request.action.action_id)),
+    )
+
+    assert observed.status == "SUCCEEDED"
+    assert len(receipts) == 1
+    assert receipts[0][0] == "SUCCEEDED"
+    assert receipts[0][1] >= 0
+
+
+@pytest.mark.asyncio
 async def test_nonzero_container_result_is_failure_not_zero_hits(
     adapter_fixture: dict[str, Any],
 ) -> None:
@@ -371,6 +427,29 @@ async def test_nonzero_container_result_is_failure_not_zero_hits(
     assert observed.errors[0].code == "CODEQL_CONTAINER_EXIT_NONZERO"
     assert all(item.execution_status == "NOT_EXECUTED" for item in observed.rules)
     assert all(item.hit_count is None for item in observed.rules)
+
+
+@pytest.mark.asyncio
+async def test_malformed_sarif_uses_contractual_tool_failure_rule_reason(
+    adapter_fixture: dict[str, Any],
+) -> None:
+    adapter = cast(ContainerCodeQLProcessAdapter, adapter_fixture["adapter"])
+    request = cast(StaticToolRequest, adapter_fixture["request"])
+    profile = cast(StaticToolProfile, adapter_fixture["profile"])
+    workspace_root = cast(Path, adapter_fixture["workspace_root"])
+    port = cast(FakeDockerPort, adapter_fixture["port"])
+    port.stdout_chunks = (b"{}",)
+
+    observed = await adapter.execute(
+        request,
+        workspace_root,
+        profile,
+        _deadline(str(request.action.action_id)),
+    )
+
+    assert observed.status == "FAILED"
+    assert observed.gaps[0].code == "CODEQL_CONTAINER_SARIF_MALFORMED"
+    assert all(item.reason == "TOOL_FAILURE" for item in observed.rules)
 
 
 @pytest.mark.asyncio
@@ -412,6 +491,7 @@ async def test_mixed_request_identity_is_blocked_before_docker(
     assert observed.status == "FAILED"
     assert observed.gaps[0].code == "CODEQL_CONTAINER_INPUT_MISMATCH"
     assert observed.errors[0].code == "CODEQL_CONTAINER_INPUT_MISMATCH"
+    assert all(item.reason == "TOOL_FAILURE" for item in observed.rules)
     assert port.operations == []
 
 

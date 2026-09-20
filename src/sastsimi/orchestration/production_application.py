@@ -28,7 +28,6 @@ from .result_aggregation import ResultAggregationPort
 from .run_initialization import RunInitializationService
 from .run_scope_plan import PlannedRunScope
 
-
 ProductionApplicationProfile = AnalysisApplicationProfile
 ProductionReadinessPort = AnalysisReadinessPort
 

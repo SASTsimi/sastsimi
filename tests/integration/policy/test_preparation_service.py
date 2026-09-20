@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from sastsimi.agents.policy_parser import (
     ParsedPolicyContent,
@@ -38,7 +38,9 @@ from sastsimi.ports.policy_runtime import PolicyCacheKey
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.storage import models
 from sastsimi.storage.artifact_store import LocalArtifactStore
+from sastsimi.storage.codec import encode
 from sastsimi.storage.policy_runtime import publish_current, validate_cache_head
+from sastsimi.storage.records import next_meta
 from tests.integration.storage.test_intermediate_publication import (
     prepared_policy_parser,
 )
@@ -278,6 +280,31 @@ async def test_found_policy_freezes_while_static_work_remains_independent(
     assert source.calls == 1
     assert parser.calls == 1
     assert runtime.work.get(str(static.work_id)).status == "READY"
+    assert result.output_refs == runtime.work.get(str(work.work_id)).output_refs
+
+
+@pytest.mark.asyncio
+async def test_policy_accepts_the_latest_heartbeat_attempt_revision(
+    tmp_path: Path,
+) -> None:
+    h, runtime, _, work, _, _, _, service = _subject(tmp_path)
+    initial = _attempt(h, work)
+    renewed = initial.model_copy(
+        update={
+            "meta": next_meta(initial.meta, h.clock, h.ids),
+            "elapsed_ms": initial.elapsed_ms + 1,
+        }
+    )
+    with h.database.write() as connection:
+        h.records.publish(connection, h.records.stage(connection, renewed))
+        connection.execute(
+            update(models.work_attempts)
+            .where(models.work_attempts.c.attempt_id == str(initial.attempt_id))
+            .values(payload=encode(renewed))
+        )
+
+    result = await PolicyWorkHandler(service).execute(WorkContext(work, renewed))
+
     assert result.output_refs == runtime.work.get(str(work.work_id)).output_refs
 
 

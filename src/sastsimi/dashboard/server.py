@@ -125,6 +125,7 @@ def create_server(
                 )
 
         def _json(self, value: object, send_body: bool) -> None:
+            payload: object
             if isinstance(value, tuple):
                 payload = [
                     item.model_dump(mode="json")

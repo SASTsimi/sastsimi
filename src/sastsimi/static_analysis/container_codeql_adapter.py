@@ -71,6 +71,9 @@ class ContainerCodeQLProcessAdapter:
         executable_key: str,
         inputs: ContainerCodeQLAdapterInputs,
         port: ContainerCodeQLDockerPort,
+        execution_receipt: (
+            Callable[[CodeQLContainerRunResult, int], None] | None
+        ) = None,
         monotonic_ns: Callable[[], int] = time.monotonic_ns,
         monotonic_ms: Callable[[], int] = lambda: time.monotonic_ns() // 1_000_000,
     ) -> None:
@@ -78,6 +81,7 @@ class ContainerCodeQLProcessAdapter:
         self.executable_key = executable_key
         self.inputs = inputs
         self.port = port
+        self.execution_receipt = execution_receipt
         self.monotonic_ns = monotonic_ns
         self.monotonic_ms = monotonic_ms
         self._active: dict[str, asyncio.Task[CodeQLContainerRunResult]] = {}
@@ -295,7 +299,11 @@ class ContainerCodeQLProcessAdapter:
                 "Container analyze used an exact registered prebuilt CodeQL database.",
             ),
             selected_rule_packs=self.inputs.selected_rule_packs,
-            rules=rules if rules is not None else self._rules_not_executed("FAILED"),
+            rules=(
+                rules
+                if rules is not None
+                else self._rules_not_executed("TOOL_FAILURE")
+            ),
             symbols=(),
             facts=facts,
             relations=relations,
@@ -431,6 +439,11 @@ class ContainerCodeQLProcessAdapter:
             finally:
                 if self._active.get(attempt_id) is task:
                     self._active.pop(attempt_id, None)
+            if self.execution_receipt is not None:
+                self.execution_receipt(
+                    result,
+                    max(0, self.monotonic_ms() - started),
+                )
         if result.status is CodeQLContainerRunStatus.CANCELLED:
             return self._observation(
                 profile,

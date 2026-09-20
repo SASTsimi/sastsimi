@@ -453,6 +453,7 @@ class WorkflowRunner:
         *,
         program_id: str,
         source_config_ref: BudgetScopeRef,
+        source_input_refs: tuple[StoredDataRef, ...] = (),
         parser_name: str,
         parser_version: str,
         generation: int = 1,
@@ -462,13 +463,21 @@ class WorkflowRunner:
         analysis_id = getattr(metadata, "analysis_id", None)
         if analysis_id is None:
             raise ValueError("POLICY_WORK_REQUIRES_RUN_SCOPE")
+        if len(source_input_refs) != len(set(source_input_refs)) or any(
+            ref.data_kind != "artifact"
+            or ref.record_id is not None
+            or getattr(metadata, "workspace_id", None) != ref.workspace_id
+            or getattr(metadata, "commit_id", None) != ref.commit_id
+            for ref in source_input_refs
+        ):
+            raise ValueError("POLICY_SOURCE_INPUT_INVALID")
         candidate = self._pending_work(
             metadata,
             "POLICY_FETCH",
             "ANALYSIS",
             str(analysis_id),
             generation=generation,
-            inputs=(source_config_ref,),
+            inputs=(source_config_ref, *source_input_refs),
             parent=None,
             trigger_primitive_ref=None,
         )

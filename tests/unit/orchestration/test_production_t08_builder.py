@@ -380,9 +380,9 @@ def test_builder_installs_exact_five_stage_real_t08_graph(tmp_path: Path) -> Non
         }
     )
 
+    context = _context(root, profile, configuration)
     feature = build_production_t08_feature(
-        _context(root, profile, configuration),
-        _inputs(profile, git, git_profile, ast_profile),
+        context, _inputs(profile, git, git_profile, ast_profile)
     )
 
     assert isinstance(feature.workspace_prep, WorkspacePrepWorkHandler)
@@ -392,6 +392,14 @@ def test_builder_installs_exact_five_stage_real_t08_graph(tmp_path: Path) -> Non
     assert isinstance(feature.context_retrieval, ContextRetrievalWorkHandler)
     assert isinstance(feature.seeder, StaticPostWorkspaceSeeder)
     assert isinstance(feature.repository_profile.handler, RepositoryProfileWorkHandler)
+    assert (
+        feature.seeder.graph.requester_identity_ref
+        == context.role_identity_refs[RequesterRole.ORCHESTRATION]
+    )
+    assert (
+        feature.repository_profile.handler.state_identity_ref
+        == context.role_identity_refs[RequesterRole.ORCHESTRATION]
+    )
 
 
 def test_builder_rejects_required_codeql_before_custom_adapter_factory(

@@ -145,6 +145,24 @@ def test_loads_explicit_production_profile_without_resolving_secret(
     assert "TEST_ONLY_MUST_NOT_APPEAR" not in profile.model_dump_json()
 
 
+def test_rejects_parallel_budget_that_cannot_start_pro_and_con_children(
+    tmp_path: Path,
+) -> None:
+    from sastsimi.config.production_profile import (
+        ProductionProfileError,
+        load_production_profile,
+    )
+
+    source = _profile_text(tmp_path / "workspaces").replace(
+        "max_parallel_work = 8", "max_parallel_work = 5"
+    )
+    path = tmp_path / "deadlocking-parallel-budget.toml"
+    path.write_text(source, encoding="utf-8")
+
+    with pytest.raises(ProductionProfileError):
+        load_production_profile(path)
+
+
 def test_loads_optional_codeql_container_table(tmp_path: Path) -> None:
     from sastsimi.config.production_profile import load_production_profile
 

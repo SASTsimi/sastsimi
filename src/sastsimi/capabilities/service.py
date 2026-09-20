@@ -423,6 +423,11 @@ class _CapabilityProbeEngine:
 
         return self._store.list()
 
+    def evidence_refs(self) -> tuple[StoredDataRef, ...]:
+        """Expose exact evidence roots so sibling runtimes preserve them."""
+
+        return self._store.evidence_refs()
+
     def resolve_executable(self, profile_ref: HostConfigurationRef) -> Path:
         """Resolve a pinned ACTIVE ref to the same current executable digest."""
 
@@ -857,7 +862,11 @@ class _CapabilityProbeEngine:
                     "codeql_boundary": codeql_boundary,
                     "probe_timeout_ms": 15_000,
                     "run_timeout_ms": 300_000,
-                    "stdout_limit_bytes": 1_048_576,
+                    "stdout_limit_bytes": (
+                        8_388_608
+                        if kind in {"PYTHON_AST", "OPENGREP"}
+                        else 1_048_576
+                    ),
                     "stderr_limit_bytes": 1_048_576,
                     "max_attempt_output_bytes": codeql_output_limit,
                     "max_output_file_bytes": 4_194_304,

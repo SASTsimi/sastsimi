@@ -663,7 +663,9 @@ def _build_t08_feature(
     graph = StaticProductionGraph(
         runner=context.runner,
         work_query=context.scheduler_store,
-        requester_identity_ref=static_identity,
+        # Orchestration owns work registration. Static Analysis owns the
+        # handlers' tool execution and result publication after dispatch.
+        requester_identity_ref=context.role_identity_refs[RequesterRole.ORCHESTRATION],
         routes=tuple(routes[item] for item in inputs.static.enabled_tools),
     )
     profile_handler = RepositoryProfileWorkHandler(
@@ -689,7 +691,7 @@ def _build_t08_feature(
         ),
         context.budget_binding_ref,
         static_identity,
-        static_identity,
+        context.role_identity_refs[RequesterRole.ORCHESTRATION],
     )
     return T08ProductionFeature(
         workspace_prep=WorkspacePrepWorkHandler(

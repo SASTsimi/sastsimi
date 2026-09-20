@@ -13,6 +13,7 @@ from sastsimi.composition.local_codex_binding import LocalCodexBindingRecords
 from sastsimi.composition.local_prompt_configuration import (
     build_local_prompt_configuration_plan,
     publish_local_prompt_configuration,
+    restore_local_prompt_configuration_plan,
 )
 from sastsimi.config.package_resources import builtin_package_root
 from sastsimi.contracts.refs import StoredDataRef, reference
@@ -174,6 +175,84 @@ async def test_plan_loads_templates_from_installed_package_root() -> None:
     )
 
     assert len(plan.prompt_entries) == 17
+
+
+@pytest.mark.asyncio
+async def test_resume_reuses_exact_published_prompt_graph() -> None:
+    records = _safe_records()
+    artifacts = _Artifacts()
+    validated = await validate_local_codex_binding(
+        records=records,
+        artifacts=artifacts,  # type: ignore[arg-type]
+        ids=_Ids(),
+        clock=_Clock(),
+        live_runner=_ProbeRunner(),
+        unauthenticated_runner=_ProbeRunner(),
+        probe_timeout_ms=500,
+    )
+    plan = build_local_prompt_configuration_plan(
+        repository_root=builtin_package_root(),
+        binding_records=records,
+        validation=validated,
+        artifacts=artifacts,  # type: ignore[arg-type]
+        ids=_Ids(),
+        clock=_Clock(),
+        timeout_ms=30_000,
+        max_parallel_calls=2,
+        max_calls_per_work=4,
+        max_retries=1,
+    )
+
+    restored = restore_local_prompt_configuration_plan(
+        published_records=plan.approval_records,
+        current_records=plan.approval_records,
+        binding_records=records,
+        validation=validated,
+    )
+
+    assert restored is not None
+    restored_plan, restored_validation = restored
+    assert restored_plan.prompt_entries == plan.prompt_entries
+    assert restored_plan.supported_provider == plan.supported_provider
+    assert restored_validation.provider == plan.supported_provider
+    assert restored_validation.evidence_ref == validated.evidence_ref
+
+
+@pytest.mark.asyncio
+async def test_resume_rejects_partial_active_prompt_graph() -> None:
+    records = _safe_records()
+    artifacts = _Artifacts()
+    validated = await validate_local_codex_binding(
+        records=records,
+        artifacts=artifacts,  # type: ignore[arg-type]
+        ids=_Ids(),
+        clock=_Clock(),
+        live_runner=_ProbeRunner(),
+        unauthenticated_runner=_ProbeRunner(),
+        probe_timeout_ms=500,
+    )
+    plan = build_local_prompt_configuration_plan(
+        repository_root=builtin_package_root(),
+        binding_records=records,
+        validation=validated,
+        artifacts=artifacts,  # type: ignore[arg-type]
+        ids=_Ids(),
+        clock=_Clock(),
+        timeout_ms=30_000,
+        max_parallel_calls=2,
+        max_calls_per_work=4,
+        max_retries=1,
+    )
+
+    with pytest.raises(
+        ValueError, match="LOCAL_PROMPT_RESUME_CONFIGURATION_INCOMPLETE"
+    ):
+        restore_local_prompt_configuration_plan(
+            published_records=plan.approval_records,
+            current_records=plan.approval_records[:-1],
+            binding_records=records,
+            validation=validated,
+        )
 
 
 @pytest.mark.asyncio

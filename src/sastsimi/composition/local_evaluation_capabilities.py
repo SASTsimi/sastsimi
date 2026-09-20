@@ -13,7 +13,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Protocol
 
-from sastsimi.contracts.refs import HostConfigurationRef
+from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
 from sastsimi.ports.trusted_evidence import TrustedEvidencePort
 
 _KINDS = ("GIT", "PYTHON_RUNTIME", "PYTHON_AST", "OPENGREP", "CODEQL")
@@ -52,6 +52,8 @@ class LocalCapabilityService(Protocol):
 
     def trusted_evidence(self) -> TrustedEvidencePort: ...
 
+    def evidence_refs(self) -> tuple[StoredDataRef, ...]: ...
+
 
 type LocalCapabilityServiceFactory = Callable[[str | None], LocalCapabilityService]
 
@@ -65,12 +67,15 @@ class LocalEvaluationApprovedCapabilities:
     static_profile_refs: Mapping[str, HostConfigurationRef]
     executables: Mapping[str, Path]
     trusted_evidence: TrustedEvidencePort
+    protected_artifact_refs: tuple[StoredDataRef, ...]
 
     @property
     def workspace_dependency_refs(
         self,
-    ) -> tuple[HostConfigurationRef, HostConfigurationRef]:
-        return self.git_profile_ref, self.python_runtime_profile_ref
+    ) -> tuple[HostConfigurationRef]:
+        """Return only the Git capability consumed by repository preparation."""
+
+        return (self.git_profile_ref,)
 
 
 def resolve_local_approved_capabilities(
@@ -144,6 +149,7 @@ def resolve_local_approved_capabilities(
         ),
         executables=MappingProxyType(executables),
         trusted_evidence=lookup.trusted_evidence(),
+        protected_artifact_refs=lookup.evidence_refs(),
     )
 
 

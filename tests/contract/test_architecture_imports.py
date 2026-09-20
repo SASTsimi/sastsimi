@@ -29,6 +29,23 @@ RULES: dict[str, frozenset[str]] = {
     "sandbox": frozenset({"contracts", "ports", "config"}),
     "storage": frozenset({"contracts", "ports", "config"}),
     "interfaces": frozenset({"bootstrap", "orchestration", "runtime", "evaluation"}),
+    "observability": frozenset({"contracts"}),
+    "simple_runtime": frozenset(
+        {
+            "contracts",
+            "ports",
+            "config",
+            "providers",
+            "reproduction",
+            "reporting",
+            "sandbox",
+            "storage",
+            "observability",
+        }
+    ),
+    "dashboard": frozenset(
+        {"config", "contracts", "observability", "reporting", "simple_runtime"}
+    ),
     "logging": frozenset(),
     "bootstrap": frozenset({"composition"}),
     # Concrete creation/injection only; applications never import this root.
@@ -74,6 +91,59 @@ RULES: dict[str, frozenset[str]] = {
 # concrete persistence adapters. Keep these exceptions module-exact so the
 # package-wide dependency policy is not weakened for unrelated code.
 EXACT_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
+    # The speed-first local CLI composes the intentionally isolated simple
+    # runtime. It is not imported by the production orchestration graph.
+    "sastsimi.interfaces.cli.simple_evaluation": frozenset(
+        {
+            "sastsimi.composition.local_codex_binding",
+            "sastsimi.config.local_evaluation_profile",
+            "sastsimi.contracts.ids",
+            "sastsimi.contracts.refs",
+            "sastsimi.providers.codex_subscription",
+            "sastsimi.simple_runtime.artifacts",
+            "sastsimi.simple_runtime.container",
+            "sastsimi.simple_runtime.migration",
+            "sastsimi.simple_runtime.models",
+            "sastsimi.simple_runtime.provider",
+            "sastsimi.simple_runtime.runner",
+            "sastsimi.simple_runtime.stages",
+            "sastsimi.simple_runtime.store",
+        }
+    ),
+    "sastsimi.interfaces.cli.dashboard": frozenset(
+        {"sastsimi.dashboard.server"}
+    ),
+    "sastsimi.agents.chaining": frozenset(
+        {
+            "sastsimi.chaining.service",
+            "sastsimi.chaining.service.chaining_prompt_input_bytes",
+        }
+    ),
+    "sastsimi.prompts.local_catalog": frozenset(
+        {
+            "sastsimi.agents.chaining",
+            "sastsimi.agents.cwe_labeling",
+            "sastsimi.agents.dynamic_reproduction",
+            "sastsimi.agents.hypothesis",
+            "sastsimi.agents.policy_parser",
+            "sastsimi.agents.pro",
+            "sastsimi.agents.rule_scope_gate",
+            "sastsimi.agents.technical_gate",
+            "sastsimi.agents.verification",
+        }
+    ),
+    "sastsimi.reporting.markdown_export": frozenset(
+        {"sastsimi.config.runtime_paths"}
+    ),
+    "sastsimi.storage.agent_activity": frozenset(
+        {"sastsimi.observability.agent_activity"}
+    ),
+    "sastsimi.storage.configuration_registry": frozenset(
+        {
+            "sastsimi.prompts.static_projection",
+            "sastsimi.prompts.static_projection.project_hypothesis_static_bundle",
+        }
+    ),
     # This operator-only adapter invokes the narrow capability application
     # facade and uses its public DTOs. It does not import capability internals,
     # storage, the runtime, or executable adapters directly.
@@ -123,6 +193,7 @@ EXACT_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
 # Symbol-exact DTO, port, and pure helper edges. Unlike module exceptions,
 # allowing one value does not permit importing another concrete service there.
 SYMBOL_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
+    "sastsimi.prompts.local_catalog": frozenset({"sastsimi.agents"}),
     "sastsimi.capabilities.composition": frozenset(
         {
             "sastsimi.composition.runtime.build_runtime",

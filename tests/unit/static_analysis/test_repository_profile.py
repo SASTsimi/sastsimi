@@ -660,6 +660,43 @@ def test_python_selection_uses_exact_active_registry_refs(tmp_path: Path) -> Non
         )
 
 
+def test_python_library_without_start_command_still_selects_static_tools(
+    tmp_path: Path,
+) -> None:
+    repository = _build(
+        tmp_path,
+        (
+            _write(tmp_path, "src/library.py", b"VALUE = 1\n"),
+            _write(tmp_path, "pyproject.toml", b"[project]\nname='library'\n"),
+        ),
+    )
+    assert repository.status == "NEEDS_CONFIRMATION"
+    assert repository.confirmation_reasons == ("BUILD_OR_START_UNCONFIRMED",)
+    fake_resolver = _Resolver()
+
+    selection = RepositoryExecutionSelector(
+        cast(ProductionCapabilityResolverPort, fake_resolver),
+        operating_system="windows",
+        architecture="x86_64",
+    ).select(
+        repository,
+        meta=_selection_meta(),
+        repository_profile_ref=cast(StoredDataRef, reference(repository)),
+        git_clone_profile_ref=fake_resolver.git_ref,
+        git_checkout_profile_ref=fake_resolver.git_ref,
+    )
+
+    assert selection.status == "READY"
+    assert [item.adapter_key for item in selection.selected_tools] == [
+        "CODEQL",
+        "OPENGREP",
+        "PYTHON_AST",
+    ]
+    assert [gap.code for gap in selection.gaps] == [
+        "BUILD_OR_START_UNCONFIRMED"
+    ]
+
+
 def test_tool_selection_runs_verified_intersection_when_optional_codeql_is_missing(
     tmp_path: Path,
 ) -> None:

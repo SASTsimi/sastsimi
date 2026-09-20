@@ -234,7 +234,9 @@ def _open_read_descriptor(path: Path) -> int:
 
 @dataclass(frozen=True)
 class _DecodedBatch:
+    requested_paths: tuple[str, ...]
     paths: tuple[str, ...]
+    skipped_paths: tuple[str, ...]
     raw: bytes
     unknown_rules: frozenset[str]
     hit_counts: Counter[str]
@@ -469,6 +471,9 @@ def _telemetry_unknown(
     identifiers: list[str] = []
     malformed = False
     for item in value:
+        if isinstance(item, str):
+            identifiers.append(item)
+            continue
         if not isinstance(item, dict) or not isinstance(item.get("id"), str):
             malformed = True
             continue
@@ -507,14 +512,32 @@ def _decode_batch(
     ):
         raise ValueError("OPENGREP_OUTPUT_MALFORMED")
     scanned = path_info.get("scanned")
-    skipped = path_info.get("skipped")
+    # OpenGrep 1.16 omits ``skipped`` when it is empty.  An explicit
+    # non-list value remains malformed; only the absent field means no skips.
+    skipped = path_info.get("skipped", [])
+    if not isinstance(scanned, list) or not all(
+        isinstance(item, str) for item in scanned
+    ) or not isinstance(skipped, list):
+        raise ValueError("OPENGREP_OUTPUT_SCOPE_MISMATCH")
+    scanned_paths = tuple(_safe_git_path(cast(str, item)) for item in scanned)
+    skipped_paths: list[str] = []
+    for item in skipped:
+        if isinstance(item, str):
+            skipped_paths.append(_safe_git_path(item))
+            continue
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("path"), str)
+            or not isinstance(item.get("reason"), str)
+        ):
+            raise ValueError("OPENGREP_OUTPUT_SCOPE_MISMATCH")
+        skipped_paths.append(_safe_git_path(cast(str, item["path"])))
+    skipped_tuple = tuple(skipped_paths)
     if (
-        not isinstance(scanned, list)
-        or not all(isinstance(item, str) for item in scanned)
-        or len(set(scanned)) != len(scanned)
-        or set(scanned) != set(paths)
-        or not isinstance(skipped, list)
-        or skipped
+        len(set(scanned_paths)) != len(scanned_paths)
+        or len(set(skipped_tuple)) != len(skipped_tuple)
+        or set(scanned_paths).intersection(skipped_tuple)
+        or set(scanned_paths).union(skipped_tuple) != set(paths)
     ):
         raise ValueError("OPENGREP_OUTPUT_SCOPE_MISMATCH")
     selected = frozenset(selected_rule_ids)
@@ -550,7 +573,7 @@ def _decode_batch(
             continue
         hits[rule_id] += 1
         try:
-            location = _location(item, frozenset(paths))
+            location = _location(item, frozenset(scanned_paths))
         except ValueError:
             gaps.append(
                 _gap(
@@ -589,13 +612,24 @@ def _decode_batch(
                 paths=paths,
             )
         )
+    if skipped_tuple:
+        gaps.append(
+            _gap(
+                "STATIC_COVERAGE_MISSING",
+                "MISSING",
+                "OpenGrep skipped one or more authorized files.",
+                paths=skipped_tuple,
+            )
+        )
     return _DecodedBatch(
-        paths,
-        raw,
-        unknown,
-        hits,
-        tuple(facts),
-        tuple(gaps),
+        requested_paths=paths,
+        paths=scanned_paths,
+        skipped_paths=skipped_tuple,
+        raw=raw,
+        unknown_rules=unknown,
+        hit_counts=hits,
+        facts=tuple(facts),
+        gaps=tuple(gaps),
     )
 
 
@@ -686,6 +720,9 @@ def replay_opengrep_raw(
     if analyzed != tuple(result.coverage.analyzed_paths) or not set(analyzed).issubset(
         authorized
     ):
+        raise ValueError("STATIC_RAW_REPLAY_SCOPE_MISMATCH")
+    replay_skipped = tuple(path for batch in complete for path in batch.skipped_paths)
+    if not set(replay_skipped).issubset(result.coverage.skipped_paths):
         raise ValueError("STATIC_RAW_REPLAY_SCOPE_MISMATCH")
     unknown = frozenset().union(*(batch.unknown_rules for batch in complete))
     hits: Counter[str] = Counter()
@@ -1201,6 +1238,7 @@ class OpenGrepProcessAdapter:
             str(self.inputs.config_path),
             "--json",
             "--time",
+            "--verbose",
             "--no-rewrite-rule-ids",
             "--disable-version-check",
             "--",
@@ -1549,9 +1587,11 @@ class OpenGrepProcessAdapter:
         all_facts: list[CandidateFact] = []
         batch_gaps: list[CandidateGap] = []
         analyzed: list[str] = []
+        tool_skipped: list[str] = []
         for decoded_batch in complete:
             hits.update(decoded_batch.hit_counts)
             analyzed.extend(decoded_batch.paths)
+            tool_skipped.extend(decoded_batch.skipped_paths)
             batch_gaps.extend(decoded_batch.gaps)
             all_facts.extend(decoded_batch.facts)
         if unknown:
@@ -1622,7 +1662,7 @@ class OpenGrepProcessAdapter:
                 "tool_version": profile.expected_version,
                 "batches": [
                     {
-                        "paths": list(batch.paths),
+                        "paths": list(batch.requested_paths),
                         "stdout_base64": base64.b64encode(batch.raw).decode("ascii"),
                         "stdout_sha256": _digest(batch.raw),
                     }
@@ -1656,14 +1696,18 @@ class OpenGrepProcessAdapter:
                 ),
             )
         gaps = (*initial_gaps, *batch_gaps, *terminal_gaps)
-        status = "PARTIAL" if gaps or process_error or skipped else "SUCCEEDED"
+        status = (
+            "PARTIAL"
+            if gaps or process_error or skipped or tool_skipped
+            else "SUCCEEDED"
+        )
         return self._observation(
             profile,
             status=status,
             started=started,
             raw=envelope,
             analyzed=tuple(analyzed),
-            skipped=tuple(sorted((*skipped, *remaining))),
+            skipped=tuple(sorted((*skipped, *tool_skipped, *remaining))),
             rules=rules,
             facts=tuple(all_facts),
             gaps=gaps,

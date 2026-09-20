@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -19,6 +20,7 @@ from sastsimi.contracts.actions import ActionType, RequesterRole
 from sastsimi.contracts.analysis import AnalysisStartRequest
 from sastsimi.contracts.budget import Purpose
 from sastsimi.contracts.ids import ProgramId
+from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.policy.adapters.official_http import PolicySourceBoundaryError
 from sastsimi.ports.dto import OfficialPolicyFetchRequest
@@ -169,6 +171,28 @@ class _Runner:
     def __init__(self) -> None:
         self.begin_calls: list[dict[str, object]] = []
         self.enqueue_calls: list[tuple[object, ...]] = []
+        self.binding_meta = RecordMeta.model_validate(
+            dict(
+                schema_version="1.0.0",
+                record_id="binding-record",
+                logical_record_id="binding-record",
+                record_type="budget_profile_binding",
+                revision_number=1,
+                previous_record_id=None,
+                created_at=datetime(2026, 9, 20, tzinfo=UTC),
+                analysis_id="analysis-1",
+                workspace_id="workspace-1",
+                commit_id="b" * 40,
+                hypothesis_id=None,
+                attempt_id=None,
+            )
+        )
+        records = SimpleNamespace(
+            get_exact=lambda _ref: SimpleNamespace(meta=self.binding_meta)
+        )
+        self.runtime = SimpleNamespace(
+            unit_of_work=SimpleNamespace(records=records)
+        )
 
     def begin_policy(self, *args: object, **kwargs: object) -> object:
         self.begin_calls.append({"args": args, **kwargs})
@@ -183,9 +207,20 @@ def test_seeder_registers_one_exact_local_policy_work() -> None:
     runner = _Runner()
     identity_ref = _record_ref("agent_identity", "orchestration-identity")
     binding_ref = _record_ref("budget_profile_binding", "binding-1")
+    boundary_ref = StoredDataRef.model_validate(
+        dict(
+            stored_data_id="c" * 64,
+            data_kind="artifact",
+            content_hash="c" * 64,
+            workspace_id="workspace-1",
+            commit_id="b" * 40,
+            record_id=None,
+        )
+    )
     seeder = LocalEvaluationPolicyPostWorkspaceSeeder(
         runner=cast(Any, runner),
         orchestration_identity_ref=identity_ref,
+        boundary_ref=boundary_ref,
         parser_name="local-evaluation-policy-parser",
         parser_version="1",
     )
@@ -196,7 +231,7 @@ def test_seeder_registers_one_exact_local_policy_work() -> None:
         workspace_id=binding_ref.workspace_id,
         commit_id=binding_ref.commit_id,
         run_policy_state_ref=None,
-        meta=SimpleNamespace(analysis_id="analysis-1"),
+        meta=SimpleNamespace(analysis_id=runner.binding_meta.analysis_id),
     )
 
     ready = seeder.ensure_initial(_request(), cast(Any, state), binding_ref)
@@ -205,7 +240,9 @@ def test_seeder_registers_one_exact_local_policy_work() -> None:
     assert cast(Any, ready[0]) == "ready-policy-work"
     assert runner.begin_calls[0]["program_id"] == "local-program"
     assert runner.begin_calls[0]["source_config_ref"] == binding_ref
+    assert runner.begin_calls[0]["source_input_refs"] == (boundary_ref,)
     assert runner.begin_calls[0]["parser_name"] == "local-evaluation-policy-parser"
+    assert runner.begin_calls[0]["args"][1] == runner.binding_meta
     assert runner.enqueue_calls[0][0] == "pending-policy-work"
     assert runner.enqueue_calls[0][1] == binding_ref
 
@@ -217,6 +254,16 @@ def test_seeder_is_idempotent_and_rejects_non_local_use() -> None:
     seeder = LocalEvaluationPolicyPostWorkspaceSeeder(
         runner=cast(Any, runner),
         orchestration_identity_ref=identity_ref,
+        boundary_ref=StoredDataRef.model_validate(
+            dict(
+                stored_data_id="c" * 64,
+                data_kind="artifact",
+                content_hash="c" * 64,
+                workspace_id="workspace-1",
+                commit_id="b" * 40,
+                record_id=None,
+            )
+        ),
         parser_name="local-evaluation-policy-parser",
         parser_version="1",
     )

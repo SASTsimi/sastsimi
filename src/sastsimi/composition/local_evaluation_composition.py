@@ -109,6 +109,7 @@ class ResolvedLocalEvaluationCapabilities:
     handler_failure_recorder: HandlerFailureRecorder
     install: LocalEvaluationFeatureInstaller
     configuration_evidence: TrustedEvidencePort
+    protected_artifact_refs: tuple[StoredDataRef | RunStoredDataRef, ...] = ()
 
 
 class LocalEvaluationCapabilityResolver(Protocol):
@@ -214,7 +215,9 @@ class ConcreteLocalEvaluationApplicationFactory:
         from sastsimi.runtime.cancellation_service import CancellationService
         from sastsimi.runtime.work_service import WorkService
         from sastsimi.storage.database import Database
+        from sastsimi.storage.queries import RuntimeQueries
         from sastsimi.storage.report_export import SQLiteCurrentReportSource
+        from sastsimi.storage.repositories import SQLiteRecordStore
         from sastsimi.storage.run_control import (
             CancellationTransitionPort,
             RunControlStore,
@@ -222,12 +225,40 @@ class ConcreteLocalEvaluationApplicationFactory:
         from sastsimi.storage.work_dispatch import WorkDispatchStore
         from sastsimi.storage.work_service import WorkService as SQLiteWorkService
 
-        profiles = LocalEvaluationOperatorProfiles(
-            scope=scope,
-            program_id=profile.program_id,
-            settings=cast(ProductionBudgetSettings, profile.budget),
-            clock=clock,
-            ids=ids,
+        database = Database(RuntimePaths(data_dir).database)
+        resume_records = SQLiteRecordStore(database)
+        resume_queries = RuntimeQueries(resume_records)
+        current_runs = tuple(
+            item
+            for item in resume_queries.current_records(
+                str(scope.analysis_id), "analysis_run_state"
+            )
+            if isinstance(item, AnalysisRunState)
+        )
+        if len(current_runs) > 1:
+            raise LocalEvaluationCompositionUnavailable(
+                "LOCAL_EVALUATION_RUN_STATE_AMBIGUOUS"
+            )
+        profiles = (
+            LocalEvaluationOperatorProfiles.restore(
+                scope=scope,
+                program_id=profile.program_id,
+                settings=cast(ProductionBudgetSettings, profile.budget),
+                clock=clock,
+                ids=ids,
+                run_state=current_runs[0],
+                published_records=resume_queries.published_records(
+                    str(scope.analysis_id)
+                ),
+            )
+            if current_runs
+            else LocalEvaluationOperatorProfiles(
+                scope=scope,
+                program_id=profile.program_id,
+                settings=cast(ProductionBudgetSettings, profile.budget),
+                clock=clock,
+                ids=ids,
+            )
         )
         evidence = CompositeProductionTrustedEvidence(
             ProductionTrustedEvidence(profiles), resolved.configuration_evidence
@@ -252,6 +283,7 @@ class ConcreteLocalEvaluationApplicationFactory:
             analysis_finalization_identity_ref=identities[RequesterRole.ORCHESTRATION],
             llm_adapters=resolved.llm_adapters,
             capability_host_id=profile.host_id,
+            protected_artifact_refs=lambda: resolved.protected_artifact_refs,
         )
         runtime = replace(
             runtime,
@@ -310,7 +342,7 @@ class ConcreteLocalEvaluationApplicationFactory:
             budgets=runtime.budget_registry,
             ready_work=runner,
             work_query=scheduler_store,
-            workspace_identity_ref=identities[RequesterRole.REPOSITORY_LOADER],
+            workspace_identity_ref=identities[RequesterRole.ORCHESTRATION],
             workspace_dependency_refs=resolved.workspace_dependency_refs,
             seeder=installation.seeder,
         )

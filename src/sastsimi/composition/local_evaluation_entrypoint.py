@@ -6,9 +6,6 @@ from pathlib import Path
 from typing import cast
 
 from sastsimi.contracts.analysis import AnalysisStartRequest
-from sastsimi.orchestration.local_evaluation_entrypoint import (
-    LocalEvaluationResumeScopeLoader,
-)
 from sastsimi.orchestration.run_scope_plan import PlannedRunScope
 
 
@@ -85,9 +82,7 @@ def build_local_evaluation_analyze() -> object:
             LocalEvaluationApplicationPreflight,
             ConcreteLocalEvaluationPreflight(),
         ),
-        load_resume_scope=cast(
-            LocalEvaluationResumeScopeLoader, _load_local_resume_scope
-        ),
+        load_resume_scope=_load_local_resume_scope,
     )
 
 

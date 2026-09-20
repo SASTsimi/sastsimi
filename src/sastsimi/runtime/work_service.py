@@ -7,6 +7,7 @@ from sastsimi.contracts.work import (
     TERMINAL_WORK_STATUSES,
     AttemptStatus,
     StateTransition,
+    WorkAttempt,
     WorkExecutionState,
     WorkStatus,
 )
@@ -41,6 +42,11 @@ class WorkService:
 
     def get(self, work_id: str) -> WorkExecutionState:
         return self.store.get(work_id)
+
+    def attempts_for_work(self, work_id: str) -> tuple[WorkAttempt, ...]:
+        """Expose exact attempt history without leaking the storage adapter."""
+
+        return self.store.attempts_for_work(work_id)
 
     def registration_scope(self, work_id: str) -> BudgetScopeRef:
         return self.store.registration_scope(work_id)

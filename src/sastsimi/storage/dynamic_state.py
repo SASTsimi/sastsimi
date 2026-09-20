@@ -49,16 +49,44 @@ def advance_dynamic_work(
     state = current_dynamic(records, connection, work)
     if state.dynamic_work_ref != reference(previous):
         raise ValueError("DYNAMIC_STATE_WORK_CONFLICT")
-    if work.status not in {"READY", "RUNNING"}:
+    recovery_block = (
+        work.status == "BLOCKED"
+        and state.status in {"RUNNING", "FAILED"}
+        and not work.output_refs
+        and work.stop_reason
+        in {"LEASE_EXPIRED", "RECOVERY_FAILED", "WORK_HANDLER_FAILED"}
+    )
+    local_failed_repair = (
+        previous.status == "FAILED"
+        and work.status == "READY"
+        and state.status == "FAILED"
+        and state.dynamic_result_ref is not None
+        and state.dynamic_result_ref in previous.output_refs
+        and not work.output_refs
+    )
+    if work.status not in {"READY", "RUNNING"} and not recovery_block:
         # A returned result must have been projected by the owning terminal commit.
         if (
             state.status != work.status.value
             or state.dynamic_result_ref not in work.output_refs
         ):
             raise ValueError("DYNAMIC_RESULT_PROJECTION_REQUIRED")
+    state_updates: dict[str, object] = {"dynamic_work_ref": reference(work)}
+    if recovery_block or local_failed_repair:
+        state_updates.update(
+            status="BLOCKED",
+            dynamic_result_ref=None,
+            finished_at=None,
+        )
+    elif work.status == "RUNNING" and state.status == "BLOCKED":
+        state_updates.update(
+            status="RUNNING",
+            dynamic_result_ref=None,
+            finished_at=None,
+        )
     updated = DynamicReproductionState.model_validate(
         state.model_dump()
-        | dict(meta=next_meta(state.meta, clock, ids), dynamic_work_ref=reference(work))
+        | dict(meta=next_meta(state.meta, clock, ids), **state_updates)
     )
     ref = records.stage(connection, updated)
     records.publish(connection, ref)

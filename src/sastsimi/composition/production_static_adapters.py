@@ -10,7 +10,7 @@ import stat
 import threading
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, cast
@@ -27,6 +27,7 @@ from sastsimi.ports.dto import (
     CandidateRule,
     MonotonicActionDeadline,
     PrebuiltCodeQLDatabase,
+    ProcessReceipt,
     StaticCapabilityObservation,
     StaticOutputQuotaBinding,
     StaticRuleMapping,
@@ -50,13 +51,18 @@ from sastsimi.static_analysis.codeql_adapter import (
     CodeQLProcessAdapter,
     digest_path,
 )
-from sastsimi.static_analysis.container_codeql import ContainerCodeQLSpec
+from sastsimi.static_analysis.container_codeql import (
+    ContainerCodeQLSpec,
+    build_container_codeql_create_argv,
+)
 from sastsimi.static_analysis.container_codeql_adapter import (
     ContainerCodeQLAdapterInputs,
     ContainerCodeQLProcessAdapter,
 )
 from sastsimi.static_analysis.container_codeql_runtime import (
     CodeQLArtifactIdentity,
+    CodeQLContainerRunResult,
+    CodeQLContainerRunStatus,
     ContainerCodeQLDockerPort,
 )
 from sastsimi.static_analysis.docker_codeql_port import (
@@ -527,6 +533,95 @@ def _bound_attempt_root(
     except OSError as error:
         raise ValueError("STATIC_ATTEMPT_ROOT_INVALID") from error
     return exact
+
+
+_CONTAINER_RECEIPT_STREAM_LIMIT_BYTES = 64 * 1024 * 1024
+
+
+def _write_exact_attempt_file(path: Path, payload: bytes) -> None:
+    try:
+        with path.open("xb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except FileExistsError:
+        if path.read_bytes() != payload:
+            raise ValueError("STATIC_PROCESS_RECEIPT_CONFLICT") from None
+
+
+def _persist_container_codeql_receipt(
+    attempt_root: Path,
+    spec: ContainerCodeQLSpec,
+    result: CodeQLContainerRunResult,
+    *,
+    elapsed_ms: int,
+) -> None:
+    """Persist one durable receipt for the exact inspected container attempt."""
+
+    exact_root = _safe_existing_directory(
+        attempt_root, "STATIC_PROCESS_RECEIPT_ROOT_INVALID"
+    )
+    stdout = result.raw_sarif or b""
+    stderr = b"" if result.reason is None else (result.reason + "\n").encode("ascii")
+    if (
+        len(stdout) > _CONTAINER_RECEIPT_STREAM_LIMIT_BYTES
+        or len(stderr) > _CONTAINER_RECEIPT_STREAM_LIMIT_BYTES
+        or elapsed_ms < 0
+    ):
+        raise ValueError("STATIC_PROCESS_RECEIPT_INVALID")
+    invocation_key = hashlib.sha256(
+        canonical_bytes(
+            {
+                "action_id": spec.action_id,
+                "attempt_id": spec.attempt_id,
+                "operation": "codeql-container-analyze",
+            }
+        )
+    ).hexdigest()
+    prefix = invocation_key[:24]
+    stdout_name = f"{prefix}.stdout"
+    stderr_name = f"{prefix}.stderr"
+    if result.status is CodeQLContainerRunStatus.SUCCEEDED:
+        outcome, return_code = "SUCCEEDED", 0
+    elif result.status is CodeQLContainerRunStatus.FAILED:
+        outcome, return_code = "FAILED", 1
+    elif result.status is CodeQLContainerRunStatus.TIMED_OUT:
+        outcome, return_code = "TIMED_OUT", None
+    else:
+        outcome, return_code = "CANCELLED", None
+    receipt = ProcessReceipt(
+        action_id=spec.action_id,
+        invocation_id=f"codeql-container-{prefix}",
+        command_kind="codeql-container-analyze",
+        attempt_id=spec.attempt_id,
+        command_fingerprint=hashlib.sha256(
+            canonical_bytes(
+                {
+                    "argv": build_container_codeql_create_argv(
+                        spec, operation="analyze"
+                    ),
+                    "database_digest": result.database_digest,
+                    "image_digest": result.image_digest,
+                    "query_digest": result.query_digest,
+                    "tracked_manifest_digest": result.tracked_manifest_digest,
+                }
+            )
+        ).hexdigest(),
+        outcome=cast(Literal["SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED"], outcome),
+        return_code=return_code,
+        stdout_name=stdout_name,
+        stdout_size=len(stdout),
+        stdout_sha256=hashlib.sha256(stdout).hexdigest(),
+        stderr_name=stderr_name,
+        stderr_size=len(stderr),
+        stderr_sha256=hashlib.sha256(stderr).hexdigest(),
+        elapsed_ms=elapsed_ms,
+    )
+    _write_exact_attempt_file(exact_root / stdout_name, stdout)
+    _write_exact_attempt_file(exact_root / stderr_name, stderr)
+    _write_exact_attempt_file(
+        exact_root / f"{prefix}.receipt.json", canonical_bytes(asdict(receipt))
+    )
 
 
 def _runner(
@@ -1412,6 +1507,7 @@ class _LazyContainerCodeQLAdapter:
         route_analysis_config_ref: StoredDataRef,
         route_rule_catalog_ref: StoredDataRef,
         rule_material: _RuleMaterial,
+        output_root: Path,
         workspace_locator: WorkspaceLocatorPort,
         tracked_files_for: Callable[[CodeWorkspace], tuple[TrackedFile, ...]],
         port_factory: ContainerCodeQLPortFactory,
@@ -1421,6 +1517,7 @@ class _LazyContainerCodeQLAdapter:
         self._analysis_config_ref = route_analysis_config_ref
         self._rule_catalog_ref = route_rule_catalog_ref
         self._rules = rule_material
+        self._output_root = output_root
         self._workspace_locator = workspace_locator
         self._tracked_files_for = tracked_files_for
         self._databases = RegisteredCodeQLDatabaseProvider(config)
@@ -1625,6 +1722,14 @@ class _LazyContainerCodeQLAdapter:
         capability_language = "PYTHON" if language == "python" else "JAVASCRIPT"
         if boundary is None or capability_language not in boundary.supported_languages:
             raise ValueError("CODEQL_LANGUAGE_NOT_APPROVED")
+        attempt_root = _bound_attempt_root(
+            self._output_root,
+            tool="CODEQL",
+            workspace_id=str(request.workspace.workspace_id),
+            commit_id=str(request.workspace.commit_id),
+            action_id=action_id,
+            attempt_id=attempt_id,
+        )
         try:
             published = await asyncio.to_thread(
                 self._databases.resolve_published,
@@ -1672,6 +1777,14 @@ class _LazyContainerCodeQLAdapter:
                     tracked_files=tracked,
                 ),
                 port=self._port_factory(self.executable),
+                execution_receipt=lambda result, elapsed_ms: (
+                    _persist_container_codeql_receipt(
+                        attempt_root,
+                        spec,
+                        result,
+                        elapsed_ms=elapsed_ms,
+                    )
+                ),
             )
         except RegisteredCodeQLProviderError as error:
             return self._failure(profile, tracked, code=error.code, retryable=False)
@@ -1849,6 +1962,7 @@ class ProductionStaticAdapterFactory:
                         route_analysis_config_ref=route.analysis_config_ref,
                         route_rule_catalog_ref=route.rule_catalog_ref,
                         rule_material=rules,
+                        output_root=output_root,
                         workspace_locator=context.workspace_locator,
                         tracked_files_for=context.tracked_files_for,
                         port_factory=self._container_codeql_port_factory,

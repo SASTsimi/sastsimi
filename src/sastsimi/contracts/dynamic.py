@@ -75,7 +75,11 @@ class DynamicReproductionState(DomainRecord):
             )
         ):
             raise ValueError("DYNAMIC_STATE_EXECUTION_REQUIRED")
-        if (self.status == "RUNNING") != (self.dynamic_result_ref is None):
+        if self.status == "RUNNING" and self.dynamic_result_ref is not None:
+            raise ValueError("DYNAMIC_STATE_RESULT_REQUIRED")
+        if self.status in {"SUCCEEDED", "PARTIAL", "FAILED", "CANCELLED"} and (
+            self.dynamic_result_ref is None
+        ):
             raise ValueError("DYNAMIC_STATE_RESULT_REQUIRED")
         if (self.status in {"SUCCEEDED", "PARTIAL", "FAILED", "CANCELLED"}) != (
             self.finished_at is not None

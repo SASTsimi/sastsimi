@@ -29,7 +29,10 @@ from sastsimi.providers.base import (
     ResponsesResource,
     StructuredOutputValue,
 )
-from sastsimi.providers.openai_api import OpenAIResponsesApiAdapter
+from sastsimi.providers.openai_api import (
+    OpenAIResponsesApiAdapter,
+    _openai_output_schema,
+)
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import ref
 
@@ -44,6 +47,21 @@ class FixedClock:
     def monotonic_ms(self) -> int:
         self.elapsed += 5
         return self.elapsed
+
+
+def test_array_transport_schema_hoists_root_definitions() -> None:
+    schema: dict[str, JsonValue] = {
+        "$defs": {"Entry": {"type": "string"}},
+        "type": "array",
+        "items": {"$ref": "#/$defs/Entry"},
+    }
+
+    adapted = _openai_output_schema(schema)
+
+    assert adapted["$defs"] == schema["$defs"]
+    assert adapted["properties"] == {
+        "items": {"type": "array", "items": {"$ref": "#/$defs/Entry"}}
+    }
 
 
 class PromptResolver:

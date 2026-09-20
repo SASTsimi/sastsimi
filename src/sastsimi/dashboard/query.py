@@ -7,6 +7,7 @@ import re
 import sqlite3
 from collections import defaultdict
 from pathlib import Path
+from typing import Literal, overload
 
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.observability.agent_activity import AgentActivityEvent
@@ -169,6 +170,24 @@ class DashboardQuery:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
         return resolved
 
+    @overload
+    def _project_analysis(
+        self,
+        analysis_id: str,
+        values: list[StageCheckpoint],
+        *,
+        detail: Literal[False] = False,
+    ) -> AnalysisSummaryView: ...
+
+    @overload
+    def _project_analysis(
+        self,
+        analysis_id: str,
+        values: list[StageCheckpoint],
+        *,
+        detail: Literal[True],
+    ) -> AnalysisDetailView: ...
+
     def _project_analysis(
         self,
         analysis_id: str,
@@ -187,7 +206,7 @@ class DashboardQuery:
         latest = max(values, key=lambda item: item.updated_at)
         completed = sum(item.status is StageStatus.SUCCEEDED for item in values)
         reports = self._reports(analysis_id)
-        data = dict(
+        data = AnalysisSummaryView(
             analysis_id=analysis_id,
             workspace_id=latest.identity.workspace_id,
             commit_id=latest.identity.commit_id,
@@ -201,11 +220,11 @@ class DashboardQuery:
         )
         if detail:
             return AnalysisDetailView(
-                **data,
+                **data.model_dump(),
                 hypotheses=hypotheses,
                 reports=reports,
             )
-        return AnalysisSummaryView(**data)
+        return data
 
     @staticmethod
     def _project_hypothesis(

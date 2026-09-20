@@ -420,7 +420,7 @@ def main(
                     bootstrap.build_local_evaluation_analyze(),
                 )
             if args.evaluate_command == "analyze":
-                evaluation_request = (
+                analyze_request = (
                     local_evaluation_command.LocalEvaluationAnalyzeRequest(
                         data_dir=config.data_dir,
                         repository=args.repo,
@@ -430,11 +430,11 @@ def main(
                 )
                 evaluation_result = asyncio.run(
                     local_evaluation_command.run(
-                        local_evaluation_analyze, evaluation_request
+                        local_evaluation_analyze, analyze_request
                     )
                 )
             else:
-                evaluation_request = (
+                resume_request = (
                     local_evaluation_command.LocalEvaluationResumeRequest(
                         data_dir=config.data_dir,
                         analysis_id=args.analysis_id,
@@ -443,7 +443,7 @@ def main(
                 )
                 evaluation_result = asyncio.run(
                     local_evaluation_command.resume(
-                        local_evaluation_analyze, evaluation_request
+                        local_evaluation_analyze, resume_request
                     )
                 )
             emit_data(

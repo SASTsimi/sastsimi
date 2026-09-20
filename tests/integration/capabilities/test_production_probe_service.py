@@ -556,6 +556,18 @@ def test_real_probe_receipts_require_exact_human_approval_before_active(
         expected_target_hash=docker.approval_target_hash or "",
     )
     assert (
+        runtime.configuration.resolve_pinned_active_profile(
+            python_ref
+        ).stdout_limit_bytes
+        == 8_388_608
+    )
+    assert (
+        runtime.configuration.resolve_pinned_active_profile(
+            opengrep_ref
+        ).stdout_limit_bytes
+        == 8_388_608
+    )
+    assert (
         runtime.configuration.resolve_active_static_tool(
             adapter_key="PYTHON_AST",
             language="PYTHON",

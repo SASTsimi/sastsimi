@@ -704,7 +704,12 @@ class RepositoryExecutionSelector:
                 status="FAILED",
             )
 
-        if repository.status != "READY":
+        non_static_confirmation_reasons = tuple(
+            reason
+            for reason in repository.confirmation_reasons
+            if reason != "BUILD_OR_START_UNCONFIRMED"
+        )
+        if repository.status != "READY" and non_static_confirmation_reasons:
             confirmation_gaps = tuple(
                 self._gap(
                     repository,
@@ -726,6 +731,21 @@ class RepositoryExecutionSelector:
                 errors=(),
                 status="BLOCKED",
             )
+
+        advisory_confirmation_gaps = tuple(
+            self._gap(
+                repository,
+                code="BUILD_OR_START_UNCONFIRMED",
+                description=(
+                    "No build or start command was confirmed. Static analysis "
+                    "may proceed, but dynamic reproduction must resolve its "
+                    "environment independently."
+                ),
+                reason="MISSING",
+            )
+            for reason in repository.confirmation_reasons
+            if reason == "BUILD_OR_START_UNCONFIRMED"
+        )
 
         detected = tuple(sorted(item.name for item in repository.languages))
         unsupported = tuple(item for item in detected if item not in _STATIC_ROUTES)
@@ -763,7 +783,7 @@ class RepositoryExecutionSelector:
                 StaticToolCapabilitySelection,
             ]
         ] = []
-        selection_gaps: list[DataGap] = []
+        selection_gaps: list[DataGap] = list(advisory_confirmation_gaps)
         errors: list[AnalysisError] = []
         configured_codeql_languages = self._configured_codeql_languages()
         for language in supported_languages:

@@ -17,6 +17,7 @@ RUN set -eu; \
         '/tmp/codeql-bundle-linux64.tar.gz' \
         | sha256sum --check --strict -; \
     tar -xzf /tmp/codeql-bundle-linux64.tar.gz -C /opt; \
+    chmod -R a+rX /opt/codeql; \
     rm -f /tmp/codeql-bundle-linux64.tar.gz; \
     test -x /opt/codeql/codeql; \
     test -x /usr/local/bin/python3; \

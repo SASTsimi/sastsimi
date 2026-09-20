@@ -20,7 +20,7 @@ from sastsimi.contracts.capabilities import (
     CapabilityOperatingSystem,
 )
 from sastsimi.contracts.ids import CommitId, OpaqueId, WorkspaceId
-from sastsimi.contracts.refs import HostConfigurationRef
+from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
 from sastsimi.ports.dynamic_sandbox import TrustedDockerTarget
 from sastsimi.ports.static_tool import (
     PrebuiltCodeQLDatabasePort,
@@ -166,6 +166,11 @@ class ProductionCapabilityProbeService:
 
         return self.__evidence
 
+    def evidence_refs(self) -> tuple[StoredDataRef, ...]:
+        """Return capability evidence roots that other runtimes must not quarantine."""
+
+        return self.__engine.evidence_refs()
+
 
 def _host_platform() -> tuple[CapabilityOperatingSystem, CapabilityArchitecture]:
     operating_system = {
@@ -215,6 +220,7 @@ def _build_production_engine(
         evidence=authority,
         capability_host_id=host_id,
         protected_artifact_refs=store.evidence_refs,
+        recover_expired_leases=False,
     )
     operating_system, architecture = _host_platform()
     allowed_executables = frozenset({"git", "opengrep", "docker", "codeql"})

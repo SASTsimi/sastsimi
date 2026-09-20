@@ -1406,6 +1406,9 @@ def build_t11_services(
             ]
         ] = []
         for requirement in requirements:
+            attempt_id = requirement.meta.attempt_id
+            if attempt_id is None:
+                continue
             requirement_ref = reference(requirement)
             if not isinstance(requirement_ref, StoredDataRef):
                 continue
@@ -1413,12 +1416,12 @@ def build_t11_services(
                 plan_ref = reference(plan)
                 if (
                     isinstance(plan_ref, StoredDataRef)
-                    and plan.meta.attempt_id == requirement.meta.attempt_id
+                    and plan.meta.attempt_id == attempt_id
                     and plan.environment_requirements_ref == requirement_ref
                 ):
                     pairs.append(
                         (
-                            attempt_numbers[requirement.meta.attempt_id],
+                            attempt_numbers[attempt_id],
                             requirement,
                             requirement_ref,
                             plan,
@@ -1437,6 +1440,8 @@ def build_t11_services(
     def baseline_recipe_resolver(
         work: WorkExecutionState, source: PreparedRecipeSourceView
     ) -> EnvironmentRecipe | None:
+        if not isinstance(work.meta, RecordMeta):
+            raise ValueError("DYNAMIC_BASELINE_WORK_SCOPE_INVALID")
         candidates = tuple(
             item
             for item in runtime.queries.current_records(

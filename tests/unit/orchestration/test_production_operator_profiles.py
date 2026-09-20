@@ -254,6 +254,52 @@ def test_local_operator_profiles_are_locked_to_local_evaluation() -> None:
         )
 
 
+def test_local_operator_profiles_restore_exact_restart_identities() -> None:
+    original = LocalEvaluationOperatorProfiles(
+        scope=_scope(),
+        program_id="program-one",
+        settings=_settings(),
+        clock=_Clock(),
+        ids=_Ids(),
+    )
+    execution_ref = reference(original.execution_profile)
+    binding_ref = reference(original.binding)
+    assert isinstance(execution_ref, RunStoredDataRef)
+    assert isinstance(binding_ref, StoredDataRef)
+    run_state = _workspace_ready_state(original).model_copy(
+        update={
+            "purpose": Purpose.LOCAL_EVALUATION,
+            "execution_budget_profile_ref": execution_ref,
+            "budget_binding_ref": binding_ref,
+        }
+    )
+    published = (
+        original.execution_profile,
+        original.binding,
+        original.work_profile,
+        original.verification_profile,
+        original.dynamic_profile,
+        *original.role_profiles.values(),
+    )
+
+    restored = LocalEvaluationOperatorProfiles.restore(
+        scope=_scope(),
+        program_id="program-one",
+        settings=_settings(),
+        clock=_Clock(),
+        ids=_Ids(),
+        run_state=run_state,
+        published_records=published,
+    )
+    evidence = ProductionTrustedEvidence(restored)
+
+    assert restored.execution_profile == original.execution_profile
+    assert restored.binding == original.binding
+    for role in RequesterRole:
+        assert restored.identity_ref(role) == original.identity_ref(role)
+        assert evidence.identity_role(original.identity_ref(role)) == role
+
+
 def test_rejects_wrong_scope_and_never_approves_a_modified_profile() -> None:
     catalog = ProductionOperatorProfiles(
         scope=_scope(),

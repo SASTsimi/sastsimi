@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
@@ -19,6 +20,8 @@ from sastsimi.composition.local_evaluation_composition import (
     ResolvedLocalEvaluationCapabilities,
 )
 from sastsimi.config.local_evaluation_profile import LocalEvaluationProfile
+from sastsimi.config.runtime_paths import RuntimePaths
+from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.analysis import AnalysisStartRequest
 from sastsimi.contracts.budget import Purpose
 from sastsimi.contracts.ids import (
@@ -47,6 +50,7 @@ from sastsimi.ports.llm_provider import LLMProviderAdapter
 from sastsimi.ports.scheduler import CancellationObservation, CancellationTarget
 from sastsimi.ports.trusted_evidence import UnprovenEvidence
 from sastsimi.runtime.work_service import HandlerFailureRecorder
+from sastsimi.storage.artifact_store import LocalArtifactStore
 
 COMMIT = CommitId("a" * 40)
 
@@ -182,6 +186,44 @@ class _Capabilities(LocalEvaluationCapabilityResolver):
         )
 
 
+class _ProtectedArtifactCapabilities(_Capabilities):
+    protected_ref: StoredDataRef | None = None
+
+    def resolve(
+        self,
+        *,
+        data_dir: Path,
+        request: AnalysisStartRequest,
+        profile: LocalEvaluationProfile,
+        scope: PlannedRunScope,
+    ) -> ResolvedLocalEvaluationCapabilities:
+        resolved = super().resolve(
+            data_dir=data_dir,
+            request=request,
+            profile=profile,
+            scope=scope,
+        )
+        artifacts = LocalArtifactStore(
+            RuntimePaths(data_dir).artifacts,
+            WorkspaceId("host-configuration"),
+            CommitId("host-configuration-v1"),
+        )
+        self.protected_ref = artifacts.commit(
+            artifacts.stage_bytes(b"prepared-before-runtime", "text/plain")
+        )
+        return replace(resolved, protected_artifact_refs=(self.protected_ref,))
+
+    def _install(
+        self, context: LocalEvaluationInstallationContext
+    ) -> InstalledLocalEvaluationServices:
+        assert self.protected_ref is not None
+        path = context.runtime.unit_of_work.artifacts.path_for(
+            self.protected_ref.content_hash
+        )
+        assert path.read_bytes() == b"prepared-before-runtime"
+        return super()._install(context)
+
+
 def _profile() -> LocalEvaluationProfile:
     root = Path.cwd().resolve()
     return LocalEvaluationProfile.model_validate(
@@ -313,10 +355,32 @@ def test_factory_builds_local_runtime_with_injected_capability_closure() -> None
         assert isinstance(core, AnalysisApplication)
         assert core.expected_purpose == Purpose.LOCAL_EVALUATION
         assert core.scope == _scope()
+        assert (
+            core.runtime.unit_of_work.records.evidence.identity_role(
+                core.pipeline._initializer._workspace_identity_ref
+            )
+            == RequesterRole.ORCHESTRATION
+        )
         assert capabilities.resolve_calls == 1
         assert capabilities.install_calls == 1
         assert capabilities.readiness.calls == 1
         assert tuple(core.handlers.resolve(kind) for kind in WorkType)
+
+
+def test_factory_preserves_exact_preflight_artifacts_until_publication() -> None:
+    with _writable_data_dir() as data_dir:
+        upgrade_database(data_dir)
+        capabilities = _ProtectedArtifactCapabilities()
+
+        ConcreteLocalEvaluationApplicationFactory(capabilities).build(
+            data_dir=data_dir,
+            request=_request(),
+            profile=_profile(),
+            scope=_scope(),
+        )
+
+        assert capabilities.protected_ref is not None
+        assert capabilities.install_calls == 1
 
 
 def test_factory_rejects_production_request_before_capability_resolution() -> None:
