@@ -1147,22 +1147,20 @@ async def test_generated_recipe_requires_an_explicit_runtime_version(
 
 
 @pytest.mark.asyncio
-async def test_unverifiable_required_environment_need_blocks_before_docker(
+async def test_agent_managed_environment_need_reaches_clean_sandbox(
     tmp_path: Path,
 ) -> None:
-    files = {"app.py": b"pass\n", "requirements.txt": b""}
-    for name, raw in files.items():
-        (tmp_path / name).write_bytes(raw)
-    request, requirements, _ = _dynamic_records()
+    (tmp_path / "Dockerfile").write_bytes(b"FROM scratch\n")
+    request, requirements, plan = _dynamic_records()
     request_ref = reference(request)
     assert isinstance(request_ref, StoredDataRef)
     requirements = requirements.model_copy(
         update={
             "items": (
                 EnvironmentRequirement(
-                    requirement_id="database",
-                    kind="DATABASE",
-                    name="postgres",
+                    requirement_id="fixture",
+                    kind="FIXTURE",
+                    name="local test fixture",
                     required=True,
                     expected="ready",
                     expected_ref=None,
@@ -1174,23 +1172,26 @@ async def test_unverifiable_required_environment_need_blocks_before_docker(
             )
         }
     )
+    requirements_ref = reference(requirements)
+    assert isinstance(requirements_ref, StoredDataRef)
+    plan = plan.model_copy(
+        update={"environment_requirements_ref": requirements_ref}
+    )
     docker = FakeDockerAdapter()
+    setup = _setup(docker, artifacts=_MemoryArtifacts())
 
-    with pytest.raises(
-        ValueError,
-        match="ENVIRONMENT_REQUIREMENT_CONFIRMATION_REQUIRED:DATABASE",
-    ):
-        await _setup(docker, artifacts=_MemoryArtifacts()).preflight(
-            workspace_root=tmp_path,
-            repository_profile=_repository_profile(files),
-            request=request,
-            requirements=requirements,
-            meta=_meta("environment_recipe", "unverifiable-required-need"),
-        )
+    prepared = await _prepare(
+        setup,
+        tmp_path,
+        request=request,
+        requirements=requirements,
+        plan=plan,
+        meta=_meta("sandbox_environment", "agent-managed-fixture"),
+    )
 
-    assert docker.built == []
-    assert docker.built_contexts == []
-    assert docker.created == {}
+    assert prepared.environment.status == "READY"
+    assert prepared.environment.checks[0].status == "NOT_CHECKED"
+    assert prepared.environment.checks[0].requirement_id == "fixture"
 
 
 @pytest.mark.asyncio

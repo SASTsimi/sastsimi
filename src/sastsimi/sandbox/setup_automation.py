@@ -55,7 +55,7 @@ from .recipe_store import (
 )
 
 _CLEANUP_TIMEOUT_SECONDS = 10.0
-_SUPPORTED_INITIAL_CHECKS = frozenset({"VERSION", "HEALTH_CHECK"})
+_RUNTIME_CHECKED_REQUIREMENTS = frozenset({"VERSION", "HEALTH_CHECK"})
 
 
 class DockerLifecyclePort(Protocol):
@@ -142,18 +142,6 @@ class ReproductionSetupAutomation:
         dependency_bundle: DependencyBundle | None = None,
     ) -> PreparedRecipeSource:
         """Read and validate recipe files without touching Docker."""
-
-        unsupported = sorted(
-            {
-                item.kind
-                for item in requirements.items
-                if item.required and item.kind not in _SUPPORTED_INITIAL_CHECKS
-            }
-        )
-        if unsupported:
-            kinds = ",".join(unsupported)
-            raise ValueError(f"ENVIRONMENT_REQUIREMENT_CONFIRMATION_REQUIRED:{kinds}")
-
         return self._recipes.preflight(
             context=workspace_root,
             request_ref=self._exact_ref(request),
@@ -692,7 +680,11 @@ class ReproductionSetupAutomation:
         checks: tuple[EnvironmentCheck, ...],
         meta: RecordMeta,
     ) -> SandboxEnvironment:
-        required = {item.requirement_id for item in requirements.items if item.required}
+        required = {
+            item.requirement_id
+            for item in requirements.items
+            if item.required and item.kind in _RUNTIME_CHECKED_REQUIREMENTS
+        }
         status_by_id = {check.requirement_id: check.status for check in checks}
         status: Literal["READY", "MISMATCH", "ERROR"] = (
             "ERROR"
