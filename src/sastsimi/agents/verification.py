@@ -1233,6 +1233,7 @@ class VerificationAgent:
             pro_ref,
             con_ref,
             generation.evidence_ref,
+            *generation.context_refs,
         )
 
     @staticmethod
@@ -1246,6 +1247,7 @@ class VerificationAgent:
     ) -> None:
         allowed = {
             generation.evidence_ref,
+            *generation.context_refs,
             reference(pro),
             reference(con),
             *(

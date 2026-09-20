@@ -1174,9 +1174,7 @@ async def test_agent_managed_environment_need_reaches_clean_sandbox(
     )
     requirements_ref = reference(requirements)
     assert isinstance(requirements_ref, StoredDataRef)
-    plan = plan.model_copy(
-        update={"environment_requirements_ref": requirements_ref}
-    )
+    plan = plan.model_copy(update={"environment_requirements_ref": requirements_ref})
     docker = FakeDockerAdapter()
     setup = _setup(docker, artifacts=_MemoryArtifacts())
 
@@ -1864,6 +1862,56 @@ async def test_missing_declared_container_health_is_not_a_match() -> None:
 
     assert checks[0].status == "NOT_CHECKED"
     assert checks[0].actual is None
+
+
+class _NoDeclaredHealthDocker(FakeDockerAdapter):
+    async def inspect(self, container_id: str) -> DockerContainerState:
+        state = await super().inspect(container_id)
+        return replace(state, health_status=None)
+
+
+@pytest.mark.asyncio
+async def test_missing_declared_health_does_not_block_agent_managed_reproduction(
+    tmp_path: Path,
+) -> None:
+    """An absent Docker HEALTHCHECK must not prevent the Agent from running PoC."""
+    (tmp_path / "Dockerfile").write_bytes(b"FROM scratch\n")
+    request, requirements, plan = _dynamic_records()
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
+    requirements = requirements.model_copy(
+        update={
+            "items": (
+                EnvironmentRequirement(
+                    requirement_id="health",
+                    kind="HEALTH_CHECK",
+                    name="application health",
+                    required=True,
+                    expected="healthy",
+                    expected_ref=None,
+                    alternatives=(),
+                    check_ref=None,
+                    secret_ref=None,
+                    source_refs=(request_ref,),
+                ),
+            )
+        }
+    )
+    requirements_ref = reference(requirements)
+    assert isinstance(requirements_ref, StoredDataRef)
+    plan = plan.model_copy(update={"environment_requirements_ref": requirements_ref})
+
+    prepared = await _prepare(
+        _setup(_NoDeclaredHealthDocker()),
+        tmp_path,
+        request=request,
+        requirements=requirements,
+        plan=plan,
+        meta=_meta("sandbox_environment", "agent-managed-health"),
+    )
+
+    assert prepared.environment.checks[0].status == "NOT_CHECKED"
+    assert prepared.environment.status == "READY"
 
 
 @pytest.mark.asyncio

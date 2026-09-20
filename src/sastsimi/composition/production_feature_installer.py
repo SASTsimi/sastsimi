@@ -38,6 +38,7 @@ from sastsimi.composition.runtime import (
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
 from sastsimi.contracts.budget import Purpose
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.dynamic import DependencyBundle, DynamicReproductionRequest
 from sastsimi.contracts.hypothesis import HypothesisProcessState
 from sastsimi.contracts.ids import WorkId
@@ -50,7 +51,11 @@ from sastsimi.contracts.refs import (
     StoredDataRef,
     reference,
 )
-from sastsimi.contracts.static import CodeWorkspace, RepositoryProfile
+from sastsimi.contracts.static import (
+    CodeWorkspace,
+    ContextRetrievalLimits,
+    RepositoryProfile,
+)
 from sastsimi.contracts.work import SubjectType, WorkExecutionState, WorkType
 from sastsimi.orchestration.production_context import (
     InstalledProductionServices,
@@ -558,6 +563,25 @@ class ProductionFeatureInstaller:
             runner=runner,
             verification_identity_ref=verification_identity,
         )
+        context_limits = ContextRetrievalLimits(
+            max_depth=5,
+            max_fragments=32,
+            max_bytes=262_144,
+            max_requests_per_hypothesis=24,
+            timeout_ms=45_000,
+        )
+        context_ceiling_ref = runtime.unit_of_work.artifacts.commit(
+            runtime.unit_of_work.artifacts.stage_bytes(
+                canonical_bytes(
+                    {
+                        "kind": "context_ceiling_profile",
+                        "schema_version": "1.0",
+                        **context_limits.model_dump(),
+                    }
+                ),
+                "application/json",
+            )
+        )
 
         dynamic = self.inputs.dynamic
         if isinstance(dynamic, LocalUnavailableDynamicFeature):
@@ -565,6 +589,7 @@ class ProductionFeatureInstaller:
                 dynamic.reason_code
             )
         else:
+
             def build_t11(profile: RepositoryProfile, root: Path) -> T11Services:
                 return build_t11_services(
                     runtime=runtime,
@@ -612,6 +637,8 @@ class ProductionFeatureInstaller:
             verification_identity_ref=verification_identity,
             budget_scope=budget_scope,
             sandbox_profile=dynamic.sandbox_profile,
+            context_retrieval=self.inputs.t08.context_retrieval,
+            context_ceiling_ref=context_ceiling_ref,
         )
 
         verification = VerificationWorkHandler(
@@ -726,13 +753,10 @@ class ProductionFeatureInstaller:
             self.inputs.verification_policy_ref,
             self.inputs.verification_playbook_ref,
         )
-        if (
-            not self.inputs.taxonomy_version.strip()
-            or any(
-                (ref.workspace_id, ref.commit_id)
-                != (context.scope.workspace_id, context.scope.commit_id)
-                for ref in refs
-            )
+        if not self.inputs.taxonomy_version.strip() or any(
+            (ref.workspace_id, ref.commit_id)
+            != (context.scope.workspace_id, context.scope.commit_id)
+            for ref in refs
         ):
             raise ProductionCapabilityUnavailable("PRODUCTION_FEATURE_INPUT_NOT_EXACT")
         _require_policy_feature(context, self.inputs.policy)

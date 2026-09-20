@@ -27,6 +27,7 @@ class VerificationGenerationInputs:
     location: CodeLocation
     falsification_question_ids: tuple[str, ...]
     validation_ids: tuple[str, ...]
+    context_refs: tuple[StoredDataRef, ...] = ()
 
 
 class VerificationAssemblyPort(Protocol):

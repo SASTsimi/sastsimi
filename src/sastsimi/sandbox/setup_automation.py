@@ -55,7 +55,10 @@ from .recipe_store import (
 )
 
 _CLEANUP_TIMEOUT_SECONDS = 10.0
-_RUNTIME_CHECKED_REQUIREMENTS = frozenset({"VERSION", "HEALTH_CHECK"})
+# A repository is not required to declare a Docker HEALTHCHECK. A declared
+# health failure remains observable to the reproduction session, but an absent
+# declaration (NOT_CHECKED) must not prevent its first PoC command from running.
+_RUNTIME_CHECKED_REQUIREMENTS = frozenset({"VERSION"})
 
 
 class DockerLifecyclePort(Protocol):
