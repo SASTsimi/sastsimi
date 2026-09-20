@@ -657,12 +657,24 @@ class WorkDispatchStore:
                 connection, reservation.work_ref, candidate=True
             )
             action = self.works.records.resolve(connection, reservation.action_ref)
-            if (
+            direct_registration = (
                 isinstance(candidate, WorkExecutionState)
                 and candidate.work_id == work.work_id
                 and isinstance(action, ActionRequest)
                 and action.action_type == ActionType.REGISTER_WORK
-            ):
+            )
+            dynamic_handoff_registration = (
+                isinstance(candidate, WorkExecutionState)
+                and isinstance(action, ActionRequest)
+                and work.work_type == "DYNAMIC_REPRO"
+                and work.parent_work_ref == reservation.work_ref
+                and action.action_type == ActionType.REQUEST_DYNAMIC_REPRO
+                and action.work_ref == reservation.work_ref
+                and action.dynamic_request_ref is not None
+                and work.input_refs == (action.dynamic_request_ref,)
+                and reservation.requested_units.work_count == 1
+            )
+            if direct_registration or dynamic_handoff_registration:
                 matches.append((reservation.budget_binding_ref, action))
         if len(matches) != 1:
             raise ValueError("WORK_REGISTRATION_SCOPE_MISSING")

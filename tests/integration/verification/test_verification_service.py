@@ -839,6 +839,37 @@ async def test_false_requires_named_disproof_and_complete_checks() -> None:
 
 
 @pytest.mark.asyncio
+async def test_initial_assessment_may_cite_exact_current_pro_and_con_results() -> None:
+    fixture = _Fixture()
+    payload = fixture.assessment_payload(
+        "TRUE", next_step="POC_CONFIRMATION", unresolved=("PoC required",)
+    )
+    payload["evidence_refs"] = [
+        fixture.evidence_ref.model_dump(mode="json"),
+        fixture.pro_ref.model_dump(mode="json"),
+        fixture.con_ref.model_dump(mode="json"),
+    ]
+    fixture.queue(
+        payload,
+        task_kind="ASSESS_INITIAL",
+        context_refs=fixture.assessment_context(),
+    )
+
+    assessment = await fixture.service.assess_initial(
+        generation=fixture.generation,
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+
+    assert assessment.evidence_refs == (
+        fixture.evidence_ref,
+        fixture.pro_ref,
+        fixture.con_ref,
+    )
+
+
+@pytest.mark.asyncio
 async def test_false_without_named_disproof_is_rejected() -> None:
     fixture = _Fixture()
     fixture.queue(

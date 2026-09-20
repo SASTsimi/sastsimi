@@ -1244,6 +1244,8 @@ class VerificationAgent:
     ) -> None:
         allowed = {
             generation.evidence_ref,
+            reference(pro),
+            reference(con),
             *(
                 ref
                 for claim in (*pro.evidence, *con.evidence)

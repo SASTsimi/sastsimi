@@ -1,6 +1,7 @@
 """A dynamic work start must project the exact current request and generation."""
 
 import json
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,7 @@ from sastsimi.ports.dto import WorkContext, WorkHandlerResult
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.storage.codec import reference
+from sastsimi.storage.work_dispatch import WorkDispatchStore
 from sastsimi.verification.dynamic_verification_handoff import (
     DynamicParentResumeService,
 )
@@ -129,6 +131,19 @@ def test_production_handoff_atomically_parks_parent_and_readies_child(
         if isinstance(item, WorkExecutionState) and item.work_type == "DYNAMIC_REPRO"
     )
     assert children == (child,)
+    claimed = WorkDispatchStore(runtime.work.store).try_claim_ready(
+        str(child.meta.analysis_id),
+        str(child.work_id),
+        child.state_version,
+        "dynamic-worker",
+        h.clock.now() + timedelta(seconds=30),
+    )
+    assert claimed is not None
+    assert claimed.work.work_id == child.work_id
+    (running_state,) = runtime.queries.current_records(
+        "a1", "dynamic_reproduction_state"
+    )
+    assert running_state.dynamic_work_ref == reference(claimed.work)
     # WorkerPool's post-handler observation accepts the parked parent instead
     # of replacing the dependency wait with WORK_HANDLER_DID_NOT_FINALIZE.
     context = WorkContext(parent, original_attempt)
