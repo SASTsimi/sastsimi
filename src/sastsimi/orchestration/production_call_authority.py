@@ -147,9 +147,11 @@ class ExactAnalysisProductionRouteLookup:
 class ProductionPreparedCallAuthorizer:
     """Create one CALL_LLM action under the run's exact active budget binding.
 
-    A claimed call is never released speculatively. A returned invocation is
-    accounted only when its persisted ``UsageMeasurement`` includes exact cost;
-    otherwise its reservation remains RESERVED for recovery/reconciliation.
+    An unresolved dispatch keeps its reservation.  A returned invocation is
+    settled with exact reported cost when available; otherwise the trusted
+    runtime debits the full reserved maximum while using the observed elapsed
+    time.  This preserves a conservative budget without leaking one active
+    reservation per subscription call.
     """
 
     def __init__(
@@ -252,12 +254,19 @@ class ProductionPreparedCallAuthorizer:
             or stored_request.meta.attempt_id != work.active_attempt_id
         ):
             raise ValueError("PRODUCTION_LLM_USAGE_PROVENANCE_MISMATCH")
+        if invocation.dispatch_state == "UNRESOLVED":
+            # An unknown external outcome cannot be safely settled or released.
+            return
         if (
-            invocation.dispatch_state == "UNRESOLVED"
-            or stored_result.usage is None
+            stored_result.usage is None
             or stored_result.usage.cost_minor_units is None
         ):
-            # Claimed/unknown-use reservations cannot be released as unused.
+            actual = self._runner.units(
+                elapsed_ms=stored_result.elapsed_ms,
+                llm_call_count=1,
+                cost_minor_units=reservation.requested_units.cost_minor_units,
+            )
+            self._runner.account(reservation, actual, usage_refs=(result_ref,))
             return
         requests = stored_result.usage.provider_units.get("requests")
         if requests is not None and (

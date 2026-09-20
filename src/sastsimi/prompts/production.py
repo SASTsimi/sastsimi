@@ -101,7 +101,7 @@ REQUIRED_PRODUCTION_PROMPT_ROUTES = (
         "VERIFICATION",
         "FINAL_VERDICT",
         "verification_result",
-        "src/sastsimi/prompts/templates/verification/final-verdict/1.0.0.md",
+        "src/sastsimi/prompts/templates/verification/final-verdict/1.0.1.md",
     ),
     _required(
         "DYNAMIC_REPRODUCTION",

@@ -362,8 +362,11 @@ def _work(source_ref: StoredDataRef) -> WorkExecutionState:
     return _context(WorkType.HYPOTHESIS_PROPOSAL, (source_ref,)).work
 
 
-def test_exact_route_authorizes_one_call_and_accounts_only_returned_usage(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("reported_usage", "expected_cost"), ((True, 21), (False, 100))
+)
+def test_exact_route_authorizes_one_call_and_accounts_returned_usage(
+    tmp_path: Path, reported_usage: bool, expected_cost: int
 ) -> None:
     service, prompt_records, artifacts, raw_route, approval = _prompt_fixture(tmp_path)
     route = _production_route(raw_route)
@@ -442,18 +445,22 @@ def test_exact_route_authorizes_one_call_and_accounts_only_returned_usage(
         }
     )
     records.add(request)
-    usage = UsageMeasurement(
-        token_source="PROVIDER_REPORTED",
-        input_tokens=7,
-        output_tokens=5,
-        total_tokens=12,
-        token_unavailable_reason=None,
-        provider_units={"requests": 1},
-        cost_source="PROVIDER_REPORTED",
-        cost_minor_units=21,
-        currency="USD",
-        pricing_revision_ref=binding.approval_ref,
-        cost_unavailable_reason=None,
+    usage = (
+        UsageMeasurement(
+            token_source="PROVIDER_REPORTED",
+            input_tokens=7,
+            output_tokens=5,
+            total_tokens=12,
+            token_unavailable_reason=None,
+            provider_units={"requests": 1},
+            cost_source="PROVIDER_REPORTED",
+            cost_minor_units=21,
+            currency="USD",
+            pricing_revision_ref=binding.approval_ref,
+            cost_unavailable_reason=None,
+        )
+        if reported_usage
+        else None
     )
     result = LLMInvocationResult(
         meta=_record_meta(
@@ -488,7 +495,7 @@ def test_exact_route_authorizes_one_call_and_accounts_only_returned_usage(
     assert len(budget.commits) == 1
     entry = budget.commits[0].entry
     assert entry.actual_units == runner.units(
-        elapsed_ms=23, llm_call_count=1, cost_minor_units=21
+        elapsed_ms=23, llm_call_count=1, cost_minor_units=expected_cost
     )
     assert entry.usage_refs == (reference(result),)
 

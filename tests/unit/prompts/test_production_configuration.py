@@ -552,6 +552,19 @@ def test_evidence_templates_require_exact_visible_reference_objects() -> None:
         assert "Never assemble a reference" in text
 
 
+def test_final_verdict_template_defines_completed_check_semantics() -> None:
+    route = next(
+        route
+        for route in REQUIRED_PRODUCTION_PROMPT_ROUTES
+        if route.role == "VERIFICATION" and route.task_kind == "FINAL_VERDICT"
+    )
+
+    assert route.template_path.name == "1.0.1.md"
+    text = route.template_path.read_text(encoding="utf-8")
+    assert "records whether you completed the assessment" in text
+    assert "use INCOMPLETE merely because" in text
+
+
 @pytest.mark.parametrize(
     ("field_paths", "cardinality", "trust_class", "include_slot"),
     (
