@@ -115,9 +115,9 @@ class PolicyCollector:
                 area=value.area,
                 blocks_allow=value.blocks_allow,
                 description=value.description,
-                policy_item_ids=tuple(
-                    self._require_item_key(item_ids, key)
-                    for key in value.policy_item_keys
+                policy_item_ids=self._known_item_ids(
+                    item_ids,
+                    value.policy_item_keys,
                 ),
                 evidence_refs=(source_check.source_ref,),
             )
@@ -427,11 +427,13 @@ class PolicyCollector:
         )
 
     @staticmethod
-    def _require_item_key(item_ids: dict[str, str], key: str) -> str:
-        try:
-            return item_ids[key]
-        except KeyError as error:
-            raise ValueError("POLICY_MISSING_INFO_ITEM_UNKNOWN") from error
+    def _known_item_ids(
+        item_ids: dict[str, str],
+        keys: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Resolve only runtime-issued item IDs; never trust an LLM-only key."""
+
+        return tuple(item_ids[key] for key in keys if key in item_ids)
 
 
 __all__ = ["CollectedPolicy", "PolicyCollector"]
