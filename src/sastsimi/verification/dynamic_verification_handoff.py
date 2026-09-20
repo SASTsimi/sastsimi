@@ -356,9 +356,6 @@ class ProductionDynamicVerificationHandoff:
             self._validate_context_refs(work, refs)
             return replace(generation, context_refs=refs)
 
-        parent_ref = reference(work)
-        if not isinstance(parent_ref, StoredDataRef):
-            raise ValueError("DYNAMIC_CODE_CONTEXT_REQUIRED")
         child = self.runner.start(
             self.budget_scope(str(work.meta.analysis_id)),
             work.meta,
@@ -368,7 +365,6 @@ class ProductionDynamicVerificationHandoff:
             self.verification_identity_ref,
             role="VERIFICATION",
             inputs=inputs,
-            parent=parent_ref,
             generation=work.work_generation,
         )
         attempts = self.runner.runtime.work.store.attempts_for_work(str(child.work_id))
