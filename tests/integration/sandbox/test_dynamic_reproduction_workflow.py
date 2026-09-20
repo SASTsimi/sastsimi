@@ -1096,9 +1096,7 @@ async def test_environment_error_blocks_before_poc_generation() -> None:
         content={"items": []},
         sequence=41,
     )
-    requirements_ref = stored_ref(
-        "environment_requirements", "blocked-requirements"
-    )
+    requirements_ref = stored_ref("environment_requirements", "blocked-requirements")
     plan_ref = stored_ref("reproduction_plan", "blocked-plan")
     failed_environment = environment(
         request_ref,
@@ -1157,9 +1155,7 @@ async def test_invalid_poc_candidate_output_is_retryable_blocked_work() -> None:
         status="INVALID_OUTPUT",
         sequence=42,
     )
-    requirements_ref = stored_ref(
-        "environment_requirements", "blocked-requirements"
-    )
+    requirements_ref = stored_ref("environment_requirements", "blocked-requirements")
     plan_ref = stored_ref("reproduction_plan", "blocked-plan")
     ready_environment = environment(request_ref, plan_ref, requirements_ref)
     log = agent_log(request_ref)

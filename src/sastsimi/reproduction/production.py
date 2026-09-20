@@ -257,12 +257,15 @@ class ProductionDynamicWorkflow:
         work: WorkExecutionState,
         request: DynamicReproductionRequest,
         request_ref: StoredDataRef,
-    ) -> tuple[
-        EnvironmentRequirements,
-        StoredDataRef,
-        ReproductionPlan,
-        StoredDataRef,
-    ] | None:
+    ) -> (
+        tuple[
+            EnvironmentRequirements,
+            StoredDataRef,
+            ReproductionPlan,
+            StoredDataRef,
+        ]
+        | None
+    ):
         """Re-publish exact prior successful setup stages for one RESUME attempt."""
 
         self._require_work(work, request, request_ref)

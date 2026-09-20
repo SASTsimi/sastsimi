@@ -175,9 +175,7 @@ def test_resolver_prepares_exact_sources_and_uses_authority() -> None:
         model="configured-model",
         prompt_key="hypothesis.generate.local-v1",
     )
-    approval = ApprovedLocalEvaluationRoute(
-        entry_ref, provider_ref
-    )
+    approval = ApprovedLocalEvaluationRoute(entry_ref, provider_ref)
     prepared = PreparedLocalEvaluationCall(
         payload=cast(Any, object()),
         payload_ref=_ref("prompt_payload", "payload-r1"),

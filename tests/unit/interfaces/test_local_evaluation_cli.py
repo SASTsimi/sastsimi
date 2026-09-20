@@ -27,11 +27,10 @@ class _Entrypoint:
         self.calls.append(request)
         return RunOutcome("analysis-local-1", "TERMINAL", None)
 
-    async def resume(
-        self, request: command.LocalEvaluationResumeRequest
-    ) -> RunOutcome:
+    async def resume(self, request: command.LocalEvaluationResumeRequest) -> RunOutcome:
         self.resume_calls.append(request)
         return RunOutcome(request.analysis_id, "BLOCKED", None)
+
 
 def test_local_evaluation_uses_shipped_composition_when_not_injected(
     tmp_path: Path,
@@ -226,3 +225,6 @@ def test_local_evaluation_status_and_results_remain_clearly_labelled() -> None:
     for projection in (status, result):
         assert projection["purpose"] == "LOCAL_EVALUATION"
         assert projection["production_ready"] is False
+
+
+# mypy: disable-error-code="arg-type,attr-defined,unused-ignore"

@@ -316,3 +316,6 @@ async def test_plan_rejects_resume_capable_local_provider() -> None:
             max_calls_per_work=4,
             max_retries=1,
         )
+
+
+# mypy: disable-error-code="arg-type,unused-ignore"

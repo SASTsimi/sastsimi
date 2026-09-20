@@ -123,9 +123,7 @@ class LocalValidatedCodexExecutionBinding:
             not in self.provider_profile.limitations
             or self.experimental_binding.provider_validation_evidence is not None
         ):
-            raise LocalCodexValidationError(
-                "LOCAL_CODEX_SUPPORTED_BINDING_INVALID"
-            )
+            raise LocalCodexValidationError("LOCAL_CODEX_SUPPORTED_BINDING_INVALID")
 
     @property
     def client_execution_profile(self) -> ClientExecutionProfile:
@@ -278,9 +276,7 @@ async def _validate_with_runners(
                     request("local-codex-new-session-b", probe_timeout_ms)
                 ),
             )
-            timeout = await live_runner.execute(
-                request("local-codex-timeout-probe", 1)
-            )
+            timeout = await live_runner.execute(request("local-codex-timeout-probe", 1))
             authentication = await unauthenticated_runner.execute(
                 request("local-codex-auth-probe", probe_timeout_ms)
             )

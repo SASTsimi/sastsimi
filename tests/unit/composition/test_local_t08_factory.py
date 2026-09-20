@@ -115,9 +115,7 @@ def _static_profile(
     query_pack_sha256: str,
     codeql: dict[str, object],
 ) -> StaticToolProfile:
-    tool = {"PYTHON_AST": "AST", "OPENGREP": "OPENGREP", "CODEQL": "CODEQL"}[
-        adapter
-    ]
+    tool = {"PYTHON_AST": "AST", "OPENGREP": "OPENGREP", "CODEQL": "CODEQL"}[adapter]
     values: dict[str, object] = {
         "meta": _record_meta("static_tool_profile", f"{adapter.lower()}-profile"),
         "host_id": "host-one",
@@ -136,9 +134,7 @@ def _static_profile(
         ),
         "executable_sha256": _digest(executable),
         "expected_version": (
-            str(codeql["expected_codeql_version"])
-            if adapter == "CODEQL"
-            else "1.0.0"
+            str(codeql["expected_codeql_version"]) if adapter == "CODEQL" else "1.0.0"
         ),
         "capability_evidence_ref": _host_ref(
             "tool_capability_evidence", f"{adapter.lower()}-evidence"
@@ -159,7 +155,7 @@ def _static_profile(
         image_digest = str(codeql["image"]).split("@", 1)[1]
         boundary_values = {
             "image_digest": image_digest,
-            "user": f'{codeql["container_uid"]}:{codeql["container_gid"]}',
+            "user": f"{codeql['container_uid']}:{codeql['container_gid']}",
             "pids_limit": codeql["pids_limit"],
             "memory_limit_bytes": codeql["memory_limit_bytes"],
             "nano_cpus": codeql["nano_cpus"],
@@ -305,7 +301,9 @@ def _profile(root: Path, query_digest: str) -> LocalEvaluationProfile:
     )
 
 
-def _fixture(root: Path, query_digest: str) -> tuple[
+def _fixture(
+    root: Path, query_digest: str
+) -> tuple[
     LocalEvaluationInstallationContext,
     LocalEvaluationT08Capabilities,
     _Configuration,
@@ -426,9 +424,7 @@ def test_builds_exact_local_workspace_and_three_tool_t08_graph(tmp_path: Path) -
         "CODEQL",
     )
     assert set(inputs.static_profile_refs) == {"AST", "OPENGREP", "CODEQL"}
-    assert all(
-        digest in inputs.evidence for digest in inputs.static.evidence_sha256
-    )
+    assert all(digest in inputs.evidence for digest in inputs.static.evidence_sha256)
     assert callable(inputs.static_process_receipts)
     assert callable(inputs.static_attempt_dispatch)
     assert isinstance(feature.workspace_prep, WorkspacePrepWorkHandler)
@@ -442,9 +438,7 @@ def test_builds_exact_local_workspace_and_three_tool_t08_graph(tmp_path: Path) -
 def test_rejects_codeql_query_pack_digest_drift_before_build(tmp_path: Path) -> None:
     context, capabilities, _configuration = _fixture(tmp_path, "f" * 64)
 
-    with pytest.raises(
-        ValueError, match="LOCAL_EVALUATION_CODEQL_QUERY_PACK_STALE"
-    ):
+    with pytest.raises(ValueError, match="LOCAL_EVALUATION_CODEQL_QUERY_PACK_STALE"):
         prepare_local_evaluation_t08_inputs(context, capabilities)
 
 
@@ -474,9 +468,7 @@ def test_rejects_a_profile_ref_that_is_no_longer_current(tmp_path: Path) -> None
     )
     configuration.values[capabilities.python_ast_profile_ref] = replacement
 
-    with pytest.raises(
-        ValueError, match="LOCAL_EVALUATION_STATIC_PROFILE_STALE"
-    ):
+    with pytest.raises(ValueError, match="LOCAL_EVALUATION_STATIC_PROFILE_STALE"):
         prepare_local_evaluation_t08_inputs(context, capabilities)
 
 
@@ -515,3 +507,6 @@ def test_rejects_codeql_profile_that_can_combine_two_languages(
         ValueError, match="LOCAL_EVALUATION_CODEQL_PYTHON_ONLY_REQUIRED"
     ):
         prepare_local_evaluation_t08_inputs(context, capabilities)
+
+
+# mypy: disable-error-code="arg-type"

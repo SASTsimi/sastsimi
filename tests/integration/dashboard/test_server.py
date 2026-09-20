@@ -95,3 +95,6 @@ def test_server_is_local_read_only_and_serves_current_state(tmp_path) -> None:
 def test_server_rejects_non_loopback_bind(tmp_path) -> None:
     with pytest.raises(ValueError, match="DASHBOARD_LOOPBACK_ONLY"):
         create_server(tmp_path, host="0.0.0.0", port=8765)
+
+
+# mypy: disable-error-code="no-untyped-def"

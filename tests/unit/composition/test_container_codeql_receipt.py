@@ -66,4 +66,3 @@ def test_container_codeql_result_is_persisted_as_exact_process_receipt(
     assert stdout.read_bytes() == sarif
     assert stderr.read_bytes() == b""
     assert value["stdout_sha256"] == hashlib.sha256(sarif).hexdigest()
-

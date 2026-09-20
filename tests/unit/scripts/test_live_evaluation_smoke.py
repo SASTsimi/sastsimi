@@ -288,7 +288,6 @@ def test_run_target_queries_results_and_exports_every_report(tmp_path: Path) -> 
 
     assert summary["analysis_id"] == "analysis-pygoat"
     assert [
-        command[5] if command[5] != "report" else "report export"
-        for command in calls
+        command[5] if command[5] != "report" else "report export" for command in calls
     ] == ["evaluate", "results", "reports", "report export"]
     assert all("demo" not in command for command in calls)

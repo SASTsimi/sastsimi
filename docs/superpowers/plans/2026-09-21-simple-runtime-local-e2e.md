@@ -237,7 +237,10 @@ class SimpleRuntimeRunner:
                 continue
             self.store.mark_running(identity, stage, input_refs)
             try:
-                result = await self.handlers[stage](
+                handler = self.handlers.get(stage)
+                if handler is None:
+                    raise StageFailed("STAGE_HANDLER_MISSING")
+                result = await handler(
                     self.store.require(identity, stage), self.store.prior(identity, stage)
                 )
             except StageBlocked as error:

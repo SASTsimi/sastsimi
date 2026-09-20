@@ -417,3 +417,6 @@ def test_cancellation_committed_before_resume_admission_wins(
         with pytest.raises(ValueError, match="RUN_CANCELLED"):
             future.result(timeout=5)
     assert runtime.work.get(str(blocked.work_id)) == blocked
+
+
+# mypy: disable-error-code="arg-type"

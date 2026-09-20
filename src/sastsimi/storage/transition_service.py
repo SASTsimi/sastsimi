@@ -159,11 +159,9 @@ def _validate_repository_profile(
             candidate.status == "NEEDS_CONFIRMATION"
             and selection.status != "BLOCKED"
             and (
-                candidate.confirmation_reasons
-                != ("BUILD_OR_START_UNCONFIRMED",)
+                candidate.confirmation_reasons != ("BUILD_OR_START_UNCONFIRMED",)
                 or not any(
-                    gap.code == "BUILD_OR_START_UNCONFIRMED"
-                    for gap in selection.gaps
+                    gap.code == "BUILD_OR_START_UNCONFIRMED" for gap in selection.gaps
                 )
             )
         )
@@ -831,9 +829,7 @@ class TransitionService:
                     and action.requested_by == RequesterRole.RECOVERY
                 )
             ):
-                retire_undispatched(
-                    connection, self.works.validator.budget, previous
-                )
+                retire_undispatched(connection, self.works.validator.budget, previous)
             work = WorkExecutionState.model_validate(
                 previous.model_dump()
                 | dict(

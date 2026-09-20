@@ -34,13 +34,10 @@ def test_exact_local_authority_keeps_configuration_categories_separate() -> None
     assert evidence.playbook_configuration_approved(
         cast(VerificationPlaybook, "playbook-a")
     )
-    assert evidence.sandbox_configuration_approved(
-        cast(SandboxProfile, "sandbox-a")
-    )
+    assert evidence.sandbox_configuration_approved(cast(SandboxProfile, "sandbox-a"))
     assert not evidence.llm_configuration_approved(cast(LLMRecord, "playbook-a"))
-    assert not evidence.playbook_configuration_approved(
-        cast(PlaybookPolicy, "llm-a")
-    )
-    assert not evidence.sandbox_configuration_approved(
-        cast(SandboxProfile, "other")
-    )
+    assert not evidence.playbook_configuration_approved(cast(PlaybookPolicy, "llm-a"))
+    assert not evidence.sandbox_configuration_approved(cast(SandboxProfile, "other"))
+
+
+# mypy: disable-error-code="comparison-overlap"

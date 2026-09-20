@@ -63,9 +63,7 @@ def create_server(
 
         def _dispatch(self, *, send_body: bool) -> None:
             parsed = urlsplit(self.path)
-            parts = tuple(
-                unquote(part) for part in parsed.path.split("/") if part
-            )
+            parts = tuple(unquote(part) for part in parsed.path.split("/") if part)
             try:
                 if not parts:
                     self._file(

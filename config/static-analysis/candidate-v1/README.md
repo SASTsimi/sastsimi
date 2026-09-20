@@ -5,7 +5,7 @@ It is not approved or production-ready. A successful smoke test does not activat
 these materials; production activation still requires the repository's normal
 capability evidence, approval, exact-reference, and profile checks.
 
-- `opengrep/` contains generic Python and JavaScript fact-candidate rules for
+- The OpenGrep rules directory contains generic Python and JavaScript fact-candidate rules for
   OpenGrep 1.16.5. The rules identify possible sources, sinks, sanitizers,
   validators, and authorization checks. A match is not a vulnerability verdict.
 - `codeql/` wraps only the Python queries bundled in CodeQL 2.27.0 under

@@ -164,9 +164,7 @@ def test_static_materials_are_protected_before_run_start_recovery(
     )
 
     assert {item.content_hash for item in protected} == set(materials.evidence)
-    assert all(
-        artifacts.path_for(item.content_hash).is_file() for item in protected
-    )
+    assert all(artifacts.path_for(item.content_hash).is_file() for item in protected)
 
 
 def test_resume_restores_exact_completed_workspace_without_clone(
@@ -250,9 +248,7 @@ def test_resume_rejects_ambiguous_completed_workspace_receipts(
                 current_input=lambda _analysis_id: run_input,
             )
         ),
-        scheduler_store=SimpleNamespace(
-            work_for_run=lambda _analysis_id: (work, work)
-        ),
+        scheduler_store=SimpleNamespace(work_for_run=lambda _analysis_id: (work, work)),
     )
     monkeypatch.setattr(
         "sastsimi.composition.local_evaluation_preflight.reference",
@@ -269,3 +265,6 @@ def test_resume_rejects_ambiguous_completed_workspace_receipts(
                 workspace_locator=SimpleNamespace(),
             ),
         )
+
+
+# mypy: disable-error-code="unused-ignore"

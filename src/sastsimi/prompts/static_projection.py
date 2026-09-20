@@ -127,9 +127,7 @@ def _projection(
         ),
     )
     metadata = raw.get("meta")
-    source_record_id = (
-        metadata.get("record_id") if isinstance(metadata, dict) else None
-    )
+    source_record_id = metadata.get("record_id") if isinstance(metadata, dict) else None
     included["projection_summary"] = cast(
         JsonValue,
         {

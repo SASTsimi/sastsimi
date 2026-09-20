@@ -137,12 +137,13 @@ def test_resolves_each_exact_approved_current_profile_and_executable() -> None:
         "OPENGREP": receipts[3].approved_profile_ref,
         "CODEQL": receipts[4].approved_profile_ref,
     }
-    assert resolved.executables["GIT"] == Path("/tools/git")
-    assert resolved.executables["CODEQL"] == Path("/tools/codeql")
+    assert resolved.executables["GIT"] == Path("/tools/git").resolve()
+    assert resolved.executables["CODEQL"] == Path("/tools/codeql").resolve()
     assert resolved.protected_artifact_refs == services[None].evidence_refs()
-    assert all(services[kind].checked for kind in (
-        "GIT", "PYTHON_RUNTIME", "PYTHON_AST", "OPENGREP", "CODEQL"
-    ))
+    assert all(
+        services[kind].checked
+        for kind in ("GIT", "PYTHON_RUNTIME", "PYTHON_AST", "OPENGREP", "CODEQL")
+    )
 
 
 def test_rejects_missing_or_ambiguous_profile_instead_of_falling_back() -> None:

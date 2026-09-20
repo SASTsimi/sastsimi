@@ -123,9 +123,7 @@ class ConfiguredProductionCallResolver:
         *,
         role: LLMRole,
         task_kind: str,
-    ) -> tuple[
-        PromptSource | ProjectedPromptSource | ArtifactPromptSource, ...
-    ]:
+    ) -> tuple[PromptSource | ProjectedPromptSource | ArtifactPromptSource, ...]:
         # PromptInputSlot is deliberately consumed structurally so this adapter
         # does not introduce another prompt-contract model.
         slot_by_kind: dict[str, PromptInputSlot] = {}
@@ -134,9 +132,7 @@ class ConfiguredProductionCallResolver:
             if not kind or kind in slot_by_kind:
                 raise ValueError("PRODUCTION_PROMPT_SOURCE_AMBIGUOUS")
             slot_by_kind[kind] = slot
-        sources: list[
-            PromptSource | ProjectedPromptSource | ArtifactPromptSource
-        ] = []
+        sources: list[PromptSource | ProjectedPromptSource | ArtifactPromptSource] = []
         counts: dict[str, int] = {}
         for ref in refs:
             candidate_slot = slot_by_kind.get(ref.data_kind)

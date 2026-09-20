@@ -138,9 +138,9 @@ def _tmpfs(spec: ContainerCodeQLProvisionSpec) -> str:
 
 
 def _name(spec: ContainerCodeQLProvisionSpec) -> str:
-    digest = hashlib.sha256(
-        f"{spec.action_id}|{spec.attempt_id}".encode()
-    ).hexdigest()[:24]
+    digest = hashlib.sha256(f"{spec.action_id}|{spec.attempt_id}".encode()).hexdigest()[
+        :24
+    ]
     return "sastsimi-codeql-provision-" + digest
 
 

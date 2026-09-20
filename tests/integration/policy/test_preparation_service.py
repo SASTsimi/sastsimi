@@ -103,7 +103,9 @@ class _Parser:
         content = ParsedPolicyContent(
             document_status=self.document_status,
             policy_version="2026-09",
-            in_scope_assets=() if self.document_status == "ABSENT_CONFIRMED" else (
+            in_scope_assets=()
+            if self.document_status == "ABSENT_CONFIRMED"
+            else (
                 PolicyItemContent(
                     item_key="asset-main",
                     value="example.test",

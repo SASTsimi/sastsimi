@@ -68,9 +68,9 @@ def test_candidate_manifest_is_current_and_deterministic() -> None:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    assert manifest["material_set_sha256"] == hashlib.sha256(
-        canonical_entries
-    ).hexdigest()
+    assert (
+        manifest["material_set_sha256"] == hashlib.sha256(canonical_entries).hexdigest()
+    )
 
 
 def test_candidate_catalog_selection_and_mapping_ids_are_exact() -> None:
@@ -104,9 +104,7 @@ def test_candidate_catalog_selection_and_mapping_ids_are_exact() -> None:
     native_rule_ids = tuple(sorted(rule["id"] for rule in rules_document["rules"]))
     assert native_rule_ids == opengrep_rule_ids
     assert {
-        language
-        for rule in rules_document["rules"]
-        for language in rule["languages"]
+        language for rule in rules_document["rules"] for language in rule["languages"]
     } == {"javascript", "python"}
 
     codeql_rule_ids = _rule_ids(codeql_catalog)
@@ -129,9 +127,7 @@ def test_codeql_wrapper_is_pinned_to_built_in_2_27_0_materials() -> None:
         (MATERIAL_ROOT / "codeql" / "qlpack.yml").read_text(encoding="utf-8")
     )
     suite = yaml.safe_load(
-        (MATERIAL_ROOT / "codeql" / "python-security.qls").read_text(
-            encoding="utf-8"
-        )
+        (MATERIAL_ROOT / "codeql" / "python-security.qls").read_text(encoding="utf-8")
     )
 
     assert pack == {
@@ -162,3 +158,6 @@ def test_candidate_materials_do_not_encode_evaluation_targets() -> None:
     )
 
     assert forbidden.isdisjoint(combined)
+
+
+# mypy: disable-error-code="import-untyped"

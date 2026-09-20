@@ -55,9 +55,7 @@ _POSIX_HOST_PATH = re.compile(
     r"(?<![\w/])/(?:root|home|Users|tmp|etc|var|opt|srv|usr|private)"
     r"(?:/|\b)[^\r\n,;\"'<>]*"
 )
-_SAFE_SANDBOX_PATHS = {
-    "/tmp/sastsimi-poc-candidate": "SASTSIMI_SAFE_POC_RUNTIME_PATH"
-}
+_SAFE_SANDBOX_PATHS = {"/tmp/sastsimi-poc-candidate": "SASTSIMI_SAFE_POC_RUNTIME_PATH"}
 _POC_SANDBOX_ABSOLUTE_PATH = re.compile(
     r"(?<![\w/])/(?:workspace|tmp|etc|var|opt|srv|usr)(?:/|\b)"
     r"[^\s\r\n,;\"'<>]*"
@@ -189,8 +187,10 @@ def inspect_poc_candidate_json(data: bytes) -> RedactionResult:
         value = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError("PROMPT_REDACTION_FAILED") from error
-    if not isinstance(value, dict) or set(value) != {"content"} or not isinstance(
-        value["content"], str
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"content"}
+        or not isinstance(value["content"], str)
     ):
         raise ValueError("PROMPT_REDACTION_FAILED")
     protected_paths: list[tuple[bytes, bytes]] = []

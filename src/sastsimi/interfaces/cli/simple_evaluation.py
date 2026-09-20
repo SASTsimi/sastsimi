@@ -54,9 +54,7 @@ async def resume(
         ):
             repair_inputs[identity.hypothesis_id or ""] = tuple(
                 dict.fromkeys(
-                    candidate.input_refs
-                    + candidate.output_refs
-                    + execution.output_refs
+                    candidate.input_refs + candidate.output_refs + execution.output_refs
                 )
             )
             store.invalidate_from(
@@ -101,8 +99,7 @@ async def resume(
         for identity in identities
         if (
             (hypothesis_id is None or identity.hypothesis_id == hypothesis_id)
-            and
-            (candidate := store.get(identity, SimpleStage.POC_CANDIDATE_DONE))
+            and (candidate := store.get(identity, SimpleStage.POC_CANDIDATE_DONE))
             is not None
             and candidate.image_digest is not None
             and candidate.recipe_ref is not None

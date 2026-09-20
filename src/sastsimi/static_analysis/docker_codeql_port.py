@@ -19,9 +19,7 @@ if TYPE_CHECKING:
         ContainerCodeQLProbeRequest,
     )
 
-_CONTAINER_NAME = re.compile(
-    r"^sastsimi-codeql(?:-provision)?-[0-9a-f]{24}$"
-)
+_CONTAINER_NAME = re.compile(r"^sastsimi-codeql(?:-provision)?-[0-9a-f]{24}$")
 _INSPECT_LIMIT_BYTES = 1024 * 1024
 _CONTROL_OUTPUT_LIMIT_BYTES = 4096
 _PROBE_OUTPUT_LIMIT_BYTES = 64 * 1024
@@ -366,9 +364,7 @@ class ContainerCodeQLDockerPort:
             with destination.open("xb") as output:
                 while chunk := await stream.read(_STREAM_CHUNK_BYTES):
                     if not isinstance(chunk, bytes):
-                        raise ContainerCodeQLDockerError(
-                            "CODEQL_DOCKER_COPY_FAILED"
-                        )
+                        raise ContainerCodeQLDockerError("CODEQL_DOCKER_COPY_FAILED")
                     written += len(chunk)
                     if written > max_bytes:
                         raise ContainerCodeQLDockerError("CODEQL_DOCKER_COPY_LIMIT")
@@ -399,9 +395,7 @@ class ContainerCodeQLDockerPort:
             or part.endswith((" ", "."))
             for part in parts
         ):
-            raise ContainerCodeQLDockerError(
-                "CODEQL_DOCKER_COPY_ARCHIVE_INVALID"
-            )
+            raise ContainerCodeQLDockerError("CODEQL_DOCKER_COPY_ARCHIVE_INVALID")
         return parts
 
     @classmethod
@@ -437,9 +431,7 @@ class ContainerCodeQLDockerPort:
                     if member.isfile():
                         total += member.size
                         if member.size < 0 or total > max_bytes:
-                            raise ContainerCodeQLDockerError(
-                                "CODEQL_DOCKER_COPY_LIMIT"
-                            )
+                            raise ContainerCodeQLDockerError("CODEQL_DOCKER_COPY_LIMIT")
                     validated.append((member, parts))
 
                 for member, parts in validated:
@@ -591,9 +583,7 @@ class ContainerCodeQLDockerPort:
             if state["Running"] is False:
                 return False
             if logs not in (b"", _PROVISION_READY):
-                raise ContainerCodeQLDockerError(
-                    "CODEQL_DOCKER_PROVISION_LOGS_INVALID"
-                )
+                raise ContainerCodeQLDockerError("CODEQL_DOCKER_PROVISION_LOGS_INVALID")
             await asyncio.sleep(0.1)
 
     async def probe(

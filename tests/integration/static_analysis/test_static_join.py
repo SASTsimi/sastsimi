@@ -366,9 +366,7 @@ def test_real_runtime_publication_and_terminal_replay_validate_expected_runs(
         )
         connection.execute(
             update(models.work_attempts)
-            .where(
-                models.work_attempts.c.attempt_id == str(initial_attempt.attempt_id)
-            )
+            .where(models.work_attempts.c.attempt_id == str(initial_attempt.attempt_id))
             .values(payload=encode(renewed_attempt))
         )
     sources = (
@@ -465,3 +463,6 @@ def test_real_runtime_publication_and_terminal_replay_validate_expected_runs(
         publisher._validate_committed_bundle(
             terminal, workspace, damaged, bundle_ref, materials
         )
+
+
+# mypy: disable-error-code="attr-defined"

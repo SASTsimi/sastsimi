@@ -221,14 +221,11 @@ class LocalEvaluationStaticServices:
         self, requests: tuple[StaticToolRequest, ...]
     ) -> tuple[ToolRunResult, ...]:
         if not requests:
-            raise LocalEvaluationStaticBlocked(
-                "LOCAL_EVALUATION_STATIC_REQUESTS_EMPTY"
-            )
+            raise LocalEvaluationStaticBlocked("LOCAL_EVALUATION_STATIC_REQUESTS_EMPTY")
         configured = frozenset(self.profile_refs.values())
         requested = tuple(item.tool_profile_ref for item in requests)
-        if (
-            len(requested) != len(set(requested))
-            or any(ref not in configured for ref in requested)
+        if len(requested) != len(set(requested)) or any(
+            ref not in configured for ref in requested
         ):
             raise LocalEvaluationStaticBlocked(
                 "LOCAL_EVALUATION_STATIC_PROFILE_BINDING_BLOCKED"
@@ -252,11 +249,7 @@ class LocalEvaluationStaticServices:
                 "LOCAL_EVALUATION_STATIC_EXECUTION_BLOCKED"
             ) from error
         cancellation = next(
-            (
-                item
-                for item in raw_results
-                if isinstance(item, asyncio.CancelledError)
-            ),
+            (item for item in raw_results if isinstance(item, asyncio.CancelledError)),
             None,
         )
         if cancellation is not None:
@@ -429,8 +422,7 @@ def build_local_evaluation_static(
         executables[str(profile.executable_key)] = executable
 
     by_ref = {
-        inputs.static_profile_refs[tool]: profile
-        for tool, profile in profiles.items()
+        inputs.static_profile_refs[tool]: profile for tool, profile in profiles.items()
     }
     tools = StaticToolCoordinator(
         _PinnedStaticProfileResolver(inputs.capability_resolver, by_ref),

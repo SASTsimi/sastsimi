@@ -24,6 +24,16 @@ def test_shipped_entrypoint_runs_concrete_preflight_before_sync_composition(
     def reject(*_args: object, **_kwargs: object) -> object:
         raise ValueError("LOCAL_CAPABILITY_PREFLIGHT_REACHED")
 
+    monkeypatch.setattr(
+        preflight,
+        "_required_executable",
+        lambda name: Path(__file__).resolve(),
+    )
+    monkeypatch.setattr(
+        preflight,
+        "build_production_capability_probe_service",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
     monkeypatch.setattr(preflight, "resolve_local_approved_capabilities", reject)
     entrypoint = build_local_evaluation_analyze()
 
@@ -38,3 +48,6 @@ def test_shipped_entrypoint_runs_concrete_preflight_before_sync_composition(
                 )
             )
         )
+
+
+# mypy: disable-error-code="operator"

@@ -76,11 +76,7 @@ def _prepared_artifact_refs(
         prompt_plan.client_execution.network_policy_ref,
         *(item.schema_artifact_ref for item in prompt_plan.output_schemas),
         *(item.implementation_ref for item in prompt_plan.semantic_validators),
-        *(
-            ref
-            for item in prompt_plan.semantic_validators
-            for ref in item.test_refs
-        ),
+        *(ref for item in prompt_plan.semantic_validators for ref in item.test_refs),
         *(item.template_ref for item in prompt_plan.prompt_entries),
         *run_configuration.sandbox_profile.isolation_policy_refs,
         run_configuration.workspace_policy_ref,
@@ -669,9 +665,7 @@ def _install_local_features(
             published.semantic_validators,
             validate_output,
             request_semantic_validators={
-                ("REPORTER", "CREATE_DRAFT"): ReporterOutputSemanticValidator(
-                    records
-                )
+                ("REPORTER", "CREATE_DRAFT"): ReporterOutputSemanticValidator(records)
             },
         ),
         result_builder=StoredInvocationResultBuilder(records, artifacts, metadata),

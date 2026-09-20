@@ -190,9 +190,7 @@ class _Runner:
         records = SimpleNamespace(
             get_exact=lambda _ref: SimpleNamespace(meta=self.binding_meta)
         )
-        self.runtime = SimpleNamespace(
-            unit_of_work=SimpleNamespace(records=records)
-        )
+        self.runtime = SimpleNamespace(unit_of_work=SimpleNamespace(records=records))
 
     def begin_policy(self, *args: object, **kwargs: object) -> object:
         self.begin_calls.append({"args": args, **kwargs})
@@ -276,9 +274,9 @@ def test_seeder_is_idempotent_and_rejects_non_local_use() -> None:
         run_policy_state_ref=binding_ref,
         meta=SimpleNamespace(analysis_id="analysis-1"),
     )
-    assert seeder.ensure_initial(
-        _request(), cast(Any, already_seeded), binding_ref
-    ) == ()
+    assert (
+        seeder.ensure_initial(_request(), cast(Any, already_seeded), binding_ref) == ()
+    )
     assert runner.begin_calls == []
 
     wrong = _request().model_copy(update={"purpose": Purpose.PRODUCTION})
@@ -299,3 +297,6 @@ def test_seeder_is_idempotent_and_rejects_non_local_use() -> None:
             ),
             binding_ref,
         )
+
+
+# mypy: disable-error-code="index"

@@ -203,7 +203,7 @@ async def test_failed_transaction_never_publishes_success_or_false(tmp_path) -> 
         allowed_environment_names=frozenset(),
     )
     assert validate_candidate(
-        b"#!/bin/sh\nset -eu\nfixture=/tmp/input\nprintf x > \"$fixture\"\n",
+        b'#!/bin/sh\nset -eu\nfixture=/tmp/input\nprintf x > "$fixture"\n',
         allowed_environment_names=frozenset(),
     )
 
@@ -245,3 +245,6 @@ def test_scope_denial_creates_only_a_restricted_internal_report() -> None:
 
     with pytest.raises(ValueError, match="RULE_SCOPE_STATUS_INVALID"):
         internal_report_status("REVISE")
+
+
+# mypy: disable-error-code="arg-type,no-untyped-def"

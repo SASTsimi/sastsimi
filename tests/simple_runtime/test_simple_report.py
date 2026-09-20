@@ -211,3 +211,6 @@ async def test_report_rejects_missing_validated_poc(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="REPORT_VALIDATED_POC_MISSING"):
         await ReporterStage(_ReporterClient(), artifacts)(current, prior)  # type: ignore[arg-type]
+
+
+# mypy: disable-error-code="arg-type,no-untyped-def,unused-ignore"

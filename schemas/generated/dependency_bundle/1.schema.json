@@ -190,7 +190,7 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Offline dependency archive vendored for one exact attempt.\n\nA repository's declared dependencies are a fact about the repository,\nnot a judgement call, so most bundles are `AUTOMATIC` - fetched and\npackaged unattended from what the repository itself declares\n(`sandbox/recipe_store.py::EnvironmentRecipeStore._auto_fetch_\ndependency_bundle`). `HUMAN` stays available for a bundle an operator\nhand-supplies instead, e.g. to cover a dependency this repository's\ndeclared metadata does not name.",
+  "description": "Pre-approved offline dependency archive for one exact attempt.",
   "properties": {
     "approval_target_hash": {
       "pattern": "^[0-9a-f]{64}$",
@@ -209,10 +209,7 @@
       "type": "string"
     },
     "approved_by_role": {
-      "enum": [
-        "HUMAN",
-        "AUTOMATIC"
-      ],
+      "const": "HUMAN",
       "title": "Approved By Role",
       "type": "string"
     },

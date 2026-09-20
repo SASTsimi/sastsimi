@@ -162,3 +162,6 @@ def test_shared_engine_rejects_a_request_with_a_different_purpose() -> None:
             clock=cast(Clock, object()),
             readiness=readiness,
         )
+
+
+# mypy: disable-error-code="attr-defined"

@@ -300,9 +300,7 @@ class ContainerCodeQLProcessAdapter:
             ),
             selected_rule_packs=self.inputs.selected_rule_packs,
             rules=(
-                rules
-                if rules is not None
-                else self._rules_not_executed("TOOL_FAILURE")
+                rules if rules is not None else self._rules_not_executed("TOOL_FAILURE")
             ),
             symbols=(),
             facts=facts,

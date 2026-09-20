@@ -212,18 +212,14 @@ class ConfiguredLocalEvaluationCallResolver:
         *,
         role: LLMRole,
         task_kind: str,
-    ) -> tuple[
-        PromptSource | ProjectedPromptSource | ArtifactPromptSource, ...
-    ]:
+    ) -> tuple[PromptSource | ProjectedPromptSource | ArtifactPromptSource, ...]:
         slot_by_kind: dict[str, PromptInputSlot] = {}
         for slot in slots:
             kind = str(slot.data_kind)
             if not kind or kind in slot_by_kind:
                 raise ValueError("LOCAL_EVALUATION_PROMPT_SOURCE_AMBIGUOUS")
             slot_by_kind[kind] = slot
-        sources: list[
-            PromptSource | ProjectedPromptSource | ArtifactPromptSource
-        ] = []
+        sources: list[PromptSource | ProjectedPromptSource | ArtifactPromptSource] = []
         counts: dict[str, int] = {}
         for ref in refs:
             candidate_slot = slot_by_kind.get(ref.data_kind)

@@ -156,3 +156,6 @@ def test_zero_work_limit_denies_operation(
                 BudgetReservation.model_validate_json(json.dumps(initial))
             )
         )
+
+
+# mypy: disable-error-code="attr-defined"

@@ -1204,9 +1204,7 @@ class DynamicReproductionWorkflowService:
                     request=request,
                     request_ref=request_ref,
                 )
-                self._settle_call(
-                    derive_authorization, requirements_outcome.invocation
-                )
+                self._settle_call(derive_authorization, requirements_outcome.invocation)
                 requirements = _require_stage_record(requirements_outcome, "AGENT")
                 requirements_ref = self._workflow.publish(
                     requirements, requirements_outcome.invocation

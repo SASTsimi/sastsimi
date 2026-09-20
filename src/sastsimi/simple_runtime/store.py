@@ -219,10 +219,13 @@ class SimpleCheckpointStore:
                 "updated_at": datetime.now(UTC),
             }
         )
-        final_sequence = max(
-            (event.sequence for event in result.activity_events),
-            default=self._stage_sequence(checkpoint.stage, 1),
-        ) + 1
+        final_sequence = (
+            max(
+                (event.sequence for event in result.activity_events),
+                default=self._stage_sequence(checkpoint.stage, 1),
+            )
+            + 1
+        )
         self._write(
             completed,
             activity_events=(

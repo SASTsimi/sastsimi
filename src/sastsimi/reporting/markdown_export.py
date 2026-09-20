@@ -53,9 +53,7 @@ class ReportMarkdownService:
         self._data_dir = data_dir.resolve()
         self._data_dir_identity = _capture_directory_identity(self._data_dir)
         self._source = source
-        self._display_ids = FindingDisplayIdStore(
-            RuntimePaths(self._data_dir).database
-        )
+        self._display_ids = FindingDisplayIdStore(RuntimePaths(self._data_dir).database)
 
     def summaries(self, analysis_id: str) -> tuple[dict[str, str], ...]:
         summaries: list[dict[str, str]] = []
@@ -73,9 +71,7 @@ class ReportMarkdownService:
                 "cwe": report.cwe.primary or "UNCLASSIFIED",
             }
             if report.purpose == "LOCAL_EVALUATION":
-                summary.update(
-                    purpose="LOCAL_EVALUATION", production_ready="false"
-                )
+                summary.update(purpose="LOCAL_EVALUATION", production_ready="false")
             try:
                 assert_safe_provider_text(canonical_bytes(summary))
                 for value in summary.values():

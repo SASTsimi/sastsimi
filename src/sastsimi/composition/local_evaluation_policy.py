@@ -140,9 +140,7 @@ class LocalEvaluationPolicySource:
             )
         ):
             raise ValueError("LOCAL_POLICY_BOUNDARY_INVALID")
-        value = LocalEvaluationPolicyBoundary.model_validate_json(
-            self.boundary_bytes
-        )
+        value = LocalEvaluationPolicyBoundary.model_validate_json(self.boundary_bytes)
         if (
             value.analysis_id != self.analysis_id
             or value.program_id != self.program_id

@@ -452,3 +452,6 @@ def test_dynamic_start_projects_current_request_work_and_attempt(
         assert returned.dynamic_work_ref == reference(finished)
         (process,) = runtime.queries.current_records("a1", "hypothesis_process_state")
         assert process.status == "VERIFYING" and process.verification_result_ref is None
+
+
+# mypy: disable-error-code="arg-type,attr-defined"

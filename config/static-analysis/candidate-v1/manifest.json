@@ -2,8 +2,8 @@
   "files": [
     {
       "path": "README.md",
-      "sha256": "3a48eb65849314ee750b033543bbc785815e1e938aa78c4e443888b4a85c2a31",
-      "size_bytes": 1377
+      "sha256": "8a642ddfd9706b7d19573b8fbca084628d25b746fc4fc440047924c3d9caaaf5",
+      "size_bytes": 1394
     },
     {
       "path": "codeql/python-security.qls",
@@ -52,7 +52,7 @@
     }
   ],
   "material_set": "sastsimi-static-candidate-v1",
-  "material_set_sha256": "e5ac82d2b44315c99103c67b37b82146769a38cc30bf2ae778d151bc80d9ac7f",
+  "material_set_sha256": "90fda208d7846cf6e35b4bd6a9c7805c326e1ee5bf44154396e990e3383ec15f",
   "production_ready": false,
   "schema_version": 1,
   "status": "CANDIDATE"

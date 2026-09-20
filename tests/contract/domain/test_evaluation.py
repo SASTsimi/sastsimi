@@ -154,8 +154,9 @@ def test_failed_hypotheses_cannot_be_complete_run() -> None:
             wire(AnalysisRunResult, value | patch)
 
 
-def test_local_evaluation_result_is_distinct_from_production_and_corpus_evaluation(
-) -> None:
+def test_local_evaluation_result_is_distinct_from_production_and_corpus_evaluation() -> (  # noqa: E501
+    None
+):
     from sastsimi.contracts.evaluation import AnalysisRunResult
 
     value: dict[str, Any] = dict(

@@ -139,17 +139,13 @@ class LocalEvaluationAnalyzeService:
         finally:
             await application.shutdown()
 
-    async def resume(
-        self, command: LocalEvaluationResumeCommandInput
-    ) -> RunOutcome:
+    async def resume(self, command: LocalEvaluationResumeCommandInput) -> RunOutcome:
         """Resume exactly one persisted blocked cohort, never retry in a loop."""
 
         if self._load_resume_scope is None:
             raise ValueError("LOCAL_EVALUATION_RESUME_LOADER_REQUIRED")
         profile = self._load_profile(command.profile)
-        request, scope = self._load_resume_scope(
-            command.data_dir, command.analysis_id
-        )
+        request, scope = self._load_resume_scope(command.data_dir, command.analysis_id)
         factory = self._factory
         if self._preflight is not None:
             factory = await self._preflight.prepare(

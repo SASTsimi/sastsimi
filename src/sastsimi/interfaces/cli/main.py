@@ -434,12 +434,10 @@ def main(
                     )
                 )
             else:
-                resume_request = (
-                    local_evaluation_command.LocalEvaluationResumeRequest(
-                        data_dir=config.data_dir,
-                        analysis_id=args.analysis_id,
-                        profile=args.profile,
-                    )
+                resume_request = local_evaluation_command.LocalEvaluationResumeRequest(
+                    data_dir=config.data_dir,
+                    analysis_id=args.analysis_id,
+                    profile=args.profile,
                 )
                 evaluation_result = asyncio.run(
                     local_evaluation_command.resume(
@@ -448,9 +446,7 @@ def main(
                 )
             emit_data(
                 output_format,
-                sys.stdout
-                if evaluation_result.code == ExitCode.OK
-                else sys.stderr,
+                sys.stdout if evaluation_result.code == ExitCode.OK else sys.stderr,
                 command=command_name,
                 data=evaluation_result.data,
                 code=evaluation_result.code,
@@ -606,9 +602,7 @@ def main(
                     raise _InputError
                 codeql_config = load_production_profile(profile_path).codeql_container
                 if codeql_config is None:
-                    raise bootstrap.ProductionProfileError(
-                        "CODEQL_CONTAINER_REQUIRED"
-                    )
+                    raise bootstrap.ProductionProfileError("CODEQL_CONTAINER_REQUIRED")
             elif profile_path is not None:
                 codeql_config = load_production_profile(profile_path).codeql_container
             if args.capability_command == "probe":

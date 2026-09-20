@@ -796,10 +796,7 @@ class RepositoryExecutionSelector:
                     selection_gaps.append(
                         self._gap(
                             repository,
-                            code=(
-                                "NO_ACTIVE_STATIC_CAPABILITY:"
-                                f"CODEQL:{language}"
-                            ),
+                            code=(f"NO_ACTIVE_STATIC_CAPABILITY:CODEQL:{language}"),
                             description=(
                                 "The approved CodeQL runtime does not support "
                                 "this repository language; another verified "

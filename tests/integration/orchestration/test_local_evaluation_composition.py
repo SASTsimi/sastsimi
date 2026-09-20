@@ -415,3 +415,6 @@ def test_factory_requires_an_explicit_capability_resolver() -> None:
             )
 
         assert not data_dir.exists()
+
+
+# mypy: disable-error-code="attr-defined"

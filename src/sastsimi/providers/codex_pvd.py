@@ -499,8 +499,7 @@ class CodexUnprovenRuntimeCheck:
 
     def __post_init__(self) -> None:
         if (
-            self.test_id
-            not in {*_AUTOMATED_TEST_IDS, _OPTIONAL_DYNAMIC_TEST_ID}
+            self.test_id not in {*_AUTOMATED_TEST_IDS, _OPTIONAL_DYNAMIC_TEST_ID}
             or not self.reason_code.startswith("CODEX_")
             or not self.safe_summary.strip()
         ):
@@ -846,8 +845,7 @@ class CodexFailoverLifecycleCheck:
                 or source.request.model != fallback.request.model
             )
             and source.log.failover_from_llm_call_id is None
-            and fallback.log.failover_from_llm_call_id
-            == source.request.llm_call_id
+            and fallback.log.failover_from_llm_call_id == source.request.llm_call_id
             and fallback.log.retry_of_llm_call_id is None
         )
         if not passed:
@@ -1661,8 +1659,7 @@ def _exact_live_invocation_adapter(
     bound_profile = getattr(getattr(runner, "binding", None), "provider_profile", None)
     if (
         bound_profile is None
-        or getattr(runner.binding, "runtime_environment", None)
-        != candidate.environment
+        or getattr(runner.binding, "runtime_environment", None) != candidate.environment
         or any(
             getattr(bound_profile, field, None) != getattr(candidate, field)
             for field in (
@@ -1680,10 +1677,9 @@ def _exact_live_invocation_adapter(
     ):
         return None
     try:
-        if (
-            runner.executable.sha256 != _sha256_file(runner.executable.path)
-            or not _is_sha256(runner.executable.sha256)
-        ):
+        if runner.executable.sha256 != _sha256_file(
+            runner.executable.path
+        ) or not _is_sha256(runner.executable.sha256):
             return None
     except (AttributeError, OSError, TypeError, ValueError):
         return None

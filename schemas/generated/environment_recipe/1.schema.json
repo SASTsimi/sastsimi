@@ -41,6 +41,20 @@
           ],
           "default": null
         },
+        "dependency_manifest_path": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dependency Manifest Path"
+        },
         "dockerfile_digest": {
           "pattern": "^[0-9a-f]{64}$",
           "title": "Dockerfile Digest",

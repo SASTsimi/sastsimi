@@ -39,9 +39,7 @@ def test_loader_rejects_a_file_changed_after_the_candidate_manifest(
 ) -> None:
     root = tmp_path / "candidate-v1"
     shutil.copytree(MATERIALS, root)
-    (root / "opengrep" / "rules.yml").write_text(
-        "rules: []\n", encoding="utf-8"
-    )
+    (root / "opengrep" / "rules.yml").write_text("rules: []\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="LOCAL_STATIC_MATERIAL_STALE"):
         load_local_candidate_static_materials(root)

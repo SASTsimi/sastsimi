@@ -269,3 +269,6 @@ def test_t11_fails_closed_before_build_when_current_profile_is_missing() -> None
         resolver(work)
 
     assert built == []
+
+
+# mypy: disable-error-code="arg-type"

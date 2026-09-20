@@ -110,4 +110,3 @@ def test_rejects_executable_changed_after_profile_load(tmp_path: Path) -> None:
             ids=_Ids(),
             clock=_Clock(),
         )
-

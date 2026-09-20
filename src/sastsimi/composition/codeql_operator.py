@@ -150,9 +150,7 @@ def inspect_database(
             identity=identity,
         )
     except (OSError, ValueError):
-        return _blocked(
-            "INTEGRITY_ERROR", "CODEQL_DATABASE_INTEGRITY_CHECK_FAILED"
-        )
+        return _blocked("INTEGRITY_ERROR", "CODEQL_DATABASE_INTEGRITY_CHECK_FAILED")
     if published is None:
         return _blocked("CAPABILITY_UNSUPPORTED", "CODEQL_DATABASE_NOT_FOUND")
     return OperatorCommandResult(
@@ -213,9 +211,7 @@ def provision_database(
                     tracked_manifest_sha256=prepared.tracked_manifest_sha256,
                 )
                 if identity is None or prepared.root != source_root:
-                    return _blocked(
-                        "INPUT_ERROR", "CODEQL_DATABASE_IDENTITY_INVALID"
-                    )
+                    return _blocked("INPUT_ERROR", "CODEQL_DATABASE_IDENTITY_INVALID")
                 action_id = "codeql-provision-" + uuid4().hex
                 attempt_id = "codeql-attempt-" + uuid4().hex
                 spec = ContainerCodeQLProvisionSpec(

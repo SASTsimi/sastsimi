@@ -138,10 +138,10 @@ class SimpleRuntimeRunner:
                     error_code=error.failure.code,
                 )
             completed = self.store.complete(checkpoint, result)
-            if (
-                stage is SimpleStage.VERIFICATION_FINAL_DONE
-                and completed.verdict in {"FALSE", "HOLD"}
-            ):
+            if stage is SimpleStage.VERIFICATION_FINAL_DONE and completed.verdict in {
+                "FALSE",
+                "HOLD",
+            }:
                 return RunOutcome(
                     current_stage=stage,
                     status=StageStatus.SUCCEEDED,

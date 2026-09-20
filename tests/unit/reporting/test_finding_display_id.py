@@ -36,9 +36,7 @@ def test_concurrent_allocation_never_reuses_a_number(tmp_path) -> None:
     database = tmp_path / "sastsimi.sqlite3"
 
     def allocate(name: str) -> str:
-        return FindingDisplayIdStore(database).get_or_allocate(
-            "analysis-1", _ref(name)
-        )
+        return FindingDisplayIdStore(database).get_or_allocate("analysis-1", _ref(name))
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         values = tuple(pool.map(allocate, ("finding-a", "finding-b")))
@@ -52,3 +50,6 @@ def test_resolve_rejects_invalid_display_id(tmp_path, display_id: str) -> None:
 
     with pytest.raises(ValueError, match="FINDING_DISPLAY_ID_INVALID"):
         store.resolve("analysis-1", display_id)
+
+
+# mypy: disable-error-code="no-untyped-def"

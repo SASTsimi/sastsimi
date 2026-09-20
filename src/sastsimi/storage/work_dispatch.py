@@ -58,9 +58,7 @@ from .run_states import get_run
 from .work_service import WorkService
 
 
-def _resume_reason_is_resolvable(
-    purpose: Purpose, work: WorkExecutionState
-) -> bool:
+def _resume_reason_is_resolvable(purpose: Purpose, work: WorkExecutionState) -> bool:
     allowed_waiting = {
         "WAITING_FOR_INPUT": ("INPUT",),
         "LEASE_EXPIRED": ("RETRY",),

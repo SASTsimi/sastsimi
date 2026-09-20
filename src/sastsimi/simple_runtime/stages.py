@@ -195,9 +195,7 @@ class PoCCandidateStage:
         checkpoint: StageCheckpoint,
         prior: Mapping[SimpleStage, StageCheckpoint],
     ) -> StageResult:
-        source_refs = list(
-            _unique_refs(_prior_refs(prior) + checkpoint.input_refs)
-        )
+        source_refs = list(_unique_refs(_prior_refs(prior) + checkpoint.input_refs))
         if checkpoint.recipe_ref is not None:
             source_refs.append(checkpoint.recipe_ref)
         exact_refs = _unique_refs(tuple(source_refs))
@@ -590,9 +588,7 @@ content hashes, limitations, and unresolved conditions.
         result, output_ref = await self._stage.call(checkpoint, refs)
         verdict = cast(Literal["TRUE", "FALSE", "HOLD"], result.value["verdict"])
         dynamic = prior.get(SimpleStage.POC_EXECUTION_DONE)
-        if verdict == "TRUE" and (
-            dynamic is None or dynamic.validated_poc_ref is None
-        ):
+        if verdict == "TRUE" and (dynamic is None or dynamic.validated_poc_ref is None):
             raise StageFailed(
                 StageFailure(
                     code="TRUE_WITHOUT_VALIDATED_POC",
@@ -805,8 +801,7 @@ policy is UNCERTAIN, never ALLOW. Do not alter the technical verdict.
                     ActivityKind.DECISION_RECORDED,
                     offset=10,
                     summary_ko=(
-                        "Rule Scope Gate 결과 "
-                        f"{result.value['status']}를 저장했습니다."
+                        f"Rule Scope Gate 결과 {result.value['status']}를 저장했습니다."
                     ),
                     output_refs=(output_ref,),
                     llm=result,
@@ -951,9 +946,7 @@ human must review.
                     evidence_refs=(draft_ref,),
                 )
             )
-        report_dir = (
-            self._artifacts.paths.reports / checkpoint.identity.analysis_id
-        )
+        report_dir = self._artifacts.paths.reports / checkpoint.identity.analysis_id
         report_dir.mkdir(parents=True, exist_ok=True)
         display_id = FindingDisplayIdStore(
             self._artifacts.paths.database

@@ -69,10 +69,10 @@ def allows_local_manual_repair_scope(
         return True
     if work_status == WorkStatus.READY:
         return transition_cause == "USER_RESUME"
-    return (
-        work_status == WorkStatus.RUNNING
-        and attempt_trigger in {AttemptTrigger.RESUME, AttemptTrigger.RETRY}
-    )
+    return work_status == WorkStatus.RUNNING and attempt_trigger in {
+        AttemptTrigger.RESUME,
+        AttemptTrigger.RETRY,
+    }
 
 
 def local_manual_repair_call_allowance(

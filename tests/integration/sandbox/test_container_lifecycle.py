@@ -1344,7 +1344,10 @@ async def test_built_image_recovers_lost_intent_from_exact_docker_labels(
 async def test_exact_persisted_baseline_is_reused_after_store_restart(
     tmp_path: Path, labels_match: bool
 ) -> None:
-    files = {"Dockerfile": b"FROM scratch\n", "app.py": b"pass\n"}
+    files = {
+        "Dockerfile": b"FROM scratch\nWORKDIR /workspace\n",
+        "app.py": b"pass\n",
+    }
     for name, raw in files.items():
         (tmp_path / name).write_bytes(raw)
     artifacts = _MemoryArtifacts()
@@ -1409,9 +1412,7 @@ async def test_exact_persisted_baseline_is_reused_after_store_restart(
         meta=resumed_meta,
     )
     if not labels_match:
-        with pytest.raises(
-            ValueError, match="REUSABLE_BASELINE_OWNERSHIP_MISMATCH"
-        ):
+        with pytest.raises(ValueError, match="REUSABLE_BASELINE_OWNERSHIP_MISMATCH"):
             await restarted_setup.build(
                 approval=_build_approval(tmp_path, request, resumed_source),
                 source=resumed_source,
@@ -3962,3 +3963,6 @@ def test_profile_file_has_bounded_default_deny_values() -> None:
         "pid_limit": 64,
         "max_requested_execution_ms": 10000,
     }
+
+
+# mypy: disable-error-code="arg-type,unused-ignore"

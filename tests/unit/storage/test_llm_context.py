@@ -72,9 +72,7 @@ def _fixture() -> tuple[
     response_ref = cast(StoredDataRef, reference(response))
     request_value = make("DynamicReproductionRequest")
     request_value["environment_needs"] = tuple(request_value["environment_needs"])
-    request_value["static_evidence_refs"] = tuple(
-        request_value["static_evidence_refs"]
-    )
+    request_value["static_evidence_refs"] = tuple(request_value["static_evidence_refs"])
     request = DynamicReproductionRequest.model_validate(
         request_value
         | {

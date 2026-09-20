@@ -225,11 +225,11 @@ def test_rendered_chaining_input_allows_safe_nested_json_evidence() -> None:
         (("prepared_input", raw),),
     )
 
-    assert b'evidence-1' in rendered
-    assert b'src/app.py:1' in rendered
+    assert b"evidence-1" in rendered
+    assert b"src/app.py:1" in rendered
 
     with pytest.raises(ValueError, match="PROMPT_REDACTION_FAILED"):
-        render_provider_prompt(br"Load \\server\private\evidence.json", ())
+        render_provider_prompt(rb"Load \\server\private\evidence.json", ())
 
 
 def test_local_chaining_catalog_requires_exact_prepared_input_artifact() -> None:
@@ -323,12 +323,15 @@ def test_chaining_agent_requires_exact_prepared_content_in_call_context(
         context_refs=calls.source_refs,
     )
 
-    assert _validated_chaining_context(
-        spec=spec,
-        context=context,
-        content=content,
-        artifacts=artifacts,
-    ) == calls.source_refs
+    assert (
+        _validated_chaining_context(
+            spec=spec,
+            context=context,
+            content=content,
+            artifacts=artifacts,
+        )
+        == calls.source_refs
+    )
 
     with pytest.raises(ValueError, match="CHAINING_PROMPT_CONTENT_MISMATCH"):
         _validated_chaining_context(

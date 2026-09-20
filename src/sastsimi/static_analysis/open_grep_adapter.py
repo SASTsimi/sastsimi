@@ -515,9 +515,11 @@ def _decode_batch(
     # OpenGrep 1.16 omits ``skipped`` when it is empty.  An explicit
     # non-list value remains malformed; only the absent field means no skips.
     skipped = path_info.get("skipped", [])
-    if not isinstance(scanned, list) or not all(
-        isinstance(item, str) for item in scanned
-    ) or not isinstance(skipped, list):
+    if (
+        not isinstance(scanned, list)
+        or not all(isinstance(item, str) for item in scanned)
+        or not isinstance(skipped, list)
+    ):
         raise ValueError("OPENGREP_OUTPUT_SCOPE_MISMATCH")
     scanned_paths = tuple(_safe_git_path(cast(str, item)) for item in scanned)
     skipped_paths: list[str] = []

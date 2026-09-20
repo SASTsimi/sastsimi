@@ -169,7 +169,7 @@ def import_existing_analysis(
             SimpleStage.STATIC_DONE,
             profile_refs,
             (static_ref,),
-        )
+        ),
     )
 
     newest_hypotheses: dict[str, RecordEntry] = {}
@@ -187,7 +187,7 @@ def import_existing_analysis(
             SimpleStage.HYPOTHESIS_DONE,
             (static_ref,),
             tuple(entry[1] for entry in newest_hypotheses.values()),
-        )
+        ),
     )
 
     identities: list[CheckpointIdentity] = []
@@ -215,14 +215,12 @@ def import_existing_analysis(
                 SimpleStage.PRO_CON_DONE,
                 (hypothesis_ref, static_ref),
                 (pro[1], con[1]),
-            )
+            ),
         )
         request = _newest(
             by_kind_hypothesis[("dynamic_reproduction_request", hypothesis_id)]
         )
-        context = _newest(
-            by_kind_hypothesis[("code_context_response", hypothesis_id)]
-        )
+        context = _newest(by_kind_hypothesis[("code_context_response", hypothesis_id)])
         plan = _newest(by_kind_hypothesis[("reproduction_plan", hypothesis_id)])
         initial_outputs = (
             (initial[1],)
@@ -238,7 +236,7 @@ def import_existing_analysis(
                 (pro[1], con[1]),
                 initial_outputs,
                 attempt_id=initial[0]["meta"].get("attempt_id"),
-            )
+            ),
         )
 
         recipes = by_kind_hypothesis[("environment_recipe", hypothesis_id)]
@@ -264,7 +262,7 @@ def import_existing_analysis(
                         if environment is not None
                         else None
                     ),
-                )
+                ),
             )
 
         supported_results = [
@@ -297,7 +295,7 @@ def import_existing_analysis(
                     image_digest=(
                         recipe[0].get("built_image_digest") if recipe else None
                     ),
-                )
+                ),
             )
             _save_imported_once(
                 store,
@@ -308,7 +306,7 @@ def import_existing_analysis(
                     (dynamic_ref, poc_ref),
                     attempt_id=attempt_id,
                     validated_poc_ref=poc_ref,
-                )
+                ),
             )
         identities.append(identity)
     return tuple(identities)

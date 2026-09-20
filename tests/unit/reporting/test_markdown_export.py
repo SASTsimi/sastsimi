@@ -692,3 +692,6 @@ def test_report_source_rejects_execution_command_digest_mismatch(
             PoCCandidate.model_construct(),
             (),
         )
+
+
+# mypy: disable-error-code="arg-type"

@@ -225,14 +225,11 @@ def test_builds_real_repository_profiler_and_static_coordinator() -> None:
     assert tuple(services.profile_refs) == ("AST",)
 
 
-def test_rejects_profile_key_mismatch_before_creating_runtime_directories(
-) -> None:
+def test_rejects_profile_key_mismatch_before_creating_runtime_directories() -> None:
     root = _scratch("key-mismatch")
     before = set(root.rglob("*"))
 
-    with pytest.raises(
-        ValueError, match="LOCAL_EVALUATION_GIT_CAPABILITY_INVALID"
-    ):
+    with pytest.raises(ValueError, match="LOCAL_EVALUATION_GIT_CAPABILITY_INVALID"):
         build_local_evaluation_static(_inputs(root, git_key="wrong-git-key"))
 
     assert set(root.rglob("*")) == before

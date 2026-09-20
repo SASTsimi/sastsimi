@@ -405,3 +405,6 @@ def test_provision_failure_never_registers_a_partial_database(tmp_path: Path) ->
         "status": "BLOCKED",
     }
     assert tuple(config.database_registry_root.iterdir()) == ()
+
+
+# mypy: disable-error-code="attr-defined"

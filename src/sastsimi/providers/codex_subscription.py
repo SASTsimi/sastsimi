@@ -92,6 +92,8 @@ async def _codex_process_lock() -> AsyncIterator[None]:
     finally:
         if acquired:
             _PROCESS_LOCK.release()
+
+
 _CHILD_ENVIRONMENT_ALLOWLIST = (
     "CODEX_HOME",
     "SYSTEMROOT",

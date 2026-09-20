@@ -257,10 +257,7 @@ class ProductionPreparedCallAuthorizer:
         if invocation.dispatch_state == "UNRESOLVED":
             # An unknown external outcome cannot be safely settled or released.
             return
-        if (
-            stored_result.usage is None
-            or stored_result.usage.cost_minor_units is None
-        ):
+        if stored_result.usage is None or stored_result.usage.cost_minor_units is None:
             actual = self._runner.units(
                 elapsed_ms=stored_result.elapsed_ms,
                 llm_call_count=1,

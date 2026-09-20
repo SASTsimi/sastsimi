@@ -110,9 +110,7 @@ EXACT_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
             "sastsimi.simple_runtime.store",
         }
     ),
-    "sastsimi.interfaces.cli.dashboard": frozenset(
-        {"sastsimi.dashboard.server"}
-    ),
+    "sastsimi.interfaces.cli.dashboard": frozenset({"sastsimi.dashboard.server"}),
     "sastsimi.agents.chaining": frozenset(
         {
             "sastsimi.chaining.service",
@@ -132,9 +130,7 @@ EXACT_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
             "sastsimi.agents.verification",
         }
     ),
-    "sastsimi.reporting.markdown_export": frozenset(
-        {"sastsimi.config.runtime_paths"}
-    ),
+    "sastsimi.reporting.markdown_export": frozenset({"sastsimi.config.runtime_paths"}),
     "sastsimi.storage.agent_activity": frozenset(
         {"sastsimi.observability.agent_activity"}
     ),

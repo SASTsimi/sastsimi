@@ -95,9 +95,7 @@ def _current_profiles(
     context: LocalEvaluationInstallationContext,
     capabilities: LocalEvaluationT08Capabilities,
 ) -> tuple[RuntimeCapabilityProfile, dict[str, StaticToolProfile]]:
-    resolver = cast(
-        ProductionCapabilityResolverPort, context.runtime.configuration
-    )
+    resolver = cast(ProductionCapabilityResolverPort, context.runtime.configuration)
     try:
         git = resolver.resolve_pinned_active_profile(capabilities.git_profile_ref)
         static = {
@@ -157,9 +155,8 @@ def _current_profiles(
             raise ValueError("LOCAL_EVALUATION_STATIC_PROFILE_STALE")
         resolved[tool] = value
     codeql = resolved["CODEQL"]
-    if (
-        codeql.codeql_boundary is None
-        or codeql.codeql_boundary.supported_languages != ("PYTHON",)
+    if codeql.codeql_boundary is None or codeql.codeql_boundary.supported_languages != (
+        "PYTHON",
     ):
         raise ValueError("LOCAL_EVALUATION_CODEQL_PYTHON_ONLY_REQUIRED")
     return git, resolved
@@ -172,11 +169,7 @@ def _workspace_provisioning(
 ) -> tuple[WorkspaceStorageProvisioning, dict[str, bytes]]:
     relative = _workspace_relative(context)
     limits = context.profile.workspace_limits
-    capacity = (
-        limits.max_git_bytes
-        + limits.max_checkout_bytes
-        + limits.min_free_bytes
-    )
+    capacity = limits.max_git_bytes + limits.max_checkout_bytes + limits.min_free_bytes
     payload = canonical_bytes(
         {
             "kind": "local_evaluation_workspace_boundary",
@@ -225,21 +218,30 @@ def _static_provisioning(
         routes.append(
             StaticRouteProvisioning(
                 tool=tool,
-                adapter_key=cast(StaticAdapterKey, {
-                    "AST": "PYTHON_AST",
-                    "OPENGREP": "OPENGREP",
-                    "CODEQL": "CODEQL",
-                }[tool]),
-                executable_slot=cast(Literal["PYTHON_RUNTIME", "CODEQL", "OPENGREP"], {
-                    "AST": "PYTHON_RUNTIME",
-                    "OPENGREP": "OPENGREP",
-                    "CODEQL": "CODEQL",
-                }[tool]),
-                decoder_key=cast(StaticDecoderKey, {
-                    "AST": "PYTHON_AST_JSON_V1",
-                    "OPENGREP": "OPENGREP_JSON_V1",
-                    "CODEQL": "CODEQL_SARIF_V1",
-                }[tool]),
+                adapter_key=cast(
+                    StaticAdapterKey,
+                    {
+                        "AST": "PYTHON_AST",
+                        "OPENGREP": "OPENGREP",
+                        "CODEQL": "CODEQL",
+                    }[tool],
+                ),
+                executable_slot=cast(
+                    Literal["PYTHON_RUNTIME", "CODEQL", "OPENGREP"],
+                    {
+                        "AST": "PYTHON_RUNTIME",
+                        "OPENGREP": "OPENGREP",
+                        "CODEQL": "CODEQL",
+                    }[tool],
+                ),
+                decoder_key=cast(
+                    StaticDecoderKey,
+                    {
+                        "AST": "PYTHON_AST_JSON_V1",
+                        "OPENGREP": "OPENGREP_JSON_V1",
+                        "CODEQL": "CODEQL_SARIF_V1",
+                    }[tool],
+                ),
                 analysis_config_sha256=materials.analysis_config_sha256,
                 rule_catalog_sha256=rules[0],
                 rule_selection_sha256=rules[1],

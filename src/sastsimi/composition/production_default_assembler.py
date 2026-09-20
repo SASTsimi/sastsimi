@@ -554,7 +554,9 @@ def _require_static_runtime_ports(
     *,
     profile: ProductionProfile | None = None,
 ) -> None:
-    container_codeql = profile is not None and profile.codeql_container is not None
+    container_codeql = (
+        profile is not None and getattr(profile, "codeql_container", None) is not None
+    )
     if (
         "CODEQL" in static.enabled_tools
         and not container_codeql
@@ -604,7 +606,7 @@ def _t08_inputs(
         "PYTHON_AST": installation.profile.tools.python,
         "CODEQL": (
             installation.profile.tools.docker
-            if installation.profile.codeql_container is not None
+            if getattr(installation.profile, "codeql_container", None) is not None
             else installation.profile.tools.codeql
         ),
         "OPENGREP": installation.profile.tools.opengrep,
@@ -628,7 +630,7 @@ def _t08_inputs(
         output_quota=ports.output_quota,
         codeql_database_provider=ports.codeql_database_provider,
         codeql_database_limit_bytes=ports.codeql_database_limit_bytes,
-        codeql_container_config=installation.profile.codeql_container,
+        codeql_container_config=getattr(installation.profile, "codeql_container", None),
     )
     return ProductionT08Inputs(
         workspace=workspace,

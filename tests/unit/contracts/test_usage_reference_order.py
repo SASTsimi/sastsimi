@@ -19,3 +19,6 @@ def test_usage_references_have_one_canonical_order() -> None:
 
     assert canonical_usage_refs((second, first, second)) == (first, second)
     assert canonical_usage_refs((first, second)) == (first, second)
+
+
+# mypy: disable-error-code="arg-type"

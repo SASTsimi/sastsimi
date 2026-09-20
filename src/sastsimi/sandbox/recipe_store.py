@@ -1186,6 +1186,12 @@ class EnvironmentRecipeStore:
             rb"(?im)^\s*WORKDIR\s+([^\s#]+)\s*$", dockerfile
         )
         if not workdirs:
+            copies_to_workspace = re.search(
+                rb"(?im)^\s*(?:COPY|ADD)\s+(?:--[^\s]+\s+)*.+\s+/workspace/?\s*$",
+                dockerfile,
+            )
+            if copies_to_workspace is not None:
+                return dockerfile.rstrip() + b"\nWORKDIR /workspace\n"
             raise ValueError("DOCKERFILE_WORKDIR_CONFIRMATION_REQUIRED")
         source = workdirs[-1]
         if source == b"/workspace":

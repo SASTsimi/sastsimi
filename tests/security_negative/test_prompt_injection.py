@@ -131,7 +131,7 @@ def test_poc_candidate_allows_sandbox_paths_but_not_host_or_secret_values() -> N
         {
             "content": (
                 '#!/bin/sh\nwork="${TMPDIR:-/tmp}/poc"\n'
-                "/usr/bin/id\ncat /etc/passwd\necho \"$work\""
+                '/usr/bin/id\ncat /etc/passwd\necho "$work"'
             )
         }
     )

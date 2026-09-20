@@ -845,9 +845,7 @@ def _build_runtime(
     llm_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter] | None = None,
     capability_host_id: str | None = None,
     chaining_lineage: ChainingLineagePort | None = None,
-    protected_artifact_refs: Callable[
-        [], tuple[StoredDataRef | RunStoredDataRef, ...]
-    ]
+    protected_artifact_refs: Callable[[], tuple[StoredDataRef | RunStoredDataRef, ...]]
     | None = None,
     *,
     validator_factory: Callable[..., SQLiteRuntimeValidator],
@@ -1023,9 +1021,7 @@ def build_runtime(
     llm_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter] | None = None,
     capability_host_id: str | None = None,
     chaining_lineage: ChainingLineagePort | None = None,
-    protected_artifact_refs: Callable[
-        [], tuple[StoredDataRef | RunStoredDataRef, ...]
-    ]
+    protected_artifact_refs: Callable[[], tuple[StoredDataRef | RunStoredDataRef, ...]]
     | None = None,
     *,
     recover_expired_leases: bool = True,
@@ -1353,12 +1349,15 @@ def build_t11_services(
 
     def initial_stage_resolver(
         work: WorkExecutionState, request_ref: StoredDataRef
-    ) -> tuple[
-        EnvironmentRequirements,
-        StoredDataRef,
-        ReproductionPlan,
-        StoredDataRef,
-    ] | None:
+    ) -> (
+        tuple[
+            EnvironmentRequirements,
+            StoredDataRef,
+            ReproductionPlan,
+            StoredDataRef,
+        ]
+        | None
+    ):
         attempts = runtime.work.attempts_for_work(str(work.work_id))
         current = next(
             (

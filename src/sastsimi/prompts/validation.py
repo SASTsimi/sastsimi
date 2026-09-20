@@ -98,6 +98,7 @@ def _trusted_finalizer_citation_fields(
         return frozenset({"citations"})
     return frozenset()
 
+
 _ROLE_RESULT_KINDS: Mapping[str, frozenset[str]] = {
     "HYPOTHESIS": frozenset({"hypothesis_proposal", "hypothesis_duplicate_review"}),
     "PRO": frozenset({"pro_evidence_result"}),

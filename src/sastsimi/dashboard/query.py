@@ -51,10 +51,13 @@ class DashboardQuery:
 
     @staticmethod
     def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
-        return connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-            (name,),
-        ).fetchone() is not None
+        return (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (name,),
+            ).fetchone()
+            is not None
+        )
 
     def _checkpoints(self) -> tuple[StageCheckpoint, ...]:
         with self._connect() as connection:
@@ -78,9 +81,7 @@ class DashboardQuery:
         for summary in self._full_runtime_summaries():
             if summary.analysis_id not in known:
                 summaries.append(summary)
-        return tuple(
-            sorted(summaries, key=lambda item: item.analysis_id)
-        )
+        return tuple(sorted(summaries, key=lambda item: item.analysis_id))
 
     def get_analysis(self, analysis_id: str) -> AnalysisDetailView:
         self._validate_analysis_id(analysis_id)

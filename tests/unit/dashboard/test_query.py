@@ -77,9 +77,10 @@ def seed(data_dir) -> None:
         )
     )
     finding = ref("finding")
-    assert FindingDisplayIdStore(database).get_or_allocate(
-        "analysis-a", finding
-    ) == "F-001"
+    assert (
+        FindingDisplayIdStore(database).get_or_allocate("analysis-a", finding)
+        == "F-001"
+    )
     report = data_dir / "reports" / "analysis-a" / "F-001.md"
     report.parent.mkdir(parents=True)
     report.write_text("# report", encoding="utf-8")
@@ -108,3 +109,6 @@ def test_report_path_rejects_traversal_and_unknown_report(tmp_path) -> None:
     with pytest.raises(DashboardNotFound):
         query.report_path("analysis-a", "F-999")
     assert query.report_path("analysis-a", "F-001").name == "F-001.md"
+
+
+# mypy: disable-error-code="no-untyped-def"

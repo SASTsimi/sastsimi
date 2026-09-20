@@ -131,3 +131,6 @@ async def test_local_codex_records_publish_only_through_exact_local_evidence() -
             validation.provider,
             local_evidence_ref=wrong_scope,
         )
+
+
+# mypy: disable-error-code="arg-type,unused-ignore"

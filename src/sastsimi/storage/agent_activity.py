@@ -86,10 +86,7 @@ class AgentActivityStore:
         *,
         hypothesis_id: str | None = None,
     ) -> tuple[AgentActivityEvent, ...]:
-        sql = (
-            "SELECT event_json FROM agent_activity_events "
-            "WHERE analysis_id = ?"
-        )
+        sql = "SELECT event_json FROM agent_activity_events WHERE analysis_id = ?"
         values: tuple[str, ...]
         if hypothesis_id is None:
             values = (analysis_id,)
@@ -99,9 +96,7 @@ class AgentActivityStore:
         sql += " ORDER BY started_at, rowid"
         with self._connect() as connection:
             rows = connection.execute(sql, values).fetchall()
-        return tuple(
-            AgentActivityEvent.model_validate_json(row[0]) for row in rows
-        )
+        return tuple(AgentActivityEvent.model_validate_json(row[0]) for row in rows)
 
 
 __all__ = ["AgentActivityStore"]

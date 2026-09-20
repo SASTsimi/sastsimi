@@ -196,16 +196,16 @@ def _static_selection(
                     "database_limit_bytes": 2,
                     "execution_limit_bytes": 1,
                     "database_provider_key": "test-provider",
-                        "database_provider_revision": "1",
-                        "database_provider_evidence_sha256": "2" * 64,
-                        "image_digest": "sha256:" + "3" * 64,
-                        "expected_codeql_version": "1.0.0",
-                        "query_pack_sha256": "4" * 64,
-                        "container_user": "65532:65532",
-                        "pids_limit": 64,
-                        "memory_limit_bytes": 536_870_912,
-                        "nano_cpus": 500_000_000,
-                        "supported_languages": codeql_languages,
+                    "database_provider_revision": "1",
+                    "database_provider_evidence_sha256": "2" * 64,
+                    "image_digest": "sha256:" + "3" * 64,
+                    "expected_codeql_version": "1.0.0",
+                    "query_pack_sha256": "4" * 64,
+                    "container_user": "65532:65532",
+                    "pids_limit": 64,
+                    "memory_limit_bytes": 536_870_912,
+                    "nano_cpus": 500_000_000,
+                    "supported_languages": codeql_languages,
                     "prebuilt_database_only": True,
                 }
                 if adapter == "CODEQL"
@@ -236,7 +236,7 @@ def _static_selection(
             "host_id": "host-a",
             "profile_key": name,
             "capability_kind": "AST" if adapter == "PYTHON_AST" else adapter,
-            "subject_key": name,
+            "subject_key": "docker" if adapter == "CODEQL" else name,
             "observed_version": "1",
             "observed_sha256": "c" * 64,
             "execution_target_hash": (
@@ -492,16 +492,12 @@ def test_profile_accepts_exact_windows_batch_file_when_fd_mode_bits_differ(
     # the CRT descriptor reports the same file with regular read/write bits.
     assert path_details.st_ino == descriptor_details.st_ino
     assert path_details.st_dev == descriptor_details.st_dev
-    assert stat.S_IFMT(path_details.st_mode) == stat.S_IFMT(
-        descriptor_details.st_mode
-    )
+    assert stat.S_IFMT(path_details.st_mode) == stat.S_IFMT(descriptor_details.st_mode)
     assert path_details.st_mode != descriptor_details.st_mode
 
     result = _build(tmp_path, tracked)
 
-    assert tuple(item.git_path for item in result.tracked_files) == (
-        "docs/make.bat",
-    )
+    assert tuple(item.git_path for item in result.tracked_files) == ("docs/make.bat",)
 
 
 def test_unknown_or_ambiguous_build_is_not_guessed(tmp_path: Path) -> None:
@@ -692,9 +688,7 @@ def test_python_library_without_start_command_still_selects_static_tools(
         "OPENGREP",
         "PYTHON_AST",
     ]
-    assert [gap.code for gap in selection.gaps] == [
-        "BUILD_OR_START_UNCONFIRMED"
-    ]
+    assert [gap.code for gap in selection.gaps] == ["BUILD_OR_START_UNCONFIRMED"]
 
 
 def test_tool_selection_runs_verified_intersection_when_optional_codeql_is_missing(
@@ -888,9 +882,7 @@ def test_python_only_codeql_routes_mixed_repository_without_blocking_opengrep(
     )
 
     assert selection.status == "READY"
-    assert {
-        item.adapter_key: item.languages for item in selection.selected_tools
-    } == {
+    assert {item.adapter_key: item.languages for item in selection.selected_tools} == {
         "CODEQL": ("PYTHON",),
         "OPENGREP": ("JAVASCRIPT", "PYTHON"),
         "PYTHON_AST": ("PYTHON",),

@@ -406,9 +406,10 @@ def restore_local_prompt_configuration_plan(
 
     def exact(ref: StoredDataRef, expected_type: type[_RecordT]) -> _RecordT:
         value = indexed.get((str(ref.record_id), ref.data_kind))
-        if not isinstance(value, expected_type) or reference(
-            cast(ReferencedRecord, value)
-        ) != ref:
+        if (
+            not isinstance(value, expected_type)
+            or reference(cast(ReferencedRecord, value)) != ref
+        ):
             raise ValueError("LOCAL_PROMPT_RESUME_CONFIGURATION_INCOMPLETE")
         return value
 
@@ -470,8 +471,7 @@ def restore_local_prompt_configuration_plan(
         exact(entry.output_schema_ref, OutputSchemaSpec) for entry in entries
     )
     validators = tuple(
-        exact(entry.semantic_validator_ref, SemanticValidatorSpec)
-        for entry in entries
+        exact(entry.semantic_validator_ref, SemanticValidatorSpec) for entry in entries
     )
     shared_refs = (
         "execution_limits_ref",

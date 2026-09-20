@@ -22,4 +22,3 @@ def test_integrity_only_opens_content_backed_artifact_refs() -> None:
         artifact_digest,
     )
     assert tuple(artifact_hashes(_ref("recipe_source", recipe_identity_digest))) == ()
-

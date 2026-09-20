@@ -42,27 +42,21 @@ def _chaining_prepared_input_refs(
     if not isinstance(work.meta, RecordMeta):
         raise ValueError("LLM_CONTEXT_WORK_MISMATCH: chaining prepared_input")
     meta = work.meta
-    if (
-        len(spec.context_refs) != len(work.input_refs) + 1
-        or tuple(spec.context_refs[:-1]) != tuple(work.input_refs)
-    ):
+    if len(spec.context_refs) != len(work.input_refs) + 1 or tuple(
+        spec.context_refs[:-1]
+    ) != tuple(work.input_refs):
         raise ValueError("LLM_CONTEXT_WORK_MISMATCH: chaining prepared_input")
     source = spec.context_refs[-1]
     bindings = tuple(
-        binding
-        for binding in payload.context_bindings
-        if binding.source_ref == source
+        binding for binding in payload.context_bindings if binding.source_ref == source
     )
     if len(bindings) != 1:
         raise ValueError("LLM_CONTEXT_WORK_MISMATCH: chaining prepared_input")
     binding = bindings[0]
     projected = binding.projected_data_ref
     exact_projection = (
-        binding.slot == "prepared_input"
-        and binding.field_paths == ("/redacted_body",)
-    ) or (
-        binding.slot.startswith("context-") and binding.field_paths == ("$",)
-    )
+        binding.slot == "prepared_input" and binding.field_paths == ("/redacted_body",)
+    ) or (binding.slot.startswith("context-") and binding.field_paths == ("$",))
     if (
         binding.data_kind != "artifact"
         or not exact_projection
@@ -257,9 +251,7 @@ def check_llm_context(
         ):
             raise ValueError("LLM_CONTEXT_WORK_MISMATCH: call spec already bound")
     allowed: set[RecordRef] = set(work.input_refs)
-    allowed.update(
-        _chaining_prepared_input_refs(payload=payload, spec=spec, work=work)
-    )
+    allowed.update(_chaining_prepared_input_refs(payload=payload, spec=spec, work=work))
     allowed.update(
         _dynamic_poc_context_refs(
             records,

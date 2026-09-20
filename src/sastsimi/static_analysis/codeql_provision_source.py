@@ -56,8 +56,7 @@ def _environment() -> dict[str, str]:
     allowed = {
         name.upper(): value
         for name, value in os.environ.items()
-        if name.upper() in {"SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR"}
-        and value
+        if name.upper() in {"SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR"} and value
     }
     return allowed | {
         "GIT_CONFIG_NOSYSTEM": "1",
@@ -180,9 +179,7 @@ def prepare_exact_source(
             raise ValueError("CODEQL_PROVISION_SOURCE_MISMATCH")
         _unchanged(runner, repository)
         raw = _git(runner, repository, "ls-files", "--stage", "-z")
-        tracked, _gaps = _build_manifest(
-            repository, raw, DEFAULT_SENSITIVE_PATH_POLICY
-        )
+        tracked, _gaps = _build_manifest(repository, raw, DEFAULT_SENSITIVE_PATH_POLICY)
         if not tracked:
             raise ValueError("CODEQL_PROVISION_SOURCE_MISMATCH")
         for item in tracked:
@@ -198,18 +195,22 @@ def prepare_exact_source(
                 ):
                     raise ValueError
                 destination_file.parent.mkdir(parents=True, exist_ok=True)
-                with source.open("rb") as reader, destination_file.open(
-                    "xb"
-                ) as writer:
+                with source.open("rb") as reader, destination_file.open("xb") as writer:
                     shutil.copyfileobj(reader, writer, length=1024 * 1024)
                     writer.flush()
                     os.fsync(writer.fileno())
                 after = source.lstat()
                 if (
-                    (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-                    != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-                    or destination_file.stat().st_size != item.size_bytes
-                ):
+                    before.st_dev,
+                    before.st_ino,
+                    before.st_size,
+                    before.st_mtime_ns,
+                ) != (
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_size,
+                    after.st_mtime_ns,
+                ) or destination_file.stat().st_size != item.size_bytes:
                     raise ValueError
             except (OSError, ValueError):
                 raise ValueError("CODEQL_PROVISION_SOURCE_MISMATCH") from None

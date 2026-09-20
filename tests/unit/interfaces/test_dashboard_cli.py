@@ -21,12 +21,18 @@ def test_dashboard_cli_starts_loopback_server(monkeypatch, tmp_path) -> None:
 
 
 def test_dashboard_cli_rejects_external_host(tmp_path) -> None:
-    assert main(
-        [
-            "--data-dir",
-            str(tmp_path),
-            "dashboard",
-            "--host",
-            "0.0.0.0",
-        ]
-    ) != 0
+    assert (
+        main(
+            [
+                "--data-dir",
+                str(tmp_path),
+                "dashboard",
+                "--host",
+                "0.0.0.0",
+            ]
+        )
+        != 0
+    )
+
+
+# mypy: disable-error-code="no-untyped-def,var-annotated"

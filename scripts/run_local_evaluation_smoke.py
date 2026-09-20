@@ -167,9 +167,7 @@ def validate_run(
         raise SmokeFailure("REPORT_EXPORT_INVENTORY_MISMATCH")
 
     if target.name == "pygoat" and (
-        finding_count < 1
-        or report_count < 1
-        or verdict_counts.get("TRUE", 0) < 1
+        finding_count < 1 or report_count < 1 or verdict_counts.get("TRUE", 0) < 1
     ):
         raise SmokeFailure("PYGOAT_TRUE_REPORT_REQUIRED")
 
@@ -235,9 +233,7 @@ def _run_json(command: list[str], timeout_seconds: int) -> dict[str, object]:
         value: object = json.loads(completed.stdout)
     except json.JSONDecodeError:
         raise SmokeFailure("CLI_OUTPUT_NOT_JSON") from None
-    if not isinstance(value, dict) or any(
-        not isinstance(key, str) for key in value
-    ):
+    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
         raise SmokeFailure("CLI_OUTPUT_NOT_OBJECT")
     return cast(dict[str, object], value)
 
@@ -272,9 +268,7 @@ def run_target(
 ) -> dict[str, object]:
     """Execute one pinned repository and verify its persisted result closure."""
 
-    evaluate = execute(
-        _evaluate_command(target, profile, data_dir), timeout_seconds
-    )
+    evaluate = execute(_evaluate_command(target, profile, data_dir), timeout_seconds)
     evaluation_data = _data(evaluate, "evaluate analyze")
     analysis_id = evaluation_data.get("analysis_id")
     if not isinstance(analysis_id, str) or not analysis_id:
@@ -293,9 +287,7 @@ def run_target(
         raise SmokeFailure("REPORT_LIST_INVALID")
     exported: dict[str, Path] = {}
     for item in listed:
-        if not isinstance(item, Mapping) or not isinstance(
-            item.get("finding_id"), str
-        ):
+        if not isinstance(item, Mapping) or not isinstance(item.get("finding_id"), str):
             raise SmokeFailure("REPORT_SUMMARY_INVALID")
         finding_id = cast(str, item["finding_id"])
         export_payload = execute(

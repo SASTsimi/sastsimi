@@ -210,9 +210,10 @@ def restore_local_evaluation_run_configuration(
 
     def exact(ref: StoredDataRef, expected_type: type[_RecordT]) -> _RecordT:
         value = indexed.get((str(ref.record_id), ref.data_kind))
-        if not isinstance(value, expected_type) or reference(
-            cast(ReferencedRecord, value)
-        ) != ref:
+        if (
+            not isinstance(value, expected_type)
+            or reference(cast(ReferencedRecord, value)) != ref
+        ):
             raise ValueError("LOCAL_RUN_RESUME_CONFIGURATION_INCOMPLETE")
         return value
 

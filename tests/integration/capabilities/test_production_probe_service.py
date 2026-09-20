@@ -1081,3 +1081,6 @@ def test_registry_publish_precedes_idempotent_probe_marker_reconciliation(
     assert runtime.configuration.resolve_pinned_active_profile(recovered).status == (
         "ACTIVE"
     )
+
+
+# mypy: disable-error-code="attr-defined,union-attr"

@@ -611,3 +611,6 @@ def test_prepare_bundle_rejects_an_unindexed_extra_file(work_dir: Path) -> None:
 
     assert result.code == ExitCode.CAPABILITY_UNSUPPORTED
     assert result.data["reason_code"] == "PRODUCTION_ONBOARDING_BUNDLE_INVALID"
+
+
+# mypy: disable-error-code="index"

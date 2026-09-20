@@ -432,13 +432,12 @@ class LocalEvaluationOperatorProfiles(ProductionOperatorProfiles):
             if isinstance(meta, (RecordMeta, RunMeta)):
                 indexed[(str(meta.record_id), meta.record_type)] = item
 
-        def exact(
-            ref: BudgetScopeRef, expected_type: type[_RecordT]
-        ) -> _RecordT:
+        def exact(ref: BudgetScopeRef, expected_type: type[_RecordT]) -> _RecordT:
             value = indexed.get((str(ref.record_id), ref.data_kind))
-            if not isinstance(value, expected_type) or reference(
-                cast(ReferencedRecord, value)
-            ) != ref:
+            if (
+                not isinstance(value, expected_type)
+                or reference(cast(ReferencedRecord, value)) != ref
+            ):
                 raise ValueError("LOCAL_OPERATOR_RESUME_CONFIGURATION_INCOMPLETE")
             return value
 

@@ -863,9 +863,7 @@ class _CapabilityProbeEngine:
                     "probe_timeout_ms": 15_000,
                     "run_timeout_ms": 300_000,
                     "stdout_limit_bytes": (
-                        8_388_608
-                        if kind in {"PYTHON_AST", "OPENGREP"}
-                        else 1_048_576
+                        8_388_608 if kind in {"PYTHON_AST", "OPENGREP"} else 1_048_576
                     ),
                     "stderr_limit_bytes": 1_048_576,
                     "max_attempt_output_bytes": codeql_output_limit,

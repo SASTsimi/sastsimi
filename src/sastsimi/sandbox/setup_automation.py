@@ -265,21 +265,16 @@ class ReproductionSetupAutomation:
             or baseline.source_manifest != source.source_manifest
         ):
             raise ValueError("BASELINE_RECIPE_SOURCE_MISMATCH")
-        image_ref = self._resources.preserved_image_ref(
-            baseline.built_image_digest
-        )
+        image_ref = self._resources.preserved_image_ref(baseline.built_image_digest)
         if image_ref is None:
             raise ValueError("REUSABLE_BASELINE_OWNERSHIP_REQUIRED")
         owned = self._resources.exact(image_ref)
         if owned is None or owned.resource_kind != "IMAGE":
             raise ValueError("REUSABLE_BASELINE_OWNERSHIP_REQUIRED")
-        observed = await self._docker.inspect_owned_image(
-            baseline.built_image_digest
-        )
-        if (
-            observed.image_digest != baseline.built_image_digest
-            or dict(observed.labels) != dict(owned.labels)
-        ):
+        observed = await self._docker.inspect_owned_image(baseline.built_image_digest)
+        if observed.image_digest != baseline.built_image_digest or dict(
+            observed.labels
+        ) != dict(owned.labels):
             raise ValueError("REUSABLE_BASELINE_OWNERSHIP_MISMATCH")
         recipe = self._recipes.bind_existing(
             baseline=baseline,

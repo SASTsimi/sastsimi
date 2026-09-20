@@ -573,3 +573,6 @@ async def test_provider_failure_returns_no_proposal(status: InvocationStatus) ->
 
     assert outcome.proposals == ()
     assert outcome.invocation.result.status == status
+
+
+# mypy: disable-error-code="arg-type"

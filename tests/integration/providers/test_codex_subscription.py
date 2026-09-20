@@ -519,3 +519,6 @@ async def test_codex_unwraps_array_transport_before_validation_and_storage() -> 
     expected = [{"decision": "accept"}, {"decision": "reject"}]
     assert result.status == "SUCCEEDED"
     assert validator.values == [expected]
+
+
+# mypy: disable-error-code="assignment,override"

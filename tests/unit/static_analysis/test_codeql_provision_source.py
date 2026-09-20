@@ -50,13 +50,17 @@ def _repository(tmp_path: Path) -> tuple[Path, str]:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    commit = subprocess.run(
-        (str(_git()), "-C", str(root), "rev-parse", "HEAD"),
-        check=True,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    ).stdout.decode("ascii").strip()
+    commit = (
+        subprocess.run(
+            (str(_git()), "-C", str(root), "rev-parse", "HEAD"),
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        .stdout.decode("ascii")
+        .strip()
+    )
     return root, commit
 
 

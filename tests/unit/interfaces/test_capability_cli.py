@@ -170,9 +170,7 @@ def test_capability_probe_can_be_approved_by_a_separate_cli_process(
 
     orphan = b"unreferenced-artifact"
     orphan_hash = hashlib.sha256(orphan).hexdigest()
-    orphan_path = (
-        data_dir / "artifacts" / "sha256" / orphan_hash[:2] / orphan_hash[2:]
-    )
+    orphan_path = data_dir / "artifacts" / "sha256" / orphan_hash[:2] / orphan_hash[2:]
     orphan_path.parent.mkdir(parents=True, exist_ok=True)
     orphan_path.write_bytes(orphan)
 

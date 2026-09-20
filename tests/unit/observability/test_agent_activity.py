@@ -61,9 +61,7 @@ def test_event_rejects_secret_and_host_absolute_path(tmp_path, unsafe: str) -> N
     store = AgentActivityStore(tmp_path / "sastsimi.sqlite3")
 
     with pytest.raises(ValueError, match="AGENT_ACTIVITY_UNSAFE"):
-        store.append(
-            event(ActivityKind.DECISION_RECORDED, summary_ko=unsafe)
-        )
+        store.append(event(ActivityKind.DECISION_RECORDED, summary_ko=unsafe))
 
 
 def test_duplicate_event_with_different_content_is_rejected(tmp_path) -> None:
@@ -73,3 +71,6 @@ def test_duplicate_event_with_different_content_is_rejected(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="AGENT_ACTIVITY_EVENT_CONFLICT"):
         store.append(first.model_copy(update={"summary_ko": "다른 내용"}))
+
+
+# mypy: disable-error-code="no-untyped-def"

@@ -56,7 +56,8 @@
     "Purpose": {
       "enum": [
         "EVALUATION",
-        "PRODUCTION"
+        "PRODUCTION",
+        "LOCAL_EVALUATION"
       ],
       "type": "string"
     },
