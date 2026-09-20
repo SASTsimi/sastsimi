@@ -128,6 +128,30 @@ def test_hypothesis_schema_is_content_only_array() -> None:
         validate_local_output("HYPOTHESIS", "GENERATE_INITIAL", {"proposals": []})
 
 
+def test_verification_rejects_primitive_without_exact_evidence() -> None:
+    with pytest.raises(ValueError, match="LOCAL_EVALUATION_OUTPUT_INVALID"):
+        validate_local_output(
+            "VERIFICATION",
+            "FINAL_VERDICT",
+            {
+                "verdict": "HOLD",
+                "verdict_rationale": "More evidence is required.",
+                "falsification_results": [],
+                "validation_results": [],
+                "required_primitive_candidates": [
+                    {
+                        "entity_refs": [],
+                        "privilege_level": None,
+                        "evidence_refs": [],
+                        "description": "Unproven missing input",
+                    }
+                ],
+                "provided_primitive_candidates": [],
+                "unresolved_conditions": ["Missing dynamic evidence"],
+            },
+        )
+
+
 def test_unknown_route_is_fail_closed() -> None:
     with pytest.raises(ValueError, match="LOCAL_EVALUATION_OUTPUT_ROUTE_UNAVAILABLE"):
         local_output_schema("HYPOTHESIS", "UNKNOWN")
