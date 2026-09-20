@@ -66,6 +66,14 @@ def test_catalog_declares_exact_current_runtime_input_kinds() -> None:
         "con_evidence_result",
     }
 
+    dynamic_request = _spec("VERIFICATION", "CREATE_DYNAMIC_REQUEST")
+    assert (
+        "code_context_response",
+        "REQUIRED_MANY",
+    ) in {
+        (str(slot.data_kind), slot.cardinality) for slot in dynamic_request.input_slots
+    }
+
     technical = _spec("TECHNICAL_GATE", "REVIEW_TECHNICAL")
     assert "budget_profile_binding" in {
         str(slot.data_kind) for slot in technical.input_slots

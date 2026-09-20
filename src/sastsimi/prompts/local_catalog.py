@@ -122,6 +122,7 @@ _INPUTS: dict[tuple[str, str], tuple[PromptInputSlot, ...]] = {
         *_DEBATE_RESULTS,
         _slot("initial_assessment", "verification_initial_assessment"),
         _slot("sandbox_profile", "sandbox_profile"),
+        _slot("code_context", "code_context_response", "REQUIRED_MANY"),
     ),
     ("VERIFICATION", "FINAL_VERDICT"): (
         *_VERIFICATION_PUBLIC,
