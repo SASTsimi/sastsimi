@@ -31,6 +31,7 @@ from sastsimi.ports.context import (
 )
 from sastsimi.ports.dto import MonotonicActionDeadline, TrackedFile
 from sastsimi.static_analysis.context_retrieval import (
+    context_intent_hash,
     plan_context_retrieval,
     read_context_files,
 )
@@ -298,6 +299,49 @@ def test_seed_only_uses_empty_relation_query() -> None:
 
     assert plan.relations == ()
     assert plan.entities == (symbols["seed"],)
+
+
+def test_plan_hash_binds_the_expanded_authorized_targets() -> None:
+    bundle, symbols = _fixture()
+    bundle_ref = reference(bundle)
+    assert isinstance(bundle_ref, StoredDataRef)
+    limits = ContextRetrievalLimits(
+        max_depth=1,
+        max_fragments=20,
+        max_bytes=100_000,
+        max_requests_per_hypothesis=3,
+        timeout_ms=2_000,
+    )
+    intent = ContextRetrievalIntent(
+        proposal_ref=_ref("hypothesis_proposal", "proposal-r1"),
+        bundle_ref=bundle_ref,
+        requested_entities=(symbols["seed"],),
+        requested_locations=(),
+        relation_query=("CALLEES",),
+        reason="Need exact context",
+        requested_limits=limits,
+    )
+
+    plan = plan_context_retrieval(
+        intent=intent,
+        bundle=bundle,
+        workspace=_workspace(),
+        work=_work(),
+        ceilings=ContextCeilingProfile(_ref("artifact", "e" * 64), limits),
+        work_timeout_ms=2_000,
+    )
+    bound_intent = ContextRetrievalIntent(
+        proposal_ref=plan.proposal_ref,
+        bundle_ref=plan.bundle_ref,
+        requested_entities=plan.entities,
+        requested_locations=plan.locations,
+        relation_query=intent.relation_query,
+        reason=intent.reason,
+        requested_limits=plan.requested_limits,
+    )
+
+    assert plan.entities != intent.requested_entities
+    assert plan.intent_hash == context_intent_hash(bound_intent)
 
 
 def test_requested_limit_above_ceiling_fails_before_any_file_api(
