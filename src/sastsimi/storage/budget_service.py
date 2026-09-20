@@ -49,6 +49,7 @@ UNIT_FIELDS = (
     "retry_count",
     "cost_minor_units",
 )
+_LOCAL_MANUAL_REPAIR_ATTEMPTS = 2
 
 
 def _allows_local_manual_repair_attempt(
@@ -59,7 +60,7 @@ def _allows_local_manual_repair_attempt(
     work_status: WorkStatus | str,
     transition_cause: str | None,
 ) -> bool:
-    """Allow one audited repair slot only for an explicit local manual resume."""
+    """Allow bounded repair slots only for an explicit local manual resume."""
 
     if (
         purpose != Purpose.LOCAL_EVALUATION
@@ -318,7 +319,11 @@ class BudgetService:
                 work_status=work.status,
                 transition_cause=transition_cause,
             ):
-                ceiling += 1
+                # One slot repairs the exhausted local work.  A second bounded
+                # slot keeps a pre-provider infrastructure repair from
+                # consuming the work's sole content retry.  Production remains
+                # closed and every failed attempt stays in durable history.
+                ceiling += _LOCAL_MANUAL_REPAIR_ATTEMPTS
         if kinds:
             if ceiling is None:
                 raise ValueError("BUDGET unavailable: operation limit is unspecified")

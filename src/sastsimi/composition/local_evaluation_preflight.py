@@ -26,10 +26,18 @@ from sastsimi.composition.local_evaluation_composition import (
     LocalEvaluationInstallationContext,
     ResolvedLocalEvaluationCapabilities,
 )
+from sastsimi.composition.local_static_materials import LocalStaticMaterialSet
 from sastsimi.config.local_evaluation_profile import LocalEvaluationProfile
 from sastsimi.contracts.analysis import AnalysisStartRequest
-from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.refs import (
+    HostConfigurationRef,
+    RunStoredDataRef,
+    StoredDataRef,
+    reference,
+)
+from sastsimi.contracts.work import WorkStatus, WorkType
 from sastsimi.orchestration.run_scope_plan import PlannedRunScope
+from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.scheduler import CancellationObservation, CancellationTarget
 from sastsimi.runtime.work_service import HandlerFailureRecorder
 from sastsimi.verification.production_llm_work_handlers import ProductionCallPort
@@ -52,6 +60,123 @@ def _required_executable(name: str) -> Path:
             f"LOCAL_EVALUATION_{name.upper()}_UNAVAILABLE"
         )
     return executable
+
+
+def _prepared_artifact_refs(
+    *,
+    prompt_plan: Any,
+    run_configuration: Any,
+    policy_boundary_ref: StoredDataRef,
+) -> tuple[StoredDataRef | RunStoredDataRef, ...]:
+    """Keep exact preflight artifacts alive until runtime publication binds them."""
+
+    candidates: tuple[StoredDataRef | RunStoredDataRef, ...] = (
+        prompt_plan.local_evidence_ref,
+        prompt_plan.client_execution.network_policy_ref,
+        *(item.schema_artifact_ref for item in prompt_plan.output_schemas),
+        *(item.implementation_ref for item in prompt_plan.semantic_validators),
+        *(
+            ref
+            for item in prompt_plan.semantic_validators
+            for ref in item.test_refs
+        ),
+        *(item.template_ref for item in prompt_plan.prompt_entries),
+        *run_configuration.sandbox_profile.isolation_policy_refs,
+        run_configuration.workspace_policy_ref,
+        policy_boundary_ref,
+    )
+    unique: list[StoredDataRef | RunStoredDataRef] = []
+    seen: set[str] = set()
+    for ref in candidates:
+        if ref.data_kind != "artifact" or ref.record_id is not None:
+            raise ValueError("LOCAL_PREFLIGHT_ARTIFACT_REFERENCE_INVALID")
+        if ref.content_hash not in seen:
+            seen.add(ref.content_hash)
+            unique.append(ref)
+    return tuple(unique)
+
+
+def _prepared_static_artifact_refs(
+    *,
+    materials: LocalStaticMaterialSet,
+    artifacts: ArtifactStore,
+) -> tuple[StoredDataRef, ...]:
+    """Protect exact static materials across install-to-run recovery."""
+
+    protected: list[StoredDataRef] = []
+    for expected_digest in sorted(materials.evidence):
+        payload = materials.evidence[expected_digest]
+        ref = artifacts.commit(
+            artifacts.stage_bytes(payload, "application/octet-stream")
+        )
+        if (
+            ref.data_kind != "artifact"
+            or ref.record_id is not None
+            or ref.content_hash != expected_digest
+        ):
+            raise ValueError("LOCAL_STATIC_ARTIFACT_REFERENCE_INVALID")
+        protected.append(ref)
+    return tuple(protected)
+
+
+def _restore_completed_workspace_registration(
+    *,
+    context: Any,
+    t08: Any,
+) -> bool:
+    """Restore the in-memory locator from one exact durable prep receipt.
+
+    Resume must reuse the verified clone rather than guess its path or run Git
+    again.  The external runner revalidates the successful attempt, receipt,
+    lease, commit, policy and host capability references before registration.
+    """
+
+    analysis_id = str(context.scope.analysis_id)
+    state = context.runtime.budget_registry.current_state(analysis_id)
+    if state.workspace_ref is None and state.commit_id is None:
+        return False
+    if state.workspace_ref is None or state.commit_id is None:
+        raise ValueError("LOCAL_RESUME_WORKSPACE_STATE_INCOMPLETE")
+
+    run_input = context.runtime.budget_registry.current_input(analysis_id)
+    input_ref = reference(run_input)
+    if not isinstance(input_ref, RunStoredDataRef):
+        raise ValueError("LOCAL_RESUME_ANALYSIS_INPUT_INVALID")
+    candidates = tuple(
+        work
+        for work in context.scheduler_store.work_for_run(analysis_id)
+        if work.work_type == WorkType.WORKSPACE_PREP
+        and work.status == WorkStatus.SUCCEEDED
+        and work.output_refs == (state.workspace_ref,)
+    )
+    if len(candidates) != 1:
+        raise ValueError("LOCAL_RESUME_WORKSPACE_PREPARATION_AMBIGUOUS")
+    work = candidates[0]
+    if (
+        len(work.input_refs) not in {2, 3, 4}
+        or work.input_refs[0] != input_ref
+        or not isinstance(work.input_refs[1], RunStoredDataRef)
+        or work.input_refs[1].data_kind != "artifact"
+        or work.input_refs[1].record_id is not None
+    ):
+        raise ValueError("LOCAL_RESUME_WORKSPACE_INPUT_MISMATCH")
+    policy_ref = work.input_refs[1]
+    git_refs = work.input_refs[2:]
+    if len(git_refs) not in {0, 1, 2} or any(
+        not isinstance(item, HostConfigurationRef) for item in git_refs
+    ):
+        raise ValueError("LOCAL_RESUME_WORKSPACE_INPUT_MISMATCH")
+
+    external = t08.workspace_prep.external
+    preparation = external.resolve_repository_preparation(
+        workspace_work=work,
+        run_input=run_input,
+        policy_ref=policy_ref,
+        git_clone_profile_ref=git_refs[0] if git_refs else None,
+        git_checkout_profile_ref=git_refs[-1] if git_refs else None,
+    )
+    t08.workspace_locator.register(preparation)
+    return True
 
 
 def _default_capability_service_factory(
@@ -101,11 +226,19 @@ class ConcreteLocalEvaluationPreflight:
         from sastsimi.composition.local_evaluation_evidence import (
             ExactLocalEvaluationTrustedEvidence,
         )
+        from sastsimi.composition.local_evaluation_policy import (
+            local_evaluation_policy_boundary_bytes,
+        )
         from sastsimi.composition.local_evaluation_run_configuration import (
             build_local_evaluation_run_configuration,
+            restore_local_evaluation_run_configuration,
         )
         from sastsimi.composition.local_prompt_configuration import (
             build_local_prompt_configuration_plan,
+            restore_local_prompt_configuration_plan,
+        )
+        from sastsimi.composition.local_static_materials import (
+            load_local_candidate_static_materials,
         )
         from sastsimi.config.package_resources import builtin_package_root
         from sastsimi.config.runtime_paths import RuntimePaths
@@ -117,6 +250,9 @@ class ConcreteLocalEvaluationPreflight:
         )
         from sastsimi.runtime.system_support import SystemClock, UUIDIds
         from sastsimi.storage.artifact_store import LocalArtifactStore
+        from sastsimi.storage.database import Database
+        from sastsimi.storage.queries import RuntimeQueries
+        from sastsimi.storage.repositories import SQLiteRecordStore
 
         clock = SystemClock()
         ids = UUIDIds()
@@ -128,6 +264,16 @@ class ConcreteLocalEvaluationPreflight:
             RuntimePaths(data_dir).artifacts,
             scope.workspace_id,
             scope.commit_id,
+        )
+        static_materials = load_local_candidate_static_materials(
+            builtin_package_root().parent.parent
+            / "config"
+            / "static-analysis"
+            / "candidate-v1"
+        )
+        static_artifact_refs = _prepared_static_artifact_refs(
+            materials=static_materials,
+            artifacts=artifacts,
         )
         binding_records = build_local_codex_binding(
             settings=profile.codex,
@@ -143,7 +289,7 @@ class ConcreteLocalEvaluationPreflight:
             clock=clock,
             probe_timeout_ms=min(profile.timeouts.llm_ms, 120_000),
         )
-        prompt_plan = build_local_prompt_configuration_plan(
+        fresh_prompt_plan = build_local_prompt_configuration_plan(
             repository_root=builtin_package_root(),
             binding_records=binding_records,
             validation=validation,
@@ -155,12 +301,57 @@ class ConcreteLocalEvaluationPreflight:
             max_calls_per_work=profile.budget.max_calls_per_work,
             max_retries=profile.budget.max_retries_per_work,
         )
-        run_configuration = build_local_evaluation_run_configuration(
+        fresh_run_configuration = build_local_evaluation_run_configuration(
             profile=profile,
             scope=scope,
             artifacts=artifacts,
             ids=ids,
             clock=clock,
+        )
+        database = Database(RuntimePaths(data_dir).database)
+        database.check_ready()
+        stored_records = SQLiteRecordStore(database)
+        queries = RuntimeQueries(stored_records)
+        published_records = queries.published_records(str(scope.analysis_id))
+        latest_by_logical: dict[str, object] = {}
+        for item in published_records:
+            meta = getattr(item, "meta", None)
+            if meta is None:
+                continue
+            logical_id = str(meta.logical_record_id)
+            existing = latest_by_logical.get(logical_id)
+            if (
+                existing is None
+                or meta.revision_number > existing.meta.revision_number
+            ):
+                latest_by_logical[logical_id] = item
+        current_records = tuple(latest_by_logical.values())
+        restored = restore_local_prompt_configuration_plan(
+            published_records=published_records,
+            current_records=current_records,
+            binding_records=binding_records,
+            validation=validation,
+        )
+        resume_configuration = restored is not None
+        if restored is None:
+            prompt_plan = fresh_prompt_plan
+        else:
+            prompt_plan, validation = restored
+        run_configuration = (
+            restore_local_evaluation_run_configuration(
+                published_records=published_records,
+                current_records=current_records,
+                fresh=fresh_run_configuration,
+            )
+            if resume_configuration
+            else fresh_run_configuration
+        )
+        policy_boundary_bytes = local_evaluation_policy_boundary_bytes(
+            analysis_id=str(scope.analysis_id),
+            program_id=request.program_id,
+        )
+        policy_boundary_ref = artifacts.commit(
+            artifacts.stage_bytes(policy_boundary_bytes, "application/json")
         )
         provider_ref = reference(validation.provider)
         if not isinstance(provider_ref, StoredDataRef):
@@ -202,8 +393,11 @@ class ConcreteLocalEvaluationPreflight:
                 deferred_adapter=deferred_adapter,
                 deferred_calls=deferred_calls,
                 deferred_failures=deferred_failures,
+                policy_boundary_ref=policy_boundary_ref,
+                policy_boundary_bytes=policy_boundary_bytes,
                 repository_root=builtin_package_root(),
                 docker_executable=docker_executable,
+                resume_configuration=resume_configuration,
             )
 
         resolved = ResolvedLocalEvaluationCapabilities(
@@ -211,12 +405,21 @@ class ConcreteLocalEvaluationPreflight:
                 (provider_ref, validation.provider.model): deferred_adapter,
             },
             workspace_dependency_refs=(
-                *approved.workspace_dependency_refs,
                 run_configuration.workspace_policy_ref,
+                *approved.workspace_dependency_refs,
             ),
             handler_failure_recorder=deferred_failures,
             install=install,
             configuration_evidence=evidence,
+            protected_artifact_refs=(
+                *approved.protected_artifact_refs,
+                *static_artifact_refs,
+                *_prepared_artifact_refs(
+                    prompt_plan=prompt_plan,
+                    run_configuration=run_configuration,
+                    policy_boundary_ref=policy_boundary_ref,
+                ),
+            ),
         )
         resolver = _PreparedLocalCapabilityResolver(
             data_dir=data_dir.resolve(),
@@ -308,8 +511,11 @@ def _install_local_features(
     deferred_adapter: Any,
     deferred_calls: DeferredLocalEvaluationCalls,
     deferred_failures: _DeferredLocalFailureRecorder,
+    policy_boundary_ref: StoredDataRef,
+    policy_boundary_bytes: bytes,
     repository_root: Path,
     docker_executable: Path,
+    resume_configuration: bool,
 ) -> InstalledLocalEvaluationServices:
     from sastsimi.composition.local_dynamic_composition import (
         build_local_shared_dynamic_feature,
@@ -319,6 +525,7 @@ def _install_local_features(
     )
     from sastsimi.composition.local_prompt_configuration import (
         publish_local_prompt_configuration,
+        reuse_local_prompt_configuration,
     )
     from sastsimi.composition.local_t08_factory import (
         LocalEvaluationT08Capabilities,
@@ -383,9 +590,13 @@ def _install_local_features(
     ):
         raise ValueError("LOCAL_SANDBOX_PUBLICATION_MISMATCH")
 
-    published = publish_local_prompt_configuration(
-        plan=prompt_plan,
-        configuration=configuration,
+    published = (
+        reuse_local_prompt_configuration(plan=prompt_plan)
+        if resume_configuration
+        else publish_local_prompt_configuration(
+            plan=prompt_plan,
+            configuration=configuration,
+        )
     )
     records = context.runtime.unit_of_work.records
     artifacts = context.runtime.unit_of_work.artifacts
@@ -491,9 +702,13 @@ def _install_local_features(
             / "candidate-v1",
         ),
     )
+    if resume_configuration:
+        _restore_completed_workspace_registration(context=context, t08=t08)
     policy = build_local_evaluation_policy_feature(
         context=cast(Any, context),
         calls=cast(ProductionCallPort, calls),
+        boundary_ref=policy_boundary_ref,
+        boundary_bytes=policy_boundary_bytes,
     )
 
     def workspace_root_for(work: WorkExecutionState) -> Path:

@@ -21,7 +21,7 @@ from tests.integration.runtime_support import Harness, metadata
 from tests.unit.contracts.test_core_models import action, work
 
 
-def test_local_manual_resume_allows_one_repair_attempt() -> None:
+def test_local_manual_resume_allows_bounded_repair_attempts() -> None:
     assert _allows_local_manual_repair_attempt(
         purpose="LOCAL_EVALUATION",
         action_type="START_ATTEMPT",
