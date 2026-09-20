@@ -1,0 +1,47 @@
+{
+  "meta": {
+    "record_id": "rer-r2verify-failure-001",
+    "logical_record_id": "rer-r2verify-failure-001",
+    "record_type": "rule_execution_record",
+    "schema_version": "1.0.0",
+    "analysis_id": "analysis-r2verify-001",
+    "workspace_id": "ws-r2verify-001",
+    "commit_id": "99c66f2",
+    "attempt_id": "attempt-codeql-verify-002",
+    "revision_number": 1,
+    "previous_record_id": null,
+    "created_at": "2026-09-05T16:28:50Z",
+    "hypothesis_id": null
+  },
+  "tool_name": "codeql",
+  "tool_version": "2.26.4",
+  "analysis_config_ref": {
+    "stored_data_id": "cfg-r2verify-002",
+    "data_kind": "analysis_config",
+    "content_hash": "6cd4cb38e785e2a7adc82c0ffe9e21c332f69e1015919813c447c38d9f32050f",
+    "workspace_id": "ws-r2verify-001",
+    "commit_id": "99c66f2",
+    "record_id": null
+  },
+  "rule_catalog_ref": {
+    "stored_data_id": "cat-r2verify-001",
+    "data_kind": "rule_catalog",
+    "content_hash": "b062b362e80fb63c3c6c10e47b33ea0bf64cf32645140d5fa6974a05f2425cf0",
+    "workspace_id": "ws-r2verify-001",
+    "commit_id": "99c66f2",
+    "record_id": null
+  },
+  "selected_rule_packs": [
+    "codeql/python-queries:Security/CWE-089"
+  ],
+  "rules": [
+    {
+      "rule_id": "py/sql-injection",
+      "selection_status": "SELECTED",
+      "execution_status": "NOT_EXECUTED",
+      "hit_count": null,
+      "reason": "TOOL_FAILURE",
+      "detail": "database root missing before query evaluation stage (exit code 2)"
+    }
+  ]
+}
