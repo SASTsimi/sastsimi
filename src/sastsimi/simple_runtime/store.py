@@ -12,6 +12,8 @@ from .models import (
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
+    StageFailure,
+    StageResult,
     StageStatus,
     input_reference_hash,
 )
@@ -104,6 +106,114 @@ class SimpleCheckpointStore:
         )
         self._write(completed, fail_before_commit=fail_before_commit)
         return completed
+
+    def save_checkpoint(self, checkpoint: StageCheckpoint) -> None:
+        self._write(checkpoint)
+
+    def mark_running(
+        self,
+        identity: CheckpointIdentity,
+        stage: SimpleStage,
+        input_refs: tuple[StoredDataRef, ...],
+        *,
+        attempt_id: str,
+    ) -> StageCheckpoint:
+        previous = self.get(identity, stage)
+        checkpoint = StageCheckpoint(
+            identity=identity,
+            stage=stage,
+            status=StageStatus.RUNNING,
+            input_refs=input_refs,
+            input_hash=input_reference_hash(input_refs),
+            attempt_id=attempt_id,
+            attempt_number=(previous.attempt_number if previous else 0) + 1,
+            recipe_ref=previous.recipe_ref if previous else None,
+            image_digest=previous.image_digest if previous else None,
+            container_id=previous.container_id if previous else None,
+        )
+        self._write(checkpoint)
+        return checkpoint
+
+    def complete(
+        self,
+        checkpoint: StageCheckpoint,
+        result: StageResult,
+    ) -> StageCheckpoint:
+        completed = checkpoint.model_copy(
+            update={
+                "status": StageStatus.SUCCEEDED,
+                "output_refs": result.output_refs,
+                "error_code": None,
+                "retryable": False,
+                "recipe_ref": result.recipe_ref or checkpoint.recipe_ref,
+                "image_digest": result.image_digest or checkpoint.image_digest,
+                "container_id": result.container_id or checkpoint.container_id,
+                "validated_poc_ref": result.validated_poc_ref,
+                "report_ref": result.report_ref,
+                "verdict": result.verdict,
+                "markdown_path": result.markdown_path,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        self._write(completed)
+        return completed
+
+    def mark_failure(
+        self,
+        checkpoint: StageCheckpoint,
+        failure: StageFailure,
+        status: StageStatus,
+    ) -> StageCheckpoint:
+        if status not in (StageStatus.BLOCKED, StageStatus.FAILED):
+            raise ValueError("SimpleRuntime failure status must be BLOCKED or FAILED")
+        failed = checkpoint.model_copy(
+            update={
+                "status": status,
+                "error_code": failure.code,
+                "retryable": failure.retryable,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        self._write(failed)
+        return failed
+
+    def require(
+        self,
+        identity: CheckpointIdentity,
+        stage: SimpleStage,
+    ) -> StageCheckpoint:
+        checkpoint = self.get(identity, stage)
+        if checkpoint is None:
+            raise LookupError(f"Missing SimpleRuntime checkpoint: {stage.value}")
+        return checkpoint
+
+    def prior(
+        self,
+        identity: CheckpointIdentity,
+        stage: SimpleStage,
+    ) -> dict[SimpleStage, StageCheckpoint]:
+        limit = STAGE_ORDER.index(stage)
+        result: dict[SimpleStage, StageCheckpoint] = {}
+        for item in STAGE_ORDER[:limit]:
+            checkpoint = self.get(identity, item)
+            if checkpoint is not None:
+                result[item] = checkpoint
+        return result
+
+    def input_refs_for(
+        self,
+        identity: CheckpointIdentity,
+        stage: SimpleStage,
+    ) -> tuple[StoredDataRef, ...]:
+        existing = self.get(identity, stage)
+        if existing is not None:
+            return existing.input_refs
+        limit = STAGE_ORDER.index(stage)
+        for item in reversed(STAGE_ORDER[:limit]):
+            checkpoint = self.get(identity, item)
+            if checkpoint is not None and checkpoint.status is StageStatus.SUCCEEDED:
+                return checkpoint.output_refs
+        return ()
 
     def _write(
         self,
