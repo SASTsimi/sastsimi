@@ -336,7 +336,12 @@ class ProductionDynamicVerificationHandoff:
         proposal_ref = reference(proposal)
         if not isinstance(proposal_ref, StoredDataRef):
             raise ValueError("DYNAMIC_CODE_CONTEXT_REQUIRED")
-        inputs = (proposal_ref, generation.evidence_ref, self.context_ceiling_ref)
+        inputs = (
+            generation.hypothesis_ref,
+            proposal_ref,
+            generation.evidence_ref,
+            self.context_ceiling_ref,
+        )
         existing = tuple(
             candidate
             for candidate in self.runner.runtime.work.store.work_for_run(

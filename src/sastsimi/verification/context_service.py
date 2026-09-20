@@ -32,7 +32,7 @@ from sastsimi.contracts.budget import (
     validate_reservation_revision,
 )
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
-from sastsimi.contracts.hypothesis import HypothesisProposal
+from sastsimi.contracts.hypothesis import HypothesisProposal, VulnerabilityHypothesis
 from sastsimi.contracts.ids import ErrorId, GapId, TransitionCommitId, TransitionId
 from sastsimi.contracts.records import RecordMeta, RecordMetadata
 from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
@@ -215,7 +215,7 @@ class ContextRetrievalService:
             or bundle not in current_bundles
             or exact_proposal not in current_proposals
             or run_state.workspace_ref != reference(workspace)
-            or exact_proposal.meta.hypothesis_id != work.meta.hypothesis_id
+            or not self._proposal_belongs_to_work(exact_proposal, work)
         ):
             raise ValueError("CONTEXT_INPUT_MISMATCH")
         if (
@@ -853,11 +853,36 @@ class ContextRetrievalService:
             or run_state.workspace_ref != reference(workspace)
             or self.runtime.unit_of_work.records.get_exact(run_state.workspace_ref)
             != workspace
-            or exact_proposal.meta.hypothesis_id != work.meta.hypothesis_id
+            or not self._proposal_belongs_to_work(exact_proposal, work)
             or work.input_refs.count(intent.proposal_ref) != 1
             or work.input_refs.count(intent.bundle_ref) != 1
         ):
             raise ValueError("CONTEXT_INPUT_MISMATCH")
+
+    def _proposal_belongs_to_work(
+        self,
+        proposal: HypothesisProposal,
+        work: WorkExecutionState,
+    ) -> bool:
+        if not isinstance(work.meta, RecordMeta) or work.meta.hypothesis_id is None:
+            return False
+        if proposal.meta.hypothesis_id == work.meta.hypothesis_id:
+            return True
+        hypothesis_refs = tuple(
+            ref
+            for ref in work.input_refs
+            if isinstance(ref, StoredDataRef)
+            and ref.data_kind == VulnerabilityHypothesis.KIND
+        )
+        if len(hypothesis_refs) != 1:
+            return False
+        hypothesis = self.runtime.unit_of_work.records.get_exact(hypothesis_refs[0])
+        return (
+            isinstance(hypothesis, VulnerabilityHypothesis)
+            and reference(hypothesis) == hypothesis_refs[0]
+            and hypothesis.meta.hypothesis_id == work.meta.hypothesis_id
+            and hypothesis.proposal_ref == reference(proposal)
+        )
 
     def _require_service_identity(self, service_identity: BudgetScopeRef) -> None:
         records = self.runtime.unit_of_work.records
