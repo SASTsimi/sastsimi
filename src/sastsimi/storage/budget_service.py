@@ -20,6 +20,7 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import BudgetScopeRef
 from sastsimi.contracts.work import (
     StateTransition,
+    WorkAttempt,
     WorkExecutionState,
     WorkType,
 )
@@ -41,6 +42,9 @@ from .budget_limits import (
 )
 from .budget_limits import (
     allows_local_manual_repair_attempt as _allows_local_manual_repair_attempt,
+)
+from .budget_limits import (
+    local_manual_repair_call_allowance as _local_manual_repair_call_allowance,
 )
 from .budget_registry import BudgetProfileRegistry
 from .records import next_meta
@@ -281,15 +285,26 @@ class BudgetService:
             }
         else:
             ceiling, kinds = None, set()
-        if action.action_type == ActionType.START_ATTEMPT and ceiling is not None:
-            transition_cause: str | None = None
-            if work.last_transition_ref is not None:
-                transition = self.records.resolve(
-                    connection, work.last_transition_ref, candidate=True
+        transition_cause: str | None = None
+        if work.last_transition_ref is not None:
+            transition = self.records.resolve(
+                connection, work.last_transition_ref, candidate=True
+            )
+            if isinstance(transition, StateTransition):
+                transition_cause = transition.cause
+        attempt_trigger = None
+        if work.active_attempt_id is not None:
+            attempt_payload = connection.execute(
+                select(models.work_attempts.c.payload).where(
+                    models.work_attempts.c.attempt_id == str(work.active_attempt_id)
                 )
-                if isinstance(transition, StateTransition):
-                    transition_cause = transition.cause
-            run = get_run(connection, str(work.meta.analysis_id))
+            ).scalar_one_or_none()
+            if attempt_payload is not None:
+                attempt_trigger = WorkAttempt.model_validate_json(
+                    attempt_payload
+                ).trigger
+        run = get_run(connection, str(work.meta.analysis_id))
+        if action.action_type == ActionType.START_ATTEMPT and ceiling is not None:
             if _allows_local_manual_repair_attempt(
                 purpose=run.purpose,
                 action_type=action.action_type,
@@ -297,11 +312,19 @@ class BudgetService:
                 work_status=work.status,
                 transition_cause=transition_cause,
             ):
-                # Two slots repair pre-provider local infrastructure failures.
-                # The final bounded slot preserves the one requested content
-                # retry. Production remains closed and every failed attempt
-                # stays in durable history.
+                # Pre-provider local infrastructure failures keep bounded
+                # repair slots. The final slot preserves the one requested
+                # content retry. Production remains closed and every failed
+                # attempt stays in durable history.
                 ceiling += _LOCAL_MANUAL_REPAIR_ATTEMPTS
+        elif ceiling is not None:
+            ceiling += _local_manual_repair_call_allowance(
+                purpose=run.purpose,
+                action_type=action.action_type,
+                work_status=work.status,
+                transition_cause=transition_cause,
+                attempt_trigger=attempt_trigger,
+            )
         if kinds:
             if ceiling is None:
                 raise ValueError("BUDGET unavailable: operation limit is unspecified")

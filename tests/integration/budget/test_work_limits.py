@@ -14,7 +14,9 @@ from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import BudgetReservationRequest
 from sastsimi.storage.budget_limits import (
     LOCAL_MANUAL_REPAIR_ATTEMPTS,
+    LOCAL_MANUAL_REPAIR_CALLS,
     allows_local_manual_repair_scope,
+    local_manual_repair_call_allowance,
 )
 from sastsimi.storage.budget_registry import BudgetProfileRegistry
 from sastsimi.storage.budget_service import (
@@ -26,7 +28,7 @@ from tests.unit.contracts.test_core_models import action, work
 
 
 def test_local_manual_resume_allows_bounded_repair_attempts() -> None:
-    assert LOCAL_MANUAL_REPAIR_ATTEMPTS == 9
+    assert LOCAL_MANUAL_REPAIR_ATTEMPTS == 10
     assert _allows_local_manual_repair_attempt(
         purpose="LOCAL_EVALUATION",
         action_type="START_ATTEMPT",
@@ -39,6 +41,20 @@ def test_local_manual_resume_allows_bounded_repair_attempts() -> None:
         work_status="RUNNING",
         transition_cause="STARTED",
         attempt_trigger="RESUME",
+    )
+
+
+def test_local_manual_resume_preserves_one_complete_dynamic_call_sequence() -> None:
+    assert LOCAL_MANUAL_REPAIR_CALLS == 12
+    assert (
+        local_manual_repair_call_allowance(
+            purpose="LOCAL_EVALUATION",
+            action_type="CALL_LLM",
+            work_status="RUNNING",
+            transition_cause="STARTED",
+            attempt_trigger="RESUME",
+        )
+        == LOCAL_MANUAL_REPAIR_CALLS
     )
 
 
@@ -62,6 +78,16 @@ def test_repair_attempt_remains_closed_outside_local_manual_resume() -> None:
         work_status="RUNNING",
         transition_cause="STARTED",
         attempt_trigger="RESUME",
+    )
+    assert (
+        local_manual_repair_call_allowance(
+            purpose="PRODUCTION",
+            action_type="CALL_LLM",
+            work_status="RUNNING",
+            transition_cause="STARTED",
+            attempt_trigger="RESUME",
+        )
+        == 0
     )
 
 

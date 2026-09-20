@@ -23,7 +23,8 @@ EXTERNAL_ACTIONS = frozenset(
 )
 
 OPERATIONS = WORK_OPERATIONS
-LOCAL_MANUAL_REPAIR_ATTEMPTS = 9
+LOCAL_MANUAL_REPAIR_ATTEMPTS = 10
+LOCAL_MANUAL_REPAIR_CALLS = 12
 
 
 def allows_local_manual_repair_attempt(
@@ -72,6 +73,28 @@ def allows_local_manual_repair_scope(
         work_status == WorkStatus.RUNNING
         and attempt_trigger in {AttemptTrigger.RESUME, AttemptTrigger.RETRY}
     )
+
+
+def local_manual_repair_call_allowance(
+    *,
+    purpose: Purpose | str,
+    action_type: ActionType | str,
+    work_status: WorkStatus | str,
+    transition_cause: str | None,
+    attempt_trigger: AttemptTrigger | str | None,
+) -> int:
+    """Preserve one bounded end-to-end call sequence during local recovery."""
+
+    if action_type not in EXTERNAL_ACTIONS:
+        return 0
+    if not allows_local_manual_repair_scope(
+        purpose=purpose,
+        work_status=work_status,
+        transition_cause=transition_cause,
+        attempt_trigger=attempt_trigger,
+    ):
+        return 0
+    return LOCAL_MANUAL_REPAIR_CALLS
 
 
 def operation(
