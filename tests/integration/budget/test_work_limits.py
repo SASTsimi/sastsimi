@@ -12,6 +12,7 @@ from sastsimi.contracts.budget import (
 from sastsimi.contracts.refs import RunStoredDataRef
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import BudgetReservationRequest
+from sastsimi.storage.budget_limits import allows_local_manual_repair_scope
 from sastsimi.storage.budget_registry import BudgetProfileRegistry
 from sastsimi.storage.budget_service import (
     BudgetService,
@@ -29,6 +30,12 @@ def test_local_manual_resume_allows_bounded_repair_attempts() -> None:
         work_status="READY",
         transition_cause="USER_RESUME",
     )
+    assert allows_local_manual_repair_scope(
+        purpose="LOCAL_EVALUATION",
+        work_status="RUNNING",
+        transition_cause="STARTED",
+        attempt_trigger="RESUME",
+    )
 
 
 def test_repair_attempt_remains_closed_outside_local_manual_resume() -> None:
@@ -45,6 +52,12 @@ def test_repair_attempt_remains_closed_outside_local_manual_resume() -> None:
         action_reason="Claim exact READY work",
         work_status="READY",
         transition_cause=None,
+    )
+    assert not allows_local_manual_repair_scope(
+        purpose="PRODUCTION",
+        work_status="RUNNING",
+        transition_cause="STARTED",
+        attempt_trigger="RESUME",
     )
 
 

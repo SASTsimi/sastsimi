@@ -7,7 +7,7 @@ from sastsimi.contracts.budget import (
     OperationKind,
     Purpose,
 )
-from sastsimi.contracts.work import WorkStatus, WorkType
+from sastsimi.contracts.work import AttemptTrigger, WorkStatus, WorkType
 
 EXTERNAL_ACTIONS = frozenset(
     {
@@ -23,7 +23,7 @@ EXTERNAL_ACTIONS = frozenset(
 )
 
 OPERATIONS = WORK_OPERATIONS
-LOCAL_MANUAL_REPAIR_ATTEMPTS = 2
+LOCAL_MANUAL_REPAIR_ATTEMPTS = 3
 
 
 def allows_local_manual_repair_attempt(
@@ -33,6 +33,7 @@ def allows_local_manual_repair_attempt(
     action_reason: str,
     work_status: WorkStatus | str,
     transition_cause: str | None,
+    attempt_trigger: AttemptTrigger | str | None = None,
 ) -> bool:
     """Recognize only the explicit, bounded local manual-resume path."""
 
@@ -42,11 +43,35 @@ def allows_local_manual_repair_attempt(
         or action_reason != "Claim exact READY work"
     ):
         return False
+    return allows_local_manual_repair_scope(
+        purpose=purpose,
+        work_status=work_status,
+        transition_cause=transition_cause,
+        attempt_trigger=attempt_trigger,
+    )
+
+
+def allows_local_manual_repair_scope(
+    *,
+    purpose: Purpose | str,
+    work_status: WorkStatus | str,
+    transition_cause: str | None,
+    attempt_trigger: AttemptTrigger | str | None,
+) -> bool:
+    """Keep the bounded allowance active inside the claimed RESUME attempt."""
+
+    if purpose != Purpose.LOCAL_EVALUATION:
+        return False
     if work_status == WorkStatus.BLOCKED:
         # Atomic resume admission validates the exhausted attempt before it
         # publishes the USER_RESUME transition.
         return True
-    return work_status == WorkStatus.READY and transition_cause == "USER_RESUME"
+    if work_status == WorkStatus.READY:
+        return transition_cause == "USER_RESUME"
+    return (
+        work_status == WorkStatus.RUNNING
+        and attempt_trigger == AttemptTrigger.RESUME
+    )
 
 
 def operation(

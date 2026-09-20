@@ -297,10 +297,10 @@ class BudgetService:
                 work_status=work.status,
                 transition_cause=transition_cause,
             ):
-                # One slot repairs the exhausted local work.  A second bounded
-                # slot keeps a pre-provider infrastructure repair from
-                # consuming the work's sole content retry.  Production remains
-                # closed and every failed attempt stays in durable history.
+                # Two slots repair pre-provider local infrastructure failures.
+                # The final bounded slot preserves the one requested content
+                # retry. Production remains closed and every failed attempt
+                # stays in durable history.
                 ceiling += _LOCAL_MANUAL_REPAIR_ATTEMPTS
         if kinds:
             if ceiling is None:

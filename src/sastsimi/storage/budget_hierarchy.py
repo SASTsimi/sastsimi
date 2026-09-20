@@ -13,13 +13,18 @@ from sastsimi.contracts.budget import (
     WorkBudgetProfile,
     select_work_limit,
 )
-from sastsimi.contracts.work import StateTransition, WorkExecutionState, WorkType
+from sastsimi.contracts.work import (
+    StateTransition,
+    WorkAttempt,
+    WorkExecutionState,
+    WorkType,
+)
 
 from . import models
 from .budget_limits import (
     EXTERNAL_ACTIONS,
     LOCAL_MANUAL_REPAIR_ATTEMPTS,
-    allows_local_manual_repair_attempt,
+    allows_local_manual_repair_scope,
     operation,
 )
 from .repositories import SQLiteRecordStore
@@ -63,15 +68,24 @@ def check_hierarchy(
         )
         if isinstance(transition, StateTransition):
             transition_cause = transition.cause
+    attempt_trigger = None
+    if work.active_attempt_id is not None:
+        attempt_payload = connection.execute(
+            select(models.work_attempts.c.payload).where(
+                models.work_attempts.c.attempt_id == str(work.active_attempt_id)
+            )
+        ).scalar_one_or_none()
+        if attempt_payload is not None:
+            attempt = WorkAttempt.model_validate_json(attempt_payload)
+            attempt_trigger = attempt.trigger
     run = get_run(connection, str(work.meta.analysis_id))
     local_repair_extra = (
         LOCAL_MANUAL_REPAIR_ATTEMPTS
-        if allows_local_manual_repair_attempt(
+        if allows_local_manual_repair_scope(
             purpose=run.purpose,
-            action_type=action.action_type,
-            action_reason=action.reason,
             work_status=work.status,
             transition_cause=transition_cause,
+            attempt_trigger=attempt_trigger,
         )
         else 0
     )
