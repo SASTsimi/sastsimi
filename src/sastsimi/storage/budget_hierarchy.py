@@ -13,11 +13,17 @@ from sastsimi.contracts.budget import (
     WorkBudgetProfile,
     select_work_limit,
 )
-from sastsimi.contracts.work import WorkExecutionState, WorkType
+from sastsimi.contracts.work import StateTransition, WorkExecutionState, WorkType
 
 from . import models
-from .budget_limits import EXTERNAL_ACTIONS, operation
+from .budget_limits import (
+    EXTERNAL_ACTIONS,
+    LOCAL_MANUAL_REPAIR_ATTEMPTS,
+    allows_local_manual_repair_attempt,
+    operation,
+)
 from .repositories import SQLiteRecordStore
+from .run_states import get_run
 
 
 def verification_root(
@@ -50,6 +56,25 @@ def check_hierarchy(
     dynamic = records.resolve(connection, binding.dynamic_lifecycle_profile_ref)
     assert isinstance(profile, VerificationBudgetProfile)
     assert isinstance(dynamic, DynamicReproductionLifecycleProfile)
+    transition_cause: str | None = None
+    if work.last_transition_ref is not None:
+        transition = records.resolve(
+            connection, work.last_transition_ref, candidate=True
+        )
+        if isinstance(transition, StateTransition):
+            transition_cause = transition.cause
+    run = get_run(connection, str(work.meta.analysis_id))
+    local_repair_extra = (
+        LOCAL_MANUAL_REPAIR_ATTEMPTS
+        if allows_local_manual_repair_attempt(
+            purpose=run.purpose,
+            action_type=action.action_type,
+            action_reason=action.reason,
+            work_status=work.status,
+            transition_cause=transition_cause,
+        )
+        else 0
+    )
     scope_units: list[BudgetUnits] = [reservation.requested_units]
     work_units: list[BudgetUnits] = [reservation.requested_units]
     attempts = 1 if action.action_type == ActionType.START_ATTEMPT else 0
@@ -108,14 +133,14 @@ def check_hierarchy(
                 raise ValueError("BUDGET_EXCEEDED: Verification " + name)
         if (
             sum(units.retry_count for units in work_units)
-            > profile.max_retries_per_work
+            > profile.max_retries_per_work + local_repair_extra
         ):
             raise ValueError("BUDGET_EXCEEDED: retries per work")
     if evidence_calls > profile.max_parallel_evidence_calls:
         raise ValueError("BUDGET_EXCEEDED: parallel evidence calls")
     if (
         work.work_type == WorkType.DYNAMIC_REPRO
-        and attempts > dynamic.max_new_attempts + 1
+        and attempts > dynamic.max_new_attempts + 1 + local_repair_extra
     ):
         raise ValueError("BUDGET_EXCEEDED: dynamic attempts")
     if work.work_type == WorkType.DYNAMIC_REPRO:

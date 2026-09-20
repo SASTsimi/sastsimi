@@ -11,7 +11,6 @@ from sastsimi.contracts.budget import (
     BudgetRemaining,
     BudgetReservation,
     BudgetUnits,
-    Purpose,
     ReservationStatus,
     WorkBudgetProfile,
     select_work_limit,
@@ -22,7 +21,6 @@ from sastsimi.contracts.refs import BudgetScopeRef
 from sastsimi.contracts.work import (
     StateTransition,
     WorkExecutionState,
-    WorkStatus,
     WorkType,
 )
 from sastsimi.ports.clock import Clock
@@ -38,6 +36,12 @@ from sastsimi.storage.repositories import SQLiteRecordStore
 
 from .budget_hierarchy import check_hierarchy
 from .budget_limits import EXTERNAL_ACTIONS, operation
+from .budget_limits import (
+    LOCAL_MANUAL_REPAIR_ATTEMPTS as _LOCAL_MANUAL_REPAIR_ATTEMPTS,
+)
+from .budget_limits import (
+    allows_local_manual_repair_attempt as _allows_local_manual_repair_attempt,
+)
 from .budget_registry import BudgetProfileRegistry
 from .records import next_meta
 from .run_states import get_run
@@ -49,32 +53,6 @@ UNIT_FIELDS = (
     "retry_count",
     "cost_minor_units",
 )
-_LOCAL_MANUAL_REPAIR_ATTEMPTS = 2
-
-
-def _allows_local_manual_repair_attempt(
-    *,
-    purpose: Purpose | str,
-    action_type: ActionType | str,
-    action_reason: str,
-    work_status: WorkStatus | str,
-    transition_cause: str | None,
-) -> bool:
-    """Allow bounded repair slots only for an explicit local manual resume."""
-
-    if (
-        purpose != Purpose.LOCAL_EVALUATION
-        or action_type != ActionType.START_ATTEMPT
-        or action_reason != "Claim exact READY work"
-    ):
-        return False
-    if work_status == WorkStatus.BLOCKED:
-        # Atomic resume admission validates the exhausted attempt before it
-        # publishes the USER_RESUME transition.
-        return True
-    return work_status == WorkStatus.READY and transition_cause == "USER_RESUME"
-
-
 class BudgetService:
     def __init__(
         self,
