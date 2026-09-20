@@ -56,6 +56,7 @@ from sastsimi.verification.service import VerificationService
 
 type BudgetScopeResolver = Callable[[str], BudgetScopeRef]
 type SandboxProfileResolver = Callable[[WorkExecutionState], StoredDataRef]
+type ContextCeilingResolver = Callable[[], StoredDataRef]
 
 
 class DynamicExecutor(Protocol):
@@ -87,7 +88,7 @@ class ProductionDynamicVerificationHandoff:
     budget_scope: BudgetScopeResolver
     sandbox_profile: SandboxProfileResolver
     context_retrieval: WorkHandler
-    context_ceiling_ref: StoredDataRef
+    context_ceiling: ContextCeilingResolver
 
     async def complete_dynamic(
         self,
@@ -336,11 +337,12 @@ class ProductionDynamicVerificationHandoff:
         proposal_ref = reference(proposal)
         if not isinstance(proposal_ref, StoredDataRef):
             raise ValueError("DYNAMIC_CODE_CONTEXT_REQUIRED")
+        context_ceiling_ref = self.context_ceiling()
         inputs = (
             generation.hypothesis_ref,
             proposal_ref,
             generation.evidence_ref,
-            self.context_ceiling_ref,
+            context_ceiling_ref,
         )
         existing = tuple(
             candidate

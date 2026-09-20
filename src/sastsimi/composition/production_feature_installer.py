@@ -570,18 +570,23 @@ class ProductionFeatureInstaller:
             max_requests_per_hypothesis=24,
             timeout_ms=45_000,
         )
-        context_ceiling_ref = runtime.unit_of_work.artifacts.commit(
-            runtime.unit_of_work.artifacts.stage_bytes(
-                canonical_bytes(
-                    {
-                        "kind": "context_ceiling_profile",
-                        "schema_version": "1.0",
-                        **context_limits.model_dump(),
-                    }
-                ),
-                "application/json",
-            )
+        context_ceiling_raw = canonical_bytes(
+            {
+                "kind": "context_ceiling_profile",
+                "schema_version": "1.0",
+                **context_limits.model_dump(),
+            }
         )
+
+        def context_ceiling() -> StoredDataRef:
+            """Persist the ceiling immediately before its owning work starts."""
+
+            return runtime.unit_of_work.artifacts.commit(
+                runtime.unit_of_work.artifacts.stage_bytes(
+                    context_ceiling_raw,
+                    "application/json",
+                )
+            )
 
         dynamic = self.inputs.dynamic
         if isinstance(dynamic, LocalUnavailableDynamicFeature):
@@ -638,7 +643,7 @@ class ProductionFeatureInstaller:
             budget_scope=budget_scope,
             sandbox_profile=dynamic.sandbox_profile,
             context_retrieval=self.inputs.t08.context_retrieval,
-            context_ceiling_ref=context_ceiling_ref,
+            context_ceiling=context_ceiling,
         )
 
         verification = VerificationWorkHandler(
