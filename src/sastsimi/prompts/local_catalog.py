@@ -1,8 +1,9 @@
 """Executable, content-only prompt catalog for LOCAL_EVALUATION.
 
 The catalog is deliberately derived from the models consumed by each Agent.
-It does not grant Production approval and it omits the resumable dynamic tool
-loop, which the official local Codex route cannot currently execute safely.
+It does not grant Production approval.  Dynamic execution turns use complete
+stored state in distinct NEW official-client sessions; the SASTSIMI runtime,
+not the Provider, owns the bounded in-container loop.
 """
 
 from __future__ import annotations
@@ -151,6 +152,20 @@ _INPUTS: dict[tuple[str, str], tuple[PromptInputSlot, ...]] = {
             fields=("/redacted_body",),
         ),
     ),
+    ("DYNAMIC_REPRODUCTION", "EXECUTE_REPRODUCTION"): (
+        _slot("dynamic_request", "dynamic_reproduction_request"),
+        _slot("environment_requirements", "environment_requirements"),
+        _slot("reproduction_plan", "reproduction_plan"),
+        _slot("sandbox_environment", "sandbox_environment"),
+        _slot("poc_candidate", "poc_candidate", "OPTIONAL_ONE"),
+        _slot("agent_log", "agent_log"),
+        _slot(
+            "prior_tool_requests",
+            "dynamic_reproduction_tool_request",
+            "OPTIONAL_MANY",
+        ),
+        _slot("observations", "artifact", "OPTIONAL_MANY"),
+    ),
     ("DYNAMIC_REPRODUCTION", "INTERPRET_ATTEMPT"): (
         _slot("dynamic_request", "dynamic_reproduction_request"),
         _slot("reproduction_plan", "reproduction_plan"),
@@ -252,6 +267,9 @@ _OUTPUTS: dict[tuple[str, str], TypeAdapter[Any]] = {
     ),
     ("DYNAMIC_REPRODUCTION", "CREATE_POC_CANDIDATE"): TypeAdapter(
         dynamic_agent._PoCCandidateContent  # noqa: SLF001
+    ),
+    ("DYNAMIC_REPRODUCTION", "EXECUTE_REPRODUCTION"): TypeAdapter(
+        dynamic_agent._ToolRequestContent  # noqa: SLF001
     ),
     ("DYNAMIC_REPRODUCTION", "INTERPRET_ATTEMPT"): TypeAdapter(
         dynamic_agent._ConclusionContent  # noqa: SLF001

@@ -33,7 +33,6 @@ from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import Record
 from sastsimi.prompts.builder import PromptSource
 from sastsimi.prompts.local_evaluation import (
-    LOCAL_EVALUATION_EXECUTE_UNAVAILABLE,
     REQUIRED_LOCAL_EVALUATION_PROMPT_ROUTES,
     LocalEvaluationLLMConfigurationService,
     LocalEvaluationPromptSupport,
@@ -323,14 +322,14 @@ def _work() -> WorkExecutionState:
     )
 
 
-def test_local_route_set_uses_all_canonical_agent_templates_except_execute() -> None:
+def test_local_route_set_uses_all_canonical_agent_templates() -> None:
     keys = {
         (route.role, route.task_kind)
         for route in REQUIRED_LOCAL_EVALUATION_PROMPT_ROUTES
     }
 
-    assert len(keys) == 16
-    assert ("DYNAMIC_REPRODUCTION", "EXECUTE_REPRODUCTION") not in keys
+    assert len(keys) == 17
+    assert ("DYNAMIC_REPRODUCTION", "EXECUTE_REPRODUCTION") in keys
     assert {route.role for route in REQUIRED_LOCAL_EVALUATION_PROMPT_ROUTES} == {
         "HYPOTHESIS",
         "PRO",
@@ -413,7 +412,7 @@ def test_local_route_builds_exact_new_session_payload_without_production_authori
     assert not hasattr(service, "evaluation_recommendation")
 
 
-def test_execute_reproduction_route_is_explicitly_unavailable(work_path: Path) -> None:
+def test_execute_reproduction_route_uses_a_fresh_session(work_path: Path) -> None:
     service, records, artifacts = _service(work_path)
     support, provider = _support(
         records,
@@ -432,10 +431,13 @@ def test_execute_reproduction_route_is_explicitly_unavailable(work_path: Path) -
         prompt_key="dynamic.execute.local-v1",
     )
 
-    with pytest.raises(ValueError, match=LOCAL_EVALUATION_EXECUTE_UNAVAILABLE):
-        service.activate_route(
-            scope=_scope(), route=route, support=support, input_slots=()
-        )
+    approved = service.activate_route(
+        scope=_scope(), route=route, support=support, input_slots=()
+    )
+    entry = records.get_exact(approved.active_prompt_ref)
+
+    assert isinstance(entry, PromptRegistryEntry)
+    assert entry.session_policy == "NEW"
 
 
 def test_local_route_rejects_model_or_provider_drift(work_path: Path) -> None:

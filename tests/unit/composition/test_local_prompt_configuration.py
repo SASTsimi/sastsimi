@@ -116,9 +116,9 @@ async def test_plan_and_publish_complete_local_prompt_graph() -> None:
         max_retries=1,
     )
 
-    assert len(plan.routes) == 16
-    assert len(plan.prompt_entries) == 16
-    assert len(plan.output_schemas) == 16
+    assert len(plan.routes) == 17
+    assert len(plan.prompt_entries) == 17
+    assert len(plan.output_schemas) == 17
     assert all(item.purpose == "LOCAL_EVALUATION" for item in plan.prompt_entries)
     assert all(item.quality_evaluation_ref is None for item in plan.prompt_entries)
     assert not hasattr(plan, "evaluation_recommendation")
@@ -129,7 +129,7 @@ async def test_plan_and_publish_complete_local_prompt_graph() -> None:
         configuration=publisher,  # type: ignore[arg-type]
     )
 
-    assert len(published.bindings) == 16
+    assert len(published.bindings) == 17
     assert published.provider_profile_ref == reference(validated.provider)
     names = [name for name, _ in publisher.calls]
     assert names[:4] == [
@@ -143,7 +143,7 @@ async def test_plan_and_publish_complete_local_prompt_graph() -> None:
         for name, evidence in publisher.calls[:4]
         if name.startswith("register_local_")
     )
-    assert names.count("register_prompt_entry") == 16
+    assert names.count("register_prompt_entry") == 17
 
 
 @pytest.mark.asyncio
@@ -173,7 +173,7 @@ async def test_plan_loads_templates_from_installed_package_root() -> None:
         max_retries=1,
     )
 
-    assert len(plan.prompt_entries) == 16
+    assert len(plan.prompt_entries) == 17
 
 
 @pytest.mark.asyncio

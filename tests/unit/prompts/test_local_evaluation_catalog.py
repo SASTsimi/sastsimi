@@ -21,11 +21,11 @@ def _spec(role: str, task: str):  # type: ignore[no-untyped-def]
     )
 
 
-def test_catalog_covers_every_fresh_session_route_and_excludes_execute() -> None:
+def test_catalog_covers_every_fresh_session_route() -> None:
     keys = {(item.role, item.task_kind) for item in LOCAL_EVALUATION_PROMPT_SPECS}
 
-    assert len(keys) == 16
-    assert ("DYNAMIC_REPRODUCTION", "EXECUTE_REPRODUCTION") not in keys
+    assert len(keys) == 17
+    assert ("DYNAMIC_REPRODUCTION", "EXECUTE_REPRODUCTION") in keys
     assert ("HYPOTHESIS", "GENERATE_INITIAL") in keys
     assert ("REPORTER", "CREATE_DRAFT") in keys
     assert all(
@@ -107,6 +107,17 @@ def test_content_schema_is_strict_and_matches_agent_parser() -> None:
             {"content": "echo ok", "attempt_id": "provider-owned"},
         )
 
+    validate_local_output(
+        "DYNAMIC_REPRODUCTION",
+        "EXECUTE_REPRODUCTION",
+        {
+            "action": "FINISH",
+            "command": None,
+            "recreate_reason": None,
+            "rationale": "No further action is required.",
+        },
+    )
+
 
 def test_hypothesis_schema_is_content_only_array() -> None:
     schema = json.loads(local_output_schema("HYPOTHESIS", "GENERATE_INITIAL"))
@@ -117,8 +128,6 @@ def test_hypothesis_schema_is_content_only_array() -> None:
         validate_local_output("HYPOTHESIS", "GENERATE_INITIAL", {"proposals": []})
 
 
-def test_unknown_or_execute_route_is_fail_closed() -> None:
-    with pytest.raises(ValueError, match="LOCAL_EVALUATION_OUTPUT_ROUTE_UNAVAILABLE"):
-        local_output_schema("DYNAMIC_REPRODUCTION", "EXECUTE_REPRODUCTION")
+def test_unknown_route_is_fail_closed() -> None:
     with pytest.raises(ValueError, match="LOCAL_EVALUATION_OUTPUT_ROUTE_UNAVAILABLE"):
         local_output_schema("HYPOTHESIS", "UNKNOWN")

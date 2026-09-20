@@ -48,10 +48,6 @@ from .loader import PromptLoader
 from .production import REQUIRED_PRODUCTION_PROMPT_ROUTES
 from .registry import LoadedPromptDefinition
 
-LOCAL_EVALUATION_EXECUTE_UNAVAILABLE = (
-    "LOCAL_EVALUATION_CODEX_DYNAMIC_RESUME_UNSUPPORTED"
-)
-
 _REQUIRED_REDACTIONS = frozenset(
     {
         "CREDENTIAL",
@@ -94,10 +90,6 @@ REQUIRED_LOCAL_EVALUATION_PROMPT_ROUTES = tuple(
         route.role, route.task_kind, route.result_kind, route.template_path
     )
     for route in REQUIRED_PRODUCTION_PROMPT_ROUTES
-    if not (
-        route.role == "DYNAMIC_REPRODUCTION"
-        and route.task_kind == "EXECUTE_REPRODUCTION"
-    )
 )
 _ROUTES = {
     (route.role, route.task_kind): route
@@ -446,11 +438,6 @@ class LocalEvaluationLLMConfigurationService:
     def _required(
         self, route: LocalEvaluationRoute
     ) -> RequiredLocalEvaluationPromptRoute:
-        if (
-            route.role == "DYNAMIC_REPRODUCTION"
-            and route.task_kind == "EXECUTE_REPRODUCTION"
-        ):
-            raise ValueError(LOCAL_EVALUATION_EXECUTE_UNAVAILABLE)
         required = _ROUTES.get((route.role, route.task_kind))
         if required is None or not all(
             isinstance(value, str) and value.strip()
@@ -531,7 +518,6 @@ class LocalEvaluationLLMConfigurationService:
 
 __all__ = [
     "ApprovedLocalEvaluationRoute",
-    "LOCAL_EVALUATION_EXECUTE_UNAVAILABLE",
     "LocalEvaluationLLMConfigurationService",
     "LocalEvaluationPromptSupport",
     "LocalEvaluationRoute",
