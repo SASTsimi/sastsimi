@@ -12,7 +12,7 @@ from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.static import StaticFactBundle
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.authorized_llm_call import AuthorizedLLMCall
-from sastsimi.prompts.builder import PromptSource
+from sastsimi.prompts.builder import ProjectedPromptSource
 from sastsimi.prompts.local_calls import (
     ConfiguredLocalEvaluationCallResolver,
     ExactAnalysisLocalEvaluationRouteLookup,
@@ -228,5 +228,81 @@ def test_resolver_prepares_exact_sources_and_uses_authority() -> None:
     assert authorizer.prepared is prepared
     assert len(configuration.captured_sources) == 1
     source = configuration.captured_sources[0]
-    assert isinstance(source, PromptSource)
+    assert isinstance(source, ProjectedPromptSource)
     assert source.source_ref == facts_ref
+    assert source.value is facts
+    assert isinstance(source.projected_value, dict)
+    assert "projection_summary" in source.projected_value
+
+
+def test_pro_and_con_receive_bounded_static_projection_with_exact_source_ref() -> None:
+    """Catches sending a multi-megabyte full StaticFactBundle to debate calls."""
+
+    provider_ref = _ref("provider_profile", "provider-r1")
+    entry = _entry(provider_ref).model_copy(
+        update={
+            "agent_role": "PRO",
+            "task_kind": "COLLECT_SUPPORT",
+            "prompt_key": "pro.collect.local-v1",
+        }
+    )
+    entry_ref = cast(StoredDataRef, reference(entry))
+    facts = StaticFactBundle.model_validate_json(json.dumps(bundle()))
+    facts_ref = cast(StoredDataRef, reference(facts))
+    route = LocalEvaluationRoute(
+        role="PRO",
+        task_kind="COLLECT_SUPPORT",
+        provider_profile_key="codex-local",
+        model="configured-model",
+        prompt_key="pro.collect.local-v1",
+    )
+    approval = ApprovedLocalEvaluationRoute(entry_ref, provider_ref)
+    prepared = PreparedLocalEvaluationCall(
+        payload=cast(Any, object()),
+        payload_ref=_ref("prompt_payload", "payload-r1"),
+        call_spec=cast(
+            Any,
+            type(
+                "Spec",
+                (),
+                {
+                    "agent_role": "PRO",
+                    "task_kind": "COLLECT_SUPPORT",
+                    "purpose": "LOCAL_EVALUATION",
+                    "session_policy": "NEW",
+                    "parent_session_ref": None,
+                    "model": "configured-model",
+                    "provider_profile_ref": approval.provider_profile_ref,
+                    "context_refs": (facts_ref,),
+                },
+            )(),
+        ),
+        call_spec_ref=_ref("llm_call_spec", "spec-r1"),
+    )
+    work = _work()
+    authorized = AuthorizedLLMCall(
+        work=work,
+        decision_ref=_ref("action_decision", "decision-r1"),
+        reservation_ref=_ref("budget_reservation", "reservation-r1"),
+        call_spec_ref=prepared.call_spec_ref,
+    )
+    configuration = _Configuration(prepared)
+    resolver = ConfiguredLocalEvaluationCallResolver(
+        configuration=cast(Any, configuration),
+        records=cast(Any, _Records({entry_ref: entry, facts_ref: facts})),
+        route_lookup=lambda *_args: (route, approval, entry),
+        authorizer=cast(Any, _Authorizer(authorized)),
+    )
+
+    resolver.resolve(
+        work=work,
+        role="PRO",
+        task_kind="COLLECT_SUPPORT",
+        source_refs=(facts_ref,),
+    )
+
+    (source,) = configuration.captured_sources
+    assert isinstance(source, ProjectedPromptSource)
+    assert source.source_ref == facts_ref
+    assert source.value is facts
+    assert len(json.dumps(source.projected_value)) < 1_000_000

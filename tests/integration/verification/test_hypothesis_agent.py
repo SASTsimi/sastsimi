@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import BytesIO
@@ -39,6 +40,7 @@ from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.dto import StagedArtifact
 from sastsimi.prompts.builder import PromptBuilder
 from sastsimi.prompts.registry import LoadedPromptDefinition
+from sastsimi.prompts.static_projection import project_hypothesis_static_bundle
 from sastsimi.runtime.fake_support import FakeClock, FakeIds
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
 
@@ -151,6 +153,21 @@ def _bundle() -> StaticFactBundle:
         gaps=(),
         errors=(),
     )
+
+
+def test_hypothesis_static_projection_is_bounded_and_reports_truncation() -> None:
+    bundle = _bundle()
+    location = bundle.locations[0]
+    oversized = bundle.model_copy(update={"locations": (location,) * 2_000})
+
+    projected = project_hypothesis_static_bundle(oversized)
+
+    assert len(canonical_bytes(projected)) <= 600_000
+    assert projected["source_ref"] == reference(oversized).model_dump(mode="json")
+    assert len(projected["locations"]) == 64
+    summary = cast(dict[str, object], projected["projection_summary"])
+    assert cast(dict[str, int], summary["total_counts"])["locations"] == 2_000
+    assert "locations" in cast(list[str], summary["truncated_fields"])
 
 
 def _definition(
@@ -408,6 +425,13 @@ async def test_hypothesis_output_is_finalized_with_runtime_owned_ids() -> None:
         static_bundle_ref=bundle_ref,
     )
     assert payload.context_bindings[0].source_ref == bundle_ref
+    with artifacts.open_verified(
+        payload.context_bindings[0].projected_data_ref
+    ) as projected_stream:
+        projected = json.load(projected_stream)
+    assert projected["projection_summary"]["source_record_id"] == str(
+        bundle.meta.record_id
+    )
 
     outcome = await agent.propose(
         work=work,

@@ -42,7 +42,12 @@ from sastsimi.ports.prompt_registry import PromptRegistryPort
 from sastsimi.ports.record_store import RecordStore
 from sastsimi.ports.runtime_query import RuntimeQueryPort
 
-from .builder import ArtifactPromptSource, PromptBuilder, PromptSource
+from .builder import (
+    ArtifactPromptSource,
+    ProjectedPromptSource,
+    PromptBuilder,
+    PromptSource,
+)
 from .loader import PromptLoader
 from .registry import LoadedPromptDefinition
 
@@ -66,19 +71,19 @@ REQUIRED_PRODUCTION_PROMPT_ROUTES = (
         "HYPOTHESIS",
         "GENERATE_INITIAL",
         "hypothesis_proposal",
-        "src/sastsimi/prompts/templates/hypothesis/generate-initial/1.0.0.md",
+        "src/sastsimi/prompts/templates/hypothesis/generate-initial/1.0.1.md",
     ),
     _required(
         "PRO",
         "COLLECT_SUPPORT",
         "pro_evidence_result",
-        "src/sastsimi/prompts/templates/pro/collect-support/1.0.0.md",
+        "src/sastsimi/prompts/templates/pro/collect-support/1.0.1.md",
     ),
     _required(
         "CON",
         "COLLECT_COUNTEREVIDENCE",
         "con_evidence_result",
-        "src/sastsimi/prompts/templates/con-agent/collect-counterevidence/1.0.0.md",
+        "src/sastsimi/prompts/templates/con-agent/collect-counterevidence/1.0.1.md",
     ),
     _required(
         "VERIFICATION",
@@ -343,7 +348,9 @@ class ProductionLLMConfigurationService:
         route: ProductionRoute,
         approval: ApprovedProductionRoute,
         work: WorkExecutionState,
-        sources: tuple[PromptSource | ArtifactPromptSource, ...],
+        sources: tuple[
+            PromptSource | ProjectedPromptSource | ArtifactPromptSource, ...
+        ],
         parent_session_ref: str | None = None,
     ) -> PreparedProductionCall:
         if (

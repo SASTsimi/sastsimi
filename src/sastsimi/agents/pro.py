@@ -77,6 +77,7 @@ class _EvidenceAgentFinalizer:
         evidence_work: WorkExecutionState,
         debate_input_hash: str,
         allowed_evidence_refs: tuple[StoredDataRef, ...],
+        allowed_claim_evidence_refs: tuple[StoredDataRef, ...],
     ) -> dict[str, object]:
         if not isinstance(parent_work.meta, RecordMeta) or not isinstance(
             evidence_work.meta, RecordMeta
@@ -142,11 +143,18 @@ class _EvidenceAgentFinalizer:
             raise
         except Exception as error:
             raise ValueError("EVIDENCE_OUTPUT_ARTIFACT_INVALID") from error
-        allowed = set(allowed_evidence_refs)
+        allowed = set(allowed_claim_evidence_refs)
         if any(
             ref not in allowed
             for claim in output.evidence
             for ref in claim.evidence_refs
+        ):
+            raise ValueError("CROSS_ROLE_INPUT_DENIED")
+        if any(
+            location.workspace_id != evidence_work.meta.workspace_id
+            or location.commit_id != evidence_work.meta.commit_id
+            for claim in output.evidence
+            for location in claim.code_locations
         ):
             raise ValueError("CROSS_ROLE_INPUT_DENIED")
         meta = self.metadata_factory(
@@ -212,6 +220,7 @@ class ProAgent:
         evidence_work: WorkExecutionState,
         debate_input_hash: str,
         allowed_evidence_refs: tuple[StoredDataRef, ...],
+        allowed_claim_evidence_refs: tuple[StoredDataRef, ...],
     ) -> ProEvidenceResult:
         return ProEvidenceResult.model_validate(
             self._finalizer.content(
@@ -220,6 +229,7 @@ class ProAgent:
                 evidence_work=evidence_work,
                 debate_input_hash=debate_input_hash,
                 allowed_evidence_refs=allowed_evidence_refs,
+                allowed_claim_evidence_refs=allowed_claim_evidence_refs,
             )
         )
 

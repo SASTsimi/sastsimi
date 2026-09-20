@@ -38,7 +38,12 @@ from sastsimi.ports.id_generator import IdGenerator
 from sastsimi.ports.prompt_registry import PromptRegistryPort
 from sastsimi.ports.record_store import RecordStore
 
-from .builder import ArtifactPromptSource, PromptBuilder, PromptSource
+from .builder import (
+    ArtifactPromptSource,
+    ProjectedPromptSource,
+    PromptBuilder,
+    PromptSource,
+)
 from .loader import PromptLoader
 from .production import REQUIRED_PRODUCTION_PROMPT_ROUTES
 from .registry import LoadedPromptDefinition
@@ -245,7 +250,9 @@ class LocalEvaluationLLMConfigurationService:
         route: LocalEvaluationRoute,
         approved: ApprovedLocalEvaluationRoute,
         work: WorkExecutionState,
-        sources: tuple[PromptSource | ArtifactPromptSource, ...],
+        sources: tuple[
+            PromptSource | ProjectedPromptSource | ArtifactPromptSource, ...
+        ],
     ) -> PreparedLocalEvaluationCall:
         if (
             work.status != "RUNNING"

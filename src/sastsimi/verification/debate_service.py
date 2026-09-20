@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, cast
 
+from pydantic import BaseModel
+
 from sastsimi.agents.con_agent import ConAgent
 from sastsimi.agents.pro import ArtifactReader, ProAgent
 from sastsimi.contracts.actions import RequesterRole, SessionMode
@@ -17,6 +19,7 @@ from sastsimi.contracts.budget import (
     VerificationBudgetProfile,
 )
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
+from sastsimi.contracts.ids import CommitId, WorkspaceId
 from sastsimi.contracts.llm import LLMCallSpec, PromptPayload
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
@@ -271,6 +274,64 @@ def _normalized_inputs(
     return tuple(unique[key] for key in sorted(unique))
 
 
+def _stored_refs(value: object) -> tuple[StoredDataRef, ...]:
+    """Collect exact code-scoped refs visibly nested in one trusted input."""
+
+    found: list[StoredDataRef] = []
+
+    def visit(item: object) -> None:
+        if isinstance(item, StoredDataRef):
+            found.append(item)
+        elif isinstance(item, BaseModel):
+            for field_name in type(item).model_fields:
+                visit(getattr(item, field_name))
+        elif isinstance(item, dict):
+            for nested in item.values():
+                visit(nested)
+        elif isinstance(item, (list, tuple, set, frozenset)):
+            for nested in item:
+                visit(nested)
+
+    visit(value)
+    return tuple(found)
+
+
+def _trusted_claim_evidence_refs(
+    records: ExactRecordReader,
+    public_inputs: tuple[StoredDataRef, ...],
+    *,
+    workspace_id: WorkspaceId,
+    commit_id: CommitId,
+) -> tuple[StoredDataRef, ...]:
+    """Allow only current-scope refs present in the exact registered inputs.
+
+    Static facts expose immutable raw tool artifacts below the bundle record.
+    Pro/Con may cite those artifacts even though only the bundle itself is a
+    prompt context root.  This is a one-level visible closure: references from
+    unrelated records or another workspace/commit never become eligible.
+    """
+
+    eligible: dict[bytes, StoredDataRef] = {
+        canonical_bytes(ref): ref
+        for ref in public_inputs
+        if (ref.workspace_id, ref.commit_id) == (workspace_id, commit_id)
+    }
+    for root_ref in public_inputs:
+        try:
+            root = records.get_exact(root_ref)
+        except LookupError:
+            # Some narrow adapters expose only the exact root reference.  That
+            # is safe: no nested evidence is admitted without the root record.
+            continue
+        for nested_ref in _stored_refs(root):
+            if (nested_ref.workspace_id, nested_ref.commit_id) == (
+                workspace_id,
+                commit_id,
+            ):
+                eligible[canonical_bytes(nested_ref)] = nested_ref
+    return tuple(eligible[key] for key in sorted(eligible))
+
+
 class CurrentEvidenceParallelLimit:
     """Resolve the trusted limit from the current exact ACTIVE budget binding."""
 
@@ -416,6 +477,12 @@ class DebateService:
             return_exceptions=True,
         )
         debate_hash = content_hash(public_inputs)
+        claim_evidence_refs = _trusted_claim_evidence_refs(
+            self.records,
+            public_inputs,
+            workspace_id=verification_work.meta.workspace_id,
+            commit_id=verification_work.meta.commit_id,
+        )
         outputs: list[ProEvidenceResult | ConEvidenceResult | None] = [None, None]
         failures: list[Exception] = []
         for index, (call, invocation) in enumerate(
@@ -439,6 +506,7 @@ class DebateService:
                         evidence_work=call.work,
                         debate_input_hash=debate_hash,
                         allowed_evidence_refs=public_inputs,
+                        allowed_claim_evidence_refs=claim_evidence_refs,
                     )
                 else:
                     outputs[index] = self.con.finalize(
@@ -447,6 +515,7 @@ class DebateService:
                         evidence_work=call.work,
                         debate_input_hash=debate_hash,
                         allowed_evidence_refs=public_inputs,
+                        allowed_claim_evidence_refs=claim_evidence_refs,
                     )
             except Exception as error:
                 failures.append(error)
@@ -478,7 +547,7 @@ class DebateService:
                     if isinstance(invocations[1], PersistedLLMInvocation)
                     else None
                 ),
-            )
+            ) from failures[0]
 
         pro = outputs[0]
         con = outputs[1]
@@ -562,6 +631,12 @@ class DebateService:
         ):
             raise ValueError("EVIDENCE_INVOCATION_CLOSURE_MISMATCH")
         debate_hash = content_hash(public_inputs)
+        claim_evidence_refs = _trusted_claim_evidence_refs(
+            self.records,
+            public_inputs,
+            workspace_id=parent_work.meta.workspace_id,
+            commit_id=parent_work.meta.commit_id,
+        )
         output = (
             self.pro.finalize(
                 invocation,
@@ -569,6 +644,7 @@ class DebateService:
                 evidence_work=call.work,
                 debate_input_hash=debate_hash,
                 allowed_evidence_refs=public_inputs,
+                allowed_claim_evidence_refs=claim_evidence_refs,
             )
             if role == "PRO"
             else self.con.finalize(
@@ -577,6 +653,7 @@ class DebateService:
                 evidence_work=call.work,
                 debate_input_hash=debate_hash,
                 allowed_evidence_refs=public_inputs,
+                allowed_claim_evidence_refs=claim_evidence_refs,
             )
         )
         output_ref = self._publish_exact(call.work, output, invocation)

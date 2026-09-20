@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from sastsimi.contracts.llm import LLMRole, PromptInputSlot
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.static import StaticFactBundle
 from sastsimi.contracts.work import WorkExecutionState, WorkStatus
 from sastsimi.ports.authorized_llm_call import AuthorizedLLMCall
 from sastsimi.ports.dto import Record
@@ -20,8 +21,13 @@ from sastsimi.ports.production_prompt import (
     ProductionRoute,
 )
 from sastsimi.ports.record_store import RecordStore
-from sastsimi.prompts.builder import ArtifactPromptSource, PromptSource
+from sastsimi.prompts.builder import (
+    ArtifactPromptSource,
+    ProjectedPromptSource,
+    PromptSource,
+)
 from sastsimi.prompts.production import ProductionLLMConfigurationService
+from sastsimi.prompts.static_projection import project_hypothesis_static_bundle
 
 
 class ProductionRouteLookup(Protocol):
@@ -78,7 +84,13 @@ class ConfiguredProductionCallResolver:
         if route.role != role or route.task_kind != task_kind:
             raise ValueError("PRODUCTION_LLM_ROUTE_MISMATCH")
         resolved = self.configuration.resolve_route(route=route, approval=approval)
-        sources = self._sources(work.meta, resolved.entry.input_slots, source_refs)
+        sources = self._sources(
+            work.meta,
+            resolved.entry.input_slots,
+            source_refs,
+            role=role,
+            task_kind=task_kind,
+        )
         prepared = self.configuration.prepare_call(
             route=route,
             approval=approval,
@@ -108,7 +120,12 @@ class ConfiguredProductionCallResolver:
         work_meta: RecordMeta,
         slots: tuple[PromptInputSlot, ...],
         refs: tuple[StoredDataRef, ...],
-    ) -> tuple[PromptSource | ArtifactPromptSource, ...]:
+        *,
+        role: LLMRole,
+        task_kind: str,
+    ) -> tuple[
+        PromptSource | ProjectedPromptSource | ArtifactPromptSource, ...
+    ]:
         # PromptInputSlot is deliberately consumed structurally so this adapter
         # does not introduce another prompt-contract model.
         slot_by_kind: dict[str, PromptInputSlot] = {}
@@ -117,7 +134,9 @@ class ConfiguredProductionCallResolver:
             if not kind or kind in slot_by_kind:
                 raise ValueError("PRODUCTION_PROMPT_SOURCE_AMBIGUOUS")
             slot_by_kind[kind] = slot
-        sources: list[PromptSource | ArtifactPromptSource] = []
+        sources: list[
+            PromptSource | ProjectedPromptSource | ArtifactPromptSource
+        ] = []
         counts: dict[str, int] = {}
         for ref in refs:
             candidate_slot = slot_by_kind.get(ref.data_kind)
@@ -155,7 +174,17 @@ class ConfiguredProductionCallResolver:
             ):
                 raise ValueError("PRODUCTION_PROMPT_SOURCE_SCOPE_MISMATCH")
             name = str(candidate_slot.slot)
-            sources.append(PromptSource(name, ref, value))
+            if isinstance(value, StaticFactBundle):
+                sources.append(
+                    ProjectedPromptSource(
+                        name,
+                        ref,
+                        value,
+                        project_hypothesis_static_bundle(value),
+                    )
+                )
+            else:
+                sources.append(PromptSource(name, ref, value))
             counts[name] = counts.get(name, 0) + 1
         for slot in slots:
             name = str(slot.slot)

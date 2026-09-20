@@ -38,8 +38,9 @@ from sastsimi.ports.clock import Clock
 from sastsimi.ports.hypothesis_agent import HypothesisAgentOutcome
 from sastsimi.ports.id_generator import IdGenerator
 from sastsimi.ports.llm_invocation import PersistedLLMInvocation
-from sastsimi.prompts.builder import PromptBuilder, PromptSource
+from sastsimi.prompts.builder import PromptBuilder, ProjectedPromptSource
 from sastsimi.prompts.registry import LoadedPromptDefinition
+from sastsimi.prompts.static_projection import project_hypothesis_static_bundle
 
 
 class HypothesisLLMCall(Protocol):
@@ -120,7 +121,14 @@ class HypothesisAgent:
             definition=definition,
             registry_entry_ref=registry_entry_ref,
             metadata=self._fresh_meta(work, "prompt_payload"),
-            sources=(PromptSource("facts", static_bundle_ref, static_bundle),),
+            sources=(
+                ProjectedPromptSource(
+                    "facts",
+                    static_bundle_ref,
+                    static_bundle,
+                    project_hypothesis_static_bundle(static_bundle),
+                ),
+            ),
         )
 
     async def propose(

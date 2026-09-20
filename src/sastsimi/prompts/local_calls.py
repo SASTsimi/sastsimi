@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from sastsimi.contracts.llm import LLMRole, PromptInputSlot, PromptRegistryEntry
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.static import StaticFactBundle
 from sastsimi.contracts.work import WorkExecutionState, WorkStatus
 from sastsimi.ports.authorized_llm_call import AuthorizedLLMCall
 from sastsimi.ports.dto import Record
@@ -18,12 +19,13 @@ from sastsimi.ports.llm_invocation import PersistedLLMInvocation
 from sastsimi.ports.record_store import RecordStore
 from sastsimi.ports.runtime_query import RuntimeQueryPort
 
-from .builder import ArtifactPromptSource, PromptSource
+from .builder import ArtifactPromptSource, ProjectedPromptSource, PromptSource
 from .local_evaluation import (
     ApprovedLocalEvaluationRoute,
     LocalEvaluationRoute,
     PreparedLocalEvaluationCall,
 )
+from .static_projection import project_hypothesis_static_bundle
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,7 +54,9 @@ class LocalEvaluationConfigurationPort(Protocol):
         route: LocalEvaluationRoute,
         approved: ApprovedLocalEvaluationRoute,
         work: WorkExecutionState,
-        sources: tuple[PromptSource | ArtifactPromptSource, ...],
+        sources: tuple[
+            PromptSource | ProjectedPromptSource | ArtifactPromptSource, ...
+        ],
     ) -> PreparedLocalEvaluationCall: ...
 
     def bind_artifact_source(
@@ -165,7 +169,13 @@ class ConfiguredLocalEvaluationCallResolver:
         )
         if route.role != role or route.task_kind != task_kind:
             raise ValueError("LOCAL_EVALUATION_LLM_ROUTE_MISMATCH")
-        sources = self._sources(work.meta, entry.input_slots, source_refs)
+        sources = self._sources(
+            work.meta,
+            entry.input_slots,
+            source_refs,
+            role=role,
+            task_kind=task_kind,
+        )
         prepared = self.configuration.prepare_call(
             route=route,
             approved=approved,
@@ -199,14 +209,21 @@ class ConfiguredLocalEvaluationCallResolver:
         work_meta: RecordMeta,
         slots: tuple[PromptInputSlot, ...],
         refs: tuple[StoredDataRef, ...],
-    ) -> tuple[PromptSource | ArtifactPromptSource, ...]:
+        *,
+        role: LLMRole,
+        task_kind: str,
+    ) -> tuple[
+        PromptSource | ProjectedPromptSource | ArtifactPromptSource, ...
+    ]:
         slot_by_kind: dict[str, PromptInputSlot] = {}
         for slot in slots:
             kind = str(slot.data_kind)
             if not kind or kind in slot_by_kind:
                 raise ValueError("LOCAL_EVALUATION_PROMPT_SOURCE_AMBIGUOUS")
             slot_by_kind[kind] = slot
-        sources: list[PromptSource | ArtifactPromptSource] = []
+        sources: list[
+            PromptSource | ProjectedPromptSource | ArtifactPromptSource
+        ] = []
         counts: dict[str, int] = {}
         for ref in refs:
             candidate_slot = slot_by_kind.get(ref.data_kind)
@@ -246,7 +263,17 @@ class ConfiguredLocalEvaluationCallResolver:
             ):
                 raise ValueError("LOCAL_EVALUATION_PROMPT_SOURCE_SCOPE_MISMATCH")
             name = str(candidate_slot.slot)
-            sources.append(PromptSource(name, ref, value))
+            if isinstance(value, StaticFactBundle):
+                sources.append(
+                    ProjectedPromptSource(
+                        name,
+                        ref,
+                        value,
+                        project_hypothesis_static_bundle(value),
+                    )
+                )
+            else:
+                sources.append(PromptSource(name, ref, value))
             counts[name] = counts.get(name, 0) + 1
         for slot in slots:
             name = str(slot.slot)

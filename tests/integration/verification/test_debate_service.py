@@ -34,6 +34,7 @@ from sastsimi.contracts.refs import (
     StoredDataRef,
     reference,
 )
+from sastsimi.contracts.static import StaticFactBundle
 from sastsimi.contracts.verification import ProEvidenceResult
 from sastsimi.contracts.work import (
     SubjectType,
@@ -47,7 +48,9 @@ from sastsimi.verification.debate_service import (
     CurrentEvidenceParallelLimit,
     DebateIncompleteError,
     DebateService,
+    _trusted_claim_evidence_refs,
 )
+from tests.contract.domain.canonical_fixtures import make
 
 NOW = datetime(2026, 9, 11, tzinfo=UTC)
 
@@ -443,6 +446,28 @@ def _output(role: str, evidence_ref: StoredDataRef) -> dict[str, Any]:
     }
 
 
+def test_claim_evidence_closure_includes_exact_nested_static_artifacts() -> None:
+    records = MemoryRecords()
+    bundle = StaticFactBundle.model_validate_json(
+        canonical_bytes(make("StaticFactBundle"))
+    )
+    bundle_ref = records.publish(bundle)
+
+    allowed = _trusted_claim_evidence_refs(
+        records,
+        (bundle_ref,),
+        workspace_id=bundle.meta.workspace_id,
+        commit_id=bundle.meta.commit_id,
+    )
+
+    raw_refs = {
+        run.raw_result_ref for run in bundle.tool_runs if run.raw_result_ref is not None
+    }
+    assert bundle_ref in allowed
+    assert raw_refs
+    assert raw_refs <= set(allowed)
+
+
 @pytest.mark.asyncio
 async def test_budget_limit_rejects_zero_and_allows_parallel_new_sessions() -> None:
     """Catches a zero-capacity hang, serial bypass, or shared Pro/Con session."""
@@ -522,6 +547,59 @@ async def test_budget_limit_rejects_zero_and_allows_parallel_new_sessions() -> N
     assert result.con.evidence[0].source_role == "CON"
     assert records.get_exact(result.pro_ref) == result.pro
     assert records.get_exact(result.con_ref) == result.con
+
+
+@pytest.mark.asyncio
+async def test_evidence_code_location_cannot_escape_current_workspace_or_commit() -> None:
+    public_inputs = tuple(
+        sorted(
+            (
+                _ref("static_fact_bundle", "facts"),
+                _ref("playbook_application", "application"),
+            ),
+            key=canonical_bytes,
+        )
+    )
+    parent = _work("VERIFICATION", public_inputs)
+    pro_work = _work("PRO", public_inputs, parent=parent)
+    con_work = _work("CON", public_inputs, parent=parent)
+    records, artifacts = MemoryRecords(), MemoryArtifacts()
+    pro_call = _authorized_call(records, "PRO", pro_work, public_inputs)
+    con_call = _authorized_call(records, "CON", con_work, public_inputs)
+    forged_pro = _output("PRO", public_inputs[0])
+    forged_pro["evidence"][0]["code_locations"][0]["workspace_id"] = "other-ws"
+    calls = ConcurrentLLMCalls(
+        records,
+        artifacts,
+        {
+            "PRO": forged_pro,
+            "CON": _output("CON", public_inputs[0]),
+        },
+    )
+    publisher = RecordingPublisher(records)
+    service = DebateService(
+        records=records,
+        artifacts=artifacts,
+        llm_calls=calls,
+        metadata_factory=MetadataFactory(),
+        claim_id_factory=ClaimIds(),
+        publish_result=publisher,
+        parallel_limit=lambda _work: 2,
+    )
+
+    with pytest.raises(DebateIncompleteError):
+        await service.run(
+            verification_work=parent,
+            public_input_refs=public_inputs,
+            pro_call=pro_call,
+            con_call=con_call,
+        )
+
+    assert all(
+        result.role != "PRO"
+        for result in publisher.published
+        if isinstance(result, ProEvidenceResult)
+    )
 
 
 @pytest.mark.asyncio

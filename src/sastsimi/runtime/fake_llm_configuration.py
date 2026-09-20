@@ -27,6 +27,7 @@ from sastsimi.contracts.llm import (
 from sastsimi.contracts.prompt_projection import project_prompt_value
 from sastsimi.contracts.prompt_redaction import (
     redact_projected_json,
+    redact_untrusted_text,
     render_provider_prompt,
 )
 from sastsimi.contracts.records import RecordMeta
@@ -55,7 +56,16 @@ def _source_projection(runtime: RuntimeServices, ref: StoredDataRef) -> bytes:
     if ref.record_id is not None:
         return project_prompt_value(runtime.unit_of_work.records.get_exact(ref), ("$",))
     with runtime.unit_of_work.artifacts.open_verified(ref) as source:
-        return project_prompt_value(source.read().decode("utf-8"), ("$",))
+        raw = source.read()
+    redacted_body = redact_untrusted_text(raw).data.decode("utf-8")
+    return project_prompt_value(
+        {
+            "source_ref": ref.model_dump(mode="json"),
+            "content_hash": ref.content_hash,
+            "redacted_body": redacted_body,
+        },
+        ("$",),
+    )
 
 
 def register_fake_llm_call(

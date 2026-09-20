@@ -51,18 +51,39 @@ from sastsimi.contracts.llm import (
 from sastsimi.contracts.prompt_projection import project_prompt_value
 from sastsimi.contracts.prompt_redaction import (
     redact_projected_json,
+    redact_untrusted_text,
     render_provider_prompt,
 )
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
-from sastsimi.contracts.static import StaticToolProfile
+from sastsimi.contracts.static import StaticFactBundle, StaticToolProfile
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.dto import CapabilityProbeResult, Record
+from sastsimi.prompts.static_projection import project_hypothesis_static_bundle
 
 from . import models
 from .codec import reference
 from .repositories import SQLiteRecordStore
+
+
+def _artifact_prompt_source_value(
+    source_ref: StoredDataRef, raw: bytes
+) -> dict[str, object]:
+    """Rebuild the exact prompt-only wrapper used for a raw artifact source."""
+
+    if (
+        source_ref.record_id is not None
+        or source_ref.data_kind != "artifact"
+        or str(source_ref.stored_data_id) != source_ref.content_hash
+    ):
+        raise ValueError("PROMPT_SOURCE_REFERENCE_MISMATCH")
+    redacted_body = redact_untrusted_text(raw).data.decode("utf-8")
+    return {
+        "source_ref": source_ref.model_dump(mode="json"),
+        "content_hash": source_ref.content_hash,
+        "redacted_body": redacted_body,
+    }
 
 
 class ConfigurationRegistry:
@@ -1625,18 +1646,31 @@ class ConfigurationRegistry:
                 source_refs.add(source_key)
                 if source_ref.record_id is None:
                     with self.artifacts.open_verified(source_ref) as source:
-                        source_value: object = source.read().decode("utf-8")
+                        source_value: object = _artifact_prompt_source_value(
+                            source_ref, source.read()
+                        )
                 else:
                     source_value = self.records.resolve(connection, source_ref)
-                expected_projection = redact_projected_json(
-                    project_prompt_value(source_value, binding.field_paths)
-                ).data
+                expected_projections = {
+                    redact_projected_json(
+                        project_prompt_value(source_value, binding.field_paths)
+                    ).data
+                }
+                if isinstance(source_value, StaticFactBundle):
+                    expected_projections.add(
+                        redact_projected_json(
+                            canonical_bytes(
+                                project_hypothesis_static_bundle(source_value)
+                            )
+                        ).data
+                    )
                 with self.artifacts.open_verified(
                     binding.projected_data_ref
                 ) as projected:
-                    if projected.read() != expected_projection:
+                    actual_projection = projected.read()
+                    if actual_projection not in expected_projections:
                         raise ValueError("PROMPT_PROJECTION_MISMATCH")
-                projections.append((binding.slot, expected_projection))
+                projections.append((binding.slot, actual_projection))
             for slot in entry.input_slots:
                 count = seen.get(str(slot.slot), 0)
                 bounds = {

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from pydantic import BaseModel
+from pydantic import JsonValue
 
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -25,11 +26,13 @@ from sastsimi.contracts.prompt_redaction import (
 )
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.static import StaticFactBundle
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.dto import Record
 
 from .redaction import redact_projected_json, render_provider_prompt
 from .registry import LoadedPromptDefinition
+from .static_projection import project_hypothesis_static_bundle
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,16 @@ class PromptSource:
     slot: str
     source_ref: StoredDataRef
     value: BaseModel
+
+
+@dataclass(frozen=True)
+class ProjectedPromptSource:
+    """Bind an exact source record to a deterministic prompt-only projection."""
+
+    slot: str
+    source_ref: StoredDataRef
+    value: BaseModel
+    projected_value: JsonValue
 
 
 @dataclass(frozen=True)
@@ -104,7 +117,9 @@ class PromptBuilder:
         definition: LoadedPromptDefinition,
         registry_entry_ref: StoredDataRef,
         metadata: RecordMeta,
-        sources: tuple[PromptSource | ArtifactPromptSource, ...],
+        sources: tuple[
+            PromptSource | ProjectedPromptSource | ArtifactPromptSource, ...
+        ],
     ) -> PromptPayload:
         entry = definition.entry
         if _stored_ref(entry) != registry_entry_ref:
@@ -133,11 +148,21 @@ class PromptBuilder:
                 self._validate_artifact_source(source)
             elif _stored_ref(source.value) != source.source_ref:
                 raise ValueError("PROMPT_SOURCE_REFERENCE_MISMATCH")
+            if isinstance(source, ProjectedPromptSource) and (
+                not isinstance(source.value, StaticFactBundle)
+                or source.projected_value
+                != project_hypothesis_static_bundle(source.value)
+            ):
+                raise ValueError("PROMPT_PROJECTION_MISMATCH")
             source_key = canonical_bytes(source.source_ref)
             if source_key in source_refs:
                 raise ValueError("PROMPT_CONTEXT_DUPLICATE")
             source_refs.add(source_key)
-            projected = project_prompt_value(source.value, slot.field_paths)
+            projected = (
+                canonical_bytes(source.projected_value)
+                if isinstance(source, ProjectedPromptSource)
+                else project_prompt_value(source.value, slot.field_paths)
+            )
             redacted = redact_projected_json(projected).data
             projected_ref = self._commit(redacted, "application/json")
             rendered_bindings.append((source.slot, redacted))
