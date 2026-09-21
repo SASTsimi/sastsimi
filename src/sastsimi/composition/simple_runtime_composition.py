@@ -88,11 +88,14 @@ class SimpleClientFactory:
         self,
         identity: CheckpointIdentity,
         artifacts: SimpleArtifactRepository,
+        *,
+        deep: bool = False,
     ) -> SimpleClaudeClient | SimpleCodexClient | SimpleOpenAIClient:
+        model = self._profile.model_for(deep=deep)
         if self._profile.auth_mode == "API_KEY":
             return SimpleOpenAIClient(
                 credential_ref=self._profile.credential_ref,
-                model=self._profile.model,
+                model=model,
             )
         scope = PlannedRunScope(
             analysis_id=AnalysisId(identity.analysis_id),
@@ -101,7 +104,7 @@ class SimpleClientFactory:
             repository_ref="simple-runtime",
         )
         if self._profile.provider.casefold() == "claude":
-            return self._claude(scope, artifacts)
+            return self._claude(scope, artifacts, model)
         try:
             tool = self._profile.tools["codex"]
         except KeyError:
@@ -112,7 +115,7 @@ class SimpleClientFactory:
             executable_sha256=tool.executable_sha256,
             codex_home=_codex_home(),
             client_version=tool.version,
-            model=self._profile.model,
+            model=model,
         )
         binding = build_local_codex_binding(
             settings=settings,
@@ -127,13 +130,14 @@ class SimpleClientFactory:
         return SimpleCodexClient(
             runner=CodexCliProcessRunner(binding=binding.binding),
             provider_profile_ref=provider_ref,
-            model=self._profile.model,
+            model=model,
         )
 
     def _claude(
         self,
         scope: PlannedRunScope,
         artifacts: SimpleArtifactRepository,
+        model: str,
     ) -> SimpleClaudeClient:
         try:
             tool = self._profile.tools["claude"]
@@ -146,7 +150,7 @@ class SimpleClientFactory:
                 executable_sha256=tool.executable_sha256,
                 claude_config_dir=_claude_config_dir(),
                 client_version=tool.version,
-                model=self._profile.model,
+                model=model,
             ),
             scope=scope,
             artifacts=artifacts.artifacts,
@@ -159,7 +163,7 @@ class SimpleClientFactory:
         return SimpleClaudeClient(
             runner=ClaudeCliProcessRunner(binding=binding.binding),
             provider_profile_ref=provider_ref,
-            model=self._profile.model,
+            model=model,
         )
 
 
@@ -179,6 +183,7 @@ def build_analysis_application(
     ) -> SimpleRuntimeRunner:
         artifacts = SimpleArtifactRepository(data_dir, identity)
         client = client_factory(identity, artifacts)
+        deep_client = client_factory(identity, artifacts, deep=True)
         environments = DirectEnvironmentPreparer(
             docker=docker,
             artifacts=artifacts,
@@ -188,6 +193,10 @@ def build_analysis_application(
             runtime_store,
             build_stage_handlers(
                 client=client,
+                # Hypothesis, Pro, Con and both verification passes carry the
+                # reasoning the later stages only label or format, so the
+                # operator may run them on a stronger model.
+                deep_client=deep_client,
                 artifacts=artifacts,
                 docker=cast(DockerAdapter, docker),
                 containers=PortableContainerFactory(docker),

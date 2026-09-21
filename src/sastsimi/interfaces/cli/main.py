@@ -161,6 +161,13 @@ def main(
     setup_parser.add_argument("--provider")
     setup_parser.add_argument("--model")
     setup_parser.add_argument(
+        "--deep-model",
+        help=(
+            "Model for the reasoning-heavy roles (hypothesis, pro, con, both "
+            "verification passes); defaults to --model."
+        ),
+    )
+    setup_parser.add_argument(
         "--profile", dest="execution_profile", choices=["full", "lightweight"]
     )
     setup_parser.add_argument(

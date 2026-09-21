@@ -83,6 +83,10 @@ class UserConfig(BaseModel):
     auth_mode: Literal["API_KEY", "SUBSCRIPTION_LOGIN"]
     provider: str
     model: str
+    # The model the reasoning-heavy roles use when the operator wants a
+    # stronger one there than in the rest of the run: hypothesis, pro, con and
+    # both verification passes.  ``None`` keeps every role on ``model``.
+    deep_model: str | None = None
     credential_ref: str
     execution_profile: Literal["FULL", "LIGHTWEIGHT"]
     max_cost_minor_units: int = Field(gt=0)
@@ -102,6 +106,13 @@ class UserConfig(BaseModel):
     @classmethod
     def safe_names(cls, value: str) -> str:
         if _SAFE_NAME.fullmatch(value) is None:
+            raise ValueError("USER_CONFIG_NAME_INVALID")
+        return value
+
+    @field_validator("deep_model")
+    @classmethod
+    def safe_deep_model(cls, value: str | None) -> str | None:
+        if value is not None and _SAFE_NAME.fullmatch(value) is None:
             raise ValueError("USER_CONFIG_NAME_INVALID")
         return value
 
@@ -137,6 +148,11 @@ class UserConfig(BaseModel):
             f"auth_mode = {_quoted(self.auth_mode)}",
             f"provider = {_quoted(self.provider)}",
             f"model = {_quoted(self.model)}",
+            *(
+                ()
+                if self.deep_model is None
+                else (f"deep_model = {_quoted(self.deep_model)}",)
+            ),
             f"credential_ref = {_quoted(self.credential_ref)}",
             f"execution_profile = {_quoted(self.execution_profile)}",
             f"max_cost_minor_units = {self.max_cost_minor_units}",
@@ -183,6 +199,7 @@ class SimpleExecutionProfile(BaseModel):
     provider_profile_ref: str
     provider: str
     model: str
+    deep_model: str | None = None
     auth_mode: Literal["API_KEY", "SUBSCRIPTION_LOGIN"]
     credential_ref: str
     data_dir: Path
@@ -205,6 +222,18 @@ class SimpleExecutionProfile(BaseModel):
             raise ValueError("SIMPLE_PROFILE_NAME_INVALID")
         return value
 
+    @field_validator("deep_model")
+    @classmethod
+    def safe_deep_model(cls, value: str | None) -> str | None:
+        if value is not None and _SAFE_NAME.fullmatch(value) is None:
+            raise ValueError("SIMPLE_PROFILE_NAME_INVALID")
+        return value
+
+    def model_for(self, *, deep: bool) -> str:
+        """Return the model one role runs on; ``deep`` roles may differ."""
+
+        return self.deep_model if deep and self.deep_model else self.model
+
     @model_validator(mode="after")
     def validate_credential(self) -> Self:
         _credential_ref(self.auth_mode, self.credential_ref)
@@ -216,6 +245,11 @@ class SimpleExecutionProfile(BaseModel):
             f"provider_profile_ref = {_quoted(self.provider_profile_ref)}",
             f"provider = {_quoted(self.provider)}",
             f"model = {_quoted(self.model)}",
+            *(
+                ()
+                if self.deep_model is None
+                else (f"deep_model = {_quoted(self.deep_model)}",)
+            ),
             f"auth_mode = {_quoted(self.auth_mode)}",
             f"credential_ref = {_quoted(self.credential_ref)}",
             f"data_dir = {_quoted(self.data_dir.as_posix())}",

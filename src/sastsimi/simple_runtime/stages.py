@@ -1401,6 +1401,9 @@ verification verdict follows from the supplied Pro, Con, and PoC evidence.
 def build_stage_handlers(
     *,
     client: SimpleLLMClient,
+    # The reasoning-heavy roles when the operator configured a stronger model
+    # for them; ``None`` keeps every stage on ``client``.
+    deep_client: SimpleLLMClient | None = None,
     artifacts: SimpleArtifactRepository,
     docker: DockerAdapter,
     containers: SimpleContainerFactory,
@@ -1410,12 +1413,13 @@ def build_stage_handlers(
     poc_timeout_ms: int = _POC_TIMEOUT_MS,
 ) -> dict[SimpleStage, SimpleStageHandler]:
     environment_preparer = environments or _UnavailableEnvironmentPreparer()
+    deep = deep_client or client
     handlers: dict[SimpleStage, SimpleStageHandler] = {
         SimpleStage.PRO_CON_DONE: ProConStage(
-            client, artifacts, call_timeout_ms=call_timeout_ms
+            deep, artifacts, call_timeout_ms=call_timeout_ms
         ),
         SimpleStage.VERIFICATION_INITIAL_DONE: InitialVerificationStage(
-            client,
+            deep,
             artifacts,
             environment_preparer,
             call_timeout_ms=call_timeout_ms,
@@ -1434,7 +1438,7 @@ def build_stage_handlers(
             poc_timeout_ms=poc_timeout_ms,
         ),
         SimpleStage.VERIFICATION_FINAL_DONE: FinalVerificationStage(
-            client,
+            deep,
             artifacts,
             call_timeout_ms=call_timeout_ms,
         ),

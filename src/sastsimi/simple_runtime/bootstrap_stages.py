@@ -547,7 +547,8 @@ class DirectHypothesisBootstrap:
         static: StaticBootstrapResult,
     ) -> tuple[HypothesisSeed, ...]:
         artifacts = SimpleArtifactRepository(self._data_dir, identity)
-        client = self._client_factory(identity, artifacts)
+        # Proposing the hypotheses is the reasoning the whole run is built on.
+        client = self._client_factory(identity, artifacts, deep=True)
         schema = {
             "type": "object",
             "properties": {
@@ -649,6 +650,8 @@ class SimpleClientFactory(Protocol):
         self,
         identity: CheckpointIdentity,
         artifacts: SimpleArtifactRepository,
+        *,
+        deep: bool = False,
     ) -> SimpleLLMClient: ...
 
 

@@ -133,3 +133,44 @@ def test_simple_execution_profile_preserves_an_empty_tool_table(
     profile.write(path)
 
     assert load_simple_execution_profile(path) == profile
+
+
+def _profile(tmp_path: Path, **overrides: object) -> SimpleExecutionProfile:
+    fields: dict[str, object] = {
+        "provider_profile_ref": "local-claude",
+        "provider": "claude",
+        "model": "claude-sonnet-5",
+        "auth_mode": "SUBSCRIPTION_LOGIN",
+        "credential_ref": "OFFICIAL_CLIENT_SESSION",
+        "data_dir": tmp_path / "data",
+        "workspace_root": tmp_path / "workspaces",
+        "max_cost_minor_units": 10_000,
+        "max_tokens": 500_000,
+        "max_elapsed_seconds": 3_600,
+        "docker_network": "NONE",
+        "tools": {},
+    }
+    fields.update(overrides)
+    return SimpleExecutionProfile(**fields)  # type: ignore[arg-type]
+
+
+def test_one_configured_model_serves_every_role(tmp_path: Path) -> None:
+    profile = _profile(tmp_path)
+
+    assert profile.deep_model is None
+    assert profile.model_for(deep=True) == "claude-sonnet-5"
+    assert profile.model_for(deep=False) == "claude-sonnet-5"
+    assert "deep_model" not in profile.to_toml()
+
+
+def test_deep_model_reaches_only_the_reasoning_roles(tmp_path: Path) -> None:
+    profile = _profile(tmp_path, deep_model="claude-opus-5")
+
+    assert profile.model_for(deep=True) == "claude-opus-5"
+    assert profile.model_for(deep=False) == "claude-sonnet-5"
+    assert 'deep_model = "claude-opus-5"' in profile.to_toml()
+
+
+def test_deep_model_rejects_an_unsafe_name(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="SIMPLE_PROFILE_NAME_INVALID"):
+        _profile(tmp_path, deep_model="../../etc/passwd")

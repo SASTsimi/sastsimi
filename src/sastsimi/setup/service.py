@@ -55,6 +55,7 @@ class SetupChoices(BaseModel):
     auth_mode: Literal["API_KEY", "SUBSCRIPTION_LOGIN"]
     provider: str
     model: str
+    deep_model: str | None = None
     credential_ref: str
     execution_profile: Literal["FULL", "LIGHTWEIGHT"]
     max_cost_minor_units: int = Field(gt=0)
@@ -331,6 +332,7 @@ class SetupService:
             auth_mode=choices.auth_mode,
             provider=choices.provider,
             model=choices.model,
+            deep_model=choices.deep_model,
             credential_ref=choices.credential_ref,
             execution_profile=choices.execution_profile,
             max_cost_minor_units=choices.max_cost_minor_units,
@@ -358,6 +360,7 @@ class SetupService:
             provider_profile_ref=f"local-{choices.provider}",
             provider=choices.provider,
             model=choices.model,
+            deep_model=choices.deep_model,
             auth_mode=choices.auth_mode,
             credential_ref=choices.credential_ref,
             data_dir=choices.data_dir,
