@@ -10,6 +10,7 @@ from pydantic import ValidationError, field_validator, model_validator
 
 from sastsimi.config.codeql_container import CodeQLContainerRuntimeConfig
 from sastsimi.config.production_profile import (
+    PolicySource,
     TimeoutSettings,
     WorkerSettings,
     WorkspaceLimitSettings,
@@ -103,6 +104,34 @@ class LocalCodexSubscriptionSettings(ContractModel):
         return self
 
 
+class LocalClaudeSubscriptionSettings(ContractModel):
+    """Hash-pinned official Claude Code client binding with no credential payload."""
+
+    provider_profile_key: NonEmptyStr
+    product: Literal["CLAUDE_CODE"] = "CLAUDE_CODE"
+    transport: Literal["CLAUDE_CODE_CLIENT"] = "CLAUDE_CODE_CLIENT"
+    auth_mode: Literal["SUBSCRIPTION_LOGIN"] = "SUBSCRIPTION_LOGIN"
+    credential_source: Literal["OFFICIAL_CLIENT_SESSION"] = "OFFICIAL_CLIENT_SESSION"
+    executable_path: Path
+    executable_sha256: Sha256
+    claude_config_dir: Path
+    client_version: NonEmptyStr
+    model: NonEmptyStr
+
+    @field_validator("executable_path", "claude_config_dir", mode="before")
+    @classmethod
+    def absolute_binding_paths(cls, value: object) -> Path:
+        return _absolute_non_root_path(value)
+
+    @model_validator(mode="after")
+    def immutable_client_outside_credential_home(self) -> Self:
+        executable = self.executable_path.resolve(strict=False)
+        home = self.claude_config_dir.resolve(strict=False)
+        if executable == home or home in executable.parents:
+            raise ValueError("LOCAL_EVALUATION_CLAUDE_PATHS_OVERLAP")
+        return self
+
+
 class LocalEvaluationBudgetSettings(ContractModel):
     """Runtime limits for local evaluation, without any approval assertion."""
 
@@ -167,18 +196,43 @@ class LocalEvaluationProfile(ContractModel):
     budget: LocalEvaluationBudgetSettings
     codeql_container: CodeQLContainerRuntimeConfig
     capabilities: LocalCapabilitySelection
-    codex: LocalCodexSubscriptionSettings
+    codex: LocalCodexSubscriptionSettings | None = None
+    claude: LocalClaudeSubscriptionSettings | None = None
+    # Without this the run parses a synthetic "no official policy" declaration.
+    # Naming an officially published endpoint makes the run collect and parse the
+    # real document instead, exactly as a production run does.
+    policy: PolicySource | None = None
 
     @field_validator("workspace_root", mode="before")
     @classmethod
     def absolute_workspace_root(cls, value: object) -> Path:
         return _absolute_non_root_path(value)
 
+    @property
+    def subscription(
+        self,
+    ) -> LocalCodexSubscriptionSettings | LocalClaudeSubscriptionSettings:
+        """The single configured official-client binding for this run."""
+
+        settings = self.codex if self.codex is not None else self.claude
+        if settings is None:
+            raise ValueError("LOCAL_EVALUATION_SUBSCRIPTION_CLIENT_MISSING")
+        return settings
+
     @model_validator(mode="after")
     def isolate_code_and_credentials(self) -> Self:
+        if (self.codex is None) == (self.claude is None):
+            raise ValueError("LOCAL_EVALUATION_SUBSCRIPTION_CLIENT_AMBIGUOUS")
+        client = self.codex if self.codex is not None else self.claude
+        assert client is not None
+        credential_home = (
+            client.codex_home
+            if isinstance(client, LocalCodexSubscriptionSettings)
+            else client.claude_config_dir
+        )
         workspace = self.workspace_root.resolve(strict=False)
-        home = self.codex.codex_home.resolve(strict=False)
-        executable = self.codex.executable_path.resolve(strict=False)
+        home = credential_home.resolve(strict=False)
+        executable = client.executable_path.resolve(strict=False)
         if (
             workspace == home
             or workspace in home.parents
@@ -209,6 +263,7 @@ def load_local_evaluation_profile(path: Path) -> LocalEvaluationProfile:
 
 __all__ = [
     "LocalCapabilitySelection",
+    "LocalClaudeSubscriptionSettings",
     "LocalCodexSubscriptionSettings",
     "LocalEvaluationBudgetSettings",
     "LocalEvaluationProfile",

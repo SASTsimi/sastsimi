@@ -66,6 +66,21 @@ from . import models
 from .codec import reference
 from .repositories import SQLiteRecordStore
 
+# One receipt kind per official subscription client.  Each is written only by
+# that client's bounded local probe and never by a Production PVD run.
+_LOCAL_SUBSCRIPTION_EVIDENCE_KINDS = frozenset(
+    {"local_codex_live_probe", "local_claude_live_probe"}
+)
+# The exact identity of every official subscription client this registry admits
+# on a LOCAL_EVALUATION route.  An identity outside this set is not a client
+# whose isolation boundary has been implemented and probed.
+_LOCAL_SUBSCRIPTION_IDENTITIES = frozenset(
+    {
+        ("OPENAI", "CODEX", "CODEX_CLIENT"),
+        ("ANTHROPIC", "CLAUDE_CODE", "CLAUDE_CODE_CLIENT"),
+    }
+)
+
 
 def _artifact_prompt_source_value(
     source_ref: StoredDataRef, raw: bytes
@@ -897,18 +912,17 @@ class ConfigurationRegistry:
         *,
         local_evidence_ref: StoredDataRef,
     ) -> StoredDataRef:
-        """Publish only the bounded LOCAL_EVALUATION Codex probe identity."""
+        """Publish only a bounded LOCAL_EVALUATION official-client probe identity."""
 
         record = ProviderValidationEvidence.model_validate(record)
-        evidence = self._local_codex_evidence(local_evidence_ref, record)
+        evidence = self._local_subscription_evidence(local_evidence_ref, record)
         experimental = evidence.get("experimental_provider_profile_ref")
         if (
             record.checked_by != "LOCAL_EVALUATION_OPERATOR"
             or record.tests
             or not isinstance(experimental, dict)
-            or record.provider != "OPENAI"
-            or record.product != "CODEX"
-            or record.transport != "CODEX_CLIENT"
+            or (record.provider, record.product, record.transport)
+            not in _LOCAL_SUBSCRIPTION_IDENTITIES
             or record.auth_mode != "SUBSCRIPTION_LOGIN"
             or evidence.get("model") != record.model
         ):
@@ -1076,7 +1090,7 @@ class ConfigurationRegistry:
         """Publish an experimental/supported local revision without PVD authority."""
 
         record = ProviderProfile.model_validate(record)
-        evidence = self._local_codex_evidence(local_evidence_ref, record)
+        evidence = self._local_subscription_evidence(local_evidence_ref, record)
         experimental_data = evidence.get("experimental_provider_profile_ref")
         if not isinstance(experimental_data, dict):
             raise ValueError("LOCAL_PROVIDER_PROFILE_EVIDENCE_MISMATCH")
@@ -1096,9 +1110,8 @@ class ConfigurationRegistry:
             "session_metadata",
         )
         if (
-            record.provider != "OPENAI"
-            or record.product != "CODEX"
-            or record.transport != "CODEX_CLIENT"
+            (record.provider, record.product, record.transport)
+            not in _LOCAL_SUBSCRIPTION_IDENTITIES
             or record.model != evidence.get("model")
             or record.auth_mode != "SUBSCRIPTION_LOGIN"
             or record.credential_source != "OFFICIAL_CLIENT_SESSION"
@@ -1199,7 +1212,7 @@ class ConfigurationRegistry:
         local_evidence_ref: StoredDataRef,
     ) -> StoredDataRef:
         record = ClientExecutionProfile.model_validate(record)
-        evidence = self._local_codex_evidence(local_evidence_ref, record)
+        evidence = self._local_subscription_evidence(local_evidence_ref, record)
         experimental = evidence.get("experimental_provider_profile_ref")
         if (
             not isinstance(experimental, dict)
@@ -1229,7 +1242,7 @@ class ConfigurationRegistry:
                 raise ValueError("LOCAL_CLIENT_EXECUTION_EVIDENCE_MISMATCH")
         return self._publish(record, self.records.evidence.llm_configuration_approved)
 
-    def _local_codex_evidence(
+    def _local_subscription_evidence(
         self,
         evidence_ref: StoredDataRef,
         owner: ProviderValidationEvidence | ProviderProfile | ClientExecutionProfile,
@@ -1252,7 +1265,7 @@ class ConfigurationRegistry:
             not isinstance(value, dict)
             or canonical_bytes(value) != raw
             or value.get("purpose") != "LOCAL_EVALUATION"
-            or value.get("evidence_kind") != "local_codex_live_probe"
+            or value.get("evidence_kind") not in _LOCAL_SUBSCRIPTION_EVIDENCE_KINDS
             or value.get("production_pvd") is not False
             or value.get("production_approval") is not False
             or not isinstance(checks, dict)

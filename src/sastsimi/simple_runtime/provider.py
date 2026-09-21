@@ -15,7 +15,11 @@ from pydantic import JsonValue
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
-from sastsimi.providers.base import CodexProcessRequest, CodexProcessRunner
+from sastsimi.providers.base import (
+    CodexProcessRequest,
+    CodexProcessRunner,
+    SubscriptionProcessRunner,
+)
 
 from .models import StageFailure
 
@@ -160,6 +164,87 @@ class SimpleCodexClient:
         )
 
 
+class SimpleClaudeClient:
+    """One-call-at-a-time Claude Code boundary for the local sequential runtime.
+
+    The official subscription clients share one process boundary shape, so this
+    mirrors the Codex client and differs only in which client it names.
+    """
+
+    def __init__(
+        self,
+        *,
+        runner: SubscriptionProcessRunner,
+        provider_profile_ref: StoredDataRef,
+        model: str,
+    ) -> None:
+        self._runner = runner
+        self._provider_profile_ref = provider_profile_ref
+        self._model = model
+        self._lock = asyncio.Lock()
+
+    async def call(
+        self,
+        *,
+        prompt: bytes,
+        output_schema: Mapping[str, Any],
+        timeout_ms: int,
+    ) -> SimpleLLMCallResult | StageFailure:
+        prompt_digest = hashlib.sha256(prompt).hexdigest()
+        invocation_id = f"simple-{uuid4().hex}"
+        request = CodexProcessRequest(
+            invocation_id=invocation_id,
+            provider_profile_ref=self._provider_profile_ref,
+            model=self._model,
+            prompt=prompt,
+            output_schema=canonical_bytes(output_schema),
+            timeout_ms=timeout_ms,
+        )
+        started_at = datetime.now(UTC)
+        started = monotonic()
+        async with self._lock:
+            result = await self._runner.execute(request)
+        finished_at = datetime.now(UTC)
+        elapsed_ms = max(0, int((monotonic() - started) * 1000))
+        if result.status != "SUCCEEDED" or result.final_message is None:
+            return StageFailure(
+                code=result.status,
+                retryable=result.status
+                in {"AUTH_REQUIRED", "RATE_LIMITED", "TIMED_OUT", "FAILED"},
+                safe_message=f"Claude Code call did not succeed: {result.status}",
+            )
+        try:
+            value = json.loads(result.final_message.decode("utf-8"))
+            if not isinstance(value, dict):
+                raise ValueError("$")
+            _validate_schema(value, output_schema)
+            canonical = canonical_bytes(value)
+        except (
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as error:
+            field = str(error) if str(error).startswith("$") else None
+            return StageFailure(
+                code="INVALID_OUTPUT",
+                retryable=False,
+                safe_message="Claude Code returned invalid structured output",
+                invalid_field=field,
+            )
+        return SimpleLLMCallResult(
+            value=value,
+            prompt_digest=prompt_digest,
+            output_digest=hashlib.sha256(canonical).hexdigest(),
+            invocation_id=invocation_id,
+            provider="claude-code",
+            model=self._model,
+            started_at=started_at,
+            finished_at=finished_at,
+            elapsed_ms=elapsed_ms,
+        )
+
+
 class SimpleOpenAIClient:
     """Minimal official Responses API client for the sequential local path."""
 
@@ -267,6 +352,7 @@ class SimpleOpenAIClient:
 
 
 __all__ = [
+    "SimpleClaudeClient",
     "SimpleCodexClient",
     "SimpleLLMCallResult",
     "SimpleLLMClient",

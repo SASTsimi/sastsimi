@@ -1,4 +1,4 @@
-"""Materialize and publish the LOCAL_EVALUATION Codex prompt graph.
+"""Materialize and publish the LOCAL_EVALUATION official-client prompt graph.
 
 The two-phase API lets composition approve the exact immutable records before
 the runtime registry publishes them.  No Evaluation recommendation, Production
@@ -12,7 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, TypeVar, cast
 
-from sastsimi.composition.local_codex_binding import LocalCodexBindingRecords
+from sastsimi.composition.local_subscription_route import (
+    LocalSubscriptionRoute,
+    LocalValidationResult,
+    restored_result,
+)
 from sastsimi.config.package_resources import resolve_builtin_resource
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import LogicalRecordId, RecordId
@@ -44,11 +48,6 @@ from sastsimi.prompts.local_catalog import (
 from sastsimi.prompts.local_evaluation import (
     ApprovedLocalEvaluationRoute,
     LocalEvaluationRoute,
-)
-from sastsimi.providers.codex_subscription import ApprovedCodexExecutionBinding
-from sastsimi.providers.local_codex_validation import (
-    LocalCodexValidationResult,
-    LocalValidatedCodexExecutionBinding,
 )
 
 type SemanticValidator = Callable[[object], None]
@@ -174,8 +173,7 @@ def _route(
 def build_local_prompt_configuration_plan(
     *,
     repository_root: Path,
-    binding_records: LocalCodexBindingRecords,
-    validation: LocalCodexValidationResult,
+    subscription: LocalSubscriptionRoute,
     artifacts: ArtifactStore,
     ids: IdGenerator,
     clock: Clock,
@@ -184,14 +182,13 @@ def build_local_prompt_configuration_plan(
     max_calls_per_work: int,
     max_retries: int,
 ) -> LocalPromptConfigurationPlan:
-    """Create the exact local graph after the bounded live Codex probe succeeds."""
+    """Create the exact local graph after the bounded live probe succeeds."""
 
-    experimental = binding_records.provider
-    supported = validation.provider
+    experimental = subscription.experimental
+    supported = subscription.supported
     if (
-        validation.binding.provider_profile != supported
-        or validation.binding.experimental_binding != binding_records.binding
-        or validation.binding.local_evidence_ref != validation.evidence_ref
+        subscription.binding.provider_profile != supported
+        or subscription.binding.local_evidence_ref != subscription.evidence_ref
         or supported.meta.logical_record_id != experimental.meta.logical_record_id
         or supported.meta.previous_record_id != experimental.meta.record_id
         or supported.model != experimental.model
@@ -216,7 +213,7 @@ def build_local_prompt_configuration_plan(
     source = supported.meta
     limits = ExecutionLimits(
         meta=_meta(source, ExecutionLimits.KIND, ids=ids, clock=clock),
-        limits_key="local-evaluation-codex-v1",
+        limits_key=subscription.configuration_key,
         token_budget=None,
         timeout_ms=timeout_ms,
         max_parallel_calls=max_parallel_calls,
@@ -224,7 +221,7 @@ def build_local_prompt_configuration_plan(
     )
     retry = LLMRetryPolicy(
         meta=_meta(source, LLMRetryPolicy.KIND, ids=ids, clock=clock),
-        policy_key="local-evaluation-codex-v1",
+        policy_key=subscription.configuration_key,
         max_schema_repairs=1,
         max_semantic_repairs=0,
         max_retries=max_retries,
@@ -348,11 +345,11 @@ def build_local_prompt_configuration_plan(
         entries.append(entry)
         routes.append(route)
     return LocalPromptConfigurationPlan(
-        validation_evidence=binding_records.validation,
-        client_execution=binding_records.client,
+        validation_evidence=subscription.validation_evidence,
+        client_execution=subscription.client,
         experimental_provider=experimental,
         supported_provider=supported,
-        local_evidence_ref=validation.evidence_ref,
+        local_evidence_ref=subscription.evidence_ref,
         execution_limits=limits,
         retry_policy=retry,
         tool_policy=tools,
@@ -368,9 +365,8 @@ def restore_local_prompt_configuration_plan(
     *,
     published_records: Iterable[object],
     current_records: Iterable[object],
-    binding_records: LocalCodexBindingRecords,
-    validation: LocalCodexValidationResult,
-) -> tuple[LocalPromptConfigurationPlan, LocalCodexValidationResult] | None:
+    subscription: LocalSubscriptionRoute,
+) -> tuple[LocalPromptConfigurationPlan, LocalValidationResult] | None:
     """Restore one analysis' exact prompt graph instead of publishing duplicates.
 
     A resumed analysis keeps the prompt/provider revisions referenced by its
@@ -438,30 +434,15 @@ def restore_local_prompt_configuration_plan(
     assert isinstance(client, ClientExecutionProfile)
     assert isinstance(validation_evidence, ProviderValidationEvidence)
     if (
-        supported.profile_key != validation.provider.profile_key
-        or supported.model != validation.provider.model
-        or experimental.profile_key != binding_records.provider.profile_key
-        or experimental.model != binding_records.provider.model
+        supported.profile_key != subscription.supported.profile_key
+        or supported.model != subscription.supported.model
+        or experimental.profile_key != subscription.experimental.profile_key
+        or experimental.model != subscription.experimental.model
     ):
         raise ValueError("LOCAL_PROMPT_RESUME_PROVIDER_MISMATCH")
 
-    restored_binding = LocalValidatedCodexExecutionBinding(
-        experimental_binding=ApprovedCodexExecutionBinding(
-            provider_profile=experimental,
-            client_execution_profile=client,
-            executable=binding_records.binding.executable,
-            codex_home=binding_records.binding.codex_home,
-            runtime_environment=binding_records.binding.runtime_environment,
-            provider_validation_evidence=None,
-        ),
-        provider_profile=supported,
-        local_evidence_ref=validation.evidence_ref,
-    )
-    restored_validation = LocalCodexValidationResult(
-        provider=supported,
-        evidence_ref=validation.evidence_ref,
-        binding=restored_binding,
-    )
+    restored_binding = subscription.rebind(experimental, client, supported)
+    restored_validation = restored_result(subscription, restored_binding)
 
     limits = exact(entries[0].execution_limits_ref, ExecutionLimits)
     retry = exact(entries[0].retry_policy_ref, LLMRetryPolicy)
@@ -505,7 +486,7 @@ def restore_local_prompt_configuration_plan(
             client_execution=client,
             experimental_provider=experimental,
             supported_provider=supported,
-            local_evidence_ref=validation.evidence_ref,
+            local_evidence_ref=subscription.evidence_ref,
             execution_limits=limits,
             retry_policy=retry,
             tool_policy=tools,

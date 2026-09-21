@@ -5,11 +5,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from sastsimi.composition.local_claude_binding import build_local_claude_binding
 from sastsimi.composition.local_codex_binding import build_local_codex_binding
-from sastsimi.config.local_evaluation_profile import load_local_evaluation_profile
+from sastsimi.config.local_evaluation_profile import (
+    LocalEvaluationProfile,
+    load_local_evaluation_profile,
+)
 from sastsimi.contracts.ids import AnalysisId, CommitId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.orchestration.run_scope_plan import PlannedRunScope
+from sastsimi.providers.claude_subscription import ClaudeCliProcessRunner
 from sastsimi.providers.codex_subscription import CodexCliProcessRunner
 from sastsimi.runtime.system_support import SystemClock, UUIDIds
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
@@ -24,10 +29,56 @@ from sastsimi.simple_runtime.models import (
     StageStatus,
     input_reference_hash,
 )
-from sastsimi.simple_runtime.provider import SimpleCodexClient
+from sastsimi.simple_runtime.provider import (
+    SimpleClaudeClient,
+    SimpleCodexClient,
+    SimpleLLMClient,
+)
 from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
 from sastsimi.simple_runtime.stages import build_stage_handlers
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
+
+
+def _subscription_client(
+    profile: LocalEvaluationProfile,
+    scope: PlannedRunScope,
+    repository: SimpleArtifactRepository,
+) -> SimpleLLMClient:
+    """Bind the one official client this profile configured; never both."""
+
+    if profile.claude is not None:
+        claude = build_local_claude_binding(
+            settings=profile.claude,
+            scope=scope,
+            artifacts=repository.artifacts,
+            ids=UUIDIds(),
+            clock=SystemClock(),
+        )
+        claude_ref = reference(claude.provider)
+        if not isinstance(claude_ref, StoredDataRef):
+            raise ValueError("SIMPLE_RUNTIME_PROVIDER_REFERENCE_INVALID")
+        return SimpleClaudeClient(
+            runner=ClaudeCliProcessRunner(binding=claude.binding),
+            provider_profile_ref=claude_ref,
+            model=profile.claude.model,
+        )
+    if profile.codex is not None:
+        codex = build_local_codex_binding(
+            settings=profile.codex,
+            scope=scope,
+            artifacts=repository.artifacts,
+            ids=UUIDIds(),
+            clock=SystemClock(),
+        )
+        codex_ref = reference(codex.provider)
+        if not isinstance(codex_ref, StoredDataRef):
+            raise ValueError("SIMPLE_RUNTIME_PROVIDER_REFERENCE_INVALID")
+        return SimpleCodexClient(
+            runner=CodexCliProcessRunner(binding=codex.binding),
+            provider_profile_ref=codex_ref,
+            model=profile.codex.model,
+        )
+    raise ValueError("SIMPLE_RUNTIME_SUBSCRIPTION_CLIENT_REQUIRED")
 
 
 async def resume(
@@ -116,21 +167,7 @@ async def resume(
         repository_ref="imported-local-evaluation",
     )
     bootstrap_artifacts = SimpleArtifactRepository(data_dir, first)
-    binding = build_local_codex_binding(
-        settings=profile.codex,
-        scope=scope,
-        artifacts=bootstrap_artifacts.artifacts,
-        ids=UUIDIds(),
-        clock=SystemClock(),
-    )
-    provider_ref = reference(binding.provider)
-    if not isinstance(provider_ref, StoredDataRef):
-        raise ValueError("SIMPLE_RUNTIME_PROVIDER_REFERENCE_INVALID")
-    client = SimpleCodexClient(
-        runner=CodexCliProcessRunner(binding=binding.binding),
-        provider_profile_ref=provider_ref,
-        model=profile.codex.model,
-    )
+    client = _subscription_client(profile, scope, bootstrap_artifacts)
     docker = build_simple_docker_adapter(profile, first)
     containers = SimpleLocalContainerFactory(docker=docker, profile=profile)
 

@@ -15,6 +15,7 @@ from sastsimi.composition.local_prompt_configuration import (
     publish_local_prompt_configuration,
     restore_local_prompt_configuration_plan,
 )
+from sastsimi.composition.local_subscription_route import codex_route
 from sastsimi.config.package_resources import builtin_package_root
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.ports.dto import StagedArtifact
@@ -106,8 +107,7 @@ async def test_plan_and_publish_complete_local_prompt_graph() -> None:
     )
     plan = build_local_prompt_configuration_plan(
         repository_root=Path.cwd(),
-        binding_records=records,
-        validation=validated,
+        subscription=codex_route(records=records, validation=validated),
         artifacts=artifacts,  # type: ignore[arg-type]
         ids=_Ids(),
         clock=_Clock(),
@@ -163,8 +163,7 @@ async def test_plan_loads_templates_from_installed_package_root() -> None:
 
     plan = build_local_prompt_configuration_plan(
         repository_root=builtin_package_root(),
-        binding_records=records,
-        validation=validated,
+        subscription=codex_route(records=records, validation=validated),
         artifacts=artifacts,  # type: ignore[arg-type]
         ids=_Ids(),
         clock=_Clock(),
@@ -192,8 +191,7 @@ async def test_resume_reuses_exact_published_prompt_graph() -> None:
     )
     plan = build_local_prompt_configuration_plan(
         repository_root=builtin_package_root(),
-        binding_records=records,
-        validation=validated,
+        subscription=codex_route(records=records, validation=validated),
         artifacts=artifacts,  # type: ignore[arg-type]
         ids=_Ids(),
         clock=_Clock(),
@@ -206,8 +204,7 @@ async def test_resume_reuses_exact_published_prompt_graph() -> None:
     restored = restore_local_prompt_configuration_plan(
         published_records=plan.approval_records,
         current_records=plan.approval_records,
-        binding_records=records,
-        validation=validated,
+        subscription=codex_route(records=records, validation=validated),
     )
 
     assert restored is not None
@@ -233,8 +230,7 @@ async def test_resume_rejects_partial_active_prompt_graph() -> None:
     )
     plan = build_local_prompt_configuration_plan(
         repository_root=builtin_package_root(),
-        binding_records=records,
-        validation=validated,
+        subscription=codex_route(records=records, validation=validated),
         artifacts=artifacts,  # type: ignore[arg-type]
         ids=_Ids(),
         clock=_Clock(),
@@ -250,8 +246,7 @@ async def test_resume_rejects_partial_active_prompt_graph() -> None:
         restore_local_prompt_configuration_plan(
             published_records=plan.approval_records,
             current_records=plan.approval_records[:-1],
-            binding_records=records,
-            validation=validated,
+            subscription=codex_route(records=records, validation=validated),
         )
 
 
@@ -273,11 +268,13 @@ async def test_plan_rejects_supported_provider_not_from_exact_binding() -> None:
     with pytest.raises(ValueError, match="LOCAL_PROMPT_PROVIDER_BINDING_MISMATCH"):
         build_local_prompt_configuration_plan(
             repository_root=Path.cwd(),
-            binding_records=records,
-            validation=validated.__class__(
-                provider=wrong,
-                evidence_ref=validated.evidence_ref,
-                binding=validated.binding,
+            subscription=codex_route(
+                records=records,
+                validation=validated.__class__(
+                    provider=wrong,
+                    evidence_ref=validated.evidence_ref,
+                    binding=validated.binding,
+                ),
             ),
             artifacts=artifacts,  # type: ignore[arg-type]
             ids=_Ids(),
@@ -306,8 +303,7 @@ async def test_plan_rejects_resume_capable_local_provider() -> None:
     with pytest.raises(ValueError, match="LOCAL_PROMPT_PROVIDER_BINDING_MISMATCH"):
         build_local_prompt_configuration_plan(
             repository_root=Path.cwd(),
-            binding_records=records,
-            validation=validated,
+            subscription=codex_route(records=records, validation=validated),
             artifacts=artifacts,  # type: ignore[arg-type]
             ids=_Ids(),
             clock=_Clock(),

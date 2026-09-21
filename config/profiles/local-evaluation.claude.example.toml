@@ -1,0 +1,110 @@
+# LOCAL_EVALUATION profile template for the official Claude Code subscription client.
+#
+# This file is a structure example, not an approval record. It cannot represent a
+# production decision: `purpose` and `production_ready` are fixed, and the Claude
+# binding it produces is EXPERIMENTAL until exact PVD evidence and a human
+# approval exist.
+#
+# No secret belongs in this file. The subscription credential lives only in the
+# isolated `claude_config_dir` that `claude auth login` writes, and is never read
+# or copied by sastsimi.
+#
+# Replace every <...> with a real value:
+#   claude --version                       -> client_version (the version alone)
+#   sha256sum <claude executable>          -> executable_sha256
+
+schema_version = 1
+purpose = "LOCAL_EVALUATION"
+production_ready = false
+program_id = "sastsimi-local-evaluation"
+host_id = "<operator-host-id>"
+workspace_root = "<absolute path for analysis workspaces>"
+allow_local_repository = true
+taxonomy_version = "CWE-4.18"
+
+[worker]
+max_workers = 2
+lease_ms = 30000
+heartbeat_ms = 5000
+poll_ms = 100
+
+[timeouts]
+workspace_ms = 120000
+static_tool_ms = 900000
+llm_ms = 1500000
+sandbox_ms = 600000
+shutdown_ms = 5000
+
+[workspace_limits]
+max_git_bytes = 1073741824
+max_checkout_bytes = 2147483648
+max_file_count = 100000
+min_free_bytes = 536870912
+
+[budget]
+profile_key = "local-evaluation-budget-v1"
+pricing_revision = "<YYYY-MM-DD>"
+currency = "USD"
+max_analysis_elapsed_ms = 86400000
+max_total_cost_minor_units = 100000
+max_total_work = 1000
+max_total_llm_calls = 500
+max_total_retries = 100
+# A claimed Verification parent holds a slot while its Pro and Con children run,
+# so this ceiling must clear the number of parents that can be active at once,
+# not just the worker count.  Too low deadlocks the run.  It bounds how many
+# attempts may be open, not how fast calls execute: the subscription adapter
+# serializes official-client children, so throughput is set by max_workers and
+# that lock, never by this number.
+max_parallel_work = 64
+work_timeout_ms = 1800000
+max_attempts_per_work = 3
+max_calls_per_work = 10
+max_items_per_work = 1000
+max_verification_elapsed_ms = 21600000
+max_work_per_verification = 100
+max_llm_calls_per_verification = 50
+max_retries_per_work = 3
+max_parallel_evidence_calls = 2
+max_dynamic_attempts = 3
+
+[codeql_container]
+schema_version = 1
+image = "<pinned image@sha256:...>"
+expected_codeql_version = "<codeql version>"
+database_registry_root = "<absolute path>"
+query_pack_root = "<absolute path>"
+query_pack_sha256 = "<sha256>"
+database_provider_key = "<provider key>"
+database_provider_revision = "<revision>"
+database_provider_evidence_sha256 = "<sha256>"
+database_limit_bytes = 2147483648
+output_limit_bytes = 268435456
+pids_limit = 256
+memory_limit_bytes = 2147483648
+nano_cpus = 1000000000
+container_uid = 65532
+container_gid = 65532
+
+[capabilities]
+git_profile_key = "git-local-evaluation-v1"
+python_runtime_profile_key = "python-local-evaluation-v1"
+python_ast_profile_key = "python-ast-local-evaluation-v1"
+opengrep_profile_key = "opengrep-local-evaluation-v1"
+codeql_profile_key = "codeql-local-evaluation-v1"
+
+# Exactly one official client may be configured. Use [claude] or [codex], never
+# both and never neither.
+[claude]
+provider_profile_key = "anthropic.claude-code.subscription.local-v1"
+product = "CLAUDE_CODE"
+transport = "CLAUDE_CODE_CLIENT"
+auth_mode = "SUBSCRIPTION_LOGIN"
+credential_source = "OFFICIAL_CLIENT_SESSION"
+executable_path = "<absolute path to the official claude executable>"
+executable_sha256 = "<sha256 of that exact executable>"
+# The directory `CLAUDE_CONFIG_DIR=... claude auth login` wrote. It must not
+# overlap workspace_root or contain the executable.
+claude_config_dir = "<absolute path, e.g. /home/<user>/.sastsimi/claude-home>"
+client_version = "<claude --version, e.g. 2.1.197>"
+model = "<exact model id this subscription may call>"

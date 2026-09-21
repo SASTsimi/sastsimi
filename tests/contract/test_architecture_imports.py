@@ -109,10 +109,12 @@ EXACT_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
     # runtime. It is not imported by the production orchestration graph.
     "sastsimi.interfaces.cli.simple_evaluation": frozenset(
         {
+            "sastsimi.composition.local_claude_binding",
             "sastsimi.composition.local_codex_binding",
             "sastsimi.config.local_evaluation_profile",
             "sastsimi.contracts.ids",
             "sastsimi.contracts.refs",
+            "sastsimi.providers.claude_subscription",
             "sastsimi.providers.codex_subscription",
             "sastsimi.simple_runtime.artifacts",
             "sastsimi.simple_runtime.container",
