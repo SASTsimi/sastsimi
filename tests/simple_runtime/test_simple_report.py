@@ -16,6 +16,7 @@ from sastsimi.simple_runtime.models import (
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
 from sastsimi.simple_runtime.stages import ReporterStage
+from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
 class _ReporterClient:
@@ -33,6 +34,22 @@ class _ReporterClient:
             prompt_digest=hashlib.sha256(b"prompt").hexdigest(),
             output_digest=hashlib.sha256(b"output").hexdigest(),
         )
+
+
+def test_policy_lookup_is_empty_for_a_simple_runtime_database(tmp_path: Path) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+
+    refs = SimpleArtifactRepository(tmp_path, identity).published_refs(
+        frozenset({"program_policy_record"})
+    )
+
+    assert refs == ()
 
 
 def _checkpoint(
