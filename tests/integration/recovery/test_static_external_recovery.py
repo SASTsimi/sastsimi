@@ -349,7 +349,6 @@ def test_static_receipt_round_trip_binds_ordered_process_receipts(
         decision_ref,
         _observation(),
         1,
-        profile.max_attempt_output_bytes,
         receipts,
     )
 
@@ -377,7 +376,6 @@ def test_static_recovery_rejects_forged_process_receipt_hash(
         decision_ref,
         _observation(),
         1,
-        profile.max_attempt_output_bytes,
         (
             _process(
                 str(request.action.action_id), str(request.action.meta.attempt_id), 0
@@ -839,7 +837,6 @@ async def test_missing_then_late_static_receipt_blocks_and_is_quarantined(
         StoredDataRef.model_validate(ref("action_decision")),
         _observation(),
         1,
-        profile.max_attempt_output_bytes,
         (
             _process(
                 str(request.action.action_id),

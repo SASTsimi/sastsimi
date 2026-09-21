@@ -430,7 +430,6 @@ class StaticExternalRunner:
                 decision_ref,
                 observation,
                 elapsed_ms,
-                resolved_profile.max_attempt_output_bytes,
                 process_receipts,
             )
             self.checkpoint("STATIC_RECEIPT_DURABLE")
@@ -634,7 +633,6 @@ class StaticExternalRunner:
                 decision_ref,
                 observation,
                 elapsed_ms,
-                profile.max_attempt_output_bytes,
                 receipts,
             )
             return observation
@@ -1279,7 +1277,6 @@ class StaticExternalRunner:
             decision_ref,
             observation,
             elapsed_ms,
-            profile.max_attempt_output_bytes,
             receipts,
         )
         if dispatch is not None and dispatch.state == "DISPATCHED":
@@ -1394,7 +1391,6 @@ class StaticExternalRunner:
         decision_ref: RecordRef,
         observation: StaticToolObservation,
         elapsed_ms: int,
-        output_limit: int,
         process_receipts: tuple[ProcessReceipt, ...] = (),
     ) -> Path:
         if not isinstance(request.action.meta, RecordMeta):
@@ -1416,11 +1412,13 @@ class StaticExternalRunner:
         process_receipts = self._validate_tool_process_receipts(
             str(request.action.action_id), str(attempt_id), process_receipts
         )
-        projected_bytes = len(raw) + sum(
-            item.stdout_size + item.stderr_size for item in process_receipts
-        )
-        if projected_bytes > output_limit:
-            raise ValueError("STATIC_TOOL_OUTPUT_LIMIT")
+        # No ceiling is applied here.  The same bytes reach this point three
+        # times over -- once as the observation's structured content, again as
+        # the base64 ``raw_output`` copy of the tool's stdout, and once more as
+        # the process receipt's byte count -- so any figure compared against
+        # them measured representation, not output.  What the tool may emit is
+        # already bounded where it is produced, by ``stdout_limit_bytes`` and
+        # ``stderr_limit_bytes`` on the approved profile.
         observation_name = prefix + ".static.json"
         self._atomic_write(self.receipt_root / observation_name, raw)
         process_hashes: list[str] = []
