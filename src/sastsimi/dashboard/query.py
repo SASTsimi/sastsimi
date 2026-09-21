@@ -14,8 +14,8 @@ from sastsimi.observability.agent_activity import AgentActivityEvent
 from sastsimi.progress.projector import ProgressProjector
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
-from sastsimi.simple_runtime.application import SimpleAnalysisRun
 from sastsimi.simple_runtime.models import (
+    SimpleAnalysisRun,
     SimpleStage,
     StageCheckpoint,
     StageStatus,
@@ -265,9 +265,7 @@ class DashboardQuery:
             excluded_primitive_count=sum(
                 len(item.output_refs) <= 1 for item in admissions
             ),
-            child_hypothesis_count=(
-                len(run.parent_hypothesis_ids) if run else 0
-            ),
+            child_hypothesis_count=(len(run.parent_hypothesis_ids) if run else 0),
             updated_at=latest.updated_at,
         )
         if detail:

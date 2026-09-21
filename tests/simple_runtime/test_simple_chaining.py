@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
 
 import pytest
 
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.chaining import SimpleChainingStage
 from sastsimi.simple_runtime.models import (
@@ -31,7 +35,14 @@ class _Client:
         self._upstream = upstream
         self._downstream = downstream
 
-    async def call(self, **_kwargs):
+    async def call(
+        self,
+        *,
+        prompt: bytes,
+        output_schema: Mapping[str, Any],
+        timeout_ms: int,
+    ) -> SimpleLLMCallResult:
+        del prompt, output_schema, timeout_ms
         return SimpleLLMCallResult(
             value={
                 "children": [
@@ -57,7 +68,7 @@ def _primitive(
     *,
     required: tuple[str, ...],
     provided: tuple[str, ...],
-):
+) -> StoredDataRef:
     return artifacts.put_json(
         {
             "kind": "simple_primitive",
@@ -69,7 +80,7 @@ def _primitive(
 
 
 @pytest.mark.asyncio
-async def test_exact_primitives_create_one_material_child(tmp_path) -> None:
+async def test_exact_primitives_create_one_material_child(tmp_path: Path) -> None:
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
     first_identity = _identity("hypothesis-a")
     second_identity = _identity("hypothesis-b")
@@ -124,7 +135,9 @@ async def test_exact_primitives_create_one_material_child(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_unknown_primitive_reference_never_registers_child(tmp_path) -> None:
+async def test_unknown_primitive_reference_never_registers_child(
+    tmp_path: Path,
+) -> None:
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
     identity = _identity("hypothesis-a")
     artifacts = SimpleArtifactRepository(tmp_path, identity)

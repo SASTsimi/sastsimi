@@ -251,9 +251,7 @@ class DirectStaticBootstrap:
             if item
         )
         if len(values) > _MAX_TRACKED_FILES or any(
-            not value
-            or value.startswith(("/", "\\"))
-            or ".." in Path(value).parts
+            not value or value.startswith(("/", "\\")) or ".." in Path(value).parts
             for value in values
         ):
             raise RuntimeError("TRACKED_FILE_SET_INVALID")
@@ -487,9 +485,7 @@ class DirectStaticBootstrap:
                     continue
                 locations = item.get("locations", [])
                 location = (
-                    locations[0]
-                    if isinstance(locations, list) and locations
-                    else {}
+                    locations[0] if isinstance(locations, list) and locations else {}
                 )
                 physical = (
                     location.get("physicalLocation", {})
@@ -502,9 +498,7 @@ class DirectStaticBootstrap:
                     else {}
                 )
                 region = (
-                    physical.get("region", {})
-                    if isinstance(physical, dict)
-                    else {}
+                    physical.get("region", {}) if isinstance(physical, dict) else {}
                 )
                 uri = artifact.get("uri") if isinstance(artifact, dict) else None
                 try:
@@ -617,11 +611,14 @@ class DirectHypothesisBootstrap:
             if not isinstance(value, dict):
                 continue
             canonical = canonical_bytes(value)
-            hypothesis_id = "hypothesis-" + hashlib.sha256(
-                static.static_bundle_ref.content_hash.encode()
-                + index.to_bytes(4, "big")
-                + canonical
-            ).hexdigest()[:32]
+            hypothesis_id = (
+                "hypothesis-"
+                + hashlib.sha256(
+                    static.static_bundle_ref.content_hash.encode()
+                    + index.to_bytes(4, "big")
+                    + canonical
+                ).hexdigest()[:32]
+            )
             if hypothesis_id in seen:
                 continue
             seen.add(hypothesis_id)

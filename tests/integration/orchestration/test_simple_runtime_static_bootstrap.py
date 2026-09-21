@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -19,7 +21,13 @@ from sastsimi.simple_runtime.provider import SimpleLLMCallResult
 
 
 class _Process:
-    async def run(self, argv, *, cwd=None, timeout_seconds):
+    async def run(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        timeout_seconds: int,
+    ) -> ProcessResult:
         del timeout_seconds
         if argv[1] == "clone":
             root = Path(argv[-1])
@@ -54,9 +62,7 @@ class _Process:
             database.mkdir(parents=True, exist_ok=True)
             (database / "codeql-database.yml").write_text("ok", encoding="utf-8")
         elif argv[1:3] == ("database", "analyze"):
-            output_arg = next(
-                value for value in argv if value.startswith("--output=")
-            )
+            output_arg = next(value for value in argv if value.startswith("--output="))
             output = Path(output_arg[9:])
             output.write_text(
                 json.dumps(
@@ -113,7 +119,14 @@ def _profile(tmp_path: Path) -> SimpleExecutionProfile:
 
 
 class _Client:
-    async def call(self, **_kwargs):
+    async def call(
+        self,
+        *,
+        prompt: bytes,
+        output_schema: Mapping[str, Any],
+        timeout_ms: int,
+    ) -> SimpleLLMCallResult:
+        del prompt, output_schema, timeout_ms
         return SimpleLLMCallResult(
             value={
                 "hypotheses": [

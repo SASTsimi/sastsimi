@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
+
+import pytest
 
 from sastsimi.config.user_config import UserConfig, UserConfigStore
 from sastsimi.interfaces.cli.main import main
@@ -40,7 +43,12 @@ class _PublicApplication:
 
 
 class _ProgressApplication(_PublicApplication):
-    def analyze_with_progress(self, repository, commit, callback):
+    def analyze_with_progress(
+        self,
+        repository: str,
+        commit: str,
+        callback: Callable[[ProgressSnapshot], None],
+    ) -> dict[str, object]:
         callback(
             ProgressSnapshot(
                 analysis_id="analysis-exact",
@@ -87,7 +95,10 @@ def _config(tmp_path: Path) -> UserConfigStore:
     return store
 
 
-def test_public_analyze_uses_positional_repo_and_human_output(tmp_path, capsys) -> None:
+def test_public_analyze_uses_positional_repo_and_human_output(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     code = main(
         [
             "analyze",
@@ -108,46 +119,62 @@ def test_public_analyze_uses_positional_repo_and_human_output(tmp_path, capsys) 
     assert not output.startswith("{")
 
 
-def test_public_commands_emit_json_only_when_requested(tmp_path, capsys) -> None:
+def test_public_commands_emit_json_only_when_requested(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     application = _PublicApplication()
     store = _config(tmp_path)
 
-    assert main(
-        ["status", "A-001", "--format", "json"],
-        public_application=application,
-        user_config_store=store,
-    ) == 0
+    assert (
+        main(
+            ["status", "A-001", "--format", "json"],
+            public_application=application,
+            user_config_store=store,
+        )
+        == 0
+    )
     payload = json.loads(capsys.readouterr().out)
     assert payload["data"]["percent"] == 40
 
-    assert main(
-        ["resume", "A-001", "--format", "json"],
-        public_application=application,
-        user_config_store=store,
-    ) == 0
+    assert (
+        main(
+            ["resume", "A-001", "--format", "json"],
+            public_application=application,
+            user_config_store=store,
+        )
+        == 0
+    )
     assert json.loads(capsys.readouterr().out)["data"]["status"] == "COMPLETE"
 
-    assert main(
-        ["result", "A-001", "--format", "json"],
-        public_application=application,
-        user_config_store=store,
-    ) == 0
+    assert (
+        main(
+            ["result", "A-001", "--format", "json"],
+            public_application=application,
+            user_config_store=store,
+        )
+        == 0
+    )
     assert json.loads(capsys.readouterr().out)["data"]["finding_count"] == 1
 
 
 def test_public_analyze_renders_checkpoint_progress_when_enabled(
-    tmp_path, capsys
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert main(
-        [
-            "analyze",
-            "https://example.invalid/repository.git",
-            "--commit",
-            "a" * 40,
-        ],
-        public_application=_ProgressApplication(),
-        user_config_store=_config(tmp_path),
-    ) == 0
+    assert (
+        main(
+            [
+                "analyze",
+                "https://example.invalid/repository.git",
+                "--commit",
+                "a" * 40,
+            ],
+            public_application=_ProgressApplication(),
+            user_config_store=_config(tmp_path),
+        )
+        == 0
+    )
 
     output = capsys.readouterr().out
     assert "현재 단계: STATIC_DONE (1/4)" in output
@@ -156,7 +183,9 @@ def test_public_analyze_renders_checkpoint_progress_when_enabled(
 
 
 def test_public_poc_and_report_aliases_keep_legacy_report_commands(
-    tmp_path, capsys, monkeypatch
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from sastsimi.interfaces.cli import report as report_command
 
@@ -172,30 +201,41 @@ def test_public_poc_and_report_aliases_keep_legacy_report_commands(
     application = _PublicApplication()
     store = _config(tmp_path)
 
-    assert main(
-        ["poc", "F-001"],
-        public_application=application,
-        user_config_store=store,
-    ) == 0
+    assert (
+        main(
+            ["poc", "F-001"],
+            public_application=application,
+            user_config_store=store,
+        )
+        == 0
+    )
     assert capsys.readouterr().out == "PoC F-001\n"
 
-    assert main(
-        ["report", "F-001"],
-        public_application=application,
-        user_config_store=store,
-    ) == 0
+    assert (
+        main(
+            ["report", "F-001"],
+            public_application=application,
+            user_config_store=store,
+        )
+        == 0
+    )
     assert capsys.readouterr().out == "Report F-001\n"
 
-    assert main(
-        ["report", "F-001", "--export", "markdown"],
-        public_application=application,
-        user_config_store=store,
-    ) == 0
+    assert (
+        main(
+            ["report", "F-001", "--export", "markdown"],
+            public_application=application,
+            user_config_store=store,
+        )
+        == 0
+    )
     assert "reports/analysis/F-001.md" in capsys.readouterr().out
 
 
 def test_installed_entrypoint_normalizes_compact_report_syntax(
-    tmp_path, capsys, monkeypatch
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from sastsimi.interfaces.cli import report as report_command
 

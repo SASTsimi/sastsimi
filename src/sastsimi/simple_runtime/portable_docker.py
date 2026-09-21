@@ -341,8 +341,7 @@ class DirectEnvironmentPreparer:
             workspace=self._workspace,
             dockerfile=dockerfile,
             cache_key=(
-                f"{checkpoint.identity.commit_id}:"
-                f"{dockerfile_ref.content_hash}"
+                f"{checkpoint.identity.commit_id}:{dockerfile_ref.content_hash}"
             ),
             labels={
                 "sastsimi.owner": "simple-runtime",
@@ -405,9 +404,7 @@ class DirectEnvironmentPreparer:
                 continue
             proposal = value.get("proposal")
             locations = (
-                proposal.get("code_locations")
-                if isinstance(proposal, dict)
-                else None
+                proposal.get("code_locations") if isinstance(proposal, dict) else None
             )
             if not isinstance(locations, list):
                 continue
@@ -445,8 +442,7 @@ class DirectEnvironmentPreparer:
             return b""
         absolute = f"/workspace/{requirements_path}"
         return (
-            "RUN python -m pip install --no-cache-dir -r "
-            f"{shlex.quote(absolute)}\n"
+            f"RUN python -m pip install --no-cache-dir -r {shlex.quote(absolute)}\n"
         ).encode()
 
     def _generated_dockerfile(
@@ -466,7 +462,7 @@ class DirectEnvironmentPreparer:
             f"{install}\n"
             f"{self._target_install_layer(target_requirements).decode('utf-8')}"
             "RUN chmod -R a+rX /workspace && mkdir -p /tmp && chmod 1777 /tmp\n"
-            "CMD [\"sleep\", \"infinity\"]\n"
+            'CMD ["sleep", "infinity"]\n'
         ).encode()
 
 

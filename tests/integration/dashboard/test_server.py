@@ -90,9 +90,10 @@ def test_server_is_local_read_only_and_serves_current_state(tmp_path) -> None:
         assert response.headers["X-Content-Type-Options"] == "nosniff"
         assert request(f"{base}/api/analyses", method="POST").status == 405
         assert request(f"{base}/analyses/A-001").status == 200
-        assert json.loads(request(f"{base}/api/analyses/A-001").read())[
-            "analysis_id"
-        ] == "analysis-1"
+        assert (
+            json.loads(request(f"{base}/api/analyses/A-001").read())["analysis_id"]
+            == "analysis-1"
+        )
         assert request(f"{base}/reports/analysis-1/F-001.md").read().decode() == (
             "# 한국어 보고서"
         )

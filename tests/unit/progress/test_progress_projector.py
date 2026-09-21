@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
+from typing import Literal
 
 from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
@@ -33,7 +35,7 @@ def _save(
     stage: SimpleStage,
     *,
     status: StageStatus = StageStatus.SUCCEEDED,
-    verdict: str | None = None,
+    verdict: Literal["TRUE", "FALSE", "HOLD"] | None = None,
 ) -> None:
     checkpoint = StageCheckpoint(
         identity=identity,
@@ -49,7 +51,9 @@ def _save(
     store.save_checkpoint(checkpoint)
 
 
-def test_progress_counts_known_work_and_only_complete_reaches_100(tmp_path) -> None:
+def test_progress_counts_known_work_and_only_complete_reaches_100(
+    tmp_path: Path,
+) -> None:
     store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
     analysis = CheckpointIdentity(
         analysis_id="analysis-1",
@@ -74,11 +78,7 @@ def test_progress_counts_known_work_and_only_complete_reaches_100(tmp_path) -> N
             store,
             hypothesis,
             stage,
-            verdict=(
-                "TRUE"
-                if stage is SimpleStage.VERIFICATION_FINAL_DONE
-                else None
-            ),
+            verdict=("TRUE" if stage is SimpleStage.VERIFICATION_FINAL_DONE else None),
         )
 
     complete = ProgressProjector(store).snapshot("analysis-1")
@@ -86,7 +86,7 @@ def test_progress_counts_known_work_and_only_complete_reaches_100(tmp_path) -> N
     assert complete.percent == 100
 
 
-def test_false_is_terminal_without_becoming_a_failed_analysis(tmp_path) -> None:
+def test_false_is_terminal_without_becoming_a_failed_analysis(tmp_path: Path) -> None:
     store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
     identity = CheckpointIdentity(
         analysis_id="analysis-1",
@@ -110,7 +110,7 @@ def test_false_is_terminal_without_becoming_a_failed_analysis(tmp_path) -> None:
     assert snapshot.skipped_units > 0
 
 
-def test_new_child_expands_denominator_without_losing_progress(tmp_path) -> None:
+def test_new_child_expands_denominator_without_losing_progress(tmp_path: Path) -> None:
     store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
     parent = CheckpointIdentity(
         analysis_id="analysis-1",
@@ -131,7 +131,7 @@ def test_new_child_expands_denominator_without_losing_progress(tmp_path) -> None
     assert after.denominator_change_reason == "NEW_HYPOTHESIS_REGISTERED"
 
 
-def test_blocked_and_failed_stages_are_not_counted_complete(tmp_path) -> None:
+def test_blocked_and_failed_stages_are_not_counted_complete(tmp_path: Path) -> None:
     store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
     identity = CheckpointIdentity(
         analysis_id="analysis-1",

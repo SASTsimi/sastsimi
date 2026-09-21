@@ -18,8 +18,8 @@ from sastsimi.config.user_config import (
 )
 from sastsimi.contracts.ids import AnalysisId, CommitId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef, reference
-from sastsimi.interfaces.cli.public import PublicCommandApplication
 from sastsimi.orchestration.run_scope_plan import PlannedRunScope
+from sastsimi.ports.public_commands import PublicCommandApplication
 from sastsimi.progress.models import ProgressSnapshot
 from sastsimi.progress.projector import ProgressProjector
 from sastsimi.providers.codex_subscription import CodexCliProcessRunner
@@ -156,9 +156,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
     def __init__(self, config: UserConfig, profile: SimpleExecutionProfile) -> None:
         self._config = config
         self._profile = profile
-        self._store = SimpleCheckpointStore(
-            config.data_dir / "db" / "sastsimi.sqlite3"
-        )
+        self._store = SimpleCheckpointStore(config.data_dir / "db" / "sastsimi.sqlite3")
         self._display = AnalysisDisplayIdStore(self._store.database_path)
 
     def analyze(self, repository: str, commit: str) -> dict[str, object]:
@@ -276,8 +274,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         findings = [
             checkpoint
             for checkpoint in checkpoints
-            if checkpoint.stage is SimpleStage.FINDING_DONE
-            and checkpoint.output_refs
+            if checkpoint.stage is SimpleStage.FINDING_DONE and checkpoint.output_refs
         ]
         return {
             **self.status(run.display_analysis_id),
@@ -298,9 +295,11 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         dynamic = self._store.require(identity, SimpleStage.POC_EXECUTION_DONE)
         if dynamic.validated_poc_ref is None or len(candidate.output_refs) < 2:
             raise LookupError("VALIDATED_POC_NOT_FOUND")
-        return SimpleArtifactRepository(self._config.data_dir, identity).read(
-            candidate.output_refs[1]
-        ).decode("utf-8", errors="replace")
+        return (
+            SimpleArtifactRepository(self._config.data_dir, identity)
+            .read(candidate.output_refs[1])
+            .decode("utf-8", errors="replace")
+        )
 
     def report(self, finding_id: str) -> str:
         identity, _finding_ref = self._finding_identity(finding_id)
@@ -314,9 +313,11 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             or len(checkpoint.output_refs) < 2
         ):
             raise LookupError("CURRENT_REPORT_NOT_FOUND")
-        return SimpleArtifactRepository(self._config.data_dir, identity).read(
-            checkpoint.output_refs[1]
-        ).decode("utf-8", errors="strict")
+        return (
+            SimpleArtifactRepository(self._config.data_dir, identity)
+            .read(checkpoint.output_refs[1])
+            .decode("utf-8", errors="strict")
+        )
 
     def export_report(self, finding_id: str) -> str:
         identity, _finding_ref = self._finding_identity(finding_id)

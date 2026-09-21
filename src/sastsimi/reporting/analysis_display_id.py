@@ -103,8 +103,7 @@ class AnalysisDisplayIdStore:
                     raise LookupError("ANALYSIS_DISPLAY_ID_NOT_FOUND")
                 return value
             row = connection.execute(
-                "SELECT analysis_id FROM analysis_display_ids "
-                "WHERE display_number = ?",
+                "SELECT analysis_id FROM analysis_display_ids WHERE display_number = ?",
                 (int(match.group(1)),),
             ).fetchone()
         finally:

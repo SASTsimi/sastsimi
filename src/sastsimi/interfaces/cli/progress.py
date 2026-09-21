@@ -26,11 +26,7 @@ class ProgressRenderer:
             return
         filled = round(self._width * snapshot.percent / 100)
         bar = "█" * filled + "-" * (self._width - filled)
-        end = (
-            "\n"
-            if snapshot.status in {"COMPLETE", "BLOCKED", "FAILED"}
-            else ""
-        )
+        end = "\n" if snapshot.status in {"COMPLETE", "BLOCKED", "FAILED"} else ""
         self._stream.write(
             f"\r[{bar}] {snapshot.percent:3d}% "
             f"{snapshot.completed_units}/{snapshot.known_units} {stage}{end}"

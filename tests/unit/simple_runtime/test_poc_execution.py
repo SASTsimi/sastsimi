@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -50,7 +51,9 @@ class _Containers:
 
 
 @pytest.mark.asyncio
-async def test_runtime_pins_interpretation_to_exact_execution_ref(tmp_path) -> None:
+async def test_runtime_pins_interpretation_to_exact_execution_ref(
+    tmp_path: Path,
+) -> None:
     identity = CheckpointIdentity(
         analysis_id="analysis-1",
         workspace_id="workspace-1",
@@ -89,10 +92,10 @@ async def test_runtime_pins_interpretation_to_exact_execution_ref(tmp_path) -> N
         attempt_id="attempt-1",
     )
     stage = PoCExecutionStage(
-        client=_InterpretationClient(),  # type: ignore[arg-type]
+        client=_InterpretationClient(),
         artifacts=artifacts,
         docker=_Docker(),  # type: ignore[arg-type]
-        containers=_Containers(),  # type: ignore[arg-type]
+        containers=_Containers(),
     )
 
     result = await stage(

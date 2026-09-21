@@ -85,7 +85,9 @@ class SystemToolDiscovery:
         executable = (
             Path(command[0])
             if name == "python"
-            else Path(found) if (found := shutil.which(command[0])) else None
+            else Path(found)
+            if (found := shutil.which(command[0]))
+            else None
         )
         if executable is None or not executable.is_file():
             return ToolInspection(name=name, available=False)
@@ -112,8 +114,10 @@ class SystemToolDiscovery:
             if not version.startswith(prefix):
                 return ToolInspection(name=name, available=False)
             version = version.removeprefix(prefix)
-        if completed.returncode != 0 or not version or any(
-            ord(character) < 32 for character in version
+        if (
+            completed.returncode != 0
+            or not version
+            or any(ord(character) < 32 for character in version)
         ):
             return ToolInspection(name=name, available=False)
         if name == "codeql" and not SystemToolDiscovery._has_codeql_query_pack(
@@ -155,9 +159,7 @@ class SystemToolDiscovery:
         if resolved.name == "codex.js":
             package_root = resolved.parent.parent
         elif resolved.name.lower() in {"codex.cmd", "codex.ps1"}:
-            package_root = (
-                resolved.parent / "node_modules" / "@openai" / "codex"
-            )
+            package_root = resolved.parent / "node_modules" / "@openai" / "codex"
         else:
             return executable
         candidates = sorted(
@@ -267,7 +269,7 @@ class SetupService:
         )
         auth_ready = self._auth_checker(choices, tools)
         ready = not missing and auth_ready
-        enabled_tools = (
+        enabled_tools: tuple[Literal["AST", "OPENGREP", "CODEQL", "DOCKER"], ...] = (
             ("AST", "OPENGREP", "CODEQL", "DOCKER")
             if choices.execution_profile == "FULL"
             else ("AST", "OPENGREP", "DOCKER")

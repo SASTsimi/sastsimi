@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from io import StringIO
+from typing import Literal
 
 from sastsimi.interfaces.cli.progress import ProgressRenderer
 from sastsimi.progress.models import ProgressSnapshot
 
 
-def _snapshot(percent: int, *, status: str = "RUNNING") -> ProgressSnapshot:
+def _snapshot(
+    percent: int,
+    *,
+    status: Literal["RUNNING", "BLOCKED", "FAILED", "COMPLETE"] = "RUNNING",
+) -> ProgressSnapshot:
     return ProgressSnapshot(
         analysis_id="analysis-1",
         status=status,
@@ -29,7 +34,7 @@ def test_tty_progress_bar_renders_truthful_percent_without_json() -> None:
     assert "[████------]" in output
     assert "40%" in output
     assert "100%" in output
-    assert "\"percent\"" not in output
+    assert '"percent"' not in output
 
 
 def test_non_tty_progress_only_emits_stage_transitions() -> None:

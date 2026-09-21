@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -38,7 +41,11 @@ def _ref(name: str) -> StoredDataRef:
 
 
 class _Static:
-    async def run(self, request, identity):
+    async def run(
+        self,
+        request: SimpleAnalysisRequest,
+        identity: CheckpointIdentity,
+    ) -> StaticBootstrapResult:
         assert request.repository == "https://example.invalid/repo.git"
         return StaticBootstrapResult(
             repository_profile_ref=_ref("repository-profile"),
@@ -48,7 +55,12 @@ class _Static:
 
 
 class _Hypotheses:
-    async def propose(self, identity, static):
+    async def propose(
+        self,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+    ) -> tuple[HypothesisSeed, ...]:
+        del identity
         assert static.static_bundle_ref == _ref("static-bundle")
         return (
             HypothesisSeed(
@@ -58,11 +70,21 @@ class _Hypotheses:
         )
 
 
-def _runner(store, identity, _static):
-    handlers = {}
+def _runner(
+    store: SimpleCheckpointStore,
+    identity: CheckpointIdentity,
+    _static: StaticBootstrapResult,
+) -> SimpleRuntimeRunner:
+    del identity, _static
+    handlers: dict[SimpleStage, Any] = {}
     for stage in tuple(SimpleStage)[2:]:
 
-        async def handle(_checkpoint, _prior, *, current=stage):
+        async def handle(
+            _checkpoint: StageCheckpoint,
+            _prior: Mapping[SimpleStage, StageCheckpoint],
+            *,
+            current: SimpleStage = stage,
+        ) -> StageResult:
             return StageResult(
                 output_refs=(_ref(current.value.lower()),),
                 verdict="FALSE"
@@ -75,7 +97,9 @@ def _runner(store, identity, _static):
 
 
 @pytest.mark.asyncio
-async def test_new_analysis_persists_bootstrap_then_runs_hypotheses(tmp_path) -> None:
+async def test_new_analysis_persists_bootstrap_then_runs_hypotheses(
+    tmp_path: Path,
+) -> None:
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
     application = SimpleAnalysisApplication(
         data_dir=tmp_path,
@@ -108,15 +132,20 @@ async def test_new_analysis_persists_bootstrap_then_runs_hypotheses(tmp_path) ->
     hypothesis_identity = outcome.identity.model_copy(
         update={"hypothesis_id": "hypothesis-1"}
     )
-    assert store.require(
-        hypothesis_identity, SimpleStage.VERIFICATION_FINAL_DONE
-    ).verdict == "FALSE"
+    assert (
+        store.require(hypothesis_identity, SimpleStage.VERIFICATION_FINAL_DONE).verdict
+        == "FALSE"
+    )
 
 
 class _BlockedStatic:
     calls = 0
 
-    async def run(self, _request, _identity):
+    async def run(
+        self,
+        _request: SimpleAnalysisRequest,
+        _identity: CheckpointIdentity,
+    ) -> StaticBootstrapResult:
         self.calls += 1
         if self.calls == 1:
             raise RuntimeError("OPENGREP_EXECUTION_FAILED")
@@ -128,7 +157,7 @@ class _BlockedStatic:
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_failure_is_visible_and_never_false(tmp_path) -> None:
+async def test_bootstrap_failure_is_visible_and_never_false(tmp_path: Path) -> None:
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
     application = SimpleAnalysisApplication(
         data_dir=tmp_path,
@@ -162,7 +191,7 @@ async def test_bootstrap_failure_is_visible_and_never_false(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_resume_reuses_static_and_hypothesis_results(tmp_path) -> None:
+async def test_resume_reuses_static_and_hypothesis_results(tmp_path: Path) -> None:
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
     static = _Static()
     hypotheses = _Hypotheses()
@@ -188,7 +217,9 @@ async def test_resume_reuses_static_and_hypothesis_results(tmp_path) -> None:
     assert len(store.list_checkpoints("analysis-1")) >= 4
 
 
-def test_chaining_child_is_added_once_to_durable_analysis_queue(tmp_path) -> None:
+def test_chaining_child_is_added_once_to_durable_analysis_queue(
+    tmp_path: Path,
+) -> None:
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
     application = SimpleAnalysisApplication(
         data_dir=tmp_path,

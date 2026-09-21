@@ -2,25 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Protocol, TextIO
+from typing import TextIO
 
 from sastsimi.interfaces.cli.output import emit_data
-
-
-class PublicCommandApplication(Protocol):
-    def analyze(self, repository: str, commit: str) -> dict[str, object]: ...
-
-    def status(self, analysis_id: str) -> dict[str, object]: ...
-
-    def resume(self, analysis_id: str) -> dict[str, object]: ...
-
-    def result(self, analysis_id: str) -> dict[str, object]: ...
-
-    def poc(self, finding_id: str) -> str: ...
-
-    def report(self, finding_id: str) -> str: ...
-
-    def export_report(self, finding_id: str) -> str: ...
+from sastsimi.ports.public_commands import PublicCommandApplication
 
 
 class PublicCommandUnavailable(RuntimeError):

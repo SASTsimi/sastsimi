@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Protocol
+from typing import Literal, Protocol
 
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
@@ -38,9 +38,7 @@ class ProgressProjector:
             else:
                 by_hypothesis[hypothesis_id].append(checkpoint)
 
-        completed = sum(
-            item.status is StageStatus.SUCCEEDED for item in analysis_level
-        )
+        completed = sum(item.status is StageStatus.SUCCEEDED for item in analysis_level)
         known = len(_ANALYSIS_STAGES) if analysis_level else 0
         skipped = 0
         terminal_hypotheses = 0
@@ -110,12 +108,19 @@ class ProgressProjector:
         checkpoints: tuple[StageCheckpoint, ...],
         terminal_hypotheses: int,
         hypothesis_count: int,
-    ) -> tuple[str, StageCheckpoint]:
+    ) -> tuple[Literal["RUNNING", "BLOCKED", "FAILED", "COMPLETE"], StageCheckpoint]:
         current = max(checkpoints, key=lambda item: item.updated_at)
         for status in (StageStatus.BLOCKED, StageStatus.FAILED, StageStatus.RUNNING):
             matches = [item for item in checkpoints if item.status is status]
             if matches:
-                return status.value, max(matches, key=lambda item: item.updated_at)
+                result_status: Literal["BLOCKED", "FAILED", "RUNNING"] = (
+                    "BLOCKED"
+                    if status is StageStatus.BLOCKED
+                    else "FAILED"
+                    if status is StageStatus.FAILED
+                    else "RUNNING"
+                )
+                return result_status, max(matches, key=lambda item: item.updated_at)
         if hypothesis_count > 0 and terminal_hypotheses == hypothesis_count:
             return "COMPLETE", current
         return "RUNNING", current

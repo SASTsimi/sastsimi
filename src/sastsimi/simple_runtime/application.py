@@ -9,8 +9,6 @@ from pathlib import Path
 from typing import Literal, Protocol
 from uuid import uuid4
 
-from pydantic import ConfigDict, Field
-
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
@@ -19,6 +17,7 @@ from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from .artifacts import SimpleArtifactRepository
 from .models import (
     CheckpointIdentity,
+    SimpleAnalysisRun,
     SimpleStage,
     StageCheckpoint,
     StageFailure,
@@ -45,22 +44,6 @@ class StaticBootstrapResult(ContractModel):
 class HypothesisSeed(ContractModel):
     hypothesis_id: str
     proposal_ref: StoredDataRef
-
-
-class SimpleAnalysisRun(ContractModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    analysis_id: str
-    display_analysis_id: str
-    workspace_id: str
-    commit_id: str
-    repository: str
-    workspace_path: Path | None = None
-    repository_profile_ref: StoredDataRef | None = None
-    static_bundle_ref: StoredDataRef | None = None
-    hypothesis_ids: tuple[str, ...] = ()
-    parent_hypothesis_ids: dict[str, tuple[str, ...]] = Field(default_factory=dict)
-    chain_depths: dict[str, int] = Field(default_factory=dict)
 
 
 class SimpleAnalysisOutcome(ContractModel):
@@ -294,10 +277,13 @@ class SimpleAnalysisApplication:
             ).resume_hypothesis(child)
             latest_stage = outcome.current_stage
             if outcome.status in {StageStatus.BLOCKED, StageStatus.FAILED}:
+                outcome_status: Literal["BLOCKED", "FAILED"] = (
+                    "BLOCKED" if outcome.status is StageStatus.BLOCKED else "FAILED"
+                )
                 return SimpleAnalysisOutcome(
                     identity=identity,
                     display_analysis_id=run.display_analysis_id,
-                    status=outcome.status.value,
+                    status=outcome_status,
                     current_stage=outcome.current_stage,
                     error_code=outcome.error_code,
                 )
@@ -339,9 +325,10 @@ class SimpleAnalysisApplication:
             depth = 1 + max((depths.get(item, 0) for item in parent_ids), default=0)
             if not parent_ids or depth > 4:
                 continue
-            hypothesis_id = "hypothesis-chain-" + hashlib.sha256(
-                canonical_bytes(child_value)
-            ).hexdigest()[:32]
+            hypothesis_id = (
+                "hypothesis-chain-"
+                + hashlib.sha256(canonical_bytes(child_value)).hexdigest()[:32]
+            )
             if hypothesis_id in hypothesis_ids:
                 continue
             proposal_ref = artifacts.put_json(
@@ -353,15 +340,13 @@ class SimpleAnalysisApplication:
                     "static_bundle_ref": static.static_bundle_ref.model_dump(
                         mode="json"
                     ),
-                    "parent_chaining_result_ref": checkpoint.output_refs[
-                        0
-                    ].model_dump(mode="json"),
+                    "parent_chaining_result_ref": checkpoint.output_refs[0].model_dump(
+                        mode="json"
+                    ),
                     "proposal": child_value,
                 }
             )
-            child_identity = parent.model_copy(
-                update={"hypothesis_id": hypothesis_id}
-            )
+            child_identity = parent.model_copy(update={"hypothesis_id": hypothesis_id})
             inputs = (proposal_ref, static.static_bundle_ref)
             self._store.save_checkpoint(
                 StageCheckpoint(

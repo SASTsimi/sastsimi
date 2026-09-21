@@ -413,9 +413,8 @@ def main(
             key: value
             for key, value in {
                 "log_level": args.log_level,
-                "data_dir": args.data_dir or (
-                    user_config.data_dir if user_config is not None else None
-                ),
+                "data_dir": args.data_dir
+                or (user_config.data_dir if user_config is not None else None),
                 "output_format": requested_output,
             }.items()
             if value is not None

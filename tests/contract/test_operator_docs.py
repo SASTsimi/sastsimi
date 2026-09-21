@@ -42,7 +42,7 @@ def test_operator_path_is_linked_and_separates_production_from_demo() -> None:
     )
     assert "Fake로 자동 대체하지 않습니다" in usage
     assert "Fake 없는 live E2E" in usage
-    assert "LIVE_E2E_VERIFICATION_PENDING" in readme
+    assert "LIVE_E2E_VERIFIED" in readme
 
 
 def test_operator_docs_never_embed_a_credential_or_claim_preflight_is_active() -> None:

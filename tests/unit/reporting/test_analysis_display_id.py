@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 
 
-def test_analysis_display_ids_are_stable_and_resolvable(tmp_path) -> None:
+def test_analysis_display_ids_are_stable_and_resolvable(tmp_path: Path) -> None:
     store = AnalysisDisplayIdStore(tmp_path / "sastsimi.sqlite3")
 
     assert store.get_or_allocate("analysis-exact-a") == "A-001"
@@ -17,7 +18,7 @@ def test_analysis_display_ids_are_stable_and_resolvable(tmp_path) -> None:
     assert store.resolve("analysis-exact-a") == "analysis-exact-a"
 
 
-def test_analysis_display_id_concurrent_allocation_is_unique(tmp_path) -> None:
+def test_analysis_display_id_concurrent_allocation_is_unique(tmp_path: Path) -> None:
     database = tmp_path / "sastsimi.sqlite3"
 
     def allocate(analysis_id: str) -> str:
@@ -30,7 +31,7 @@ def test_analysis_display_id_concurrent_allocation_is_unique(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("value", ["A-1", "../A-001", "A-001.md", "a-001"])
-def test_analysis_display_id_rejects_invalid_alias(tmp_path, value: str) -> None:
+def test_analysis_display_id_rejects_invalid_alias(tmp_path: Path, value: str) -> None:
     store = AnalysisDisplayIdStore(tmp_path / "sastsimi.sqlite3")
 
     with pytest.raises((ValueError, LookupError)):

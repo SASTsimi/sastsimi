@@ -699,9 +699,10 @@ or tool errors are not vulnerability FALSE.
             checkpoint,
             _unique_refs(checkpoint.input_refs + _prior_refs(prior)),
         )
-        requirements = tuple(
-            str(value) for value in result.value["environment_requirements"]
-        )
+        raw_requirements = result.value["environment_requirements"]
+        if not isinstance(raw_requirements, list):
+            raise ValueError("ENVIRONMENT_REQUIREMENTS_INVALID")
+        requirements = tuple(str(value) for value in raw_requirements)
         try:
             environment = await self._environments.prepare(
                 checkpoint,

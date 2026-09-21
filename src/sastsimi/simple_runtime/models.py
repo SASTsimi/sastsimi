@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -61,6 +62,22 @@ class CheckpointIdentity(ContractModel):
     workspace_id: str
     commit_id: str
     hypothesis_id: str | None
+
+
+class SimpleAnalysisRun(ContractModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    analysis_id: str
+    display_analysis_id: str
+    workspace_id: str
+    commit_id: str
+    repository: str
+    workspace_path: Path | None = None
+    repository_profile_ref: StoredDataRef | None = None
+    static_bundle_ref: StoredDataRef | None = None
+    hypothesis_ids: tuple[str, ...] = ()
+    parent_hypothesis_ids: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    chain_depths: dict[str, int] = Field(default_factory=dict)
 
 
 def input_reference_hash(refs: tuple[StoredDataRef, ...]) -> str:

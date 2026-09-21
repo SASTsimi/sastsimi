@@ -11,9 +11,9 @@ from sastsimi.dashboard.query import DashboardNotFound, DashboardQuery
 from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
-from sastsimi.simple_runtime.application import SimpleAnalysisRun
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
+    SimpleAnalysisRun,
     SimpleStage,
     StageCheckpoint,
     StageStatus,

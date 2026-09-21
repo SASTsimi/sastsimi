@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -36,7 +37,7 @@ class _RepairClient:
 
 @pytest.mark.asyncio
 async def test_sensitive_candidate_repair_explains_secret_shaped_names(
-    tmp_path,
+    tmp_path: Path,
 ) -> None:
     identity = CheckpointIdentity(
         analysis_id="analysis-1",
@@ -54,7 +55,7 @@ async def test_sensitive_candidate_repair_explains_secret_shaped_names(
     )
     client = _RepairClient()
     stage = PoCCandidateStage(
-        client=client,  # type: ignore[arg-type]
+        client=client,
         artifacts=SimpleArtifactRepository(tmp_path, identity),
     )
 

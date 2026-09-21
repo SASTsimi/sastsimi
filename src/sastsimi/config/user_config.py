@@ -149,8 +149,7 @@ class UserConfig(BaseModel):
             "[detected_versions]",
         ]
         lines.extend(
-            f"{key} = {_quoted(value)}"
-            for key, value in self.detected_versions.items()
+            f"{key} = {_quoted(value)}" for key, value in self.detected_versions.items()
         )
         return "\n".join(lines) + "\n"
 

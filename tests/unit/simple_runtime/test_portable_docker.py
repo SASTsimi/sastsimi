@@ -64,8 +64,6 @@ def test_target_requirements_are_resolved_from_exact_hypothesis(
         workspace=workspace,
     )
 
-    resolved = preparer._target_requirements_path(
-        {SimpleStage.PRO_CON_DONE: pro_con}
-    )
+    resolved = preparer._target_requirements_path({SimpleStage.PRO_CON_DONE: pro_con})
 
     assert resolved == "nested/lab/requirements.txt"
