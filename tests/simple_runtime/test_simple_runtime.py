@@ -178,6 +178,7 @@ async def test_poc_execution_retry_starts_a_new_candidate_attempt(tmp_path) -> N
             code="POC_INVALID_OUTPUT",
             retryable=True,
             safe_message="retry the PoC attempt",
+            evidence_refs=(_ref("execution-failure"),),
         ),
         StageStatus.BLOCKED,
     )
@@ -205,6 +206,8 @@ async def test_poc_execution_retry_starts_a_new_candidate_attempt(tmp_path) -> N
     ]
     assert retried_candidate.attempt_id != old_attempt_id
     assert retried_execution.attempt_id == retried_candidate.attempt_id
+    assert _ref("candidate-old") in retried_candidate.input_refs
+    assert _ref("execution-failure") in retried_candidate.input_refs
     assert outcome.current_stage is SimpleStage.REPORT_DONE
 
 

@@ -8,12 +8,14 @@ from sastsimi.contracts.base import ContractModel
 
 from .models import (
     HYPOTHESIS_STAGES,
+    STAGE_VERSION,
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
     StageFailure,
     StageResult,
     StageStatus,
+    input_reference_hash,
 )
 from .store import SimpleCheckpointStore
 
@@ -203,6 +205,28 @@ class SimpleRuntimeRunner:
         ):
             return
 
+        activity_refs = tuple(
+            ref
+            for event in (
+                self.store.stage_activity(
+                    identity,
+                    SimpleStage.POC_EXECUTION_DONE,
+                    candidate.attempt_id,
+                )
+                if candidate.attempt_id is not None
+                else ()
+            )
+            for ref in event.output_refs
+        )
+        repair_inputs = tuple(
+            dict.fromkeys(
+                candidate.input_refs
+                + candidate.output_refs
+                + (execution.output_refs if execution is not None else ())
+                + activity_refs
+            )
+        )
+
         # A retry is a new attempt. The candidate and its execution must share
         # that attempt, so restart the pair instead of reusing an old attempt ID.
         self.store.invalidate_from(
@@ -210,4 +234,17 @@ class SimpleRuntimeRunner:
             SimpleStage.POC_CANDIDATE_DONE,
             new_inputs=candidate.input_refs,
             force=True,
+        )
+        self.store.save_checkpoint(
+            StageCheckpoint(
+                identity=identity,
+                stage=SimpleStage.POC_CANDIDATE_DONE,
+                stage_version=STAGE_VERSION[SimpleStage.POC_CANDIDATE_DONE],
+                status=StageStatus.PENDING,
+                input_refs=repair_inputs,
+                input_hash=input_reference_hash(repair_inputs),
+                recipe_ref=candidate.recipe_ref,
+                image_digest=candidate.image_digest,
+                container_id=candidate.container_id,
+            )
         )
