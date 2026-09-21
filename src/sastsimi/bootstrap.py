@@ -55,7 +55,6 @@ from sastsimi.composition.runtime import build_config as build_config
 from sastsimi.composition.runtime import (
     build_diagnostic_logger as build_diagnostic_logger,
 )
-from sastsimi.composition.runtime import build_fake_pipeline as build_fake_pipeline
 from sastsimi.composition.runtime import (
     build_production_query as build_production_query,
 )
@@ -73,7 +72,6 @@ from sastsimi.composition.runtime import build_t13_services as build_t13_service
 from sastsimi.composition.runtime import database_command as database_command
 from sastsimi.composition.runtime import diagnostic_event as diagnostic_event
 from sastsimi.composition.runtime import install_t13_services as install_t13_services
-from sastsimi.composition.runtime import load_fake_progress as load_fake_progress
 from sastsimi.composition.runtime import upgrade_database as upgrade_database
 
 # Compatibility alias for existing integration callers. New code should use

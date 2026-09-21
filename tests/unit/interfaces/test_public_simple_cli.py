@@ -248,3 +248,10 @@ def test_installed_entrypoint_normalizes_compact_report_syntax(
 
     assert main(user_config_store=_config(tmp_path)) == 0
     assert capsys.readouterr().out == "Report F-001\n"
+
+
+def test_demo_is_not_a_public_command(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["demo", "analyze", "--scenario", "TRUE"]) == 2
+    assert "Invalid command or option; use --help." in capsys.readouterr().err

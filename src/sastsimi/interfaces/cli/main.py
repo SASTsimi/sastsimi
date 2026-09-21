@@ -17,7 +17,6 @@ from sastsimi.interfaces.cli import capability as capability_command
 from sastsimi.interfaces.cli import codeql as codeql_command
 from sastsimi.interfaces.cli import commands
 from sastsimi.interfaces.cli import dashboard as dashboard_command
-from sastsimi.interfaces.cli import demo as demo_command
 from sastsimi.interfaces.cli import local_evaluation as local_evaluation_command
 from sastsimi.interfaces.cli import onboarding as onboarding_command
 from sastsimi.interfaces.cli import public as public_command
@@ -227,17 +226,6 @@ def main(
     evaluate_simple_resume.add_argument("--hypothesis-id")
     evaluate_simple_resume.add_argument("--profile", required=True, type=Path)
     evaluate_simple_resume.add_argument("--format", choices=["text", "json"])
-    demo_parser = subparsers.add_parser(
-        "demo", help="run deterministic local scenarios", allow_abbrev=False
-    )
-    demo_commands = demo_parser.add_subparsers(dest="demo_command", required=True)
-    demo_analyze = demo_commands.add_parser("analyze", allow_abbrev=False)
-    demo_analyze.add_argument(
-        "--scenario", choices=["TRUE", "FALSE", "HOLD", "REVISE", "CHAINING"]
-    )
-    demo_analyze.add_argument("--format", choices=["text", "json"])
-    demo_results = demo_commands.add_parser("results", allow_abbrev=False)
-    demo_results.add_argument("--format", choices=["text", "json"])
     status_parser = subparsers.add_parser(
         "status", help="read production analysis progress", allow_abbrev=False
     )
@@ -609,14 +597,6 @@ def main(
                 code=evaluation_result.code,
             )
             return int(evaluation_result.code)
-        if args.command == "demo":
-            command_name = "demo " + args.demo_command
-            if args.demo_command == "analyze":
-                data = demo_command.analyze(config.data_dir, args.scenario or "TRUE")
-            else:
-                data = demo_command.results(config.data_dir)
-            emit_data(output_format, sys.stdout, command=command_name, data=data)
-            return int(ExitCode.OK)
         if args.command == "resume":
             command_name = "resume"
             if public_application is not None or args.analysis_id.startswith("A-"):
