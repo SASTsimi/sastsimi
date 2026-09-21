@@ -71,25 +71,25 @@ REQUIRED_PRODUCTION_PROMPT_ROUTES = (
         "HYPOTHESIS",
         "GENERATE_INITIAL",
         "hypothesis_proposal",
-        "src/sastsimi/prompts/templates/hypothesis/generate-initial/1.0.1.md",
+        "src/sastsimi/prompts/templates/hypothesis/generate-initial/1.0.2.md",
     ),
     _required(
         "PRO",
         "COLLECT_SUPPORT",
         "pro_evidence_result",
-        "src/sastsimi/prompts/templates/pro/collect-support/1.0.1.md",
+        "src/sastsimi/prompts/templates/pro/collect-support/1.0.2.md",
     ),
     _required(
         "CON",
         "COLLECT_COUNTEREVIDENCE",
         "con_evidence_result",
-        "src/sastsimi/prompts/templates/con-agent/collect-counterevidence/1.0.1.md",
+        "src/sastsimi/prompts/templates/con-agent/collect-counterevidence/1.0.2.md",
     ),
     _required(
         "VERIFICATION",
         "ASSESS_INITIAL",
         "verification_initial_assessment",
-        "src/sastsimi/prompts/templates/verification/assess-initial/1.0.0.md",
+        "src/sastsimi/prompts/templates/verification/assess-initial/1.0.1.md",
     ),
     _required(
         "VERIFICATION",
@@ -101,7 +101,7 @@ REQUIRED_PRODUCTION_PROMPT_ROUTES = (
         "VERIFICATION",
         "FINAL_VERDICT",
         "verification_result",
-        "src/sastsimi/prompts/templates/verification/final-verdict/1.0.1.md",
+        "src/sastsimi/prompts/templates/verification/final-verdict/1.0.2.md",
     ),
     _required(
         "DYNAMIC_REPRODUCTION",
@@ -161,7 +161,7 @@ REQUIRED_PRODUCTION_PROMPT_ROUTES = (
         "POLICY_PARSER",
         "PARSE_OFFICIAL_POLICY",
         "policy_parser_result",
-        "src/sastsimi/prompts/templates/policy-parser/parse-policy/1.0.0.md",
+        "src/sastsimi/prompts/templates/policy-parser/parse-policy/1.0.1.md",
     ),
     _required(
         "CHAINING",

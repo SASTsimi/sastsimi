@@ -367,9 +367,9 @@ def _approved_hypothesis_route(
         records,
         artifacts,
         template_path=Path(
-            "src/sastsimi/prompts/templates/hypothesis/generate-initial/1.0.1.md"
+            "src/sastsimi/prompts/templates/hypothesis/generate-initial/1.0.2.md"
         ),
-        template_version="1.0.1",
+        template_version="1.0.2",
         role="HYPOTHESIS",
         task_kind="GENERATE_INITIAL",
         result_kind="hypothesis_proposal",
@@ -517,7 +517,7 @@ def test_approved_route_creates_active_entry_and_attempt_call(tmp_path: Path) ->
     )
 
     assert prepared.payload.agent_role == "HYPOTHESIS"
-    assert prepared.payload.template_version == "1.0.1"
+    assert prepared.payload.template_version == "1.0.2"
     assert prepared.call_spec.model == "approved-model"
     assert prepared.call_spec.context_refs == (facts_ref,)
     assert records.get_exact(prepared.payload_ref) == prepared.payload
@@ -546,10 +546,57 @@ def test_evidence_templates_require_exact_visible_reference_objects() -> None:
 
     assert set(routes) == {"PRO", "CON"}
     for route in routes.values():
-        assert route.template_path.name == "1.0.1.md"
+        assert route.template_path.name == "1.0.2.md"
         text = route.template_path.read_text(encoding="utf-8")
         assert "Copy one complete reference object exactly" in text
         assert "Never assemble a reference" in text
+        # EvidenceClaim rejects a repeated reference and an error/gap citation,
+        # so the template has to say so before the call rather than after it.
+        assert "`evidence_refs` must be a set" in text
+        assert "cite it at\nmost once per claim" in text
+        assert (
+            "Never cite an analysis error, a data\ngap, or an initial assessment"
+            in text
+        )
+
+
+def test_policy_parser_template_requires_empty_items_when_absent() -> None:
+    route = next(
+        route
+        for route in REQUIRED_PRODUCTION_PROMPT_ROUTES
+        if route.role == "POLICY_PARSER"
+    )
+
+    assert route.template_path.name == "1.0.1.md"
+    text = route.template_path.read_text(encoding="utf-8")
+    # The collector rejects an ABSENT_CONFIRMED result that carries any policy
+    # item, so the template has to forbid inferring one.
+    assert "every policy item" in text
+    assert "Never infer an item from the repository" in text
+    for field in (
+        "in_scope_assets",
+        "testing_restrictions",
+        "impact_criteria",
+        "disclosure_requirements",
+    ):
+        assert field in text
+
+
+def test_assess_initial_template_binds_verdict_to_its_only_route() -> None:
+    route = next(
+        route
+        for route in REQUIRED_PRODUCTION_PROMPT_ROUTES
+        if route.role == "VERIFICATION" and route.task_kind == "ASSESS_INITIAL"
+    )
+
+    assert route.template_path.name == "1.0.1.md"
+    text = route.template_path.read_text(encoding="utf-8")
+    # VerificationInitialAssessment.assessment_route rejects any other pairing,
+    # so the template states the mapping instead of leaving it implied.
+    assert "`TRUE` requires `POC_CONFIRMATION`" in text
+    assert "`FALSE` requires `FINALIZE_WITHOUT_DYNAMIC`" in text
+    assert "`VERDICT_EVIDENCE` never carries `TRUE` or `FALSE`" in text
+    assert "is still `HOLD`, not `TRUE`" in text
 
 
 def test_final_verdict_template_defines_completed_check_semantics() -> None:
@@ -559,10 +606,14 @@ def test_final_verdict_template_defines_completed_check_semantics() -> None:
         if route.role == "VERIFICATION" and route.task_kind == "FINAL_VERDICT"
     )
 
-    assert route.template_path.name == "1.0.1.md"
+    assert route.template_path.name == "1.0.2.md"
     text = route.template_path.read_text(encoding="utf-8")
     assert "records whether you completed the assessment" in text
     assert "use INCOMPLETE merely because" in text
+    # VerificationResult rejects the whole verdict on any of these.
+    assert "every validation result is COMPLETE" in text
+    assert "if any falsification result is DISPROVED then the" in text
+    assert "never TRUE" in text
 
 
 @pytest.mark.parametrize(
