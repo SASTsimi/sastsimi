@@ -3,6 +3,10 @@
 > 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 >
 > 프로그램이 중간에 멈췄을 때 어떤 기록을 확인하고 어디서 다시 시작해야 하는지 정리한 **검토용 설계 초안**이다. 실제 runtime·복구 코드·fixture·자동 테스트를 구현하거나 실행한 결과가 아니다.
+>
+> **현재 구현 안내:** 이 문서의 `fake adapter`, `fake storage`, `fake clock`은 당시의
+> 장애 주입 예시다. 별도 Fake 제품 파이프라인은 제거됐고 현재 제품 복구 경로는
+> `SimpleRuntime` checkpoint와 실패 단계 `resume`이다.
 
 ## 1. 목적과 기준
 

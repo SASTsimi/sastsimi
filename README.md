@@ -2,13 +2,17 @@
 
 SASTSIMI는 저장소의 AST·OpenGrep·CodeQL 결과를 LLM Agent가 검토하고, Docker에서 PoC를 재현한 뒤 사람이 읽을 수 있는 한국어 Markdown 보고서를 만드는 로컬 보안 분석 도구입니다.
 
-정적 분석 결과만으로 취약점을 확정하지 않습니다. Hypothesis Agent가 가설을 만들고, Pro·Con Agent와 Verification Agent가 근거를 검토합니다. `TRUE`는 Docker에서 성공한 validated PoC가 있을 때만 Gate·Finding·Reporter 단계로 이동합니다. 여러 취약 조건을 연결하는 Chaining 결과는 새 가설로 등록해 같은 검증을 다시 거칩니다.
+정적 분석 결과만으로 취약점을 확정하지 않습니다. Hypothesis Agent가 가설을 만들고, Pro Agent·Con Agent와 Verification Agent가 근거를 검토합니다. `TRUE`는 Docker에서 성공한 validated PoC가 있을 때만 Gate·Finding·Reporter 단계로 이동합니다. 여러 취약 조건을 연결하는 Chaining 결과는 새 가설로 등록해 같은 검증을 다시 거칩니다.
+
+설계 상태: `DESIGN_APPROVED`. 실제 지원 상태는 아래의 검증된 실행 조합과 제한을
+함께 확인해야 합니다.
 
 ## 현재 구현 상태
 
 - 구현됨: exact commit clone, Python AST, OpenGrep, CodeQL, LLM Agent 파이프라인, Docker PoC, 두 Gate, Chaining, `F-001.md` 보고서, 실패 단계 재개, CLI 진행 표시, 로컬 읽기 전용 대시보드
 - LLM 연결: OpenAI API 또는 공식 Codex CLI 회원 로그인
 - 기본 실행 방식: 작은 단일 프로세스 `SimpleRuntime`
+- 분석 경로: 설치된 제품에는 별도 Fake/demo 파이프라인이 없으며 실제 저장소 분석과 실패 단계 재개가 같은 `SimpleRuntime`을 사용
 - 지원 기준: Python 3.12, Git, OpenGrep, Docker. `full` 프로필은 CodeQL도 필수
 - 제한: Python 저장소가 첫 통합 검증 대상입니다. 자동 외부 제출·공개, HTML/PDF 보고서, 대시보드 쓰기 기능은 지원하지 않습니다.
 - 주의: 실제 Provider·도구·Docker 조합은 설치한 컴퓨터에서 `sastsimi setup`으로 다시 확인해야 합니다. 인증·도구·환경 오류는 취약점 `FALSE`로 바꾸지 않습니다.

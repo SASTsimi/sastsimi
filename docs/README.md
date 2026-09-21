@@ -1,6 +1,6 @@
 # SASTSIMI 설계 문서 안내
 
-이 폴더에는 승인된 Architecture v5 구현 기준 설계, 팀 검토 기록과 운영 안내가 들어 있습니다. 실행 코드는 구현 중이며 실제 저장소의 production 전체 완주 검증은 아직 끝나지 않았습니다.
+이 폴더에는 승인된 Architecture v5 구현 기준 설계, 팀 검토 기록과 운영 안내가 들어 있습니다. 현재 제품 분석 경로는 `SimpleRuntime` 하나이며, 실제 저장소를 대상으로 한 통합 실행 근거와 지원 한계는 루트 `README.md`를 우선합니다.
 
 ## 처음이라면 여기부터 읽으세요
 
@@ -34,7 +34,7 @@
 ## 현재 상태
 
 - `DESIGN_APPROVED`: 역할별 검토와 전체 문서 추적 검토를 거쳐 구현 기준 설계로 승인되었습니다.
-- `IMPLEMENTATION_IN_PROGRESS`: 계약과 개별 실행 모듈은 구현 중입니다.
-- `PRODUCTION_E2E_NOT_YET_PROVEN`: Fake Adapter 없이 실제 저장소 clone부터 Markdown 보고서까지 완주한 출시 증거는 아직 없습니다.
+- `IMPLEMENTATION_AVAILABLE`: 저장소 준비부터 Markdown 보고서까지 `SimpleRuntime`으로 연결돼 있습니다.
+- `LIVE_E2E_VERIFIED`: README에 기록한 exact Provider·도구·운영체제 조합에서 실제 저장소 통합 실행을 확인했습니다. 이 표시는 모든 조합의 운영 승인을 뜻하지 않습니다.
 
 GitHub Issue와 PR에서 결정한 내용은 관련 번호 문서와 [설계 결정 기록](./review/decisions/README.md)에 반영되어야 실제 기준으로 인정됩니다.

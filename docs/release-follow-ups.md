@@ -11,6 +11,6 @@
 - 원격 Sandbox와 분산 worker: host·secret·network·resource 경계를 새로 검증해야 합니다.
 - 자동 외부 제출·공개: 사람의 최종 권한 경계를 바꾸므로 현재 자동화 범위에 포함하지 않습니다.
 
-실제 Provider·OpenGrep·CodeQL·Docker 조합의 깨끗한 환경 검증과 Fake 없는
-clone→Markdown live E2E는 정식 출시 전에 반드시 확인합니다. 구현 경로가
-존재하는 것만으로 production-ready라고 표시하지 않습니다.
+README에 기록된 실제 Provider·OpenGrep·CodeQL·Docker 조합 외의 깨끗한 환경도
+정식 출시 전에 추가 검증합니다. 제품의 clone→Markdown 통합 실행 경로가 존재한다는
+이유만으로 검증하지 않은 조합까지 production-ready라고 표시하지 않습니다.

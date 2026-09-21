@@ -91,14 +91,15 @@ sastsimi report F-001 --export markdown
 
 외부 정책이 없거나 범위 밖인 결과는 내부 기술 보고서로 생성할 수 있지만 외부 제출·공개가 제한됐다고 표시합니다. SASTSIMI가 자동으로 외부에 제출하지 않습니다.
 
-## 5. 내부·고급 명령
+## 5. 실행 경로
 
-기존 `--data-dir`, `--profile`, `evaluate`, `capability`, `onboarding`, `demo` 명령은 회귀 시험이나 고급 운영을 위해 유지합니다. 일반 사용자는 위의 공개 명령만 사용하면 됩니다.
+저장소 분석은 `SimpleRuntime` 한 경로만 사용합니다. `setup`이 저장한 기본 설정을
+읽어 실제 저장소 분석을 시작하며, 준비 실패를 다른 시험용 분석 경로로 대체하지
+않습니다.
 
-`demo`는 설치 확인용 가짜 시나리오이며 실제 저장소 분석 결과가 아닙니다.
-준비 실패 시 production 실행을 Fake로 자동 대체하지 않습니다. 깨끗한 환경의
-Fake 없는 live E2E 결과만 실제 통합 검증 근거로 사용합니다.
+`--data-dir`, `--profile`, `evaluate`, `capability`, `onboarding` 같은 세부 명령과
+옵션은 문제 진단 또는 고급 운영을 위해 유지합니다. 일반 사용자는 위의 공개 명령만
+사용하면 됩니다.
 
-```text
-sastsimi --data-dir <demo-dir> demo analyze --scenario TRUE --format json
-```
+과거의 `demo` 분석 명령과 별도 Fake 파이프라인은 제품 코드에서 제거됐습니다. 당시
+동작은 Git 이력에서만 확인할 수 있으며 현재 설치·분석 검증에 사용할 수 없습니다.

@@ -10,6 +10,11 @@
 
 PR #116 병합과 Issue #92·R3 상위 Issue #4 종료를 확인해 이 단일안을 구현 기준으로 승인했다. Provider capability, 품질 평가, Docker 보안과 전체 실행은 실제 구현에서 별도로 증명해야 한다.
 
+> **후속 구현 상태:** 초기 순서에서 언급한 별도 Fake 제품 adapter·demo 분석 경로는
+> 제거됐다. 현재 제품 분석 runtime은 `SimpleRuntime` 하나이며 test double은 개별
+> 단위·통합 테스트 파일 안에서만 허용한다. 이 후속 변경은 Agent 역할과 데이터
+> 계약을 바꾸지 않는다.
+
 ## Context
 
 Architecture v5 번호 문서는 역할·데이터·상태·권한을 정했고 R3-01~R3-05는 22단계 mapping, 계약 시험, 복구 시험, Provider와 Prompt 구조를 설계했다. 그러나 실제 언어, repository tree, 저장 기술, migration, CLI와 CI가 하나의 정본으로 확정되지 않으면 한 명의 구현 담당자가 개발 중에 다시 결정을 내려야 한다.
