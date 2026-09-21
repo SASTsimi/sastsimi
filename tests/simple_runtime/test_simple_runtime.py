@@ -8,6 +8,7 @@ from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
+    STAGE_VERSION,
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
@@ -50,13 +51,18 @@ def _checkpoint(
     stage: SimpleStage | str,
     *,
     inputs: tuple[StoredDataRef, ...],
+    stage_version: str | None = None,
+    attempt_id: str | None = None,
 ) -> StageCheckpoint:
+    normalized_stage = SimpleStage(stage)
     return StageCheckpoint(
         identity=_identity(),
-        stage=SimpleStage(stage),
+        stage=normalized_stage,
+        stage_version=stage_version or STAGE_VERSION[normalized_stage],
         status=StageStatus.PENDING,
         input_refs=inputs,
         input_hash=input_reference_hash(inputs),
+        attempt_id=attempt_id,
     )
 
 
@@ -144,13 +150,74 @@ async def test_resume_reuses_exact_success_and_invalidates_changed_downstream(
     assert outcome.current_stage is SimpleStage.REPORT_DONE
 
 
+@pytest.mark.asyncio
+async def test_poc_execution_retry_starts_a_new_candidate_attempt(tmp_path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.VERIFICATION_INITIAL_DONE)
+    candidate_inputs = store.input_refs_for(
+        _identity(),
+        SimpleStage.POC_CANDIDATE_DONE,
+    )
+    old_attempt_id = "poc-attempt-old"
+    candidate = _checkpoint(
+        SimpleStage.POC_CANDIDATE_DONE,
+        inputs=candidate_inputs,
+        attempt_id=old_attempt_id,
+    )
+    store.save_success(candidate, outputs=(_ref("candidate-old"),))
+    execution = store.mark_running(
+        _identity(),
+        SimpleStage.POC_EXECUTION_DONE,
+        (_ref("candidate-old"),),
+        attempt_id=old_attempt_id,
+        inherit_from=store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE),
+    )
+    store.mark_failure(
+        execution,
+        StageFailure(
+            code="POC_INVALID_OUTPUT",
+            retryable=True,
+            safe_message="retry the PoC attempt",
+            evidence_refs=(_ref("execution-failure"),),
+        ),
+        StageStatus.BLOCKED,
+    )
+    # Simulate a crash/recovery boundary where the append-only activity log
+    # survived but the execution checkpoint was invalidated.
+    store.invalidate_from(
+        _identity(),
+        SimpleStage.POC_EXECUTION_DONE,
+        new_inputs=(_ref("candidate-old"),),
+        force=True,
+    )
+    assert store.get(_identity(), SimpleStage.POC_EXECUTION_DONE) is None
+
+    calls: list[SimpleStage] = []
+    outcome = await SimpleRuntimeRunner(
+        store,
+        _recording_handlers(calls),
+    ).resume_analysis(_identity())
+
+    retried_candidate = store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE)
+    retried_execution = store.require(_identity(), SimpleStage.POC_EXECUTION_DONE)
+    assert calls[:2] == [
+        SimpleStage.POC_CANDIDATE_DONE,
+        SimpleStage.POC_EXECUTION_DONE,
+    ]
+    assert retried_candidate.attempt_id != old_attempt_id
+    assert retried_execution.attempt_id == retried_candidate.attempt_id
+    assert _ref("candidate-old") in retried_candidate.input_refs
+    assert _ref("execution-failure") in retried_candidate.input_refs
+    assert outcome.current_stage is SimpleStage.REPORT_DONE
+
+
 def test_report_format_upgrade_reuses_earlier_stages_but_not_old_report(
     tmp_path,
 ) -> None:
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
     inputs = (_ref("finding"),)
     store.save_success(
-        _checkpoint(SimpleStage.REPORT_DONE, inputs=inputs),
+        _checkpoint(SimpleStage.REPORT_DONE, inputs=inputs, stage_version="1"),
         outputs=(_ref("old-report"),),
     )
     store.save_success(

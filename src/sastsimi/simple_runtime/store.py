@@ -18,6 +18,7 @@ from .models import (
     STAGE_ORDER,
     STAGE_VERSION,
     CheckpointIdentity,
+    SimpleAnalysisRun,
     SimpleStage,
     StageCheckpoint,
     StageFailure,
@@ -37,6 +38,8 @@ ROLE_BY_STAGE: dict[SimpleStage, str] = {
     SimpleStage.CWE_DONE: "CWE Labeling Agent",
     SimpleStage.TECH_GATE_DONE: "Technical Gate Agent",
     SimpleStage.SCOPE_GATE_DONE: "Rule Scope Gate Agent",
+    SimpleStage.PRIMITIVE_ADMISSION_DONE: "Primitive Admission Runtime",
+    SimpleStage.CHAINING_DONE: "Chaining Agent",
     SimpleStage.FINDING_DONE: "Finding Runtime",
     SimpleStage.REPORT_DONE: "Reporter Agent",
 }
@@ -72,6 +75,40 @@ class SimpleCheckpointStore:
                 """
             )
             AgentActivityStore.initialize_connection(connection)
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_analysis_runs (
+                    analysis_id TEXT PRIMARY KEY,
+                    run_json TEXT NOT NULL
+                )
+                """
+            )
+
+    @property
+    def database_path(self) -> Path:
+        return self._database_path
+
+    def save_analysis_run(self, run: object) -> None:
+        validated = SimpleAnalysisRun.model_validate(run)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO simple_analysis_runs (analysis_id, run_json)
+                VALUES (?, ?)
+                ON CONFLICT (analysis_id) DO UPDATE SET run_json = excluded.run_json
+                """,
+                (validated.analysis_id, validated.model_dump_json()),
+            )
+
+    def require_analysis_run(self, analysis_id: str) -> SimpleAnalysisRun:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (analysis_id,),
+            ).fetchone()
+        if row is None:
+            raise LookupError("SIMPLE_ANALYSIS_RUN_NOT_FOUND")
+        return SimpleAnalysisRun.model_validate_json(row[0])
 
     @staticmethod
     def _hypothesis_key(identity: CheckpointIdentity) -> str:
@@ -97,6 +134,76 @@ class SimpleCheckpointStore:
         if checkpoint.identity != identity:
             return None
         return checkpoint
+
+    def list_checkpoints(self, analysis_id: str) -> tuple[StageCheckpoint, ...]:
+        """Return immutable validated checkpoints for exactly one analysis."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT checkpoint_json
+                FROM simple_runtime_checkpoints
+                WHERE analysis_id = ?
+                ORDER BY updated_at, hypothesis_key, stage
+                """,
+                (analysis_id,),
+            ).fetchall()
+        return tuple(
+            StageCheckpoint.model_validate_json(row["checkpoint_json"]) for row in rows
+        )
+
+    def list_analysis_ids(self) -> tuple[str, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT analysis_id
+                FROM simple_runtime_checkpoints
+                ORDER BY analysis_id
+                """
+            ).fetchall()
+        return tuple(str(row[0]) for row in rows)
+
+    def has_stage_activity(
+        self,
+        identity: CheckpointIdentity,
+        stage: SimpleStage,
+        attempt_id: str,
+    ) -> bool:
+        """Return whether an append-only event already used this stage attempt."""
+
+        return bool(self.stage_activity(identity, stage, attempt_id))
+
+    def stage_activity(
+        self,
+        identity: CheckpointIdentity,
+        stage: SimpleStage,
+        attempt_id: str,
+    ) -> tuple[AgentActivityEvent, ...]:
+        """Read exact append-only events retained for one stage attempt."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT event_json
+                FROM agent_activity_events
+                WHERE analysis_id = ?
+                  AND hypothesis_key = ?
+                  AND attempt_id = ?
+                """,
+                (
+                    identity.analysis_id,
+                    self._hypothesis_key(identity),
+                    attempt_id,
+                ),
+            ).fetchall()
+        return tuple(
+            event
+            for row in rows
+            if (
+                event := AgentActivityEvent.model_validate_json(row["event_json"])
+            ).stage
+            == stage.value
+        )
 
     def reusable(
         self,

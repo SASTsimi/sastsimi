@@ -10,8 +10,15 @@ function Add-Failure {
     $failures.Add($Message)
 }
 
-$markdownFiles = Get-ChildItem -LiteralPath $repoRoot -Recurse -File -Filter '*.md' |
-    Where-Object { $_.FullName -notmatch '[\\/]\.git[\\/]' }
+$trackedMarkdownPaths = @(& git -C $repoRoot ls-files -- '*.md')
+if ($LASTEXITCODE -ne 0) {
+    throw 'failed to enumerate Git-tracked Markdown files'
+}
+$markdownFiles = @(
+    foreach ($relativePath in $trackedMarkdownPaths) {
+        Get-Item -LiteralPath (Join-Path $repoRoot $relativePath)
+    }
+)
 
 foreach ($file in $markdownFiles) {
     $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
@@ -166,9 +173,11 @@ foreach ($file in $currentOperationalMarkdownFiles) {
 foreach ($file in $markdownFiles) {
     $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
     # Official URLs use the lowercase GitHub organization/repository spelling.
-    # Exclude URL targets while keeping prose and code spellings canonical.
+    # Exclude URL targets and executable examples while keeping prose spellings canonical.
     $textWithoutExternalUrls = [regex]::Replace($text, 'https?://[^\s)>]+', '')
-    if ($textWithoutExternalUrls.Contains('opengrep')) {
+    $proseOnly = [regex]::Replace($textWithoutExternalUrls, '(?s)```.*?```', '')
+    $proseOnly = [regex]::Replace($proseOnly, '`[^`]*`', '')
+    if ($proseOnly.Contains('opengrep')) {
         Add-Failure "non-canonical OpenGrep product spelling: $($file.FullName)"
     }
 }

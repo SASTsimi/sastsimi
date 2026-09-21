@@ -101,6 +101,14 @@ class SimpleArtifactRepository:
             uri=True,
         )
         try:
+            available_tables = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+            if not {"records", "record_revisions"}.issubset(available_tables):
+                return ()
             rows = connection.execute(
                 """
                 SELECT r.payload, r.ref

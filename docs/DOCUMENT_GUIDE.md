@@ -2,6 +2,23 @@
 
 이 문서는 저장소에 있는 각 파일이 무엇을 위한 것인지 쉽게 설명합니다. 처음 참여했다면 먼저 [프로젝트 README](../README.md), [협업 가이드](../CONTRIBUTING.md), [쉬운 용어집](./GLOSSARY.md) 순서로 읽으세요.
 
+## 처음 실행하는 사용자가 먼저 읽을 문서
+
+| 파일 | 쉽게 말하면 |
+|---|---|
+| [`README.md`](../README.md) | 설치부터 SimpleRuntime 분석·재개·대시보드·보고서까지 가장 짧은 시작 안내입니다. |
+| [`docs/installation.md`](./installation.md) | 깨끗한 Windows·Linux/WSL 환경에 필요한 프로그램과 `sastsimi setup` 절차입니다. |
+| [`docs/usage.md`](./usage.md) | 단순 공개 명령, 실제 진행률, 실패 단계 재개, PoC와 보고서 확인 방법입니다. |
+| [`docs/provider-setup.md`](./provider-setup.md) | OpenAI API와 공식 Codex 회원 로그인 연결 및 model 변경 방법입니다. |
+| [`docs/troubleshooting.md`](./troubleshooting.md) | clone·정적 도구·인증·Docker·보고서 실패를 FALSE로 오인하지 않고 복구하는 방법입니다. |
+
+아래 Architecture·검토 문서는 설계 근거와 세부 계약을 확인할 때 읽습니다. 일반
+사용자는 위 다섯 문서만으로 설치와 실행을 시작할 수 있어야 합니다.
+
+현재 설치 제품의 저장소 분석 경로는 `SimpleRuntime` 하나입니다. 과거 별도
+Fake/demo 파이프라인의 구현과 명령은 제거됐으며, 작업 기록에 등장하는 이름은 현재
+사용법이 아니라 Git 이력의 설계·시험 기록입니다.
+
 ## 기준 표시
 
 - **기준 문서**: 설계 의미와 협업 규칙을 판단할 때 우선합니다.

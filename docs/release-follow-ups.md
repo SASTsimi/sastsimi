@@ -5,8 +5,12 @@
 - HTML·PDF 보고서 출력: Markdown 출력이 첫 버전의 필수 형식이므로 후속입니다.
 - 추가 Provider와 model: exact capability·평가·사람 승인 없이 활성화하지 않습니다.
 - Python·JavaScript 밖의 언어와 framework: RepositoryProfile과 실제 도구 probe를 함께 추가해야 합니다.
-- UI와 dashboard: 현재 CLI의 status·results·reports를 대체하지 않습니다.
+- 대시보드 쓰기 기능: 로컬 읽기 전용 진행·가설·Chaining·보고서 화면은
+  구현됐습니다. 취소·재시도·판정 변경·공개 승인 UI는 권한 설계 전까지
+  추가하지 않습니다.
 - 원격 Sandbox와 분산 worker: host·secret·network·resource 경계를 새로 검증해야 합니다.
 - 자동 외부 제출·공개: 사람의 최종 권한 경계를 바꾸므로 현재 자동화 범위에 포함하지 않습니다.
 
-CodeQL quota control, 실제 Provider·Prompt의 검증 및 승인 완료, Fake 없는 clone→Markdown live E2E는 첫 production 출시를 막는 항목이므로 이 후속 목록으로 미루지 않습니다. Production composition 자체는 구현됐지만 이 세 조건을 충족하기 전에는 production-ready로 간주하지 않습니다.
+README에 기록된 실제 Provider·OpenGrep·CodeQL·Docker 조합 외의 깨끗한 환경도
+정식 출시 전에 추가 검증합니다. 제품의 clone→Markdown 통합 실행 경로가 존재한다는
+이유만으로 검증하지 않은 조합까지 production-ready라고 표시하지 않습니다.

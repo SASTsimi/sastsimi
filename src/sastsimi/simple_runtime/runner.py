@@ -8,12 +8,14 @@ from sastsimi.contracts.base import ContractModel
 
 from .models import (
     HYPOTHESIS_STAGES,
+    STAGE_VERSION,
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
     StageFailure,
     StageResult,
     StageStatus,
+    input_reference_hash,
 )
 from .store import SimpleCheckpointStore
 
@@ -57,13 +59,29 @@ class SimpleRuntimeRunner:
         return await self.resume_hypothesis(identity)
 
     async def resume_hypothesis(self, identity: CheckpointIdentity) -> RunOutcome:
+        self._reset_incomplete_poc_attempt(identity)
         for stage in HYPOTHESIS_STAGES:
+            final = self.store.get(identity, SimpleStage.VERIFICATION_FINAL_DONE)
+            if (
+                final is not None
+                and final.status is StageStatus.SUCCEEDED
+                and final.verdict == "HOLD"
+                and stage
+                in {
+                    SimpleStage.CWE_DONE,
+                    SimpleStage.TECH_GATE_DONE,
+                    SimpleStage.SCOPE_GATE_DONE,
+                    SimpleStage.FINDING_DONE,
+                    SimpleStage.REPORT_DONE,
+                }
+            ):
+                continue
             input_refs = self.store.input_refs_for(identity, stage)
             if self.store.reusable(identity, stage, input_refs):
                 reusable = self.store.require(identity, stage)
                 if (
                     stage is SimpleStage.VERIFICATION_FINAL_DONE
-                    and reusable.verdict in {"FALSE", "HOLD"}
+                    and reusable.verdict == "FALSE"
                 ):
                     return RunOutcome(
                         current_stage=stage,
@@ -138,10 +156,18 @@ class SimpleRuntimeRunner:
                     error_code=error.failure.code,
                 )
             completed = self.store.complete(checkpoint, result)
-            if stage is SimpleStage.VERIFICATION_FINAL_DONE and completed.verdict in {
-                "FALSE",
-                "HOLD",
-            }:
+            if stage is SimpleStage.VERIFICATION_FINAL_DONE and completed.verdict == (
+                "FALSE"
+            ):
+                return RunOutcome(
+                    current_stage=stage,
+                    status=StageStatus.SUCCEEDED,
+                )
+            if (
+                stage is SimpleStage.CHAINING_DONE
+                and final is not None
+                and final.verdict == "HOLD"
+            ):
                 return RunOutcome(
                     current_stage=stage,
                     status=StageStatus.SUCCEEDED,
@@ -149,4 +175,76 @@ class SimpleRuntimeRunner:
         return RunOutcome(
             current_stage=SimpleStage.REPORT_DONE,
             status=StageStatus.SUCCEEDED,
+        )
+
+    def _reset_incomplete_poc_attempt(self, identity: CheckpointIdentity) -> None:
+        candidate = self.store.get(identity, SimpleStage.POC_CANDIDATE_DONE)
+        execution = self.store.get(identity, SimpleStage.POC_EXECUTION_DONE)
+        if candidate is None:
+            return
+        if candidate.status is not StageStatus.SUCCEEDED:
+            return
+        execution_inputs = self.store.input_refs_for(
+            identity,
+            SimpleStage.POC_EXECUTION_DONE,
+        )
+        reusable_execution = execution is not None and self.store.reusable(
+            identity, SimpleStage.POC_EXECUTION_DONE, execution_inputs
+        )
+        orphaned_execution_activity = (
+            execution is None
+            and candidate.attempt_id is not None
+            and self.store.has_stage_activity(
+                identity,
+                SimpleStage.POC_EXECUTION_DONE,
+                candidate.attempt_id,
+            )
+        )
+        if reusable_execution or (
+            execution is None and not orphaned_execution_activity
+        ):
+            return
+
+        activity_refs = tuple(
+            ref
+            for event in (
+                self.store.stage_activity(
+                    identity,
+                    SimpleStage.POC_EXECUTION_DONE,
+                    candidate.attempt_id,
+                )
+                if candidate.attempt_id is not None
+                else ()
+            )
+            for ref in event.output_refs
+        )
+        repair_inputs = tuple(
+            dict.fromkeys(
+                candidate.input_refs
+                + candidate.output_refs
+                + (execution.output_refs if execution is not None else ())
+                + activity_refs
+            )
+        )
+
+        # A retry is a new attempt. The candidate and its execution must share
+        # that attempt, so restart the pair instead of reusing an old attempt ID.
+        self.store.invalidate_from(
+            identity,
+            SimpleStage.POC_CANDIDATE_DONE,
+            new_inputs=candidate.input_refs,
+            force=True,
+        )
+        self.store.save_checkpoint(
+            StageCheckpoint(
+                identity=identity,
+                stage=SimpleStage.POC_CANDIDATE_DONE,
+                stage_version=STAGE_VERSION[SimpleStage.POC_CANDIDATE_DONE],
+                status=StageStatus.PENDING,
+                input_refs=repair_inputs,
+                input_hash=input_reference_hash(repair_inputs),
+                recipe_ref=candidate.recipe_ref,
+                image_digest=candidate.image_digest,
+                container_id=candidate.container_id,
+            )
         )

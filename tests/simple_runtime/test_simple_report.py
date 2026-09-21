@@ -16,6 +16,7 @@ from sastsimi.simple_runtime.models import (
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
 from sastsimi.simple_runtime.stages import ReporterStage
+from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
 class _ReporterClient:
@@ -33,6 +34,22 @@ class _ReporterClient:
             prompt_digest=hashlib.sha256(b"prompt").hexdigest(),
             output_digest=hashlib.sha256(b"output").hexdigest(),
         )
+
+
+def test_policy_lookup_is_empty_for_a_simple_runtime_database(tmp_path: Path) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+
+    refs = SimpleArtifactRepository(tmp_path, identity).published_refs(
+        frozenset({"program_policy_record"})
+    )
+
+    assert refs == ()
 
 
 def _checkpoint(
@@ -101,7 +118,7 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
         }
     )
     verification_ref = artifacts.put_json(
-        {"result": {"rationale": "동일 실행에서 취약점이 재현되었습니다."}}
+        {"result": {"rationale": "Same-attempt evidence supports the finding."}}
     )
     cwe_ref = artifacts.put_json(
         {"result": {"primary_cwe": "CWE-78", "rationale": "명령어 삽입"}}
@@ -181,6 +198,8 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
     assert "실행 결과" in markdown
     assert script.decode().rstrip() in markdown
     assert "SUPPORTED: command executed" in markdown
+    assert "입력값이 정제되지 않고 명령 실행 함수까지 전달됩니다." in markdown
+    assert "Same-attempt evidence supports the finding." not in markdown
 
 
 @pytest.mark.asyncio

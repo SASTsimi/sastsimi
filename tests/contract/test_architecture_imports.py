@@ -28,8 +28,12 @@ RULES: dict[str, frozenset[str]] = {
     "static_analysis": frozenset({"contracts", "ports", "config", "security"}),
     "sandbox": frozenset({"contracts", "ports", "config"}),
     "storage": frozenset({"contracts", "ports", "config"}),
-    "interfaces": frozenset({"bootstrap", "orchestration", "runtime", "evaluation"}),
+    "interfaces": frozenset(
+        {"bootstrap", "orchestration", "runtime", "evaluation", "ports"}
+    ),
     "observability": frozenset({"contracts"}),
+    "progress": frozenset({"contracts", "simple_runtime"}),
+    "setup": frozenset({"config"}),
     "simple_runtime": frozenset(
         {
             "contracts",
@@ -44,7 +48,14 @@ RULES: dict[str, frozenset[str]] = {
         }
     ),
     "dashboard": frozenset(
-        {"config", "contracts", "observability", "reporting", "simple_runtime"}
+        {
+            "config",
+            "contracts",
+            "observability",
+            "progress",
+            "reporting",
+            "simple_runtime",
+        }
     ),
     "logging": frozenset(),
     "bootstrap": frozenset({"composition"}),
@@ -71,6 +82,9 @@ RULES: dict[str, frozenset[str]] = {
             "storage",
             "logging",
             "capabilities",
+            "progress",
+            "simple_runtime",
+            "setup",
         }
     ),
     "capabilities": frozenset(
@@ -111,6 +125,15 @@ EXACT_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
         }
     ),
     "sastsimi.interfaces.cli.dashboard": frozenset({"sastsimi.dashboard.server"}),
+    "sastsimi.interfaces.cli.main": frozenset(
+        {
+            "sastsimi.composition.simple_runtime_composition",
+            "sastsimi.config.user_config",
+            "sastsimi.setup.service",
+        }
+    ),
+    "sastsimi.interfaces.cli.progress": frozenset({"sastsimi.progress.models"}),
+    "sastsimi.interfaces.cli.setup": frozenset({"sastsimi.setup.service"}),
     "sastsimi.agents.chaining": frozenset(
         {
             "sastsimi.chaining.service",
@@ -728,7 +751,7 @@ def test_real_static_slice_is_public_composition_only_and_not_selected_by_cli() 
     assert "PythonAstProcessAdapter" not in interfaces
     assert "OpenGrepProcessAdapter" not in interfaces
     assert "CodeQLProcessAdapter" not in interfaces
-    assert "build_fake_pipeline" in interfaces
+    assert "build_fake_pipeline" not in interfaces
 
 
 def test_static_analysis_process_creation_is_shell_free_and_suspended() -> None:
@@ -793,25 +816,28 @@ def cycle_errors(sources: dict[str, str]) -> list[str]:
             target for target in targets if target in sources and target != module
         }
     visited: set[str] = set()
-    active: set[str] = set()
+    active: list[str] = []
 
-    def visit(module: str) -> bool:
+    def visit(module: str) -> tuple[str, ...] | None:
         if module in active:
-            return True
+            start = active.index(module)
+            return (*active[start:], module)
         if module in visited:
-            return False
-        active.add(module)
-        if any(visit(target) for target in sorted(graph[module])):
-            return True
-        active.remove(module)
+            return None
+        active.append(module)
+        for target in sorted(graph[module]):
+            cycle = visit(target)
+            if cycle is not None:
+                return cycle
+        active.pop()
         visited.add(module)
-        return False
+        return None
 
-    return (
-        ["Import cycle detected"]
-        if any(visit(module) for module in sorted(graph))
-        else []
-    )
+    for module in sorted(graph):
+        cycle = visit(module)
+        if cycle is not None:
+            return ["Import cycle detected: " + " -> ".join(cycle)]
+    return []
 
 
 def test_import_cycles_fail_even_within_allowed_package() -> None:

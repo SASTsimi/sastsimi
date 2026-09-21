@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from time import monotonic
-from typing import Any
+from typing import Any, Protocol
 from uuid import uuid4
 
 from pydantic import JsonValue
@@ -29,6 +30,16 @@ class SimpleLLMCallResult(ContractModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     elapsed_ms: int | None = None
+
+
+class SimpleLLMClient(Protocol):
+    async def call(
+        self,
+        *,
+        prompt: bytes,
+        output_schema: Mapping[str, Any],
+        timeout_ms: int,
+    ) -> SimpleLLMCallResult | StageFailure: ...
 
 
 def _matches_type(value: object, expected: str) -> bool:
@@ -149,4 +160,115 @@ class SimpleCodexClient:
         )
 
 
-__all__ = ["SimpleCodexClient", "SimpleLLMCallResult"]
+class SimpleOpenAIClient:
+    """Minimal official Responses API client for the sequential local path."""
+
+    def __init__(self, *, credential_ref: str, model: str) -> None:
+        variable = credential_ref.removeprefix("env:")
+        if variable == credential_ref:
+            raise ValueError("CREDENTIAL_REFERENCE_INVALID")
+        self._variable = variable
+        self._model = model
+        self._lock = asyncio.Lock()
+
+    async def call(
+        self,
+        *,
+        prompt: bytes,
+        output_schema: Mapping[str, Any],
+        timeout_ms: int,
+    ) -> SimpleLLMCallResult | StageFailure:
+        credential = os.environ.get(self._variable)
+        if credential is None or not credential or credential != credential.strip():
+            return StageFailure(
+                code="AUTH_REQUIRED",
+                retryable=True,
+                safe_message="Configured API credential is unavailable",
+            )
+        try:
+            from openai import AsyncOpenAI
+        except (ImportError, AttributeError):
+            return StageFailure(
+                code="OPENAI_SDK_UNAVAILABLE",
+                retryable=True,
+                safe_message="Official OpenAI SDK is unavailable",
+            )
+        prompt_digest = hashlib.sha256(prompt).hexdigest()
+        invocation_id = f"simple-{uuid4().hex}"
+        started_at = datetime.now(UTC)
+        started = monotonic()
+        try:
+            async with AsyncOpenAI(api_key=credential, max_retries=0) as client:
+                async with self._lock:
+                    response = await asyncio.wait_for(
+                        client.responses.create(
+                            model=self._model,
+                            input=prompt.decode("utf-8"),
+                            text={
+                                "format": {
+                                    "type": "json_schema",
+                                    "name": "sastsimi_agent_output",
+                                    "schema": dict(output_schema),
+                                    "strict": True,
+                                }
+                            },
+                            store=False,
+                        ),
+                        timeout=max(1, timeout_ms) / 1000,
+                    )
+            raw = str(response.output_text)
+        except TimeoutError:
+            return StageFailure(
+                code="TIMED_OUT",
+                retryable=True,
+                safe_message="OpenAI request timed out",
+            )
+        except Exception as error:
+            name = type(error).__name__.lower()
+            code = (
+                "AUTH_REQUIRED"
+                if "authentication" in name
+                else "RATE_LIMITED"
+                if "ratelimit" in name
+                else "FAILED"
+            )
+            return StageFailure(
+                code=code,
+                retryable=True,
+                safe_message="OpenAI request did not complete",
+            )
+        finished_at = datetime.now(UTC)
+        elapsed_ms = max(0, int((monotonic() - started) * 1000))
+        try:
+            value = json.loads(raw)
+            if not isinstance(value, dict):
+                raise ValueError("$")
+            _validate_schema(value, output_schema)
+            canonical = canonical_bytes(value)
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            field = str(error) if str(error).startswith("$") else None
+            return StageFailure(
+                code="INVALID_OUTPUT",
+                retryable=False,
+                safe_message="OpenAI returned invalid structured output",
+                invalid_field=field,
+            )
+        return SimpleLLMCallResult(
+            value=value,
+            prompt_digest=prompt_digest,
+            output_digest=hashlib.sha256(canonical).hexdigest(),
+            invocation_id=invocation_id,
+            provider="openai-api",
+            model=self._model,
+            started_at=started_at,
+            finished_at=finished_at,
+            elapsed_ms=elapsed_ms,
+        )
+
+
+__all__ = [
+    "SimpleCodexClient",
+    "SimpleLLMCallResult",
+    "SimpleLLMClient",
+    "SimpleOpenAIClient",
+]

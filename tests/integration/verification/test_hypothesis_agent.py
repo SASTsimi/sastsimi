@@ -41,8 +41,8 @@ from sastsimi.ports.dto import StagedArtifact
 from sastsimi.prompts.builder import PromptBuilder
 from sastsimi.prompts.registry import LoadedPromptDefinition
 from sastsimi.prompts.static_projection import project_hypothesis_static_bundle
-from sastsimi.runtime.fake_support import FakeClock, FakeIds
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
+from tests.support.runtime import DeterministicClock, SequenceIds
 
 NOW = datetime(2026, 9, 11, tzinfo=UTC)
 
@@ -408,13 +408,13 @@ async def test_hypothesis_output_is_finalized_with_runtime_owned_ids() -> None:
         ],
     )
     calls = _Calls(invocation)
-    ids = FakeIds()
+    ids = SequenceIds()
     agent = HypothesisAgent(
         prompt_builder=builder,
         llm_calls=calls,
         artifacts=artifacts,
         ids=ids,
-        clock=FakeClock(),
+        clock=DeterministicClock(),
     )
 
     payload = agent.prepare_prompt(
@@ -494,13 +494,13 @@ async def test_provider_owned_ids_are_rejected_before_runtime_ids_are_issued() -
         ],
     }
     invocation = _invocation(artifacts, work, bundle_ref, [forged])
-    ids = FakeIds()
+    ids = SequenceIds()
     agent = HypothesisAgent(
         prompt_builder=PromptBuilder(artifacts),
         llm_calls=_Calls(invocation),
         artifacts=artifacts,
         ids=ids,
-        clock=FakeClock(),
+        clock=DeterministicClock(),
     )
 
     with pytest.raises(ValueError, match="OUTPUT_RUNTIME_AUTHORITY_DENIED"):
@@ -528,8 +528,8 @@ async def test_empty_candidate_list_is_a_successful_no_proposal_result() -> None
         prompt_builder=PromptBuilder(artifacts),
         llm_calls=_Calls(invocation),
         artifacts=artifacts,
-        ids=FakeIds(),
-        clock=FakeClock(),
+        ids=SequenceIds(),
+        clock=DeterministicClock(),
     )
 
     outcome = await agent.propose(
@@ -558,8 +558,8 @@ async def test_provider_failure_returns_no_proposal(status: InvocationStatus) ->
         prompt_builder=PromptBuilder(artifacts),
         llm_calls=_Calls(invocation),
         artifacts=artifacts,
-        ids=FakeIds(),
-        clock=FakeClock(),
+        ids=SequenceIds(),
+        clock=DeterministicClock(),
     )
 
     outcome = await agent.propose(

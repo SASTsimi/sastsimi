@@ -12,6 +12,7 @@ import pytest
 from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.dashboard.server import create_server
+from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
@@ -25,6 +26,7 @@ from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 def seed(data_dir) -> None:
     database = data_dir / "db" / "sastsimi.sqlite3"
+    AnalysisDisplayIdStore(database).get_or_allocate("analysis-1")
     identity = CheckpointIdentity(
         analysis_id="analysis-1",
         workspace_id="workspace-1",
@@ -87,6 +89,11 @@ def test_server_is_local_read_only_and_serves_current_state(tmp_path) -> None:
         assert response.headers["Cache-Control"] == "no-store"
         assert response.headers["X-Content-Type-Options"] == "nosniff"
         assert request(f"{base}/api/analyses", method="POST").status == 405
+        assert request(f"{base}/analyses/A-001").status == 200
+        assert (
+            json.loads(request(f"{base}/api/analyses/A-001").read())["analysis_id"]
+            == "analysis-1"
+        )
         assert request(f"{base}/reports/analysis-1/F-001.md").read().decode() == (
             "# 한국어 보고서"
         )

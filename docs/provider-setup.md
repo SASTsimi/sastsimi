@@ -1,138 +1,68 @@
-# Provider 인증과 운영 활성화
+# LLM Provider 설정
 
-이 문서는 LLM 연결 정보, 검증 근거와 Prompt 승인을 준비하는 방법을 설명합니다. API key나 회원 로그인 정보 자체를 저장하는 문서가 아닙니다.
+Agent 이름·역할·입출력은 특정 Provider나 model에 고정되지 않습니다. 실제 연결은 setup이 만든 `provider_profile_ref + model` 설정으로 선택합니다.
 
-## 1. 공통 원칙
+현재 SimpleRuntime에서 직접 사용할 수 있는 경로는 다음 두 가지입니다.
 
-- Agent의 이름·역할·입출력은 Provider나 모델에 고정되지 않습니다.
-- 실제 호출은 승인된 `provider_profile_ref + model`로 정합니다.
-- model을 바꾸면 같은 Agent라도 새 Provider 검증·평가·승인이 필요할 수 있습니다.
-- API key, access token, cookie, browser profile, 로그인 session과 실제 secret을 TOML·Markdown·Issue·PR·로그에 적지 않습니다.
-- 인증 실패는 가설 반증이 아닙니다. `FALSE`를 만들지 않고 LLM work를 `AUTH_REQUIRED`, `BLOCKED` 또는 verdict 없는 `FAILED`로 남깁니다.
+- OpenAI Responses API: 환경변수의 API key 사용
+- 공식 Codex CLI: ChatGPT 회원 로그인 사용
 
-계약에는 여러 Provider 이름이 있어도 실제 adapter와 완전한 검증 근거가 있는 경로만 production에서 사용할 수 있습니다.
+Anthropic API나 Claude Code 회원 로그인을 위한 검증된 SimpleRuntime adapter는 현재 포함하지 않습니다. 이름만 설정해 사용할 수 있는 것처럼 취급하지 않습니다.
 
-## 2. OpenAI Responses API
+공식 안내:
 
-OpenAI API key는 코드나 profile에 넣지 않고 실행 환경의 secret으로 주입합니다. 공식 OpenAI 문서도 SDK가 환경변수에서 key를 읽는 방법을 안내합니다. [OpenAI API quickstart](https://developers.openai.com/api/docs/quickstart)를 참고하세요.
+- [OpenAI API quickstart](https://developers.openai.com/api/docs/quickstart)
+- [Codex 인증](https://developers.openai.com/codex/auth)
 
-profile에는 실제 값이 아니라 변수 이름만 적습니다.
+## OpenAI API
 
-```text
-credential_ref = { reference = "env:OPENAI_API_KEY" }
+key를 TOML, Markdown, Git, 로그에 쓰지 않습니다.
+
+```powershell
+$env:OPENAI_API_KEY = "<key>"
+sastsimi setup --auth api-key --provider openai --model <model>
 ```
 
-운영 shell 또는 secret store가 `OPENAI_API_KEY` 값을 안전하게 주입해야 합니다. 출력, shell history, 화면 공유와 저장소에 실제 값을 남기지 않습니다.
-
-capability 명령이 포함된 설치본에서는 작은 연결 시험을 실행할 수 있습니다.
-
-```text
-uv run sastsimi --data-dir <data-dir> capability probe OPENAI_API --model <model-id> --credential-ref env:OPENAI_API_KEY --format json
+```bash
+export OPENAI_API_KEY='<key>'
+sastsimi setup --auth api-key --provider openai --model <model>
 ```
 
-이 probe는 인증과 구조화 출력만 확인합니다. 현재 구현은 성공해도 `activation_supported=false`이며, 이 결과만으로 `ProviderProfile.support_status=SUPPORTED`를 만들 수 없습니다. production 활성화에는 아래 onboarding의 PVD-01~PVD-15, 현재 약관 확인, R8 평가, 사람 승인과 Prompt 승인이 모두 필요합니다.
+설정 파일에는 `env:OPENAI_API_KEY`라는 환경변수 참조만 저장됩니다. 분석을 실행하는 각 터미널이나 서비스에도 해당 환경변수가 있어야 합니다.
 
-## 3. Codex 회원 로그인 — 공식 client 경로, 별도 승인 필요
+## Codex 회원 로그인
 
-Codex 회원 로그인은 공식 Codex CLI 경로만 허용합니다. 브라우저 cookie를 읽거나 browser profile을 복사해 연결하지 않습니다. 공식 인증 안내는 [Codex 인증 문서](https://developers.openai.com/codex/auth)를 참고하세요.
+공식 Codex CLI에서 로그인합니다.
 
 ```text
 codex login
 codex login status
+sastsimi setup --auth subscription --provider codex --model <model>
 ```
 
-공식 Codex CLI adapter는 구현되어 있으며 `CODEX_OFFICIAL_CLIENT_V1` 구현으로 연결합니다. 다만 로그인 성공이나 adapter 존재만으로 운영 지원이 확정되지는 않습니다. exact 실행 파일·client version·model·격리 환경의 검증 근거를 연결한 `ProviderProfile`이 사람 승인 후 `SUPPORTED`가 되기 전에는 production route에 선택되지 않습니다.
+SASTSIMI는 현재 컴퓨터의 공식 CLI 실행 파일과 SHA-256을 profile에 기록하고 호출 직전에 다시 확인합니다. 브라우저 cookie를 읽거나 browser profile, 다른 사용자의 인증 파일을 복사하지 않습니다.
 
-다음 증거를 별도 승인 환경에서 모두 확보하기 전에는 Codex 회원제를 production profile 예시에 넣지 않습니다.
+Agent 호출은 같은 인증 파일을 동시에 갱신하는 충돌을 줄이기 위해 SimpleRuntime에서 순차 처리합니다. 각 역할은 독립 Prompt와 구조화 출력 계약을 사용하지만, 사람이 Codex Desktop에서 채팅 창을 직접 여는 방식은 아닙니다.
 
-- 승인된 Codex 실행 파일의 절대 경로·version·SHA-256
-- 격리된 `CODEX_HOME`과 `OFFICIAL_CLIENT_SESSION`
-- repository, shell, web, MCP, hook, plugin과 ambient secret을 사용하지 않는 no-tools 경계
-- PVD-01~PVD-15와 필요한 경우 PVD-16
-- 정확한 model identity, 구조화 출력, 새 독립 session, timeout·취소·사용량 기록
+## model 변경
 
-Codex CLI의 JSON event stream은 현재 provider가 실제 사용한 model identity를 별도
-필드로 보고하지 않습니다. 따라서 이 제한을 숨긴 채 `PVD-02`를 통과시키지 않습니다.
-`PVD-02=PASS`는 같은 실행에서 승인된 공식 CLI 실행 파일의 exact SHA-256을 다시
-확인하고, 요청 model이 명시적인 `--model` 인자로 들어갔으며, 잘못된 model의 negative
-control이 거절되고, 요청 model로 엄격한 structured output 호출이 성공한 경우에만
-허용합니다. 근거에는 `provider_model_reported=false`와 이 제한 설명을 함께 남깁니다.
-이 조건은 provider가 model을 응답으로 확인해 주었다는 뜻이 아니라, 현재 공식 client
-경계에서 검증 가능한 가장 좁은 binding임을 뜻합니다. 이 제한을 수용할지는 사람의
-Provider 승인 단계에서 별도로 판단해야 합니다.
-
-`PVD-15`는 호출 성공으로 자동 통과하지 않습니다. 검토자가 현재 공식 약관 URL,
-계정 범위와 내부 분석 목적을 직접 확인하고 명시적으로 승인한 입력이 있어야만 PASS
-근거를 만들 수 있습니다.
-- R8 평가와 사람의 production 승인
-
-## 4. onboarding 명령의 역할
-
-onboarding 명령은 “시험을 대신 수행해 PASS를 만들어 주는 명령”이 아닙니다. 외부에서 실제로 수집하고 사람이 승인한 근거를 가져와, 현재 profile·Provider·model·Prompt와 정확히 같은지 다시 확인합니다.
-
-먼저 secret 없는 준비 계획을 만들고 필요한 항목을 조회합니다. `init`은 실행할 probe와 검토 항목을 적은 계획만 만들며 어떤 항목도 승인하지 않습니다.
+model은 setup을 다시 실행해 바꿉니다.
 
 ```text
-uv run sastsimi --data-dir <data-dir> onboarding init --profile <production-profile.toml> --output-dir <onboarding-work-dir> --format json
+sastsimi setup --auth subscription --provider codex --model <new-model>
 ```
 
-같은 `output-dir`의 기존 계획을 덮어쓰지 않습니다. 이어서 현재 profile과 Prompt hash에 필요한 항목을 조회합니다.
+model을 바꿔도 Hypothesis·Pro·Con·Verification·Gate·Reporter 역할은 바뀌지 않습니다. 다만 현재 계정에 model 접근 권한이 없거나 구조화 출력이 맞지 않으면 분석은 `AUTH_REQUIRED`, `BLOCKED` 또는 verdict 없는 `FAILED`로 중단됩니다. 이를 취약점 `FALSE`로 바꾸지 않습니다.
 
-```text
-uv run sastsimi --data-dir <data-dir> onboarding requirements --profile <production-profile.toml> --format json
-```
+## 호출 기록
 
-이 명령은 필요한 PVD 번호, Prompt route와 template hash를 보여 주고 `BLOCKED`로 끝납니다. 준비 완료를 뜻하지 않습니다.
+각 LLM 호출은 다음 감사 정보를 저장합니다.
 
-운영 담당자는 다음을 별도 승인 절차에서 준비합니다.
+- 역할과 단계
+- 사용한 Provider와 model
+- prompt·output digest
+- 시작·종료 시각과 소요 시간
+- 확인한 exact artifact reference
+- 사람이 읽을 수 있는 근거·행동·판정 이유 요약
 
-- PVD-01~PVD-15의 실제 관측 파일과 SHA-256
-- 현재 Provider 약관 확인자·확인 시각·유효 기한
-- R8 평가 결과와 `ACCEPT_FOR_PRODUCTION` 추천
-- 각 route의 정확한 Prompt template hash와 사람 승인
-- 공식 정책 원문의 안전한 artifact와 SHA-256
-- 위 승인값을 담은 secret 없는 `approval-input.json`
-- 이미 승인된 capability probe ID와 일곱 provisioning slot template
-
-CLI는 이 근거를 자동으로 PASS 또는 승인하지 않습니다. `onboarding compose`는 이미 승인된 probe·PVD·R8·Prompt·사람 결정을 정확한 hash로 묶을 뿐입니다. 값을 추측하거나 다른 실행의 근거를 재사용하면 안 됩니다. 필드 의미와 안전한 작성 순서는 [운영 onboarding manifest와 근거 작성 안내](./onboarding-evidence.md)를 따릅니다.
-
-준비한 승인 입력, 일곱 slot template과 그 안에서 참조하는 모든 근거를 원자적 bundle로 조립합니다. `--slot-template`과 `--evidence`는 필요한 파일 수만큼 반복합니다.
-
-```text
-uv run sastsimi --data-dir <data-dir> onboarding compose --profile <production-profile.toml> --approval-input <approval-input.json> --slot-template <slot-1.json> --slot-template <slot-2.json> --evidence <approved-evidence-1> --evidence <approved-evidence-2> --output-dir <onboarding-bundle-dir> --format json
-uv run sastsimi --data-dir <data-dir> onboarding prepare --profile <production-profile.toml> --bundle-dir <onboarding-bundle-dir> --format json
-```
-
-조립 중 누락·hash 불일치·승인되지 않은 probe·민감정보가 발견되면 bundle을 일부만 남기지 않고 실패합니다. 이미 완성된 manifest를 직접 가져오는 기존 `prepare --manifest ... --evidence ...` 경로도 유지됩니다.
-
-마지막으로 현재 시각에도 모든 승인이 유효한지 다시 확인합니다.
-
-```text
-uv run sastsimi --data-dir <data-dir> onboarding status --profile <production-profile.toml> --format json
-```
-
-`status=READY`일 때만 해당 profile로 분석을 요청할 수 있습니다. 파일 수정, Prompt 변경, model 변경, 유효 기한 만료 또는 근거 hash 변경이 있으면 다시 `BLOCKED`가 됩니다.
-
-## 5. production profile
-
-예시는 [`config/profiles/production.example.toml`](../config/profiles/production.example.toml)에 있습니다. 이 파일은 구조를 설명하는 template이며 승인 자료가 아닙니다.
-
-반드시 다음 값을 실제 승인 내용으로 바꿉니다.
-
-- 절대 `workspace_root`
-- 프로그램과 공식 정책 정보
-- 실행 파일 이름 또는 승인 경로
-- 정확한 Provider client version과 model
-- 역할별 승인 Prompt key
-- 사람이 승인한 budget과 유효한 onboarding manifest
-
-실제 secret은 바꾸어 넣지 않습니다. `credential_ref`에는 `env:NAME`처럼 secret의 위치만 둡니다.
-
-## 6. 현재 지원 상태 확인
-
-- OpenAI API adapter: 구현되어 있으나 exact full PVD·평가·사람 승인·onboarding을 통과한 profile만 production 후보입니다.
-- Codex 회원 로그인 adapter: 공식 client 경로가 구현되어 있습니다. 현재 환경에서 검증되지 않은 후보는 실행 가능한 profile로 만들지 않으며, exact PVD·격리·R8 평가·사람 승인을 통과해 `SUPPORTED`가 된 profile만 production에서 사용합니다.
-- Anthropic API·Claude Code 회원 로그인: 계약 이름만으로 지원을 주장하지 않습니다. 현재 production adapter와 검증 증거가 없으면 사용할 수 없습니다.
-- Fake Provider: 테스트·시연 전용이며 production fallback이 아닙니다.
-
-전체 Fake 없는 production 실행은 아직 출시 증거가 완성되지 않았습니다. `READY`나 `ACTIVE`를 설정 파일에서 임의로 만들지 말고 실제 capability와 onboarding 결과를 기다립니다.
+숨겨진 내부 사고 원문, 전체 prompt, API key, token, 로그인 session과 민감한 전체 코드는 대시보드에 표시하지 않습니다.

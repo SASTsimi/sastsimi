@@ -1,5 +1,20 @@
 # T17 구현 인계서
 
+> **현재 구현 안내(2026-09-21):** 아래 T17 내용은 당시 병합 상태를 보존한
+> 기록입니다. 이후 기본 사용자 경로는 `sastsimi setup`, `sastsimi analyze`,
+> `sastsimi status`, `sastsimi resume`, `sastsimi dashboard`를 사용하는
+> SimpleRuntime으로 단순화됐습니다. 성공한 단계와 Docker image를 재사용하고,
+> exact-reference Primitive Chaining, 한국어 `F-001.md`, 실제 진행률, Windows와
+> Linux/WSL의 운영체제별 설정 경로를 연결했습니다. Full profile은 Python AST,
+> OpenGrep, CodeQL, Docker를 모두 실행합니다. 최신 사용법과 실제 지원 한계는
+> 저장소 루트 `README.md`, `docs/installation.md`, `docs/usage.md`를 우선합니다.
+> T17 당시 존재했던 별도 Fake/demo 분석 경로는 이후 제품 코드와 CLI에서 제거됐고
+> Git 이력에만 남습니다. 아래의 과거 demo 검증 기록은 현재 실행 절차가 아닙니다.
+> 2026-09-21 실제 검증에서는 WSL PyGoat에서 validated PoC와 한국어 `F-001.md`,
+> WSL ItsDangerous에서 안전한 `HOLD`, Windows clean wheel ItsDangerous에서 7개
+> 가설·1개 Finding·100% 완료를 확인했습니다. 따라서 아래의 과거 “E2E·resume·
+> dashboard 미지원” 항목은 T17 당시 기록일 뿐 현재 상태가 아닙니다.
+
 이 문서는 T17까지 병합된 `main`의 실제 구현 상태와 다음 작업 시작 기준을 설명합니다.
 기능이 존재하는 것과 실제 외부 환경에서 운영 승인이 끝난 것을 구분하며, 확인하지
 못한 기능을 완료로 표시하지 않습니다.
@@ -70,8 +85,8 @@
   - production `analyze`, T08~T13 graph, Provider·Prompt·정책·provisioning 연결,
     지연 Docker 준비 검사, status·results·reports·cancel과 read-only resume 검사가
     연결돼 있습니다.
-  - Fake 없는 clone→Markdown production 전체 E2E와 실제 resume dispatch는 아직
-    확인 또는 구현되지 않았습니다. CodeQL은 fail-closed입니다.
+  - 이후 `SimpleRuntime`에서 실제 저장소 clone→Markdown 통합 실행과 실패 단계
+    resume를 확인했습니다. exact 조합과 남은 제한은 루트 README를 따릅니다.
 - **T15 보안 조치 — 일부 병합됨, 최종 감사 미완료**
   - SQLite workspace lease, 중앙 `SensitivePathPolicy`, CI Action full SHA pin,
     checkout credential 비보존 조치는 이미 병합됐습니다.
@@ -86,7 +101,7 @@
 - **T17 운영 문서·배포 smoke — 완료**
   - README, 설치·Provider·사용·문제 해결·코드 지도, public analysis ID 보고서 조회,
     wheel metadata·resource 검사, Ubuntu·Windows clean-wheel smoke를 추가했습니다.
-  - T17 완료는 Fake 없는 production 출시 성공이나 정식 배포를 뜻하지 않습니다.
+  - T17 완료는 정식 배포나 모든 Provider·도구 조합의 운영 승인을 뜻하지 않습니다.
 
 ### 외부 준비가 필요한 기능
 
@@ -104,14 +119,14 @@
 - CodeQL은 안전한 hard-quota backend와 exact prebuilt DB 공급 경로가 없어
   production에서 의도적으로 활성화할 수 없습니다.
 
-### Fake·demo와 production 구분
+### 현재 제품 분석 경로
 
-- Production은 `sastsimi analyze --repo ... --commit ... --profile ...` 경로이며 실제
-  capability·Provider·onboarding·정책·provisioning을 요구합니다.
-- Fake는 `sastsimi demo analyze --scenario ...`에서만 실행하며 설치와 결정론적 회귀
-  확인용입니다.
-- production 준비 실패를 Fake로 자동 대체하지 않습니다.
-- Fake TRUE와 Fake 보고서는 실제 저장소·LLM·Docker의 production 성공 증거가 아닙니다.
+- 일반 사용자는 `sastsimi setup` 후 `sastsimi analyze <repo> --commit <exact-SHA>`를
+  실행합니다.
+- 제품 분석은 `SimpleRuntime` 하나만 사용하며 성공한 단계는 재사용하고 실패한
+  단계부터 `resume`합니다.
+- 과거의 별도 Fake/demo 분석 명령과 구현은 제거됐습니다. 작은 test double은 단위
+  테스트 안에서만 사용하며 제품 분석 성공 근거로 인정하지 않습니다.
 
 ## 3. 실제 사용자 실행 흐름
 
@@ -360,7 +375,7 @@ T17 작업에서는 T15 감사를 실행하거나 수정하지 않았습니다.
 - Docker daemon별 build·run·health·cleanup·resource·Sandbox probe
 - Python·JavaScript, Dockerfile 유·무 저장소 조합
 - CodeQL hard-quota backend와 immutable prebuilt DB 경로
-- Fake 없는 clone→Static→LLM→Docker→Gates→Markdown production E2E
+- 실제 clone→Static→LLM→Docker→Gates→Markdown 통합 실행
 
 Provider·OS·도구 조합은 서로 다른 worktree와 data directory에서 병렬 검증할 수
 있습니다. 각 조합 내부의 `PVD → R8 평가 → 사람 승인 → onboarding READY → E2E`와
@@ -418,8 +433,8 @@ uv run sastsimi --data-dir <fresh-data-dir> db current --format json
 
 - T15 최종 통합 보안 감사와 독립 승인이 완료되지 않았습니다.
   - 우회: 연구·검증 환경으로 제한하고 production security sign-off를 주장하지 않습니다.
-- Fake 없는 실제 Provider·정적 도구·Docker clone→Markdown 전체 E2E가 없습니다.
-  - 우회: Fake demo와 component CI를 production 출시 증거로 사용하지 않습니다.
+- README에 기록된 조합 외의 Provider·정적 도구·Docker 전체 E2E는 검증되지 않았습니다.
+  - 우회: 검증하지 않은 조합을 READY 또는 운영 승인 상태로 표시하지 않습니다.
 - exact Provider·model·Prompt의 PVD·R8·사람 승인·onboarding 조합이 외부 환경에서
   완성됐다는 저장소 근거가 없습니다.
   - 우회: 누락 상태를 READY 또는 SUPPORTED로 수동 변경하지 않습니다.
@@ -465,18 +480,14 @@ uv run sastsimi --data-dir <fresh-data-dir> db current --format json
 - `uv run sastsimi doctor --format json`: exit 0, `OK`
 - 새 data directory의 `db upgrade head`와 `db current`: PASS,
   `0008_cancellation_observations`
-- `demo analyze --scenario TRUE`: exit 0, `COMPLETE`, TRUE 1
-- `demo results`: exit 0
-- `reports fake-analysis --format json`: public 문자열 ID 조회 PASS, report 1
-- `report show fake-recordid-3127`: 한국어 Markdown UTF-8 출력 PASS
-- `report export fake-recordid-3127 --format markdown`: PASS,
-  `reports/fake-analysis/fake-recordid-3127.md`
+- 당시 별도 demo 경로의 smoke 결과는 이후 제거된 기능의 역사적 기록이므로 현재
+  설치·분석 검증 명령에서 제외했습니다.
 - 임시 DB·보고서는 검증 뒤 삭제했으며 Git에 포함하지 않았습니다.
 
 ### 실행하지 않은 시험
 
-- Fake 없는 실제 Provider·OpenGrep·Docker clone→Markdown 전체 production E2E:
-  exact 승인 Provider·profile·onboarding 근거가 없어 미실행
+- 실제 Provider·OpenGrep·Docker clone→Markdown 통합 실행은 이후 README에 기록된
+  exact 조합에서 확인했습니다. 다른 조합은 별도 검증이 필요합니다.
 - OpenAI·Codex live PVD와 R8 전체 평가: 외부 인증·사람 승인 근거가 없어 미실행
 - production CodeQL: hard-quota backend와 prebuilt DB 경로가 없어 fail-closed
 - production resume dispatch: 기능 미지원
@@ -511,7 +522,7 @@ uv run sastsimi --data-dir <fresh-data-dir> db current --format json
 
 - 실제 LLM Provider, OpenGrep, Docker를 연결합니다.
 - CodeQL은 안전한 실행량 제한이 준비된 경우에만 활성화합니다.
-- 실제 Git 저장소 입력부터 Markdown 보고서 생성까지 Fake Adapter 없이 검증합니다.
+- 실제 Git 저장소 입력부터 Markdown 보고서 생성까지 제품 경로로 검증합니다.
 - 인증 실패, 도구 미설치, Docker 빌드 실패를 취약점 FALSE로 처리하지 않습니다.
 - 실제로 검증한 Provider·모델·도구 조합만 운영 가능 상태로 표시합니다.
 
@@ -545,7 +556,7 @@ uv run sastsimi --data-dir <fresh-data-dir> db current --format json
 ### 6. 권장 진행 순서
 
 - T16 설정 자동화 및 실제 연동
-- Fake 없는 실제 저장소 전체 E2E
+- 실제 저장소 전체 E2E
 - CLI 진행 표시
 - 로컬 읽기 전용 웹 대시보드
 - T15 최종 보안 감사

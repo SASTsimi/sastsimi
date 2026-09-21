@@ -1,6 +1,5 @@
 """Primitive admission and chaining composition boundary."""
 
-from .fake_runtime import no_match_result
 from .publication import RuntimeChainingResultPublisher
 from .service import (
     ChainingCallResolver,
@@ -23,5 +22,4 @@ __all__ = [
     "PrimitiveUpdateHandler",
     "RuntimeChainingResultPublisher",
     "chaining_input_hash",
-    "no_match_result",
 ]

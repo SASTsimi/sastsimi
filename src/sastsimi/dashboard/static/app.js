@@ -1,4 +1,7 @@
-const state = { selected: null };
+const routeMatch = window.location.pathname.match(/^\/analyses\/([^/]+)$/);
+const state = {
+  selected: routeMatch ? decodeURIComponent(routeMatch[1]) : null
+};
 
 function el(tag, text, className) {
   const node = document.createElement(tag);
@@ -20,11 +23,16 @@ async function getJson(url) {
 
 function analysisButton(item) {
   const button = el("button");
-  if (state.selected === item.analysis_id) button.classList.add("selected");
-  button.append(el("strong", item.analysis_id));
+  const routeId = item.display_analysis_id || item.analysis_id;
+  if (state.selected === routeId) button.classList.add("selected");
+  button.append(el("strong", item.display_analysis_id || item.analysis_id));
   button.append(el("div", `${item.current_stage} · ${item.status}`, "status"));
-  button.append(el("div", `완료 ${item.completed_count} / 저장 ${item.stage_count}`, "meta"));
-  button.addEventListener("click", () => { state.selected = item.analysis_id; refresh(); });
+  button.append(el("div", `진행 ${item.progress_percent}% · ${item.completed_units}/${item.known_units}`, "meta"));
+  button.addEventListener("click", () => {
+    state.selected = routeId;
+    window.history.replaceState({}, "", `/analyses/${encodeURIComponent(routeId)}`);
+    refresh();
+  });
   return button;
 }
 
@@ -32,9 +40,17 @@ function renderDetail(detail, events) {
   const overview = document.getElementById("overview");
   overview.className = "panel";
   overview.replaceChildren(
-    el("h2", detail.analysis_id),
+    el("h2", detail.display_analysis_id || detail.analysis_id),
     el("div", `현재 단계: ${detail.current_stage}`, "status"),
-    el("div", `상태: ${detail.status} · 완료 ${detail.completed_count} · 가설 ${detail.hypothesis_count} · Finding ${detail.finding_count}`, "meta"),
+    (() => {
+      const wrap = el("div", undefined, "progress-wrap");
+      const bar = el("div", undefined, "progress-bar");
+      bar.style.width = `${detail.progress_percent}%`;
+      wrap.append(bar);
+      return wrap;
+    })(),
+    el("div", `진행 ${detail.progress_percent}% · 완료 ${detail.completed_units}/${detail.known_units} · 가설 ${detail.hypothesis_count} · Finding ${detail.finding_count}`, "meta"),
+    el("div", `Primitive 허용 ${detail.admitted_primitive_count} · 제외 ${detail.excluded_primitive_count} · 체이닝 자식 ${detail.child_hypothesis_count}`, "meta"),
     el("div", `commit: ${detail.commit_id || "미확인"}`, "meta")
   );
   replace("hypotheses", detail.hypotheses.map(item => {
@@ -43,6 +59,12 @@ function renderDetail(detail, events) {
     card.append(el("div", `${item.current_stage} · ${item.status}`, "status"));
     card.append(el("div", `완료 ${item.completed_count}/${item.stage_count} · 판정 ${item.verdict || "미확정"} · PoC ${item.validated_poc ? "검증됨" : "미검증"}`, "meta"));
     if (item.error_code) card.append(el("div", `오류: ${item.error_code}`, "error"));
+    return card;
+  }));
+  replace("chains", detail.hypotheses.filter(item => item.parent_hypothesis_ids.length).map(item => {
+    const card = el("article", undefined, "card chain-card");
+    card.append(el("strong", `${item.parent_hypothesis_ids.join(" + ")} → ${item.hypothesis_id}`));
+    card.append(el("div", `깊이 ${item.chain_depth} · ${item.current_stage} · ${item.status}`, "meta"));
     return card;
   }));
   replace("events", events.map(item => {
@@ -65,7 +87,7 @@ async function refresh() {
   const connection = document.getElementById("connection");
   try {
     const analyses = await getJson("/api/analyses");
-    if (!state.selected && analyses.length) state.selected = analyses[0].analysis_id;
+    if (!state.selected && analyses.length) state.selected = analyses[0].display_analysis_id || analyses[0].analysis_id;
     replace("analyses", analyses.map(analysisButton));
     if (state.selected) {
       const [detail, events] = await Promise.all([

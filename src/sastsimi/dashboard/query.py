@@ -11,8 +11,11 @@ from typing import Literal, overload
 
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.observability.agent_activity import AgentActivityEvent
+from sastsimi.progress.projector import ProgressProjector
+from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.simple_runtime.models import (
+    SimpleAnalysisRun,
     SimpleStage,
     StageCheckpoint,
     StageStatus,
@@ -32,6 +35,18 @@ _DISPLAY_ID = re.compile(r"F-[0-9]{3,}\Z")
 
 class DashboardNotFound(LookupError):
     pass
+
+
+class _CheckpointProjection:
+    def __init__(self, checkpoints: tuple[StageCheckpoint, ...]) -> None:
+        self._checkpoints = checkpoints
+
+    def list_checkpoints(self, analysis_id: str) -> tuple[StageCheckpoint, ...]:
+        return tuple(
+            item
+            for item in self._checkpoints
+            if item.identity.analysis_id == analysis_id
+        )
 
 
 class DashboardQuery:
@@ -84,6 +99,10 @@ class DashboardQuery:
         return tuple(sorted(summaries, key=lambda item: item.analysis_id))
 
     def get_analysis(self, analysis_id: str) -> AnalysisDetailView:
+        try:
+            analysis_id = self._resolve_analysis_id(analysis_id)
+        except (LookupError, OSError, sqlite3.Error, ValueError) as error:
+            raise DashboardNotFound("DASHBOARD_ANALYSIS_NOT_FOUND") from error
         self._validate_analysis_id(analysis_id)
         values = tuple(
             checkpoint
@@ -110,6 +129,10 @@ class DashboardQuery:
         *,
         after_event_id: str | None = None,
     ) -> tuple[AgentActivityView, ...]:
+        try:
+            analysis_id = self._resolve_analysis_id(analysis_id)
+        except (LookupError, OSError, sqlite3.Error, ValueError) as error:
+            raise DashboardNotFound("DASHBOARD_ANALYSIS_NOT_FOUND") from error
         self._validate_analysis_id(analysis_id)
         with self._connect() as connection:
             if not self._table_exists(connection, "agent_activity_events"):
@@ -200,15 +223,31 @@ class DashboardQuery:
         for checkpoint in values:
             if checkpoint.identity.hypothesis_id is not None:
                 hypothesis_groups[checkpoint.identity.hypothesis_id].append(checkpoint)
+        run = self._simple_run(analysis_id)
         hypotheses = tuple(
-            self._project_hypothesis(analysis_id, hypothesis_id, checkpoints)
+            self._project_hypothesis(
+                analysis_id,
+                hypothesis_id,
+                checkpoints,
+                run,
+            )
             for hypothesis_id, checkpoints in sorted(hypothesis_groups.items())
         )
         latest = max(values, key=lambda item: item.updated_at)
         completed = sum(item.status is StageStatus.SUCCEEDED for item in values)
         reports = self._reports(analysis_id)
+        progress = ProgressProjector(_CheckpointProjection(tuple(values))).snapshot(
+            analysis_id
+        )
+        admissions = [
+            item
+            for item in values
+            if item.stage is SimpleStage.PRIMITIVE_ADMISSION_DONE
+            and item.status is StageStatus.SUCCEEDED
+        ]
         data = AnalysisSummaryView(
             analysis_id=analysis_id,
+            display_analysis_id=(run.display_analysis_id if run else None),
             workspace_id=latest.identity.workspace_id,
             commit_id=latest.identity.commit_id,
             current_stage=latest.stage.value,
@@ -217,6 +256,16 @@ class DashboardQuery:
             stage_count=len(values),
             hypothesis_count=len(hypotheses),
             finding_count=len(reports),
+            progress_percent=progress.percent,
+            completed_units=progress.completed_units,
+            known_units=progress.known_units,
+            admitted_primitive_count=sum(
+                len(item.output_refs) > 1 for item in admissions
+            ),
+            excluded_primitive_count=sum(
+                len(item.output_refs) <= 1 for item in admissions
+            ),
+            child_hypothesis_count=(len(run.parent_hypothesis_ids) if run else 0),
             updated_at=latest.updated_at,
         )
         if detail:
@@ -227,11 +276,12 @@ class DashboardQuery:
             )
         return data
 
-    @staticmethod
     def _project_hypothesis(
+        self,
         analysis_id: str,
         hypothesis_id: str,
         values: list[StageCheckpoint],
+        run: SimpleAnalysisRun | None,
     ) -> HypothesisProgressView:
         latest = max(values, key=lambda item: item.updated_at)
         completed = sum(item.status is StageStatus.SUCCEEDED for item in values)
@@ -253,8 +303,34 @@ class DashboardQuery:
             error_code=latest.error_code,
             verdict=final.verdict if final else None,
             validated_poc=any(item.validated_poc_ref is not None for item in values),
+            parent_hypothesis_ids=(
+                run.parent_hypothesis_ids.get(hypothesis_id, ()) if run else ()
+            ),
+            chain_depth=(run.chain_depths.get(hypothesis_id, 0) if run else 0),
             updated_at=latest.updated_at,
         )
+
+    def _simple_run(self, analysis_id: str) -> SimpleAnalysisRun | None:
+        with self._connect() as connection:
+            if not self._table_exists(connection, "simple_analysis_runs"):
+                return None
+            row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (analysis_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            return SimpleAnalysisRun.model_validate_json(row[0])
+        except ValueError:
+            return None
+
+    def _resolve_analysis_id(self, value: str) -> str:
+        """Resolve public A-NNN names without breaking older exact-ID data."""
+        if value.startswith("A-"):
+            return AnalysisDisplayIdStore.resolve_existing(self._database, value)
+        self._validate_analysis_id(value)
+        return value
 
     def _reports(self, analysis_id: str) -> tuple[FindingReportView, ...]:
         with self._connect() as connection:

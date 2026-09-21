@@ -37,6 +37,7 @@
 |---|---|---|
 | `candidate baseline` | 아직 승인되지 않은 설계 초안 | 최종 설계나 구현 완료 상태로 부르지 않습니다. |
 | `contract` | 파트 사이의 입출력 약속 | 어떤 데이터를 누가 만들고 누가 받는지 포함합니다. |
+| `SimpleRuntime` | 저장소 분석의 현재 단계와 결과를 저장하고 다음 단계 호출·실패 단계 재개를 담당하는 단일 제품 실행 관리자 | 별도 Fake/demo 분석 runtime은 제품 코드에 없으며, 테스트 안의 작은 double과 혼동하지 않습니다. |
 | `Repository Loader` | 저장소를 로컬로 가져오고 분석할 commit을 준비하는 프로그램 | 별도 저장소 복사본을 만들지 않습니다. |
 | `CodeWorkspace` | AST와 SAST가 읽는 실행별 로컬 코드 폴더 | `workspace_id`와 `commit_id`로 구분합니다. |
 | `ProgramPolicyRecord` | 공식 버그바운티 정책을 확인해 남긴 기록 | 저장소 코드 복사본이 아니며 공식 출처와 수집 시각을 기록합니다. |

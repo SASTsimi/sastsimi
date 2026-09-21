@@ -10,26 +10,30 @@ from uuid import uuid4
 
 from sastsimi import bootstrap
 from sastsimi.config.production_profile import load_production_profile
+from sastsimi.config.user_config import UserConfigStore
 from sastsimi.interfaces.cli import analyze as analyze_command
 from sastsimi.interfaces.cli import cancel as cancel_command
 from sastsimi.interfaces.cli import capability as capability_command
 from sastsimi.interfaces.cli import codeql as codeql_command
 from sastsimi.interfaces.cli import commands
 from sastsimi.interfaces.cli import dashboard as dashboard_command
-from sastsimi.interfaces.cli import demo as demo_command
 from sastsimi.interfaces.cli import local_evaluation as local_evaluation_command
 from sastsimi.interfaces.cli import onboarding as onboarding_command
+from sastsimi.interfaces.cli import public as public_command
 from sastsimi.interfaces.cli import report as report_command
 from sastsimi.interfaces.cli import reports as reports_command
 from sastsimi.interfaces.cli import result as result_command
+from sastsimi.interfaces.cli import setup as setup_command
 from sastsimi.interfaces.cli import simple_evaluation as simple_evaluation_command
 from sastsimi.interfaces.cli import status as status_command
 from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.output import emit_data, emit_result
+from sastsimi.interfaces.cli.progress import ProgressRenderer
 from sastsimi.orchestration.production_onboarding_builder import (
     ApprovedProbeResolver,
 )
 from sastsimi.runtime.system_support import SystemClock
+from sastsimi.setup.service import SetupService
 
 
 class _InputError(ValueError):
@@ -54,6 +58,33 @@ def _exact_commit(value: str) -> str:
     if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value) is None:
         raise argparse.ArgumentTypeError("exact commit required")
     return value
+
+
+def _normalize_public_argv(argv: list[str] | None) -> list[str] | None:
+    """Translate compact report syntax while preserving legacy subcommands."""
+
+    if argv is None:
+        return None
+    normalized = list(argv)
+    try:
+        index = normalized.index("report")
+    except ValueError:
+        return normalized
+    if index + 1 >= len(normalized) or normalized[index + 1] in {
+        "show",
+        "export",
+        "-h",
+        "--help",
+    }:
+        return normalized
+    finding_id = normalized[index + 1]
+    if normalized[index + 2 : index + 4] == ["--export", "markdown"]:
+        return (
+            normalized[: index + 1]
+            + ["export", finding_id, "--format", "markdown"]
+            + normalized[index + 4 :]
+        )
+    return normalized[: index + 1] + ["show", finding_id] + normalized[index + 2 :]
 
 
 def _approved_probe_resolver(
@@ -105,6 +136,9 @@ def main(
     local_evaluation_analyze: (
         local_evaluation_command.LocalEvaluationAnalyzeEntrypoint | None
     ) = None,
+    setup_service: SetupService | None = None,
+    public_application: public_command.PublicCommandApplication | None = None,
+    user_config_store: UserConfigStore | None = None,
 ) -> int:
     _configure_standard_streams()
     output_format = "text"
@@ -118,6 +152,24 @@ def main(
         "--data-dir", type=Path, help="local runtime root (not created by doctor)"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    setup_parser = subparsers.add_parser(
+        "setup", help="configure local analysis defaults", allow_abbrev=False
+    )
+    setup_parser.add_argument("--non-interactive", action="store_true")
+    setup_parser.add_argument("--data-dir", dest="setup_data_dir", type=Path)
+    setup_parser.add_argument("--auth", choices=["api-key", "subscription"])
+    setup_parser.add_argument("--provider")
+    setup_parser.add_argument("--model")
+    setup_parser.add_argument(
+        "--profile", dest="execution_profile", choices=["full", "lightweight"]
+    )
+    setup_parser.add_argument(
+        "--docker-network", choices=["none", "bridge"], default="none"
+    )
+    setup_parser.add_argument("--max-cost-minor-units", type=int, default=100_000)
+    setup_parser.add_argument("--max-tokens", type=int, default=1_000_000)
+    setup_parser.add_argument("--max-elapsed-seconds", type=int, default=3_600)
+    setup_parser.add_argument("--format", choices=["text", "json"])
     doctor_parser = subparsers.add_parser(
         "doctor", help="read-only foundation host checks", allow_abbrev=False
     )
@@ -144,9 +196,11 @@ def main(
     analyze_parser = subparsers.add_parser(
         "analyze", help="run a production repository analysis", allow_abbrev=False
     )
-    analyze_parser.add_argument("--repo", required=True)
+    analyze_parser.add_argument("repository", nargs="?")
+    analyze_parser.add_argument("--repo", dest="repository_option")
     analyze_parser.add_argument("--commit", required=True, type=_exact_commit)
-    analyze_parser.add_argument("--profile", required=True, type=Path)
+    analyze_parser.add_argument("--profile", type=Path)
+    analyze_parser.add_argument("--no-progress", action="store_true")
     analyze_parser.add_argument("--format", choices=["text", "json"])
     evaluate_parser = subparsers.add_parser(
         "evaluate",
@@ -172,17 +226,6 @@ def main(
     evaluate_simple_resume.add_argument("--hypothesis-id")
     evaluate_simple_resume.add_argument("--profile", required=True, type=Path)
     evaluate_simple_resume.add_argument("--format", choices=["text", "json"])
-    demo_parser = subparsers.add_parser(
-        "demo", help="run deterministic local scenarios", allow_abbrev=False
-    )
-    demo_commands = demo_parser.add_subparsers(dest="demo_command", required=True)
-    demo_analyze = demo_commands.add_parser("analyze", allow_abbrev=False)
-    demo_analyze.add_argument(
-        "--scenario", choices=["TRUE", "FALSE", "HOLD", "REVISE", "CHAINING"]
-    )
-    demo_analyze.add_argument("--format", choices=["text", "json"])
-    demo_results = demo_commands.add_parser("results", allow_abbrev=False)
-    demo_results.add_argument("--format", choices=["text", "json"])
     status_parser = subparsers.add_parser(
         "status", help="read production analysis progress", allow_abbrev=False
     )
@@ -199,12 +242,23 @@ def main(
         allow_abbrev=False,
     )
     resume_parser.add_argument("analysis_id")
+    resume_parser.add_argument("--no-progress", action="store_true")
     resume_parser.add_argument("--format", choices=["text", "json"])
     results_parser = subparsers.add_parser(
         "results", help="read one terminal production result", allow_abbrev=False
     )
     results_parser.add_argument("analysis_id")
     results_parser.add_argument("--format", choices=["text", "json"])
+    result_parser = subparsers.add_parser(
+        "result", help="show one SimpleRuntime result", allow_abbrev=False
+    )
+    result_parser.add_argument("analysis_id")
+    result_parser.add_argument("--format", choices=["text", "json"])
+    poc_parser = subparsers.add_parser(
+        "poc", help="show one validated PoC", allow_abbrev=False
+    )
+    poc_parser.add_argument("finding_id")
+    poc_parser.add_argument("--format", choices=["text", "json"])
     reports_parser = subparsers.add_parser(
         "reports", help="list current human-review reports", allow_abbrev=False
     )
@@ -331,21 +385,85 @@ def main(
     codeql_provision.add_argument("--repository-root", type=Path, required=True)
     codeql_provision.add_argument("--format", choices=["text", "json"])
     try:
-        args = parser.parse_args(argv)
+        raw_argv = list(sys.argv[1:]) if argv is None else argv
+        args = parser.parse_args(_normalize_public_argv(raw_argv))
         requested_output = getattr(args, "format", None)
         if requested_output is not None:
             output_format = requested_output
+        selected_user_store = user_config_store or UserConfigStore()
+        user_config = None
+        if args.command != "setup":
+            try:
+                user_config = selected_user_store.load()
+            except ValueError:
+                user_config = None
         overrides = {
             key: value
             for key, value in {
                 "log_level": args.log_level,
-                "data_dir": args.data_dir,
+                "data_dir": args.data_dir
+                or (user_config.data_dir if user_config is not None else None),
                 "output_format": requested_output,
             }.items()
             if value is not None
         }
         config = bootstrap.build_config(args.config, overrides)
         output_format = config.output_format
+
+        def resolve_public_application() -> public_command.PublicCommandApplication:
+            nonlocal public_application
+            if public_application is None:
+                from sastsimi.composition.simple_runtime_composition import (
+                    build_public_simple_runtime,
+                )
+
+                public_application = build_public_simple_runtime(selected_user_store)
+            return public_application
+
+        if args.command == "setup":
+            command_name = "setup"
+            service = setup_service or SetupService()
+            setup_result = setup_command.run(service, args)
+            setup_code = (
+                ExitCode.OK
+                if setup_result.status == "READY"
+                else ExitCode.CAPABILITY_UNSUPPORTED
+            )
+            if output_format != "json":
+                target = sys.stdout if setup_code == ExitCode.OK else sys.stderr
+                headline = (
+                    "설정이 완료되었습니다.\n"
+                    if setup_code == ExitCode.OK
+                    else "설정에 필요한 항목이 남았습니다.\n"
+                )
+                target.write(
+                    headline
+                    + f"기본 설정: {setup_result.config_path}\n"
+                    + f"실행 프로필: {setup_result.profile_path}\n"
+                )
+                if setup_result.missing_tools:
+                    target.write(
+                        "설치 또는 확인 필요: "
+                        + ", ".join(setup_result.missing_tools)
+                        + "\n"
+                    )
+                for action in setup_result.next_actions:
+                    target.write(f"- {action}\n")
+                return int(setup_code)
+            emit_data(
+                output_format,
+                sys.stdout if setup_code == ExitCode.OK else sys.stderr,
+                command=command_name,
+                code=setup_code,
+                data={
+                    "status": setup_result.status,
+                    "config_path": str(setup_result.config_path),
+                    "profile_path": str(setup_result.profile_path),
+                    "missing_tools": list(setup_result.missing_tools),
+                    "next_actions": list(setup_result.next_actions),
+                },
+            )
+            return int(setup_code)
         if args.command == "db":
             command_name = "db " + args.db_command
             revision = bootstrap.database_command(
@@ -365,6 +483,33 @@ def main(
             return int(ExitCode.OK)
         if args.command == "analyze":
             command_name = "analyze"
+            repository = args.repository or args.repository_option
+            if repository is None or (
+                args.repository is not None and args.repository_option is not None
+            ):
+                raise _InputError
+            if args.profile is None:
+                application = resolve_public_application()
+                progress_call = getattr(application, "analyze_with_progress", None)
+                if (
+                    output_format != "json"
+                    and not args.no_progress
+                    and callable(progress_call)
+                ):
+                    renderer = ProgressRenderer(
+                        stream=sys.stdout,
+                        is_tty=sys.stdout.isatty(),
+                    )
+                    data = progress_call(repository, args.commit, renderer.render)
+                else:
+                    data = application.analyze(repository, args.commit)
+                public_command.emit_public(
+                    output_format,
+                    sys.stdout,
+                    command=command_name,
+                    data=data,
+                )
+                return int(ExitCode.OK)
             if production_analyze is None:
                 production_analyze = cast(
                     analyze_command.ProductionAnalyzeEntrypoint,
@@ -372,7 +517,7 @@ def main(
                 )
             request = analyze_command.ProductionAnalyzeRequest(
                 data_dir=config.data_dir,
-                repository=args.repo,
+                repository=repository,
                 commit=args.commit,
                 profile=args.profile,
             )
@@ -452,16 +597,30 @@ def main(
                 code=evaluation_result.code,
             )
             return int(evaluation_result.code)
-        if args.command == "demo":
-            command_name = "demo " + args.demo_command
-            if args.demo_command == "analyze":
-                data = demo_command.analyze(config.data_dir, args.scenario or "TRUE")
-            else:
-                data = demo_command.results(config.data_dir)
-            emit_data(output_format, sys.stdout, command=command_name, data=data)
-            return int(ExitCode.OK)
         if args.command == "resume":
             command_name = "resume"
+            if public_application is not None or args.analysis_id.startswith("A-"):
+                application = resolve_public_application()
+                progress_call = getattr(application, "resume_with_progress", None)
+                if (
+                    output_format != "json"
+                    and not args.no_progress
+                    and callable(progress_call)
+                ):
+                    renderer = ProgressRenderer(
+                        stream=sys.stdout,
+                        is_tty=sys.stdout.isatty(),
+                    )
+                    data = progress_call(args.analysis_id, renderer.render)
+                else:
+                    data = application.resume(args.analysis_id)
+                public_command.emit_public(
+                    output_format,
+                    sys.stdout,
+                    command=command_name,
+                    data=data,
+                )
+                return int(ExitCode.OK)
             bootstrap.inspect_production_resume(config.data_dir, args.analysis_id)
         if args.command == "cancel":
             command_name = "cancel"
@@ -486,6 +645,16 @@ def main(
             return int(ExitCode.OK)
         if args.command == "status":
             command_name = "status"
+            if public_application is not None or args.analysis_id.startswith("A-"):
+                application = resolve_public_application()
+                data = application.status(args.analysis_id)
+                public_command.emit_public(
+                    output_format,
+                    sys.stdout,
+                    command=command_name,
+                    data=data,
+                )
+                return int(ExitCode.OK)
             if production_query is None:
                 production_query = cast(
                     analyze_command.ProductionQueryEntrypoint,
@@ -508,6 +677,31 @@ def main(
             )
             emit_data(output_format, sys.stdout, command=command_name, data=data)
             return int(ExitCode.OK)
+        if args.command == "result":
+            command_name = "result"
+            application = resolve_public_application()
+            data = application.result(args.analysis_id)
+            public_command.emit_public(
+                output_format,
+                sys.stdout,
+                command=command_name,
+                data=data,
+            )
+            return int(ExitCode.OK)
+        if args.command == "poc":
+            command_name = "poc"
+            application = resolve_public_application()
+            value = application.poc(args.finding_id)
+            if output_format == "json":
+                emit_data(
+                    output_format,
+                    sys.stdout,
+                    command=command_name,
+                    data={"finding_id": args.finding_id, "content": value},
+                )
+            else:
+                sys.stdout.write(value)
+            return int(ExitCode.OK)
         if args.command == "reports":
             command_name = "reports"
             data = reports_command.run(config.data_dir, args.analysis_id)
@@ -515,7 +709,27 @@ def main(
             return int(ExitCode.OK)
         if args.command == "report":
             command_name = "report " + args.report_command
-            if args.report_command == "show":
+            report_application = public_application
+            if report_application is None and args.finding_id.startswith("F-"):
+                try:
+                    report_application = resolve_public_application()
+                except (FileNotFoundError, ValueError):
+                    report_application = None
+            show_public = getattr(report_application, "report", None)
+            export_public = getattr(report_application, "export_report", None)
+            if args.report_command == "show" and callable(show_public):
+                sys.stdout.write(show_public(args.finding_id))
+            elif args.report_command == "export" and callable(export_public):
+                emit_data(
+                    output_format,
+                    sys.stdout,
+                    command=command_name,
+                    data={
+                        "finding_id": args.finding_id,
+                        "path": export_public(args.finding_id),
+                    },
+                )
+            elif args.report_command == "show":
                 sys.stdout.write(report_command.show(config.data_dir, args.finding_id))
             else:
                 path = report_command.export(config.data_dir, args.finding_id)
@@ -723,6 +937,8 @@ def main(
         code = ExitCode.RESULT_INCOMPLETE
     except result_command.ResultIntegrityError:
         code = ExitCode.INTEGRITY_ERROR
+    except public_command.PublicCommandUnavailable:
+        code = ExitCode.CONFIG_ERROR
     except Exception:
         trace_id = "trace-" + str(uuid4())
         logger = bootstrap.build_diagnostic_logger(sys.stderr, "ERROR")

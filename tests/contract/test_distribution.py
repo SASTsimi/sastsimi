@@ -40,6 +40,9 @@ def test_wheel_contains_runtime_resources(tmp_path: Path) -> None:
         "sastsimi/prompts/registry.py",
         "sastsimi/prompts/templates/verification/final-verdict/1.0.0.md",
         "sastsimi/storage/alembic/versions/0008_cancellation_observations.py",
+        "sastsimi/_static/candidate-v1/opengrep/rules.yml",
+        "sastsimi/_static/candidate-v1/codeql/python-security.qls",
+        "sastsimi/dashboard/static/index.html",
     }
     assert required <= names
     assert "Description-Content-Type: text/markdown" in metadata
@@ -79,6 +82,16 @@ def test_operator_examples_do_not_embed_secrets_or_local_absolute_paths() -> Non
     assert not violations, "\n".join(violations)
 
 
+def test_installed_wheel_smoke_uses_only_the_product_runtime() -> None:
+    root = Path(__file__).resolve().parents[2]
+    smoke = (root / "scripts" / "wheel-smoke.ps1").read_text(encoding="utf-8")
+
+    assert "'demo'" not in smoke
+    assert "'demo', 'analyze'" not in smoke
+    for command in ("setup", "analyze", "status", "resume", "report", "dashboard"):
+        assert f"'{command}'" in smoke
+
+
 def test_readme_first_screen_contains_the_real_operator_path() -> None:
     root = Path(__file__).resolve().parents[2]
     readme = (root / "README.md").read_text(encoding="utf-8")
@@ -92,11 +105,12 @@ def test_readme_first_screen_contains_the_real_operator_path() -> None:
         "CodeQL",
         "OpenGrep",
         "Docker",
-        "analyze --repo <URL-or-local-path>",
-        "status <analysis_id>",
-        "results <analysis_id>",
-        "reports <analysis_id>",
-        "report export <finding_id> --format markdown",
+        "sastsimi setup",
+        "sastsimi analyze",
+        "sastsimi status A-001",
+        "sastsimi resume A-001",
+        "sastsimi dashboard",
+        "sastsimi report F-001 --export markdown",
         "docs/troubleshooting.md",
     ):
         assert required in first_screen

@@ -10,6 +10,7 @@ from sastsimi.observability.agent_activity import ActivityKind
 
 class AnalysisSummaryView(ContractModel):
     analysis_id: str
+    display_analysis_id: str | None = None
     workspace_id: str | None = None
     commit_id: str | None = None
     current_stage: str
@@ -18,6 +19,12 @@ class AnalysisSummaryView(ContractModel):
     stage_count: int
     hypothesis_count: int
     finding_count: int
+    progress_percent: int = 0
+    completed_units: int = 0
+    known_units: int = 0
+    admitted_primitive_count: int = 0
+    excluded_primitive_count: int = 0
+    child_hypothesis_count: int = 0
     updated_at: datetime | None = None
     elapsed_ms: int | None = None
 
@@ -32,6 +39,8 @@ class HypothesisProgressView(ContractModel):
     error_code: str | None = None
     verdict: str | None = None
     validated_poc: bool = False
+    parent_hypothesis_ids: tuple[str, ...] = ()
+    chain_depth: int = 0
     updated_at: datetime | None = None
 
 

@@ -15,7 +15,7 @@ def _read(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
 
 
-def test_operator_path_is_linked_and_separates_production_from_demo() -> None:
+def test_operator_path_is_linked_and_exposes_only_the_product_runtime() -> None:
     readme = _read("README.md")
     guide = _read("docs/DOCUMENT_GUIDE.md")
     usage = _read("docs/usage.md")
@@ -31,18 +31,16 @@ def test_operator_path_is_linked_and_separates_production_from_demo() -> None:
         assert (ROOT / path).is_file()
 
     assert "docs/installation.md" in readme
-    assert "analyze --repo <URL-or-local-path> --commit <exact-SHA>" in usage
-    assert "status <analysis_id>" in usage
-    assert "results <analysis_id>" in usage
-    assert "reports <analysis_id>" in usage
-    assert "report export <finding_id> --format markdown" in usage
-    assert "demo analyze --scenario TRUE" in usage
-    assert "analyze --scenario TRUE" not in usage.replace(
-        "demo analyze --scenario TRUE", ""
-    )
-    assert "Fake로 자동 대체하지 않습니다" in usage
-    assert "Fake 없는 live E2E" in usage
-    assert "PRODUCTION_E2E_NOT_YET_PROVEN" in readme
+    assert "sastsimi analyze <URL-or-local-path> --commit <exact-SHA>" in usage
+    assert "sastsimi status A-001" in usage
+    assert "sastsimi resume A-001" in usage
+    assert "sastsimi dashboard" in usage
+    assert "sastsimi report F-001 --export markdown" in usage
+    assert "demo analyze" not in usage
+    assert "Fake로 자동 대체" not in usage
+    assert "SimpleRuntime" in usage
+    assert "실제 저장소 분석" in usage
+    assert "LIVE_E2E_VERIFIED" in readme
 
 
 def test_operator_docs_never_embed_a_credential_or_claim_preflight_is_active() -> None:
@@ -51,14 +49,13 @@ def test_operator_docs_never_embed_a_credential_or_claim_preflight_is_active() -
 
     assert "sk-" not in provider
     assert "cookie를 읽거나" in provider
-    assert 'reference = "env:OPENAI_API_KEY"' in provider
-    assert "설치나 `--version` 성공만으로" in installation
-    assert "activation_supported=false" in installation
-    assert "activation_supported=false" in provider
+    assert "env:OPENAI_API_KEY" in provider
+    assert "key·token·cookie를 저장하지 않습니다" in installation
+    assert "`READY`는 현재 컴퓨터에서 필요한 실행 파일" in installation
     assert "codex login" in provider
     assert "codex login status" in provider
-    assert "공식 Codex CLI adapter는 구현되어" in provider
-    assert "`SUPPORTED`가 되기 전에는 production route에 선택되지 않습니다" in provider
+    assert "공식 Codex CLI" in provider
+    assert "현재 계정에 model 접근 권한이 없" in provider
 
 
 def test_source_cli_and_onboarding_contract_are_documented() -> None:
@@ -72,15 +69,13 @@ def test_source_cli_and_onboarding_contract_are_documented() -> None:
     )
     combined = "\n".join(_read(path) for path in operator_paths)
 
-    assert "\nsastsimi " not in combined
-    assert "uv run sastsimi analyze --help" in combined
+    assert "sastsimi setup" in combined
+    assert "sastsimi analyze" in combined
+    assert "uv run sastsimi ..." in combined
     assert "ProductionOnboardingManifest" in combined
     assert "ProductionProvisioningManifest" in combined
     assert "PVDObservation" in combined
-    assert "onboarding init --profile" in combined
-    assert "onboarding compose --profile" in combined
-    assert "onboarding prepare --profile" in combined
-    assert "--bundle-dir" in combined
+    assert "onboarding" in combined
     for field in (
         "provisioning_manifest_sha256",
         "policy_artifact_sha256",

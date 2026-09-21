@@ -59,8 +59,8 @@ from sastsimi.reproduction.service import (
     DynamicStageAuthorizations,
     DynamicStageCallResolver,
 )
-from sastsimi.runtime.fake_support import FakeClock, FakeIds
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
+from tests.support.runtime import DeterministicClock, SequenceIds
 
 NOW = datetime(2026, 9, 11, tzinfo=UTC)
 
@@ -380,8 +380,8 @@ async def test_only_execute_stage_can_request_sandbox_tools() -> None:
     agent = DynamicReproductionAgent(
         llm_calls=calls,
         artifacts=artifacts,
-        ids=FakeIds(),
-        clock=FakeClock(),
+        ids=SequenceIds(),
+        clock=DeterministicClock(),
     )
     requirements_outcome = await agent.derive_environment(
         work=work,
@@ -566,8 +566,8 @@ async def test_runtime_owned_provider_fields_are_rejected() -> None:
     agent = DynamicReproductionAgent(
         llm_calls=QueuedCalls([forged], []),
         artifacts=artifacts,
-        ids=FakeIds(),
-        clock=FakeClock(),
+        ids=SequenceIds(),
+        clock=DeterministicClock(),
     )
 
     with pytest.raises(ValueError, match="OUTPUT_RUNTIME_AUTHORITY_DENIED"):
@@ -614,8 +614,8 @@ async def test_dynamic_agent_accepts_claimed_decision_revision() -> None:
     agent = DynamicReproductionAgent(
         llm_calls=QueuedCalls([derive], []),
         artifacts=artifacts,
-        ids=FakeIds(),
-        clock=FakeClock(),
+        ids=SequenceIds(),
+        clock=DeterministicClock(),
     )
 
     outcome = await agent.derive_environment(

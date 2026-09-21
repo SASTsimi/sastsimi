@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -24,6 +25,8 @@ class SimpleStage(StrEnum):
     CWE_DONE = "CWE_DONE"
     TECH_GATE_DONE = "TECH_GATE_DONE"
     SCOPE_GATE_DONE = "SCOPE_GATE_DONE"
+    PRIMITIVE_ADMISSION_DONE = "PRIMITIVE_ADMISSION_DONE"
+    CHAINING_DONE = "CHAINING_DONE"
     FINDING_DONE = "FINDING_DONE"
     REPORT_DONE = "REPORT_DONE"
 
@@ -31,7 +34,18 @@ class SimpleStage(StrEnum):
 STAGE_ORDER: tuple[SimpleStage, ...] = tuple(SimpleStage)
 HYPOTHESIS_STAGES: tuple[SimpleStage, ...] = STAGE_ORDER[2:]
 STAGE_VERSION: dict[SimpleStage, str] = {
-    stage: "2" if stage is SimpleStage.REPORT_DONE else "1" for stage in STAGE_ORDER
+    stage: (
+        "3"
+        if stage is SimpleStage.REPORT_DONE
+        else "2"
+        if stage
+        in {
+            SimpleStage.VERIFICATION_INITIAL_DONE,
+            SimpleStage.POC_EXECUTION_DONE,
+        }
+        else "1"
+    )
+    for stage in STAGE_ORDER
 }
 
 
@@ -48,6 +62,22 @@ class CheckpointIdentity(ContractModel):
     workspace_id: str
     commit_id: str
     hypothesis_id: str | None
+
+
+class SimpleAnalysisRun(ContractModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    analysis_id: str
+    display_analysis_id: str
+    workspace_id: str
+    commit_id: str
+    repository: str
+    workspace_path: Path | None = None
+    repository_profile_ref: StoredDataRef | None = None
+    static_bundle_ref: StoredDataRef | None = None
+    hypothesis_ids: tuple[str, ...] = ()
+    parent_hypothesis_ids: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    chain_depths: dict[str, int] = Field(default_factory=dict)
 
 
 def input_reference_hash(refs: tuple[StoredDataRef, ...]) -> str:

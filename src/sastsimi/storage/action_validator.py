@@ -720,7 +720,7 @@ class RuntimeValidator:
                     )
                     output_ref = result.parsed_output_ref
                 else:
-                    # Kept only for the deterministic pre-T10 fake pipeline. The
+                    # Kept only for the pre-T10 compatibility path. The
                     # production LLMCallService rejects record-shaped provider output.
                     candidate = self.records.resolve(
                         connection, result.parsed_output_ref, candidate=True
