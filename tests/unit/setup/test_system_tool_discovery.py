@@ -12,10 +12,10 @@ def test_windows_command_path_with_spaces_is_invoked_as_one_argument(
     executable = tmp_path / "사용자 도구" / "codex.CMD"
     executable.parent.mkdir()
     executable.write_bytes(b"@echo codex-cli 1.0\r\n")
-    calls: list[tuple[tuple[str, ...], bool]] = []
+    calls: list[tuple[tuple[str, ...], bool, int]] = []
 
     def run(argv, **kwargs):
-        calls.append((tuple(argv), bool(kwargs["shell"])))
+        calls.append((tuple(argv), bool(kwargs["shell"]), int(kwargs["timeout"])))
         return subprocess.CompletedProcess(argv, 0, "codex-cli 1.0\n", "")
 
     monkeypatch.setattr("sastsimi.setup.service.shutil.which", lambda _name: executable)
@@ -25,4 +25,4 @@ def test_windows_command_path_with_spaces_is_invoked_as_one_argument(
 
     assert inspected.available is True
     assert inspected.executable == executable.resolve()
-    assert calls == [((str(executable), "--version"), False)]
+    assert calls == [((str(executable), "--version"), False, 20)]

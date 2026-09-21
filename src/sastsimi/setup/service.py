@@ -94,7 +94,11 @@ class SystemToolDiscovery:
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=5,
+                # OpenGrep and CodeQL may need a few seconds for a cold first
+                # start even when the executable is healthy.  Setup is a
+                # one-time operation, so prefer an accurate capability check
+                # over reporting a slow tool as missing.
+                timeout=20,
                 shell=False,
             )
         except (OSError, subprocess.SubprocessError):
