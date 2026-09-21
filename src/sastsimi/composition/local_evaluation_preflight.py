@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Lock
 from typing import Any, Protocol, cast
@@ -27,6 +27,7 @@ from sastsimi.composition.local_evaluation_composition import (
     ResolvedLocalEvaluationCapabilities,
 )
 from sastsimi.composition.local_static_materials import LocalStaticMaterialSet
+from sastsimi.composition.local_subscription_route import LocalSubscriptionRoute
 from sastsimi.config.local_evaluation_profile import LocalEvaluationProfile
 from sastsimi.contracts.analysis import AnalysisStartRequest
 from sastsimi.contracts.records import RecordMeta
@@ -217,6 +218,9 @@ class ConcreteLocalEvaluationPreflight:
         profile: LocalEvaluationProfile,
         scope: PlannedRunScope,
     ) -> ConcreteLocalEvaluationApplicationFactory:
+        from sastsimi.composition.local_claude_binding import (
+            build_local_claude_binding,
+        )
         from sastsimi.composition.local_codex_binding import (
             build_local_codex_binding,
         )
@@ -237,8 +241,15 @@ class ConcreteLocalEvaluationPreflight:
         from sastsimi.composition.local_static_materials import (
             load_local_candidate_static_materials,
         )
+        from sastsimi.composition.local_subscription_route import (
+            claude_route,
+            codex_route,
+        )
         from sastsimi.config.package_resources import builtin_package_root
         from sastsimi.config.runtime_paths import RuntimePaths
+        from sastsimi.providers.local_claude_validation import (
+            validate_local_claude_binding,
+        )
         from sastsimi.providers.local_codex_validation import (
             validate_local_codex_binding,
         )
@@ -272,24 +283,48 @@ class ConcreteLocalEvaluationPreflight:
             materials=static_materials,
             artifacts=artifacts,
         )
-        binding_records = build_local_codex_binding(
-            settings=profile.codex,
-            scope=scope,
-            artifacts=artifacts,
-            ids=ids,
-            clock=clock,
-        )
-        validation = await validate_local_codex_binding(
-            records=binding_records,
-            artifacts=artifacts,
-            ids=ids,
-            clock=clock,
-            probe_timeout_ms=min(profile.timeouts.llm_ms, 120_000),
-        )
+        probe_timeout_ms = min(profile.timeouts.llm_ms, 120_000)
+        if profile.claude is not None:
+            claude_records = build_local_claude_binding(
+                settings=profile.claude,
+                scope=scope,
+                artifacts=artifacts,
+                ids=ids,
+                clock=clock,
+            )
+            subscription = claude_route(
+                records=claude_records,
+                validation=await validate_local_claude_binding(
+                    records=claude_records,
+                    artifacts=artifacts,
+                    ids=ids,
+                    clock=clock,
+                    probe_timeout_ms=probe_timeout_ms,
+                ),
+            )
+        elif profile.codex is not None:
+            codex_records = build_local_codex_binding(
+                settings=profile.codex,
+                scope=scope,
+                artifacts=artifacts,
+                ids=ids,
+                clock=clock,
+            )
+            subscription = codex_route(
+                records=codex_records,
+                validation=await validate_local_codex_binding(
+                    records=codex_records,
+                    artifacts=artifacts,
+                    ids=ids,
+                    clock=clock,
+                    probe_timeout_ms=probe_timeout_ms,
+                ),
+            )
+        else:
+            raise ValueError("LOCAL_EVALUATION_SUBSCRIPTION_CLIENT_REQUIRED")
         fresh_prompt_plan = build_local_prompt_configuration_plan(
             repository_root=builtin_package_root(),
-            binding_records=binding_records,
-            validation=validation,
+            subscription=subscription,
             artifacts=artifacts,
             ids=ids,
             clock=clock,
@@ -328,14 +363,20 @@ class ConcreteLocalEvaluationPreflight:
         restored = restore_local_prompt_configuration_plan(
             published_records=published_records,
             current_records=current_records,
-            binding_records=binding_records,
-            validation=validation,
+            subscription=subscription,
         )
         resume_configuration = restored is not None
         if restored is None:
             prompt_plan = fresh_prompt_plan
         else:
-            prompt_plan, validation = restored
+            prompt_plan, restored_validation = restored
+            # A resumed analysis keeps the provider revision its completed calls
+            # already reference; the fresh probe receipt stays attached to it.
+            subscription = replace(
+                subscription,
+                supported=restored_validation.provider,
+                binding=restored_validation.binding,
+            )
         run_configuration = (
             restore_local_evaluation_run_configuration(
                 published_records=published_records,
@@ -352,14 +393,14 @@ class ConcreteLocalEvaluationPreflight:
         policy_boundary_ref = artifacts.commit(
             artifacts.stage_bytes(policy_boundary_bytes, "application/json")
         )
-        provider_ref = reference(validation.provider)
+        provider_ref = reference(subscription.supported)
         if not isinstance(provider_ref, StoredDataRef):
             raise LocalEvaluationCompositionUnavailable(
                 "LOCAL_EVALUATION_PROVIDER_SCOPE_INVALID"
             )
         deferred_adapter = DeferredLLMProviderAdapter(
             provider_profile_ref=provider_ref,
-            model=validation.provider.model,
+            model=subscription.supported.model,
         )
         deferred_calls = DeferredLocalEvaluationCalls()
         deferred_failures = _DeferredLocalFailureRecorder()
@@ -388,7 +429,7 @@ class ConcreteLocalEvaluationPreflight:
                 approved=approved,
                 prompt_plan=prompt_plan,
                 run_configuration=run_configuration,
-                validation=validation,
+                subscription=subscription,
                 deferred_adapter=deferred_adapter,
                 deferred_calls=deferred_calls,
                 deferred_failures=deferred_failures,
@@ -401,7 +442,7 @@ class ConcreteLocalEvaluationPreflight:
 
         resolved = ResolvedLocalEvaluationCapabilities(
             llm_adapters={
-                (provider_ref, validation.provider.model): deferred_adapter,
+                (provider_ref, subscription.supported.model): deferred_adapter,
             },
             workspace_dependency_refs=(
                 run_configuration.workspace_policy_ref,
@@ -506,7 +547,7 @@ def _install_local_features(
     approved: LocalEvaluationApprovedCapabilities,
     prompt_plan: Any,
     run_configuration: Any,
-    validation: Any,
+    subscription: LocalSubscriptionRoute,
     deferred_adapter: Any,
     deferred_calls: DeferredLocalEvaluationCalls,
     deferred_failures: _DeferredLocalFailureRecorder,
@@ -560,6 +601,12 @@ def _install_local_features(
         LocalEvaluationLLMConfigurationService,
     )
     from sastsimi.prompts.validation import validate_output
+    from sastsimi.providers.local_claude_validation import (
+        LocalValidatedClaudeExecutionBinding,
+    )
+    from sastsimi.providers.local_evaluation_claude import (
+        build_local_evaluation_claude_call_service,
+    )
     from sastsimi.providers.local_evaluation_codex import (
         build_local_evaluation_codex_call_service,
     )
@@ -656,11 +703,10 @@ def _install_local_features(
             attempt_id=attempt_id,
         )
 
-    codex = build_local_evaluation_codex_call_service(
-        binding=validation.binding,
-        prompt_resolver=StoredPromptInputResolver(records, artifacts),
-        session_store=StoredProviderSessionStore(artifacts),
-        output_schema_validator=StoredOutputValidator(
+    call_service_arguments: dict[str, Any] = {
+        "prompt_resolver": StoredPromptInputResolver(records, artifacts),
+        "session_store": StoredProviderSessionStore(artifacts),
+        "output_schema_validator": StoredOutputValidator(
             records,
             published.semantic_validators,
             validate_output,
@@ -668,10 +714,20 @@ def _install_local_features(
                 ("REPORTER", "CREATE_DRAFT"): ReporterOutputSemanticValidator(records)
             },
         ),
-        result_builder=StoredInvocationResultBuilder(records, artifacts, metadata),
-        clock=context.clock,
+        "result_builder": StoredInvocationResultBuilder(records, artifacts, metadata),
+        "clock": context.clock,
+    }
+    binding = subscription.binding
+    call_service = (
+        build_local_evaluation_claude_call_service(
+            binding=binding, **call_service_arguments
+        )
+        if isinstance(binding, LocalValidatedClaudeExecutionBinding)
+        else build_local_evaluation_codex_call_service(
+            binding=binding, **call_service_arguments
+        )
     )
-    deferred_adapter.bind(codex)
+    deferred_adapter.bind(call_service)
     recovery_identity = context.role_identity_refs[RequesterRole.RECOVERY]
     if not isinstance(recovery_identity, StoredDataRef):
         raise ValueError("LOCAL_RECOVERY_IDENTITY_REQUIRED")
