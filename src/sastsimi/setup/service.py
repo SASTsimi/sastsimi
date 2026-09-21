@@ -88,6 +88,7 @@ class SystemToolDiscovery:
         )
         if executable is None or not executable.is_file():
             return ToolInspection(name=name, available=False)
+        executable = SystemToolDiscovery._native_codex_executable(name, executable)
         try:
             completed = subprocess.run(
                 (str(executable), *command[1:]),
@@ -123,6 +124,35 @@ class SystemToolDiscovery:
             version=version,
             executable_sha256=digest.hexdigest(),
         )
+
+    @staticmethod
+    def _native_codex_executable(name: str, executable: Path) -> Path:
+        """Prefer the official native Codex binary over its Node launcher.
+
+        The npm launcher uses ``#!/usr/bin/env node``. Provider children run
+        without an ambient PATH so credentials and unapproved executables do
+        not leak into the boundary. Official Codex packages also ship the
+        native binary; pinning that file keeps the boundary strict and makes
+        subscription login portable on Linux/WSL.
+        """
+
+        if name != "codex":
+            return executable
+        try:
+            resolved = executable.resolve(strict=True)
+        except OSError:
+            return executable
+        if resolved.name != "codex.js":
+            return executable
+        package_root = resolved.parent.parent
+        candidates = sorted(
+            candidate
+            for candidate in package_root.glob(
+                "node_modules/@openai/codex-*/vendor/*/bin/codex*"
+            )
+            if candidate.is_file() and candidate.name in {"codex", "codex.exe"}
+        )
+        return candidates[0] if len(candidates) == 1 else executable
 
 
 AuthChecker = Callable[[SetupChoices, dict[str, ToolInspection]], bool]
