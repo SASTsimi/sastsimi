@@ -356,6 +356,74 @@ async def test_current_opengrep_verbose_skips_are_exact_partial_coverage(
     assert "--verbose" in runner.calls[1].argv
 
 
+@pytest.mark.asyncio
+async def test_ignored_target_reported_in_both_lists_is_skipped_not_a_scope_error(
+    opengrep_fixture: dict[str, object],
+) -> None:
+    """OpenGrep 1.30 lists an ignored target in ``scanned`` and ``skipped``.
+
+    Treating the two lists as disjoint rejects the whole batch, so a run that
+    produced real findings is recorded as a tool failure with no coverage.
+    """
+
+    root = cast(Path, opengrep_fixture["root"])
+    skipped_target = root / "tests" / "test_a.py"
+    skipped_target.parent.mkdir()
+    skipped_target.write_text("assert True\n", encoding="utf-8")
+    inputs = cast(Any, opengrep_fixture["inputs"])
+    opengrep_fixture["inputs"] = replace(
+        inputs,
+        tracked_files=inputs.tracked_files
+        + (
+            TrackedFile(
+                "tests/test_a.py",
+                "100644",
+                "blob-test-a",
+                skipped_target.stat().st_size,
+            ),
+        ),
+    )
+    raw = canonical_bytes(
+        {
+            "version": "1.8.0",
+            "results": [_finding("R1", "src/a.py")],
+            "errors": [],
+            "paths": {
+                # The ignored target appears in both lists.
+                "scanned": ["src/a.py", "tests/test_a.py"],
+                "skipped": [
+                    {
+                        "path": "tests/test_a.py",
+                        "reason": "semgrepignore_patterns_match",
+                    }
+                ],
+            },
+            "time": {"rules": ["R1", "R2"]},
+        }
+    )
+    runner = FakeRunner([{"stdout": raw}])
+    adapter = _adapter(opengrep_fixture, runner)
+    request = cast(StaticToolRequest, opengrep_fixture["request"])
+    request = replace(
+        request,
+        action=request.action.model_copy(
+            update={"file_paths": ("src/a.py", "tests/test_a.py")}
+        ),
+    )
+
+    result = await adapter.execute(
+        request,
+        root,
+        cast(StaticToolProfile, opengrep_fixture["profile"]),
+        _deadline(str(request.action.action_id)),
+    )
+
+    assert result.status != "FAILED"
+    assert result.analyzed_paths == ("src/a.py",)
+    assert result.skipped_paths == ("tests/test_a.py",)
+    assert {item.rule_id: item for item in result.rules}["R1"].hit_count == 1
+
+
 @pytest.fixture
 def opengrep_fixture(tmp_path: Path) -> dict[str, object]:
     from sastsimi.static_analysis.open_grep_adapter import OpenGrepExecutionInputs

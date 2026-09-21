@@ -535,11 +535,17 @@ def _decode_batch(
             raise ValueError("OPENGREP_OUTPUT_SCOPE_MISMATCH")
         skipped_paths.append(_safe_git_path(cast(str, item["path"])))
     skipped_tuple = tuple(skipped_paths)
+    skipped_set = set(skipped_tuple)
+    # OpenGrep 1.30 reports a target in ``scanned`` and again in ``skipped``
+    # when an ignore pattern excludes it, so the two are not disjoint.  A
+    # skipped file was never analyzed, so ``skipped`` decides.  What still
+    # has to hold exactly is the closure: together they are the authorized
+    # path set, with no foreign and no missing path.
+    analyzed_paths = tuple(item for item in scanned_paths if item not in skipped_set)
     if (
         len(set(scanned_paths)) != len(scanned_paths)
-        or len(set(skipped_tuple)) != len(skipped_tuple)
-        or set(scanned_paths).intersection(skipped_tuple)
-        or set(scanned_paths).union(skipped_tuple) != set(paths)
+        or len(skipped_set) != len(skipped_tuple)
+        or set(analyzed_paths) | skipped_set != set(paths)
     ):
         raise ValueError("OPENGREP_OUTPUT_SCOPE_MISMATCH")
     selected = frozenset(selected_rule_ids)
@@ -575,7 +581,7 @@ def _decode_batch(
             continue
         hits[rule_id] += 1
         try:
-            location = _location(item, frozenset(scanned_paths))
+            location = _location(item, frozenset(analyzed_paths))
         except ValueError:
             gaps.append(
                 _gap(
@@ -625,7 +631,7 @@ def _decode_batch(
         )
     return _DecodedBatch(
         requested_paths=paths,
-        paths=scanned_paths,
+        paths=analyzed_paths,
         skipped_paths=skipped_tuple,
         raw=raw,
         unknown_rules=unknown,
