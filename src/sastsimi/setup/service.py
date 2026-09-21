@@ -28,6 +28,7 @@ _TOOL_COMMANDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("codeql", ("codeql", "version", "--format=terse")),
     ("docker", ("docker", "version", "--format", "{{.Client.Version}}")),
     ("codex", ("codex", "--version")),
+    ("claude", ("claude", "--version")),
 )
 
 
@@ -123,6 +124,12 @@ class SystemToolDiscovery:
             if not version.startswith(prefix):
                 return ToolInspection(name=name, available=False)
             version = version.removeprefix(prefix)
+        if name == "claude":
+            # The official client reports "<version> (Claude Code)".
+            head = version.split(" ", 1)[0]
+            if not head or head == version:
+                return ToolInspection(name=name, available=False)
+            version = head
         if (
             completed.returncode != 0
             or not version
@@ -219,18 +226,30 @@ class SystemToolDiscovery:
 AuthChecker = Callable[[SetupChoices, dict[str, ToolInspection]], bool]
 
 
+def _subscription_tool(provider: str) -> str:
+    """Return the official client a subscription provider is served by."""
+
+    return "claude" if provider.casefold() == "claude" else "codex"
+
+
 def _default_auth_checker(
     choices: SetupChoices, tools: dict[str, ToolInspection]
 ) -> bool:
     if choices.auth_mode == "API_KEY":
         variable = choices.credential_ref.removeprefix("env:")
         return bool(variable and os.environ.get(variable))
-    codex = tools.get("codex")
-    if codex is None or not codex.available or codex.executable is None:
+    name = _subscription_tool(choices.provider)
+    client = tools.get(name)
+    if client is None or not client.available or client.executable is None:
         return False
+    argv = (
+        (str(client.executable), "auth", "status")
+        if name == "claude"
+        else (str(client.executable), "login", "status")
+    )
     try:
         completed = subprocess.run(
-            (str(codex.executable), "login", "status"),
+            argv,
             check=False,
             capture_output=True,
             text=True,
@@ -239,7 +258,25 @@ def _default_auth_checker(
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    return completed.returncode == 0
+    if completed.returncode != 0:
+        return False
+    if name != "claude":
+        return True
+    # The official Claude client reports its state in the payload and exits 0
+    # whether or not anyone is signed in, so the exit code alone would call an
+    # unauthenticated host ready.  Require the exact subscription identity the
+    # adapter itself demands: an API key must never satisfy a subscription
+    # profile, even when one sits in the environment.
+    try:
+        payload = json.loads(completed.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("loggedIn") is True
+        and payload.get("authMethod") == "claude.ai"
+        and payload.get("apiProvider") == "firstParty"
+    )
 
 
 class SetupService:
@@ -268,7 +305,7 @@ class SetupService:
         if choices.execution_profile == "FULL":
             required.add("codeql")
         if choices.auth_mode == "SUBSCRIPTION_LOGIN":
-            required.add("codex")
+            required.add(_subscription_tool(choices.provider))
         missing = tuple(
             sorted(
                 name
