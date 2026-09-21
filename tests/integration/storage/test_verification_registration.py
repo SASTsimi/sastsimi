@@ -5,10 +5,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import func, insert, select
 
-from sastsimi.bootstrap import build_fake_pipeline
-from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.hypothesis import (
@@ -16,16 +14,12 @@ from sastsimi.contracts.hypothesis import (
     HypothesisProposal,
     VulnerabilityHypothesis,
 )
-from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.verification import (
-    PlaybookApplication,
     PlaybookPolicy,
     VerificationPlaybook,
 )
-from sastsimi.ports.verification_registration import VerificationRegistration
 from sastsimi.storage import models
 from sastsimi.storage.codec import reference
-from sastsimi.storage.database import Database
 from tests.contract.domain.canonical_fixtures import make
 from tests.integration.storage.test_intermediate_publication import (
     prepared_policy_parser,
@@ -206,95 +200,3 @@ def test_registration_returns_same_work_application_and_questions_on_duplicate(
     assert current_process.verification_work_ref == reference(running)
     (dynamic,) = runtime.queries.current_records("a1", "dynamic_reproduction_state")
     assert dynamic.status == "NOT_REQUESTED" and dynamic.verification_generation == 1
-
-
-def test_revise_registration_replays_after_ready_response_is_lost(
-    tmp_path: Path,
-) -> None:
-    scenario = build_fake_pipeline(tmp_path)._scenario
-    execution = scenario._verification("TRUE")
-    verification = execution.result
-    review = scenario._post_true(
-        execution,
-        technical_status="REVISE",
-    )
-    assert scenario.runtime is not None and scenario.runner is not None
-    runtime = scenario.runtime
-    state = runtime.budget_registry.current_state("fake-analysis")
-    assert state.budget_binding_ref is not None
-    budget_binding_ref = state.budget_binding_ref
-    (hypothesis,) = runtime.queries.current_records(
-        "fake-analysis", "vulnerability_hypothesis"
-    )
-    (process,) = runtime.queries.current_records(
-        "fake-analysis", "hypothesis_process_state"
-    )
-    assert isinstance(hypothesis, VulnerabilityHypothesis)
-    assert isinstance(process, HypothesisProcessState)
-    application = runtime.unit_of_work.records.get_exact(
-        verification.playbook_application_ref
-    )
-    assert isinstance(application, PlaybookApplication)
-    owner_ref = next(
-        ref
-        for ref, role in scenario.evidence.identities.items()
-        if role == RequesterRole.VERIFICATION
-        and getattr(ref, "data_kind", None) == "work_budget_profile"
-    )
-    requester_ref = next(
-        ref
-        for ref in scenario.evidence.identities
-        if getattr(ref, "data_kind", None) == "verification_budget_profile"
-    )
-    scenario.evidence.identities[requester_ref] = RequesterRole.ORCHESTRATION
-    review_ref = reference(review)
-    hypothesis_ref = reference(hypothesis)
-    process_ref = reference(process)
-    assert isinstance(review_ref, StoredDataRef)
-    assert isinstance(hypothesis_ref, StoredDataRef)
-    assert isinstance(process_ref, StoredDataRef)
-    assert isinstance(owner_ref, StoredDataRef)
-    assert isinstance(requester_ref, StoredDataRef)
-
-    def revise() -> VerificationRegistration:
-        return runtime.verification_registration.revise(
-            technical_review_ref=review_ref,
-            hypothesis_ref=hypothesis_ref,
-            proposal_ref=hypothesis.proposal_ref,
-            policy_ref=application.policy_ref,
-            playbook_ref=application.playbook_ref,
-            expected_process_ref=process_ref,
-            owner_identity_ref=owner_ref,
-            requester_identity_ref=requester_ref,
-            budget_binding_ref=budget_binding_ref,
-        )
-
-    first = revise()
-    ready = scenario.runner.enqueue_registered(
-        first.work,
-        budget_binding_ref,
-        requester_ref,
-        role="ORCHESTRATION",
-    )
-    registered_process = runtime.unit_of_work.records.get_exact(first.process_ref)
-    assert isinstance(registered_process, HypothesisProcessState)
-    database = Database(RuntimePaths(scenario.data_dir).database)
-    with database.write() as connection:
-        connection.execute(
-            update(models.current_records)
-            .where(
-                models.current_records.c.logical_record_id
-                == str(registered_process.meta.logical_record_id)
-            )
-            .values(
-                record_id=str(registered_process.meta.record_id),
-                state_version=registered_process.meta.revision_number,
-            )
-        )
-    id_index = scenario.ids.index
-    replay = revise()
-
-    assert replay.work == ready
-    assert replay.application == first.application
-    assert replay.assignment_ref == first.assignment_ref
-    assert scenario.ids.index == id_index

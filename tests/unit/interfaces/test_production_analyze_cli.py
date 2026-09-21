@@ -197,20 +197,16 @@ def test_production_analyze_rejects_missing_or_non_exact_commit(
     assert capsys.readouterr().out == ""
 
 
-def test_production_analyze_builds_the_real_composition_not_fake(
+def test_production_analyze_builds_the_real_composition(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     entrypoint = _Entrypoint()
 
-    def forbidden_fake(_data_dir: Path) -> object:
-        raise AssertionError("production must not use the fake pipeline")
-
     def build_production() -> _Entrypoint:
         return entrypoint
 
-    monkeypatch.setattr(bootstrap, "build_fake_pipeline", forbidden_fake)
     monkeypatch.setattr(bootstrap, "build_production_analyze", build_production)
 
     assert (

@@ -24,7 +24,7 @@ from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.policy.adapters.official_http import PolicySourceBoundaryError
 from sastsimi.ports.dto import OfficialPolicyFetchRequest
-from sastsimi.runtime.fake_support import FakeClock
+from tests.support.runtime import DeterministicClock
 
 
 def _record_ref(kind: str, value: str) -> StoredDataRef:
@@ -69,7 +69,7 @@ def test_boundary_declares_local_only_and_denies_external_disclosure() -> None:
 
 
 def test_source_returns_unverified_boundary_for_exact_run_scope() -> None:
-    clock = FakeClock()
+    clock = DeterministicClock()
     binding_ref = _record_ref("budget_profile_binding", "binding-1")
     boundary_ref = StoredDataRef.model_validate(
         dict(
@@ -145,7 +145,7 @@ def test_source_rejects_other_program_or_configuration() -> None:
         ),
         boundary_bytes=raw,
         analysis_id="analysis-1",
-        clock=FakeClock(),
+        clock=DeterministicClock(),
     )
     action = SimpleNamespace(
         action_type=ActionType.FETCH_POLICY,
