@@ -312,7 +312,12 @@ def check_llm_context(
             producer.action_type == "FETCH_POLICY"
             and spec.agent_role == "POLICY_PARSER"
         ):
+            # A declaration supplied up front arrives as a fetch input; a
+            # document collected from the official endpoint exists only as the
+            # fetch outcome.  The Policy Parser may read either, and nothing
+            # else this work did not fetch itself.
             allowed.update(producer.input_refs)
+            allowed.update(decision.outcome_refs)
     for ref in spec.context_refs:
         if (
             ref.data_kind == "sandbox_profile"

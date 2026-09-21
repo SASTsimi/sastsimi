@@ -6,7 +6,7 @@ from typing import Protocol, runtime_checkable
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.ids import LogicalRecordId, ProgramId
 from sastsimi.contracts.policy import PolicyCacheRecord, RunPolicyState
-from sastsimi.contracts.refs import RecordRef
+from sastsimi.contracts.refs import RecordRef, StoredDataRef
 from sastsimi.contracts.work import WorkExecutionState
 
 
@@ -59,6 +59,13 @@ class PolicyRuntimePort(Protocol):
         reservation_ref: RecordRef,
         state: RunPolicyState,
     ) -> PolicyPreparation: ...
+
+    def record_fetched_source(
+        self,
+        work: WorkExecutionState,
+        decision_ref: RecordRef,
+        source_ref: StoredDataRef,
+    ) -> None: ...
 
     def reject_preparing(self, work: WorkExecutionState) -> None: ...
 

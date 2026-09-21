@@ -13,10 +13,11 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from sastsimi.agents.policy_parser import PolicyParserAgent
 from sastsimi.composition.production_feature_installer import LocalPolicyFeature
+from sastsimi.config.local_evaluation_profile import LocalEvaluationProfile
 from sastsimi.contracts.actions import ActionType, RequesterRole
 from sastsimi.contracts.analysis import AnalysisRunState, AnalysisStartRequest
 from sastsimi.contracts.base import ContractModel, NonEmptyStr
@@ -29,7 +30,12 @@ from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.orchestration.run_initialization import PostWorkspaceSeederPort
 from sastsimi.orchestration.run_scope_plan import PlannedRunScope
-from sastsimi.policy.adapters.official_http import PolicySourceBoundaryError
+from sastsimi.policy.adapters.official_http import (
+    OfficialHttpPolicySource,
+    PinnedHttpsTransport,
+    PolicySourceBoundaryError,
+    resolve_public_addresses,
+)
 from sastsimi.policy.cache_service import PolicyCacheService
 from sastsimi.policy.collector import PolicyCollector
 from sastsimi.policy.preparation_service import PolicyPreparationService
@@ -182,7 +188,10 @@ class LocalEvaluationPolicyPostWorkspaceSeeder(PostWorkspaceSeederPort):
 
     runner: WorkflowRunner
     orchestration_identity_ref: BudgetScopeRef
-    boundary_ref: StoredDataRef
+    # None when the run collects an officially published endpoint: the document
+    # only exists once the fetch succeeds, so no source artifact can be pinned
+    # in advance.
+    boundary_ref: StoredDataRef | None
     parser_name: str = _PARSER_NAME
     parser_version: str = _PARSER_VERSION
 
@@ -221,7 +230,9 @@ class LocalEvaluationPolicyPostWorkspaceSeeder(PostWorkspaceSeederPort):
             self.orchestration_identity_ref,
             program_id=str(request.program_id),
             source_config_ref=binding_ref,
-            source_input_refs=(self.boundary_ref,),
+            source_input_refs=(
+                () if self.boundary_ref is None else (self.boundary_ref,)
+            ),
             parser_name=self.parser_name,
             parser_version=self.parser_version,
         )
@@ -236,6 +247,7 @@ class LocalEvaluationPolicyPostWorkspaceSeeder(PostWorkspaceSeederPort):
 
 class _LocalPolicyContext(Protocol):
     request: AnalysisStartRequest
+    profile: LocalEvaluationProfile
     scope: PlannedRunScope
     clock: Clock
     ids: IdGenerator
@@ -293,31 +305,62 @@ def build_local_evaluation_policy_feature(
         or boundary_ref.commit_id != context.scope.commit_id
     ):
         raise ValueError("LOCAL_POLICY_RUN_SCOPE_MISMATCH")
-    source = LocalEvaluationPolicySource(
-        program_id=context.request.program_id,
-        source_config_ref=context.budget_binding_ref,
-        boundary_ref=boundary_ref,
-        boundary_bytes=raw,
-        analysis_id=str(context.scope.analysis_id),
-        clock=context.clock,
-    )
-    entry = ProgramCatalogEntry(
-        program_id=context.request.program_id,
-        program_namespace="local-evaluation",
-        external_program_id=f"local-{context.scope.analysis_id}",
-        source_config_ref=context.budget_binding_ref,
-        source_version="local-boundary-v1",
-        official_endpoint=_LOCAL_ENDPOINT,
-        publisher="LOCAL_EVALUATION_OPERATOR",
-        parser_name=_PARSER_NAME,
-        parser_version=_PARSER_VERSION,
-        freshness_criterion_ref=context.budget_binding_ref,
-        freshness_ttl_seconds=1,
-        timeout_seconds=1,
-        max_response_bytes=max(4096, len(raw)),
-        allowed_content_types=("application/json",),
-    )
-    catalog = ProgramCatalog((entry,))
+    configured = context.profile.policy
+    if configured is None:
+        entry = ProgramCatalogEntry(
+            program_id=context.request.program_id,
+            program_namespace="local-evaluation",
+            external_program_id=f"local-{context.scope.analysis_id}",
+            source_config_ref=context.budget_binding_ref,
+            source_version="local-boundary-v1",
+            official_endpoint=_LOCAL_ENDPOINT,
+            publisher="LOCAL_EVALUATION_OPERATOR",
+            parser_name=_PARSER_NAME,
+            parser_version=_PARSER_VERSION,
+            freshness_criterion_ref=context.budget_binding_ref,
+            freshness_ttl_seconds=1,
+            timeout_seconds=1,
+            max_response_bytes=max(4096, len(raw)),
+            allowed_content_types=("application/json",),
+        )
+        catalog = ProgramCatalog((entry,))
+        source: object = LocalEvaluationPolicySource(
+            program_id=context.request.program_id,
+            source_config_ref=context.budget_binding_ref,
+            boundary_ref=boundary_ref,
+            boundary_bytes=raw,
+            analysis_id=str(context.scope.analysis_id),
+            clock=context.clock,
+        )
+    else:
+        # The operator named an officially published endpoint, so this run
+        # collects and parses that exact document instead of the local
+        # declaration.  The repository never becomes a policy source.
+        entry = ProgramCatalogEntry(
+            program_id=context.request.program_id,
+            program_namespace=configured.program_namespace,
+            external_program_id=configured.external_program_id,
+            source_config_ref=context.budget_binding_ref,
+            source_version=configured.source_version,
+            official_endpoint=configured.official_endpoint,
+            publisher=configured.publisher,
+            parser_name=_PARSER_NAME,
+            parser_version=_PARSER_VERSION,
+            freshness_criterion_ref=context.budget_binding_ref,
+            freshness_ttl_seconds=configured.freshness_ttl_seconds,
+            timeout_seconds=configured.timeout_seconds,
+            max_response_bytes=configured.max_response_bytes,
+            allowed_content_types=configured.allowed_content_types,
+            allowed_redirect_hosts=configured.allowed_redirect_hosts,
+        )
+        catalog = ProgramCatalog((entry,))
+        source = OfficialHttpPolicySource(
+            catalog=catalog,
+            artifacts=artifacts,
+            transport=PinnedHttpsTransport(),
+            resolver=resolve_public_addresses,
+            clock=context.clock,
+        )
     parser = PolicyParserAgent(
         invocations=_LocalPolicyParserInvocation(calls, context),
         artifacts=artifacts,
@@ -330,7 +373,7 @@ def build_local_evaluation_policy_feature(
         runtime=context.runtime,
         runner=context.runner,
         catalog=catalog,
-        source=source,
+        source=cast(Any, source),
         parser=parser,
         cache=PolicyCacheService(
             runtime=context.runtime.policy,
@@ -354,7 +397,7 @@ def build_local_evaluation_policy_feature(
             orchestration_identity_ref=context.role_identity_refs[
                 RequesterRole.ORCHESTRATION
             ],
-            boundary_ref=boundary_ref,
+            boundary_ref=None if configured is not None else boundary_ref,
         ),
     )
 

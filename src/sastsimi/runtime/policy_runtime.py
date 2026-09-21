@@ -3,7 +3,7 @@
 from sastsimi.contracts.ids import RecordId
 from sastsimi.contracts.policy import PolicyCacheRecord, RunPolicyState
 from sastsimi.contracts.records import PolicyCacheMeta
-from sastsimi.contracts.refs import RecordRef
+from sastsimi.contracts.refs import RecordRef, StoredDataRef
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
@@ -33,6 +33,14 @@ class PolicyRuntimeService:
         state: RunPolicyState,
     ) -> PolicyPreparation:
         return self.store.begin(work, decision_ref, reservation_ref, state)
+
+    def record_fetched_source(
+        self,
+        work: WorkExecutionState,
+        decision_ref: RecordRef,
+        source_ref: StoredDataRef,
+    ) -> None:
+        self.store.record_fetched_source(work, decision_ref, source_ref)
 
     def reject_preparing(self, work: WorkExecutionState) -> None:
         self.store.reject_preparing(work)

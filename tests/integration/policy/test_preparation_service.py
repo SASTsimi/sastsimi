@@ -16,13 +16,18 @@ from sastsimi.agents.policy_parser import (
     PolicyItemContent,
     PolicyParserAgentOutcome,
 )
-from sastsimi.contracts.actions import RequesterRole
+from sastsimi.contracts.actions import (
+    ActionDecision,
+    ActionRequest,
+    ActionType,
+    RequesterRole,
+)
 from sastsimi.contracts.policy import (
     PolicyCacheRecord,
     PolicyParserResult,
     PolicySourceCheck,
 )
-from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.work import WorkAttempt
 from sastsimi.policy.adapters.official_http import (
     PolicyFetchError,
@@ -399,3 +404,64 @@ async def test_expired_cache_failure_is_not_old_success(
     assert source.calls == 1
     assert parser.calls == 0
     assert runtime.policy.current_cache(key) == old
+
+
+def _fetch_decisions(h: Any) -> list[ActionDecision]:
+    """Return every FETCH_POLICY decision recorded, in insertion order."""
+    found: list[ActionDecision] = []
+    with h.database.engine.connect() as connection:
+        for wire in connection.execute(
+            select(models.action_decisions.c.payload)
+        ).scalars():
+            decision = ActionDecision.model_validate_json(wire)
+            action = h.records.resolve(connection, decision.action_ref)
+            if (
+                isinstance(action, ActionRequest)
+                and action.action_type == ActionType.FETCH_POLICY
+            ):
+                found.append(decision)
+    return found
+
+
+@pytest.mark.asyncio
+async def test_collected_document_is_pinned_as_the_fetch_outcome(
+    tmp_path: Path,
+) -> None:
+    """A document the run fetched itself must reach the Policy Parser.
+
+    The work declares only its source configuration, so the fetched artifact is
+    not a work input.  Without an outcome on the FETCH_POLICY decision the LLM
+    context validator has nothing to admit and the parser call is refused.
+    """
+    h, _, _, work, _, source, _, service = _subject(tmp_path)
+    assert isinstance(source.result, OfficialPolicySource)
+    fetched = source.result.source_check.source_ref
+    assert fetched not in work.input_refs
+
+    await PolicyWorkHandler(service).execute(WorkContext(work, _attempt(h, work)))
+
+    decisions = _fetch_decisions(h)
+    assert decisions, "no FETCH_POLICY decision was recorded"
+    assert tuple(decisions[-1].outcome_refs) == (fetched,)
+
+
+@pytest.mark.asyncio
+async def test_fetch_outcome_never_carries_a_document_the_run_did_not_fetch(
+    tmp_path: Path,
+) -> None:
+    """Only the exact fetched artifact may be pinned, and only once."""
+    h, runtime, _, work, _, source, _, service = _subject(tmp_path)
+    assert isinstance(source.result, OfficialPolicySource)
+    fetched = source.result.source_check.source_ref
+    other = _artifact(tmp_path, work, b'{"scope":{"in":["attacker.test"]}}')
+    assert other != fetched
+
+    await PolicyWorkHandler(service).execute(WorkContext(work, _attempt(h, work)))
+
+    decision_ref = reference(_fetch_decisions(h)[-1])
+    with pytest.raises(ValueError, match="POLICY_FETCH_OUTCOME_MISMATCH"):
+        runtime.policy.record_fetched_source(work, decision_ref, other)
+
+    # The exact same document replays without appending a second outcome.
+    runtime.policy.record_fetched_source(work, decision_ref, fetched)
+    assert tuple(_fetch_decisions(h)[-1].outcome_refs) == (fetched,)

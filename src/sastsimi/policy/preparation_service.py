@@ -217,7 +217,7 @@ class PolicyPreparationService:
                 return error
 
         try:
-            result, _claimed = await self._runtime.external.invoke_bound(
+            result, claimed = await self._runtime.external.invoke_bound(
                 str(work.work_id),
                 decision_ref,
                 reference(reservation),
@@ -226,6 +226,11 @@ class PolicyPreparationService:
             )
             if isinstance(result, Exception):
                 raise result
+            # A collected document is not a declared work input, so the fetch
+            # decision is what makes it admissible to the Policy Parser.
+            self._runtime.policy.record_fetched_source(
+                work, claimed, result.source_check.source_ref
+            )
             return result
         finally:
             self._runner.account(reservation, units)

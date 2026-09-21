@@ -3,10 +3,11 @@
 from sqlalchemy import Connection, delete, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
+from sastsimi.contracts.actions import ActionDecision, ActionRequest, ActionType
 from sastsimi.contracts.analysis import AnalysisRunState
 from sastsimi.contracts.policy import PolicyCacheRecord, RunPolicyState
 from sastsimi.contracts.records import validate_revision
-from sastsimi.contracts.refs import RecordRef
+from sastsimi.contracts.refs import RecordRef, StoredDataRef
 from sastsimi.contracts.work import WorkExecutionState, WorkStatus, WorkType
 from sastsimi.ports.policy_runtime import (
     PolicyCacheKey,
@@ -67,6 +68,49 @@ class PolicyRuntime:
             )
             save_run(self.records, connection, updated, run)
         return PolicyPreparation(registered, state)
+
+    def record_fetched_source(
+        self,
+        work: WorkExecutionState,
+        decision_ref: RecordRef,
+        source_ref: StoredDataRef,
+    ) -> None:
+        """Pin the fetched document as the outcome of one exact FETCH_POLICY.
+
+        A collected policy document exists only after the fetch returns, so it
+        can never be declared as a work input the way a supplied declaration
+        is.  The fetch decision is the only record that can carry it, and the
+        LLM context validator admits it to the Policy Parser from there.
+        """
+        if work.work_type != WorkType.POLICY_FETCH:
+            raise ValueError("POLICY_FETCH_WORK_REQUIRED")
+        if source_ref.data_kind != "artifact" or source_ref.record_id is not None:
+            raise ValueError("POLICY_SOURCE_ARTIFACT_REQUIRED")
+        with self.records.database.write() as connection:
+            decision = self.records.resolve(connection, decision_ref)
+            if not isinstance(decision, ActionDecision):
+                raise ValueError("POLICY_FETCH_DECISION_MISMATCH")
+            action = self.records.resolve(connection, decision.action_ref)
+            if (
+                not isinstance(action, ActionRequest)
+                or action.action_type != ActionType.FETCH_POLICY
+                or action.work_ref != reference(work)
+            ):
+                raise ValueError("POLICY_FETCH_DECISION_MISMATCH")
+            payload = connection.execute(
+                select(models.action_decisions.c.payload).where(
+                    models.action_decisions.c.decision_id == str(decision.decision_id)
+                )
+            ).scalar_one_or_none()
+            if payload is None:
+                raise ValueError("POLICY_FETCH_DECISION_NOT_USED")
+            claimed = ActionDecision.model_validate_json(payload)
+            if claimed.outcome_refs:
+                # One exact replay of the same fetch is the only repeat allowed.
+                if claimed.outcome_refs != (source_ref,):
+                    raise ValueError("POLICY_FETCH_OUTCOME_MISMATCH")
+                return
+            self.works.validator.record_outcome(connection, claimed, (source_ref,))
 
     def current_state(self, analysis_id: str) -> RunPolicyState | None:
         with self.records.database.engine.connect() as connection:
