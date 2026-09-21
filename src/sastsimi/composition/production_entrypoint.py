@@ -16,7 +16,7 @@ def builtin_resource_root() -> Path:
 
 
 def build_production_analyze(capability_bundle_loader: object | None = None) -> object:
-    """Build the real production command entrypoint; never select FakePipeline."""
+    """Build the real production command entrypoint."""
 
     from sastsimi.composition.production_bootstrap_runtime import (
         build_production_bootstrap_assembler,

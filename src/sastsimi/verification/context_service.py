@@ -34,15 +34,13 @@ from sastsimi.contracts.budget import (
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.hypothesis import HypothesisProposal, VulnerabilityHypothesis
 from sastsimi.contracts.ids import ErrorId, GapId, TransitionCommitId, TransitionId
-from sastsimi.contracts.records import RecordMeta, RecordMetadata
+from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
 from sastsimi.contracts.static import (
     AnalysisError,
     CodeContextRequest,
     CodeContextResponse,
-    CodeLocation,
     CodeWorkspace,
-    ContextRetrievalLimits,
     DataGap,
     StaticFactBundle,
 )
@@ -66,7 +64,6 @@ from sastsimi.ports.dto import (
     TransitionCommitRequest,
 )
 from sastsimi.ports.workspace import WorkspaceLocatorPort
-from sastsimi.runtime.fake_support import FakeEvidence
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.static_analysis.context_retrieval import (
@@ -1647,167 +1644,3 @@ class ContextRetrievalService:
         finally:
             os.close(descriptor)
         os.replace(temporary, path)
-
-
-def retrieve_fake_context(
-    *,
-    runtime: RuntimeServices,
-    runner: WorkflowRunner,
-    evidence: FakeEvidence,
-    scope: StoredDataRef,
-    identity: StoredDataRef,
-    service_identity: StoredDataRef,
-    metadata: RecordMetadata,
-    hypothesis_id: str,
-    generation: int,
-    inputs: tuple[StoredDataRef, ...],
-    location: CodeLocation,
-    fragment_ref: StoredDataRef,
-) -> tuple[CodeContextResponse, StoredDataRef]:
-    evidence.bind_identity(identity, RequesterRole.VERIFICATION)
-    limits = ContextRetrievalLimits(
-        max_depth=1,
-        max_fragments=1,
-        max_bytes=4096,
-        # The fake REVISE scenario performs one bounded retrieval per generation:
-        # initial verification plus the single revised verification generation.
-        max_requests_per_hypothesis=2,
-        timeout_ms=1000,
-    )
-    ceiling_ref = runtime.unit_of_work.artifacts.commit(
-        runtime.unit_of_work.artifacts.stage_bytes(
-            canonical_bytes(
-                {
-                    "kind": "context_ceiling_profile",
-                    "schema_version": "1.0",
-                    **limits.model_dump(),
-                }
-            ),
-            "application/json",
-        )
-    )
-    intent = ContextRetrievalIntent(
-        proposal_ref=inputs[0],
-        bundle_ref=inputs[1],
-        requested_entities=(),
-        requested_locations=(location,),
-        relation_query=("CALLERS", "CALLEES"),
-        reason="Retrieve fake same-commit context",
-        requested_limits=limits,
-    )
-    plan = ContextReadPlan(
-        intent_hash=context_intent_hash(intent),
-        workspace_id=str(location.workspace_id),
-        commit_id=str(location.commit_id),
-        proposal_ref=intent.proposal_ref,
-        bundle_ref=intent.bundle_ref,
-        ceiling_profile_ref=ceiling_ref,
-        requested_limits=limits,
-        entities=(),
-        locations=(location,),
-        relations=(),
-        file_paths=(str(location.file_path),),
-        lineage_refs=(),
-    )
-    plan_ref = runtime.unit_of_work.artifacts.commit(
-        runtime.unit_of_work.artifacts.stage_bytes(
-            encode_context_read_plan(plan), "application/json"
-        )
-    )
-    work = runner.start(
-        scope,
-        metadata,
-        "CONTEXT_RETRIEVAL",
-        "HYPOTHESIS",
-        hypothesis_id,
-        identity,
-        role="VERIFICATION",
-        inputs=(*inputs, ceiling_ref),
-        generation=generation,
-    )
-
-    action = runner.action(
-        work,
-        identity,
-        "VERIFICATION",
-        "READ_CODE",
-        input_refs=(*work.input_refs, plan_ref),
-        file_paths=(str(location.file_path),),
-        reason=intent.reason,
-    )
-    units = runner.units(elapsed_ms=1, cost_minor_units=1)
-    reservation = runner.reserve(work, scope, action, units)
-    decision = runner.authorize(work, action, reservation)
-    used = runtime.validator.claim_external(
-        str(work.work_id), decision, reference(reservation)
-    )
-    evidence.bind_identity(service_identity, RequesterRole.CONTEXT_RETRIEVAL_SERVICE)
-    request = runtime.context.bind(
-        str(work.work_id),
-        used,
-        requested_entities=(),
-        requested_locations=(location,),
-        relation_query=("CALLERS", "CALLEES"),
-        limits=limits,
-    )
-    runtime.validator.mark_dispatched(decision, idempotency_key=str(action.action_id))
-    runtime.validator.mark_returned(decision)
-    runner.account(reservation, units)
-    response = CodeContextResponse.model_validate_json(
-        canonical_bytes(
-            dict(
-                meta=runner.metadata(
-                    work.meta,
-                    "code_context_response",
-                    attempt_id=work.active_attempt_id,
-                ),
-                code_request_id=request.code_request_id,
-                entities=(),
-                locations=(location,),
-                code_fragment_refs=(fragment_ref,),
-                discovered_relations=(),
-                gaps=(),
-                errors=(),
-                truncated=False,
-                returned_fragment_count=1,
-                returned_bytes=len(
-                    runtime.unit_of_work.artifacts.open_verified(fragment_ref).read()
-                ),
-                consumed_token_estimate=1,
-            )
-        )
-    )
-    request_ref = reference(request)
-    if not isinstance(used, StoredDataRef) or not isinstance(
-        request_ref, StoredDataRef
-    ):
-        raise ValueError("FAKE_CONTEXT_OUTPUT_MISMATCH")
-    receipt_ref = runtime.unit_of_work.artifacts.commit(
-        runtime.unit_of_work.artifacts.stage_bytes(
-            canonical_bytes(
-                {
-                    "kind": "fake_context_receipt",
-                    "action_id": str(action.action_id),
-                    "attempt_id": str(work.active_attempt_id),
-                }
-            ),
-            "application/json",
-        )
-    )
-    completed = ContextRetrievalService._complete(
-        runtime=runtime,
-        runner=runner,
-        work=work,
-        service_identity=service_identity,
-        response=response,
-        read_decision_ref=used,
-        request_ref=request_ref,
-        plan_ref=plan_ref,
-        profile_ref=ceiling_ref,
-        receipt_ref=receipt_ref,
-        fragment_refs=(fragment_ref,),
-    )
-    output_ref = completed.output_refs[0]
-    if not isinstance(output_ref, StoredDataRef) or output_ref != reference(response):
-        raise ValueError("FAKE_CONTEXT_OUTPUT_MISMATCH")
-    return response, output_ref

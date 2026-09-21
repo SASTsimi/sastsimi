@@ -751,7 +751,7 @@ def test_real_static_slice_is_public_composition_only_and_not_selected_by_cli() 
     assert "PythonAstProcessAdapter" not in interfaces
     assert "OpenGrepProcessAdapter" not in interfaces
     assert "CodeQLProcessAdapter" not in interfaces
-    assert "build_fake_pipeline" in interfaces
+    assert "build_fake_pipeline" not in interfaces
 
 
 def test_static_analysis_process_creation_is_shell_free_and_suspended() -> None:
