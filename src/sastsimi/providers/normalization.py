@@ -37,8 +37,38 @@ _CODEX_FAILURES: dict[InvocationStatus, str] = {
 }
 
 
+_CLAUDE_FAILURES: dict[InvocationStatus, str] = {
+    "AUTH_REQUIRED": "AUTH_REQUIRED: Claude Code subscription login is required",
+    "TIMED_OUT": "TIMED_OUT: Claude Code subscription request exceeded its deadline",
+    "RATE_LIMITED": "RATE_LIMITED: Claude Code subscription usage limit was reached",
+    "INVALID_OUTPUT": "INVALID_OUTPUT: Claude Code returned invalid structured output",
+    "CANCELLED": "CANCELLED: Claude Code subscription request was cancelled",
+    "FAILED": "FAILED: Claude Code subscription request failed",
+    "SUCCEEDED": "FAILED: Claude Code subscription result status was inconsistent",
+}
+
+
 def failure(status: InvocationStatus) -> NormalizedFailure:
     return NormalizedFailure(status, _FAILURES[status])
+
+
+def claude_failure(status: InvocationStatus) -> NormalizedFailure:
+    if status == "SUCCEEDED":
+        return NormalizedFailure("FAILED", _CLAUDE_FAILURES[status])
+    return NormalizedFailure(status, _CLAUDE_FAILURES[status])
+
+
+def normalize_claude_exception(error: BaseException) -> NormalizedFailure:
+    """Classify local Claude Code boundary failures without copying exception text."""
+    if isinstance(error, ProviderInvalidOutputError):
+        return claude_failure("INVALID_OUTPUT")
+    if isinstance(error, ProviderInputMismatchError):
+        return NormalizedFailure(
+            "FAILED", "FAILED: authorized Claude Code request inputs did not match"
+        )
+    if isinstance(error, TimeoutError):
+        return claude_failure("TIMED_OUT")
+    return claude_failure("FAILED")
 
 
 def codex_failure(status: InvocationStatus) -> NormalizedFailure:
@@ -99,8 +129,10 @@ def normalize_response_failure(
 
 __all__ = [
     "NormalizedFailure",
+    "claude_failure",
     "codex_failure",
     "failure",
+    "normalize_claude_exception",
     "normalize_codex_exception",
     "normalize_exception",
     "normalize_response_failure",

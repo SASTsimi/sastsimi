@@ -34,6 +34,9 @@ type StructuredOutputValue = dict[str, JsonValue] | list[JsonValue]
 # which keeps the provider modules acyclic without trusting a caller string.
 CODEX_PVD_RUNNER_MARKER = object()
 
+# The same arrangement for the official Claude Code subscription adapter.
+CLAUDE_PVD_RUNNER_MARKER = object()
+
 
 class CredentialUnavailableError(RuntimeError):
     """The approved credential reference cannot currently be resolved."""
@@ -175,6 +178,11 @@ class CodexProcessRunner(Protocol):
     async def execute(self, request: CodexProcessRequest) -> CodexProcessResult: ...
 
 
+# The official-client process boundary is the same shape for every subscription
+# client, so both subscription adapters are typed against it.
+type SubscriptionProcessRunner = CodexProcessRunner
+
+
 __all__ = [
     "CODEX_PVD_RUNNER_MARKER",
     "Clock",
@@ -195,5 +203,6 @@ __all__ = [
     "ResolvedPromptContext",
     "ResolvedPromptInput",
     "SecretResolver",
+    "SubscriptionProcessRunner",
     "StructuredOutputValue",
 ]

@@ -1,5 +1,15 @@
 """External provider adapters, composed only at the application boundary."""
 
+from .claude_subscription import (
+    ApprovedClaudeExecutable as ApprovedClaudeExecutable,
+)
+from .claude_subscription import (
+    ApprovedClaudeExecutionBinding as ApprovedClaudeExecutionBinding,
+)
+from .claude_subscription import ClaudeCliProcessRunner as ClaudeCliProcessRunner
+from .claude_subscription import (
+    ClaudeSubscriptionAdapter as ClaudeSubscriptionAdapter,
+)
 from .codex_subscription import (
     ApprovedCodexExecutable as ApprovedCodexExecutable,
 )
