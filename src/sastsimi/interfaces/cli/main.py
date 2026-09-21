@@ -29,6 +29,7 @@ from sastsimi.interfaces.cli import simple_evaluation as simple_evaluation_comma
 from sastsimi.interfaces.cli import status as status_command
 from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.output import emit_data, emit_result
+from sastsimi.interfaces.cli.progress import ProgressRenderer
 from sastsimi.orchestration.production_onboarding_builder import (
     ApprovedProbeResolver,
 )
@@ -253,6 +254,7 @@ def main(
         allow_abbrev=False,
     )
     resume_parser.add_argument("analysis_id")
+    resume_parser.add_argument("--no-progress", action="store_true")
     resume_parser.add_argument("--format", choices=["text", "json"])
     results_parser = subparsers.add_parser(
         "results", help="read one terminal production result", allow_abbrev=False
@@ -479,7 +481,19 @@ def main(
                 raise _InputError
             if args.profile is None:
                 application = resolve_public_application()
-                data = application.analyze(repository, args.commit)
+                progress_call = getattr(application, "analyze_with_progress", None)
+                if (
+                    output_format != "json"
+                    and not args.no_progress
+                    and callable(progress_call)
+                ):
+                    renderer = ProgressRenderer(
+                        stream=sys.stdout,
+                        is_tty=sys.stdout.isatty(),
+                    )
+                    data = progress_call(repository, args.commit, renderer.render)
+                else:
+                    data = application.analyze(repository, args.commit)
                 public_command.emit_public(
                     output_format,
                     sys.stdout,
@@ -586,7 +600,19 @@ def main(
             command_name = "resume"
             if public_application is not None or args.analysis_id.startswith("A-"):
                 application = resolve_public_application()
-                data = application.resume(args.analysis_id)
+                progress_call = getattr(application, "resume_with_progress", None)
+                if (
+                    output_format != "json"
+                    and not args.no_progress
+                    and callable(progress_call)
+                ):
+                    renderer = ProgressRenderer(
+                        stream=sys.stdout,
+                        is_tty=sys.stdout.isatty(),
+                    )
+                    data = progress_call(args.analysis_id, renderer.render)
+                else:
+                    data = application.resume(args.analysis_id)
                 public_command.emit_public(
                     output_format,
                     sys.stdout,

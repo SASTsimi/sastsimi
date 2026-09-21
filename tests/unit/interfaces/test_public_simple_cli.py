@@ -5,6 +5,7 @@ from pathlib import Path
 
 from sastsimi.config.user_config import UserConfig, UserConfigStore
 from sastsimi.interfaces.cli.main import main
+from sastsimi.progress.models import ProgressSnapshot
 
 
 class _PublicApplication:
@@ -30,6 +31,31 @@ class _PublicApplication:
 
     def poc(self, finding_id: str) -> str:
         return f"PoC {finding_id}\n"
+
+
+class _ProgressApplication(_PublicApplication):
+    def analyze_with_progress(self, repository, commit, callback):
+        callback(
+            ProgressSnapshot(
+                analysis_id="analysis-exact",
+                status="RUNNING",
+                completed_units=1,
+                known_units=4,
+                percent=25,
+                current_stage="STATIC_DONE",
+            )
+        )
+        callback(
+            ProgressSnapshot(
+                analysis_id="analysis-exact",
+                status="COMPLETE",
+                completed_units=4,
+                known_units=4,
+                percent=100,
+                current_stage="REPORT_DONE",
+            )
+        )
+        return self.analyze(repository, commit)
 
 
 def _config(tmp_path: Path) -> UserConfigStore:
@@ -101,6 +127,26 @@ def test_public_commands_emit_json_only_when_requested(tmp_path, capsys) -> None
         user_config_store=store,
     ) == 0
     assert json.loads(capsys.readouterr().out)["data"]["finding_count"] == 1
+
+
+def test_public_analyze_renders_checkpoint_progress_when_enabled(
+    tmp_path, capsys
+) -> None:
+    assert main(
+        [
+            "analyze",
+            "https://example.invalid/repository.git",
+            "--commit",
+            "a" * 40,
+        ],
+        public_application=_ProgressApplication(),
+        user_config_store=_config(tmp_path),
+    ) == 0
+
+    output = capsys.readouterr().out
+    assert "현재 단계: STATIC_DONE (1/4)" in output
+    assert "현재 단계: REPORT_DONE (4/4)" in output
+    assert "분석 ID: A-001" in output
 
 
 def test_public_poc_and_report_aliases_keep_legacy_report_commands(

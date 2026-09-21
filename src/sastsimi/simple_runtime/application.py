@@ -112,7 +112,12 @@ class SimpleAnalysisApplication:
         self._ids = id_factory or (lambda: uuid4().hex)
         self._display = AnalysisDisplayIdStore(store.database_path)
 
-    async def analyze(self, request: SimpleAnalysisRequest) -> SimpleAnalysisOutcome:
+    async def analyze(
+        self,
+        request: SimpleAnalysisRequest,
+        *,
+        on_analysis_started: Callable[[str], None] | None = None,
+    ) -> SimpleAnalysisOutcome:
         analysis_id = self._ids()
         workspace_id = self._ids()
         display_id = self._display.get_or_allocate(analysis_id)
@@ -130,6 +135,8 @@ class SimpleAnalysisApplication:
             repository=request.repository,
         )
         self._store.save_analysis_run(run)
+        if on_analysis_started is not None:
+            on_analysis_started(analysis_id)
         return await self._run_static(run, identity)
 
     async def _run_static(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -19,6 +20,7 @@ from sastsimi.contracts.ids import AnalysisId, CommitId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.interfaces.cli.public import PublicCommandApplication
 from sastsimi.orchestration.run_scope_plan import PlannedRunScope
+from sastsimi.progress.models import ProgressSnapshot
 from sastsimi.progress.projector import ProgressProjector
 from sastsimi.providers.codex_subscription import CodexCliProcessRunner
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
@@ -27,6 +29,7 @@ from sastsimi.runtime.system_support import SystemClock, UUIDIds
 from sastsimi.sandbox.docker_adapter import DockerAdapter
 from sastsimi.simple_runtime.application import (
     SimpleAnalysisApplication,
+    SimpleAnalysisOutcome,
     SimpleAnalysisRequest,
     StaticBootstrapResult,
 )
@@ -170,6 +173,31 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         )
         return self._outcome(outcome.display_analysis_id, repository, commit)
 
+    def analyze_with_progress(
+        self,
+        repository: str,
+        commit: str,
+        callback: Callable[[ProgressSnapshot], None],
+    ) -> dict[str, object]:
+        async def run() -> SimpleAnalysisOutcome:
+            started: list[str] = []
+            application = build_analysis_application(self._config, self._profile)
+            task = asyncio.create_task(
+                application.analyze(
+                    SimpleAnalysisRequest(
+                        data_dir=self._config.data_dir,
+                        repository=repository,
+                        commit=commit,
+                    ),
+                    on_analysis_started=started.append,
+                )
+            )
+            outcome = await self._track(task, started, callback)
+            return outcome
+
+        outcome = asyncio.run(run())
+        return self._outcome(outcome.display_analysis_id, repository, commit)
+
     def resume(self, analysis_id: str) -> dict[str, object]:
         outcome = asyncio.run(
             build_analysis_application(self._config, self._profile).resume(analysis_id)
@@ -180,6 +208,51 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             run.repository,
             run.commit_id,
         )
+
+    def resume_with_progress(
+        self,
+        analysis_id: str,
+        callback: Callable[[ProgressSnapshot], None],
+    ) -> dict[str, object]:
+        exact = self._display.resolve(analysis_id)
+
+        async def run() -> SimpleAnalysisOutcome:
+            task = asyncio.create_task(
+                build_analysis_application(self._config, self._profile).resume(exact)
+            )
+            return await self._track(task, [exact], callback)
+
+        outcome = asyncio.run(run())
+        stored = self._store.require_analysis_run(outcome.identity.analysis_id)
+        return self._outcome(
+            outcome.display_analysis_id,
+            stored.repository,
+            stored.commit_id,
+        )
+
+    async def _track(
+        self,
+        task: asyncio.Task[SimpleAnalysisOutcome],
+        started: list[str],
+        callback: Callable[[ProgressSnapshot], None],
+    ) -> SimpleAnalysisOutcome:
+        last: ProgressSnapshot | None = None
+        while not task.done():
+            if started:
+                try:
+                    current = ProgressProjector(self._store).snapshot(started[0])
+                except LookupError:
+                    current = None
+                if current is not None and current != last:
+                    callback(current)
+                    last = current
+            await asyncio.sleep(0.2)
+        outcome = await task
+        if started:
+            current = ProgressProjector(self._store).snapshot(started[0])
+            if current != last:
+                callback(current)
+        return outcome
 
     def status(self, analysis_id: str) -> dict[str, object]:
         exact = self._display.resolve(analysis_id)
