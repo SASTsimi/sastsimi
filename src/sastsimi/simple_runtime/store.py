@@ -170,6 +170,35 @@ class SimpleCheckpointStore:
             ).fetchall()
         return tuple(str(row[0]) for row in rows)
 
+    def has_stage_activity(
+        self,
+        identity: CheckpointIdentity,
+        stage: SimpleStage,
+        attempt_id: str,
+    ) -> bool:
+        """Return whether an append-only event already used this stage attempt."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT event_json
+                FROM agent_activity_events
+                WHERE analysis_id = ?
+                  AND hypothesis_key = ?
+                  AND attempt_id = ?
+                """,
+                (
+                    identity.analysis_id,
+                    self._hypothesis_key(identity),
+                    attempt_id,
+                ),
+            ).fetchall()
+        return any(
+            AgentActivityEvent.model_validate_json(row["event_json"]).stage
+            == stage.value
+            for row in rows
+        )
+
     def reusable(
         self,
         identity: CheckpointIdentity,

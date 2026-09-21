@@ -181,6 +181,15 @@ async def test_poc_execution_retry_starts_a_new_candidate_attempt(tmp_path) -> N
         ),
         StageStatus.BLOCKED,
     )
+    # Simulate a crash/recovery boundary where the append-only activity log
+    # survived but the execution checkpoint was invalidated.
+    store.invalidate_from(
+        _identity(),
+        SimpleStage.POC_EXECUTION_DONE,
+        new_inputs=(_ref("candidate-old"),),
+        force=True,
+    )
+    assert store.get(_identity(), SimpleStage.POC_EXECUTION_DONE) is None
 
     calls: list[SimpleStage] = []
     outcome = await SimpleRuntimeRunner(

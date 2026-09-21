@@ -178,7 +178,7 @@ class SimpleRuntimeRunner:
     def _reset_incomplete_poc_attempt(self, identity: CheckpointIdentity) -> None:
         candidate = self.store.get(identity, SimpleStage.POC_CANDIDATE_DONE)
         execution = self.store.get(identity, SimpleStage.POC_EXECUTION_DONE)
-        if candidate is None or execution is None:
+        if candidate is None:
             return
         if candidate.status is not StageStatus.SUCCEEDED:
             return
@@ -186,10 +186,20 @@ class SimpleRuntimeRunner:
             identity,
             SimpleStage.POC_EXECUTION_DONE,
         )
-        if self.store.reusable(
-            identity,
-            SimpleStage.POC_EXECUTION_DONE,
-            execution_inputs,
+        reusable_execution = execution is not None and self.store.reusable(
+            identity, SimpleStage.POC_EXECUTION_DONE, execution_inputs
+        )
+        orphaned_execution_activity = (
+            execution is None
+            and candidate.attempt_id is not None
+            and self.store.has_stage_activity(
+                identity,
+                SimpleStage.POC_EXECUTION_DONE,
+                candidate.attempt_id,
+            )
+        )
+        if reusable_execution or (
+            execution is None and not orphaned_execution_activity
         ):
             return
 
