@@ -57,6 +57,7 @@ class SimpleRuntimeRunner:
         return await self.resume_hypothesis(identity)
 
     async def resume_hypothesis(self, identity: CheckpointIdentity) -> RunOutcome:
+        self._reset_incomplete_poc_attempt(identity)
         for stage in HYPOTHESIS_STAGES:
             final = self.store.get(identity, SimpleStage.VERIFICATION_FINAL_DONE)
             if (
@@ -172,4 +173,31 @@ class SimpleRuntimeRunner:
         return RunOutcome(
             current_stage=SimpleStage.REPORT_DONE,
             status=StageStatus.SUCCEEDED,
+        )
+
+    def _reset_incomplete_poc_attempt(self, identity: CheckpointIdentity) -> None:
+        candidate = self.store.get(identity, SimpleStage.POC_CANDIDATE_DONE)
+        execution = self.store.get(identity, SimpleStage.POC_EXECUTION_DONE)
+        if candidate is None or execution is None:
+            return
+        if candidate.status is not StageStatus.SUCCEEDED:
+            return
+        execution_inputs = self.store.input_refs_for(
+            identity,
+            SimpleStage.POC_EXECUTION_DONE,
+        )
+        if self.store.reusable(
+            identity,
+            SimpleStage.POC_EXECUTION_DONE,
+            execution_inputs,
+        ):
+            return
+
+        # A retry is a new attempt. The candidate and its execution must share
+        # that attempt, so restart the pair instead of reusing an old attempt ID.
+        self.store.invalidate_from(
+            identity,
+            SimpleStage.POC_CANDIDATE_DONE,
+            new_inputs=candidate.input_refs,
+            force=True,
         )

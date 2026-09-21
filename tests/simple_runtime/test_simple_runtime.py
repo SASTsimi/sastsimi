@@ -52,6 +52,7 @@ def _checkpoint(
     *,
     inputs: tuple[StoredDataRef, ...],
     stage_version: str | None = None,
+    attempt_id: str | None = None,
 ) -> StageCheckpoint:
     normalized_stage = SimpleStage(stage)
     return StageCheckpoint(
@@ -61,6 +62,7 @@ def _checkpoint(
         status=StageStatus.PENDING,
         input_refs=inputs,
         input_hash=input_reference_hash(inputs),
+        attempt_id=attempt_id,
     )
 
 
@@ -145,6 +147,55 @@ async def test_resume_reuses_exact_success_and_invalidates_changed_downstream(
     assert calls[0] is SimpleStage.POC_CANDIDATE_DONE
     assert SimpleStage.STATIC_DONE not in calls
     assert SimpleStage.HYPOTHESIS_DONE not in calls
+    assert outcome.current_stage is SimpleStage.REPORT_DONE
+
+
+@pytest.mark.asyncio
+async def test_poc_execution_retry_starts_a_new_candidate_attempt(tmp_path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.VERIFICATION_INITIAL_DONE)
+    candidate_inputs = store.input_refs_for(
+        _identity(),
+        SimpleStage.POC_CANDIDATE_DONE,
+    )
+    old_attempt_id = "poc-attempt-old"
+    candidate = _checkpoint(
+        SimpleStage.POC_CANDIDATE_DONE,
+        inputs=candidate_inputs,
+        attempt_id=old_attempt_id,
+    )
+    store.save_success(candidate, outputs=(_ref("candidate-old"),))
+    execution = store.mark_running(
+        _identity(),
+        SimpleStage.POC_EXECUTION_DONE,
+        (_ref("candidate-old"),),
+        attempt_id=old_attempt_id,
+        inherit_from=store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE),
+    )
+    store.mark_failure(
+        execution,
+        StageFailure(
+            code="POC_INVALID_OUTPUT",
+            retryable=True,
+            safe_message="retry the PoC attempt",
+        ),
+        StageStatus.BLOCKED,
+    )
+
+    calls: list[SimpleStage] = []
+    outcome = await SimpleRuntimeRunner(
+        store,
+        _recording_handlers(calls),
+    ).resume_analysis(_identity())
+
+    retried_candidate = store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE)
+    retried_execution = store.require(_identity(), SimpleStage.POC_EXECUTION_DONE)
+    assert calls[:2] == [
+        SimpleStage.POC_CANDIDATE_DONE,
+        SimpleStage.POC_EXECUTION_DONE,
+    ]
+    assert retried_candidate.attempt_id != old_attempt_id
+    assert retried_execution.attempt_id == retried_candidate.attempt_id
     assert outcome.current_stage is SimpleStage.REPORT_DONE
 
 
