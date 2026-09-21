@@ -36,7 +36,11 @@ STAGE_VERSION: dict[SimpleStage, str] = {
     stage: (
         "2"
         if stage
-        in {SimpleStage.VERIFICATION_INITIAL_DONE, SimpleStage.REPORT_DONE}
+        in {
+            SimpleStage.VERIFICATION_INITIAL_DONE,
+            SimpleStage.POC_EXECUTION_DONE,
+            SimpleStage.REPORT_DONE,
+        }
         else "1"
     )
     for stage in STAGE_ORDER

@@ -408,10 +408,9 @@ class PoCExecutionStage:
             {
                 "outcome": _enum("SUPPORTED", "DISPROVED", "INCONCLUSIVE"),
                 "rationale": _string(),
-                "execution_ref": _string(),
                 "limitations": _string_array(),
             },
-            ["outcome", "rationale", "execution_ref", "limitations"],
+            ["outcome", "rationale", "limitations"],
         )
         context = self._artifacts.prompt_context(
             (candidate_ref, execution_ref, stdout_ref, stderr_ref)
@@ -422,8 +421,8 @@ class PoCExecutionStage:
 You are the Dynamic Reproduction Agent interpreting one completed local PoC
 execution. Return SUPPORTED only when the output and exit code directly support
 the exact hypothesis, DISPROVED only for actual counterevidence, otherwise
-INCONCLUSIVE. Copy the exact execution artifact content hash into
-`execution_ref`. Do not reinterpret an execution error as DISPROVED.
+INCONCLUSIVE. The Runtime binds your interpretation to the exact execution
+artifact. Do not reinterpret an execution error as DISPROVED.
 """,
                 context,
             ),
@@ -434,15 +433,6 @@ INCONCLUSIVE. Copy the exact execution artifact content hash into
             _raise_provider_failure(
                 interpreted.model_copy(
                     update={"evidence_refs": (execution_ref, stdout_ref, stderr_ref)}
-                )
-            )
-        if interpreted.value["execution_ref"] != execution_ref.content_hash:
-            raise StageFailed(
-                StageFailure(
-                    code="POC_INTERPRETATION_REFERENCE_MISMATCH",
-                    retryable=False,
-                    safe_message="Interpretation cited a different execution",
-                    evidence_refs=(execution_ref,),
                 )
             )
         interpretation_ref = self._artifacts.put_json(
