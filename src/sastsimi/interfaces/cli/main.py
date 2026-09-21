@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from sastsimi import bootstrap
 from sastsimi.config.production_profile import load_production_profile
+from sastsimi.config.user_config import UserConfigStore
 from sastsimi.interfaces.cli import analyze as analyze_command
 from sastsimi.interfaces.cli import cancel as cancel_command
 from sastsimi.interfaces.cli import capability as capability_command
@@ -19,6 +20,7 @@ from sastsimi.interfaces.cli import dashboard as dashboard_command
 from sastsimi.interfaces.cli import demo as demo_command
 from sastsimi.interfaces.cli import local_evaluation as local_evaluation_command
 from sastsimi.interfaces.cli import onboarding as onboarding_command
+from sastsimi.interfaces.cli import public as public_command
 from sastsimi.interfaces.cli import report as report_command
 from sastsimi.interfaces.cli import reports as reports_command
 from sastsimi.interfaces.cli import result as result_command
@@ -56,6 +58,33 @@ def _exact_commit(value: str) -> str:
     if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value) is None:
         raise argparse.ArgumentTypeError("exact commit required")
     return value
+
+
+def _normalize_public_argv(argv: list[str] | None) -> list[str] | None:
+    """Translate compact report syntax while preserving legacy subcommands."""
+
+    if argv is None:
+        return None
+    normalized = list(argv)
+    try:
+        index = normalized.index("report")
+    except ValueError:
+        return normalized
+    if index + 1 >= len(normalized) or normalized[index + 1] in {
+        "show",
+        "export",
+        "-h",
+        "--help",
+    }:
+        return normalized
+    finding_id = normalized[index + 1]
+    if normalized[index + 2 : index + 4] == ["--export", "markdown"]:
+        return (
+            normalized[: index + 1]
+            + ["export", finding_id, "--format", "markdown"]
+            + normalized[index + 4 :]
+        )
+    return normalized[: index + 1] + ["show", finding_id] + normalized[index + 2 :]
 
 
 def _approved_probe_resolver(
@@ -108,6 +137,8 @@ def main(
         local_evaluation_command.LocalEvaluationAnalyzeEntrypoint | None
     ) = None,
     setup_service: SetupService | None = None,
+    public_application: public_command.PublicCommandApplication | None = None,
+    user_config_store: UserConfigStore | None = None,
 ) -> int:
     _configure_standard_streams()
     output_format = "text"
@@ -165,9 +196,11 @@ def main(
     analyze_parser = subparsers.add_parser(
         "analyze", help="run a production repository analysis", allow_abbrev=False
     )
-    analyze_parser.add_argument("--repo", required=True)
+    analyze_parser.add_argument("repository", nargs="?")
+    analyze_parser.add_argument("--repo", dest="repository_option")
     analyze_parser.add_argument("--commit", required=True, type=_exact_commit)
-    analyze_parser.add_argument("--profile", required=True, type=Path)
+    analyze_parser.add_argument("--profile", type=Path)
+    analyze_parser.add_argument("--no-progress", action="store_true")
     analyze_parser.add_argument("--format", choices=["text", "json"])
     evaluate_parser = subparsers.add_parser(
         "evaluate",
@@ -226,6 +259,16 @@ def main(
     )
     results_parser.add_argument("analysis_id")
     results_parser.add_argument("--format", choices=["text", "json"])
+    result_parser = subparsers.add_parser(
+        "result", help="show one SimpleRuntime result", allow_abbrev=False
+    )
+    result_parser.add_argument("analysis_id")
+    result_parser.add_argument("--format", choices=["text", "json"])
+    poc_parser = subparsers.add_parser(
+        "poc", help="show one validated PoC", allow_abbrev=False
+    )
+    poc_parser.add_argument("finding_id")
+    poc_parser.add_argument("--format", choices=["text", "json"])
     reports_parser = subparsers.add_parser(
         "reports", help="list current human-review reports", allow_abbrev=False
     )
@@ -352,15 +395,24 @@ def main(
     codeql_provision.add_argument("--repository-root", type=Path, required=True)
     codeql_provision.add_argument("--format", choices=["text", "json"])
     try:
-        args = parser.parse_args(argv)
+        args = parser.parse_args(_normalize_public_argv(argv))
         requested_output = getattr(args, "format", None)
         if requested_output is not None:
             output_format = requested_output
+        selected_user_store = user_config_store or UserConfigStore()
+        user_config = None
+        if args.command != "setup":
+            try:
+                user_config = selected_user_store.load()
+            except ValueError:
+                user_config = None
         overrides = {
             key: value
             for key, value in {
                 "log_level": args.log_level,
-                "data_dir": args.data_dir,
+                "data_dir": args.data_dir or (
+                    user_config.data_dir if user_config is not None else None
+                ),
                 "output_format": requested_output,
             }.items()
             if value is not None
@@ -409,6 +461,21 @@ def main(
             return int(ExitCode.OK)
         if args.command == "analyze":
             command_name = "analyze"
+            repository = args.repository or args.repository_option
+            if repository is None or (
+                args.repository is not None and args.repository_option is not None
+            ):
+                raise _InputError
+            if args.profile is None:
+                application = public_application or public_command.unavailable()
+                data = application.analyze(repository, args.commit)
+                public_command.emit_public(
+                    output_format,
+                    sys.stdout,
+                    command=command_name,
+                    data=data,
+                )
+                return int(ExitCode.OK)
             if production_analyze is None:
                 production_analyze = cast(
                     analyze_command.ProductionAnalyzeEntrypoint,
@@ -416,7 +483,7 @@ def main(
                 )
             request = analyze_command.ProductionAnalyzeRequest(
                 data_dir=config.data_dir,
-                repository=args.repo,
+                repository=repository,
                 commit=args.commit,
                 profile=args.profile,
             )
@@ -506,6 +573,16 @@ def main(
             return int(ExitCode.OK)
         if args.command == "resume":
             command_name = "resume"
+            if public_application is not None or args.analysis_id.startswith("A-"):
+                application = public_application or public_command.unavailable()
+                data = application.resume(args.analysis_id)
+                public_command.emit_public(
+                    output_format,
+                    sys.stdout,
+                    command=command_name,
+                    data=data,
+                )
+                return int(ExitCode.OK)
             bootstrap.inspect_production_resume(config.data_dir, args.analysis_id)
         if args.command == "cancel":
             command_name = "cancel"
@@ -530,6 +607,16 @@ def main(
             return int(ExitCode.OK)
         if args.command == "status":
             command_name = "status"
+            if public_application is not None or args.analysis_id.startswith("A-"):
+                application = public_application or public_command.unavailable()
+                data = application.status(args.analysis_id)
+                public_command.emit_public(
+                    output_format,
+                    sys.stdout,
+                    command=command_name,
+                    data=data,
+                )
+                return int(ExitCode.OK)
             if production_query is None:
                 production_query = cast(
                     analyze_command.ProductionQueryEntrypoint,
@@ -551,6 +638,31 @@ def main(
                 output_format="json" if output_format == "json" else "summary",
             )
             emit_data(output_format, sys.stdout, command=command_name, data=data)
+            return int(ExitCode.OK)
+        if args.command == "result":
+            command_name = "result"
+            application = public_application or public_command.unavailable()
+            data = application.result(args.analysis_id)
+            public_command.emit_public(
+                output_format,
+                sys.stdout,
+                command=command_name,
+                data=data,
+            )
+            return int(ExitCode.OK)
+        if args.command == "poc":
+            command_name = "poc"
+            application = public_application or public_command.unavailable()
+            value = application.poc(args.finding_id)
+            if output_format == "json":
+                emit_data(
+                    output_format,
+                    sys.stdout,
+                    command=command_name,
+                    data={"finding_id": args.finding_id, "content": value},
+                )
+            else:
+                sys.stdout.write(value)
             return int(ExitCode.OK)
         if args.command == "reports":
             command_name = "reports"
@@ -767,6 +879,8 @@ def main(
         code = ExitCode.RESULT_INCOMPLETE
     except result_command.ResultIntegrityError:
         code = ExitCode.INTEGRITY_ERROR
+    except public_command.PublicCommandUnavailable:
+        code = ExitCode.CONFIG_ERROR
     except Exception:
         trace_id = "trace-" + str(uuid4())
         logger = bootstrap.build_diagnostic_logger(sys.stderr, "ERROR")
