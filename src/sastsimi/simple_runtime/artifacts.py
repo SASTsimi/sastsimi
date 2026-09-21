@@ -21,10 +21,73 @@ from .models import CheckpointIdentity
 _MAX_CONTEXT_BYTES = 256 * 1024
 
 
+def _list_nodes(value: Any, path: str = "") -> list[tuple[int, str, list[Any]]]:
+    """Return every non-empty list in the document with its size and path."""
+
+    found: list[tuple[int, str, list[Any]]] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            found.extend(_list_nodes(item, f"{path}.{key}" if path else str(key)))
+    elif isinstance(value, list):
+        if value:
+            found.append((len(canonical_bytes(value)), path, value))
+        for index, item in enumerate(value):
+            if isinstance(item, (dict, list)):
+                found.extend(_list_nodes(item, f"{path}[{index}]"))
+    return found
+
+
+def _fit_document(redacted: bytes, budget: int) -> tuple[Any, int, dict[str, int]]:
+    """Return the document reduced to fit ``budget`` without breaking its JSON.
+
+    Cutting encoded JSON at a byte offset yields text that no longer parses, and
+    the caller then fell back to a raw truncated string.  A one megabyte static
+    bundle therefore reached the agent as a broken fragment holding whichever
+    keys happened to sort first, which is how a run can carry complete tool
+    output and still look like it found nothing.  Halve the longest list
+    anywhere in the document instead, repeatedly, and report what was dropped:
+    the largest collections give up entries first, so small high-signal ones
+    survive intact.
+    """
+
+    try:
+        value: Any = json.loads(redacted)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        text = redacted.decode("utf-8", errors="replace")[:budget]
+        return text, len(text.encode("utf-8")), {}
+    if len(redacted) <= budget:
+        return value, len(redacted), {}
+    reduced: Any = json.loads(redacted)
+    omitted: dict[str, int] = {}
+    while len(canonical_bytes(reduced)) > budget:
+        nodes = _list_nodes(reduced)
+        if not nodes:
+            break
+        _, path, node = max(nodes)
+        kept = len(node) // 2
+        omitted[path or "."] = omitted.get(path or ".", 0) + (len(node) - kept)
+        del node[kept:]
+    encoded = canonical_bytes(reduced)
+    if len(encoded) > budget:
+        return (
+            {"omitted": True, "original_bytes": len(redacted)},
+            0,
+            {"document": 1},
+        )
+    return reduced, len(encoded), omitted
+
+
 class SimpleArtifactRepository:
     """Exact record reader plus content-addressed output writer."""
 
-    def __init__(self, data_dir: str | Path, identity: CheckpointIdentity) -> None:
+    def __init__(
+        self,
+        data_dir: str | Path,
+        identity: CheckpointIdentity,
+        *,
+        max_context_bytes: int = _MAX_CONTEXT_BYTES,
+    ) -> None:
+        self._max_context_bytes = max_context_bytes
         self.data_dir = Path(data_dir)
         self.identity = identity
         self.paths = RuntimePaths(self.data_dir)
@@ -69,23 +132,23 @@ class SimpleArtifactRepository:
         for ref in refs:
             raw = self.read(ref)
             redacted = self._redacted(raw)
-            remaining = _MAX_CONTEXT_BYTES - used
+            remaining = self._max_context_bytes - used
             if remaining <= 0:
                 break
-            redacted = redacted[:remaining]
-            used += len(redacted)
-            try:
-                data: Any = json.loads(redacted)
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                data = redacted.decode("utf-8", errors="replace")
+            data, consumed, omitted = _fit_document(redacted, remaining)
+            used += consumed
             item: dict[str, Any] = {
                 "reference": ref.model_dump(mode="json"),
                 "data": data,
             }
+            if omitted:
+                # The agent must be able to tell a short list from a trimmed
+                # one; silence here reads as "the tool found nothing".
+                item["omitted_entries"] = omitted
             if ref.data_kind == "code_context_response":
                 item["code_fragments"] = self._code_fragments(
                     raw,
-                    remaining - len(redacted),
+                    remaining - consumed,
                 )
             items.append(item)
         return canonical_bytes({"exact_inputs": items})
