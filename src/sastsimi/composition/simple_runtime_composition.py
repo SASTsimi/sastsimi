@@ -53,6 +53,17 @@ from sastsimi.simple_runtime.stages import build_stage_handlers
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
+def _call_timeout_ms(profile: SimpleExecutionProfile) -> int:
+    """Return the per-call ceiling the operator's elapsed budget allows.
+
+    One stage must not be able to consume the whole run, so the share is
+    bounded well below ``max_elapsed_seconds`` while still clearing the
+    three-minute default that a large static bundle routinely exceeds.
+    """
+
+    return max(180_000, min(profile.max_elapsed_seconds * 1000 // 8, 1_800_000))
+
+
 def _codex_home() -> Path:
     configured = os.environ.get("CODEX_HOME")
     return Path(configured).expanduser() if configured else Path.home() / ".codex"
@@ -137,6 +148,11 @@ def build_analysis_application(
                 containers=PortableContainerFactory(docker),
                 environments=environments,
                 store=runtime_store,
+                # A stage that exceeds its per-call ceiling is blocked for the
+                # whole run, so the operator's elapsed budget has to reach the
+                # LLM calls too, not only the tool subprocesses.
+                call_timeout_ms=_call_timeout_ms(profile),
+                poc_timeout_ms=_call_timeout_ms(profile),
             ),
         )
 
