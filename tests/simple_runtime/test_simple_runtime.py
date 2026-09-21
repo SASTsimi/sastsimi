@@ -302,6 +302,90 @@ async def test_false_stops_before_cwe_gate_and_report(tmp_path) -> None:
     assert store.get(_identity(), SimpleStage.REPORT_DONE) is None
 
 
+@pytest.mark.asyncio
+async def test_technical_gate_revise_returns_to_same_final_verification(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "revise" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.POC_EXECUTION_DONE)
+    validated_poc = _ref("validated-poc")
+
+    final_inputs = store.input_refs_for(
+        _identity(),
+        SimpleStage.VERIFICATION_FINAL_DONE,
+    )
+    final_running = store.mark_running(
+        _identity(),
+        SimpleStage.VERIFICATION_FINAL_DONE,
+        final_inputs,
+        attempt_id="verification-attempt-1",
+    )
+    final = store.complete(
+        final_running,
+        StageResult(
+            output_refs=(_ref("verification-old"),),
+            validated_poc_ref=validated_poc,
+            verdict="TRUE",
+        ),
+    )
+    cwe_inputs = final.output_refs
+    cwe_running = store.mark_running(
+        _identity(),
+        SimpleStage.CWE_DONE,
+        cwe_inputs,
+        attempt_id="cwe-attempt-1",
+    )
+    cwe = store.complete(
+        cwe_running,
+        StageResult(output_refs=(_ref("cwe-old"),)),
+    )
+    gate_running = store.mark_running(
+        _identity(),
+        SimpleStage.TECH_GATE_DONE,
+        cwe.output_refs,
+        attempt_id="gate-attempt-1",
+    )
+    revise_ref = _ref("technical-revision-request")
+    store.mark_failure(
+        gate_running,
+        StageFailure(
+            code="TECH_GATE_REVISE",
+            retryable=True,
+            safe_message="revise verification",
+            evidence_refs=(revise_ref,),
+        ),
+        StageStatus.BLOCKED,
+    )
+
+    calls: list[SimpleStage] = []
+    revised_inputs: tuple[StoredDataRef, ...] = ()
+
+    async def revised_verification(
+        checkpoint: StageCheckpoint,
+        _prior: object,
+    ) -> StageResult:
+        nonlocal revised_inputs
+        calls.append(SimpleStage.VERIFICATION_FINAL_DONE)
+        revised_inputs = checkpoint.input_refs
+        return StageResult(
+            output_refs=(_ref("verification-revised"),),
+            validated_poc_ref=validated_poc,
+            verdict="TRUE",
+        )
+
+    handlers = _recording_handlers(calls)
+    handlers[SimpleStage.VERIFICATION_FINAL_DONE] = revised_verification
+    outcome = await SimpleRuntimeRunner(store, handlers).resume_analysis(_identity())
+
+    assert calls[0] is SimpleStage.VERIFICATION_FINAL_DONE
+    assert final.output_refs[0] in revised_inputs
+    assert revise_ref in revised_inputs
+    assert store.require(
+        _identity(), SimpleStage.VERIFICATION_FINAL_DONE
+    ).attempt_number == 2
+    assert outcome.current_stage is SimpleStage.REPORT_DONE
+
+
 def test_scope_denial_creates_only_a_restricted_internal_report() -> None:
     assert internal_report_status("ALLOW") == ("CONFIRMED", True)
     assert internal_report_status("DENY") == ("CONFIRMED_RESTRICTED", False)

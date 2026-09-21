@@ -60,6 +60,7 @@ class SimpleRuntimeRunner:
 
     async def resume_hypothesis(self, identity: CheckpointIdentity) -> RunOutcome:
         self._reset_incomplete_poc_attempt(identity)
+        self._reset_technical_revision(identity)
         for stage in HYPOTHESIS_STAGES:
             final = self.store.get(identity, SimpleStage.VERIFICATION_FINAL_DONE)
             if (
@@ -106,7 +107,14 @@ class SimpleRuntimeRunner:
                 and preceding.attempt_id is not None
                 else uuid4().hex
             )
+            retry_seed = (
+                existing
+                if existing is not None and existing.status is StageStatus.PENDING
+                else None
+            )
             self.store.invalidate_from(identity, stage, new_inputs=input_refs)
+            if retry_seed is not None:
+                self.store.save_checkpoint(retry_seed)
             checkpoint = self.store.mark_running(
                 identity,
                 stage,
@@ -246,5 +254,51 @@ class SimpleRuntimeRunner:
                 recipe_ref=candidate.recipe_ref,
                 image_digest=candidate.image_digest,
                 container_id=candidate.container_id,
+            )
+        )
+
+    def _reset_technical_revision(self, identity: CheckpointIdentity) -> None:
+        gate = self.store.get(identity, SimpleStage.TECH_GATE_DONE)
+        verification = self.store.get(
+            identity,
+            SimpleStage.VERIFICATION_FINAL_DONE,
+        )
+        if (
+            gate is None
+            or gate.status is not StageStatus.BLOCKED
+            or gate.error_code != "TECH_GATE_REVISE"
+            or not gate.retryable
+            or verification is None
+            or verification.status is not StageStatus.SUCCEEDED
+            or verification.attempt_number >= 2
+        ):
+            return
+
+        repair_inputs = tuple(
+            dict.fromkeys(
+                verification.input_refs
+                + verification.output_refs
+                + gate.output_refs
+            )
+        )
+        self.store.invalidate_from(
+            identity,
+            SimpleStage.VERIFICATION_FINAL_DONE,
+            new_inputs=repair_inputs,
+            force=True,
+        )
+        self.store.save_checkpoint(
+            verification.model_copy(
+                update={
+                    "status": StageStatus.PENDING,
+                    "input_refs": repair_inputs,
+                    "input_hash": input_reference_hash(repair_inputs),
+                    "output_refs": (),
+                    "attempt_id": None,
+                    "error_code": None,
+                    "retryable": False,
+                    "validated_poc_ref": None,
+                    "verdict": None,
+                }
             )
         )

@@ -787,7 +787,7 @@ content hashes, limitations, and unresolved conditions.
         checkpoint: StageCheckpoint,
         prior: Mapping[SimpleStage, StageCheckpoint],
     ) -> StageResult:
-        refs = _prior_refs(prior)
+        refs = _unique_refs(_prior_refs(prior) + checkpoint.input_refs)
         result, output_ref = await self._stage.call(checkpoint, refs)
         verdict = cast(Literal["TRUE", "FALSE", "HOLD"], result.value["verdict"])
         dynamic = prior.get(SimpleStage.POC_EXECUTION_DONE)

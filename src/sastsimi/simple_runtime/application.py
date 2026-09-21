@@ -25,7 +25,7 @@ from .models import (
     StageStatus,
     input_reference_hash,
 )
-from .runner import SimpleRuntimeRunner
+from .runner import RunOutcome, SimpleRuntimeRunner
 from .store import SimpleCheckpointStore
 
 
@@ -265,6 +265,7 @@ class SimpleAnalysisApplication:
         static: StaticBootstrapResult,
     ) -> SimpleAnalysisOutcome:
         latest_stage = SimpleStage.HYPOTHESIS_DONE
+        incomplete: RunOutcome | None = None
         index = 0
         while index < len(run.hypothesis_ids):
             hypothesis_id = run.hypothesis_ids[index]
@@ -277,17 +278,27 @@ class SimpleAnalysisApplication:
             ).resume_hypothesis(child)
             latest_stage = outcome.current_stage
             if outcome.status in {StageStatus.BLOCKED, StageStatus.FAILED}:
-                outcome_status: Literal["BLOCKED", "FAILED"] = (
-                    "BLOCKED" if outcome.status is StageStatus.BLOCKED else "FAILED"
-                )
-                return SimpleAnalysisOutcome(
-                    identity=identity,
-                    display_analysis_id=run.display_analysis_id,
-                    status=outcome_status,
-                    current_stage=outcome.current_stage,
-                    error_code=outcome.error_code,
-                )
+                if (
+                    incomplete is None
+                    or outcome.status is StageStatus.FAILED
+                    and incomplete.status is StageStatus.BLOCKED
+                ):
+                    incomplete = outcome
+                continue
             run = self._register_chain_children(run, child, static)
+        if incomplete is not None:
+            outcome_status: Literal["BLOCKED", "FAILED"] = (
+                "BLOCKED"
+                if incomplete.status is StageStatus.BLOCKED
+                else "FAILED"
+            )
+            return SimpleAnalysisOutcome(
+                identity=identity,
+                display_analysis_id=run.display_analysis_id,
+                status=outcome_status,
+                current_stage=incomplete.current_stage,
+                error_code=incomplete.error_code,
+            )
         return SimpleAnalysisOutcome(
             identity=identity,
             display_analysis_id=run.display_analysis_id,

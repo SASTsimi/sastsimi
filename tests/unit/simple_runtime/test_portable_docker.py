@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import pytest
+
+from sastsimi.sandbox.docker_adapter import DockerCommandOutcome
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
     STAGE_VERSION,
@@ -9,11 +12,47 @@ from sastsimi.simple_runtime.models import (
     StageStatus,
     input_reference_hash,
 )
-from sastsimi.simple_runtime.portable_docker import DirectEnvironmentPreparer
+from sastsimi.simple_runtime.portable_docker import (
+    DirectEnvironmentPreparer,
+    PortableDockerRuntime,
+)
 
 
 def test_target_environment_change_invalidates_initial_verification() -> None:
     assert STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE] == "2"
+
+
+@pytest.mark.asyncio
+async def test_reproduction_container_keeps_baked_workspace_writable() -> None:
+    runtime = PortableDockerRuntime.__new__(PortableDockerRuntime)
+    runtime._executable = Path("docker")  # type: ignore[attr-defined]
+    runtime._network = "none"  # type: ignore[attr-defined]
+    runtime._timeout = 60  # type: ignore[attr-defined]
+    calls: list[tuple[str, ...]] = []
+
+    async def run(
+        args: tuple[str, ...],
+        *,
+        timeout_seconds: int,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        del timeout_seconds, input_bytes
+        calls.append(args)
+        return DockerCommandOutcome(
+            exit_code=0,
+            stdout=(b"container-1\n" if args[0] == "create" else b""),
+            stderr=b"",
+            timed_out=False,
+        )
+
+    runtime._run = run  # type: ignore[method-assign]
+    await runtime.create_container("sha256:" + "a" * 64, {})
+
+    create = calls[0]
+    assert create[0] == "create"
+    assert "--read-only" not in create
+    assert "--network" in create
+    assert "no-new-privileges" in create
 
 
 def test_repository_buster_dockerfile_uses_archive_mirrors_before_apt() -> None:
