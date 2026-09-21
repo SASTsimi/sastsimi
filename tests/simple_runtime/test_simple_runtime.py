@@ -8,6 +8,7 @@ from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
+    STAGE_VERSION,
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
@@ -50,10 +51,13 @@ def _checkpoint(
     stage: SimpleStage | str,
     *,
     inputs: tuple[StoredDataRef, ...],
+    stage_version: str | None = None,
 ) -> StageCheckpoint:
+    normalized_stage = SimpleStage(stage)
     return StageCheckpoint(
         identity=_identity(),
-        stage=SimpleStage(stage),
+        stage=normalized_stage,
+        stage_version=stage_version or STAGE_VERSION[normalized_stage],
         status=StageStatus.PENDING,
         input_refs=inputs,
         input_hash=input_reference_hash(inputs),
@@ -150,7 +154,7 @@ def test_report_format_upgrade_reuses_earlier_stages_but_not_old_report(
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
     inputs = (_ref("finding"),)
     store.save_success(
-        _checkpoint(SimpleStage.REPORT_DONE, inputs=inputs),
+        _checkpoint(SimpleStage.REPORT_DONE, inputs=inputs, stage_version="1"),
         outputs=(_ref("old-report"),),
     )
     store.save_success(

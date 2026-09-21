@@ -2,6 +2,7 @@ from pathlib import Path
 
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
+    STAGE_VERSION,
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
@@ -9,6 +10,10 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
 )
 from sastsimi.simple_runtime.portable_docker import DirectEnvironmentPreparer
+
+
+def test_target_environment_change_invalidates_initial_verification() -> None:
+    assert STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE] == "2"
 
 
 def test_repository_buster_dockerfile_uses_archive_mirrors_before_apt() -> None:
