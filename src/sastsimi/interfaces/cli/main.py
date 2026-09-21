@@ -22,6 +22,7 @@ from sastsimi.interfaces.cli import onboarding as onboarding_command
 from sastsimi.interfaces.cli import report as report_command
 from sastsimi.interfaces.cli import reports as reports_command
 from sastsimi.interfaces.cli import result as result_command
+from sastsimi.interfaces.cli import setup as setup_command
 from sastsimi.interfaces.cli import simple_evaluation as simple_evaluation_command
 from sastsimi.interfaces.cli import status as status_command
 from sastsimi.interfaces.cli.exit_codes import ExitCode
@@ -30,6 +31,7 @@ from sastsimi.orchestration.production_onboarding_builder import (
     ApprovedProbeResolver,
 )
 from sastsimi.runtime.system_support import SystemClock
+from sastsimi.setup.service import SetupService
 
 
 class _InputError(ValueError):
@@ -105,6 +107,7 @@ def main(
     local_evaluation_analyze: (
         local_evaluation_command.LocalEvaluationAnalyzeEntrypoint | None
     ) = None,
+    setup_service: SetupService | None = None,
 ) -> int:
     _configure_standard_streams()
     output_format = "text"
@@ -118,6 +121,24 @@ def main(
         "--data-dir", type=Path, help="local runtime root (not created by doctor)"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    setup_parser = subparsers.add_parser(
+        "setup", help="configure local analysis defaults", allow_abbrev=False
+    )
+    setup_parser.add_argument("--non-interactive", action="store_true")
+    setup_parser.add_argument("--data-dir", dest="setup_data_dir", type=Path)
+    setup_parser.add_argument("--auth", choices=["api-key", "subscription"])
+    setup_parser.add_argument("--provider")
+    setup_parser.add_argument("--model")
+    setup_parser.add_argument(
+        "--profile", dest="execution_profile", choices=["full", "lightweight"]
+    )
+    setup_parser.add_argument(
+        "--docker-network", choices=["none", "bridge"], default="none"
+    )
+    setup_parser.add_argument("--max-cost-minor-units", type=int, default=100_000)
+    setup_parser.add_argument("--max-tokens", type=int, default=1_000_000)
+    setup_parser.add_argument("--max-elapsed-seconds", type=int, default=3_600)
+    setup_parser.add_argument("--format", choices=["text", "json"])
     doctor_parser = subparsers.add_parser(
         "doctor", help="read-only foundation host checks", allow_abbrev=False
     )
@@ -346,6 +367,29 @@ def main(
         }
         config = bootstrap.build_config(args.config, overrides)
         output_format = config.output_format
+        if args.command == "setup":
+            command_name = "setup"
+            service = setup_service or SetupService()
+            setup_result = setup_command.run(service, args)
+            setup_code = (
+                ExitCode.OK
+                if setup_result.status == "READY"
+                else ExitCode.CAPABILITY_UNSUPPORTED
+            )
+            emit_data(
+                output_format,
+                sys.stdout if setup_code == ExitCode.OK else sys.stderr,
+                command=command_name,
+                code=setup_code,
+                data={
+                    "status": setup_result.status,
+                    "config_path": str(setup_result.config_path),
+                    "profile_path": str(setup_result.profile_path),
+                    "missing_tools": list(setup_result.missing_tools),
+                    "next_actions": list(setup_result.next_actions),
+                },
+            )
+            return int(setup_code)
         if args.command == "db":
             command_name = "db " + args.db_command
             revision = bootstrap.database_command(
