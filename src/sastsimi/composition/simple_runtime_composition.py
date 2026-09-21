@@ -8,8 +8,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
+from sastsimi.composition.local_claude_binding import build_local_claude_binding
 from sastsimi.composition.local_codex_binding import build_local_codex_binding
-from sastsimi.config.local_evaluation_profile import LocalCodexSubscriptionSettings
+from sastsimi.config.local_evaluation_profile import (
+    LocalClaudeSubscriptionSettings,
+    LocalCodexSubscriptionSettings,
+)
 from sastsimi.config.user_config import (
     SimpleExecutionProfile,
     UserConfig,
@@ -22,6 +26,7 @@ from sastsimi.orchestration.run_scope_plan import PlannedRunScope
 from sastsimi.ports.public_commands import PublicCommandApplication
 from sastsimi.progress.models import ProgressSnapshot
 from sastsimi.progress.projector import ProgressProjector
+from sastsimi.providers.claude_subscription import ClaudeCliProcessRunner
 from sastsimi.providers.codex_subscription import CodexCliProcessRunner
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
@@ -45,6 +50,7 @@ from sastsimi.simple_runtime.portable_docker import (
     PortableDockerRuntime,
 )
 from sastsimi.simple_runtime.provider import (
+    SimpleClaudeClient,
     SimpleCodexClient,
     SimpleOpenAIClient,
 )
@@ -58,6 +64,11 @@ def _codex_home() -> Path:
     return Path(configured).expanduser() if configured else Path.home() / ".codex"
 
 
+def _claude_config_dir() -> Path:
+    configured = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(configured).expanduser() if configured else Path.home() / ".claude"
+
+
 class SimpleClientFactory:
     def __init__(self, profile: SimpleExecutionProfile) -> None:
         self._profile = profile
@@ -66,12 +77,20 @@ class SimpleClientFactory:
         self,
         identity: CheckpointIdentity,
         artifacts: SimpleArtifactRepository,
-    ) -> SimpleCodexClient | SimpleOpenAIClient:
+    ) -> SimpleClaudeClient | SimpleCodexClient | SimpleOpenAIClient:
         if self._profile.auth_mode == "API_KEY":
             return SimpleOpenAIClient(
                 credential_ref=self._profile.credential_ref,
                 model=self._profile.model,
             )
+        scope = PlannedRunScope(
+            analysis_id=AnalysisId(identity.analysis_id),
+            workspace_id=WorkspaceId(identity.workspace_id),
+            commit_id=CommitId(identity.commit_id),
+            repository_ref="simple-runtime",
+        )
+        if self._profile.provider.casefold() == "claude":
+            return self._claude(scope, artifacts)
         try:
             tool = self._profile.tools["codex"]
         except KeyError:
@@ -83,12 +102,6 @@ class SimpleClientFactory:
             codex_home=_codex_home(),
             client_version=tool.version,
             model=self._profile.model,
-        )
-        scope = PlannedRunScope(
-            analysis_id=AnalysisId(identity.analysis_id),
-            workspace_id=WorkspaceId(identity.workspace_id),
-            commit_id=CommitId(identity.commit_id),
-            repository_ref="simple-runtime",
         )
         binding = build_local_codex_binding(
             settings=settings,
@@ -102,6 +115,38 @@ class SimpleClientFactory:
             raise ValueError("SIMPLE_RUNTIME_PROVIDER_REFERENCE_INVALID")
         return SimpleCodexClient(
             runner=CodexCliProcessRunner(binding=binding.binding),
+            provider_profile_ref=provider_ref,
+            model=self._profile.model,
+        )
+
+    def _claude(
+        self,
+        scope: PlannedRunScope,
+        artifacts: SimpleArtifactRepository,
+    ) -> SimpleClaudeClient:
+        try:
+            tool = self._profile.tools["claude"]
+        except KeyError:
+            raise ValueError("CLAUDE_NOT_CONFIGURED") from None
+        binding = build_local_claude_binding(
+            settings=LocalClaudeSubscriptionSettings(
+                provider_profile_key=self._profile.provider_profile_ref,
+                executable_path=tool.executable_path,
+                executable_sha256=tool.executable_sha256,
+                claude_config_dir=_claude_config_dir(),
+                client_version=tool.version,
+                model=self._profile.model,
+            ),
+            scope=scope,
+            artifacts=artifacts.artifacts,
+            ids=UUIDIds(),
+            clock=SystemClock(),
+        )
+        provider_ref = reference(binding.provider)
+        if not isinstance(provider_ref, StoredDataRef):
+            raise ValueError("SIMPLE_RUNTIME_PROVIDER_REFERENCE_INVALID")
+        return SimpleClaudeClient(
+            runner=ClaudeCliProcessRunner(binding=binding.binding),
             provider_profile_ref=provider_ref,
             model=self._profile.model,
         )
