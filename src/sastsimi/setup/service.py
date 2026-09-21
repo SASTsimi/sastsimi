@@ -147,9 +147,14 @@ class SystemToolDiscovery:
             resolved = executable.resolve(strict=True)
         except OSError:
             return executable
-        if resolved.name != "codex.js":
+        if resolved.name == "codex.js":
+            package_root = resolved.parent.parent
+        elif resolved.name.lower() in {"codex.cmd", "codex.ps1"}:
+            package_root = (
+                resolved.parent / "node_modules" / "@openai" / "codex"
+            )
+        else:
             return executable
-        package_root = resolved.parent.parent
         candidates = sorted(
             candidate
             for candidate in package_root.glob(
