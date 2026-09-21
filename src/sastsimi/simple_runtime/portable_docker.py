@@ -7,8 +7,9 @@ import hashlib
 import json
 import os
 import re
+import shlex
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from sastsimi.config.user_config import SimpleExecutionProfile
 from sastsimi.ports.docker_state import DockerContainerState
@@ -306,19 +307,21 @@ class DirectEnvironmentPreparer:
         prior: Mapping[SimpleStage, StageCheckpoint],
         requirements: tuple[str, ...],
     ) -> ReproductionEnvironment:
-        del prior
+        target_requirements = self._target_requirements_path(prior)
+        target_install = self._target_install_layer(target_requirements)
         dockerfile_path = self._workspace / "Dockerfile"
         if dockerfile_path.is_file():
             dockerfile = self._portable_repository_dockerfile(
                 dockerfile_path.read_bytes()
             ) + (
                 b"\nUSER root\nWORKDIR /workspace\nCOPY . /workspace\n"
-                b"RUN chmod -R a+rX /workspace && mkdir -p /tmp "
+                + target_install
+                + b"RUN chmod -R a+rX /workspace && mkdir -p /tmp "
                 b"&& chmod 1777 /tmp\n"
             )
             source = "REPOSITORY_DOCKERFILE"
         else:
-            dockerfile = self._generated_dockerfile()
+            dockerfile = self._generated_dockerfile(target_requirements)
             source = "GENERATED"
         dockerfile_ref = self._artifacts.put_bytes(dockerfile, "text/x-dockerfile")
         recipe = {
@@ -330,6 +333,7 @@ class DirectEnvironmentPreparer:
             "attempt_id": checkpoint.attempt_id,
             "dockerfile_source": source,
             "dockerfile_ref": dockerfile_ref.model_dump(mode="json"),
+            "target_requirements_path": target_requirements,
             "requirements": requirements,
         }
         recipe_ref = self._artifacts.put_json(recipe)
@@ -382,7 +386,73 @@ class DirectEnvironmentPreparer:
                 prepared.append(archive_setup)
         return b"".join(prepared)
 
-    def _generated_dockerfile(self) -> bytes:
+    def _target_requirements_path(
+        self,
+        prior: Mapping[SimpleStage, StageCheckpoint],
+    ) -> str | None:
+        pro_con = prior.get(SimpleStage.PRO_CON_DONE)
+        if pro_con is None:
+            return None
+        root = self._workspace.resolve()
+        for ref in pro_con.input_refs:
+            try:
+                value = json.loads(self._artifacts.read(ref))
+            except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(value, dict) or value.get("kind") != (
+                "simple_hypothesis_proposal"
+            ):
+                continue
+            proposal = value.get("proposal")
+            locations = (
+                proposal.get("code_locations")
+                if isinstance(proposal, dict)
+                else None
+            )
+            if not isinstance(locations, list):
+                continue
+            for location in locations:
+                if not isinstance(location, str):
+                    continue
+                relative_text, separator, line = location.rpartition(":")
+                relative = PurePosixPath(relative_text)
+                if (
+                    separator != ":"
+                    or not line.isdigit()
+                    or relative.is_absolute()
+                    or ".." in relative.parts
+                ):
+                    continue
+                try:
+                    source = (root / Path(*relative.parts)).resolve(strict=True)
+                except OSError:
+                    continue
+                if not source.is_relative_to(root):
+                    continue
+                current = source.parent
+                while current.is_relative_to(root):
+                    candidate = current / "requirements.txt"
+                    if candidate.is_file() and not candidate.is_symlink():
+                        return candidate.relative_to(root).as_posix()
+                    if current == root:
+                        break
+                    current = current.parent
+        return None
+
+    @staticmethod
+    def _target_install_layer(requirements_path: str | None) -> bytes:
+        if requirements_path in {None, "requirements.txt"}:
+            return b""
+        absolute = f"/workspace/{requirements_path}"
+        return (
+            "RUN python -m pip install --no-cache-dir -r "
+            f"{shlex.quote(absolute)}\n"
+        ).encode()
+
+    def _generated_dockerfile(
+        self,
+        target_requirements: str | None = None,
+    ) -> bytes:
         if (self._workspace / "requirements.txt").is_file():
             install = "RUN pip install --no-cache-dir -r requirements.txt"
         elif (self._workspace / "pyproject.toml").is_file():
@@ -394,6 +464,7 @@ class DirectEnvironmentPreparer:
             "WORKDIR /workspace\n"
             "COPY . /workspace\n"
             f"{install}\n"
+            f"{self._target_install_layer(target_requirements).decode('utf-8')}"
             "RUN chmod -R a+rX /workspace && mkdir -p /tmp && chmod 1777 /tmp\n"
             "CMD [\"sleep\", \"infinity\"]\n"
         ).encode()
