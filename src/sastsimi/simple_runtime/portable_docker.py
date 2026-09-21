@@ -104,7 +104,10 @@ class PortableDockerRuntime:
         ]
         for key, value in sorted(labels.items()):
             args.extend(("--label", f"{key}={value}"))
-        args.extend((image_digest, "sleep", "infinity"))
+        # An image that declares its own ENTRYPOINT would receive "sleep
+        # infinity" as arguments instead of running it, so the container exits
+        # at once and every later exec fails.  Replace the entrypoint outright.
+        args.extend(("--entrypoint", "sleep", image_digest, "infinity"))
         created = await self._run(tuple(args), timeout_seconds=60)
         self._require_success("DOCKER_CREATE_FAILED", created)
         container_id = created.stdout.decode("ascii", errors="strict").strip()

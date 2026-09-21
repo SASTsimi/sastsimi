@@ -405,8 +405,11 @@ class DockerAdapter:
                 (f"/tmp:rw,noexec,nosuid,nodev,size={spec.disk_limit_bytes},mode=1777"),
                 *self._label_args(labels),
                 *mount_args,
-                image_digest,
+                # The image's own ENTRYPOINT would otherwise consume "sleep
+                # infinity" as arguments and the container would exit at once.
+                "--entrypoint",
                 "sleep",
+                image_digest,
                 "infinity",
             )
         )
