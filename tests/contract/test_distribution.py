@@ -82,6 +82,16 @@ def test_operator_examples_do_not_embed_secrets_or_local_absolute_paths() -> Non
     assert not violations, "\n".join(violations)
 
 
+def test_installed_wheel_smoke_uses_only_the_product_runtime() -> None:
+    root = Path(__file__).resolve().parents[2]
+    smoke = (root / "scripts" / "wheel-smoke.ps1").read_text(encoding="utf-8")
+
+    assert "'demo'" not in smoke
+    assert "'demo', 'analyze'" not in smoke
+    for command in ("setup", "analyze", "status", "resume", "report", "dashboard"):
+        assert f"'{command}'" in smoke
+
+
 def test_readme_first_screen_contains_the_real_operator_path() -> None:
     root = Path(__file__).resolve().parents[2]
     readme = (root / "README.md").read_text(encoding="utf-8")

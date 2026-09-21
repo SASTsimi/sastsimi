@@ -81,11 +81,21 @@ Push-Location $requestedRoot
 try {
     $help = (Invoke-Native $cli '--help') -join "`n"
     foreach ($command in @(
-        'doctor', 'analyze', 'demo', 'status', 'results', 'reports', 'report',
-        'onboarding', 'capability'
+        'setup', 'doctor', 'dashboard', 'analyze', 'status', 'resume', 'result',
+        'poc', 'report', 'onboarding', 'capability'
     )) {
         if ($help -notmatch "\b$command\b") {
             throw "Installed wheel does not expose required command: $command"
+        }
+    }
+    if ($help -match '\bdemo\b') {
+        throw 'Installed wheel unexpectedly exposes the removed demo command'
+    }
+
+    $setupHelp = (Invoke-Native $cli 'setup' '--help') -join "`n"
+    foreach ($option in @('--auth', '--provider', '--model', '--profile')) {
+        if ($setupHelp -notmatch [regex]::Escape($option)) {
+            throw "Installed wheel setup is missing: $option"
         }
     }
     $analyzeHelp = (Invoke-Native $cli 'analyze' '--help') -join "`n"
@@ -110,37 +120,16 @@ try {
         throw 'Database migration smoke failed'
     }
 
-    $analysis = Invoke-JsonCli $cli @(
-        '--data-dir', $data, 'demo', 'analyze', '--scenario', 'TRUE',
-        '--format', 'json'
-    )
-    $result = Invoke-JsonCli $cli @(
-        '--data-dir', $data, 'demo', 'results', '--format', 'json'
-    )
-    if ($analysis.status -ne 'ok' -or $result.status -ne 'ok') {
-        throw 'Deterministic analysis smoke failed'
-    }
-
-    $analysisId = [string]$analysis.data.analysis_id
-    $reports = Invoke-JsonCli $cli @(
-        '--data-dir', $data, 'reports', $analysisId, '--format', 'json'
-    )
-    if ($reports.status -ne 'ok' -or @($reports.data.reports).Count -ne 1) {
-        throw 'Expected exactly one current report'
-    }
-    $findingId = [string]$reports.data.reports[0].finding_id
-    $displayId = [string]$reports.data.reports[0].display_id
-    if ($displayId -notmatch '^F-[0-9]{3,}$') {
-        throw "Report list did not return a stable display id: $displayId"
-    }
-    $shown = (Invoke-Native $cli '--data-dir' $data 'report' 'show' $findingId) -join "`n"
-    if ($shown -notmatch '^# ') {
-        throw 'Report show did not return Markdown'
-    }
-    Invoke-Native $cli '--data-dir' $data 'report' 'export' $findingId '--format' 'markdown' | Out-Null
-    $reportPath = Join-Path $data "reports/$analysisId/$displayId.md"
-    if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
-        throw "Markdown report was not exported to the exact expected path: $reportPath"
+    foreach ($arguments in @(
+        @('status', '--help'),
+        @('resume', '--help'),
+        @('result', '--help'),
+        @('poc', '--help'),
+        @('report', 'show', '--help'),
+        @('report', 'export', '--help'),
+        @('dashboard', '--help')
+    )) {
+        Invoke-Native $cli @arguments | Out-Null
     }
 }
 finally {
