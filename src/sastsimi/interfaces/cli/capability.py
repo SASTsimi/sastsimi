@@ -215,8 +215,57 @@ def _blocked(summary: str) -> CapabilityCommandResult:
     )
 
 
+def _windows_machine_guid() -> str | None:
+    """Read the Windows installation GUID, or None when it is unavailable."""
+
+    try:
+        import winreg  # type: ignore[import-not-found,unused-ignore]
+    except ImportError:
+        return None
+    registry: Any = winreg
+    try:
+        with registry.OpenKey(
+            registry.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Cryptography",
+            0,
+            registry.KEY_READ | registry.KEY_WOW64_64KEY,
+        ) as key:
+            guid = registry.QueryValueEx(key, "MachineGuid")[0]
+    except OSError:
+        return None
+    return guid.strip() if isinstance(guid, str) and guid.strip() else None
+
+
+def _machine_identifier() -> str:
+    """Return an identifier that is the same on every run of this machine.
+
+    ``uuid.getnode()`` is documented to return a random 48-bit value when the
+    hardware address cannot be read, and some CPython builds take that path on
+    every process.  A host identity derived from it would differ between the
+    probe and the approval, so a stable operating-system identifier is read
+    first and the random fallback is refused outright.
+    """
+
+    for path in (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id")):
+        try:
+            value = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if value:
+            return value
+    if platform.system().lower() == "windows":
+        guid = _windows_machine_guid()
+        if guid is not None:
+            return guid
+    node = getnode()
+    # CPython sets the multicast bit on the randomly generated fallback.
+    if node >> 40 & 1:
+        raise ValueError("HOST_IDENTITY_UNSTABLE")
+    return f"{node:012x}"
+
+
 def _default_host_id() -> str:
-    material = f"{platform.system()}|{platform.node()}|{getnode()}".encode()
+    material = f"{platform.system()}|{platform.node()}|{_machine_identifier()}".encode()
     return "host-" + hashlib.sha256(material).hexdigest()[:24]
 
 
