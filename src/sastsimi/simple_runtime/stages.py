@@ -1462,6 +1462,7 @@ def build_stage_handlers(
             store=store,
             client=client,
             artifacts=artifacts,
+            call_timeout_ms=call_timeout_ms,
         )
     return handlers
 

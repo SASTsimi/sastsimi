@@ -95,3 +95,61 @@ def test_without_a_deep_client_every_stage_uses_the_one_client(tmp_path: Any) ->
 
     assert clients
     assert all(names == {"base"} for names in clients.values())
+
+
+def _timeouts(handlers: dict[SimpleStage, object]) -> dict[SimpleStage, set[int]]:
+    found: dict[SimpleStage, set[int]] = {}
+    for stage, handler in handlers.items():
+        values: set[int] = set()
+        _collect_timeouts(handler, values, depth=0)
+        if values:
+            found[stage] = values
+    return found
+
+
+def _collect_timeouts(value: object, values: set[int], *, depth: int) -> None:
+    if depth > 4 or not hasattr(value, "__dict__"):
+        return
+    for name, attribute in vars(value).items():
+        if name == "_call_timeout_ms" and isinstance(attribute, int):
+            values.add(attribute)
+        else:
+            _collect_timeouts(attribute, values, depth=depth + 1)
+
+
+def test_every_llm_stage_honours_the_configured_call_timeout(tmp_path: Any) -> None:
+    """No stage may keep a fixed ceiling the operator's budget cannot raise."""
+
+    base = _NamedClient("base")
+    artifacts = SimpleArtifactRepository.__new__(SimpleArtifactRepository)
+    handlers = cast(
+        dict[SimpleStage, object],
+        build_stage_handlers(
+            client=base,
+            artifacts=artifacts,
+            docker=cast(DockerAdapter, object()),
+            containers=cast(SimpleContainerFactory, _Containers()),
+            store=cast(Any, object()),
+            call_timeout_ms=999_000,
+            poc_timeout_ms=888_000,
+        ),
+    )
+
+    timeouts = _timeouts(handlers)
+    assert SimpleStage.CHAINING_DONE in timeouts, "chaining exposed no call timeout"
+    for stage, values in timeouts.items():
+        assert values == {999_000}, (stage, values)
+
+
+def test_hypothesis_bootstrap_honours_the_configured_call_timeout(
+    tmp_path: Any,
+) -> None:
+    from sastsimi.simple_runtime.bootstrap_stages import DirectHypothesisBootstrap
+
+    bootstrap = DirectHypothesisBootstrap(
+        data_dir=tmp_path,
+        client_factory=cast(Any, lambda *a, **k: _NamedClient("base")),
+        call_timeout_ms=777_000,
+    )
+
+    assert bootstrap._call_timeout_ms == 777_000

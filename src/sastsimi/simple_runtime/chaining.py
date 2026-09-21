@@ -161,10 +161,12 @@ class SimpleChainingStage:
         store: SimpleCheckpointStore,
         client: SimpleLLMClient,
         artifacts: SimpleArtifactRepository,
+        call_timeout_ms: int = 180_000,
     ) -> None:
         self._store = store
         self._client = client
         self._artifacts = artifacts
+        self._call_timeout_ms = call_timeout_ms
 
     async def __call__(
         self,
@@ -223,7 +225,7 @@ class SimpleChainingStage:
         called = await self._client.call(
             prompt=prompt,
             output_schema=schema,
-            timeout_ms=180_000,
+            timeout_ms=self._call_timeout_ms,
         )
         if isinstance(called, StageFailure):
             error = StageBlocked if called.retryable else StageFailed

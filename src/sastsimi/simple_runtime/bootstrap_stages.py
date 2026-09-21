@@ -536,10 +536,15 @@ class DirectHypothesisBootstrap:
         data_dir: Path,
         client_factory: SimpleClientFactory,
         max_hypotheses: int = 12,
+        # Proposing hypotheses reads the whole static bundle, so it needs the
+        # same elapsed share the later stages get rather than a fixed three
+        # minutes a large repository routinely exceeds.
+        call_timeout_ms: int = 180_000,
     ) -> None:
         self._data_dir = data_dir
         self._client_factory = client_factory
         self._max_hypotheses = max_hypotheses
+        self._call_timeout_ms = call_timeout_ms
 
     async def propose(
         self,
@@ -598,7 +603,7 @@ class DirectHypothesisBootstrap:
         result = await client.call(
             prompt=prompt,
             output_schema=schema,
-            timeout_ms=180_000,
+            timeout_ms=self._call_timeout_ms,
         )
         if isinstance(result, StageFailure):
             raise RuntimeError(result.code)
