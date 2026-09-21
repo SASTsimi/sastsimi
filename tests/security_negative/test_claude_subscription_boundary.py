@@ -735,6 +735,112 @@ def test_event_stream_rejects_every_forbidden_tool_event() -> None:
             _validate(_stream_with(_assistant([{"type": "tool_use", "name": name}])))
 
 
+def _user(content: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "type": "user",
+        "session_id": "session-1",
+        "parent_tool_use_id": None,
+        "message": {"content": content},
+    }
+
+
+_REFUSAL = (
+    "<tool_use_error>Error: No such tool available: Bash. Bash exists but is "
+    "not enabled in this context.</tool_use_error>"
+)
+
+
+def test_a_tool_request_the_client_refused_is_not_an_escape() -> None:
+    # Asking for a tool is not using one: this boundary enables no tools, so the
+    # client answers the request with an error and the turn continues.  Failing
+    # the whole call here would discard an answer that never left the boundary.
+    status, message, _session = _validate(
+        _stream_with(
+            _assistant([{"type": "tool_use", "id": "toolu_1", "name": "Bash"}]),
+            _user(
+                [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_1",
+                        "is_error": True,
+                        "content": _REFUSAL,
+                    }
+                ]
+            ),
+        )
+    )
+
+    assert status == "SUCCEEDED"
+    assert json.loads(message) == {"answer": "4"}
+
+
+def test_a_tool_request_that_was_not_refused_fails_closed() -> None:
+    request = _assistant([{"type": "tool_use", "id": "toolu_1", "name": "Bash"}])
+
+    # No reply at all.
+    with pytest.raises(ProviderInvalidOutputError):
+        _validate(_stream_with(request))
+
+    # A reply that is not the client's refusal - the tool actually ran.
+    with pytest.raises(ProviderInvalidOutputError):
+        _validate(
+            _stream_with(
+                request,
+                _user(
+                    [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "content": "uid=0(root)",
+                        }
+                    ]
+                ),
+            )
+        )
+
+    # An error reply that is not a refusal: the tool ran and failed.
+    with pytest.raises(ProviderInvalidOutputError):
+        _validate(
+            _stream_with(
+                request,
+                _user(
+                    [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "is_error": True,
+                            "content": "command not found",
+                        }
+                    ]
+                ),
+            )
+        )
+
+    # A refusal recorded against a different request leaves this one unanswered.
+    with pytest.raises(ProviderInvalidOutputError):
+        _validate(
+            _stream_with(
+                request,
+                _user(
+                    [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_other",
+                            "is_error": True,
+                            "content": _REFUSAL,
+                        }
+                    ]
+                ),
+            )
+        )
+
+
+def test_a_tool_request_without_an_identifier_fails_closed() -> None:
+    # Without an id the refusal can never be matched, so it is never allowed.
+    with pytest.raises(ProviderInvalidOutputError):
+        _validate(_stream_with(_assistant([{"type": "tool_use", "name": "Bash"}])))
+
+
 def test_event_stream_allows_reasoning_blocks_without_storing_them() -> None:
     # The official client emits a reasoning block before the structured answer.
     # It may appear, but only structured_output ever crosses the boundary.
