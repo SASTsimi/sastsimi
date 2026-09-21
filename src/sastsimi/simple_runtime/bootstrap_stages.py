@@ -107,12 +107,22 @@ class DirectStaticBootstrap:
     ) -> None:
         self._profile = profile
         self._process = process or LocalProcessExecutor()
-        self._materials = static_material_root or (
+        self._materials = static_material_root or self._static_material_root()
+
+    @staticmethod
+    def _static_material_root() -> Path:
+        packaged = Path(__file__).resolve().parents[1] / "_static" / "candidate-v1"
+        if packaged.is_dir():
+            return packaged
+        source_checkout = (
             Path(__file__).resolve().parents[3]
             / "config"
             / "static-analysis"
             / "candidate-v1"
         )
+        if source_checkout.is_dir():
+            return source_checkout
+        raise RuntimeError("STATIC_ANALYSIS_MATERIALS_MISSING")
 
     async def run(
         self,

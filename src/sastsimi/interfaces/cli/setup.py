@@ -41,7 +41,7 @@ def choices_from_args(
         ).absolute(),
         auth_mode="SUBSCRIPTION_LOGIN" if auth == "subscription" else "API_KEY",
         provider=provider,
-        model=value(args.model, "모델", "configured-model"),
+        model=value(args.model, "모델", "gpt-5.6-sol"),
         credential_ref=credential_ref,
         execution_profile=(args.execution_profile or "full").upper(),
         max_cost_minor_units=args.max_cost_minor_units,

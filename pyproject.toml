@@ -33,6 +33,9 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/sastsimi"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"config/static-analysis/candidate-v1" = "sastsimi/_static/candidate-v1"
+
 [tool.ruff]
 target-version = "py312"
 line-length = 88
