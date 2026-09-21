@@ -302,6 +302,42 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             candidate.output_refs[1]
         ).decode("utf-8", errors="replace")
 
+    def report(self, finding_id: str) -> str:
+        identity, _finding_ref = self._finding_identity(finding_id)
+        checkpoint = self._store.require(identity, SimpleStage.REPORT_DONE)
+        if (
+            not self._store.reusable(
+                identity,
+                SimpleStage.REPORT_DONE,
+                checkpoint.input_refs,
+            )
+            or len(checkpoint.output_refs) < 2
+        ):
+            raise LookupError("CURRENT_REPORT_NOT_FOUND")
+        return SimpleArtifactRepository(self._config.data_dir, identity).read(
+            checkpoint.output_refs[1]
+        ).decode("utf-8", errors="strict")
+
+    def export_report(self, finding_id: str) -> str:
+        identity, _finding_ref = self._finding_identity(finding_id)
+        checkpoint = self._store.require(identity, SimpleStage.REPORT_DONE)
+        content = self.report(finding_id).encode("utf-8")
+        if checkpoint.markdown_path is None:
+            raise LookupError("CURRENT_REPORT_PATH_NOT_FOUND")
+        report_path = Path(checkpoint.markdown_path).resolve()
+        report_root = (self._config.data_dir / "reports").resolve()
+        try:
+            relative = report_path.relative_to(self._config.data_dir.resolve())
+            report_path.relative_to(report_root)
+        except ValueError as error:
+            raise ValueError("REPORT_PATH_OUTSIDE_DATA_DIR") from error
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        if not report_path.exists() or report_path.read_bytes() != content:
+            temporary = report_path.with_suffix(".md.next")
+            temporary.write_bytes(content)
+            os.replace(temporary, report_path)
+        return relative.as_posix()
+
     def _finding_identity(
         self,
         finding_id: str,

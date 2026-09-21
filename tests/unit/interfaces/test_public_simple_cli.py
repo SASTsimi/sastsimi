@@ -32,6 +32,12 @@ class _PublicApplication:
     def poc(self, finding_id: str) -> str:
         return f"PoC {finding_id}\n"
 
+    def report(self, finding_id: str) -> str:
+        return f"Report {finding_id}\n"
+
+    def export_report(self, finding_id: str) -> str:
+        return f"reports/analysis/{finding_id}.md"
+
 
 class _ProgressApplication(_PublicApplication):
     def analyze_with_progress(self, repository, commit, callback):

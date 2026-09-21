@@ -730,7 +730,27 @@ def main(
             return int(ExitCode.OK)
         if args.command == "report":
             command_name = "report " + args.report_command
-            if args.report_command == "show":
+            report_application = public_application
+            if report_application is None and args.finding_id.startswith("F-"):
+                try:
+                    report_application = resolve_public_application()
+                except (FileNotFoundError, ValueError):
+                    report_application = None
+            show_public = getattr(report_application, "report", None)
+            export_public = getattr(report_application, "export_report", None)
+            if args.report_command == "show" and callable(show_public):
+                sys.stdout.write(show_public(args.finding_id))
+            elif args.report_command == "export" and callable(export_public):
+                emit_data(
+                    output_format,
+                    sys.stdout,
+                    command=command_name,
+                    data={
+                        "finding_id": args.finding_id,
+                        "path": export_public(args.finding_id),
+                    },
+                )
+            elif args.report_command == "show":
                 sys.stdout.write(report_command.show(config.data_dir, args.finding_id))
             else:
                 path = report_command.export(config.data_dir, args.finding_id)

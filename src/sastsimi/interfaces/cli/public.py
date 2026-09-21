@@ -18,6 +18,10 @@ class PublicCommandApplication(Protocol):
 
     def poc(self, finding_id: str) -> str: ...
 
+    def report(self, finding_id: str) -> str: ...
+
+    def export_report(self, finding_id: str) -> str: ...
+
 
 class PublicCommandUnavailable(RuntimeError):
     pass
