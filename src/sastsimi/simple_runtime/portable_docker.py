@@ -309,7 +309,9 @@ class DirectEnvironmentPreparer:
         del prior
         dockerfile_path = self._workspace / "Dockerfile"
         if dockerfile_path.is_file():
-            dockerfile = dockerfile_path.read_bytes() + (
+            dockerfile = self._portable_repository_dockerfile(
+                dockerfile_path.read_bytes()
+            ) + (
                 b"\nUSER root\nWORKDIR /workspace\nCOPY . /workspace\n"
                 b"RUN chmod -R a+rX /workspace && mkdir -p /tmp "
                 b"&& chmod 1777 /tmp\n"
@@ -349,6 +351,36 @@ class DirectEnvironmentPreparer:
             },
         )
         return ReproductionEnvironment(recipe_ref, image_digest)
+
+    @staticmethod
+    def _portable_repository_dockerfile(dockerfile: bytes) -> bytes:
+        """Keep repository Dockerfiles usable after Debian Buster EOL.
+
+        Some real repositories still pin a Buster-based image and exact
+        package versions. Debian moved those package indexes to its archive,
+        so an otherwise reproducible repository Dockerfile now fails before
+        the target application is built. Insert the archive configuration in
+        each affected stage while preserving the repository's own build.
+        """
+
+        if b"archive.debian.org/debian" in dockerfile:
+            return dockerfile
+        archive_setup = (
+            b"RUN sed -i "
+            b"-e 's|deb.debian.org/debian|archive.debian.org/debian|g' "
+            b"-e 's|security.debian.org/debian-security|"
+            b"archive.debian.org/debian-security|g' "
+            b"-e '/buster-updates/d' /etc/apt/sources.list "
+            b"&& printf 'Acquire::Check-Valid-Until \"false\";\\n' "
+            b"> /etc/apt/apt.conf.d/99archive\n"
+        )
+        prepared: list[bytes] = []
+        for line in dockerfile.splitlines(keepends=True):
+            prepared.append(line)
+            normalized = line.lstrip().lower()
+            if normalized.startswith(b"from ") and b"buster" in normalized:
+                prepared.append(archive_setup)
+        return b"".join(prepared)
 
     def _generated_dockerfile(self) -> bytes:
         if (self._workspace / "requirements.txt").is_file():
