@@ -62,5 +62,6 @@ async def test_sensitive_candidate_repair_explains_secret_shaped_names(
 
     assert result.output_refs
     assert len(client.prompts) == 2
+    assert b"concise error type and traceback to stderr" in client.prompts[0]
     assert b"secret-shaped identifiers" in client.prompts[1]
     assert b"cookie, session, token" in client.prompts[1]

@@ -244,6 +244,8 @@ fixture values must use neutral names such as `fixture_value`, not secret-shaped
 or credential-named assignments. Do not return a placeholder or merely print
 INCONCLUSIVE. When previous candidate and execution artifacts are supplied,
 correct the recorded runtime error instead of repeating the failed approach.
+Before exit 2, print a concise error type and traceback to stderr so the next
+attempt can repair the exact runtime failure; never print secrets or host paths.
 When testing a Python handler, prefer importing the real repository module or
 execute extracted code with its original globals (including `__file__`) intact;
 do not rebuild a handler in a way that changes its path or framework semantics.
