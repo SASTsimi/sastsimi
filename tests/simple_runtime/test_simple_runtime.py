@@ -276,6 +276,32 @@ async def test_failed_transaction_never_publishes_success_or_false(tmp_path) -> 
 
 
 @pytest.mark.asyncio
+async def test_unexpected_stage_error_is_retryable_blocked_not_orphaned_running(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "unexpected" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.VERIFICATION_INITIAL_DONE)
+
+    async def broken_handler(
+        _checkpoint: StageCheckpoint,
+        _prior: object,
+    ) -> StageResult:
+        raise RuntimeError("provider child exited unexpectedly")
+
+    handlers = _recording_handlers([])
+    handlers[SimpleStage.POC_CANDIDATE_DONE] = broken_handler
+
+    outcome = await SimpleRuntimeRunner(store, handlers).resume_analysis(_identity())
+
+    checkpoint = store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE)
+    assert outcome.status is StageStatus.BLOCKED
+    assert outcome.error_code == "STAGE_UNEXPECTED_ERROR"
+    assert checkpoint.status is StageStatus.BLOCKED
+    assert checkpoint.retryable is True
+    assert checkpoint.verdict is None
+
+
+@pytest.mark.asyncio
 async def test_false_stops_before_cwe_gate_and_report(tmp_path) -> None:
     store = SimpleCheckpointStore(tmp_path / "terminal" / "sastsimi.sqlite3")
     _seeded_through(store, SimpleStage.POC_EXECUTION_DONE)

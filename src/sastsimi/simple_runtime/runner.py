@@ -163,6 +163,25 @@ class SimpleRuntimeRunner:
                     status=StageStatus.FAILED,
                     error_code=error.failure.code,
                 )
+            except Exception as error:
+                code = getattr(error, "code", "STAGE_UNEXPECTED_ERROR")
+                if not isinstance(code, str) or not code:
+                    code = "STAGE_UNEXPECTED_ERROR"
+                failure = StageFailure(
+                    code=code[:160],
+                    retryable=True,
+                    safe_message="Stage execution ended unexpectedly; retry is allowed",
+                )
+                self.store.mark_failure(
+                    checkpoint,
+                    failure,
+                    StageStatus.BLOCKED,
+                )
+                return RunOutcome(
+                    current_stage=stage,
+                    status=StageStatus.BLOCKED,
+                    error_code=failure.code,
+                )
             completed = self.store.complete(checkpoint, result)
             if stage is SimpleStage.VERIFICATION_FINAL_DONE and completed.verdict == (
                 "FALSE"
