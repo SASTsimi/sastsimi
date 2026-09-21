@@ -383,3 +383,100 @@ def test_rejects_missing_profile_instead_of_falling_back_to_environment(
         load_local_evaluation_profile(tmp_path / "missing.toml")
 
     assert str(tmp_path) not in str(captured.value)
+
+
+def _claude_section(tmp_path: Path) -> str:
+    executable_path = (tmp_path / "bin" / "claude").as_posix()
+    claude_config_dir = (tmp_path / "claude-home").as_posix()
+    return f'''
+[claude]
+provider_profile_key = "claude-local-evaluation-v1"
+product = "CLAUDE_CODE"
+transport = "CLAUDE_CODE_CLIENT"
+auth_mode = "SUBSCRIPTION_LOGIN"
+credential_source = "OFFICIAL_CLIENT_SESSION"
+executable_path = "{executable_path}"
+executable_sha256 = "{"e" * 64}"
+claude_config_dir = "{claude_config_dir}"
+client_version = "2.1.197"
+model = "claude-haiku-4-5-20251001"
+'''
+
+
+def _without_codex(source: str) -> str:
+    return source.split("[codex]")[0]
+
+
+def test_loads_a_claude_subscription_profile_in_place_of_codex(
+    tmp_path: Path,
+) -> None:
+    from sastsimi.config.local_evaluation_profile import (
+        load_local_evaluation_profile,
+    )
+
+    path = tmp_path / "claude.toml"
+    path.write_text(
+        _without_codex(_profile_text(tmp_path)) + _claude_section(tmp_path),
+        encoding="utf-8",
+    )
+
+    profile = load_local_evaluation_profile(path)
+
+    assert profile.codex is None
+    assert profile.claude is not None
+    assert profile.claude.product == "CLAUDE_CODE"
+    assert profile.claude.transport == "CLAUDE_CODE_CLIENT"
+    assert profile.claude.auth_mode == "SUBSCRIPTION_LOGIN"
+    assert profile.claude.credential_source == "OFFICIAL_CLIENT_SESSION"
+    assert profile.claude.claude_config_dir == tmp_path / "claude-home"
+    assert profile.subscription is profile.claude
+
+
+def test_rejects_a_profile_configuring_two_official_clients_at_once(
+    tmp_path: Path,
+) -> None:
+    from sastsimi.config.local_evaluation_profile import (
+        LocalEvaluationProfileError,
+        load_local_evaluation_profile,
+    )
+
+    path = tmp_path / "both.toml"
+    path.write_text(
+        _profile_text(tmp_path) + _claude_section(tmp_path), encoding="utf-8"
+    )
+
+    with pytest.raises(LocalEvaluationProfileError):
+        load_local_evaluation_profile(path)
+
+
+def test_rejects_a_profile_configuring_no_official_client(tmp_path: Path) -> None:
+    from sastsimi.config.local_evaluation_profile import (
+        LocalEvaluationProfileError,
+        load_local_evaluation_profile,
+    )
+
+    path = tmp_path / "neither.toml"
+    path.write_text(_without_codex(_profile_text(tmp_path)), encoding="utf-8")
+
+    with pytest.raises(LocalEvaluationProfileError):
+        load_local_evaluation_profile(path)
+
+
+def test_keeps_claude_credentials_outside_mutable_analysis_paths(
+    tmp_path: Path,
+) -> None:
+    from sastsimi.config.local_evaluation_profile import (
+        LocalEvaluationProfileError,
+        load_local_evaluation_profile,
+    )
+
+    source = _without_codex(_profile_text(tmp_path)) + _claude_section(tmp_path)
+    source = source.replace(
+        f'claude_config_dir = "{(tmp_path / "claude-home").as_posix()}"',
+        f'claude_config_dir = "{(tmp_path / "workspaces" / "creds").as_posix()}"',
+    )
+    path = tmp_path / "overlap.toml"
+    path.write_text(source, encoding="utf-8")
+
+    with pytest.raises(LocalEvaluationProfileError):
+        load_local_evaluation_profile(path)
