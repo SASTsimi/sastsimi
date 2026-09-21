@@ -58,12 +58,27 @@ class SimpleRuntimeRunner:
 
     async def resume_hypothesis(self, identity: CheckpointIdentity) -> RunOutcome:
         for stage in HYPOTHESIS_STAGES:
+            final = self.store.get(identity, SimpleStage.VERIFICATION_FINAL_DONE)
+            if (
+                final is not None
+                and final.status is StageStatus.SUCCEEDED
+                and final.verdict == "HOLD"
+                and stage
+                in {
+                    SimpleStage.CWE_DONE,
+                    SimpleStage.TECH_GATE_DONE,
+                    SimpleStage.SCOPE_GATE_DONE,
+                    SimpleStage.FINDING_DONE,
+                    SimpleStage.REPORT_DONE,
+                }
+            ):
+                continue
             input_refs = self.store.input_refs_for(identity, stage)
             if self.store.reusable(identity, stage, input_refs):
                 reusable = self.store.require(identity, stage)
                 if (
                     stage is SimpleStage.VERIFICATION_FINAL_DONE
-                    and reusable.verdict in {"FALSE", "HOLD"}
+                    and reusable.verdict == "FALSE"
                 ):
                     return RunOutcome(
                         current_stage=stage,
@@ -138,10 +153,18 @@ class SimpleRuntimeRunner:
                     error_code=error.failure.code,
                 )
             completed = self.store.complete(checkpoint, result)
-            if stage is SimpleStage.VERIFICATION_FINAL_DONE and completed.verdict in {
-                "FALSE",
-                "HOLD",
-            }:
+            if stage is SimpleStage.VERIFICATION_FINAL_DONE and completed.verdict == (
+                "FALSE"
+            ):
+                return RunOutcome(
+                    current_stage=stage,
+                    status=StageStatus.SUCCEEDED,
+                )
+            if (
+                stage is SimpleStage.CHAINING_DONE
+                and final is not None
+                and final.verdict == "HOLD"
+            ):
                 return RunOutcome(
                     current_stage=stage,
                     status=StageStatus.SUCCEEDED,

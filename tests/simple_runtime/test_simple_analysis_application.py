@@ -10,9 +10,18 @@ from sastsimi.simple_runtime.application import (
     HypothesisSeed,
     SimpleAnalysisApplication,
     SimpleAnalysisRequest,
+    SimpleAnalysisRun,
     StaticBootstrapResult,
 )
-from sastsimi.simple_runtime.models import SimpleStage, StageResult, StageStatus
+from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.models import (
+    CheckpointIdentity,
+    SimpleStage,
+    StageCheckpoint,
+    StageResult,
+    StageStatus,
+    input_reference_hash,
+)
 from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
@@ -177,3 +186,67 @@ async def test_resume_reuses_static_and_hypothesis_results(tmp_path) -> None:
 
     assert resumed.status == "COMPLETE"
     assert len(store.list_checkpoints("analysis-1")) >= 4
+
+
+def test_chaining_child_is_added_once_to_durable_analysis_queue(tmp_path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=_runner,
+    )
+    identity = application_identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    chaining_ref = artifacts.put_json(
+        {
+            "kind": "simple_chaining_result",
+            "children": [
+                {
+                    "title": "compound finding",
+                    "parent_hypothesis_ids": ["hypothesis-1", "hypothesis-2"],
+                }
+            ],
+        }
+    )
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.CHAINING_DONE,
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(chaining_ref,),
+        )
+    )
+    run = SimpleAnalysisRun(
+        analysis_id="analysis-1",
+        display_analysis_id="A-001",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        repository="repo",
+        hypothesis_ids=("hypothesis-1", "hypothesis-2"),
+    )
+    static = StaticBootstrapResult(
+        repository_profile_ref=_ref("repository-profile"),
+        static_bundle_ref=_ref("static-bundle"),
+        workspace_path=tmp_path / "workspace",
+    )
+
+    updated = application._register_chain_children(run, application_identity, static)
+    repeated = application._register_chain_children(
+        updated,
+        application_identity,
+        static,
+    )
+
+    assert len(updated.hypothesis_ids) == 3
+    assert repeated.hypothesis_ids == updated.hypothesis_ids
+    child_id = updated.hypothesis_ids[-1]
+    assert updated.chain_depths[child_id] == 1

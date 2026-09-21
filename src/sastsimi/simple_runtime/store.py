@@ -40,6 +40,8 @@ ROLE_BY_STAGE: dict[SimpleStage, str] = {
     SimpleStage.CWE_DONE: "CWE Labeling Agent",
     SimpleStage.TECH_GATE_DONE: "Technical Gate Agent",
     SimpleStage.SCOPE_GATE_DONE: "Rule Scope Gate Agent",
+    SimpleStage.PRIMITIVE_ADMISSION_DONE: "Primitive Admission Runtime",
+    SimpleStage.CHAINING_DONE: "Chaining Agent",
     SimpleStage.FINDING_DONE: "Finding Runtime",
     SimpleStage.REPORT_DONE: "Reporter Agent",
 }

@@ -24,6 +24,7 @@ from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.sandbox.docker_adapter import DockerAdapter, DockerOperationError
 
 from .artifacts import SimpleArtifactRepository
+from .chaining import PrimitiveAdmissionStage, SimpleChainingStage
 from .models import (
     STAGE_ORDER,
     SimpleStage,
@@ -34,6 +35,7 @@ from .models import (
 from .poc import PoCCandidateRejected, validate_candidate
 from .provider import SimpleLLMCallResult, SimpleLLMClient
 from .runner import SimpleStageHandler, StageBlocked, StageFailed
+from .store import SimpleCheckpointStore
 
 _LOCAL_TIMEOUT_MS = 180_000
 _POC_TIMEOUT_MS = 120_000
@@ -47,6 +49,8 @@ _ROLE_BY_STAGE: dict[SimpleStage, str] = {
     SimpleStage.CWE_DONE: "CWE Labeling Agent",
     SimpleStage.TECH_GATE_DONE: "Technical Gate Agent",
     SimpleStage.SCOPE_GATE_DONE: "Rule Scope Gate Agent",
+    SimpleStage.PRIMITIVE_ADMISSION_DONE: "Primitive Admission Runtime",
+    SimpleStage.CHAINING_DONE: "Chaining Agent",
     SimpleStage.FINDING_DONE: "Finding Runtime",
     SimpleStage.REPORT_DONE: "Reporter Agent",
 }
@@ -759,6 +763,9 @@ content hashes, limitations, and unresolved conditions.
                     "supporting_refs": _string_array(),
                     "limitations": _string_array(),
                     "unresolved_conditions": _string_array(),
+                    "required_capabilities": _string_array(),
+                    "provided_capabilities": _string_array(),
+                    "entities": _string_array(),
                 },
                 [
                     "verdict",
@@ -766,6 +773,9 @@ content hashes, limitations, and unresolved conditions.
                     "supporting_refs",
                     "limitations",
                     "unresolved_conditions",
+                    "required_capabilities",
+                    "provided_capabilities",
+                    "entities",
                 ],
             ),
             kind="simple_verification_result",
@@ -960,8 +970,19 @@ policy is UNCERTAIN, never ALLOW. Do not alter the technical verdict.
                     "rationale": _string(),
                     "checks": _string_array(),
                     "restrictions": _string_array(),
+                    "testing_restriction_compliance": _enum(
+                        "PASS",
+                        "FAIL",
+                        "UNCERTAIN",
+                    ),
                 },
-                ["status", "rationale", "checks", "restrictions"],
+                [
+                    "status",
+                    "rationale",
+                    "checks",
+                    "restrictions",
+                    "testing_restriction_compliance",
+                ],
             ),
             kind="simple_rule_scope_gate",
         )
@@ -987,6 +1008,7 @@ policy is UNCERTAIN, never ALLOW. Do not alter the technical verdict.
                         "restrictions": [
                             "외부 제출·공개 금지. 내부 기술 검토만 허용됩니다."
                         ],
+                        "testing_restriction_compliance": "UNCERTAIN",
                     },
                     "attempt_id": checkpoint.attempt_id,
                 }
@@ -1358,9 +1380,10 @@ def build_stage_handlers(
     docker: DockerAdapter,
     containers: SimpleContainerFactory,
     environments: ReproductionEnvironmentPreparer | None = None,
+    store: SimpleCheckpointStore | None = None,
 ) -> dict[SimpleStage, SimpleStageHandler]:
     environment_preparer = environments or _UnavailableEnvironmentPreparer()
-    return {
+    handlers: dict[SimpleStage, SimpleStageHandler] = {
         SimpleStage.PRO_CON_DONE: ProConStage(client, artifacts),
         SimpleStage.VERIFICATION_INITIAL_DONE: InitialVerificationStage(
             client,
@@ -1384,9 +1407,17 @@ def build_stage_handlers(
         SimpleStage.CWE_DONE: CWEStage(client, artifacts),
         SimpleStage.TECH_GATE_DONE: TechnicalGateStage(client, artifacts),
         SimpleStage.SCOPE_GATE_DONE: RuleScopeGateStage(client, artifacts),
+        SimpleStage.PRIMITIVE_ADMISSION_DONE: PrimitiveAdmissionStage(artifacts),
         SimpleStage.FINDING_DONE: FindingStage(artifacts),
         SimpleStage.REPORT_DONE: ReporterStage(client, artifacts),
     }
+    if store is not None:
+        handlers[SimpleStage.CHAINING_DONE] = SimpleChainingStage(
+            store=store,
+            client=client,
+            artifacts=artifacts,
+        )
+    return handlers
 
 
 __all__ = [

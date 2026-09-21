@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal, Protocol
 from uuid import uuid4
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field
 
 from sastsimi.contracts.base import ContractModel
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 
+from .artifacts import SimpleArtifactRepository
 from .models import (
     CheckpointIdentity,
     SimpleStage,
@@ -55,6 +59,8 @@ class SimpleAnalysisRun(ContractModel):
     repository_profile_ref: StoredDataRef | None = None
     static_bundle_ref: StoredDataRef | None = None
     hypothesis_ids: tuple[str, ...] = ()
+    parent_hypothesis_ids: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    chain_depths: dict[str, int] = Field(default_factory=dict)
 
 
 class SimpleAnalysisOutcome(ContractModel):
@@ -269,7 +275,10 @@ class SimpleAnalysisApplication:
         static: StaticBootstrapResult,
     ) -> SimpleAnalysisOutcome:
         latest_stage = SimpleStage.HYPOTHESIS_DONE
-        for hypothesis_id in run.hypothesis_ids:
+        index = 0
+        while index < len(run.hypothesis_ids):
+            hypothesis_id = run.hypothesis_ids[index]
+            index += 1
             child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
             outcome = await self._runner_factory(
                 self._store,
@@ -285,12 +294,92 @@ class SimpleAnalysisApplication:
                     current_stage=outcome.current_stage,
                     error_code=outcome.error_code,
                 )
+            run = self._register_chain_children(run, child, static)
         return SimpleAnalysisOutcome(
             identity=identity,
             display_analysis_id=run.display_analysis_id,
             status="COMPLETE",
             current_stage=latest_stage,
         )
+
+    def _register_chain_children(
+        self,
+        run: SimpleAnalysisRun,
+        parent: CheckpointIdentity,
+        static: StaticBootstrapResult,
+    ) -> SimpleAnalysisRun:
+        checkpoint = self._store.get(parent, SimpleStage.CHAINING_DONE)
+        if checkpoint is None or len(checkpoint.output_refs) != 1:
+            return run
+        artifacts = SimpleArtifactRepository(self._data_dir, parent)
+        try:
+            value = json.loads(artifacts.read(checkpoint.output_refs[0]))
+            children = value.get("children", [])
+        except (OSError, ValueError, json.JSONDecodeError):
+            return run
+        if not isinstance(children, list):
+            return run
+        hypothesis_ids = list(run.hypothesis_ids)
+        parents = dict(run.parent_hypothesis_ids)
+        depths = dict(run.chain_depths)
+        changed = False
+        for child_value in children:
+            if not isinstance(child_value, dict) or len(hypothesis_ids) >= 32:
+                continue
+            parent_ids = tuple(
+                str(item) for item in child_value.get("parent_hypothesis_ids", [])
+            )
+            depth = 1 + max((depths.get(item, 0) for item in parent_ids), default=0)
+            if not parent_ids or depth > 4:
+                continue
+            hypothesis_id = "hypothesis-chain-" + hashlib.sha256(
+                canonical_bytes(child_value)
+            ).hexdigest()[:32]
+            if hypothesis_id in hypothesis_ids:
+                continue
+            proposal_ref = artifacts.put_json(
+                {
+                    "kind": "simple_hypothesis_proposal",
+                    "origin": "CHAINING",
+                    "analysis_id": parent.analysis_id,
+                    "hypothesis_id": hypothesis_id,
+                    "static_bundle_ref": static.static_bundle_ref.model_dump(
+                        mode="json"
+                    ),
+                    "parent_chaining_result_ref": checkpoint.output_refs[
+                        0
+                    ].model_dump(mode="json"),
+                    "proposal": child_value,
+                }
+            )
+            child_identity = parent.model_copy(
+                update={"hypothesis_id": hypothesis_id}
+            )
+            inputs = (proposal_ref, static.static_bundle_ref)
+            self._store.save_checkpoint(
+                StageCheckpoint(
+                    identity=child_identity,
+                    stage=SimpleStage.PRO_CON_DONE,
+                    status=StageStatus.PENDING,
+                    input_refs=inputs,
+                    input_hash=input_reference_hash(inputs),
+                )
+            )
+            hypothesis_ids.append(hypothesis_id)
+            parents[hypothesis_id] = parent_ids
+            depths[hypothesis_id] = depth
+            changed = True
+        if not changed:
+            return run
+        updated = run.model_copy(
+            update={
+                "hypothesis_ids": tuple(hypothesis_ids),
+                "parent_hypothesis_ids": parents,
+                "chain_depths": depths,
+            }
+        )
+        self._store.save_analysis_run(updated)
+        return updated
 
     @staticmethod
     def _stage_result(*refs: StoredDataRef) -> StageResult:

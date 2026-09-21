@@ -133,6 +133,7 @@ def build_analysis_application(
                 docker=cast(DockerAdapter, docker),
                 containers=PortableContainerFactory(docker),
                 environments=environments,
+                store=runtime_store,
             ),
         )
 

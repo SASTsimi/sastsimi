@@ -144,6 +144,7 @@ async def resume(
                 artifacts=artifacts,
                 docker=docker,
                 containers=containers,
+                store=store,
             ),
         )
         outcome = await runner.resume_hypothesis(identity)
