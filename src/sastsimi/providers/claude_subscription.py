@@ -92,6 +92,8 @@ _EXPECTED_AGENTS = ("claude", "Explore", "general-purpose", "Plan")
 # ``thinking_tokens`` carries token counts and ``api_retry`` a retry notice.  A
 # subtype outside this set, such as ``permission_denied``, fails the call closed.
 _INFORMATIONAL_SYSTEM_SUBTYPES = frozenset({"thinking_tokens", "api_retry"})
+# The client's own wording when it declines a tool this boundary never enabled.
+_TOOL_UNAVAILABLE_MARKER = "No such tool available"
 
 
 @asynccontextmanager
@@ -1201,13 +1203,23 @@ def _require_isolated_init(
         raise ProviderInvalidOutputError
 
 
-def _require_isolated_assistant(message: dict[str, JsonValue], *, model: str) -> None:
-    """Allow only the structured-output transport; any other tool is an escape."""
+def _require_isolated_assistant(
+    message: dict[str, JsonValue], *, model: str
+) -> tuple[str, ...]:
+    """Allow only the structured-output transport and report refusable requests.
+
+    A model may still *ask* for a tool this boundary never enabled.  Asking is
+    not an escape - the client answers it with a refusal - so the request is
+    returned for the caller to match against that refusal instead of failing
+    the whole stream here.  A request the client did not refuse is an escape and
+    the caller fails closed on it.
+    """
     if message.get("model") not in (None, model):
         raise ProviderInvalidOutputError
     content = message.get("content")
     if not isinstance(content, list):
         raise ProviderInvalidOutputError
+    requested: list[str] = []
     for block in content:
         if not isinstance(block, dict):
             raise ProviderInvalidOutputError
@@ -1216,9 +1228,40 @@ def _require_isolated_assistant(message: dict[str, JsonValue], *, model: str) ->
         # structured answer crosses this boundary.
         if kind in {"text", "thinking", "redacted_thinking"}:
             continue
-        if kind == "tool_use" and block.get("name") == _STRUCTURED_OUTPUT_TOOL:
+        if kind == "tool_use":
+            if block.get("name") == _STRUCTURED_OUTPUT_TOOL:
+                continue
+            identifier = block.get("id")
+            if not isinstance(identifier, str) or not identifier.strip():
+                raise ProviderInvalidOutputError
+            requested.append(identifier)
             continue
         raise ProviderInvalidOutputError
+    return tuple(requested)
+
+
+def _refused_tool_ids(message: dict[str, JsonValue]) -> tuple[str, ...]:
+    """Return the tool requests this turn answered with the unavailable error."""
+    content = message.get("content")
+    if not isinstance(content, list):
+        raise ProviderInvalidOutputError
+    refused: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            raise ProviderInvalidOutputError
+        if block.get("type") != "tool_result":
+            continue
+        # Only a refusal can clear a request, so only a refusal needs the id
+        # that names which request it answers.
+        if block.get("is_error") is not True:
+            continue
+        if _TOOL_UNAVAILABLE_MARKER not in str(block.get("content", "")):
+            continue
+        identifier = block.get("tool_use_id")
+        if not isinstance(identifier, str) or not identifier.strip():
+            raise ProviderInvalidOutputError
+        refused.append(identifier)
+    return tuple(refused)
 
 
 def _validated_event_stream(
@@ -1233,6 +1276,8 @@ def _validated_event_stream(
     state: Literal["INIT", "TURN", "DONE"] = "INIT"
     structured: bytes | None = None
     status: Literal["SUCCEEDED", "AUTH_REQUIRED", "RATE_LIMITED", "FAILED"] = "FAILED"
+    requested_tools: set[str] = set()
+    refused_tools: set[str] = set()
     if not event_stream or len(event_stream) >= _MAX_EVENT_STREAM_BYTES:
         raise ProviderInvalidOutputError
     for line in event_stream.splitlines():
@@ -1265,16 +1310,24 @@ def _validated_event_stream(
                 raise ProviderInvalidOutputError
             if event.get("parent_tool_use_id") is not None:
                 raise ProviderInvalidOutputError
-            _require_isolated_assistant(message, model=model)
+            requested_tools.update(_require_isolated_assistant(message, model=model))
         elif state == "TURN" and event_type == "user":
             if event.get("parent_tool_use_id") is not None:
                 raise ProviderInvalidOutputError
+            reply = event.get("message")
+            if not isinstance(reply, dict):
+                raise ProviderInvalidOutputError
+            refused_tools.update(_refused_tool_ids(reply))
         elif state == "TURN" and event_type == "result":
             status, structured = _result_outcome(event)
             state = "DONE"
         else:
             raise ProviderInvalidOutputError
     if state != "DONE" or session_id is None:
+        raise ProviderInvalidOutputError
+    # Every tool this boundary never enabled must have been declined by the
+    # client.  One that ran instead means the isolation failed, so fail closed.
+    if requested_tools - refused_tools:
         raise ProviderInvalidOutputError
     if status != "SUCCEEDED":
         return status, b"", session_id
