@@ -51,6 +51,8 @@ python -m pip install .
 sastsimi --help
 ```
 
+소스 개발자는 `uv sync --frozen` 후 `uv run sastsimi ...`를 사용할 수 있지만, 일반 사용자는 설치 후 `sastsimi` 명령만 사용하면 됩니다.
+
 ### 3. 최초 설정
 
 ```text
