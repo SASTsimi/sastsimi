@@ -34,12 +34,13 @@ STAGE_ORDER: tuple[SimpleStage, ...] = tuple(SimpleStage)
 HYPOTHESIS_STAGES: tuple[SimpleStage, ...] = STAGE_ORDER[2:]
 STAGE_VERSION: dict[SimpleStage, str] = {
     stage: (
-        "2"
+        "3"
+        if stage is SimpleStage.REPORT_DONE
+        else "2"
         if stage
         in {
             SimpleStage.VERIFICATION_INITIAL_DONE,
             SimpleStage.POC_EXECUTION_DONE,
-            SimpleStage.REPORT_DONE,
         }
         else "1"
     )

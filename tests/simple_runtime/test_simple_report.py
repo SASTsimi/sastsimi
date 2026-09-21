@@ -118,7 +118,7 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
         }
     )
     verification_ref = artifacts.put_json(
-        {"result": {"rationale": "동일 실행에서 취약점이 재현되었습니다."}}
+        {"result": {"rationale": "Same-attempt evidence supports the finding."}}
     )
     cwe_ref = artifacts.put_json(
         {"result": {"primary_cwe": "CWE-78", "rationale": "명령어 삽입"}}
@@ -198,6 +198,8 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
     assert "실행 결과" in markdown
     assert script.decode().rstrip() in markdown
     assert "SUPPORTED: command executed" in markdown
+    assert "입력값이 정제되지 않고 명령 실행 함수까지 전달됩니다." in markdown
+    assert "Same-attempt evidence supports the finding." not in markdown
 
 
 @pytest.mark.asyncio
