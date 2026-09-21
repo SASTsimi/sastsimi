@@ -25,6 +25,7 @@ def test_windows_command_path_with_spaces_is_invoked_as_one_argument(
 
     assert inspected.available is True
     assert inspected.executable == executable.resolve()
+    assert inspected.version == "1.0"
     assert calls == [((str(executable), "--version"), False, 20)]
 
 
@@ -60,4 +61,5 @@ def test_official_codex_node_launcher_prefers_packaged_native_binary(
 
     assert inspected.available is True
     assert inspected.executable == native.resolve()
+    assert inspected.version == "1.0"
     assert calls == [((str(native), "--version"))]

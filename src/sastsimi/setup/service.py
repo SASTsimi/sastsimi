@@ -106,6 +106,11 @@ class SystemToolDiscovery:
             return ToolInspection(name=name, available=False)
         output = (completed.stdout or completed.stderr).splitlines()
         version = output[0].strip()[:160] if output else ""
+        if name == "codex":
+            prefix = "codex-cli "
+            if not version.startswith(prefix):
+                return ToolInspection(name=name, available=False)
+            version = version.removeprefix(prefix)
         if completed.returncode != 0 or not version or any(
             ord(character) < 32 for character in version
         ):
