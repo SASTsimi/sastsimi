@@ -419,6 +419,17 @@ def main(
         }
         config = bootstrap.build_config(args.config, overrides)
         output_format = config.output_format
+
+        def resolve_public_application() -> public_command.PublicCommandApplication:
+            nonlocal public_application
+            if public_application is None:
+                from sastsimi.composition.simple_runtime_composition import (
+                    build_public_simple_runtime,
+                )
+
+                public_application = build_public_simple_runtime(selected_user_store)
+            return public_application
+
         if args.command == "setup":
             command_name = "setup"
             service = setup_service or SetupService()
@@ -467,7 +478,7 @@ def main(
             ):
                 raise _InputError
             if args.profile is None:
-                application = public_application or public_command.unavailable()
+                application = resolve_public_application()
                 data = application.analyze(repository, args.commit)
                 public_command.emit_public(
                     output_format,
@@ -574,7 +585,7 @@ def main(
         if args.command == "resume":
             command_name = "resume"
             if public_application is not None or args.analysis_id.startswith("A-"):
-                application = public_application or public_command.unavailable()
+                application = resolve_public_application()
                 data = application.resume(args.analysis_id)
                 public_command.emit_public(
                     output_format,
@@ -608,7 +619,7 @@ def main(
         if args.command == "status":
             command_name = "status"
             if public_application is not None or args.analysis_id.startswith("A-"):
-                application = public_application or public_command.unavailable()
+                application = resolve_public_application()
                 data = application.status(args.analysis_id)
                 public_command.emit_public(
                     output_format,
@@ -641,7 +652,7 @@ def main(
             return int(ExitCode.OK)
         if args.command == "result":
             command_name = "result"
-            application = public_application or public_command.unavailable()
+            application = resolve_public_application()
             data = application.result(args.analysis_id)
             public_command.emit_public(
                 output_format,
@@ -652,7 +663,7 @@ def main(
             return int(ExitCode.OK)
         if args.command == "poc":
             command_name = "poc"
-            application = public_application or public_command.unavailable()
+            application = resolve_public_application()
             value = application.poc(args.finding_id)
             if output_format == "json":
                 emit_data(

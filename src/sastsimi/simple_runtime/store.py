@@ -5,7 +5,7 @@ import sqlite3
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.observability.agent_activity import (
@@ -25,6 +25,9 @@ from .models import (
     StageStatus,
     input_reference_hash,
 )
+
+if TYPE_CHECKING:
+    from .application import SimpleAnalysisRun
 
 ROLE_BY_STAGE: dict[SimpleStage, str] = {
     SimpleStage.STATIC_DONE: "Static Analysis Runtime",
@@ -72,6 +75,44 @@ class SimpleCheckpointStore:
                 """
             )
             AgentActivityStore.initialize_connection(connection)
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_analysis_runs (
+                    analysis_id TEXT PRIMARY KEY,
+                    run_json TEXT NOT NULL
+                )
+                """
+            )
+
+    @property
+    def database_path(self) -> Path:
+        return self._database_path
+
+    def save_analysis_run(self, run: object) -> None:
+        from .application import SimpleAnalysisRun
+
+        validated = SimpleAnalysisRun.model_validate(run)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO simple_analysis_runs (analysis_id, run_json)
+                VALUES (?, ?)
+                ON CONFLICT (analysis_id) DO UPDATE SET run_json = excluded.run_json
+                """,
+                (validated.analysis_id, validated.model_dump_json()),
+            )
+
+    def require_analysis_run(self, analysis_id: str) -> SimpleAnalysisRun:
+        from .application import SimpleAnalysisRun
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (analysis_id,),
+            ).fetchone()
+        if row is None:
+            raise LookupError("SIMPLE_ANALYSIS_RUN_NOT_FOUND")
+        return SimpleAnalysisRun.model_validate_json(row[0])
 
     @staticmethod
     def _hypothesis_key(identity: CheckpointIdentity) -> str:

@@ -32,7 +32,7 @@ from .models import (
     StageResult,
 )
 from .poc import PoCCandidateRejected, validate_candidate
-from .provider import SimpleCodexClient, SimpleLLMCallResult
+from .provider import SimpleLLMCallResult, SimpleLLMClient
 from .runner import SimpleStageHandler, StageBlocked, StageFailed
 
 _LOCAL_TIMEOUT_MS = 180_000
@@ -54,6 +54,32 @@ _ROLE_BY_STAGE: dict[SimpleStage, str] = {
 
 class SimpleContainerFactory(Protocol):
     async def acquire(self, checkpoint: StageCheckpoint) -> str: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ReproductionEnvironment:
+    recipe_ref: StoredDataRef
+    image_digest: str
+
+
+class ReproductionEnvironmentPreparer(Protocol):
+    async def prepare(
+        self,
+        checkpoint: StageCheckpoint,
+        prior: Mapping[SimpleStage, StageCheckpoint],
+        requirements: tuple[str, ...],
+    ) -> ReproductionEnvironment: ...
+
+
+class _UnavailableEnvironmentPreparer:
+    async def prepare(
+        self,
+        checkpoint: StageCheckpoint,
+        prior: Mapping[SimpleStage, StageCheckpoint],
+        requirements: tuple[str, ...],
+    ) -> ReproductionEnvironment:
+        del checkpoint, prior, requirements
+        raise RuntimeError("REPRODUCTION_ENVIRONMENT_NOT_CONFIGURED")
 
 
 def _object_schema(
@@ -182,7 +208,7 @@ class PoCCandidateStage:
     def __init__(
         self,
         *,
-        client: SimpleCodexClient,
+        client: SimpleLLMClient,
         artifacts: SimpleArtifactRepository,
         allowed_environment_names: frozenset[str] = frozenset(),
     ) -> None:
@@ -301,7 +327,7 @@ class PoCExecutionStage:
     def __init__(
         self,
         *,
-        client: SimpleCodexClient,
+        client: SimpleLLMClient,
         artifacts: SimpleArtifactRepository,
         docker: DockerAdapter,
         containers: SimpleContainerFactory,
@@ -507,7 +533,7 @@ class _StructuredStage:
     def __init__(
         self,
         *,
-        client: SimpleCodexClient,
+        client: SimpleLLMClient,
         artifacts: SimpleArtifactRepository,
         instructions: str,
         schema: dict[str, Any],
@@ -544,10 +570,176 @@ class _StructuredStage:
         return result, output_ref
 
 
+class ProConStage:
+    """Collect independent supporting and opposing evidence."""
+
+    def __init__(
+        self,
+        client: SimpleLLMClient,
+        artifacts: SimpleArtifactRepository,
+    ) -> None:
+        schema = _object_schema(
+            {
+                "claims": _string_array(),
+                "evidence_refs": _string_array(),
+                "limitations": _string_array(),
+                "requested_paths": _string_array(),
+            },
+            ["claims", "evidence_refs", "limitations", "requested_paths"],
+        )
+        self._pro = _StructuredStage(
+            client=client,
+            artifacts=artifacts,
+            instructions="""
+You are the Pro Agent. Find only evidence that supports the exact vulnerability
+hypothesis. Trace source, propagation, sink, authorization and sanitizer facts.
+Cite supplied exact artifact content hashes. State missing code paths instead of
+inventing them. `requested_paths` lists only repository-relative files needed
+for a later bounded retrieval.
+""",
+            schema=schema,
+            kind="simple_pro_evidence",
+        )
+        self._con = _StructuredStage(
+            client=client,
+            artifacts=artifacts,
+            instructions="""
+You are the Con Agent in a new independent review. Search for concrete
+counterevidence: validation, sanitization, authorization, unreachable flows and
+false tool matches. Cite supplied exact artifact content hashes. Never weaken a
+claim merely because information is missing; record the gap in limitations and
+use `requested_paths` for repository-relative files needed later.
+""",
+            schema=schema,
+            kind="simple_con_evidence",
+        )
+
+    async def __call__(
+        self,
+        checkpoint: StageCheckpoint,
+        prior: Mapping[SimpleStage, StageCheckpoint],
+    ) -> StageResult:
+        refs = _unique_refs(checkpoint.input_refs + _prior_refs(prior))
+        pro, pro_ref = await self._pro.call(checkpoint, refs)
+        con, con_ref = await self._con.call(checkpoint, refs)
+        return StageResult(
+            output_refs=(pro_ref, con_ref),
+            activity_events=(
+                _activity_event(
+                    checkpoint,
+                    ActivityKind.EVIDENCE_RECORDED,
+                    offset=10,
+                    summary_ko="Pro Agent가 성립 근거를 저장했습니다.",
+                    output_refs=(pro_ref,),
+                    llm=pro,
+                ),
+                _activity_event(
+                    checkpoint,
+                    ActivityKind.EVIDENCE_RECORDED,
+                    offset=20,
+                    summary_ko="Con Agent가 반박 근거를 저장했습니다.",
+                    output_refs=(con_ref,),
+                    llm=con,
+                ),
+            ),
+        )
+
+
+class InitialVerificationStage:
+    def __init__(
+        self,
+        client: SimpleLLMClient,
+        artifacts: SimpleArtifactRepository,
+        environments: ReproductionEnvironmentPreparer,
+    ) -> None:
+        self._environments = environments
+        self._stage = _StructuredStage(
+            client=client,
+            artifacts=artifacts,
+            instructions="""
+You are the Verification Agent. Compare the exact hypothesis with independent
+Pro and Con evidence. Return an initial TRUE, FALSE, or HOLD assessment, but do
+not call it the final verdict. Define one concrete reproduction goal and the
+minimal environment requirements needed to obtain decisive evidence. Provider
+or tool errors are not vulnerability FALSE.
+""",
+            schema=_object_schema(
+                {
+                    "initial_assessment": _enum("TRUE", "FALSE", "HOLD"),
+                    "rationale": _string(),
+                    "reproduction_goal": _string(),
+                    "environment_requirements": _string_array(),
+                    "supporting_refs": _string_array(),
+                    "limitations": _string_array(),
+                },
+                [
+                    "initial_assessment",
+                    "rationale",
+                    "reproduction_goal",
+                    "environment_requirements",
+                    "supporting_refs",
+                    "limitations",
+                ],
+            ),
+            kind="simple_initial_verification",
+        )
+
+    async def __call__(
+        self,
+        checkpoint: StageCheckpoint,
+        prior: Mapping[SimpleStage, StageCheckpoint],
+    ) -> StageResult:
+        result, output_ref = await self._stage.call(
+            checkpoint,
+            _unique_refs(checkpoint.input_refs + _prior_refs(prior)),
+        )
+        requirements = tuple(
+            str(value) for value in result.value["environment_requirements"]
+        )
+        try:
+            environment = await self._environments.prepare(
+                checkpoint,
+                prior,
+                requirements,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            code = str(error)
+            if not code or not all(
+                character.isupper() or character.isdigit() or character in "_:"
+                for character in code
+            ):
+                code = "REPRODUCTION_ENVIRONMENT_BLOCKED"
+            raise StageBlocked(
+                StageFailure(
+                    code=code[:160],
+                    retryable=True,
+                    safe_message="Reproduction environment did not complete",
+                    evidence_refs=(output_ref,),
+                )
+            ) from error
+        return StageResult(
+            output_refs=(output_ref, environment.recipe_ref),
+            recipe_ref=environment.recipe_ref,
+            image_digest=environment.image_digest,
+            activity_events=(
+                _activity_event(
+                    checkpoint,
+                    ActivityKind.DECISION_RECORDED,
+                    offset=10,
+                    summary_ko=(
+                        "초기 검증 판단과 동적 재현 목표를 저장했습니다."
+                    ),
+                    output_refs=(output_ref, environment.recipe_ref),
+                    llm=result,
+                ),
+            ),
+        )
+
+
 class FinalVerificationStage:
     def __init__(
         self,
-        client: SimpleCodexClient,
+        client: SimpleLLMClient,
         artifacts: SimpleArtifactRepository,
     ) -> None:
         self._stage = _StructuredStage(
@@ -617,7 +809,7 @@ content hashes, limitations, and unresolved conditions.
 class CWEStage:
     def __init__(
         self,
-        client: SimpleCodexClient,
+        client: SimpleLLMClient,
         artifacts: SimpleArtifactRepository,
     ) -> None:
         self._stage = _StructuredStage(
@@ -676,7 +868,7 @@ change the verdict or invent evidence.
 class TechnicalGateStage:
     def __init__(
         self,
-        client: SimpleCodexClient,
+        client: SimpleLLMClient,
         artifacts: SimpleArtifactRepository,
     ) -> None:
         self._stage = _StructuredStage(
@@ -749,7 +941,7 @@ class RuleScopeGateStage:
 
     def __init__(
         self,
-        client: SimpleCodexClient,
+        client: SimpleLLMClient,
         artifacts: SimpleArtifactRepository,
     ) -> None:
         self._artifacts = artifacts
@@ -781,12 +973,38 @@ policy is UNCERTAIN, never ALLOW. Do not alter the technical verdict.
     ) -> StageResult:
         policy_refs = self._artifacts.published_refs(self._POLICY_KINDS)
         if not policy_refs:
-            raise StageBlocked(
-                StageFailure(
-                    code="POLICY_UNAVAILABLE",
-                    retryable=True,
-                    safe_message="Exact official policy is unavailable",
-                )
+            output_ref = self._artifacts.put_json(
+                {
+                    "kind": "simple_rule_scope_gate",
+                    "source_refs": [],
+                    "result": {
+                        "status": "UNCERTAIN",
+                        "rationale": (
+                            "공식 대상 정책이 제공되지 않아 외부 공개 가능성을 "
+                            "확인할 수 없습니다."
+                        ),
+                        "checks": ["OFFICIAL_POLICY_MISSING"],
+                        "restrictions": [
+                            "외부 제출·공개 금지. 내부 기술 검토만 허용됩니다."
+                        ],
+                    },
+                    "attempt_id": checkpoint.attempt_id,
+                }
+            )
+            return StageResult(
+                output_refs=(output_ref,),
+                activity_events=(
+                    _activity_event(
+                        checkpoint,
+                        ActivityKind.DECISION_RECORDED,
+                        offset=10,
+                        summary_ko=(
+                            "공식 정책이 없어 Rule Scope 결과를 UNCERTAIN으로 "
+                            "저장했습니다."
+                        ),
+                        output_refs=(output_ref,),
+                    ),
+                ),
             )
         result, output_ref = await self._stage.call(
             checkpoint,
@@ -880,7 +1098,7 @@ class FindingStage:
 class ReporterStage:
     def __init__(
         self,
-        client: SimpleCodexClient,
+        client: SimpleLLMClient,
         artifacts: SimpleArtifactRepository,
     ) -> None:
         self._artifacts = artifacts
@@ -1135,12 +1353,20 @@ human must review.
 
 def build_stage_handlers(
     *,
-    client: SimpleCodexClient,
+    client: SimpleLLMClient,
     artifacts: SimpleArtifactRepository,
     docker: DockerAdapter,
     containers: SimpleContainerFactory,
+    environments: ReproductionEnvironmentPreparer | None = None,
 ) -> dict[SimpleStage, SimpleStageHandler]:
+    environment_preparer = environments or _UnavailableEnvironmentPreparer()
     return {
+        SimpleStage.PRO_CON_DONE: ProConStage(client, artifacts),
+        SimpleStage.VERIFICATION_INITIAL_DONE: InitialVerificationStage(
+            client,
+            artifacts,
+            environment_preparer,
+        ),
         SimpleStage.POC_CANDIDATE_DONE: PoCCandidateStage(
             client=client,
             artifacts=artifacts,
@@ -1169,6 +1395,10 @@ __all__ = [
     "FindingStage",
     "PoCCandidateStage",
     "PoCExecutionStage",
+    "ProConStage",
+    "InitialVerificationStage",
+    "ReproductionEnvironment",
+    "ReproductionEnvironmentPreparer",
     "ReporterStage",
     "RuleScopeGateStage",
     "SimpleContainerFactory",
