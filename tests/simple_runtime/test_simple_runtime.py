@@ -406,9 +406,10 @@ async def test_technical_gate_revise_returns_to_same_final_verification(
     assert calls[0] is SimpleStage.VERIFICATION_FINAL_DONE
     assert final.output_refs[0] in revised_inputs
     assert revise_ref in revised_inputs
-    assert store.require(
-        _identity(), SimpleStage.VERIFICATION_FINAL_DONE
-    ).attempt_number == 2
+    assert (
+        store.require(_identity(), SimpleStage.VERIFICATION_FINAL_DONE).attempt_number
+        == 2
+    )
     assert outcome.current_stage is SimpleStage.REPORT_DONE
 
 

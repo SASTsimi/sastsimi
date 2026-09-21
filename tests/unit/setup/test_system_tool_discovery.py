@@ -152,9 +152,7 @@ def test_windows_opengrep_release_binary_name_is_discovered(
         lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, "1.30.0\n", ""),
     )
 
-    inspected = SystemToolDiscovery._inspect(
-        "opengrep", ("opengrep", "--version")
-    )
+    inspected = SystemToolDiscovery._inspect("opengrep", ("opengrep", "--version"))
 
     assert inspected.available is True
     assert inspected.executable == executable.resolve()

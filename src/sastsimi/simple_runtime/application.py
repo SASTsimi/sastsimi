@@ -288,9 +288,7 @@ class SimpleAnalysisApplication:
             run = self._register_chain_children(run, child, static)
         if incomplete is not None:
             outcome_status: Literal["BLOCKED", "FAILED"] = (
-                "BLOCKED"
-                if incomplete.status is StageStatus.BLOCKED
-                else "FAILED"
+                "BLOCKED" if incomplete.status is StageStatus.BLOCKED else "FAILED"
             )
             return SimpleAnalysisOutcome(
                 identity=identity,

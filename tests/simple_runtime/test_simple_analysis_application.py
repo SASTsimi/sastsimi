@@ -298,10 +298,13 @@ async def test_blocked_hypothesis_does_not_stop_independent_sibling(
     completed = outcome.identity.model_copy(
         update={"hypothesis_id": "hypothesis-complete"}
     )
-    assert store.require(
-        completed,
-        SimpleStage.VERIFICATION_FINAL_DONE,
-    ).verdict == "FALSE"
+    assert (
+        store.require(
+            completed,
+            SimpleStage.VERIFICATION_FINAL_DONE,
+        ).verdict
+        == "FALSE"
+    )
 
 
 def test_chaining_child_is_added_once_to_durable_analysis_queue(

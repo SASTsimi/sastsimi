@@ -96,11 +96,7 @@ class SystemToolDiscovery:
             None,
         )
         executable = (
-            Path(command[0])
-            if name == "python"
-            else Path(found)
-            if found
-            else None
+            Path(command[0]) if name == "python" else Path(found) if found else None
         )
         if executable is None or not executable.is_file():
             return ToolInspection(name=name, available=False)

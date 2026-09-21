@@ -295,9 +295,7 @@ class SimpleRuntimeRunner:
 
         repair_inputs = tuple(
             dict.fromkeys(
-                verification.input_refs
-                + verification.output_refs
-                + gate.output_refs
+                verification.input_refs + verification.output_refs + gate.output_refs
             )
         )
         self.store.invalidate_from(
