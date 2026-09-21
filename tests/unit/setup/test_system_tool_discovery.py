@@ -135,3 +135,25 @@ def test_codeql_without_a_query_pack_is_not_reported_as_ready(
         (str(executable), "version", "--format=terse"),
         (str(executable), "resolve", "packs", "--format=json"),
     ]
+
+
+def test_windows_opengrep_release_binary_name_is_discovered(
+    tmp_path, monkeypatch
+) -> None:
+    executable = tmp_path / "opengrep_windows_x86.exe"
+    executable.write_bytes(b"official-opengrep")
+
+    def which(name: str):
+        return executable if name == "opengrep_windows_x86.exe" else None
+
+    monkeypatch.setattr("sastsimi.setup.service.shutil.which", which)
+    monkeypatch.setattr(
+        "sastsimi.setup.service.subprocess.run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, "1.30.0\n", ""),
+    )
+
+    inspected = SystemToolDiscovery._inspect("opengrep", ("opengrep", "--version"))
+
+    assert inspected.available is True
+    assert inspected.executable == executable.resolve()
+    assert inspected.version == "1.30.0"

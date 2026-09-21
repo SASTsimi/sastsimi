@@ -18,8 +18,8 @@ SASTSIMI는 저장소의 AST·OpenGrep·CodeQL 결과를 LLM Agent가 검토하�
 - 주의: 실제 Provider·도구·Docker 조합은 설치한 컴퓨터에서 `sastsimi setup`으로 다시 확인해야 합니다. 인증·도구·환경 오류는 취약점 `FALSE`로 바꾸지 않습니다.
 
 현재 통합 상태: `LIVE_E2E_VERIFIED`. 2026-09-21에 공식 Codex 회원 로그인,
-OpenGrep, CodeQL 공식 bundle과 Linux Docker를 사용해 WSL의 PyGoat·ItsDangerous
-분석을 실행했고, Windows clean wheel 환경에서는 ItsDangerous 분석을 100% 완료해
+OpenGrep, CodeQL 공식 bundle과 Linux Docker를 사용해 WSL의 PyGoat 분석을
+실행했고, Windows clean wheel 환경에서는 ItsDangerous 분석을 100% 완료해
 validated PoC, 두 Gate, `F-001.md`까지 확인했습니다. PyGoat에서는 실제 취약점
 보고서 생성 뒤 후속 가설이 `BLOCKED`로 남는 복구 흐름도 확인했습니다. 이는 특정
 실행 조합의 통합 검증 결과이며 모든 Provider·모델·저장소의 운영 승인을 뜻하지는

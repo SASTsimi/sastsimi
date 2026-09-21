@@ -87,7 +87,6 @@ class PortableDockerRuntime:
             "create",
             "--network",
             "none",
-            "--read-only",
             "--user",
             "10001:10001",
             "--security-opt",

@@ -82,12 +82,21 @@ class SystemToolDiscovery:
 
     @staticmethod
     def _inspect(name: str, command: tuple[str, ...]) -> ToolInspection:
+        executable_names = (
+            (command[0], "opengrep_windows_x86.exe")
+            if name == "opengrep"
+            else (command[0],)
+        )
+        found = next(
+            (
+                candidate
+                for executable_name in executable_names
+                if (candidate := shutil.which(executable_name))
+            ),
+            None,
+        )
         executable = (
-            Path(command[0])
-            if name == "python"
-            else Path(found)
-            if (found := shutil.which(command[0]))
-            else None
+            Path(command[0]) if name == "python" else Path(found) if found else None
         )
         if executable is None or not executable.is_file():
             return ToolInspection(name=name, available=False)

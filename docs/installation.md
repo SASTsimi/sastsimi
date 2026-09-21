@@ -13,6 +13,10 @@
 
 각 프로그램은 현재 컴퓨터의 `PATH`에서 실행 가능해야 합니다.
 
+Windows용 OpenGrep 공식 release 파일 이름이 `opengrep_windows_x86.exe`인
+경우에는 이름을 바꾸지 않아도 됩니다. 해당 파일이 있는 폴더를 `PATH`에 추가하면
+`sastsimi setup`이 `opengrep`과 이 공식 파일 이름을 모두 확인합니다.
+
 ```text
 python --version
 git --version

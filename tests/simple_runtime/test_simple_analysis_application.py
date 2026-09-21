@@ -21,11 +21,12 @@ from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
+    StageFailure,
     StageResult,
     StageStatus,
     input_reference_hash,
 )
-from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
+from sastsimi.simple_runtime.runner import SimpleRuntimeRunner, StageBlocked
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
@@ -215,6 +216,95 @@ async def test_resume_reuses_static_and_hypothesis_results(tmp_path: Path) -> No
 
     assert resumed.status == "COMPLETE"
     assert len(store.list_checkpoints("analysis-1")) >= 4
+
+
+@pytest.mark.asyncio
+async def test_blocked_hypothesis_does_not_stop_independent_sibling(
+    tmp_path: Path,
+) -> None:
+    class TwoHypotheses:
+        async def propose(
+            self,
+            _identity: CheckpointIdentity,
+            _static: StaticBootstrapResult,
+        ) -> tuple[HypothesisSeed, ...]:
+            return (
+                HypothesisSeed(
+                    hypothesis_id="hypothesis-blocked",
+                    proposal_ref=_ref("hypothesis-blocked"),
+                ),
+                HypothesisSeed(
+                    hypothesis_id="hypothesis-complete",
+                    proposal_ref=_ref("hypothesis-complete"),
+                ),
+            )
+
+    def runner(
+        store: SimpleCheckpointStore,
+        identity: CheckpointIdentity,
+        _static: StaticBootstrapResult,
+    ) -> SimpleRuntimeRunner:
+        handlers: dict[SimpleStage, Any] = {}
+        for stage in tuple(SimpleStage)[2:]:
+
+            async def handle(
+                _checkpoint: StageCheckpoint,
+                _prior: Mapping[SimpleStage, StageCheckpoint],
+                *,
+                current: SimpleStage = stage,
+            ) -> StageResult:
+                if (
+                    identity.hypothesis_id == "hypothesis-blocked"
+                    and current is SimpleStage.PRO_CON_DONE
+                ):
+                    raise StageBlocked(
+                        StageFailure(
+                            code="PROVIDER_TEMPORARY_FAILURE",
+                            retryable=True,
+                            safe_message="try this hypothesis later",
+                        )
+                    )
+                return StageResult(
+                    output_refs=(_ref(f"{identity.hypothesis_id}-{current.value}"),),
+                    verdict=(
+                        "FALSE"
+                        if current is SimpleStage.VERIFICATION_FINAL_DONE
+                        else None
+                    ),
+                )
+
+            handlers[stage] = handle
+        return SimpleRuntimeRunner(store, handlers)
+
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=TwoHypotheses(),
+        runner_factory=runner,
+        id_factory=iter(("analysis-1", "workspace-1")).__next__,
+    )
+
+    outcome = await application.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        )
+    )
+
+    assert outcome.status == "BLOCKED"
+    completed = outcome.identity.model_copy(
+        update={"hypothesis_id": "hypothesis-complete"}
+    )
+    assert (
+        store.require(
+            completed,
+            SimpleStage.VERIFICATION_FINAL_DONE,
+        ).verdict
+        == "FALSE"
+    )
 
 
 def test_chaining_child_is_added_once_to_durable_analysis_queue(
