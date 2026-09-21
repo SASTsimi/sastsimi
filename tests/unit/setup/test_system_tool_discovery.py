@@ -1,6 +1,7 @@
 # mypy: disable-error-code="no-untyped-def"
 from __future__ import annotations
 
+import json
 import subprocess
 
 from sastsimi.setup.service import SystemToolDiscovery
@@ -102,3 +103,35 @@ def test_official_codex_windows_npm_launcher_prefers_packaged_native_binary(
     assert inspected.executable == native.resolve()
     assert inspected.version == "1.0"
     assert calls == [((str(native), "--version"))]
+
+
+def test_codeql_without_a_query_pack_is_not_reported_as_ready(
+    tmp_path, monkeypatch
+) -> None:
+    executable = tmp_path / "codeql.exe"
+    executable.write_bytes(b"standalone-codeql")
+    calls: list[tuple[str, ...]] = []
+
+    def run(argv, **_kwargs):
+        calls.append(tuple(argv))
+        if "resolve" in argv:
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                json.dumps({"steps": [{"found": {}}]}),
+                "",
+            )
+        return subprocess.CompletedProcess(argv, 0, "2.27.0\n", "")
+
+    monkeypatch.setattr("sastsimi.setup.service.shutil.which", lambda _name: executable)
+    monkeypatch.setattr("sastsimi.setup.service.subprocess.run", run)
+
+    inspected = SystemToolDiscovery._inspect(
+        "codeql", ("codeql", "version", "--format=terse")
+    )
+
+    assert inspected.available is False
+    assert calls == [
+        (str(executable), "version", "--format=terse"),
+        (str(executable), "resolve", "packs", "--format=json"),
+    ]

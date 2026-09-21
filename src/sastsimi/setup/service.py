@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -115,6 +116,10 @@ class SystemToolDiscovery:
             ord(character) < 32 for character in version
         ):
             return ToolInspection(name=name, available=False)
+        if name == "codeql" and not SystemToolDiscovery._has_codeql_query_pack(
+            executable
+        ):
+            return ToolInspection(name=name, available=False)
         digest = hashlib.sha256()
         try:
             with executable.open("rb") as stream:
@@ -163,6 +168,41 @@ class SystemToolDiscovery:
             if candidate.is_file() and candidate.name in {"codex", "codex.exe"}
         )
         return candidates[0] if len(candidates) == 1 else executable
+
+    @staticmethod
+    def _has_codeql_query_pack(executable: Path) -> bool:
+        try:
+            completed = subprocess.run(
+                (str(executable), "resolve", "packs", "--format=json"),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                shell=False,
+            )
+            if completed.returncode != 0:
+                return False
+            resolved = json.loads(completed.stdout)
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+            return False
+
+        def contains_query_pack(value: object) -> bool:
+            if isinstance(value, dict):
+                if any(
+                    isinstance(key, str)
+                    and key.startswith("codeql/")
+                    and key.endswith("-queries")
+                    and isinstance(item, dict)
+                    and item.get("kind") == "query"
+                    for key, item in value.items()
+                ):
+                    return True
+                return any(contains_query_pack(item) for item in value.values())
+            if isinstance(value, list):
+                return any(contains_query_pack(item) for item in value)
+            return False
+
+        return contains_query_pack(resolved)
 
 
 AuthChecker = Callable[[SetupChoices, dict[str, ToolInspection]], bool]
