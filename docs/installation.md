@@ -8,7 +8,7 @@
 - Git
 - OpenGrep CLI
 - Docker Desktop 또는 Docker Engine
-- Full profile: CodeQL CLI
+- Full profile: 호환 query pack이 포함된 공식 CodeQL platform bundle
 - 회원 로그인 사용 시: 공식 Codex CLI
 
 각 프로그램은 현재 컴퓨터의 `PATH`에서 실행 가능해야 합니다.
@@ -18,11 +18,17 @@ python --version
 git --version
 opengrep --version
 codeql version --format=terse
+codeql resolve packs --format=json
 docker version
 codex --version
 ```
 
 Lightweight profile은 CodeQL을 제외하고 Python AST와 OpenGrep을 사용합니다. Full profile은 Python AST·OpenGrep·CodeQL을 모두 사용하며, 하나라도 없으면 분석을 시작하지 않습니다.
+
+CodeQL은 GitHub CodeQL Action release의 현재 운영체제용 bundle을 설치합니다.
+standalone CLI만 설치하면 `codeql version`은 성공해도 분석 query가 없으므로 사용할
+수 없습니다. `codeql resolve packs --format=json` 결과에 `codeql/*-queries` query
+pack이 있어야 `sastsimi setup`의 Full profile 검사를 통과합니다.
 
 ## 2. 설치
 
@@ -121,6 +127,6 @@ sastsimi analyze --help
 sastsimi dashboard --help
 ```
 
-Full profile에서 CodeQL이 없거나, 선택한 인증을 확인하지 못하면 setup은 누락 항목을 표시하고 `BLOCKED`로 끝납니다. 설정 파일을 손으로 고쳐 우회하지 말고 프로그램이나 인증을 준비한 뒤 setup을 다시 실행합니다.
+Full profile에서 CodeQL bundle·query pack이 없거나, 선택한 인증을 확인하지 못하면 setup은 누락 항목을 표시하고 `BLOCKED`로 끝납니다. 설정 파일을 손으로 고쳐 우회하지 말고 프로그램이나 인증을 준비한 뒤 setup을 다시 실행합니다.
 
 설치 뒤의 실제 사용은 [실행 안내](usage.md), 인증 문제는 [Provider 설정](provider-setup.md), 실패 원인은 [문제 해결](troubleshooting.md)을 확인하세요.

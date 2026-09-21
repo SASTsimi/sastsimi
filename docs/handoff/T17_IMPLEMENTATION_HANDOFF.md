@@ -8,6 +8,10 @@
 > Linux/WSL의 운영체제별 설정 경로를 연결했습니다. Full profile은 Python AST,
 > OpenGrep, CodeQL, Docker를 모두 실행합니다. 최신 사용법과 실제 지원 한계는
 > 저장소 루트 `README.md`, `docs/installation.md`, `docs/usage.md`를 우선합니다.
+> 2026-09-21 실제 검증에서는 WSL PyGoat에서 validated PoC와 한국어 `F-001.md`,
+> WSL ItsDangerous에서 안전한 `HOLD`, Windows clean wheel ItsDangerous에서 7개
+> 가설·1개 Finding·100% 완료를 확인했습니다. 따라서 아래의 과거 “E2E·resume·
+> dashboard 미지원” 항목은 T17 당시 기록일 뿐 현재 상태가 아닙니다.
 
 이 문서는 T17까지 병합된 `main`의 실제 구현 상태와 다음 작업 시작 기준을 설명합니다.
 기능이 존재하는 것과 실제 외부 환경에서 운영 승인이 끝난 것을 구분하며, 확인하지

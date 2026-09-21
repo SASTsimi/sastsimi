@@ -13,9 +13,13 @@ SASTSIMI는 저장소의 AST·OpenGrep·CodeQL 결과를 LLM Agent가 검토하�
 - 제한: Python 저장소가 첫 통합 검증 대상입니다. 자동 외부 제출·공개, HTML/PDF 보고서, 대시보드 쓰기 기능은 지원하지 않습니다.
 - 주의: 실제 Provider·도구·Docker 조합은 설치한 컴퓨터에서 `sastsimi setup`으로 다시 확인해야 합니다. 인증·도구·환경 오류는 취약점 `FALSE`로 바꾸지 않습니다.
 
-현재 통합 상태: `LIVE_E2E_VERIFICATION_PENDING`. 구현 경로는 연결됐지만 깨끗한
-설치 환경에서 실제 Provider·OpenGrep·CodeQL·Docker로 두 대상 저장소를 완주한
-최종 증거는 이 변경의 마지막 검증에서 확정합니다.
+현재 통합 상태: `LIVE_E2E_VERIFIED`. 2026-09-21에 공식 Codex 회원 로그인,
+OpenGrep, CodeQL 공식 bundle과 Linux Docker를 사용해 WSL의 PyGoat·ItsDangerous
+분석을 실행했고, Windows clean wheel 환경에서는 ItsDangerous 분석을 100% 완료해
+validated PoC, 두 Gate, `F-001.md`까지 확인했습니다. PyGoat에서는 실제 취약점
+보고서 생성 뒤 후속 가설이 `BLOCKED`로 남는 복구 흐름도 확인했습니다. 이는 특정
+실행 조합의 통합 검증 결과이며 모든 Provider·모델·저장소의 운영 승인을 뜻하지는
+않습니다.
 
 ## 가장 빠른 설치
 
@@ -36,12 +40,17 @@ sastsimi --help
 git --version
 opengrep --version
 codeql version --format=terse
+codeql resolve packs --format=json
 docker version
 codex --version
 sastsimi setup
 ```
 
 `setup`은 운영체제의 사용자 설정·데이터 폴더를 사용합니다. 실행 파일의 위치와 버전을 현재 컴퓨터에서 탐지하므로 저장소를 만든 사람의 절대 경로를 재사용하지 않습니다. API key와 로그인 token은 설정 파일에 저장하지 않습니다.
+
+CodeQL은 실행 파일만 있는 standalone package가 아니라 호환 query pack이 포함된
+공식 platform bundle을 설치해야 합니다. `setup`은 query pack이 없으면 Full
+profile을 `READY`로 표시하지 않습니다.
 
 ## LLM 인증
 

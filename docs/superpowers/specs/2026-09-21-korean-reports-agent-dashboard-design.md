@@ -1,12 +1,16 @@
 # 한국어 취약점 보고서·Agent 감사 로그·읽기 전용 대시보드 설계
 
+> **상태:** 이 문서의 최초 WSL 전용 지원 범위는 이후
+> `2026-09-21-simple-runtime-productization-design.md`에서 대체됐습니다. 현재 공개
+> CLI와 실제 지원 상태는 루트 `README.md`와 `docs/installation.md`를 따릅니다.
+
 ## 목적
 
 WSL 기반 SASTSIMI 실제 분석에서 사람이 분석 진행 상황과 각 Agent의 검증 가능한 작업 과정을 실시간으로 확인하고, 최종 결과를 바로 검토할 수 있는 한국어 Markdown 보고서로 제공한다.
 
 이 기능은 LLM의 숨겨진 내부 사고 과정을 노출하거나 저장하지 않는다. 시스템이 실제로 사용한 정확한 입력·근거, 요청한 작업, 도구 실행 결과, 구조화된 판정 이유만 감사 가능한 형태로 기록한다.
 
-## 지원 환경
+## 최초 설계 당시 지원 환경
 
 - 첫 구현과 실제 E2E 검증 대상은 WSL2의 Linux 사용자 공간과 Linux Docker 컨테이너다.
 - Windows 사용자는 WSL2 안에서 SASTSIMI와 대시보드를 실행하고 Windows 브라우저에서 `localhost`로 접속한다.

@@ -32,6 +32,7 @@ setup 출력의 누락 목록을 확인합니다.
 git --version
 opengrep --version
 codeql version --format=terse
+codeql resolve packs --format=json
 docker version
 codex --version
 codex login status
@@ -67,8 +68,13 @@ CodeQL package가 없으면 다음으로 설치 상태를 확인합니다.
 
 ```text
 codeql resolve languages
-codeql resolve packs
+codeql resolve packs --format=json
 ```
+
+`codeql version`만 성공하고 `resolve packs`에 `codeql/*-queries`가 없다면 실행 파일만
+있는 standalone CLI입니다. 현재 운영체제용 공식 CodeQL bundle로 교체한 뒤
+`sastsimi setup`을 다시 실행합니다. SASTSIMI는 query pack이 없는 CodeQL을 Full
+profile의 정상 capability로 저장하지 않습니다.
 
 정적 도구 실행 실패는 `FALSE`가 아닙니다.
 
