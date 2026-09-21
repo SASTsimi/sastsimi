@@ -182,6 +182,33 @@ sastsimi resume A-001
 
 `--format json`을 지정한 경우에는 설명 문장과 animation을 출력하지 않고 기존 구조화 envelope만 출력한다.
 
+### 5.5 실제 작업 기반 진행률
+
+CLI와 대시보드는 같은 `ProgressSnapshot` 조회 모델을 사용한다. 진행률은 경과 시간이나 LLM의 예측값이 아니라 현재 분석에 등록된 실제 work unit과 durable checkpoint를 기준으로 계산한다.
+
+work unit은 최소한 다음처럼 사람이 확인할 수 있는 실행 단위로 나눈다.
+
+- 저장소 준비와 profile 생성
+- AST, OpenGrep, CodeQL과 정규화
+- 가설 생성
+- 가설별 Pro, Con과 Verification
+- PoC 생성, Docker build·실행과 최종 Verification
+- CWE, 두 Gate, Primitive admission과 Chaining
+- Finding과 보고서 생성
+
+`SUCCEEDED` 또는 실행 경로상 정당하게 `SKIPPED`로 확정된 unit만 완료로 센다. `RUNNING`, `BLOCKED`와 `FAILED`는 완료로 세지 않는다. 분석이 `COMPLETE`일 때만 100%가 된다. 실패하거나 차단된 분석은 마지막으로 실제 완료된 퍼센트와 실패 단계를 함께 표시한다.
+
+가설과 체이닝 자식이 새로 등록되면 현재 확인된 전체 work unit 수가 증가할 수 있다. 이 경우 퍼센트가 낮아질 수 있으며, UI에는 `완료 18 / 현재 확인된 27개 작업`처럼 분자와 분모를 함께 표시해 이유를 알 수 있게 한다. 아직 발견되지 않은 가설 수를 임의로 추정하지 않는다.
+
+TTY 터미널에서는 일정 간격으로 저장된 progress snapshot을 다시 읽고 같은 줄의 bar와 현재 단계를 갱신한다.
+
+```text
+[████████████░░░░░░░░] 60%  18/30
+현재 단계: SQL Injection 가설 · PoC 실행
+```
+
+하나의 긴 단계 안에서 확정 이벤트가 없으면 bar 값을 임의로 증가시키지 않고 activity indicator만 움직인다. 비-TTY 환경에서는 animation 대신 단계가 바뀔 때 한 줄씩 출력한다. `--format json`에서는 bar와 ANSI 제어 문자를 완전히 끄고 구조화된 progress event 또는 최종 envelope만 출력한다. 자동화 환경을 위해 `--no-progress`도 제공한다.
+
 ## 6. SimpleRuntime의 처음부터 실행
 
 현재의 재개 중심 SimpleRuntime을 실제 분석 시작점으로 확장한다.
@@ -250,6 +277,8 @@ TRUE와 HOLD의 등록 시점과 Rule Scope 영향은 기존 `PrimitiveAdmission
 - chain depth와 생성된 자식 수
 - Chaining Agent 활동 요약과 exact input/output reference
 - 중복·한도 초과·자식 없음 상태
+
+대시보드 상단에는 동일한 `ProgressSnapshot`으로 계산한 퍼센트 bar, 완료 작업 수, 현재 확인된 전체 작업 수와 현재 단계를 표시한다. 브라우저 animation은 CSS transition만 사용하며 서버에서 확인되지 않은 중간 값을 생성하지 않는다. 새 가설로 분모가 늘어난 경우 `새 가설이 추가되어 전체 작업 수가 갱신됨`을 표시한다.
 
 화면은 append-only event와 확정 checkpoint를 조회한다. 저장되지 않은 추론을 만들어 표시하지 않으며, 분석 취소·재시도·판정 수정 기능을 제공하지 않는다. 기본 bind는 `127.0.0.1:8765`다.
 
@@ -338,9 +367,11 @@ README 첫 화면은 다음 순서로 구성한다.
 5. 체이닝 정상: eligible Primitive가 child hypothesis를 만들고 같은 분석에서 이어서 처리된다.
 6. 체이닝 실패: 다른 분석·attempt 입력 또는 중복 child가 등록되지 않는다.
 7. 대시보드: 체이닝 부모·자식과 현재 stage가 저장된 사실대로 보인다.
-8. Windows smoke: wheel 설치, setup, DB 초기화, help, dashboard query와 외부 도구 탐지가 동작한다.
-9. Linux·WSL smoke: 같은 public CLI와 profile schema가 동작한다.
-10. 실제 E2E: PyGoat에서 OpenGrep·CodeQL·LLM·Docker 경로와 validated PoC·보고서를 확인한다.
+8. 진행률: CLI와 dashboard가 같은 완료·전체 work unit으로 같은 퍼센트를 표시하고, 실패 상태를 100%로 표시하지 않는다.
+9. 진행률 확장: 체이닝 자식 등록 시 전체 작업 수가 늘고 표시가 정확히 갱신된다.
+10. Windows smoke: wheel 설치, setup, DB 초기화, help, dashboard query와 외부 도구 탐지가 동작한다.
+11. Linux·WSL smoke: 같은 public CLI와 profile schema가 동작한다.
+12. 실제 E2E: PyGoat에서 OpenGrep·CodeQL·LLM·Docker 경로와 validated PoC·보고서를 확인한다.
 
 전체 테스트와 CI는 통합 PR의 마지막에 한 번 실행한다. Blocker·High만 즉시 수정하고 Medium·Low는 후속 목록에 남긴다.
 
@@ -352,6 +383,8 @@ README 첫 화면은 다음 순서로 구성한다.
 - 실패 후 `sastsimi resume <analysis_id>`가 성공 단계를 반복하지 않는다.
 - 기존 Primitive admission·Chaining 계약으로 자식 가설이 생성되고 같은 분석에서 검증된다.
 - 대시보드가 체이닝 관계와 실제 저장 상태를 보여준다.
+- CLI의 animation bar와 대시보드가 같은 실제 work unit 기반 진행률을 표시한다.
+- 실패·차단 상태는 100%로 표시하지 않고 실패 단계와 `resume` 명령을 안내한다.
 - 기존 상세 명령과 기존 DB·artifact를 계속 읽을 수 있다.
 - Windows native와 Linux·WSL에서 public CLI smoke test가 통과한다.
 - README만 보고 설치, 설정, 분석, 재개, 대시보드, PoC와 보고서 확인을 수행할 수 있다.
