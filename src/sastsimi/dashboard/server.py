@@ -71,6 +71,13 @@ def create_server(
                         "text/html; charset=utf-8",
                         send_body,
                     )
+                elif len(parts) == 2 and parts[0] == "analyses":
+                    # Shareable deep links serve the same read-only application.
+                    self._file(
+                        _STATIC / "index.html",
+                        "text/html; charset=utf-8",
+                        send_body,
+                    )
                 elif parts == ("static", "app.css"):
                     self._file(
                         _STATIC / "app.css",

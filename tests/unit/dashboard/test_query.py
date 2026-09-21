@@ -9,7 +9,9 @@ from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.dashboard.query import DashboardNotFound, DashboardQuery
 from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
+from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
+from sastsimi.simple_runtime.application import SimpleAnalysisRun
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleStage,
@@ -35,6 +37,19 @@ def ref(name: str) -> StoredDataRef:
 def seed(data_dir) -> None:
     database = data_dir / "db" / "sastsimi.sqlite3"
     store = SimpleCheckpointStore(database)
+    assert AnalysisDisplayIdStore(database).get_or_allocate("analysis-a") == "A-001"
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id="analysis-a",
+            display_analysis_id="A-001",
+            workspace_id="workspace-1",
+            commit_id="commit-1",
+            repository="https://example.invalid/repository.git",
+            hypothesis_ids=("hypothesis-1",),
+            parent_hypothesis_ids={"hypothesis-1": ("parent-1", "parent-2")},
+            chain_depths={"hypothesis-1": 1},
+        )
+    )
     identity = CheckpointIdentity(
         analysis_id="analysis-a",
         workspace_id="workspace-1",
@@ -95,6 +110,10 @@ def test_query_projects_current_progress_without_cross_analysis_data(tmp_path) -
     assert all(item.analysis_id == "analysis-a" for item in detail.hypotheses)
     assert "C:\\" not in detail.model_dump_json()
     assert detail.reports[0].display_id == "F-001"
+    assert detail.display_analysis_id == "A-001"
+    assert detail.progress_percent < 100
+    assert detail.hypotheses[0].parent_hypothesis_ids == ("parent-1", "parent-2")
+    assert DashboardQuery(tmp_path).get_analysis("A-001").analysis_id == "analysis-a"
     assert DashboardQuery(tmp_path).list_events("analysis-a")[0].agent_role == (
         "Pro·Con Agents"
     )

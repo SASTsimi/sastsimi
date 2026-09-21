@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import Protocol
 
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
@@ -10,15 +11,18 @@ from sastsimi.simple_runtime.models import (
     StageCheckpoint,
     StageStatus,
 )
-from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 from .models import ProgressSnapshot
 
 _ANALYSIS_STAGES = (SimpleStage.STATIC_DONE, SimpleStage.HYPOTHESIS_DONE)
 
 
+class CheckpointQuery(Protocol):
+    def list_checkpoints(self, analysis_id: str) -> tuple[StageCheckpoint, ...]: ...
+
+
 class ProgressProjector:
-    def __init__(self, store: SimpleCheckpointStore) -> None:
+    def __init__(self, store: CheckpointQuery) -> None:
         self._store = store
 
     def snapshot(self, analysis_id: str) -> ProgressSnapshot:

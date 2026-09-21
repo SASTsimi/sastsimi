@@ -16,6 +16,9 @@ button { cursor: pointer; }
 button:hover, button.selected { border-color: #5de0c0; }
 .meta { color: #9cb1bf; font-size: .82rem; }
 .status { color: #5de0c0; font-weight: 750; }
+.progress-wrap { width: 100%; height: 12px; margin: .75rem 0; overflow: hidden; border-radius: 999px; background: #183447; }
+.progress-bar { height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, #39b99a, #78f0d2); transition: width .45s ease; }
+.chain-card { border-left: 3px solid #b998ff; }
 .error { color: #ff9b9b; }
 .event { border-left: 3px solid #4e9abb; padding: .2rem 0 .2rem .8rem; }
 .event strong { display: block; }

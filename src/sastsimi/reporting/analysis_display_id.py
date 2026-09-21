@@ -87,6 +87,32 @@ class AnalysisDisplayIdStore:
             raise LookupError("ANALYSIS_DISPLAY_ID_NOT_FOUND")
         return str(row[0])
 
+    @classmethod
+    def resolve_existing(cls, database_path: str | Path, value: str) -> str:
+        match = _DISPLAY_ID.fullmatch(value)
+        path = Path(database_path).resolve()
+        connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+        try:
+            if match is None:
+                cls._validate_exact(value)
+                row = connection.execute(
+                    "SELECT 1 FROM analysis_display_ids WHERE analysis_id = ?",
+                    (value,),
+                ).fetchone()
+                if row is None:
+                    raise LookupError("ANALYSIS_DISPLAY_ID_NOT_FOUND")
+                return value
+            row = connection.execute(
+                "SELECT analysis_id FROM analysis_display_ids "
+                "WHERE display_number = ?",
+                (int(match.group(1)),),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise LookupError("ANALYSIS_DISPLAY_ID_NOT_FOUND")
+        return str(row[0])
+
     @staticmethod
     def _format(number: int) -> str:
         return f"A-{number:03d}"
