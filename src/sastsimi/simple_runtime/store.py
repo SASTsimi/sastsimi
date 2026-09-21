@@ -98,6 +98,35 @@ class SimpleCheckpointStore:
             return None
         return checkpoint
 
+    def list_checkpoints(self, analysis_id: str) -> tuple[StageCheckpoint, ...]:
+        """Return immutable validated checkpoints for exactly one analysis."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT checkpoint_json
+                FROM simple_runtime_checkpoints
+                WHERE analysis_id = ?
+                ORDER BY updated_at, hypothesis_key, stage
+                """,
+                (analysis_id,),
+            ).fetchall()
+        return tuple(
+            StageCheckpoint.model_validate_json(row["checkpoint_json"])
+            for row in rows
+        )
+
+    def list_analysis_ids(self) -> tuple[str, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT analysis_id
+                FROM simple_runtime_checkpoints
+                ORDER BY analysis_id
+                """
+            ).fetchall()
+        return tuple(str(row[0]) for row in rows)
+
     def reusable(
         self,
         identity: CheckpointIdentity,
