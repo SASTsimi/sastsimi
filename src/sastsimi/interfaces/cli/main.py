@@ -397,7 +397,8 @@ def main(
     codeql_provision.add_argument("--repository-root", type=Path, required=True)
     codeql_provision.add_argument("--format", choices=["text", "json"])
     try:
-        args = parser.parse_args(_normalize_public_argv(argv))
+        raw_argv = list(sys.argv[1:]) if argv is None else argv
+        args = parser.parse_args(_normalize_public_argv(raw_argv))
         requested_output = getattr(args, "format", None)
         if requested_output is not None:
             output_format = requested_output
@@ -441,6 +442,27 @@ def main(
                 if setup_result.status == "READY"
                 else ExitCode.CAPABILITY_UNSUPPORTED
             )
+            if output_format != "json":
+                target = sys.stdout if setup_code == ExitCode.OK else sys.stderr
+                headline = (
+                    "설정이 완료되었습니다.\n"
+                    if setup_code == ExitCode.OK
+                    else "설정에 필요한 항목이 남았습니다.\n"
+                )
+                target.write(
+                    headline
+                    + f"기본 설정: {setup_result.config_path}\n"
+                    + f"실행 프로필: {setup_result.profile_path}\n"
+                )
+                if setup_result.missing_tools:
+                    target.write(
+                        "설치 또는 확인 필요: "
+                        + ", ".join(setup_result.missing_tools)
+                        + "\n"
+                    )
+                for action in setup_result.next_actions:
+                    target.write(f"- {action}\n")
+                return int(setup_code)
             emit_data(
                 output_format,
                 sys.stdout if setup_code == ExitCode.OK else sys.stderr,

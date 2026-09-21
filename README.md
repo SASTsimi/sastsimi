@@ -1,234 +1,134 @@
 # SASTSIMI
 
-SASTSIMI는 정적 분석 도구가 모은 코드 정보를 LLM이 검토하고, 필요하면 격리된 환경에서 재현한 뒤, 사람이 최종 판단하는 보안 분석 연구 프로젝트입니다.
+SASTSIMI는 저장소의 AST·OpenGrep·CodeQL 결과를 LLM Agent가 검토하고, Docker에서 PoC를 재현한 뒤 사람이 읽을 수 있는 한국어 Markdown 보고서를 만드는 로컬 보안 분석 도구입니다.
 
-이 저장소에는 승인된 Architecture v5 설계와 이를 옮긴 실행 코드가 함께 있습니다. 구현은 진행 중이며, 실제 저장소를 Fake Adapter 없이 clone부터 Markdown 보고서까지 완주한 출시 증거는 아직 확정되지 않았습니다.
+정적 분석 결과만으로 취약점을 확정하지 않습니다. Hypothesis Agent가 가설을 만들고, Pro·Con Agent와 Verification Agent가 근거를 검토합니다. `TRUE`는 Docker에서 성공한 validated PoC가 있을 때만 Gate·Finding·Reporter 단계로 이동합니다. 여러 취약 조건을 연결하는 Chaining 결과는 새 가설로 등록해 같은 검증을 다시 거칩니다.
 
-## 지금 상태
+## 현재 구현 상태
 
-```text
-DESIGN_APPROVED
-IMPLEMENTATION_IN_PROGRESS
-PRODUCTION_E2E_NOT_YET_PROVEN
-```
+- 구현됨: exact commit clone, Python AST, OpenGrep, CodeQL, LLM Agent 파이프라인, Docker PoC, 두 Gate, Chaining, `F-001.md` 보고서, 실패 단계 재개, CLI 진행 표시, 로컬 읽기 전용 대시보드
+- LLM 연결: OpenAI API 또는 공식 Codex CLI 회원 로그인
+- 기본 실행 방식: 작은 단일 프로세스 `SimpleRuntime`
+- 지원 기준: Python 3.12, Git, OpenGrep, Docker. `full` 프로필은 CodeQL도 필수
+- 제한: Python 저장소가 첫 통합 검증 대상입니다. 자동 외부 제출·공개, HTML/PDF 보고서, 대시보드 쓰기 기능은 지원하지 않습니다.
+- 주의: 실제 Provider·도구·Docker 조합은 설치한 컴퓨터에서 `sastsimi setup`으로 다시 확인해야 합니다. 인증·도구·환경 오류는 취약점 `FALSE`로 바꾸지 않습니다.
 
-- Architecture v5 설계는 승인됐고, 실제 실행 코드를 구현 중입니다.
-- 저장소 입력용 production CLI와 Fake 시연용 `demo`는 분리되어 있습니다.
-- **아직 Fake 없는 clone → Markdown 전체 production E2E 출시 증거는 없습니다.**
-- capability(실제 도구 시험)와 onboarding(근거·사람 승인)이 `READY`인 exact
-  Provider·모델·도구 조합만 production에서 선택합니다.
-- 자동 외부 제출·공개는 지원하지 않습니다. 사람이 보고서를 검토하고 결정합니다.
+현재 통합 상태: `LIVE_E2E_VERIFICATION_PENDING`. 구현 경로는 연결됐지만 깨끗한
+설치 환경에서 실제 Provider·OpenGrep·CodeQL·Docker로 두 대상 저장소를 완주한
+최종 증거는 이 변경의 마지막 검증에서 확정합니다.
 
-## 가장 빠른 설치 확인
+## 가장 빠른 설치
 
-필수 프로그램은 **Python 3.12 64-bit, uv, Git**입니다. OpenGrep은 정적 분석,
-Docker는 동적 재현에 필요합니다. CodeQL은 설치 방법을 문서화했지만 현재 production
-경로에서는 안전한 hard-quota 전제조건이 없어 fail-closed로 비활성화됩니다.
+Python 3.12 가상환경에서 설치합니다.
 
-```text
+```powershell
 git clone https://github.com/SASTsimi/sastsimi.git
 cd sastsimi
-uv sync --frozen
-uv run sastsimi doctor --format json
-uv run sastsimi --data-dir <data-dir> db upgrade head
-uv run sastsimi --help
+python -m pip install .
+sastsimi --help
 ```
 
-상세 설치와 외부 도구 준비는 [설치 안내](./docs/installation.md)를 따르세요.
+소스 개발자는 `uv sync --frozen` 후 `uv run sastsimi ...`를 사용할 수 있지만, 일반 사용자는 설치 후 `sastsimi`만 입력하면 됩니다.
+
+외부 프로그램을 준비한 다음 한 번만 설정합니다.
+
+```text
+git --version
+opengrep --version
+codeql version --format=terse
+docker version
+codex --version
+sastsimi setup
+```
+
+`setup`은 운영체제의 사용자 설정·데이터 폴더를 사용합니다. 실행 파일의 위치와 버전을 현재 컴퓨터에서 탐지하므로 저장소를 만든 사람의 절대 경로를 재사용하지 않습니다. API key와 로그인 token은 설정 파일에 저장하지 않습니다.
 
 ## LLM 인증
 
-- OpenAI API: 실제 key는 파일에 쓰지 않고 실행 환경이 `OPENAI_API_KEY`로
-  주입합니다.
-- ChatGPT 구독을 이용한 Codex: 공식 client에서 `codex login` 후
-  `codex login status`로 확인합니다.
+OpenAI API를 선택하면 key는 환경변수로만 전달합니다.
 
-두 방식 모두 로그인 성공만으로 SASTSIMI production 사용이 허용되지는 않습니다.
-exact client·모델·Prompt 검증과 사람 승인이 필요합니다. 자세한 내용은
-[Provider 설정](./docs/provider-setup.md)을 확인하세요.
-
-## 저장소 분석과 보고서 확인
-
-`<exact-SHA>`에는 branch나 짧은 SHA가 아닌 정확한 40자리 또는 64자리 commit을
-입력합니다. 전역 `--data-dir`은 하위 명령 앞에 둡니다.
-
-```text
-uv run sastsimi --data-dir <data-dir> analyze --repo <URL-or-local-path> --commit <exact-SHA> --profile <production-profile.toml> --format json
-uv run sastsimi --data-dir <data-dir> status <analysis_id> --format json
-uv run sastsimi --data-dir <data-dir> results <analysis_id> --format json
-uv run sastsimi --data-dir <data-dir> reports <analysis_id> --format json
-uv run sastsimi --data-dir <data-dir> report show <finding_id>
-uv run sastsimi --data-dir <data-dir> report export <finding_id> --format markdown
+```powershell
+$env:OPENAI_API_KEY = "<현재 터미널에만 설정>"
+sastsimi setup --auth api-key --provider openai --model <사용할-model>
 ```
 
-## WSL 실시간 분석 화면
-
-실제 LLM·OpenGrep·Docker E2E의 기준 환경은 **WSL2 Linux**입니다.
-Windows 터미널에서 대시보드 조회 기능은 실행할 수 있지만, Windows
-native 환경의 전체 분석 E2E는 지원 완료로 표시하지 않습니다.
-
-WSL 터미널 두 개를 열어 하나에서 대시보드를 실행하고, 다른
-터미널에서 분석을 시작하거나 재개합니다.
+ChatGPT 회원 로그인을 선택하면 공식 Codex CLI만 사용합니다.
 
 ```text
-# 터미널 1: 읽기 전용 대시보드
-uv run sastsimi --data-dir <data-dir> dashboard --host 127.0.0.1 --port 8765
-
-# 터미널 2: 실제 분석 또는 실패 단계 재개
-uv run sastsimi --data-dir <data-dir> analyze --repo <URL-or-local-path> --commit <exact-SHA> --profile <production-profile.toml> --format json
-uv run sastsimi --data-dir <data-dir> evaluate simple-resume <analysis_id> --profile <evaluation-profile.toml> --format json
+codex login
+codex login status
+sastsimi setup --auth subscription --provider codex --model <사용할-model>
 ```
 
-Windows 브라우저에서 `http://localhost:8765`를 엽니다. 화면은 저장된
-현재 단계, 성공·실패·차단 상태, 가설별 진행, Agent의 근거·행동·
-판단 요약과 `F-001.md` 형태의 보고서 링크를 2초마다 새로 조회합니다.
-숨겨진 LLM 사고 원문, 전체 프롬프트, 민감한 코드, 세션·토큰과 호스트
-절대 경로는 표시하지 않습니다. 대시보드는 `GET`/`HEAD`만 허용하는
-읽기 전용 화면이며, 대시보드가 종료되어도 분석은 계속됩니다.
+브라우저 cookie나 session 파일을 복사하는 방식은 사용하지 않습니다. 모델은 Agent 역할에 고정되지 않으며 설정의 Provider와 `model` 값으로 선택합니다.
 
-새 Markdown 보고서는 `Summary`, `Details`, `PoC`, `Impact` 네 구역으로
-나오며, 검증된 PoC 코드·실행 명령·실행 결과와 두 Gate 판단을
-한국어로 확인할 수 있습니다.
+## 사용법
 
-준비되지 않은 production 입력은 Fake로 대체하지 않고 `BLOCKED` 또는 오류로
-종료됩니다. 설치 확인용 Fake 시나리오는 별도 명령으로 실행합니다.
+정확한 40자리 또는 64자리 commit SHA를 사용합니다.
 
 ```text
-uv run sastsimi --data-dir <demo-data-dir> demo analyze --scenario TRUE --format json
+sastsimi analyze https://github.com/adeyosemanputra/pygoat.git --commit <exact-SHA>
+sastsimi status A-001
+sastsimi resume A-001
+sastsimi result A-001
+sastsimi dashboard
 ```
 
-순서대로 읽기: [설치](./docs/installation.md) →
-[Provider 인증](./docs/provider-setup.md) → [실행](./docs/usage.md) →
-[실패 해결](./docs/troubleshooting.md). 모르는 용어는
-[쉬운 용어집](./docs/GLOSSARY.md), 파일별 목적은
-[전체 문서 지도](./docs/DOCUMENT_GUIDE.md)에서 확인할 수 있습니다.
-T17까지 구현된 범위와 다음 작업의 정확한 기준은
-[T17 구현 인계서](./docs/handoff/T17_IMPLEMENTATION_HANDOFF.md)를 확인하세요.
+분석 중에는 저장된 체크포인트를 기준으로 진행 바가 표시됩니다. 터미널이 애니메이션을 지원하지 않으면 단계가 바뀔 때만 한 줄을 출력합니다. `--format json`은 애니메이션 없이 구조화된 결과만 출력합니다.
 
-## 전체 분석 흐름
+대시보드는 기본적으로 `http://127.0.0.1:8765`에서 열립니다. 분석별 주소는 `http://127.0.0.1:8765/analyses/A-001` 형식입니다. 대시보드는 진행률, 가설, Agent 활동 요약, Primitive·Chaining 관계, Finding과 보고서 링크를 읽기만 하며 판정을 변경하지 않습니다.
 
-쉽게 나누면 다음과 같습니다.
-
-1. **코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다. SAST 규칙별로 검사 0건·미실행·확인 불가를 구분합니다.
-2. **가설 생성과 검증**: 비-LLM Orchestration Runtime이 Hypothesis Agent의 가설 형식과 중복을 확인한 뒤 등록해 Verification에 배정하고, Verification이 찬성·반대 근거와 필요한 후속 작업을 관리합니다.
-3. **필요한 경우 재현**: Verification 판단에 따라 Docker 격리 환경에서 제한적으로 공격 흐름을 재현합니다.
-4. **판정별 연계 탐색**: HOLD에 하나 이상의 `required_primitive_candidates`가 있으면 그 필요 조건을 연결 재료로 사용합니다. 후보가 없으면 Primitive와 Chaining 작업을 만들지 않습니다. TRUE의 제공 능력은 validated PoC와 Technical `ACCEPT` 뒤 공식 정책의 금지 테스트 위반 여부를 따로 확인하고, `PrimitiveAdmissionDecision=ALLOW`일 때만 연결해 새 가설을 만듭니다. 다른 Rule Scope 판단은 보고 가능성에 적용합니다.
-5. **근거·정책 검토와 자동화 종료**: 두 Gate를 통과한 결과만 보고서 초안으로 만들고, 결과와 디버깅 정보를 저장한 뒤 Agent 자동화를 끝냅니다.
-
-그 이후의 검토·수정·제출·공개는 Agent 자동화와 공통 action 계약 밖에서 사람이 수행합니다.
-
-아래는 문서와 데이터 형식에서 사용하는 정확한 이름을 포함한 상세 흐름입니다.
+Finding이 생성되면 다음 명령을 사용합니다.
 
 ```text
-Repository input
-→ Repository Loader가 git clone과 commit checkout
-→ CodeWorkspace 준비
-→ AST parse·SAST와 실행 단위 정책 준비를 서로 독립적으로 병렬 실행
-→ 정책은 run 시작 때 exact cache를 재사용하거나, 비-LLM Policy Collector가 공식 원문을 고정하고 LLM Policy Parser가 PolicyParserResult를 만들면 Collector가 검증·취합해 새 RunPolicyState로 저장
-→ ToolRunResult와 규칙별 RuleExecutionRecord
-→ exact 규칙 실행 기록이 연결된 StaticFactBundle
-→ constrained HypothesisProposal
-→ Orchestration Runtime이 가설을 등록하고 가설별 Verification owner를 배정
-→ Verification이 on-demand context와 운영 기본 Pro/Con 병렬 검증 관리
-→ initial TRUE면 POC_CONFIRMATION, 판정 근거가 필요하면 VERDICT_EVIDENCE 요청을 R6가 생성
-→ Runtime Validator가 같은 Verification generation의 동적 work가 하나인지 확인
-→ Dynamic Reproduction Agent가 EnvironmentRequirements·ReproductionPlan·PoC candidate 생성
-→ Sandbox Controller가 요청 당시 RunPolicyState를 감사 reference로 남기고 LOCAL_ONLY·host·Docker·secret·egress 등 외부 격리 경계 검사
-→ Reproduction Setup Automation이 image·container·환경·정리를 관리하고 Dynamic Reproduction Agent가 Sandbox 안에서 PoC candidate를 만들고 재현을 자율 실행
-→ 비-LLM Reproduction Session Manager가 같은 attempt의 AgentLog·recipe·환경·candidate·validated PoC를 결과로 묶어 반환
-→ final TRUE / FALSE / HOLD
-→ final TRUE는 재현에 성공한 validated PoC가 있을 때만 저장하고 Technical Gate로 전달
-→ FALSE는 terminal
-→ HOLD는 required candidate가 있을 때만 inputs만 있고 result가 없는 Primitive로 Chaining; 후보가 없으면 Primitive·Chaining 없음
-→ TRUE는 R5-01 CWE_LABELING이 exact Verification에 맞는 current CWELabel 생성 → Technical Evidence Gate
-→ Technical ACCEPT 뒤 실행 초기에 고정한 RunPolicyState 사용·Rule Scope의 금지 테스트 판정 → PrimitiveAdmissionDecision
-→ ALLOW인 result Primitive만 Chaining; 나머지 Rule Scope 판단은 보고 조건에 적용
-→ Verification 또는 Chaining의 새 material claim은 새 가설로 등록·재검증
-→ 조건 충족 시 ReportDraft
-→ AnalysisRunResult에 결과·로그 확정
-→ Agent automation end
+sastsimi poc F-001
+sastsimi report F-001
+sastsimi report F-001 --export markdown
 ```
 
-정적 분석 도구는 취약점 최종 판정자가 아닙니다. 함수·클래스 같은 코드 요소(`entity`), 코드 위치, 입력 시작점(`source`), 위험 동작 지점(`sink`), 호출·데이터 흐름과 인증·권한 정보를 제공합니다. 가설(`Hypothesis`)과 체이닝 후보는 아직 사람이 검토할 취약점 결과(`Finding`)가 아닙니다. 새로운 공격 주장은 새 가설로 등록되어 전체 검증을 다시 거칩니다.
+보고서는 기본 데이터 폴더의 `reports/<exact-analysis-id>/F-001.md`에 저장됩니다. 내용은 한국어 `Summary`, `Details`, `PoC`, `Impact` 구역으로 구성되며 검증된 PoC 코드·명령·결과를 포함합니다.
 
-LLM Agent의 출력은 그대로 믿지 않습니다. 프로그램 내부 규칙 검사기(`Runtime Validator`)는 시간·비용·호출·재시도·작업 한도, 호출 권한, 상태가 바뀌는 순서, LLM 연결·로그인 정책, Gate 순서와 Reporter 호출 조건을 확인합니다. `LLMCallSpec.token_budget`은 예상 사용량을 기록하는 계획값일 뿐 token 초과·누락만으로 실행을 차단하지 않습니다. Sandbox Controller는 host·Docker daemon/socket·mount·secret·egress·자원 같은 외부 경계를 강제하고, Dynamic Reproduction Agent는 그 격리 환경 안에서 재현 방법을 자율적으로 정합니다.
-
-## 설계 검토 운영 방식
-
-이 프로젝트는 **main의 승인된 기준 + 파트별 변경 PR** 방식으로 설계를 관리합니다.
-
-### Issue와 작업의 관계
+## 실제 분석 흐름
 
 ```text
-#1 PM 전체 관리 Issue
-├─ #2–#9 역할별 상위 Issue
-│  └─ 각 담당자가 직접 만드는 세부 하위 Issue
-│      └─ 세부 작업 PR
-└─ #10 전체 최종 검토 Issue
+저장소 URL/로컬 경로 + exact commit
+→ clone과 tracked file 확인
+→ RepositoryProfile
+→ Python AST + OpenGrep + CodeQL
+→ Hypothesis Agent
+→ Pro Agent + Con Agent
+→ Verification Agent
+→ Docker 환경 + PoC candidate 실행
+→ validated PoC + 최종 TRUE/FALSE/HOLD
+→ CWE Labeling
+→ Technical Gate
+→ Rule Scope Gate
+→ Primitive Admission + Chaining
+→ Finding
+→ Reporter
+→ F-001.md
 ```
 
-1. PM은 전체 목표와 역할 경계가 담긴 #1을 관리합니다.
-2. #2–#9는 각 파트의 큰 작업을 나타내는 역할별 상위 Issue입니다.
-3. 각 담당자는 자기 역할별 상위 Issue를 읽고 필요한 세부 작업을 하위 Issue로 직접 만듭니다.
-4. 하위 Issue에는 담당자, 쉬운 설명, 수정할 문서, 완료 조건과 상위 Issue 번호를 적습니다.
-5. 작업 PR은 하위 Issue를 닫고 역할별 상위 Issue를 참고로 연결합니다.
-6. PM은 세부 작업을 대신 작성하지 않고 역할 간 충돌과 전체 진행 상태를 관리합니다.
-7. 모든 하위 Issue와 연결 PR이 끝나야 역할별 상위 Issue를 닫습니다.
-8. #2–#9가 끝나면 #10에서 전체 흐름을 검토합니다.
+공식 Rule Scope 정책이 없거나 대상 범위 밖이어도 기술 검증 결과는 내부 보고서로 남길 수 있습니다. 이 경우 보고서에는 외부 제출·공개 제한이 명시됩니다.
+
+## 실패 후 재개
+
+성공한 clone·정적 분석·가설·Pro·Con·Docker image는 exact 입력이 같으면 재사용합니다. 실패한 분석은 앞 단계를 다시 실행하지 않고 재개합니다.
 
 ```text
-main  ← Architecture v5 approved design baseline
-├─ review/static-context
-├─ review/hypothesis-research
-├─ review/integration-feasibility
-├─ review/control-plane
-├─ review/verification
-├─ review/dynamic-sandbox
-├─ review/gate-reporting
-└─ review/data-evaluation
+sastsimi status A-001
+sastsimi resume A-001
 ```
 
-- 승인된 전체 설계는 `main`에서 누구나 확인할 수 있게 유지합니다.
-- 각 담당자는 먼저 자기 세부 작업의 하위 Issue를 만들고, 최신 `main`에서 파트 브랜치를 만든 뒤 `main` 대상으로 PR을 엽니다.
-- 하나의 파트 PR은 담당 영역과 필요한 인접 계약만 수정합니다.
-- 입력을 제공하는 파트와 결과를 소비하는 파트의 교차 리뷰를 받습니다.
-- 설계 의미를 바꾸는 후속 작업은 영향 역할의 교차 검토와 새 승인 근거를 남깁니다.
-- 구현 PR은 설계 변경과 섞지 않고, 승인된 계약을 시험으로 증명합니다.
+인증 실패, 도구 미설치, timeout, Docker build 실패와 LLM 형식 오류는 `FALSE`가 아닙니다. `BLOCKED` 또는 verdict 없는 `FAILED`로 저장됩니다.
 
-전체 절차는 [CONTRIBUTING.md](./CONTRIBUTING.md)를 따릅니다.
+## 문서
 
-완료된 설계 검토와 역할별 작업은 [PM 전체 관리 Issue #1](https://github.com/SASTsimi/sastsimi/issues/1), [실제 Issue 현황](./docs/review/ISSUE_TRACKER.md), [역할별 작업 안내](./docs/review/ISSUE_CATALOG.md)에서 확인합니다. 후속 설계 변경도 작업을 막는 문제(`Blocker`)와 중요한 문제(`High`)를 해결하고, 중간·낮은 문제의 담당자와 계획을 명확히 남긴 뒤 승인해야 합니다.
+- [설치와 외부 프로그램](docs/installation.md)
+- [실행과 결과 확인](docs/usage.md)
+- [Provider 인증](docs/provider-setup.md)
+- [실패 해결](docs/troubleshooting.md)
+- [구현 인계서](docs/handoff/T17_IMPLEMENTATION_HANDOFF.md)
+- [Architecture v5 설계](docs/architecture-v5/README.md)
 
-## 담당 영역
-
-| 역할 | 담당자 | 핵심 책임 |
-|---|---|---|
-| LLM 탐색·체이닝 | 배승원 ([@baeseungwon1010](https://github.com/baeseungwon1010)) | 최초 취약점 후보 생성, upstream result와 downstream input의 근거 기반 matching 및 예산 최적화 |
-| 정적분석·컨텍스트 | 김나연 ([@zv9uvr](https://github.com/zv9uvr)) | AST·CodeQL·OpenGrep 결과 정리, 코드 위치·호출 흐름과 LLM용 context 조립 |
-| 단독 구현·통합 개발 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@YHS-Sec](https://github.com/YHS-Sec)) | 전체 모듈의 구현 가능성, 계약 준수 테스트와 통합 계획 검토 |
-| PM·아키텍처·워크플로 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@YHS-Sec](https://github.com/YHS-Sec)) | 전체 구조, 공통 입출력 계약, 사람·LLM 경계, 병렬·직렬 흐름과 오류 정책 |
-| Gate·Finding·보고서 | 김혜령 ([@kimhr8463](https://github.com/kimhr8463)) | R5-01 CWE 분류와 기술 근거 검토, R5-02 정책 범위 검토, R5-03 내부 Finding과 안전한 보고서 초안 작성 |
-| 검증·반박·플레이북 | 임채민 ([@UltraPeachKeen](https://github.com/UltraPeachKeen)) | 가설별 Context·찬반, 동적 재현 목적·목표 요청, 반환 결과 소비, 최종 판정·Gate 보완 |
-| 동적검증·Sandbox | 조근석 ([@Potatonion](https://github.com/Potatonion)) | Dynamic Reproduction Agent의 환경 요구사항·간단한 plan·자율 PoC 실행, Reproduction Setup Automation의 Docker 환경·정리, Sandbox Controller 외부 경계, Reproduction Session Manager의 AgentLog·validated PoC·동적 결과 확정 |
-| 데이터·평가·예산 | 성병찬 ([@gitterable](https://github.com/gitterable)) | 평가 데이터·품질 지표와 예산 profile 설계; 실제 예산 강제는 trusted runtime 담당 |
-
-R5-01 `CWE_LABELING`은 final TRUE마다 exact Verification에 대응하는 current `CWELabel`을 만듭니다. 같은 CWE가 유지돼도 새 Verification이면 새 label revision이 필요합니다. Gate는 Verification verdict나 CWELabel을 변경하거나 공개를 승인하지 않습니다. Reporter는 보고서 초안만 작성하고 이후 Agent 자동화는 종료됩니다. 사람의 검토·수정·제출·공개는 이 자동화 밖에서 진행합니다.
-
-동적 재현의 역할 연결은 `R6의 목적별 DynamicReproductionRequest → R4 Runtime Validator의 generation별 단일 work 검사 → Dynamic Reproduction Agent의 requirements·간단한 plan → Sandbox Controller의 외부 경계 검사 → Setup Automation과 Dynamic Reproduction Agent의 PoC candidate 생성·격리 실행 → Reproduction Session Manager의 AgentLog·validated PoC·동적 결과 확정 → R6의 최종 판정`입니다. R6는 R7 산출물을 대신 만들지 않고, R7은 가설 verdict를 결정하지 않습니다. validated PoC가 없는 TRUE는 저장하거나 Technical Gate로 보낼 수 없습니다.
-
-## 승인된 설계
-
-Architecture v5 구현 기준 설계와 파생 Wiki는 `main`에서 확인합니다. 최종 승인 근거와 실제 구현 전 후속 조건은 [최종 승인 기록](./docs/review/FINAL_ARCHITECTURE_V5_APPROVAL.md)을 따릅니다.
-
-- [Architecture v5 design hub](./docs/architecture-v5/README.md)
-- [역할별 검토 Issue 구조](./docs/review/ISSUE_CATALOG.md)
-- [실제 Issue 배정·진행 현황](./docs/review/ISSUE_TRACKER.md)
-- [GitHub Parent Epic #1](https://github.com/SASTsimi/sastsimi/issues/1)
-
-## 안전 원칙
-
-- 공개 저장소 분석과 운영 서비스 테스트는 별개입니다.
-- 공식 scope·rule이 없으면 내용을 추측하지 않고 보고 권한을 거부합니다.
-- API key, membership credential, session cookie와 실제 개인정보를 저장하지 않습니다.
-- Docker 재현은 승인된 범위의 격리 환경에서만 수행합니다.
-- AI 결과와 PoC는 사람의 검토 전 외부에 공개하지 않습니다.
+SASTSIMI는 허가받은 저장소와 환경에서만 사용하세요. 보고서는 자동 공개하지 않으며 사람이 근거와 PoC를 검토한 뒤 외부 제출 여부를 결정합니다.

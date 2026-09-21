@@ -186,3 +186,19 @@ def test_public_poc_and_report_aliases_keep_legacy_report_commands(
         user_config_store=store,
     ) == 0
     assert "reports/analysis/F-001.md" in capsys.readouterr().out
+
+
+def test_installed_entrypoint_normalizes_compact_report_syntax(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    from sastsimi.interfaces.cli import report as report_command
+
+    monkeypatch.setattr(
+        report_command,
+        "show",
+        lambda _data_dir, finding_id: f"Report {finding_id}\n",
+    )
+    monkeypatch.setattr("sys.argv", ["sastsimi", "report", "F-001"])
+
+    assert main(user_config_store=_config(tmp_path)) == 0
+    assert capsys.readouterr().out == "Report F-001\n"

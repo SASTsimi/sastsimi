@@ -1,5 +1,14 @@
 # T17 구현 인계서
 
+> **현재 구현 안내(2026-09-21):** 아래 T17 내용은 당시 병합 상태를 보존한
+> 기록입니다. 이후 기본 사용자 경로는 `sastsimi setup`, `sastsimi analyze`,
+> `sastsimi status`, `sastsimi resume`, `sastsimi dashboard`를 사용하는
+> SimpleRuntime으로 단순화됐습니다. 성공한 단계와 Docker image를 재사용하고,
+> exact-reference Primitive Chaining, 한국어 `F-001.md`, 실제 진행률, Windows와
+> Linux/WSL의 운영체제별 설정 경로를 연결했습니다. Full profile은 Python AST,
+> OpenGrep, CodeQL, Docker를 모두 실행합니다. 최신 사용법과 실제 지원 한계는
+> 저장소 루트 `README.md`, `docs/installation.md`, `docs/usage.md`를 우선합니다.
+
 이 문서는 T17까지 병합된 `main`의 실제 구현 상태와 다음 작업 시작 기준을 설명합니다.
 기능이 존재하는 것과 실제 외부 환경에서 운영 승인이 끝난 것을 구분하며, 확인하지
 못한 기능을 완료로 표시하지 않습니다.

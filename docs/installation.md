@@ -1,143 +1,126 @@
-# SASTSIMI 설치와 실행 환경 준비
+# 설치와 실행 환경 준비
 
-이 문서는 SASTSIMI를 실행할 컴퓨터에 필요한 프로그램을 준비하고, 실제 분석에 사용할 수 있는지 확인하는 순서를 설명합니다.
+이 문서는 새로운 Windows 또는 Linux/WSL 컴퓨터에서 SASTSIMI를 설치하는 순서를 설명합니다. 다른 컴퓨터의 절대 경로나 설정 파일을 복사하지 않습니다.
 
-## 1. 먼저 구분할 세 가지
+## 1. 필수 프로그램
 
-- **설치됨**: 실행 파일이 컴퓨터에 있습니다.
-- **probe 통과**: SASTSIMI가 제한된 시험을 실제로 실행했습니다.
-- **ACTIVE**: probe 결과를 사람이 정확한 hash와 함께 승인했습니다.
+- 64-bit CPython `>=3.12,<3.13`
+- Git
+- OpenGrep CLI
+- Docker Desktop 또는 Docker Engine
+- Full profile: CodeQL CLI
+- 회원 로그인 사용 시: 공식 Codex CLI
 
-설치나 `--version` 성공만으로 운영 `ACTIVE`가 되지는 않습니다. 확인하지 못한 도구는 사용하지 않으며, 설정 파일에 `ACTIVE`를 직접 적어 우회하지 않습니다.
-
-현재 release가 어떤 명령을 제공하는지는 도움말로 확인합니다.
-
-```text
-uv run sastsimi --help
-uv run sastsimi analyze --help
-```
-
-- `analyze`에 `--repo`, `--commit`, `--profile`이 없으면 그 설치본은 Fake 전용입니다.
-- `capability` 또는 `onboarding`이 도움말에 없으면 해당 준비 기능이 아직 포함되지 않은 설치본입니다.
-- 이 문서의 production 명령은 관련 T14·T16 구현이 병합되고 출시 검증을 마친 설치본에서만 사용합니다.
-
-## 2. 기본 실행 환경
-
-필수 Python 범위는 `>=3.12,<3.13`입니다. 운영체제와 CPU 조합은 이름만으로 지원을 가정하지 않고, 실제 실행 host에서 capability probe와 onboarding을 통과한 조합만 사용합니다.
-
-Docker 동적 재현은 Linux container와 승인된 Docker 경계가 추가로 필요합니다. 운영체제와 Python 검사가 성공해도 Docker가 자동 허용되지는 않습니다.
-
-## 3. Python과 SASTSIMI
-
-1. [Python 공식 다운로드](https://www.python.org/downloads/)에서 Python 3.12를 설치합니다.
-2. [uv 공식 설치 안내](https://docs.astral.sh/uv/getting-started/installation/)에 따라 uv를 설치합니다.
-3. 저장소 루트에서 lock에 고정된 dependency를 설치합니다.
+각 프로그램은 현재 컴퓨터의 `PATH`에서 실행 가능해야 합니다.
 
 ```text
-uv sync --frozen
-```
-
-개발·검증 도구까지 설치하려면 다음을 사용합니다.
-
-```text
-uv sync --frozen --all-groups
-```
-
-소스 저장소에서 실행할 때는 이 문서와 운영 안내의 명령을 저장소 루트에서
-`uv run sastsimi`로 실행합니다. `uv run`은 lock으로 설치한 실행 환경을 선택하므로
-별도 가상 환경 활성화에 의존하지 않습니다.
-
-출시 wheel을 받은 사용자는 깨끗한 가상 환경에 그 wheel을 설치합니다.
-
-```text
-python -m pip install <검증된-sastsimi-wheel-경로>
-```
-
-wheel 설치 사용자는 그 가상 환경을 활성화한 뒤 아래 예시의 `uv run sastsimi`를
-`sastsimi`로 바꿔 실행합니다. wheel 사용에는 소스 저장소나 uv가 필요하지 않습니다.
-예: `sastsimi doctor --format json`.
-
-기본 상태 저장소를 준비합니다.
-
-```text
-uv run sastsimi doctor --format json
-uv run sastsimi --data-dir <data-dir> db upgrade head
-uv run sastsimi --data-dir <data-dir> db current --format json
-```
-
-`doctor`는 OS·CPU·Python만 읽어서 확인합니다. Git, 정적 분석 도구, Docker 또는 LLM을 승인하지 않습니다.
-
-## 4. 외부 프로그램
-
-### Git
-
-[Git 공식 설치 안내](https://git-scm.com/downloads)를 따라 설치한 뒤 확인합니다.
-
-```text
+python --version
 git --version
-```
-
-SASTSIMI는 분석마다 별도 로컬 폴더에 clone하고 사용자가 입력한 정확한 commit을 checkout합니다. branch, tag, 짧은 SHA나 현재 작업 폴더 상태를 분석 기준으로 추정하지 않습니다.
-
-### Python AST
-
-Python AST parser는 CPython 3.12 안에 포함되어 있습니다. 별도 parser를 설치하지 않으며, 현재 실행 중인 Python과 실제 parse가 모두 확인되어야 합니다.
-
-### OpenGrep
-
-[OpenGrep 공식 설치 안내](https://github.com/opengrep/opengrep/blob/main/INSTALL.md)를 따라 설치합니다. Linux·macOS는 안내된 `install.sh`, Windows는 `install.ps1` 경로를 사용하고, 설치 후 OpenGrep CLI 실행 파일이 `PATH`에서 동작하는지 `--version` 옵션으로 확인합니다.
-
-운영 활성화에는 version 확인뿐 아니라 Python·JavaScript 시험 파일에 승인된 규칙을 실제 실행한 probe가 필요합니다.
-
-### CodeQL
-
-[GitHub CodeQL CLI 설치 안내](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/scan-from-the-command-line/set-up-codeql-cli)를 따라 CodeQL bundle을 설치하고 `PATH`에서 확인합니다.
-
-```text
+opengrep --version
 codeql version --format=terse
-codeql resolve languages
-codeql resolve packs
-```
-
-현재 capability 구현은 CodeQL version을 읽어도 실행량 제한을 강제하는 근거가 없어 `activation_supported=false`로 남깁니다. CodeQL을 production에서 사용하려면 quota control을 포함한 별도 probe와 사람 승인이 먼저 구현·검증되어야 합니다. 그 전에는 다른 활성 정적 도구만 선택하거나 분석을 `BLOCKED`로 남깁니다.
-
-### Docker
-
-[Docker Engine 공식 설치 안내](https://docs.docker.com/engine/install/)를 따릅니다. Windows에서는 [Docker Desktop Windows 설치 안내](https://docs.docker.com/desktop/setup/install/windows-install/)도 함께 확인합니다.
-
-```text
 docker version
-docker info
+codex --version
 ```
 
-Docker probe는 CLI와 daemon 연결뿐 아니라 실제 image build, container 실행, health check, cleanup, CPU·memory·PID·disk 제한과 Sandbox 외부 경계를 확인합니다. host mount, Docker socket 노출, host namespace, secret, 다른 workspace와 허용되지 않은 network 접근을 완화해 probe를 통과시키면 안 됩니다.
+Lightweight profile은 CodeQL을 제외하고 Python AST와 OpenGrep을 사용합니다. Full profile은 Python AST·OpenGrep·CodeQL을 모두 사용하며, 하나라도 없으면 분석을 시작하지 않습니다.
 
-## 5. capability 확인과 승인
+## 2. 설치
 
-다음 명령은 설치본의 도움말에 `capability`가 있을 때만 사용할 수 있습니다. `--data-dir`과 선택적인 `--host-id`는 `capability` 앞에 둡니다.
+가상환경 사용을 권장합니다.
+
+### Windows PowerShell
+
+```powershell
+git clone https://github.com/SASTsimi/sastsimi.git
+cd sastsimi
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install .
+sastsimi --help
+```
+
+### Linux 또는 WSL
+
+```bash
+git clone https://github.com/SASTsimi/sastsimi.git
+cd sastsimi
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install .
+sastsimi --help
+```
+
+개발자는 `uv sync --frozen --all-groups`를 사용할 수 있습니다. 설치된 일반 사용자는 `uv run`, `UV_PROJECT_ENVIRONMENT`, `--data-dir`, `--profile`을 반복 입력하지 않습니다.
+
+## 3. LLM 인증
+
+API key 또는 공식 회원 로그인 중 하나를 선택합니다.
+
+### OpenAI API
+
+환경변수에만 key를 둡니다.
+
+```powershell
+$env:OPENAI_API_KEY = "<key>"
+```
+
+```bash
+export OPENAI_API_KEY='<key>'
+```
+
+### Codex 회원 로그인
 
 ```text
-uv run sastsimi --data-dir <data-dir> capability probe GIT --format json
-uv run sastsimi --data-dir <data-dir> capability probe PYTHON_AST --format json
-uv run sastsimi --data-dir <data-dir> capability probe PYTHON_RUNTIME --format json
-uv run sastsimi --data-dir <data-dir> capability probe OPENGREP --format json
-uv run sastsimi --data-dir <data-dir> capability probe DOCKER --docker-host <승인된-daemon-주소> --format json
-uv run sastsimi --data-dir <data-dir> capability list --format json
+codex login
+codex login status
 ```
 
-probe 출력이 `status=PASSED`, `activation_supported=true`이고 `approval_target_hash`가 있을 때만 사람이 같은 값을 확인해 승인합니다.
+브라우저 cookie나 다른 사용자의 인증 파일을 복사하지 않습니다.
+
+## 4. 한 번만 설정
+
+대화형 설정을 실행합니다.
 
 ```text
-uv run sastsimi --data-dir <data-dir> capability approve <probe_id> --target-hash <approval_target_hash> --format json
+sastsimi setup
 ```
 
-Docker 승인에는 probe와 같은 `--docker-host`를 다시 지정합니다. probe 실패, hash 불일치 또는 `activation_supported=false`를 수동 파일 편집으로 바꾸지 않습니다.
+설정 중 다음을 선택합니다.
 
-OpenAI API의 `capability probe OPENAI_API`는 인증과 구조화 출력의 작은 연결 시험입니다. 현재 구현에서는 성공해도 Provider 전체 검증을 대신하지 않으며 `activation_supported=false`입니다. Provider는 [Provider 인증과 운영 활성화](./provider-setup.md)의 별도 onboarding을 완료해야 합니다.
+- 기본 데이터 폴더
+- API key 또는 공식 회원 로그인
+- Provider와 model
+- Full 또는 Lightweight profile
+- 비용·token·시간 제한
+- Docker build network 사용 여부
 
-## 6. 다음 순서
+자동화 환경에서는 값을 명시합니다.
 
-1. [`config/profiles/production.example.toml`](../config/profiles/production.example.toml)을 복사해 실행 환경에 맞는 profile을 작성합니다.
-2. [Provider 인증과 운영 활성화](./provider-setup.md)에 따라 Provider·Prompt·정책 근거를 준비합니다.
-3. [저장소 분석 실행](./usage.md)에 따라 정확한 저장소와 commit으로 시작합니다.
-4. 막히면 [오류와 안전한 대응](./troubleshooting.md)을 확인합니다.
+```text
+sastsimi setup --non-interactive --auth subscription --provider codex --model <model> --profile full --docker-network none
+```
+
+API 방식은 다음과 같습니다.
+
+```text
+sastsimi setup --non-interactive --auth api-key --provider openai --model <model> --profile full --docker-network none
+```
+
+설정 파일은 운영체제의 사용자 설정 폴더에, 실행 데이터는 사용자 데이터 폴더에 생성됩니다. 파일에는 환경변수 이름이나 공식 로그인 사용 여부만 저장하며 key·token·cookie를 저장하지 않습니다.
+
+`READY`는 현재 컴퓨터에서 필요한 실행 파일과 인증 상태를 확인했다는 뜻입니다. 실제 model 접근, 저장소 의존성 설치와 Docker build는 첫 분석에서 추가로 확인될 수 있습니다.
+
+## 5. 새 환경 확인
+
+```text
+sastsimi --help
+sastsimi setup --help
+sastsimi analyze --help
+sastsimi dashboard --help
+```
+
+Full profile에서 CodeQL이 없거나, 선택한 인증을 확인하지 못하면 setup은 누락 항목을 표시하고 `BLOCKED`로 끝납니다. 설정 파일을 손으로 고쳐 우회하지 말고 프로그램이나 인증을 준비한 뒤 setup을 다시 실행합니다.
+
+설치 뒤의 실제 사용은 [실행 안내](usage.md), 인증 문제는 [Provider 설정](provider-setup.md), 실패 원인은 [문제 해결](troubleshooting.md)을 확인하세요.
