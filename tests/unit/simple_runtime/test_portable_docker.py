@@ -111,3 +111,64 @@ def test_target_requirements_are_resolved_from_exact_hypothesis(
     resolved = preparer._target_requirements_path({SimpleStage.PRO_CON_DONE: pro_con})
 
     assert resolved == "nested/lab/requirements.txt"
+
+
+def _preparer_for(workspace: Path) -> DirectEnvironmentPreparer:
+    preparer = DirectEnvironmentPreparer.__new__(DirectEnvironmentPreparer)
+    preparer._workspace = workspace
+    return preparer
+
+
+_PACKAGE = '[project]\nname = "thing"\nversion = "1"\n'
+_WORKSPACE_ONLY = '[tool.mypy]\npython_version = "3.12"\n'
+
+
+def test_a_repository_root_that_is_a_package_is_installed(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(_PACKAGE, encoding="utf-8")
+
+    assert _preparer_for(tmp_path)._installable_directory() == "."
+    assert b"pip install --no-cache-dir ." in _preparer_for(
+        tmp_path
+    )._generated_dockerfile()
+
+
+def test_a_monorepo_root_installs_its_one_package_instead(tmp_path: Path) -> None:
+    # The root only configures tools, so installing it makes setuptools guess a
+    # flat layout across every sibling directory and fail the whole build.
+    (tmp_path / "pyproject.toml").write_text(_WORKSPACE_ONLY, encoding="utf-8")
+    (tmp_path / "backend").mkdir()
+    (tmp_path / "backend" / "pyproject.toml").write_text(_PACKAGE, encoding="utf-8")
+    (tmp_path / "frontend").mkdir()
+    (tmp_path / "cypress").mkdir()
+
+    assert _preparer_for(tmp_path)._installable_directory() == "backend"
+    assert b"pip install --no-cache-dir backend" in _preparer_for(
+        tmp_path
+    )._generated_dockerfile()
+
+
+def test_an_ambiguous_layout_skips_the_install_layer(tmp_path: Path) -> None:
+    # A failed build blocks every hypothesis, so an unclear layout installs
+    # nothing rather than guessing which package the run needs.
+    (tmp_path / "pyproject.toml").write_text(_WORKSPACE_ONLY, encoding="utf-8")
+    for name in ("one", "two"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "pyproject.toml").write_text(_PACKAGE, encoding="utf-8")
+
+    assert _preparer_for(tmp_path)._installable_directory() is None
+    assert b"pip install" not in _preparer_for(tmp_path)._generated_dockerfile()
+
+
+def test_requirements_still_win_over_a_package_directory(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("flask\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(_PACKAGE, encoding="utf-8")
+
+    dockerfile = _preparer_for(tmp_path)._generated_dockerfile()
+
+    assert b"pip install --no-cache-dir -r requirements.txt" in dockerfile
+
+
+def test_an_unreadable_pyproject_is_not_treated_as_a_package(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project\nbroken", encoding="utf-8")
+
+    assert _preparer_for(tmp_path)._installable_directory() is None

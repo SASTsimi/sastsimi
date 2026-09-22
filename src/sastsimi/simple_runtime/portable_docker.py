@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shlex
+import tomllib
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 
@@ -447,14 +448,54 @@ class DirectEnvironmentPreparer:
             f"RUN python -m pip install --no-cache-dir -r {shlex.quote(absolute)}\n"
         ).encode()
 
+    @staticmethod
+    def _declares_a_package(pyproject: Path) -> bool:
+        """Say whether this file configures a build, not just a workspace.
+
+        A repository root may carry a ``pyproject.toml`` that only holds tool
+        settings for a monorepo.  Installing that root makes setuptools guess
+        at a flat layout and fail, so only a file declaring ``[project]`` or
+        ``[build-system]`` counts as installable.
+        """
+
+        try:
+            document = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            return False
+        return "project" in document or "build-system" in document
+
+    def _installable_directory(self) -> str | None:
+        """Return the one directory to install, or ``None`` when unclear.
+
+        A build failure blocks every hypothesis in the run, so an ambiguous
+        layout skips the install layer instead of guessing: the repository
+        source is copied into the image either way.
+        """
+
+        if self._declares_a_package(self._workspace / "pyproject.toml"):
+            return "."
+        try:
+            children = sorted(self._workspace.iterdir())
+        except OSError:
+            return None
+        candidates = [
+            child.name
+            for child in children
+            if child.is_dir()
+            and not child.name.startswith(".")
+            and self._declares_a_package(child / "pyproject.toml")
+        ]
+        return candidates[0] if len(candidates) == 1 else None
+
     def _generated_dockerfile(
         self,
         target_requirements: str | None = None,
     ) -> bytes:
+        directory = self._installable_directory()
         if (self._workspace / "requirements.txt").is_file():
             install = "RUN pip install --no-cache-dir -r requirements.txt"
-        elif (self._workspace / "pyproject.toml").is_file():
-            install = "RUN pip install --no-cache-dir ."
+        elif directory is not None:
+            install = f"RUN pip install --no-cache-dir {shlex.quote(directory)}"
         else:
             install = ""
         return (
