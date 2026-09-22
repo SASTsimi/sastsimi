@@ -27,7 +27,13 @@ from .provider import SimpleLLMCallResult, SimpleLLMClient
 
 _MAX_TRACKED_FILES = 200_000
 _MAX_SOURCE_BYTES = 2 * 1024 * 1024
-_MAX_FACTS = 10_000
+# Every tracked Python file is parsed.  The old ten-thousand-fact cut stopped
+# part-way through the file list, so a repository's later directories were
+# absent from the evidence entirely - one run reached only 70 of 225 files and
+# never saw the routers the target defect lived in.  Parsing all of them was
+# measured at 1.3 seconds for 3.1 MB, and what the prompt can carry is decided
+# separately when the bundle is rendered.  This ceiling only stops a runaway.
+_MAX_FACTS = 2_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,12 +302,20 @@ class DirectStaticBootstrap:
     ) -> dict[str, object]:
         facts: list[dict[str, object]] = []
         parse_errors: list[str] = []
+        # The design requires an omission to be recorded, not merely counted:
+        # a file that is missing from the evidence and missing from the record
+        # reads to an agent as a file that does not exist.
+        skipped: list[dict[str, str]] = []
         for relative in tracked:
-            if not relative.endswith(".py") or len(facts) >= _MAX_FACTS:
+            if not relative.endswith(".py"):
+                continue
+            if len(facts) >= _MAX_FACTS:
+                skipped.append({"path": relative, "reason": "FACT_BUDGET_EXHAUSTED"})
                 continue
             path = workspace / relative
             try:
                 if path.stat().st_size > _MAX_SOURCE_BYTES:
+                    skipped.append({"path": relative, "reason": "FILE_TOO_LARGE"})
                     continue
                 tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative)
             except (OSError, UnicodeError, SyntaxError):
@@ -332,12 +346,21 @@ class DirectStaticBootstrap:
                             }
                         )
                 if len(facts) >= _MAX_FACTS:
+                    skipped.append(
+                        {"path": relative, "reason": "FACT_BUDGET_EXHAUSTED"}
+                    )
                     break
         return {
             "kind": "simple_python_ast",
             "facts": facts,
             "parse_errors": parse_errors[:100],
-            "truncated": len(facts) >= _MAX_FACTS,
+            "skipped_files": skipped[:500],
+            "skipped_count": len(skipped),
+            "python_files": sum(
+                1 for value in tracked if value.endswith(".py")
+            ),
+            "covered_files": len({str(fact["path"]) for fact in facts}),
+            "truncated": bool(skipped),
         }
 
     @staticmethod
