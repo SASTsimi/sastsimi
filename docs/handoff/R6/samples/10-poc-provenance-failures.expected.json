@@ -1,0 +1,20 @@
+{
+  "fixture_version": "r6-handoff-1.1",
+  "fixture_notice": "SYNTHETIC EXPECTED REJECTION PROJECTION - no final TRUE may be persisted.",
+  "fixture_id": "R6-POC-PROVENANCE-FAILURES-01",
+  "expected": [
+    {
+      "case_id": "poc-from-different-attempt",
+      "reject_at": "DYNAMIC_PROVENANCE_VALIDATION",
+      "persist_verification_result": false,
+      "reason": "dynamic result와 PoC가 같은 attempt의 산출물이 아니다."
+    },
+    {
+      "case_id": "candidate-not-actually-executed",
+      "reject_at": "DYNAMIC_PROVENANCE_VALIDATION",
+      "persist_verification_result": false,
+      "reason": "PoC candidate reference가 AgentLog의 POC_EXECUTION_FINISHED에서 실제 실행된 candidate reference와 다르다."
+    }
+  ],
+  "must_not_output": ["final TRUE", "validated PoC 채택"]
+}

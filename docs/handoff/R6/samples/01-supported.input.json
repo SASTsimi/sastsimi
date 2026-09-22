@@ -1,0 +1,84 @@
+{
+  "fixture_version": "r6-handoff-1.0",
+  "fixture_notice": "SYNTHETIC PROMPT VALIDATION FIXTURE - not a persisted runtime record.",
+  "fixture_id": "R6-SUPPORTED-01",
+  "analysis_purpose": "PRODUCTION",
+  "verification_mode": "ALWAYS_DEBATE",
+  "analysis_id": "ana_fixture_001",
+  "workspace_id": "ws_fixture_001",
+  "commit_id": "1111111111111111111111111111111111111111",
+  "hypothesis_id": "hyp_sqli_001",
+  "parent_verification_work_id": "work_verify_001",
+  "verification_generation": 1,
+  "debate_input_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "playbook_policy_ref": "policy_ref_common_001",
+  "playbook_ref": "playbook_ref_sqli_001",
+  "playbook_application_ref": "playbook_application_ref_001",
+  "sandbox_profile_ref": "sandbox_profile_ref_local_only_001",
+  "hypothesis": {
+    "statement": "GET /users의 q 파라미터가 SQL 문자열에 직접 결합돼 SQL Injection이 가능하다.",
+    "vulnerability_type_candidates": [
+      "SQL_INJECTION"
+    ],
+    "falsification_questions": [
+      {
+        "question_id": "fq_001",
+        "question": "q가 SQL sink에 도달하기 전에 파라미터 바인딩 또는 동등한 안전 처리가 모든 경로에 적용되는가?"
+      }
+    ],
+    "validation_checks": [
+      {
+        "validation_id": "vc_001",
+        "instruction": "q의 source-to-sink data flow를 확인한다."
+      },
+      {
+        "validation_id": "vc_002",
+        "instruction": "sink 이전의 validator와 sanitizer 적용 여부를 확인한다."
+      }
+    ]
+  },
+  "context_status": "SUCCEEDED",
+  "context_evidence": [
+    {
+      "evidence_ref": "ev_request_q_source",
+      "statement": "request.args.get('q')가 사용자 입력 q를 읽는다.",
+      "location": {
+        "workspace_id": "ws_fixture_001",
+        "commit_id": "1111111111111111111111111111111111111111",
+        "file_path": "app/search.py",
+        "start_line": 12,
+        "end_line": 12
+      }
+    },
+    {
+      "evidence_ref": "ev_sql_string_concat",
+      "statement": "q가 문자열 보간을 통해 SELECT 쿼리에 포함된다.",
+      "location": {
+        "workspace_id": "ws_fixture_001",
+        "commit_id": "1111111111111111111111111111111111111111",
+        "file_path": "app/search.py",
+        "start_line": 15,
+        "end_line": 15
+      }
+    },
+    {
+      "evidence_ref": "ev_cursor_execute",
+      "statement": "보간된 query가 cursor.execute(query)에 전달된다.",
+      "location": {
+        "workspace_id": "ws_fixture_001",
+        "commit_id": "1111111111111111111111111111111111111111",
+        "file_path": "app/search.py",
+        "start_line": 16,
+        "end_line": 16
+      }
+    }
+  ],
+  "context_gaps": [],
+  "analysis_errors": [],
+  "dynamic_reproduction": {
+    "status": "NOT_REQUESTED",
+    "request_ref": null,
+    "result_ref": null,
+    "poc_ref": null
+  }
+}

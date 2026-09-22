@@ -1,0 +1,108 @@
+{
+  "fixture_version": "r6-handoff-1.0",
+  "fixture_notice": "SYNTHETIC EXPECTED PROJECTION - runtime-owned fields are intentionally omitted.",
+  "fixture_id": "R6-CONTRADICTED-01",
+  "expected_pro_result": {
+    "role": "PRO",
+    "parent_work_id": "work_verify_002",
+    "verification_generation": 1,
+    "debate_input_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "evidence": [],
+    "summary": "username source는 확인됐지만 SQL 문법으로 결합된 supporting evidence는 없다.",
+    "limitations": []
+  },
+  "expected_con_result": {
+    "role": "CON",
+    "parent_work_id": "work_verify_002",
+    "verification_generation": 1,
+    "debate_input_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "evidence": [
+      {
+        "claim_id": "con_claim_002",
+        "statement": "username은 고정 SQL과 분리된 parameter로 바인딩되므로 SQL 문법을 변경하지 않는다.",
+        "source_role": "CON",
+        "evidence_refs": [
+          "ev_login_username_source",
+          "ev_parameterized_query"
+        ],
+        "code_locations": [
+          {
+            "workspace_id": "ws_fixture_002",
+            "commit_id": "2222222222222222222222222222222222222222",
+            "file_path": "app/auth.py",
+            "start_line": 21,
+            "end_line": 27
+          }
+        ],
+        "limitations": [
+          "이 반증은 현재 login 경로에 한정되며 다른 endpoint를 평가하지 않는다."
+        ]
+      }
+    ],
+    "summary": "named falsification을 직접 지지하는 파라미터 바인딩이 current path에서 확인된다.",
+    "limitations": []
+  },
+  "expected_verification_result": {
+    "outcome_type": "VERIFICATION_RESULT_CANDIDATE",
+    "playbook_ref": "playbook_ref_sqli_001",
+    "playbook_application_ref": "playbook_application_ref_002",
+    "verification_mode": "ALWAYS_DEBATE",
+    "debate_triggers": [],
+    "debate_skip_reason": null,
+    "debate_input_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "pro_evidence_ref": "pro_result_ref_002",
+    "con_evidence_ref": "con_result_ref_002",
+    "initial_verdict": "FALSE",
+    "verdict": "FALSE",
+    "verdict_rationale": "fq_002가 ev_parameterized_query로 DISPROVED됐다. current login 경로의 username은 SQL 문법에 결합되지 않는다.",
+    "supporting_evidence": [],
+    "counter_evidence": [
+      "con_claim_002"
+    ],
+    "falsification_results": [
+      {
+        "question_id": "fq_002",
+        "outcome": "DISPROVED",
+        "evidence_refs": [
+          "ev_parameterized_query"
+        ],
+        "rationale": "username이 별도 parameter tuple로 전달되는 사실이 가설의 필수 직접 결합 조건을 반증한다."
+      }
+    ],
+    "validation_results": [
+      {
+        "validation_id": "vc_003",
+        "completion": "COMPLETE",
+        "evidence_refs": [
+          "ev_login_username_source",
+          "ev_parameterized_query"
+        ],
+        "summary": "username에서 DB 호출까지의 current path를 확인했다."
+      },
+      {
+        "validation_id": "vc_004",
+        "completion": "COMPLETE",
+        "evidence_refs": [
+          "ev_parameterized_query"
+        ],
+        "summary": "DB 호출은 파라미터 바인딩을 사용한다."
+      }
+    ],
+    "restrictions": [],
+    "bypass_candidates": [],
+    "required_primitive_candidates": [],
+    "provided_primitive_candidates": [],
+    "impact_escalation_candidates": [],
+    "material_child_proposals": [],
+    "unresolved_conditions": [],
+    "dynamic_request_ref": null,
+    "dynamic_result_ref": null,
+    "poc_ref": null,
+    "errors": []
+  },
+  "must_not_output": [
+    "다른 endpoint까지 안전하다는 확대 해석",
+    "동적 재현 요청",
+    "Primitive 후보"
+  ]
+}

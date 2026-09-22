@@ -1,0 +1,29 @@
+{
+  "fixture_version": "r6-handoff-1.1",
+  "fixture_notice": "SYNTHETIC PROMPT VALIDATION FIXTURE - normal VERDICT_EVIDENCE routing.",
+  "fixture_id": "R6-VERDICT-EVIDENCE-01",
+  "analysis_id": "ana_fixture_008",
+  "workspace_id": "ws_fixture_008",
+  "commit_id": "8888888888888888888888888888888888888888",
+  "hypothesis_id": "hyp_race_008",
+  "parent_verification_work_id": "work_verify_008",
+  "verification_generation": 1,
+  "debate_input_hash": "8888888888888888888888888888888888888888888888888888888888888888",
+  "playbook_ref": "playbook_ref_race_001",
+  "playbook_application_ref": "playbook_application_ref_008",
+  "pro_result": {
+    "result_ref": "pro_result_ref_008",
+    "status": "COMMITTED",
+    "session_id": "session_pro_008",
+    "debate_input_hash": "8888888888888888888888888888888888888888888888888888888888888888"
+  },
+  "con_result": {
+    "result_ref": "con_result_ref_008",
+    "status": "COMMITTED",
+    "session_id": "session_con_008",
+    "debate_input_hash": "8888888888888888888888888888888888888888888888888888888888888888"
+  },
+  "completed_static_checks": ["vc_008_source", "vc_008_shared_state"],
+  "unresolved_runtime_condition": "두 concurrent request가 동일한 상태 전이를 중복 수행하는지는 실행 관측이 필요하다.",
+  "analysis_errors": []
+}
