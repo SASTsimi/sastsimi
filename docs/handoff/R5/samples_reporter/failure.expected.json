@@ -1,0 +1,9 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — expected behavior, not a persisted ReportDraft record.",
+  "expected_behavior": {
+    "report_draft_created": false,
+    "required_runtime_outcome": "CREATE_REPORT_DRAFT must be blocked or report storage rejected until REDACTION=PASS.",
+    "redaction_status": "not PASSED"
+  },
+  "why": "A token is sensitive data. Reporter may not store an unredacted draft even when all upstream report-readiness fields otherwise pass."
+}

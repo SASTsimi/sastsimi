@@ -1,0 +1,6 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — null collection result reference is distinct from COLLECTION_FAILED.",
+  "canonical_input_projection": {
+    "run_policy_state": { "status": "PREPARING", "collection_result_ref": null, "policy_record_ref": null }
+  }
+}

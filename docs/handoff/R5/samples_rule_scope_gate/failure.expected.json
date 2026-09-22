@@ -1,0 +1,21 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — expected_canonical_projection is not a persisted record; partial reference assertions are not StoredDataRef values.",
+  "expected_canonical_projection": {
+    "verification_result_ref": { "record_id": "rec-ver-5" },
+    "technical_review_ref": { "record_id": "rec-tech-5" },
+    "cwe_label_ref": { "record_id": "rec-cwe-5" },
+    "run_policy_state_ref": { "record_id": "rec-policy-state-absent-1" },
+    "policy_collection_result_ref": { "record_id": "rec-collect-absent-1" },
+    "policy_record_ref": null,
+    "review_status": "UNCERTAIN",
+    "rule_compliance": "UNCERTAIN",
+    "scope_compliance": "UNCERTAIN",
+    "testing_restriction_compliance": "UNCERTAIN",
+    "security_impact": "UNCERTAIN",
+    "report_permission": "DENY",
+    "evidence_links": [],
+    "reasons": ["Official policy absence/freshness verification does not authorize an inferred policy decision."],
+    "missing_information": [{ "area": "RULE", "blocks_allow": true }, { "area": "SCOPE", "blocks_allow": true }, { "area": "TESTING_RESTRICTION", "blocks_allow": true }, { "area": "IMPACT", "blocks_allow": true }]
+  },
+  "why": "ABSENT_CONFIRMED with UNVERIFIED state permits a fail-closed UNCERTAIN+DENY review. A COLLECTION_FAILED input would instead create no review at all."
+}

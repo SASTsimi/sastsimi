@@ -1,0 +1,70 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — expected behavior and observability assertions, not persisted records.",
+  "expected_behavior": {
+    "same_policy_fetch_work": {
+      "work_id": "work-policy-retry-budget-1",
+      "work_type": "POLICY_FETCH",
+      "work_creation_count": 1,
+      "attempt_count": 4,
+      "attempt_ids_in_order": ["attempt-policy-retry-1", "attempt-policy-retry-2", "attempt-policy-retry-3", "attempt-policy-retry-4"],
+      "retry_attempts_have_trigger": "RETRY",
+      "new_work_created_for_retry": false,
+      "attempt_provenance_preserved": true
+    },
+    "r8_policy_application": {
+      "policy_owner": "R8_VERSIONED_POLICY_CONFIG",
+      "parse_budget_ms_applied": 180000,
+      "additional_retry_limit_applied": 3,
+      "retry_limit_exhausted": true,
+      "elapsed_ms_total": 180000,
+      "elapsed_equals_applied_parse_budget": true
+    },
+    "terminal_collection": {
+      "policy_collection_result_created": true,
+      "policy_collection_result": {
+        "record_id": "rec-collection-policy-retry-failed-1",
+        "status": "COLLECTION_FAILED",
+        "producer_work_id": "work-policy-retry-budget-1",
+        "producer_attempt_id": "attempt-policy-retry-4",
+        "error_ids": ["err-policy-provider-timeout-final"],
+        "policy_record_ref": null
+      },
+      "run_policy_state": {
+        "status": "FAILED",
+        "collection_result_ref_record_id": "rec-collection-policy-retry-failed-1",
+        "policy_cache_ref": null,
+        "policy_record_ref": null
+      }
+    },
+    "downstream_admission": {
+      "rule_scope_impact_gate_created": false,
+      "rule_scope_impact_gate_executed": false,
+      "reporter_created": false,
+      "reporter_executed": false
+    },
+    "cache_behavior": {
+      "policy_cache_record_created": false,
+      "reusable_cache_statuses": ["FOUND", "ABSENT_CONFIRMED"],
+      "collection_failed_cache_eligible": false,
+      "subsequent_run_cache_hit_for_failed_result": false,
+      "subsequent_run_action": "CACHE_MISS_AND_NEW_POLICY_FETCH"
+    },
+    "failure_observability": {
+      "elapsed_ms_total": 180000,
+      "attempt_count": 4,
+      "additional_retry_count": 3,
+      "final_failure_category": "TIMEOUT",
+      "final_failure_reason": "PROVIDER_TIMEOUT",
+      "per_attempt_usage_and_cost_recorded": true,
+      "usage_cost_unavailable_reasons_recorded": true
+    },
+    "forbidden_conversions": {
+      "collection_status_is_not": ["ABSENT_CONFIRMED"],
+      "verification_result_created": false,
+      "verification_verdict_is_not": ["FALSE", "HOLD"],
+      "parser_did_not_determine_policy_freshness": true,
+      "freshness_authority": "Collector/R8 policy boundary remains unchanged"
+    }
+  },
+  "why": "The Collector retains collection, cache, and freshness authority. Repeated Parser provider/format failures consume the R8-referenced policy budget and retry allowance on new attempts of one POLICY_FETCH work, then produce COLLECTION_FAILED rather than policy absence or a Verification verdict."
+}

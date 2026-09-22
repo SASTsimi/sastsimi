@@ -1,0 +1,10 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — expected pre-invocation behavior, not a persisted ReportDraft.",
+  "expected_behavior": {
+    "authorization_allowed": false,
+    "provider_called": false,
+    "draft_saved": false,
+    "runtime_failure": "FINDING_INDEX_REFERENCE_MISMATCH"
+  },
+  "why": "The input Finding is not the exact CURRENT FindingIndexState pointer, so the chain is rechecked and blocked before invocation."
+}

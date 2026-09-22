@@ -1,0 +1,12 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — all references pass runtime validation; this is a domain REVISE case.",
+  "canonical_input_projection": {
+    "verification": { "verdict": "TRUE", "verification_generation": 4, "record_id": "rec-ver-revise" },
+    "cwe": { "verification_result_ref": { "record_id": "rec-ver-revise" }, "primary": "CWE-22" },
+    "dynamic_request": { "record_id": "rec-request-revise", "verification_generation": 4 },
+    "dynamic": { "status": "SUCCEEDED", "hypothesis_outcome": "SUPPORTED", "agent_invoked": true, "poc_ref": { "record_id": "rec-poc-revise" }, "agent_log_ref": { "record_id": "rec-log-revise" }, "work_id": "work-dyn-revise", "attempt_id": "attempt-revise" },
+    "poc": { "record_id": "rec-poc-revise", "status": "COMMITTED", "work_id": "work-dyn-revise", "attempt_id": "attempt-revise" },
+    "agent_log": { "record_id": "rec-log-revise", "work_id": "work-dyn-revise", "attempt_id": "attempt-revise", "execution_proof": "candidate revision and command digest match" },
+    "semantic_gap": "The exact closure is valid, but the recorded observation does not explain how the evidenced code flow causes the asserted TRUE behavior."
+  }
+}

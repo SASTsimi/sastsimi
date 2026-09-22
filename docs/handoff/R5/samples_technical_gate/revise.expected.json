@@ -1,0 +1,10 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — expected domain projection, not a persisted record.",
+  "expected_canonical_projection": {
+    "status": "REVISE",
+    "handoff_readiness": "NOT_READY",
+    "revision_requests": ["Produce a new Verification generation with technical linkage between the code flow and observed behavior."],
+    "verification_requests": ["Do not rerun the Gate against this identical Verification generation."]
+  },
+  "why": "All references are current and same-attempt; only the semantic technical evidence is insufficient."
+}

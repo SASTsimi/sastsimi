@@ -1,0 +1,77 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURES — stale/reference and prompt-injection cases block before invocation; schema/semantic cases reject provider output. The retry-budget exhaustion case creates only its terminal PolicyCollectionResult so the Collector can preserve the failure; it creates no Parser success output, Gate review, Reporter output, or Verification verdict.",
+  "cases": [
+    {
+      "name": "schema_error",
+      "failure": "OUTPUT_SCHEMA_MISMATCH",
+      "provider_called": true,
+      "domain_output_created": false
+    },
+    {
+      "name": "semantic_error",
+      "failure": "SEMANTIC_VALIDATION_FAILED",
+      "provider_called": true,
+      "domain_output_created": false
+    },
+    {
+      "name": "prompt_injection",
+      "failure": "UNTRUSTED_DATA_INSTRUCTION",
+      "provider_called": false,
+      "domain_output_created": false
+    },
+    {
+      "name": "stale_reference",
+      "failure": "STALE_REFERENCE",
+      "provider_called": false,
+      "domain_output_created": false
+    },
+    {
+      "name": "policy_parser_schema_error",
+      "role_task": "POLICY_PARSER/PARSE_OFFICIAL_POLICY",
+      "failure": "OUTPUT_SCHEMA_MISMATCH",
+      "provider_called": true,
+      "domain_output_created": false
+    },
+    {
+      "name": "policy_parser_semantic_error",
+      "role_task": "POLICY_PARSER/PARSE_OFFICIAL_POLICY",
+      "failure": "SEMANTIC_VALIDATION_FAILED",
+      "provider_called": true,
+      "domain_output_created": false
+    },
+    {
+      "name": "policy_parser_stale_source",
+      "role_task": "POLICY_PARSER/PARSE_OFFICIAL_POLICY",
+      "failure": "STALE_REFERENCE",
+      "provider_called": false,
+      "domain_output_created": false
+    },
+    {
+      "name": "policy_parser_prompt_injection",
+      "role_task": "POLICY_PARSER/PARSE_OFFICIAL_POLICY",
+      "failure": "UNTRUSTED_DATA_INSTRUCTION",
+      "provider_called": false,
+      "domain_output_created": false
+    },
+    {
+      "name": "policy_parser_provider_format_retry_budget_exhausted",
+      "fixture": "samples_policy_parser/retry_budget_exhausted.*.json",
+      "role_task": "POLICY_PARSER/PARSE_OFFICIAL_POLICY",
+      "work_type": "POLICY_FETCH",
+      "failure": "RETRY_LIMIT_EXHAUSTED",
+      "r8_versioned_policy_config_applied": true,
+      "same_work_new_attempts": true,
+      "new_work_created": false,
+      "terminal_collection_status": "COLLECTION_FAILED",
+      "policy_cache_record_created": false,
+      "rule_scope_impact_gate_created": false,
+      "reporter_created": false,
+      "verification_verdict_created": false,
+      "forbidden_conversions": ["ABSENT_CONFIRMED", "FALSE", "HOLD"]
+    }
+  ],
+  "domain_decision_cases": [
+    { "name": "technical_revise", "fixture": "samples_technical_gate/revise.*.json", "provider_called": true, "domain_output": "TechnicalEvidenceReview(status=REVISE)" },
+    { "name": "cwe_uncertain", "fixture": "samples_cwe_labeling/failure.*.json", "provider_called": true, "domain_output": "CWELabel(primary=null)" }
+  ]
+}
