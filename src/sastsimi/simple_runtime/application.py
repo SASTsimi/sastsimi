@@ -269,25 +269,38 @@ class SimpleAnalysisApplication:
     ) -> SimpleAnalysisOutcome:
         latest_stage = SimpleStage.HYPOTHESIS_DONE
         incomplete: RunOutcome | None = None
-        index = 0
-        while index < len(run.hypothesis_ids):
-            # Chaining can append hypotheses while the run is under way, so the
-            # batch is taken from the list as it stands and the loop re-reads it.
-            batch = run.hypothesis_ids[index : index + self._max_parallel]
-            index += len(batch)
-            children = [
-                identity.model_copy(update={"hypothesis_id": hypothesis_id})
-                for hypothesis_id in batch
-            ]
-            outcomes = await asyncio.gather(
-                *(
-                    self._runner_factory(
-                        self._store, child, static
-                    ).resume_hypothesis(child)
-                    for child in children
-                )
+        # A semaphore rather than fixed batches: stage times differ by an order
+        # of magnitude - minutes for evidence, tens of minutes for one
+        # reproduction - so waiting for a whole batch leaves the other worker
+        # idle.  Here a finished hypothesis frees its slot at once.
+        slots = asyncio.Semaphore(self._max_parallel)
+
+        async def work(
+            hypothesis_id: str,
+        ) -> tuple[CheckpointIdentity, RunOutcome]:
+            child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+            async with slots:
+                outcome = await self._runner_factory(
+                    self._store, child, static
+                ).resume_hypothesis(child)
+            return child, outcome
+
+        started: set[str] = set()
+        running: set[asyncio.Task[tuple[CheckpointIdentity, RunOutcome]]] = set()
+        while True:
+            # Chaining appends hypotheses while the run is under way, so the
+            # list is re-read after every completion rather than sliced once.
+            for hypothesis_id in run.hypothesis_ids:
+                if hypothesis_id not in started:
+                    started.add(hypothesis_id)
+                    running.add(asyncio.create_task(work(hypothesis_id)))
+            if not running:
+                break
+            finished, running = await asyncio.wait(
+                running, return_when=asyncio.FIRST_COMPLETED
             )
-            for child, outcome in zip(children, outcomes, strict=True):
+            for task in finished:
+                child, outcome = task.result()
                 latest_stage = outcome.current_stage
                 if outcome.status in {StageStatus.BLOCKED, StageStatus.FAILED}:
                     if (
@@ -297,8 +310,8 @@ class SimpleAnalysisApplication:
                     ):
                         incomplete = outcome
                     continue
-                # Registering a child rewrites the run record, so it is done
-                # once the batch is finished rather than from inside it.
+                # Only this loop rewrites the run record, and it does so between
+                # awaits, so the appended children are visible to the next pass.
                 run = self._register_chain_children(run, child, static)
         if incomplete is not None:
             outcome_status: Literal["BLOCKED", "FAILED"] = (

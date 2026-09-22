@@ -131,3 +131,52 @@ async def test_every_hypothesis_is_still_visited(tmp_path: Path) -> None:
     await application._run_hypotheses(_run(7), _identity(), _static())
 
     assert sorted(seen) == sorted(f"hypothesis-{index}" for index in range(7))
+
+
+class _UnevenRunner:
+    """One hypothesis is slow; the rest are quick, as real stages are."""
+
+    def __init__(self, tracker: dict[str, int], slow: str) -> None:
+        self._tracker = tracker
+        self._slow = slow
+
+    async def resume_hypothesis(self, identity: CheckpointIdentity) -> RunOutcome:
+        self._tracker["live"] += 1
+        self._tracker["peak"] = max(self._tracker["peak"], self._tracker["live"])
+        if self._tracker["live"] == 2:
+            # Every time the second slot fills, the scheduler kept both busy.
+            self._tracker["pairs"] = self._tracker.get("pairs", 0) + 1
+        turns = 40 if identity.hypothesis_id == self._slow else 1
+        for _ in range(turns):
+            await asyncio.sleep(0)
+        self._tracker["live"] -= 1
+        self._tracker["done"] = self._tracker.get("done", 0) + 1
+        return RunOutcome(
+            status=StageStatus.BLOCKED,
+            current_stage=SimpleStage.PRO_CON_DONE,
+            error_code="POC_EXECUTION_FAILED",
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_free_slot_is_filled_before_the_slow_one_finishes(
+    tmp_path: Path,
+) -> None:
+    """A long hypothesis must not hold its partner's slot empty behind it."""
+
+    tracker = {"live": 0, "peak": 0}
+    application = _application(tmp_path, tracker, 2)
+    application._runner_factory = cast(
+        Any,
+        lambda _store, _identity, _static: _UnevenRunner(tracker, "hypothesis-0"),
+    )
+
+    await application._run_hypotheses(_run(6), _identity(), _static())
+
+    # Six hypotheses, one of them slow.  Fixed batches pair them [0,1] [2,3]
+    # [4,5] and idle the free slot until the slow one ends, so the second slot
+    # fills three times.  Refilling as soon as a slot frees pairs the slow one
+    # with each of the five quick ones in turn.
+    assert tracker["done"] == 6
+    assert tracker["peak"] == 2
+    assert tracker["pairs"] == 5
