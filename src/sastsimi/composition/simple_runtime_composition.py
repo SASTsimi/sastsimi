@@ -197,6 +197,7 @@ def build_analysis_application(
                 containers=PortableContainerFactory(docker),
                 environments=environments,
                 store=runtime_store,
+                workspace=static.workspace_path,
                 # A stage that exceeds its per-call ceiling is blocked for the
                 # whole run, so the operator's elapsed budget has to reach the
                 # LLM calls too, not only the tool subprocesses.

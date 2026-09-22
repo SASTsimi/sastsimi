@@ -6,6 +6,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal, NoReturn, Protocol, cast
 
 from pydantic import JsonValue
@@ -34,6 +35,7 @@ from .models import (
 )
 from .poc import PoCCandidateRejected, validate_candidate
 from .provider import SimpleLLMCallResult, SimpleLLMClient
+from .retrieval import collect_requested_sources
 from .runner import SimpleStageHandler, StageBlocked, StageFailed
 from .store import SimpleCheckpointStore
 
@@ -640,7 +642,10 @@ class ProConStage:
         client: SimpleLLMClient,
         artifacts: SimpleArtifactRepository,
         call_timeout_ms: int = _LOCAL_TIMEOUT_MS,
+        workspace: Path | None = None,
     ) -> None:
+        self._artifacts = artifacts
+        self._workspace = workspace
         schema = _object_schema(
             {
                 "claims": _string_array(),
@@ -658,8 +663,9 @@ class ProConStage:
 You are the Pro Agent. Find only evidence that supports the exact vulnerability
 hypothesis. Trace source, propagation, sink, authorization and sanitizer facts.
 Cite supplied exact artifact content hashes. State missing code paths instead of
-inventing them. `requested_paths` lists only repository-relative files needed
-for a later bounded retrieval.
+inventing them. `requested_paths` lists the repository-relative files you still
+need to read; they are fetched and handed to the next agent, so name the exact
+files that would settle a claim you could only state as a limitation.
 """,
             schema=schema,
             kind="simple_pro_evidence",
@@ -673,11 +679,30 @@ You are the Con Agent in a new independent review. Search for concrete
 counterevidence: validation, sanitization, authorization, unreachable flows and
 false tool matches. Cite supplied exact artifact content hashes. Never weaken a
 claim merely because information is missing; record the gap in limitations and
-use `requested_paths` for repository-relative files needed later.
+use `requested_paths` for the repository-relative files that would
+settle it. They are fetched and handed to the next agent, so name the exact
+files rather than describing them.
 """,
             schema=schema,
             kind="simple_con_evidence",
         )
+
+    def _retrieved_sources(
+        self, pro: SimpleLLMCallResult, con: SimpleLLMCallResult
+    ) -> StoredDataRef | None:
+        if self._workspace is None:
+            return None
+        requested: list[str] = []
+        for result in (pro, con):
+            values = result.value.get("requested_paths")
+            if isinstance(values, list):
+                requested.extend(value for value in values if isinstance(value, str))
+        if not requested:
+            return None
+        record = collect_requested_sources(requested, workspace=self._workspace)
+        if not record["served"] and not record["refused"]:
+            return None
+        return self._artifacts.put_json(record)
 
     async def __call__(
         self,
@@ -687,8 +712,17 @@ use `requested_paths` for repository-relative files needed later.
         refs = _unique_refs(checkpoint.input_refs + _prior_refs(prior))
         pro, pro_ref = await self._pro.call(checkpoint, refs)
         con, con_ref = await self._con.call(checkpoint, refs)
+        # A static hit rarely settles whether a flow is guarded, so the files
+        # both agents said they still needed are read now and carried forward
+        # instead of being discarded with the rest of their output.
+        sources_ref = self._retrieved_sources(pro, con)
+        output_refs = (
+            (pro_ref, con_ref)
+            if sources_ref is None
+            else (pro_ref, con_ref, sources_ref)
+        )
         return StageResult(
-            output_refs=(pro_ref, con_ref),
+            output_refs=output_refs,
             activity_events=(
                 _activity_event(
                     checkpoint,
@@ -1450,13 +1484,16 @@ def build_stage_handlers(
     containers: SimpleContainerFactory,
     environments: ReproductionEnvironmentPreparer | None = None,
     store: SimpleCheckpointStore | None = None,
+    # The checkout the Pro and Con agents may ask to read from; without it the
+    # run keeps working and simply serves no requested file.
+    workspace: Path | None = None,
     call_timeout_ms: int = _LOCAL_TIMEOUT_MS,
     poc_timeout_ms: int = _POC_TIMEOUT_MS,
 ) -> dict[SimpleStage, SimpleStageHandler]:
     environment_preparer = environments or _UnavailableEnvironmentPreparer()
     handlers: dict[SimpleStage, SimpleStageHandler] = {
         SimpleStage.PRO_CON_DONE: ProConStage(
-            client, artifacts, call_timeout_ms=call_timeout_ms
+            client, artifacts, call_timeout_ms=call_timeout_ms, workspace=workspace
         ),
         SimpleStage.VERIFICATION_INITIAL_DONE: InitialVerificationStage(
             client,
