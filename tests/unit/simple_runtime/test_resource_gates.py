@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -124,3 +124,70 @@ async def test_one_build_at_a_time_is_the_default(tmp_path: Path) -> None:
     )
 
     assert _CountingRuntime.peak == 1
+
+
+class _TimedClient:
+    """Records when each call starts and ends, to see what overlapped."""
+
+    def __init__(self) -> None:
+        self.live = 0
+        self.peak = 0
+
+    async def call(self, **kwargs: object) -> Any:
+        from sastsimi.simple_runtime.provider import SimpleLLMCallResult
+
+        self.live += 1
+        self.peak = max(self.peak, self.live)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        self.live -= 1
+        return SimpleLLMCallResult(
+            value={
+                "claims": [],
+                "evidence_refs": [],
+                "limitations": [],
+                "requested_paths": [],
+            },
+            prompt_digest="a" * 64,
+            output_digest="b" * 64,
+        )
+
+
+@pytest.mark.asyncio
+async def test_pro_and_con_review_at_the_same_time(tmp_path: Path) -> None:
+    # Con is a new independent review of the same inputs, so making it wait for
+    # Pro doubles the wall clock of the stage for no reason.
+    from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+    from sastsimi.simple_runtime.models import (
+        CheckpointIdentity,
+        SimpleStage,
+        StageCheckpoint,
+        StageStatus,
+        input_reference_hash,
+    )
+    from sastsimi.simple_runtime.stages import ProConStage
+
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    client = _TimedClient()
+    stage = ProConStage(
+        cast(Any, client), SimpleArtifactRepository(tmp_path / "data", identity)
+    )
+
+    await stage(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.PRO_CON_DONE,
+            status=StageStatus.RUNNING,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            attempt_id="attempt-1",
+        ),
+        {},
+    )
+
+    assert client.peak == 2

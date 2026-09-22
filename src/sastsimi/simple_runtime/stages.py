@@ -718,8 +718,12 @@ files rather than describing them.
         prior: Mapping[SimpleStage, StageCheckpoint],
     ) -> StageResult:
         refs = _unique_refs(checkpoint.input_refs + _prior_refs(prior))
-        pro, pro_ref = await self._pro.call(checkpoint, refs)
-        con, con_ref = await self._con.call(checkpoint, refs)
+        # Con is a new independent review of the same inputs, so it never waits
+        # on Pro.  The call gate still decides how many actually run at once.
+        (pro, pro_ref), (con, con_ref) = await asyncio.gather(
+            self._pro.call(checkpoint, refs),
+            self._con.call(checkpoint, refs),
+        )
         # A static hit rarely settles whether a flow is guarded, so the files
         # both agents said they still needed are read now and carried forward
         # instead of being discarded with the rest of their output.
