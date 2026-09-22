@@ -4,6 +4,8 @@ import re
 from typing import Any
 
 from sastsimi.contracts.canonical_json import content_hash
+from sastsimi.contracts.result_registry import RESULT_REGISTRY
+from sastsimi.contracts.schema_export import CORE_SCHEMAS
 
 from .fixtures import (
     bundle,
@@ -21,6 +23,13 @@ from .fixtures import (
 from .test_inventory import canonical_fields
 
 BLOCKS = canonical_fields()
+RECORD_MODELS = {
+    model.__name__: model
+    for model in (
+        *CORE_SCHEMAS.values(),
+        *(binding.model for binding in RESULT_REGISTRY.values()),
+    )
+}
 NOW = "2026-09-08T00:00:00Z"
 REF_KINDS = {
     "analysis_input_ref": "analysis_run_input",
@@ -104,14 +113,12 @@ def make(name: str, kind: str | None = None) -> dict[str, Any]:
     value: dict[str, Any] = {}
     for field, spec in BLOCKS[name].items():
         if field == "meta":
-            host_configuration = name in {
-                "ClientExecutionProfile",
-                "ProviderProfile",
-                "ProviderValidationEvidence",
-            }
+            model = RECORD_MODELS.get(name)
+            hypothesis_scope = getattr(model, "HYPOTHESIS", None)
+            attempt_scope = getattr(model, "ATTEMPT", None)
             hypothesis = (
                 None
-                if host_configuration
+                if hypothesis_scope is False
                 or "without hypothesis" in spec
                 or "hypothesis_id null" in spec
                 or name in {"RunPolicyState", "StaticFactBundle", "ChainingResult"}
@@ -119,7 +126,7 @@ def make(name: str, kind: str | None = None) -> dict[str, Any]:
             )
             attempt = (
                 None
-                if host_configuration
+                if attempt_scope is False
                 or "attempt_id null" in spec
                 or "without hypothesis/attempt" in spec
                 else "at1"

@@ -204,7 +204,7 @@ def test_spec_rejects_database_or_query_mount_overlapping_workspace() -> None:
     """A disguised workspace mount must never become a database/query input."""
 
     spec = _spec()
-    inside_workspace = spec.workspace_root / "architecture-v5"
+    inside_workspace = spec.workspace_root / "architecture"
     fields = {
         name: getattr(spec, name) for name in ContainerCodeQLSpec.__dataclass_fields__
     }
