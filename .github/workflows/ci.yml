@@ -87,29 +87,10 @@ jobs:
         run: uv run ruff check .
       - name: Strict types
         run: uv run mypy --strict src tests
-      - name: Architecture validator (Windows PowerShell)
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: |
-          & ./scripts/validate-architecture-docs.ps1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Architecture validator (PowerShell Core)
-        if: runner.os != 'Windows'
+      - name: Current documentation and links
         shell: pwsh
         run: |
-          & ./scripts/validate-architecture-docs.ps1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Inventory and links (Windows PowerShell)
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: |
-          & ./scripts/audit-doc-inventory.ps1 -RepositoryRoot . -CheckLinks
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Inventory and links (PowerShell Core)
-        if: runner.os != 'Windows'
-        shell: pwsh
-        run: |
-          & ./scripts/audit-doc-inventory.ps1 -RepositoryRoot . -CheckLinks
+          & ./scripts/validate-current-docs.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify actual commit-range whitespace
         env:

@@ -60,7 +60,7 @@ def test_operator_examples_do_not_embed_secrets_or_local_absolute_paths() -> Non
         root / "docs" / "usage.md",
         root / "docs" / "onboarding-evidence.md",
         root / "docs" / "troubleshooting.md",
-        root / "docs" / "architecture-to-code.md",
+        root / "docs" / "architecture" / "implementation-map.md",
         root / "scripts" / "wheel-smoke.ps1",
     )
     forbidden = (

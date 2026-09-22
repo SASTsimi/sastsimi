@@ -10,6 +10,13 @@
     },
     {
       "owner": "ORCHESTRATION",
+      "result_kind": "analysis_run_input",
+      "schema": "generated/analysis_run_input/1.schema.json",
+      "schema_name": "AnalysisRunInput",
+      "source_model": "sastsimi.contracts.analysis.AnalysisRunInput"
+    },
+    {
+      "owner": "ORCHESTRATION",
       "result_kind": "analysis_run_result",
       "schema": "generated/analysis_run_result/1.schema.json",
       "schema_name": "AnalysisRunResult",
@@ -238,6 +245,20 @@
       "schema": "generated/report_draft/1.schema.json",
       "schema_name": "ReportDraft",
       "source_model": "sastsimi.contracts.reporting.ReportDraft"
+    },
+    {
+      "owner": "STATIC_ANALYSIS",
+      "result_kind": "repository_execution_selection",
+      "schema": "generated/repository_execution_selection/1.schema.json",
+      "schema_name": "RepositoryExecutionSelection",
+      "source_model": "sastsimi.contracts.static.RepositoryExecutionSelection"
+    },
+    {
+      "owner": "STATIC_ANALYSIS",
+      "result_kind": "repository_profile",
+      "schema": "generated/repository_profile/1.schema.json",
+      "schema_name": "RepositoryProfile",
+      "source_model": "sastsimi.contracts.static.RepositoryProfile"
     },
     {
       "owner": "DYNAMIC_REPRODUCTION",

@@ -2,7 +2,7 @@
 
 이 문서는 production profile을 `READY`로 검사할 때 필요한 secret 없는 파일과 각 필드의 의미를 설명합니다. 여기의 값은 예시이며 실제 시험·평가·사람 승인을 대신하지 않습니다.
 
-현재 실행 계약은 `src/sastsimi/orchestration/production_onboarding.py`의 `ProductionOnboardingManifest`, `ProductionProvisioningManifest`, `PVDObservation`과 `src/sastsimi/orchestration/production_provisioning.py`의 슬롯별 문서 모델입니다. Provider와 Prompt 판단 기준은 [Provider 결정](./architecture-v5/implementation/04-provider-decision.md)과 [Prompt Runtime](./architecture-v5/implementation/05-prompt-runtime.md)을 함께 따릅니다.
+현재 실행 계약은 `src/sastsimi/orchestration/production_onboarding.py`의 `ProductionOnboardingManifest`, `ProductionProvisioningManifest`, `PVDObservation`과 `src/sastsimi/orchestration/production_provisioning.py`의 슬롯별 문서 모델입니다. Provider와 Agent 경계는 [Agent와 LLM Provider](./architecture/agents-and-providers.md), 실제 코드 위치는 [구현 위치 지도](./architecture/implementation-map.md)를 함께 확인합니다.
 
 ## 1. 먼저 필요한 값을 조회합니다
 

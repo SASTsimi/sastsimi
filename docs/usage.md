@@ -100,6 +100,3 @@ sastsimi report F-001 --export markdown
 `--data-dir`, `--profile`, `evaluate`, `capability`, `onboarding` 같은 세부 명령과
 옵션은 문제 진단 또는 고급 운영을 위해 유지합니다. 일반 사용자는 위의 공개 명령만
 사용하면 됩니다.
-
-과거의 `demo` 분석 명령과 별도 Fake 파이프라인은 제품 코드에서 제거됐습니다. 당시
-동작은 Git 이력에서만 확인할 수 있으며 현재 설치·분석 검증에 사용할 수 없습니다.

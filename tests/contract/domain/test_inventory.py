@@ -1,32 +1,96 @@
-"""The approved owner registry must have executable schemas for every result."""
+"""The committed result inventory must match executable models and schemas."""
 
 import importlib.util
-import re
+import json
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def _field_hint(schema: dict[str, object], definitions: dict[str, object]) -> str:
+    """Translate a JSON Schema field into the compact fixture hint vocabulary."""
+    reference = schema.get("$ref")
+    if isinstance(reference, str):
+        name = reference.rsplit("/", 1)[-1]
+        target = definitions.get(name)
+        if isinstance(target, dict) and "properties" not in target:
+            return _field_hint(target, definitions)
+        return name
+
+    variants = schema.get("anyOf")
+    if isinstance(variants, list):
+        hints = [
+            "null"
+            if isinstance(item, dict) and item.get("type") == "null"
+            else _field_hint(item, definitions)
+            for item in variants
+            if isinstance(item, dict)
+        ]
+        return " | ".join(hints)
+
+    enum = schema.get("enum")
+    if isinstance(enum, list):
+        return " | ".join(str(item) for item in enum)
+
+    constant = schema.get("const")
+    if constant is not None:
+        return str(constant)
+
+    schema_type = schema.get("type")
+    if schema_type == "array":
+        items = schema.get("items")
+        return (
+            f"[{_field_hint(items, definitions)}]" if isinstance(items, dict) else "[]"
+        )
+    if schema_type == "object":
+        return "map"
+    if schema_type == "string":
+        if schema.get("format") == "date-time":
+            return "timestamp"
+        if schema.get("minLength") == 64 and schema.get("maxLength") == 64:
+            return "sha256"
+        return "string"
+    if schema_type in {"integer", "number", "boolean"}:
+        return str(schema_type)
+    return "string"
+
+
+def canonical_fields() -> dict[str, dict[str, str]]:
+    """Return fixture field hints derived from executable generated schemas."""
+    from sastsimi.contracts.schema_export import schema_documents
+
+    blocks: dict[str, dict[str, str]] = {}
+    for raw_document in schema_documents().values():
+        document = json.loads(raw_document)
+        candidates = [document]
+        definitions = document.get("$defs", {})
+        if isinstance(definitions, dict):
+            candidates.extend(
+                definition
+                for definition in definitions.values()
+                if isinstance(definition, dict)
+            )
+        for candidate in candidates:
+            title = candidate.get("title")
+            properties = candidate.get("properties")
+            if not isinstance(title, str) or not isinstance(properties, dict):
+                continue
+            blocks[title] = {
+                name: _field_hint(field, definitions)
+                for name, field in properties.items()
+                if isinstance(name, str) and isinstance(field, dict)
+            }
+    return blocks
 
 
 def canonical_inventory() -> dict[str, tuple[str, str]]:
-    source = Path("docs/architecture-v5/08-lightweight-data-contracts.md").read_text(
-        encoding="utf-8"
+    document = json.loads(
+        (ROOT / "schemas/result-owner-inventory.json").read_text(encoding="utf-8")
     )
-    paragraph = "\n".join(
-        line
-        for line in source.splitlines()
-        if line.startswith(("- 핵심 registry", "- R3-05의 중간 제어 출력"))
-    )
-    inventory = {
-        kind: (model, role)
-        for kind, model, role in re.findall(
-            r"`(\w+) -> (\w+)(?:\(role=\w+\))? -> (\w+)`", paragraph
-        )
+    return {
+        item["result_kind"]: (item["schema_name"], item["owner"])
+        for item in document["results"]
     }
-    # The Context service producer is specified in prose; coordinator confirmed
-    # this enum/registry omission must be transcribed, not assigned to an Agent.
-    inventory["code_context_response"] = (
-        "CodeContextResponse",
-        "CONTEXT_RETRIEVAL_SERVICE",
-    )
-    return inventory
 
 
 def test_every_approved_result_has_model_owner_and_export() -> None:
@@ -46,30 +110,17 @@ def test_every_approved_result_has_model_owner_and_export() -> None:
         assert f"{kind}/1.schema.json" in schema_documents()
 
 
-def canonical_fields() -> dict[str, dict[str, str]]:
-    source = Path("docs/architecture-v5/08-lightweight-data-contracts.md").read_text(
-        encoding="utf-8"
-    )
-    result: dict[str, dict[str, str]] = {}
-    for block in re.findall(r"```yaml\n(.*?)```", source, re.S):
-        current: str | None = None
-        for line in block.splitlines():
-            if re.fullmatch(r"[A-Za-z][A-Za-z0-9]+:", line):
-                current = line[:-1]
-                result[current] = {}
-            elif current and re.match(r"^  [a-z]", line):
-                key, value = line.strip().split(":", 1)
-                result[current][key] = value.strip()
-    return result
-
-
 def test_result_field_names_and_required_nulls_match_canonical_blocks() -> None:
     from sastsimi.contracts.analysis import AnalysisRunInput
     from sastsimi.contracts.result_registry import RESULT_REGISTRY
 
-    blocks = canonical_fields()
     for kind, binding in RESULT_REGISTRY.items():
-        assert set(binding.model.model_fields) == set(blocks[binding.schema_name]), kind
+        schema_path = ROOT / "schemas/generated" / kind / "1.schema.json"
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        schema_fields = set(schema["properties"])
+        schema_optional = schema_fields - set(schema.get("required", ()))
+
+        assert set(binding.model.model_fields) == schema_fields, kind
         # Only this exact model's five additive restart fields can be absent
         # when reading legacy rows. Nullable fields elsewhere remain required.
         legacy_optional = (
@@ -89,6 +140,7 @@ def test_result_field_names_and_required_nulls_match_canonical_blocks() -> None:
             if not field.is_required()
         }
         assert actual_optional == legacy_optional, kind
+        assert schema_optional == legacy_optional, kind
         assert all(
             binding.model.model_fields[name].default is None for name in legacy_optional
         ), kind

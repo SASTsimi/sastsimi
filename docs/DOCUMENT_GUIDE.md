@@ -1,183 +1,54 @@
-# SASTSIMI 전체 문서 지도
+# 문서 지도
 
-이 문서는 저장소에 있는 각 파일이 무엇을 위한 것인지 쉽게 설명합니다. 처음 참여했다면 먼저 [프로젝트 README](../README.md), [협업 가이드](../CONTRIBUTING.md), [쉬운 용어집](./GLOSSARY.md) 순서로 읽으세요.
+현재 저장소 문서는 사용법, 구현 구조, 확정 결정의 세 종류로 나눕니다. 과거 회의 자료,
+역할별 검토 기록과 대체된 설계는 Git 이력에만 남깁니다.
 
-## 처음 실행하는 사용자가 먼저 읽을 문서
+## 처음 사용하는 사람
 
-| 파일 | 쉽게 말하면 |
+| 문서 | 설명 |
 |---|---|
-| [`README.md`](../README.md) | 설치부터 SimpleRuntime 분석·재개·대시보드·보고서까지 가장 짧은 시작 안내입니다. |
-| [`docs/installation.md`](./installation.md) | 깨끗한 Windows·Linux/WSL 환경에 필요한 프로그램과 `sastsimi setup` 절차입니다. |
-| [`docs/usage.md`](./usage.md) | 단순 공개 명령, 실제 진행률, 실패 단계 재개, PoC와 보고서 확인 방법입니다. |
-| [`docs/provider-setup.md`](./provider-setup.md) | OpenAI API와 공식 Codex 회원 로그인 연결 및 model 변경 방법입니다. |
-| [`docs/troubleshooting.md`](./troubleshooting.md) | clone·정적 도구·인증·Docker·보고서 실패를 FALSE로 오인하지 않고 복구하는 방법입니다. |
+| [`README.md`](../README.md) | 프로젝트 소개와 가장 짧은 설치·분석·결과 확인 방법 |
+| [`installation.md`](./installation.md) | Windows와 Linux/WSL 설치, 외부 프로그램 준비 |
+| [`provider-setup.md`](./provider-setup.md) | API Key와 공식 Codex 회원 로그인 설정 |
+| [`usage.md`](./usage.md) | `setup`, `analyze`, `status`, `resume`, 대시보드와 보고서 사용법 |
+| [`troubleshooting.md`](./troubleshooting.md) | 인증·정적 도구·Docker·보고서 오류의 안전한 해결 방법 |
 
-아래 Architecture·검토 문서는 설계 근거와 세부 계약을 확인할 때 읽습니다. 일반
-사용자는 위 다섯 문서만으로 설치와 실행을 시작할 수 있어야 합니다.
+## 운영·공통 안내
 
-현재 설치 제품의 저장소 분석 경로는 `SimpleRuntime` 하나입니다. 과거 별도
-Fake/demo 파이프라인의 구현과 명령은 제거됐으며, 작업 기록에 등장하는 이름은 현재
-사용법이 아니라 Git 이력의 설계·시험 기록입니다.
+| 문서 | 설명 |
+|---|---|
+| [`README.md`](./README.md) | 이 문서 폴더의 시작점 |
+| [`GLOSSARY.md`](./GLOSSARY.md) | 공통 이름과 상태값의 쉬운 뜻 |
+| [`onboarding-evidence.md`](./onboarding-evidence.md) | 고급 production profile 승인 근거 형식 |
+| [`release-follow-ups.md`](./release-follow-ups.md) | 현재 제한과 검증하지 않은 후속 범위 |
+| [`CONTRIBUTING.md`](../CONTRIBUTING.md) | 코드·문서 변경, 테스트와 PR 절차 |
 
-## 기준 표시
+## 현재 구현 아키텍처
 
-- **기준 문서**: 설계 의미와 협업 규칙을 판단할 때 우선합니다.
-- **쉬운 요약**: 기준 문서를 빠르게 찾고 이해하도록 돕습니다.
-- **작업 기록**: 설계·문서 변경 과정과 검토 계획입니다.
-- **보조 파일**: Issue, PR 또는 Wiki 화면을 작동시키는 설정 파일입니다.
+| 문서 | 설명 |
+|---|---|
+| [`architecture/README.md`](./architecture/README.md) | 구현 문서의 읽는 순서와 기준 |
+| [`architecture/pipeline.md`](./architecture/pipeline.md) | 저장소 입력부터 보고서까지 실제 stage 순서 |
+| [`architecture/runtime-and-recovery.md`](./architecture/runtime-and-recovery.md) | checkpoint 재사용과 실패 지점 재개 |
+| [`architecture/agents-and-providers.md`](./architecture/agents-and-providers.md) | LLM Agent 역할과 Provider 독립성 |
+| [`architecture/contracts-and-storage.md`](./architecture/contracts-and-storage.md) | exact reference, schema와 저장 방식 |
+| [`architecture/static-and-dynamic-analysis.md`](./architecture/static-and-dynamic-analysis.md) | 정적 분석, PoC 후보와 Docker 재현 |
+| [`architecture/gates-chaining-reporting.md`](./architecture/gates-chaining-reporting.md) | 두 Gate, Primitive, Chaining, Finding과 보고서 |
+| [`architecture/security-boundaries.md`](./architecture/security-boundaries.md) | Runtime 권한, secret, workspace와 Docker 경계 |
+| [`architecture/implementation-map.md`](./architecture/implementation-map.md) | 기능별 실제 코드와 테스트 위치 |
 
-## 저장소 첫 화면과 협업
+## 확정 설계 결정
 
-| 파일 | 쉽게 말하면 | 주로 읽는 사람 | 구분 |
-|---|---|---|---|
-| [`README.md`](../README.md) | 프로젝트 목적, 현재 상태, 전체 흐름, 팀 역할과 업무 시작 방법을 소개합니다. | 모든 팀원 | 기준 문서 |
-| [`CONTRIBUTING.md`](../CONTRIBUTING.md) | Issue를 나누고 브랜치·PR·리뷰를 진행하는 실제 순서를 설명합니다. | 작업을 시작하는 팀원 | 기준 문서 |
-| [Issue 작성 양식](../.github/ISSUE_TEMPLATE/architecture-review.yml) | GitHub에서 설계 검토 Issue를 만들 때 필요한 입력 칸을 정의합니다. | Issue 작성자 | 보조 파일 |
-| [Issue 화면 설정](../.github/ISSUE_TEMPLATE/config.yml) | GitHub Issue 작성 화면의 선택 항목을 설정합니다. | 저장소 관리 담당 | 보조 파일 |
-| [PR 작성 양식](../.github/PULL_REQUEST_TEMPLATE.md) | PR에 목적·영향·검증 내용을 빠뜨리지 않도록 기본 양식을 제공합니다. | PR 작성자·검토자 | 보조 파일 |
-| [`scripts/validate-architecture-docs.ps1`](../scripts/validate-architecture-docs.ps1) | Markdown 링크·Mermaid 사본, R4 상태·복구·권한 계약과 운영 Pro/Con 결과 연결 누락을 한 번에 검사합니다. | 문서 작성자·검토자 | 검증 도구 |
-| [`scripts/audit-doc-inventory.ps1`](../scripts/audit-doc-inventory.ps1) | Git-tracked Markdown별 inbound link, validator·최종 승인·provenance·ADR 참조를 보여 주고, 현재 validator의 전역 Markdown scan과 literal 참조를 구분해 표시합니다. 어느 validator 의존도든 삭제 allowlist를 거절합니다. `-CheckLinks`로 로컬 Markdown 링크 누락도 검사합니다. | 문서 작성자·검토자 | 검증 도구 |
-| [문서 CI](../.github/workflows/docs.yml) | Windows와 Ubuntu에서 Architecture validator, 문서 인벤토리·링크 검사와 diff 검사를 실행합니다. | PR 작성자·검토자 | 보조 파일 |
+[`decisions/README.md`](./decisions/README.md)는 현재 유효한 ADR 11개를 안내합니다.
+ADR은 결정 배경을 보존하고, 실제 동작과 필드는 코드·생성 schema·테스트를 기준으로
+확인합니다. 대체된 ADR은 현재 문서 목록에 두지 않습니다.
 
-## 문서 안내와 공통 용어
+## 자동 생성·검증 자료
 
-| 파일 | 쉽게 말하면 | 주로 읽는 사람 | 구분 |
-|---|---|---|---|
-| [`docs/README.md`](./README.md) | 설계 문서를 어디서부터 읽어야 하는지 알려 주는 입구입니다. | 모든 팀원 | 쉬운 요약 |
-| [`docs/DOCUMENT_GUIDE.md`](./DOCUMENT_GUIDE.md) | 저장소의 모든 문서와 보조 파일이 무엇을 위한 것인지 설명합니다. | 처음 참여한 팀원 | 쉬운 요약 |
-| [`docs/GLOSSARY.md`](./GLOSSARY.md) | 프로젝트 전문용어를 쉬운 말로 설명합니다. | 모든 팀원 | 쉬운 요약 |
-| [`docs/installation.md`](./installation.md) | Python·Git·CodeQL·OpenGrep·Docker 설치와 운영 capability 확인 방법을 설명합니다. | 설치·운영 담당자 | 운영 안내 |
-| [`docs/provider-setup.md`](./provider-setup.md) | API key와 공식 회원 로그인 경로를 secret 노출 없이 연결하고 승인 여부를 확인하는 방법을 설명합니다. | Provider·운영 담당자 | 운영 안내 |
-| [`docs/onboarding-evidence.md`](./onboarding-evidence.md) | PVD·provisioning·onboarding 근거 파일의 실제 필드와 READY 확인 순서를 secret 없는 예시로 설명합니다. | Provider·운영·승인 담당자 | 운영 안내 |
-| [`docs/usage.md`](./usage.md) | 실제 저장소 분석 시작, 상태·결과 조회, 읽기 전용 대시보드와 Markdown 보고서 확인 순서를 설명합니다. | 도구 사용자·운영 담당자 | 운영 안내 |
-| [`docs/troubleshooting.md`](./troubleshooting.md) | capability·인증·정적 도구·Docker·보고서 오류를 verdict와 섞지 않고 처리하는 방법을 설명합니다. | 도구 사용자·운영 담당자 | 운영 안내 |
-| [`docs/handoff/T17_IMPLEMENTATION_HANDOFF.md`](./handoff/T17_IMPLEMENTATION_HANDOFF.md) | T17 병합 기준 구현 상태, 실제 실행 흐름, 다시 만들면 안 되는 기능과 다음 작업 순서를 설명합니다. | 다음 구현 담당자·PM·검토자 | 구현 인계 기준 |
-| [`docs/release-follow-ups.md`](./release-follow-ups.md) | 첫 실행 버전에서 의도적으로 미룬 Medium/Low 확장 항목을 기록합니다. | PM·후속 구현 담당자 | 후속 목록 |
-| [`config/profiles/production.example.toml`](../config/profiles/production.example.toml) | secret 없이 production profile의 전체 필드와 역할별 LLM route를 작성하는 예시입니다. 값 자체는 승인 기록이 아닙니다. | 설치·Provider·운영 담당자 | 설정 예시 |
-| [`docs/architecture-to-code.md`](./architecture-to-code.md) | Architecture v5 단계와 구현 모듈·시험·public 연결 상태를 대응시킵니다. | 구현·검토 담당 | 구현 지도 |
-| [`scripts/wheel-smoke.ps1`](../scripts/wheel-smoke.ps1) | source tree 밖의 새 venv에 wheel만 설치해 공개 CLI 흐름을 점검합니다. | 배포·CI 담당 | 검증 도구 |
+- `schemas/generated/`: Pydantic 계약에서 생성한 JSON Schema
+- `schemas/result-owner-inventory.json`: result kind, model과 owner 목록
+- `scripts/validate-current-docs.ps1`: 현재 문서 경로와 로컬 링크 검사
+- `.github/workflows/docs.yml`: 문서 검증 CI
 
-## 협업·승인 규칙
-
-| 파일 | 쉽게 말하면 | 주로 읽는 사람 | 구분 |
-|---|---|---|---|
-| [`docs/governance/OWNERSHIP.md`](./governance/OWNERSHIP.md) | 역할별 담당자, 담당 문서, 검토자와 권한 경계를 정리합니다. | PM·역할 담당자 | 기준 문서 |
-| [`docs/governance/OPEN_QUESTIONS.md`](./governance/OPEN_QUESTIONS.md) | 승인된 설계 안에서 구현·운영 전에 채울 실제 설정과 시험 증거를 모읍니다. | PM·관련 역할 담당자 | 기준 문서 |
-| [`docs/governance/REVIEW_CHECKLIST.md`](./governance/REVIEW_CHECKLIST.md) | 파트 검토와 최종 검토에서 빠뜨리면 안 되는 항목을 확인합니다. | 작성자·검토자 | 기준 문서 |
-
-## 검토 업무와 기록
-
-| 파일 | 쉽게 말하면 | 주로 읽는 사람 | 구분 |
-|---|---|---|---|
-| [`docs/review/ISSUE_TRACKER.md`](./review/ISSUE_TRACKER.md) | 실제 GitHub Issue 번호, 담당자, 브랜치와 진행 상태를 한눈에 보여 줍니다. | PM·모든 역할 담당자 | 쉬운 요약 |
-| [`docs/review/ISSUE_CATALOG.md`](./review/ISSUE_CATALOG.md) | 역할별 상위 Issue에서 무엇을 검토하고 어떤 하위 Issue를 만들지 자세히 설명합니다. | 역할 담당자 | 기준 문서 |
-| [`docs/review/R4-04_CROSS_REVIEW.md`](./review/R4-04_CROSS_REVIEW.md) | R4-04에서 역할별로 무엇을 확인하고 어떤 GitHub 기록을 승인으로 인정하는지 설명합니다. | R1~R8 담당자·최종 검토 담당자 | 검토 기록 |
-| [`docs/review/FINDINGS.md`](./review/FINDINGS.md) | 현재 설계에서 발견된 큰 문제와 해결 조건을 정리합니다. | PM·문제 담당자 | 기준 문서 |
-| [`docs/review/FINAL_ARCHITECTURE_V5_APPROVAL.md`](./review/FINAL_ARCHITECTURE_V5_APPROVAL.md) | 검토 시작 기준 main, Final PR의 정확한 head·merge commit, 종단 시나리오와 구현 전 후속 조건을 기록합니다. | R1~R8 담당자·구현 담당자 | 최종 승인 기록 |
-| [`docs/review/PROVENANCE.md`](./review/PROVENANCE.md) | Architecture v5 파일을 어디에서 가져왔는지와 원본 해시를 기록합니다. | PM·최종 검토 담당자 | 기준 기록 |
-| [`docs/review/decisions/README.md`](./review/decisions/README.md) | 팀이 확정한 중요한 설계 결정과 근거를 기록하는 방법을 설명합니다. | 결정 담당자·검토자 | 기준 문서 |
-| [`ADR-001-verification-owned-chaining-admission.md`](./review/decisions/ADR-001-verification-owned-chaining-admission.md) | Verification 중심 제어권을 정한 과거 결정입니다. Primitive와 체이닝 부분은 ADR-005가 대체했습니다. | R1·R4·R6·Gate 담당 | 대체된 이력 |
-| [`ADR-002-sandbox-policy-enforcement.md`](./review/decisions/ADR-002-sandbox-policy-enforcement.md) | 과거 Sandbox 정책 판정·실행·결과 조립 분리안을 보존합니다. 현재 구조는 ADR-007이 대체했습니다. | R4·R6·R7 담당 | 대체된 이력 |
-| [`ADR-003-r6-r7-environment-requirements-handoff.md`](./review/decisions/ADR-003-r6-r7-environment-requirements-handoff.md) | R6가 환경 요구사항과 계획을 만들던 과거 결정을 보존합니다. ADR-004를 거쳐 ADR-007이 대체했습니다. | R4·R6·R7 담당 | 대체된 이력 |
-| [`ADR-004-r6-request-r7-poc-production.md`](./review/decisions/ADR-004-r6-request-r7-poc-production.md) | R6 요청·R7 mode 기반 재현의 과거 결정을 보존합니다. validated PoC 의무는 유지되지만 현재 자율 재현 구조는 ADR-007을 따릅니다. | R4·R6·R7·Gate 담당 | 대체된 이력 |
-| [`ADR-005-unified-primitive-chaining.md`](./review/decisions/ADR-005-unified-primitive-chaining.md) | HOLD와 TRUE를 하나의 Primitive로 표현하고 결과→입력 matching, Technical admission, 계보 기반 순환 방지를 정한 현재 결정을 설명합니다. | R1·R4·R6·R8·Gate 담당 | 확정 결정 |
-| [`ADR-006-static-rule-execution-record.md`](./review/decisions/ADR-006-static-rule-execution-record.md) | SAST 규칙의 실행 0건·미실행·확인 불가를 구분하고 ToolRunResult와 연결하는 현재 결정을 설명합니다. | R2·R4·R8 담당 | 확정 결정 |
-| [`ADR-007-r7-autonomous-reproduction-session.md`](./review/decisions/ADR-007-r7-autonomous-reproduction-session.md) | Dynamic Reproduction Agent의 Sandbox 내부 자율 재현과 Session Manager의 로그·결과 확정 책임을 설명합니다. | R4·R6·R7·R8 담당 | 확정 결정 |
-| [`ADR-008-hypothesis-restriction-duplicate-contract.md`](./review/decisions/ADR-008-hypothesis-restriction-duplicate-contract.md) | 가설 제한 조건의 exact 근거와 LLM 중복 판정·실패 처리 lifecycle을 설명합니다. | R1·R2·R3·R4·R6·R8 담당 | 확정 결정 |
-| [`ADR-009-r5-01-cwe-labeling-provenance.md`](./review/decisions/ADR-009-r5-01-cwe-labeling-provenance.md) | CWE 라벨을 새 Verification마다 다시 평가하고 exact revision에 연결하는 현재 결정을 설명합니다. | R4·R5·R6 담당 | 확정 결정 |
-| [`ADR-010-static-fact-kind-partition.md`](./review/decisions/ADR-010-static-fact-kind-partition.md) | StaticFactBundle의 사실 종류와 sanitizer·validator 후보를 분리해 전달하는 현재 결정을 설명합니다. | R2·R4·R6·R8 담당 | 확정 결정 |
-| [`ADR-011-testing-restriction-primitive-admission.md`](./review/decisions/ADR-011-testing-restriction-primitive-admission.md) | 금지된 테스트 위반만 TRUE Primitive 체이닝 자격을 막도록 전용 판정과 admission 결정을 분리한 결정입니다. 회수 절차는 ADR-014가 대체했고 전용 판정·매핑은 유지됩니다. | R1·R4·R5 담당 | 대체된 이력 |
-| [`ADR-013-run-policy-preparation-and-reuse.md`](./review/decisions/ADR-013-run-policy-preparation-and-reuse.md) | 정책을 실행 초기에 한 번 준비해 가설들이 공유하고, run 안에서는 고정하며 다음 run 시작 때 exact cache를 재사용할지 판단하는 확정 결정을 설명합니다. | R4·R5·R7·R8 담당 | 확정 결정 |
-| [`ADR-012-primitive-match-duplicate-key.md`](./review/decisions/ADR-012-primitive-match-duplicate-key.md) | Primitive match의 중복 판정 키와 순회 단위를 정한 확정 결정을 설명합니다. | R1·R4 담당 | 확정 결정 |
-| [`ADR-014-primitive-admission-single-decision.md`](./review/decisions/ADR-014-primitive-admission-single-decision.md) | Primitive admission을 등록 시점의 1회 판정으로 확정하고 회수 절차를 두지 않는 현재 결정을 설명합니다. ADR-011의 회수 부분을 대체합니다. | R1·R4·R5·R6·R8 담당 | 확정 결정 |
-| [`ADR-015-r3-implementation-baseline.md`](./review/decisions/ADR-015-r3-implementation-baseline.md) | 한 명 구현을 위한 언어·저장·파일 구조·CLI·CI의 확정 기준을 설명합니다. | R1~R8·전체 구현 담당 | 확정 결정 |
-
-## Architecture v5 기술 기준 문서
-
-| 파일 | 쉽게 말하면 | 주로 읽는 사람 | 구분 |
-|---|---|---|---|
-| [`docs/architecture-v5/README.md`](./architecture-v5/README.md) | Architecture v5 전체 흐름과 번호 문서의 읽는 순서를 소개합니다. | 모든 설계 참여자 | 기준 문서 |
-| [`01-system-overview.md`](./architecture-v5/01-system-overview.md) | 저장소 입력부터 Agent 자동화 종료와 이후 사람 판단까지 전체 22단계를 설명합니다. | PM·모든 역할 담당자 | 기준 문서 |
-| [`02-static-fact-layer.md`](./architecture-v5/02-static-fact-layer.md) | AST와 SAST 결과를 LLM이 사용할 코드 사실로 정리하는 방법을 설명합니다. | 정적분석·탐색·검증 담당 | 기준 문서 |
-| [`03-agent-roles-and-orchestration.md`](./architecture-v5/03-agent-roles-and-orchestration.md) | 비-LLM Orchestration Runtime의 전역 등록·배정과 Verification의 가설 내부 제어권을 포함해 각 구성요소 역할을 설명합니다. | PM·LLM 역할·통합 담당 | 기준 문서 |
-| [`04-verification-and-dynamic-reproduction.md`](./architecture-v5/04-verification-and-dynamic-reproduction.md) | Verification이 가설 내부 Context·찬반·동적 재현·판정·Gate 보완을 관리하는 절차를 설명합니다. | 검증·동적검증 담당 | 기준 문서 |
-| [`verification-playbooks.md`](./architecture-v5/verification-playbooks.md) | 공통 및 웹 취약점 유형별 확인 항목, 반증 질문과 필요한 정적·동적 근거를 정의합니다. | 검증·정적분석·동적검증·Gate 담당 | 기준 문서 |
-| [`05-llm-gate-and-reporting.md`](./architecture-v5/05-llm-gate-and-reporting.md) | 기술 근거와 공식 정책을 검토하고 보고서 초안을 만드는 조건을 설명합니다. | Gate·검증·PM 담당 | 기준 문서 |
-| [`06-chaining.md`](./architecture-v5/06-chaining.md) | HOLD/TRUE를 같은 Primitive 형식으로 저장하고 upstream 결과가 downstream 입력을 충족하는지 비교하는 방법을 설명합니다. | 탐색·체이닝·검증 담당 | 기준 문서 |
-| [`07-results-and-observability.md`](./architecture-v5/07-results-and-observability.md) | 분석 결과, 오류, 비용과 디버깅 기록을 무엇을 저장할지 설명합니다. | 데이터·평가·통합 담당 | 기준 문서 |
-| [`08-lightweight-data-contracts.md`](./architecture-v5/08-lightweight-data-contracts.md) | 파트 사이에 주고받는 데이터 묶음과 필드 이름을 정의합니다. | 모든 구현·설계 담당자 | 기준 문서 |
-| [`09-llm-provider-session-and-logging.md`](./architecture-v5/09-llm-provider-session-and-logging.md) | 회원 로그인·API 연결, 대화 상태와 LLM 호출 기록 방법을 설명합니다. | 통합·PM·데이터 담당 | 기준 문서 |
-| [`10-security-boundaries.md`](./architecture-v5/10-security-boundaries.md) | LLM, 저장소, 비밀정보, Docker와 공식 정책을 안전하게 다루는 경계를 설명합니다. | 모든 역할·보안 검토자 | 기준 문서 |
-| [`11-migration-from-v4.md`](./architecture-v5/11-migration-from-v4.md) | v4에서 유지한 생각과 v5에서 버린 구조를 역사적 맥락으로 설명합니다. | PM·기존 설계 참여자 | 참고 문서 |
-| [`12-report-draft-template.md`](./architecture-v5/12-report-draft-template.md) | Gate를 통과한 결과를 사람이 검토할 보고서 초안으로 정리하는 양식입니다. | Gate·보고서 담당 | 기준 문서 |
-| [`13-architecture-diagrams.md`](./architecture-v5/13-architecture-diagrams.md) | 전체 흐름과 역할 관계를 Mermaid 그림으로 보여 줍니다. | 모든 팀원 | 기준 문서 |
-
-## Architecture v5 구현 준비 문서
-
-번호 문서의 설계 의미를 실제 모듈·입출력·테스트 단위로 옮깁니다. 번호 문서나 공통 계약과 충돌하면 번호 문서와 공통 계약이 우선합니다.
-
-| 파일 | 쉽게 말하면 | 주로 읽는 사람 | 구분 |
-|---|---|---|---|
-| [`implementation/README.md`](./architecture-v5/implementation/README.md) | R3-01~R3-06 구현 인계 문서를 어떤 순서로 읽고 무엇을 기준으로 삼는지 설명합니다. | 전체 구현 담당자·R1~R8 검토자 | 구현 인계 안내 |
-| [`implementation/01-module-map.md`](./architecture-v5/implementation/01-module-map.md) | 정본 22단계를 실행 모듈, 입력·출력, 저장 위치, 오류와 테스트에 연결합니다. | 전체 구현 담당자·R1~R8 검토자 | 구현 준비 기준 |
-| [`implementation/02-contract-test-plan.md`](./architecture-v5/implementation/02-contract-test-plan.md) | 파트 사이의 계약을 정상·실패·권한 위반 입력으로 어떻게 시험할지 case별로 설명합니다. | 전체 구현 담당자·R1~R8 검토자 | 구현 전 시험 계획 |
-| [`implementation/04-provider-decision.md`](./architecture-v5/implementation/04-provider-decision.md) | OpenAI·Codex·Anthropic·Claude를 API Key 또는 공식 구독 로그인으로 연결하는 네 경로와 실제 검증 기준을 설명합니다. | R3·R4·R8·LLM 역할 담당 | 구현 인계 설계 |
-| [`implementation/05-prompt-runtime.md`](./architecture-v5/implementation/05-prompt-runtime.md) | Prompt Registry·Builder와 11개 LLM 역할의 입력·출력·검사·작성 책임을 설명합니다. | R1~R8·통합 구현 담당 | 구현 인계 설계 |
-| [`implementation/06-implementation-baseline.md`](./architecture-v5/implementation/06-implementation-baseline.md) | 실제 언어·repository 구조·저장·복구·설정·CLI·CI와 한 명 구현 순서를 확정합니다. | 전체 구현 담당자·R1~R8 검토자 | 물리 구현 기준선 |
-
-## Architecture v5 쉬운 Wiki
-
-Wiki는 번호 문서의 쉬운 요약입니다. Wiki만 수정해 새로운 규칙을 만들 수 없습니다.
-
-| 파일 | 쉽게 말하면 | 주로 읽는 사람 | 구분 |
-|---|---|---|---|
-| [`wiki/README.md`](./architecture-v5/wiki/README.md) | Wiki의 성격과 추천 읽기 순서를 설명합니다. | 처음 설계를 읽는 팀원 | 쉬운 요약 |
-| [`wiki/_Sidebar.md`](./architecture-v5/wiki/_Sidebar.md) | Wiki 왼쪽 메뉴를 구성합니다. | Wiki 이용자 | 보조 파일 |
-| [`wiki/quick-guide.md`](./architecture-v5/wiki/quick-guide.md) | Architecture v5를 약 5분 안에 이해하도록 핵심만 요약합니다. | 처음 참여한 팀원 | 쉬운 요약 |
-| [`wiki/pipeline.md`](./architecture-v5/wiki/pipeline.md) | 22단계 전체 흐름을 짧게 설명합니다. | 모든 팀원 | 쉬운 요약 |
-| [`wiki/agents.md`](./architecture-v5/wiki/agents.md) | Agent별 역할과 금지 권한을 표로 요약합니다. | LLM·PM 담당 | 쉬운 요약 |
-| [`wiki/verification-and-dynamic.md`](./architecture-v5/wiki/verification-and-dynamic.md) | 가설 판정과 Docker 재현을 짧게 설명합니다. | 검증·동적검증 담당 | 쉬운 요약 |
-| [`wiki/gate-and-reporting.md`](./architecture-v5/wiki/gate-and-reporting.md) | 두 검토 단계와 보고서 작성 조건을 요약합니다. | Gate·보고서 담당 | 쉬운 요약 |
-| [`wiki/chaining.md`](./architecture-v5/wiki/chaining.md) | 여러 취약점의 조건을 연결하는 방법과 중단 조건을 요약합니다. | 탐색·체이닝 담당 | 쉬운 요약 |
-| [`wiki/providers-and-logging.md`](./architecture-v5/wiki/providers-and-logging.md) | LLM 연결 방식, 로그인 상태와 기록 방법을 요약합니다. | 통합·데이터 담당 | 쉬운 요약 |
-| [`wiki/common-contracts.md`](./architecture-v5/wiki/common-contracts.md) | 공통 ID, 시간, 상태, 분석 공백·오류와 계약 변경 규칙을 쉽게 설명합니다. | 모든 구현·검토 담당 | 쉬운 요약 |
-| [`wiki/state-and-recovery.md`](./architecture-v5/wiki/state-and-recovery.md) | 병렬 작업, 중복 방지, 재시도와 중단 후 안전한 재개 규칙을 쉽게 설명합니다. | PM·통합·모든 역할 담당 | 쉬운 요약 |
-| [`wiki/authority-boundaries.md`](./architecture-v5/wiki/authority-boundaries.md) | LLM이 제안할 일, 프로그램이 검사할 일과 사람이 결정할 일을 쉽게 설명합니다. | 모든 역할 담당·보안 검토자 | 쉬운 요약 |
-| [`wiki/results.md`](./architecture-v5/wiki/results.md) | 최종 저장 결과와 디버깅 정보를 요약합니다. | 데이터·평가·통합 담당 | 쉬운 요약 |
-| [`wiki/diagrams.md`](./architecture-v5/wiki/diagrams.md) | 기준 다이어그램을 Wiki에서 그대로 보여 줍니다. | 모든 팀원 | 쉬운 요약 사본 |
-| [`wiki/index.html`](./architecture-v5/wiki/index.html) | 로컬 Wiki 화면을 여는 HTML 파일입니다. | Wiki 관리 담당 | 보조 파일 |
-| [`wiki/theme.css`](./architecture-v5/wiki/theme.css) | Wiki 화면의 글꼴·색상·간격을 정합니다. | Wiki 관리 담당 | 보조 파일 |
-| [`wiki/serve.ps1`](./architecture-v5/wiki/serve.ps1) | 로컬 컴퓨터에서 Wiki를 실행하는 PowerShell 스크립트입니다. | Wiki 확인자 | 보조 파일 |
-| [`wiki/.nojekyll`](./architecture-v5/wiki/.nojekyll) | GitHub Pages가 Wiki 파일을 그대로 제공하도록 알리는 빈 설정 파일입니다. | 저장소 관리 담당 | 보조 파일 |
-
-## 현재 구현 자료와 설계·작업 과정 기록
-
-아래에는 현재 구현을 준비하는 문서와 과거 기록이 함께 있습니다. 파일 상단 상태가 `APPROVED_FOR_IMPLEMENTATION`인 문서만 실행 기준입니다. `DRAFT_FOR_REVIEW`는 아직 검토 중이며, 그 밖의 과거 문서는 현재 계약이 아닙니다. 어느 경우에도 Architecture v5 기술 의미는 번호 문서·승인 ADR·구현 기준선을 우선합니다.
-
-| 파일 | 쉽게 말하면 | 구분 |
-|---|---|---|
-| [`docs/superpowers/README.md`](./superpowers/README.md) | 아래 specs·plans의 승인된 현재 구현 자료와 과거 기록을 구분하고 정본 위치를 안내합니다. | 작업 기록 안내 |
-| [`2026-09-08-sastsimi-maintainable-implementation-design.md`](./superpowers/specs/2026-09-08-sastsimi-maintainable-implementation-design.md) | 승인된 설계를 유지보수 가능한 코드 구조와 PR 순서로 옮기는 기준입니다. | 현재 구현 설계 |
-| [`2026-09-08-sastsimi-complete-implementation.md`](./superpowers/plans/2026-09-08-sastsimi-complete-implementation.md) | 승인된 전체 구현 Task, 의존 순서, 파일 책임, 시험과 병합 조건을 설명합니다. | 현재 구현 계획 |
-| [`implementation/01-repository-cleanup.md`](./superpowers/plans/implementation/01-repository-cleanup.md) | T01의 문서 인벤토리, 파일별 삭제 allowlist, 탐색 경로와 문서 CI 실행 근거를 설명합니다. | 현재 Task 실행 계획 |
-| [`2026-08-27-role-review-governance.md`](./superpowers/plans/2026-08-27-role-review-governance.md) | 초기 역할별 Issue와 협업·승인 규칙 연결 작업 계획입니다. | 작업 기록 |
-| [`2026-08-27-team-role-issue-readability.md`](./superpowers/plans/2026-08-27-team-role-issue-readability.md) | 팀원·GitHub 계정 연결과 Issue 문장 단순화 작업 계획입니다. | 작업 기록 |
-| [`2026-08-27-collaboration-and-readable-docs-design.md`](./superpowers/specs/2026-08-27-collaboration-and-readable-docs-design.md) | 담당자 생성 하위 Issue와 쉬운 문서 체계를 정의한 설계입니다. | 작업 기록 |
-| [`2026-08-27-collaboration-and-readable-docs.md`](./superpowers/plans/2026-08-27-collaboration-and-readable-docs.md) | 이 설계를 저장소 전체에 적용하는 작업 순서입니다. | 작업 기록 |
-| [`2026-08-28-remove-repository-snapshot-design.md`](./superpowers/specs/2026-08-28-remove-repository-snapshot-design.md) | 저장소 스냅샷 기능을 제거하고 로컬 코드 작업공간으로 전환한 결정입니다. | 작업 기록 |
-| [`2026-08-28-remove-repository-snapshot.md`](./superpowers/plans/2026-08-28-remove-repository-snapshot.md) | 로컬 코드 작업공간 전환을 문서와 Issue에 적용한 순서입니다. | 작업 기록 |
-| [`2026-08-28-r4-01-common-contracts-design.md`](./superpowers/specs/2026-08-28-r4-01-common-contracts-design.md) | R4-01 공통 ID·시간·상태·오류·버전 계약 결정입니다. | 작업 기록 |
-| [`2026-08-28-r4-01-common-contracts.md`](./superpowers/plans/2026-08-28-r4-01-common-contracts.md) | R4-01 계약을 정본·Wiki·검토 문서에 적용하는 작업 순서입니다. | 작업 기록 |
-| [`2026-08-28-r4-02-state-recovery-design.md`](./superpowers/specs/2026-08-28-r4-02-state-recovery-design.md) | R4-02 상태 전이·중복 방지·atomic 저장·복구 설계 결정입니다. | 작업 기록 |
-| [`2026-08-28-r4-02-state-recovery.md`](./superpowers/plans/2026-08-28-r4-02-state-recovery.md) | R4-02 설계를 정본·Wiki·Mermaid에 적용하고 검증하는 작업 순서입니다. | 작업 기록 |
-| [`2026-08-28-r4-03-authority-boundary-design.md`](./superpowers/specs/2026-08-28-r4-03-authority-boundary-design.md) | R4-03 LLM·프로그램·사람 권한 경계와 action 검사 설계 결정입니다. | 작업 기록 |
-| [`2026-08-28-r4-03-authority-boundary.md`](./superpowers/plans/2026-08-28-r4-03-authority-boundary.md) | R4-03 권한 경계를 정본·Wiki·Mermaid에 적용하고 검증하는 작업 순서입니다. | 작업 기록 |
-
-## 무엇부터 읽으면 되나요?
-
-1. [프로젝트 README](../README.md)에서 목적과 현재 상태를 확인합니다.
-2. [협업 가이드](../CONTRIBUTING.md)에서 자기 Issue와 PR 작성 순서를 확인합니다.
-3. [역할과 담당자](./governance/OWNERSHIP.md)에서 자기 역할별 상위 Issue를 찾습니다.
-4. [Issue 카탈로그](./review/ISSUE_CATALOG.md)에서 세부 하위 Issue를 어떻게 나눌지 확인합니다.
-5. 모르는 단어는 [쉬운 용어집](./GLOSSARY.md)에서 찾습니다.
-6. 실제 기술 기준은 자기 역할에 연결된 Architecture v5 번호 문서에서 확인합니다.
+문서 삭제나 이름 변경 전에는 `validate-current-docs.ps1`과 관련 계약 테스트를 실행합니다.
+공통 계약이나 Python 코드를 바꿨다면 전체 테스트와 품질 검사를 추가로 실행합니다.
