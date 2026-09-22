@@ -104,16 +104,24 @@ def make(name: str, kind: str | None = None) -> dict[str, Any]:
     value: dict[str, Any] = {}
     for field, spec in BLOCKS[name].items():
         if field == "meta":
+            host_configuration = name in {
+                "ClientExecutionProfile",
+                "ProviderProfile",
+                "ProviderValidationEvidence",
+            }
             hypothesis = (
                 None
-                if "without hypothesis" in spec
+                if host_configuration
+                or "without hypothesis" in spec
                 or "hypothesis_id null" in spec
                 or name in {"RunPolicyState", "StaticFactBundle", "ChainingResult"}
                 else "h1"
             )
             attempt = (
                 None
-                if "attempt_id null" in spec or "without hypothesis/attempt" in spec
+                if host_configuration
+                or "attempt_id null" in spec
+                or "without hypothesis/attempt" in spec
                 else "at1"
             )
             if spec == "RunMeta":

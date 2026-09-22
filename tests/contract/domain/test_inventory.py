@@ -7,6 +7,86 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 
 
+def _field_hint(
+    schema: dict[str, object], definitions: dict[str, object]
+) -> str:
+    """Translate a JSON Schema field into the compact fixture hint vocabulary."""
+    reference = schema.get("$ref")
+    if isinstance(reference, str):
+        name = reference.rsplit("/", 1)[-1]
+        target = definitions.get(name)
+        if isinstance(target, dict) and "properties" not in target:
+            return _field_hint(target, definitions)
+        return name
+
+    variants = schema.get("anyOf")
+    if isinstance(variants, list):
+        hints = [
+            "null"
+            if isinstance(item, dict) and item.get("type") == "null"
+            else _field_hint(item, definitions)
+            for item in variants
+            if isinstance(item, dict)
+        ]
+        return " | ".join(hints)
+
+    enum = schema.get("enum")
+    if isinstance(enum, list):
+        return " | ".join(str(item) for item in enum)
+
+    constant = schema.get("const")
+    if constant is not None:
+        return str(constant)
+
+    schema_type = schema.get("type")
+    if schema_type == "array":
+        items = schema.get("items")
+        return (
+            f"[{_field_hint(items, definitions)}]"
+            if isinstance(items, dict)
+            else "[]"
+        )
+    if schema_type == "object":
+        return "map"
+    if schema_type == "string":
+        if schema.get("format") == "date-time":
+            return "timestamp"
+        if schema.get("minLength") == 64 and schema.get("maxLength") == 64:
+            return "sha256"
+        return "string"
+    if schema_type in {"integer", "number", "boolean"}:
+        return str(schema_type)
+    return "string"
+
+
+def canonical_fields() -> dict[str, dict[str, str]]:
+    """Return fixture field hints derived from executable generated schemas."""
+    from sastsimi.contracts.schema_export import schema_documents
+
+    blocks: dict[str, dict[str, str]] = {}
+    for raw_document in schema_documents().values():
+        document = json.loads(raw_document)
+        candidates = [document]
+        definitions = document.get("$defs", {})
+        if isinstance(definitions, dict):
+            candidates.extend(
+                definition
+                for definition in definitions.values()
+                if isinstance(definition, dict)
+            )
+        for candidate in candidates:
+            title = candidate.get("title")
+            properties = candidate.get("properties")
+            if not isinstance(title, str) or not isinstance(properties, dict):
+                continue
+            blocks[title] = {
+                name: _field_hint(field, definitions)
+                for name, field in properties.items()
+                if isinstance(name, str) and isinstance(field, dict)
+            }
+    return blocks
+
+
 def canonical_inventory() -> dict[str, tuple[str, str]]:
     document = json.loads(
         (ROOT / "schemas/result-owner-inventory.json").read_text(encoding="utf-8")
