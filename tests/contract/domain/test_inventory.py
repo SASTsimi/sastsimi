@@ -7,9 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def _field_hint(
-    schema: dict[str, object], definitions: dict[str, object]
-) -> str:
+def _field_hint(schema: dict[str, object], definitions: dict[str, object]) -> str:
     """Translate a JSON Schema field into the compact fixture hint vocabulary."""
     reference = schema.get("$ref")
     if isinstance(reference, str):
@@ -42,9 +40,7 @@ def _field_hint(
     if schema_type == "array":
         items = schema.get("items")
         return (
-            f"[{_field_hint(items, definitions)}]"
-            if isinstance(items, dict)
-            else "[]"
+            f"[{_field_hint(items, definitions)}]" if isinstance(items, dict) else "[]"
         )
     if schema_type == "object":
         return "map"
