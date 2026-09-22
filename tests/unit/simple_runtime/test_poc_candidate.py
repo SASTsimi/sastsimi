@@ -109,3 +109,87 @@ def test_a_loop_or_read_target_counts_as_declared() -> None:
 
 def test_an_undeclared_variable_is_still_refused() -> None:
     assert _rejects('#!/bin/sh\necho "$SECRET_TOKEN"\n') == "POC_UNDECLARED_INPUT"
+
+
+class _TradingClient:
+    """Fix one rule per turn, the way a model given one rule at a time does."""
+
+    def __init__(self, scripts: list[str]) -> None:
+        self.prompts: list[bytes] = []
+        self._scripts = scripts
+
+    async def call(self, **kwargs: Any) -> SimpleLLMCallResult:
+        self.prompts.append(kwargs["prompt"])
+        index = min(len(self.prompts) - 1, len(self._scripts) - 1)
+        return SimpleLLMCallResult(
+            value={"content": self._scripts[index]},
+            prompt_digest="a" * 64,
+            output_digest="b" * 64,
+        )
+
+
+def _checkpoint(identity: CheckpointIdentity) -> StageCheckpoint:
+    return StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+
+
+_IDENTITY = CheckpointIdentity(
+    analysis_id="analysis-1",
+    workspace_id="workspace-1",
+    commit_id="a" * 40,
+    hypothesis_id="hypothesis-1",
+)
+
+
+@pytest.mark.asyncio
+async def test_repair_carries_every_rule_broken_so_far(tmp_path: Path) -> None:
+    # Each script drops the rule it was just told about and breaks the next one.
+    # A single repair call, or a prompt naming only the newest rule, never
+    # converges - the run observed exactly that cycle on a real repository.
+    client = _TradingClient(
+        [
+            '#!/bin/sh\ntoken=fixture\nprintf x\n',  # SENSITIVE
+            '#!/bin/sh\ncat /home/me/f\n',  # HOST_PATH
+            '#!/bin/sh\necho "$OUTSIDE"\n',  # UNDECLARED_INPUT
+            '#!/bin/sh\nfixture_value=x\nprintf "%s" "$fixture_value"\n',  # clean
+        ]
+    )
+    stage = PoCCandidateStage(
+        client=client, artifacts=SimpleArtifactRepository(tmp_path, _IDENTITY)
+    )
+
+    result = await stage(_checkpoint(_IDENTITY), {})
+
+    assert result.output_refs
+    assert len(client.prompts) == 4
+    final = client.prompts[-1]
+    for rule in (
+        b"POC_SENSITIVE_CONTENT",
+        b"POC_HOST_PATH_FORBIDDEN",
+        b"POC_UNDECLARED_INPUT",
+    ):
+        assert rule in final, rule
+    assert b"at the same time" in final
+    assert b"Stay inside /workspace and /tmp" in final
+
+
+@pytest.mark.asyncio
+async def test_repair_gives_up_after_the_configured_attempts(tmp_path: Path) -> None:
+    client = _TradingClient(['#!/bin/sh\ntoken=fixture\nprintf x\n'])
+    stage = PoCCandidateStage(
+        client=client,
+        artifacts=SimpleArtifactRepository(tmp_path, _IDENTITY),
+        max_candidate_repairs=2,
+    )
+
+    with pytest.raises(StageBlocked) as raised:
+        await stage(_checkpoint(_IDENTITY), {})
+
+    assert raised.value.failure.code == "POC_SENSITIVE_CONTENT"
+    assert len(client.prompts) == 3  # the first call plus two repairs
