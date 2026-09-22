@@ -1,0 +1,53 @@
+name: 기능·수정 요청
+description: 현재 SASTSIMI의 기능, 계약, 문서 또는 운영 문제를 제안합니다.
+title: "[Change] "
+body:
+  - type: dropdown
+    id: change_type
+    attributes:
+      label: 변경 종류
+      options:
+        - 기능 추가
+        - 오류 수정
+        - 계약·schema 변경
+        - 문서·사용성 개선
+        - 보안·권한 경계 수정
+        - 유지보수·정리
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 해결하려는 문제
+      description: 현재 무엇이 어렵거나 잘못됐는지 쉽게 설명해주세요.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 변경 범위
+      description: 영향받는 CLI 명령, Runtime stage, Agent, 계약, 파일을 적어주세요.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 완료 조건
+      description: 무엇을 확인하면 이 Issue를 닫을 수 있는지 체크리스트로 적어주세요.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: 검증 방법
+      description: 정상 흐름, 중요한 실패 흐름과 실행할 테스트를 적어주세요.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: 공통 안전 규칙
+      options:
+        - label: 오류·인증·환경 실패를 취약점 FALSE로 바꾸지 않습니다.
+        - label: exact reference와 analysis·hypothesis·attempt 경계를 유지합니다.
+        - label: validated PoC와 PoC candidate를 구분합니다.
+        - label: 비밀정보·로컬 절대 경로·민감한 코드를 공개 출력에 넣지 않습니다.
+        - label: 지원하거나 검증하지 않은 기능을 완료됐다고 설명하지 않습니다.
