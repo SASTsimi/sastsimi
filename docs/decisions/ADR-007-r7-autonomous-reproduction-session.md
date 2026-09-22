@@ -4,7 +4,7 @@
 - 결정일: 2026-09-03
 - 결정 담당: R4 PM·아키텍처·공통 계약, R7 동적검증·Sandbox
 - 필수 확인 역할: R3 통합 개발, R6 검증·반박, R8 데이터·평가·예산
-- 대체 대상: [ADR-002](./ADR-002-sandbox-policy-enforcement.md), [ADR-004](./ADR-004-r6-request-r7-poc-production.md)의 mode·exact plan·Runner·result-owner·retry 세부 계약
+- 대체 대상: 과거 ADR-002와 ADR-004의 mode·exact plan·Runner·result-owner·retry 세부 계약. 대체된 문서는 현재 문서 트리에서 제거했으며 Git 이력으로 보존합니다.
 
 ## 쉽게 설명하면
 

@@ -3,16 +3,16 @@
 - 상태: `ACCEPTED`
 - 기록일: 2026-09-08
 - 결정 근거: [PR #119](https://github.com/SASTsimi/sastsimi/pull/119), merge commit `5657fc7b51af33271a940af37ca48bbfcdc14553`
-- 근거 설계: [승인된 유지보수 구현 설계 §4·5·10](../../superpowers/specs/2026-09-08-sastsimi-maintainable-implementation-design.md)
+- 현재 구현 지도: [구현 위치 지도](../architecture/implementation-map.md)
 - 정본 반영 Issue: [T02 #124](https://github.com/SASTsimi/sastsimi/issues/124)
 - 결정 담당: R3 구현·통합, R4 공통 아키텍처
 - 반영 검토 역할: R3·R4, 영향 영역 R1·R5·R6·R7·R8
 
-`ACCEPTED`는 PR #119에서 이미 승인·병합된 물리 package 결정의 상태다. 이 ADR은 해당 결정을 정본 구현 문서에 연결하며, Agent나 데이터 계약을 새로 승인하지 않는다. T02 문서 반영의 검토·병합 상태는 [T02 실행 계획](../../superpowers/plans/implementation/02-architecture-boundary-correction.md)과 연결 Issue에서 별도로 추적한다.
+`ACCEPTED`는 PR #119에서 이미 승인·병합된 물리 package 결정의 상태다. 이 ADR은 해당 결정을 현재 구현 문서에 연결하며, Agent나 데이터 계약을 새로 승인하지 않는다.
 
 ## Context
 
-[R3-01 모듈 맵](../../architecture-v5/implementation/01-module-map.md)은 가설 내부 Debate·Verification·REVISE·동적 재현·Chaining 서비스를 논리 이름으로 정의했지만 [R3-06 구현 기준선](../../architecture-v5/implementation/06-implementation-baseline.md)의 물리 tree에는 해당 workflow package가 빠져 있었다. 호출 순서와 import 방향을 같은 화살표로 설명하면 runtime이나 adapter가 concrete 업무 흐름·저장 구현을 직접 참조하도록 읽힐 수 있었다.
+과거 모듈 맵은 가설 내부 Debate·Verification·REVISE·동적 재현·Chaining 서비스를 논리 이름으로 정의했지만 당시 물리 tree에는 해당 workflow package가 빠져 있었다. 호출 순서와 import 방향을 같은 화살표로 설명하면 runtime이나 adapter가 concrete 업무 흐름·저장 구현을 직접 참조하도록 읽힐 수 있었다.
 
 [ADR-015](./ADR-015-r3-implementation-baseline.md)가 확정한 저장·직렬화 기술과 run-init Docker 경계도 일부 현재 문서에 과거 표현으로 남아 있었다. 승인된 유지보수 구현 설계는 코드 구현 전에 이 모순을 정리하도록 정했다.
 
