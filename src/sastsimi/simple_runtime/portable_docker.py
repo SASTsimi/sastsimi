@@ -11,6 +11,7 @@ import shlex
 import tomllib
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
+from typing import ClassVar
 
 from sastsimi.config.user_config import SimpleExecutionProfile
 from sastsimi.ports.docker_state import DockerContainerState
@@ -351,6 +352,12 @@ class DirectEnvironmentPreparer:
         recipe_ref = self._artifacts.put_json(recipe)
         return ReproductionEnvironment(recipe_ref, image_digest)
 
+    # A repository Dockerfile that cannot build here will not build for the next
+    # hypothesis either, and some of them are very expensive to fail: one target
+    # compiles a frontend and downloads gigabytes of model weights before giving
+    # up.  Remember the exact file that failed so the run pays for it once.
+    _unbuildable: ClassVar[set[str]] = set()
+
     async def _built_image(
         self,
         checkpoint: StageCheckpoint,
@@ -361,12 +368,16 @@ class DirectEnvironmentPreparer:
         """Build the full environment, or the source-only one it falls back to."""
 
         bare = "GENERATED_NO_INSTALL"
-        for candidate, label in ((dockerfile, source), (fallback, bare)):
+        attempts = [(dockerfile, source), (fallback, bare)]
+        if hashlib.sha256(dockerfile).hexdigest() in self._unbuildable:
+            attempts = attempts[1:]
+        for candidate, label in attempts:
             try:
                 digest = await self._build(checkpoint, candidate)
             except DockerOperationError as error:
                 if error.code != "DOCKER_BUILD_FAILED" or label == bare:
                     raise
+                self._unbuildable.add(hashlib.sha256(candidate).hexdigest())
                 continue
             return digest, candidate, label
         raise DockerOperationError("DOCKER_BUILD_FAILED")

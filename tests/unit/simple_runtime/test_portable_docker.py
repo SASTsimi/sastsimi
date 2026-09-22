@@ -276,3 +276,47 @@ async def test_a_build_that_fails_without_an_install_still_raises(
 
     with pytest.raises(DockerOperationError):
         await preparer.prepare(checkpoint, {}, ())
+
+
+@pytest.mark.asyncio
+async def test_a_dockerfile_that_failed_once_is_not_built_again(
+    tmp_path: Path,
+) -> None:
+    # One target compiles a frontend and downloads model weights before failing,
+    # so retrying it per hypothesis costs the run hours for a known outcome.
+    DirectEnvironmentPreparer._unbuildable.clear()
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "thing"\nversion = "1"\n', encoding="utf-8"
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    docker = _FailingInstallDocker()
+    preparer = DirectEnvironmentPreparer(
+        docker=cast(Any, docker),
+        artifacts=SimpleArtifactRepository(tmp_path / "data", identity),
+        workspace=workspace,
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+
+    await preparer.prepare(checkpoint, {}, ())
+    assert len(docker.attempts) == 2
+
+    await preparer.prepare(checkpoint, {}, ())
+
+    # The second hypothesis goes straight to the image that works.
+    assert len(docker.attempts) == 3
+    assert b"pip install" not in docker.attempts[2]
+    DirectEnvironmentPreparer._unbuildable.clear()
