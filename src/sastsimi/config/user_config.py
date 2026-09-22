@@ -209,6 +209,10 @@ class SimpleExecutionProfile(BaseModel):
     max_tokens: int = Field(gt=0)
     max_elapsed_seconds: int = Field(gt=0)
     docker_network: Literal["NONE", "BRIDGE"]
+    # How many hypotheses may be worked on at once.  One keeps the run strictly
+    # sequential; each extra one adds a concurrent official-client process and a
+    # concurrent reproduction container, so the ceiling is the host's memory.
+    max_parallel_hypotheses: int = Field(default=1, ge=1, le=8)
     tools: dict[str, SimpleToolBinding]
 
     @field_validator("data_dir", "workspace_root", mode="before")
@@ -259,6 +263,7 @@ class SimpleExecutionProfile(BaseModel):
             f"max_tokens = {self.max_tokens}",
             f"max_elapsed_seconds = {self.max_elapsed_seconds}",
             f"docker_network = {_quoted(self.docker_network)}",
+            f"max_parallel_hypotheses = {self.max_parallel_hypotheses}",
             "",
             "[tools]",
         ]

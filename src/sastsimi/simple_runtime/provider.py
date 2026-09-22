@@ -165,10 +165,12 @@ class SimpleCodexClient:
 
 
 class SimpleClaudeClient:
-    """One-call-at-a-time Claude Code boundary for the local sequential runtime.
+    """Bounded-concurrency Claude Code boundary for the local runtime.
 
     The official subscription clients share one process boundary shape, so this
     mirrors the Codex client and differs only in which client it names.
+    Concurrent children were measured to run correctly against one credential
+    directory, so the ceiling is an operator setting rather than a fixed one.
     """
 
     def __init__(
@@ -177,11 +179,12 @@ class SimpleClaudeClient:
         runner: SubscriptionProcessRunner,
         provider_profile_ref: StoredDataRef,
         model: str,
+        max_concurrent_calls: int = 1,
     ) -> None:
         self._runner = runner
         self._provider_profile_ref = provider_profile_ref
         self._model = model
-        self._lock = asyncio.Lock()
+        self._lock = asyncio.Semaphore(max(1, max_concurrent_calls))
 
     async def call(
         self,

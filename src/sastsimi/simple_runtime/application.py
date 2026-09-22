@@ -1,7 +1,8 @@
-"""Small sequential application service for new and resumed repository analyses."""
+"""Application service for new and resumed repository analyses."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Callable
@@ -86,6 +87,7 @@ class SimpleAnalysisApplication:
         hypothesis_bootstrap: HypothesisBootstrap,
         runner_factory: RunnerFactory,
         id_factory: Callable[[], str] | None = None,
+        max_parallel_hypotheses: int = 1,
     ) -> None:
         self._data_dir = data_dir
         self._store = store
@@ -93,6 +95,7 @@ class SimpleAnalysisApplication:
         self._hypotheses = hypothesis_bootstrap
         self._runner_factory = runner_factory
         self._ids = id_factory or (lambda: uuid4().hex)
+        self._max_parallel = max(1, max_parallel_hypotheses)
         self._display = AnalysisDisplayIdStore(store.database_path)
 
     async def analyze(
@@ -268,24 +271,35 @@ class SimpleAnalysisApplication:
         incomplete: RunOutcome | None = None
         index = 0
         while index < len(run.hypothesis_ids):
-            hypothesis_id = run.hypothesis_ids[index]
-            index += 1
-            child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
-            outcome = await self._runner_factory(
-                self._store,
-                child,
-                static,
-            ).resume_hypothesis(child)
-            latest_stage = outcome.current_stage
-            if outcome.status in {StageStatus.BLOCKED, StageStatus.FAILED}:
-                if (
-                    incomplete is None
-                    or outcome.status is StageStatus.FAILED
-                    and incomplete.status is StageStatus.BLOCKED
-                ):
-                    incomplete = outcome
-                continue
-            run = self._register_chain_children(run, child, static)
+            # Chaining can append hypotheses while the run is under way, so the
+            # batch is taken from the list as it stands and the loop re-reads it.
+            batch = run.hypothesis_ids[index : index + self._max_parallel]
+            index += len(batch)
+            children = [
+                identity.model_copy(update={"hypothesis_id": hypothesis_id})
+                for hypothesis_id in batch
+            ]
+            outcomes = await asyncio.gather(
+                *(
+                    self._runner_factory(
+                        self._store, child, static
+                    ).resume_hypothesis(child)
+                    for child in children
+                )
+            )
+            for child, outcome in zip(children, outcomes, strict=True):
+                latest_stage = outcome.current_stage
+                if outcome.status in {StageStatus.BLOCKED, StageStatus.FAILED}:
+                    if (
+                        incomplete is None
+                        or outcome.status is StageStatus.FAILED
+                        and incomplete.status is StageStatus.BLOCKED
+                    ):
+                        incomplete = outcome
+                    continue
+                # Registering a child rewrites the run record, so it is done
+                # once the batch is finished rather than from inside it.
+                run = self._register_chain_children(run, child, static)
         if incomplete is not None:
             outcome_status: Literal["BLOCKED", "FAILED"] = (
                 "BLOCKED" if incomplete.status is StageStatus.BLOCKED else "FAILED"

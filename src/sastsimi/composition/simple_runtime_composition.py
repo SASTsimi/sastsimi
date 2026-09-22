@@ -164,6 +164,7 @@ class SimpleClientFactory:
             runner=ClaudeCliProcessRunner(binding=binding.binding),
             provider_profile_ref=provider_ref,
             model=model,
+            max_concurrent_calls=self._profile.max_parallel_hypotheses,
         )
 
 
@@ -216,6 +217,7 @@ def build_analysis_application(
             call_timeout_ms=_call_timeout_ms(profile),
         ),
         runner_factory=runner_factory,
+        max_parallel_hypotheses=profile.max_parallel_hypotheses,
     )
 
 
