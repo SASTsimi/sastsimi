@@ -1,9 +1,14 @@
+import json
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
-from sastsimi.sandbox.docker_adapter import DockerCommandOutcome
+from sastsimi.sandbox.docker_adapter import (
+    DockerCommandOutcome,
+    DockerOperationError,
+)
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
     STAGE_VERSION,
@@ -172,3 +177,102 @@ def test_an_unreadable_pyproject_is_not_treated_as_a_package(tmp_path: Path) -> 
     (tmp_path / "pyproject.toml").write_text("[project\nbroken", encoding="utf-8")
 
     assert _preparer_for(tmp_path)._installable_directory() is None
+
+
+class _FailingInstallDocker:
+    """Fails any build carrying an install layer, the way a missing toolchain does."""
+
+    def __init__(self) -> None:
+        self.attempts: list[bytes] = []
+
+    async def build_or_reuse(
+        self,
+        *,
+        workspace: Path,
+        dockerfile: bytes,
+        cache_key: str,
+        labels: dict[str, str],
+    ) -> str:
+        self.attempts.append(dockerfile)
+        if b"pip install" in dockerfile:
+            raise DockerOperationError("DOCKER_BUILD_FAILED")
+        return "sha256:" + "a" * 64
+
+
+@pytest.mark.asyncio
+async def test_a_failed_install_falls_back_to_the_source_only_image(
+    tmp_path: Path,
+) -> None:
+    # open-webui's own build backend needs npm, which a plain Python image has
+    # not got.  The checkout is copied in either way, so the run must continue
+    # on a source-only image instead of blocking every hypothesis.
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "thing"\nversion = "1"\n', encoding="utf-8"
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    docker = _FailingInstallDocker()
+    preparer = DirectEnvironmentPreparer(
+        docker=cast(Any, docker), artifacts=artifacts, workspace=workspace
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+
+    environment = await preparer.prepare(checkpoint, {}, ())
+
+    assert len(docker.attempts) == 2
+    assert b"pip install" in docker.attempts[0]
+    assert b"pip install" not in docker.attempts[1]
+    recipe = json.loads(artifacts.read(environment.recipe_ref))
+    # The recipe says the environment is bare, so the agent is not left to
+    # assume dependencies it does not have.
+    assert recipe["dockerfile_source"] == "GENERATED_NO_INSTALL"
+    assert environment.image_digest == "sha256:" + "a" * 64
+
+
+@pytest.mark.asyncio
+async def test_a_build_that_fails_without_an_install_still_raises(
+    tmp_path: Path,
+) -> None:
+    class _AlwaysFails(_FailingInstallDocker):
+        async def build_or_reuse(self, **kwargs: Any) -> str:
+            self.attempts.append(kwargs["dockerfile"])
+            raise DockerOperationError("DOCKER_BUILD_FAILED")
+
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    preparer = DirectEnvironmentPreparer(
+        docker=cast(Any, _AlwaysFails()),
+        artifacts=SimpleArtifactRepository(tmp_path / "data", identity),
+        workspace=workspace,
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+
+    with pytest.raises(DockerOperationError):
+        await preparer.prepare(checkpoint, {}, ())

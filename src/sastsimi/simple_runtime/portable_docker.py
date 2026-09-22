@@ -326,6 +326,15 @@ class DirectEnvironmentPreparer:
         else:
             dockerfile = self._generated_dockerfile(target_requirements)
             source = "GENERATED"
+        # Installing the repository is a convenience, not a requirement: the PoC
+        # reads the checkout that is copied in either way.  A build backend can
+        # need tooling a plain Python image does not carry - one repository here
+        # needs npm to generate its own metadata - and a failure there would
+        # otherwise block every hypothesis in the run.
+        fallback = self._generated_dockerfile(target_requirements, install=False)
+        image_digest, dockerfile, source = await self._built_image(
+            checkpoint, dockerfile, source, fallback
+        )
         dockerfile_ref = self._artifacts.put_bytes(dockerfile, "text/x-dockerfile")
         recipe = {
             "kind": "simple_environment_recipe",
@@ -340,12 +349,34 @@ class DirectEnvironmentPreparer:
             "requirements": requirements,
         }
         recipe_ref = self._artifacts.put_json(recipe)
-        image_digest = await self._docker.build_or_reuse(
+        return ReproductionEnvironment(recipe_ref, image_digest)
+
+    async def _built_image(
+        self,
+        checkpoint: StageCheckpoint,
+        dockerfile: bytes,
+        source: str,
+        fallback: bytes,
+    ) -> tuple[str, bytes, str]:
+        """Build the full environment, or the source-only one it falls back to."""
+
+        bare = "GENERATED_NO_INSTALL"
+        for candidate, label in ((dockerfile, source), (fallback, bare)):
+            try:
+                digest = await self._build(checkpoint, candidate)
+            except DockerOperationError as error:
+                if error.code != "DOCKER_BUILD_FAILED" or label == bare:
+                    raise
+                continue
+            return digest, candidate, label
+        raise DockerOperationError("DOCKER_BUILD_FAILED")
+
+    async def _build(self, checkpoint: StageCheckpoint, dockerfile: bytes) -> str:
+        reference = self._artifacts.put_bytes(dockerfile, "text/x-dockerfile")
+        return await self._docker.build_or_reuse(
             workspace=self._workspace,
             dockerfile=dockerfile,
-            cache_key=(
-                f"{checkpoint.identity.commit_id}:{dockerfile_ref.content_hash}"
-            ),
+            cache_key=f"{checkpoint.identity.commit_id}:{reference.content_hash}",
             labels={
                 "sastsimi.owner": "simple-runtime",
                 "sastsimi.analysis-id": checkpoint.identity.analysis_id,
@@ -356,7 +387,6 @@ class DirectEnvironmentPreparer:
                 "sastsimi.attempt-id": checkpoint.attempt_id or "initial",
             },
         )
-        return ReproductionEnvironment(recipe_ref, image_digest)
 
     @staticmethod
     def _portable_repository_dockerfile(dockerfile: bytes) -> bytes:
@@ -490,19 +520,21 @@ class DirectEnvironmentPreparer:
     def _generated_dockerfile(
         self,
         target_requirements: str | None = None,
+        *,
+        install: bool = True,
     ) -> bytes:
-        directory = self._installable_directory()
-        if (self._workspace / "requirements.txt").is_file():
-            install = "RUN pip install --no-cache-dir -r requirements.txt"
+        directory = self._installable_directory() if install else None
+        if install and (self._workspace / "requirements.txt").is_file():
+            install_layer = "RUN pip install --no-cache-dir -r requirements.txt"
         elif directory is not None:
-            install = f"RUN pip install --no-cache-dir {shlex.quote(directory)}"
+            install_layer = f"RUN pip install --no-cache-dir {shlex.quote(directory)}"
         else:
-            install = ""
+            install_layer = ""
         return (
             "FROM python:3.12-slim\n"
             "WORKDIR /workspace\n"
             "COPY . /workspace\n"
-            f"{install}\n"
+            f"{install_layer}\n"
             f"{self._target_install_layer(target_requirements).decode('utf-8')}"
             "RUN chmod -R a+rX /workspace && mkdir -p /tmp && chmod 1777 /tmp\n"
             'CMD ["sleep", "infinity"]\n'
