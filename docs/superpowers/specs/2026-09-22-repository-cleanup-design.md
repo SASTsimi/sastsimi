@@ -1,8 +1,11 @@
 # Repository Cleanup and Implementation Documentation Design
 
-**Status:** PROPOSED_FOR_REVIEW  
-**Baseline:** `origin/main` at `c5e501a9995811d6db7a143542cd0a418779ddca`  
-**Scope:** repository cleanup, documentation synchronization, and proven-dead artifact removal  
+**Status:** APPROVED_FOR_IMPLEMENTATION
+
+**Baseline:** `origin/main` at `c5e501a9995811d6db7a143542cd0a418779ddca`
+
+**Scope:** repository cleanup, documentation synchronization, and proven-dead artifact removal
+
 **Non-goal:** changing the behavior, authority boundaries, verdict rules, storage format, or public CLI
 
 ## 1. Goal
