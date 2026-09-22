@@ -39,6 +39,9 @@ class PortableDockerRuntime:
             raise ValueError("DOCKER_NOT_CONFIGURED") from None
         self._network = "default" if profile.docker_network == "BRIDGE" else "none"
         self._timeout = max(30, profile.max_elapsed_seconds)
+        # A build was measured above two gigabytes, so it waits on its own gate;
+        # a running container costs a few megabytes and is gated where it runs.
+        self._builds = asyncio.Semaphore(profile.max_parallel_builds)
 
     async def build_or_reuse(
         self,
@@ -49,6 +52,16 @@ class PortableDockerRuntime:
         labels: Mapping[str, str],
     ) -> str:
         tag = f"sastsimi-simple:{hashlib.sha256(cache_key.encode()).hexdigest()[:24]}"
+        async with self._builds:
+            return await self._build_or_reuse(tag, workspace, dockerfile, labels)
+
+    async def _build_or_reuse(
+        self,
+        tag: str,
+        workspace: Path,
+        dockerfile: bytes,
+        labels: Mapping[str, str],
+    ) -> str:
         inspected = await self._run(
             ("image", "inspect", "--format", "{{.Id}}", tag),
             timeout_seconds=30,

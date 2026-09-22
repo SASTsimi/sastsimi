@@ -212,7 +212,14 @@ class SimpleExecutionProfile(BaseModel):
     # How many hypotheses may be worked on at once.  One keeps the run strictly
     # sequential; each extra one adds a concurrent official-client process and a
     # concurrent reproduction container, so the ceiling is the host's memory.
-    max_parallel_hypotheses: int = Field(default=1, ge=1, le=8)
+    max_parallel_hypotheses: int = Field(default=1, ge=1, le=16)
+    # Three separate resources sit under that flow, so each has its own ceiling
+    # rather than one number chosen for the heaviest of them.  Calls share one
+    # subscription; a build was measured at over two gigabytes; a reproduction
+    # container costs a few megabytes.
+    max_parallel_calls: int = Field(default=1, ge=1, le=16)
+    max_parallel_builds: int = Field(default=1, ge=1, le=8)
+    max_parallel_containers: int = Field(default=1, ge=1, le=16)
     tools: dict[str, SimpleToolBinding]
 
     @field_validator("data_dir", "workspace_root", mode="before")
@@ -264,6 +271,9 @@ class SimpleExecutionProfile(BaseModel):
             f"max_elapsed_seconds = {self.max_elapsed_seconds}",
             f"docker_network = {_quoted(self.docker_network)}",
             f"max_parallel_hypotheses = {self.max_parallel_hypotheses}",
+            f"max_parallel_calls = {self.max_parallel_calls}",
+            f"max_parallel_builds = {self.max_parallel_builds}",
+            f"max_parallel_containers = {self.max_parallel_containers}",
             "",
             "[tools]",
         ]

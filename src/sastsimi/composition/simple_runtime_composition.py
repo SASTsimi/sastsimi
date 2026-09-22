@@ -164,7 +164,7 @@ class SimpleClientFactory:
             runner=ClaudeCliProcessRunner(binding=binding.binding),
             provider_profile_ref=provider_ref,
             model=model,
-            max_concurrent_calls=self._profile.max_parallel_hypotheses,
+            max_concurrent_calls=self._profile.max_parallel_calls,
         )
 
 
@@ -199,6 +199,7 @@ def build_analysis_application(
                 environments=environments,
                 store=runtime_store,
                 workspace=static.workspace_path,
+                max_parallel_containers=profile.max_parallel_containers,
                 # A stage that exceeds its per-call ceiling is blocked for the
                 # whole run, so the operator's elapsed budget has to reach the
                 # LLM calls too, not only the tool subprocesses.

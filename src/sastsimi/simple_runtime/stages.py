@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -401,7 +402,11 @@ class PoCExecutionStage:
         containers: SimpleContainerFactory,
         call_timeout_ms: int = _LOCAL_TIMEOUT_MS,
         poc_timeout_ms: int = _POC_TIMEOUT_MS,
+        max_parallel_containers: int = 1,
     ) -> None:
+        # Held for as long as a container is alive, not merely while it is
+        # created, so the ceiling bounds what actually runs on the host.
+        self._container_slots = asyncio.Semaphore(max_parallel_containers)
         self._client = client
         self._artifacts = artifacts
         self._docker = docker
@@ -426,27 +431,30 @@ class PoCExecutionStage:
         candidate_ref, content_ref = candidate.output_refs[:2]
         content = self._artifacts.read(content_ref)
         validate_candidate(content, allowed_environment_names=frozenset())
-        container_id = await self._container(candidate)
-        try:
-            await self._docker.materialize_poc(
-                container_id,
-                content,
-                hashlib.sha256(content).hexdigest(),
-            )
-            outcome = await self._docker.execute(
-                container_id,
-                ("/bin/sh", "/tmp/sastsimi-poc-candidate"),
-                self._poc_timeout_ms,
-                working_directory="/workspace",
-            )
-        except (DockerOperationError, OSError, ValueError) as error:
-            raise StageBlocked(
-                StageFailure(
-                    code=getattr(error, "code", "POC_EXECUTION_FAILED"),
-                    retryable=True,
-                    safe_message="PoC execution could not complete",
+        # The gate is held across the whole reproduction, so the ceiling counts
+        # containers that are running rather than containers being created.
+        async with self._container_slots:
+            container_id = await self._container(candidate)
+            try:
+                await self._docker.materialize_poc(
+                    container_id,
+                    content,
+                    hashlib.sha256(content).hexdigest(),
                 )
-            ) from error
+                outcome = await self._docker.execute(
+                    container_id,
+                    ("/bin/sh", "/tmp/sastsimi-poc-candidate"),
+                    self._poc_timeout_ms,
+                    working_directory="/workspace",
+                )
+            except (DockerOperationError, OSError, ValueError) as error:
+                raise StageBlocked(
+                    StageFailure(
+                        code=getattr(error, "code", "POC_EXECUTION_FAILED"),
+                        retryable=True,
+                        safe_message="PoC execution could not complete",
+                    )
+                ) from error
         stdout_ref = self._artifacts.put_bytes(outcome.stdout, "text/plain")
         stderr_ref = self._artifacts.put_bytes(outcome.stderr, "text/plain")
         execution_ref = self._artifacts.put_json(
@@ -1487,6 +1495,7 @@ def build_stage_handlers(
     # The checkout the Pro and Con agents may ask to read from; without it the
     # run keeps working and simply serves no requested file.
     workspace: Path | None = None,
+    max_parallel_containers: int = 1,
     call_timeout_ms: int = _LOCAL_TIMEOUT_MS,
     poc_timeout_ms: int = _POC_TIMEOUT_MS,
 ) -> dict[SimpleStage, SimpleStageHandler]:
@@ -1513,6 +1522,7 @@ def build_stage_handlers(
             containers=containers,
             call_timeout_ms=call_timeout_ms,
             poc_timeout_ms=poc_timeout_ms,
+            max_parallel_containers=max_parallel_containers,
         ),
         SimpleStage.VERIFICATION_FINAL_DONE: FinalVerificationStage(
             client,
