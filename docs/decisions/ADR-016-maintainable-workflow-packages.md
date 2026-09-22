@@ -1,6 +1,8 @@
 # ADR-016. 유지보수 가능한 업무 흐름 package 경계
 
 - 상태: `ACCEPTED`
+
+> 현재 구현 안내: 아래의 R/T 번호, 당시 문서명과 완료 절차는 결정 배경을 보존한 기록입니다. 현재 실행 경로와 코드 위치는 [현재 구현 아키텍처](../architecture/README.md)를 따릅니다.
 - 기록일: 2026-09-08
 - 결정 근거: [PR #119](https://github.com/SASTsimi/sastsimi/pull/119), merge commit `5657fc7b51af33271a940af37ca48bbfcdc14553`
 - 현재 구현 지도: [구현 위치 지도](../architecture/implementation-map.md)
