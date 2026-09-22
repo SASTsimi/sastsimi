@@ -18,7 +18,11 @@ from sastsimi.storage.artifact_store import LocalArtifactStore
 
 from .models import CheckpointIdentity
 
-_MAX_CONTEXT_BYTES = 256 * 1024
+_MAX_CONTEXT_BYTES = 512 * 1024
+# What a tool actually flagged is the point of the bundle; the AST summary is a
+# structural dump of the whole checkout that happens to be far larger.  Naming
+# the findings here keeps them whole while the dump gives up entries.
+_PROTECTED_LIST_PATHS = ("codeql_findings", "opengrep_findings")
 
 
 def _list_nodes(value: Any, path: str = "") -> list[tuple[int, str, list[Any]]]:
@@ -37,6 +41,11 @@ def _list_nodes(value: Any, path: str = "") -> list[tuple[int, str, list[Any]]]:
     return found
 
 
+def _is_protected(path: str) -> bool:
+    head = path.split(".", 1)[0].split("[", 1)[0]
+    return head in _PROTECTED_LIST_PATHS
+
+
 def _fit_document(redacted: bytes, budget: int) -> tuple[Any, int, dict[str, int]]:
     """Return the document reduced to fit ``budget`` without breaking its JSON.
 
@@ -47,7 +56,9 @@ def _fit_document(redacted: bytes, budget: int) -> tuple[Any, int, dict[str, int
     output and still look like it found nothing.  Halve the longest list
     anywhere in the document instead, repeatedly, and report what was dropped:
     the largest collections give up entries first, so small high-signal ones
-    survive intact.
+    survive intact.  Tool findings yield last of
+    all: a run that drops them keeps its shape while losing the only evidence it
+    was started for.
     """
 
     try:
@@ -63,7 +74,8 @@ def _fit_document(redacted: bytes, budget: int) -> tuple[Any, int, dict[str, int
         nodes = _list_nodes(reduced)
         if not nodes:
             break
-        _, path, node = max(nodes)
+        unprotected = [item for item in nodes if not _is_protected(item[1])]
+        _, path, node = max(unprotected or nodes)
         kept = len(node) // 2
         omitted[path or "."] = omitted.get(path or ".", 0) + (len(node) - kept)
         del node[kept:]
