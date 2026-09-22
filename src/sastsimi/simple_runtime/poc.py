@@ -15,14 +15,30 @@ _SHELL_ASSIGNMENT = re.compile(
     rb"(?m)^[ \t]*(?:export[ \t]+|readonly[ \t]+)?"
     rb"(?P<name>[A-Za-z_][A-Za-z0-9_]*)="
 )
+# A loop or read target is bound by the shell exactly like an assignment, so a
+# script that iterates is self-contained even though nothing is assigned to the
+# name with "=".
+_SHELL_BINDING = re.compile(
+    rb"(?m)(?:\bfor[ \t]+(?P<loop>[A-Za-z_][A-Za-z0-9_]*)[ \t]+in\b"
+    rb"|\bread[ \t]+(?:-[A-Za-z]+[ \t]+)*(?P<read>[A-Za-z_][A-Za-z0-9_]*))"
+)
 _URL = re.compile(rb"https?://[^\s'\"<>]+", re.IGNORECASE)
-_WINDOWS_PATH = re.compile(rb"(?:[A-Za-z]:[\\/]|\\\\)[^\r\n]+")
+# A Windows host path is recognised only by its unambiguous separator: a drive
+# letter followed by a backslash, or a UNC prefix.  The forward-slash form is
+# indistinguishable from ordinary shell text - "http://host" and a sed command
+# such as "s:/a:/b:" both carry a letter, a colon and a slash - so matching it
+# rejected the loopback URLs this boundary explicitly allows.  POSIX host paths
+# are caught by _FORBIDDEN_HOST_PATHS instead.
+_WINDOWS_PATH = re.compile(rb"(?:(?<![A-Za-z0-9_])[A-Za-z]:\\|\\\\)[^\r\n]+")
 _FORBIDDEN_HOST_PATHS = (
     b"/var/run/docker.sock",
     b"/run/docker.sock",
     b"/root/",
     b"/home/",
     b"/Users/",
+    # The WSL mount of the Windows host, which is how a host drive reaches the
+    # filesystem from inside a Linux container on this kind of machine.
+    b"/mnt/c/",
 )
 _SAFE_PROCESS_VARIABLES = frozenset(
     {"PATH", "PYTHONPATH", "LANG", "LC_ALL", "TMPDIR", "PWD"}
@@ -56,6 +72,10 @@ def validate_candidate(
         match.group("name").decode("ascii")
         for match in _SHELL_ASSIGNMENT.finditer(content)
     }
+    declared.update(
+        (match.group("loop") or match.group("read")).decode("ascii")
+        for match in _SHELL_BINDING.finditer(content)
+    )
     allowed = _SAFE_PROCESS_VARIABLES | allowed_environment_names | declared
     variables = {
         (match.group("braced") or match.group("plain")).decode("ascii")
