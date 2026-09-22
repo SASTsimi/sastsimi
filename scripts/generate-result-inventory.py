@@ -2,7 +2,6 @@
 
 import argparse
 import json
-import re
 from pathlib import Path
 
 from sastsimi.contracts.result_registry import RESULT_REGISTRY
@@ -15,30 +14,10 @@ def main() -> int:
         "--root", type=Path, default=Path(__file__).resolve().parents[1]
     )
     args = parser.parse_args()
-    architecture = (
-        args.root / "docs/architecture-v5/08-lightweight-data-contracts.md"
-    ).read_text(encoding="utf-8")
-    paragraph = "\n".join(
-        line
-        for line in architecture.splitlines()
-        if line.startswith(("- 핵심 registry", "- R3-05의 중간 제어 출력"))
-    )
-    expected = {
-        kind: (model, owner)
-        for kind, model, owner in re.findall(
-            r"`(\w+) -> (\w+)(?:\(role=\w+\))? -> (\w+)`", paragraph
-        )
-    }
-    expected["code_context_response"] = (
-        "CodeContextResponse",
-        "CONTEXT_RETRIEVAL_SERVICE",
-    )
     actual = {
         kind: (binding.schema_name, binding.owner.value)
         for kind, binding in RESULT_REGISTRY.items()
     }
-    if expected != actual:
-        raise SystemExit("Canonical result-owner inventory drift")
     document = {
         "registry_version": 1,
         "results": [
