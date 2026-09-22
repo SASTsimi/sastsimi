@@ -1,13 +1,21 @@
-"""The stronger model must reach the reasoning roles and only those."""
+"""The stronger model must reach the hypothesis agent and nothing else."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any, cast
 
+import pytest
+
 from sastsimi.sandbox.docker_adapter import DockerAdapter
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
-from sastsimi.simple_runtime.models import SimpleStage, StageCheckpoint, StageFailure
+from sastsimi.simple_runtime.bootstrap_stages import DirectHypothesisBootstrap
+from sastsimi.simple_runtime.models import (
+    CheckpointIdentity,
+    SimpleStage,
+    StageCheckpoint,
+    StageFailure,
+)
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
 from sastsimi.simple_runtime.stages import SimpleContainerFactory, build_stage_handlers
 
@@ -31,13 +39,6 @@ class _Containers:
         raise AssertionError("not invoked")
 
 
-_DEEP_STAGES = {
-    SimpleStage.PRO_CON_DONE,
-    SimpleStage.VERIFICATION_INITIAL_DONE,
-    SimpleStage.VERIFICATION_FINAL_DONE,
-}
-
-
 def _clients(handlers: dict[SimpleStage, object]) -> dict[SimpleStage, set[str]]:
     found: dict[SimpleStage, set[str]] = {}
     for stage, handler in handlers.items():
@@ -58,15 +59,12 @@ def _collect(value: object, names: set[str], *, depth: int) -> None:
         _collect(attribute, names, depth=depth + 1)
 
 
-def _build(
-    tmp_path: Any, base: _NamedClient, deep: _NamedClient | None
-) -> dict[SimpleStage, object]:
+def _build(base: _NamedClient) -> dict[SimpleStage, object]:
     artifacts = SimpleArtifactRepository.__new__(SimpleArtifactRepository)
     return cast(
         dict[SimpleStage, object],
         build_stage_handlers(
             client=base,
-            deep_client=deep,
             artifacts=artifacts,
             docker=cast(DockerAdapter, object()),
             containers=cast(SimpleContainerFactory, _Containers()),
@@ -74,27 +72,43 @@ def _build(
     )
 
 
-def test_reasoning_roles_use_the_deep_client(tmp_path: Any) -> None:
-    base = _NamedClient("base")
-    deep = _NamedClient("deep")
+def test_every_stage_runs_on_the_one_stage_client() -> None:
+    """Only the hypothesis agent may differ; the stages share one client."""
 
-    clients = _clients(_build(tmp_path, base, deep))
+    clients = _clients(_build(_NamedClient("base")))
 
     assert clients, "no stage exposed an LLM client"
-    for stage in _DEEP_STAGES:
-        assert clients[stage] == {"deep"}, stage
-    for stage, names in clients.items():
-        if stage not in _DEEP_STAGES:
-            assert names == {"base"}, stage
+    assert all(names == {"base"} for names in clients.values()), clients
 
 
-def test_without_a_deep_client_every_stage_uses_the_one_client(tmp_path: Any) -> None:
-    base = _NamedClient("base")
+@pytest.mark.asyncio
+async def test_the_hypothesis_agent_asks_for_the_deep_client(tmp_path: Any) -> None:
+    """The proposals decide everything downstream, so that call may cost more."""
 
-    clients = _clients(_build(tmp_path, base, None))
+    asked: list[bool] = []
 
-    assert clients
-    assert all(names == {"base"} for names in clients.values())
+    class _Probe(Exception):
+        pass
+
+    def factory(
+        identity: object, artifacts: object, *, deep: bool = False
+    ) -> _NamedClient:
+        asked.append(deep)
+        raise _Probe
+
+    bootstrap = DirectHypothesisBootstrap(
+        data_dir=tmp_path, client_factory=cast(Any, factory)
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    with pytest.raises(_Probe):
+        await bootstrap.propose(identity, cast(Any, object()))
+
+    assert asked == [True]
 
 
 def _timeouts(handlers: dict[SimpleStage, object]) -> dict[SimpleStage, set[int]]:
@@ -117,7 +131,7 @@ def _collect_timeouts(value: object, values: set[int], *, depth: int) -> None:
             _collect_timeouts(attribute, values, depth=depth + 1)
 
 
-def test_every_llm_stage_honours_the_configured_call_timeout(tmp_path: Any) -> None:
+def test_every_llm_stage_honours_the_configured_call_timeout() -> None:
     """No stage may keep a fixed ceiling the operator's budget cannot raise."""
 
     base = _NamedClient("base")

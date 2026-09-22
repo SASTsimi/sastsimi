@@ -183,7 +183,6 @@ def build_analysis_application(
     ) -> SimpleRuntimeRunner:
         artifacts = SimpleArtifactRepository(data_dir, identity)
         client = client_factory(identity, artifacts)
-        deep_client = client_factory(identity, artifacts, deep=True)
         environments = DirectEnvironmentPreparer(
             docker=docker,
             artifacts=artifacts,
@@ -193,10 +192,6 @@ def build_analysis_application(
             runtime_store,
             build_stage_handlers(
                 client=client,
-                # Hypothesis, Pro, Con and both verification passes carry the
-                # reasoning the later stages only label or format, so the
-                # operator may run them on a stronger model.
-                deep_client=deep_client,
                 artifacts=artifacts,
                 docker=cast(DockerAdapter, docker),
                 containers=PortableContainerFactory(docker),

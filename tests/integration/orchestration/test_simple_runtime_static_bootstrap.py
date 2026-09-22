@@ -178,7 +178,7 @@ async def test_real_static_tools_feed_exact_hypothesis_input(tmp_path: Path) -> 
 
     seeds = await DirectHypothesisBootstrap(
         data_dir=profile.data_dir,
-        client_factory=lambda _identity, _artifacts: _Client(),
+        client_factory=lambda _identity, _artifacts, **_options: _Client(),
     ).propose(identity, result)
 
     assert len(seeds) == 1

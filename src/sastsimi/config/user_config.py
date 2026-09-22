@@ -83,9 +83,10 @@ class UserConfig(BaseModel):
     auth_mode: Literal["API_KEY", "SUBSCRIPTION_LOGIN"]
     provider: str
     model: str
-    # The model the reasoning-heavy roles use when the operator wants a
-    # stronger one there than in the rest of the run: hypothesis, pro, con and
-    # both verification passes.  ``None`` keeps every role on ``model``.
+    # The model the hypothesis agent uses when the operator wants a stronger
+    # one for it than for the rest of the run.  Every proposal the run can ever
+    # reach is decided there, so it is the one role worth paying more for.
+    # ``None`` keeps every role on ``model``.
     deep_model: str | None = None
     credential_ref: str
     execution_profile: Literal["FULL", "LIGHTWEIGHT"]

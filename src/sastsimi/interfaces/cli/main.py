@@ -163,8 +163,8 @@ def main(
     setup_parser.add_argument(
         "--deep-model",
         help=(
-            "Model for the reasoning-heavy roles (hypothesis, pro, con, both "
-            "verification passes); defaults to --model."
+            "Model for the hypothesis agent, which decides every proposal the "
+            "run can reach; defaults to --model."
         ),
     )
     setup_parser.add_argument(
