@@ -36,27 +36,9 @@ jobs:
           git cat-file -e "$base^{commit}"
           git cat-file -e "$head^{commit}"
           "range=$base...$head" >> $env:GITHUB_OUTPUT
-      - name: Validate Architecture documents (Windows)
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-architecture-docs.ps1
-      - name: Audit inventory and local Markdown links (Windows)
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: powershell -NoProfile -File scripts/audit-doc-inventory.ps1 -RepositoryRoot . -CheckLinks
-      - name: Check document diff whitespace (Windows)
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: git diff --check "${{ steps.diff-range.outputs.range }}"
-      - name: Validate Architecture documents (Ubuntu)
-        if: runner.os == 'Linux'
+      - name: Validate current documents and local links
         shell: pwsh
-        run: pwsh -NoProfile -File scripts/validate-architecture-docs.ps1
-      - name: Audit inventory and local Markdown links (Ubuntu)
-        if: runner.os == 'Linux'
-        shell: pwsh
-        run: pwsh -NoProfile -File scripts/audit-doc-inventory.ps1 -RepositoryRoot . -CheckLinks
-      - name: Check document diff whitespace (Ubuntu)
-        if: runner.os == 'Linux'
+        run: pwsh -NoProfile -File scripts/validate-current-docs.ps1
+      - name: Check document diff whitespace
         shell: pwsh
         run: git diff --check "${{ steps.diff-range.outputs.range }}"

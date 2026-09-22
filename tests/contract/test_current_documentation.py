@@ -33,3 +33,15 @@ def test_repository_exposes_only_current_documentation_sets() -> None:
 
     assert missing == []
     assert historical == []
+
+
+def test_documentation_ci_uses_only_the_current_validator() -> None:
+    current = ROOT / "scripts/validate-current-docs.ps1"
+    workflow = (ROOT / ".github/workflows/docs.yml").read_text(encoding="utf-8")
+
+    assert current.is_file()
+    assert not (ROOT / "scripts/validate-architecture-docs.ps1").exists()
+    assert not (ROOT / "scripts/audit-doc-inventory.ps1").exists()
+    assert "scripts/validate-current-docs.ps1" in workflow
+    assert "validate-architecture-docs.ps1" not in workflow
+    assert "audit-doc-inventory.ps1" not in workflow

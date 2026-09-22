@@ -11,14 +11,14 @@
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Docs](https://img.shields.io/badge/Docs-문서_보기-4A5568)](docs/README.md)
 
-[빠른 시작](#빠른-시작) · [사용법](docs/usage.md) · [아키텍처](docs/architecture-v5/README.md) · [기여하기](CONTRIBUTING.md)
+[빠른 시작](#빠른-시작) · [사용법](docs/usage.md) · [아키텍처](docs/architecture/README.md) · [기여하기](CONTRIBUTING.md)
 
 </div>
 
 > **현재 상태**<br>
 > 실제 저장소 입력, 정적 분석, LLM 검토, Docker PoC, 두 단계 Gate, 연계형 취약점 탐색, 실패 단계 재개, 로컬 대시보드와 `F-001.md` 보고서 생성을 구현했습니다. 2026-09-21 기준 WSL의 PyGoat와 Windows clean wheel 환경의 ItsDangerous로 통합 흐름을 확인했습니다. 이는 확인한 조합의 결과이며 모든 Provider·모델·저장소의 운영 가능성을 보장하지는 않습니다.
 >
-> 설계 상태: `DESIGN_APPROVED` · 확인된 통합 상태: `LIVE_E2E_VERIFIED`
+> 확인된 통합 상태: `LIVE_E2E_VERIFIED`
 
 ## 핵심 특징
 
@@ -116,7 +116,7 @@ sastsimi report F-001 --export markdown
 
 정적 분석 도구는 취약점을 단독으로 확정하지 않습니다. 실행 관리 프로그램이 작업 순서, 저장, 재시도와 권한을 관리하고, LLM Agent는 주어진 코드와 근거를 분석합니다. Agent의 이름과 역할은 특정 Provider나 모델에 고정되지 않습니다.
 
-내부 Agent, Gate, Chaining과 데이터 계약은 [Architecture v5 문서](docs/architecture-v5/README.md)에서 확인할 수 있습니다.
+내부 Agent, Gate, Chaining과 데이터 계약은 [현재 구현 아키텍처](docs/architecture/README.md)에서 확인할 수 있습니다.
 
 ## 결과 예시
 
@@ -151,8 +151,9 @@ Reporter는 검증 결과, CWE, validated PoC와 Gate 결과에 없는 새로운
 - [실행과 결과 확인](docs/usage.md)
 - [Provider 인증](docs/provider-setup.md)
 - [실패 해결](docs/troubleshooting.md)
-- [Architecture v5 설계](docs/architecture-v5/README.md)
-- [구현 인계서](docs/handoff/T17_IMPLEMENTATION_HANDOFF.md)
+- [현재 구현 아키텍처](docs/architecture/README.md)
+- [현재 설계 결정](docs/decisions/README.md)
+- [현재 제한과 후속 작업](docs/release-follow-ups.md)
 
 ## 기여와 사용 원칙
 
