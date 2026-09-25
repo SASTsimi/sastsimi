@@ -236,6 +236,7 @@ def build_analysis_application(
                 containers=PortableContainerFactory(docker),
                 environments=environments,
                 store=runtime_store,
+                security_policy_ref=static.security_policy_ref,
             ),
             recovery=recovery_factory(identity),
         )

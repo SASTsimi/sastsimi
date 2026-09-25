@@ -28,6 +28,42 @@ from .provider import SimpleLLMCallResult, SimpleLLMClient
 _MAX_TRACKED_FILES = 200_000
 _MAX_SOURCE_BYTES = 2 * 1024 * 1024
 _MAX_FACTS = 10_000
+_MAX_POLICY_BYTES = 256 * 1024
+
+
+def _security_policy(
+    workspace: Path,
+    tracked: Sequence[str],
+) -> dict[str, object] | None:
+    """Read one tracked repository policy without following it outside checkout."""
+
+    root = workspace.resolve()
+    available = set(tracked)
+    for name in ("SECURITY.md", ".github/SECURITY.md", "docs/SECURITY.md"):
+        if name not in available:
+            continue
+        candidate = root / name
+        try:
+            if candidate.is_symlink():
+                continue
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(root)
+            if not resolved.is_file() or resolved.stat().st_size > _MAX_POLICY_BYTES:
+                continue
+            raw = resolved.read_bytes()
+            if len(raw) > _MAX_POLICY_BYTES:
+                continue
+            content = raw.decode("utf-8")
+        except (OSError, RuntimeError, UnicodeError, ValueError):
+            continue
+        if content.strip():
+            return {
+                "kind": "simple_repository_security_policy",
+                "path": name,
+                "byte_count": len(raw),
+                "content": content,
+            }
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +192,8 @@ class DirectStaticBootstrap:
             codeql_ref = artifacts.put_bytes(codeql_raw, "application/sarif+json")
             codeql_findings = self._codeql_findings(workspace, codeql_raw)
         snippets = self._opengrep_snippets(workspace, opengrep_raw)
+        policy = _security_policy(workspace, tracked)
+        policy_ref = artifacts.put_json(policy) if policy is not None else None
         bundle_ref = artifacts.put_json(
             {
                 "kind": "simple_static_fact_bundle",
@@ -182,6 +220,7 @@ class DirectStaticBootstrap:
             repository_profile_ref=repository_ref,
             static_bundle_ref=bundle_ref,
             workspace_path=workspace,
+            security_policy_ref=policy_ref,
         )
 
     async def _prepare_repository(

@@ -175,6 +175,62 @@ async def test_new_analysis_persists_bootstrap_then_runs_hypotheses(
     )
 
 
+@pytest.mark.asyncio
+async def test_repository_policy_ref_survives_analysis_resume(tmp_path: Path) -> None:
+    class StaticWithPolicy:
+        calls = 0
+
+        async def run(
+            self,
+            request: SimpleAnalysisRequest,
+            identity: CheckpointIdentity,
+        ) -> StaticBootstrapResult:
+            self.calls += 1
+            return StaticBootstrapResult(
+                repository_profile_ref=_ref("repository-profile"),
+                static_bundle_ref=_ref("static-bundle"),
+                workspace_path=request.data_dir / "workspaces" / identity.workspace_id,
+                security_policy_ref=_ref("security-policy"),
+            )
+
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    static = StaticWithPolicy()
+    seen_refs: list[StoredDataRef | None] = []
+
+    def runner_factory(
+        current_store: SimpleCheckpointStore,
+        identity: CheckpointIdentity,
+        bootstrap: StaticBootstrapResult,
+    ) -> SimpleRuntimeRunner:
+        seen_refs.append(bootstrap.security_policy_ref)
+        return _runner(current_store, identity, bootstrap)
+
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=static,
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=runner_factory,
+        id_factory=iter(("analysis-1", "workspace-1")).__next__,
+    )
+
+    await application.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        )
+    )
+    assert store.require_analysis_run("analysis-1").security_policy_ref == _ref(
+        "security-policy"
+    )
+
+    await application.resume("analysis-1")
+
+    assert static.calls == 1
+    assert seen_refs == [_ref("security-policy"), _ref("security-policy")]
+
+
 class _BlockedStatic:
     calls = 0
 

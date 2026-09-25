@@ -978,8 +978,11 @@ class RuleScopeGateStage:
         self,
         client: SimpleLLMClient,
         artifacts: SimpleArtifactRepository,
+        *,
+        security_policy_ref: StoredDataRef | None = None,
     ) -> None:
         self._artifacts = artifacts
+        self._security_policy_ref = security_policy_ref
         self._stage = _StructuredStage(
             client=client,
             artifacts=artifacts,
@@ -1018,7 +1021,13 @@ policy is UNCERTAIN, never ALLOW. Do not alter the technical verdict.
         prior: Mapping[SimpleStage, StageCheckpoint],
     ) -> StageResult:
         policy_refs = self._artifacts.published_refs(self._POLICY_KINDS)
-        if not policy_refs:
+        repository_refs = (
+            (self._security_policy_ref,)
+            if self._security_policy_ref is not None
+            else ()
+        )
+        selected_refs = policy_refs or repository_refs
+        if not selected_refs:
             output_ref = self._artifacts.put_json(
                 {
                     "kind": "simple_rule_scope_gate",
@@ -1055,9 +1064,34 @@ policy is UNCERTAIN, never ALLOW. Do not alter the technical verdict.
             )
         result, output_ref = await self._stage.call(
             checkpoint,
-            _unique_refs(_prior_refs(prior) + policy_refs),
+            _unique_refs(_prior_refs(prior) + selected_refs),
         )
-        internal_report_status(str(result.value["status"]))
+        status = str(result.value["status"])
+        if not policy_refs and status == "ALLOW":
+            status = "UNCERTAIN"
+            output_ref = self._artifacts.put_json(
+                {
+                    "kind": "simple_rule_scope_gate",
+                    "source_refs": [
+                        ref.model_dump(mode="json") for ref in selected_refs
+                    ],
+                    "model_output_ref": output_ref.model_dump(mode="json"),
+                    "result": {
+                        "status": status,
+                        "rationale": (
+                            "저장소 정책만으로는 외부 제보 허가를 독립적으로 "
+                            "확인할 수 없습니다."
+                        ),
+                        "checks": ["REPOSITORY_POLICY_PERMISSION_UNVERIFIED"],
+                        "restrictions": [
+                            "외부 제출·공개 금지. 내부 검토만 허용됩니다."
+                        ],
+                        "testing_restriction_compliance": "UNCERTAIN",
+                    },
+                    "attempt_id": checkpoint.attempt_id,
+                }
+            )
+        internal_report_status(status)
         return StageResult(
             output_refs=(output_ref,),
             activity_events=(
@@ -1065,9 +1099,7 @@ policy is UNCERTAIN, never ALLOW. Do not alter the technical verdict.
                     checkpoint,
                     ActivityKind.DECISION_RECORDED,
                     offset=10,
-                    summary_ko=(
-                        f"Rule Scope Gate 결과 {result.value['status']}를 저장했습니다."
-                    ),
+                    summary_ko=(f"Rule Scope Gate 결과 {status}를 저장했습니다."),
                     output_refs=(output_ref,),
                     llm=result,
                 ),
@@ -1403,6 +1435,7 @@ def build_stage_handlers(
     containers: SimpleContainerFactory,
     environments: ReproductionEnvironmentPreparer | None = None,
     store: SimpleCheckpointStore | None = None,
+    security_policy_ref: StoredDataRef | None = None,
 ) -> dict[SimpleStage, SimpleStageHandler]:
     environment_preparer = environments or _UnavailableEnvironmentPreparer()
     handlers: dict[SimpleStage, SimpleStageHandler] = {
@@ -1428,7 +1461,11 @@ def build_stage_handlers(
         ),
         SimpleStage.CWE_DONE: CWEStage(client, artifacts),
         SimpleStage.TECH_GATE_DONE: TechnicalGateStage(client, artifacts),
-        SimpleStage.SCOPE_GATE_DONE: RuleScopeGateStage(client, artifacts),
+        SimpleStage.SCOPE_GATE_DONE: RuleScopeGateStage(
+            client,
+            artifacts,
+            security_policy_ref=security_policy_ref,
+        ),
         SimpleStage.PRIMITIVE_ADMISSION_DONE: PrimitiveAdmissionStage(artifacts),
         SimpleStage.FINDING_DONE: FindingStage(artifacts),
         SimpleStage.REPORT_DONE: ReporterStage(client, artifacts),

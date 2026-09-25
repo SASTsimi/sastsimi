@@ -44,6 +44,7 @@ class StaticBootstrapResult(ContractModel):
     repository_profile_ref: StoredDataRef
     static_bundle_ref: StoredDataRef
     workspace_path: Path
+    security_policy_ref: StoredDataRef | None = None
 
 
 class HypothesisSeed(ContractModel):
@@ -195,6 +196,7 @@ class SimpleAnalysisApplication:
                 "workspace_path": static.workspace_path,
                 "repository_profile_ref": static.repository_profile_ref,
                 "static_bundle_ref": static.static_bundle_ref,
+                "security_policy_ref": static.security_policy_ref,
             }
         )
         self._store.save_analysis_run(updated_run)
@@ -219,6 +221,7 @@ class SimpleAnalysisApplication:
             repository_profile_ref=run.repository_profile_ref,
             static_bundle_ref=run.static_bundle_ref,
             workspace_path=run.workspace_path,
+            security_policy_ref=run.security_policy_ref,
         )
         if not run.hypothesis_ids:
             return await self._propose_and_run(run, identity, static)
