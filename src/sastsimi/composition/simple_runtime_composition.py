@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -43,6 +44,7 @@ from sastsimi.simple_runtime.bootstrap_stages import (
     DirectHypothesisBootstrap,
     DirectStaticBootstrap,
 )
+from sastsimi.simple_runtime.call_queue import CallQueue
 from sastsimi.simple_runtime.models import CheckpointIdentity, SimpleStage
 from sastsimi.simple_runtime.portable_docker import (
     DirectEnvironmentPreparer,
@@ -75,6 +77,26 @@ def _codex_home() -> Path:
     return Path(configured).expanduser() if configured else Path.home() / ".codex"
 
 
+def _child_failure_sink(data_dir: Path) -> Callable[[str, int, bytes], None]:
+    """Keep a dead child's exit code and stderr tail where an operator can read it.
+
+    The normalized result stays free of child text; this file is local only,
+    and without it a failed call is an unexplained ``FAILED``.
+    """
+
+    directory = data_dir / "diagnostics"
+
+    def record(invocation_id: str, returncode: int, stderr: bytes) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
+        target = directory / f"{stamp}-{invocation_id}.txt"
+        target.write_bytes(
+            f"exit={returncode}\n".encode() + b"--- stderr tail ---\n" + stderr
+        )
+
+    return record
+
+
 def _claude_config_dir() -> Path:
     configured = os.environ.get("CLAUDE_CONFIG_DIR")
     return Path(configured).expanduser() if configured else Path.home() / ".claude"
@@ -83,6 +105,17 @@ def _claude_config_dir() -> Path:
 class SimpleClientFactory:
     def __init__(self, profile: SimpleExecutionProfile) -> None:
         self._profile = profile
+        # One queue for the whole run.  A client is built per hypothesis, so a
+        # ceiling that lived on the client was multiplied by however many
+        # hypotheses were in flight.
+        self._queue = CallQueue(
+            max_concurrent=profile.max_parallel_calls,
+            min_interval_ms=profile.min_call_interval_ms,
+        )
+
+    @property
+    def queue(self) -> CallQueue:
+        return self._queue
 
     def __call__(
         self,
@@ -161,10 +194,13 @@ class SimpleClientFactory:
         if not isinstance(provider_ref, StoredDataRef):
             raise ValueError("SIMPLE_RUNTIME_PROVIDER_REFERENCE_INVALID")
         return SimpleClaudeClient(
-            runner=ClaudeCliProcessRunner(binding=binding.binding),
+            runner=ClaudeCliProcessRunner(
+                binding=binding.binding,
+                diagnostics=_child_failure_sink(self._profile.data_dir),
+            ),
             provider_profile_ref=provider_ref,
             model=model,
-            max_concurrent_calls=self._profile.max_parallel_calls,
+            queue=self._queue,
         )
 
 

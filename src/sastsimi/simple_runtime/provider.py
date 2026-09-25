@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from time import monotonic
 from typing import Any, Protocol
@@ -17,11 +17,18 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.providers.base import (
     CodexProcessRequest,
+    CodexProcessResult,
     CodexProcessRunner,
     SubscriptionProcessRunner,
 )
+from sastsimi.simple_runtime.call_queue import CallQueue
 
 from .models import StageFailure
+
+# Measured against the official client: the server turns away a burst of large
+# prompts with a 429 that clears on its own, so a refused call is retried a few
+# times with a widening wait before the stage gives up.
+_RATE_LIMIT_BACKOFF_MS: tuple[int, ...] = (3_000, 12_000, 45_000)
 
 
 class SimpleLLMCallResult(ContractModel):
@@ -179,12 +186,36 @@ class SimpleClaudeClient:
         runner: SubscriptionProcessRunner,
         provider_profile_ref: StoredDataRef,
         model: str,
-        max_concurrent_calls: int = 1,
+        queue: CallQueue | None = None,
+        rate_limit_backoff_ms: tuple[int, ...] = _RATE_LIMIT_BACKOFF_MS,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._runner = runner
         self._provider_profile_ref = provider_profile_ref
         self._model = model
-        self._lock = asyncio.Semaphore(max(1, max_concurrent_calls))
+        # Every agent shares this queue, so the ceiling counts children on the
+        # host rather than children per stage.
+        self._queue = queue if queue is not None else CallQueue(max_concurrent=1)
+        self._rate_limit_backoff_ms = rate_limit_backoff_ms
+        self._sleep = sleep
+
+    async def _call_through_rate_limits(
+        self, request: CodexProcessRequest
+    ) -> CodexProcessResult:
+        """Retry a call the server turned away for sending too fast.
+
+        The refusal measured here is the server's burst limit, not the
+        subscription's usage limit, and it clears on its own.  The wait happens
+        outside the queue slot so a call that is waiting does not hold one idle.
+        """
+
+        result = await self._queue.submit(lambda: self._runner.execute(request))
+        for backoff_ms in self._rate_limit_backoff_ms:
+            if result.status != "RATE_LIMITED":
+                return result
+            await self._sleep(backoff_ms / 1000)
+            result = await self._queue.submit(lambda: self._runner.execute(request))
+        return result
 
     async def call(
         self,
@@ -205,8 +236,7 @@ class SimpleClaudeClient:
         )
         started_at = datetime.now(UTC)
         started = monotonic()
-        async with self._lock:
-            result = await self._runner.execute(request)
+        result = await self._call_through_rate_limits(request)
         finished_at = datetime.now(UTC)
         elapsed_ms = max(0, int((monotonic() - started) * 1000))
         if result.status != "SUCCEEDED" or result.final_message is None:

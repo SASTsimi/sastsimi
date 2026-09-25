@@ -218,6 +218,9 @@ class SimpleExecutionProfile(BaseModel):
     # subscription; a build was measured at over two gigabytes; a reproduction
     # container costs a few megabytes.
     max_parallel_calls: int = Field(default=1, ge=1, le=16)
+    # A freed slot is otherwise taken the same instant, so stages that finish
+    # together start their children together.  This spaces the launches out.
+    min_call_interval_ms: int = Field(default=0, ge=0, le=60_000)
     max_parallel_builds: int = Field(default=1, ge=1, le=8)
     max_parallel_containers: int = Field(default=1, ge=1, le=16)
     tools: dict[str, SimpleToolBinding]
@@ -272,6 +275,7 @@ class SimpleExecutionProfile(BaseModel):
             f"docker_network = {_quoted(self.docker_network)}",
             f"max_parallel_hypotheses = {self.max_parallel_hypotheses}",
             f"max_parallel_calls = {self.max_parallel_calls}",
+            f"min_call_interval_ms = {self.min_call_interval_ms}",
             f"max_parallel_builds = {self.max_parallel_builds}",
             f"max_parallel_containers = {self.max_parallel_containers}",
             "",
