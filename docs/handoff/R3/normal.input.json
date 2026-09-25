@@ -1,0 +1,45 @@
+{
+  "fixture_kind": "R3_PROMPT_HANDOFF_REVIEW_ONLY",
+  "source": "SYNTHETIC_FROM_ARCHITECTURE_V5",
+  "case_id": "R3-PMT-NORMAL-001",
+  "registry": {
+    "prompt_key": "hypothesis.generate-initial",
+    "agent_role": "HYPOTHESIS",
+    "task_kind": "GENERATE_INITIAL",
+    "purpose": "EVALUATION",
+    "template_version": "1.0.0",
+    "required_slots": ["facts"],
+    "forbidden_context_kinds": ["verification_result", "report_draft"],
+    "result_kind": "hypothesis_proposal",
+    "session_policy": "NEW",
+    "status": "DRAFT"
+  },
+  "context_bindings": [
+    {
+      "slot": "facts",
+      "data_kind": "static_fact_bundle",
+      "source_ref": {
+        "stored_data_id": "sd-static-001",
+        "data_kind": "static_fact_bundle",
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "workspace_id": "ws-demo-001",
+        "commit_id": "1111111111111111111111111111111111111111",
+        "record_id": "rec-static-001"
+      },
+      "field_paths": [
+        "/entities",
+        "/locations",
+        "/source_candidates",
+        "/sink_candidates",
+        "/tool_runs",
+        "/gaps",
+        "/errors"
+      ],
+      "trust_class": "UNTRUSTED_DATA"
+    }
+  ],
+  "call_limits": {
+    "timeout_ms": 30000
+  }
+}
+
