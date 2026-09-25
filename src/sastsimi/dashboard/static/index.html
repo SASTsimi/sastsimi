@@ -14,6 +14,7 @@
       <p>저장된 단계·Agent 활동·아티팩트·증거만 표시합니다.</p>
     </div>
     <div class="header-actions">
+      <button id="presentation-toggle" class="mode-toggle" type="button" aria-pressed="false">발표 모드</button>
       <div id="last-updated" class="meta">마지막 갱신 확인 중</div>
       <div id="connection" class="connection" role="status" aria-live="polite">연결 확인 중</div>
     </div>
@@ -29,6 +30,16 @@
     <section class="content">
       <div id="notice" class="notice" role="status" aria-live="polite">분석 데이터를 불러오는 중입니다.</div>
       <div id="overview" class="panel empty">분석을 선택하세요.</div>
+      <div class="grid readiness-usage-grid">
+        <section class="panel">
+          <div class="panel-heading"><h2>준비 상태</h2><span class="meta">저장 기록 기준</span></div>
+          <div id="readiness" class="readiness-grid"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-heading"><h2>LLM 사용량</h2><span id="usage-coverage" class="meta"></span></div>
+          <div id="usage" class="usage-grid"></div>
+        </section>
+      </div>
       <section class="panel">
         <h2>정적분석 도구</h2>
         <div id="static-tools" class="tool-grid"></div>
@@ -39,7 +50,7 @@
       </section>
       <div class="grid">
         <section class="panel"><h2>가설 진행 상태</h2><div id="hypotheses" class="stack"></div></section>
-        <section class="panel">
+        <section class="panel presentation-detail">
           <div class="panel-heading">
             <h2>Agent 활동·로그</h2>
             <a id="logs-download" class="text-link" href="#">로그 다운로드</a>
@@ -56,8 +67,11 @@
           <div id="events" class="timeline" role="log" aria-live="polite"></div>
         </section>
       </div>
-      <section class="panel"><h2>체이닝 관계</h2><div id="chains" class="stack"></div></section>
-      <section class="panel">
+      <section class="panel chain-panel">
+        <div class="panel-heading"><h2>Source → Sink·체이닝 시각화</h2><span class="meta">가설·부모 관계 기준</span></div>
+        <div id="chains" class="chain-graph"></div>
+      </section>
+      <section class="panel presentation-detail">
         <div class="panel-heading"><h2>단계별 JSON·파일 아티팩트</h2><span id="artifact-count" class="meta"></span></div>
         <div class="filters">
           <input id="artifact-search" type="search" placeholder="종류·단계·가설 검색" aria-label="아티팩트 검색">
@@ -67,7 +81,7 @@
           <div id="artifact-viewer" class="viewer empty">아티팩트를 선택하세요.</div>
         </div>
       </section>
-      <section class="panel">
+      <section class="panel presentation-detail">
         <h2>LLM 요청·응답</h2>
         <div id="llm-invocations" class="stack"></div>
       </section>

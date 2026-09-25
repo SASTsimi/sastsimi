@@ -64,15 +64,21 @@ sastsimi dashboard
 화면에서 다음을 확인할 수 있습니다.
 
 - 현재 단계·상태·실제 진행률과 AST·OpenGrep·CodeQL 상태
+- 저장소·commit, 실행 프로필, Provider와 발표 결과물의 저장 기록 기준 준비 상태
+- LLM 호출·성공·실패·재시도 수와 Provider가 제공한 입력·출력 token 합계
 - 가설 수와 가설별 최종 판정
 - Agent가 확인한 근거·행동·판정 이유 요약 및 검색 가능한 실행 로그
 - 단계별 JSON·텍스트 아티팩트와 비밀값을 제거한 LLM 요청·응답
 - 검증된 PoC와 정적·동적 증거의 분리된 목록 및 개별 다운로드
-- 허용·제외된 Primitive와 Chaining 부모·자식 관계
+- 가설의 Source → 취약점 → Sink 흐름과 Chaining 부모·자식 관계 시각화
 - 렌더링/원문 전환이 가능한 Markdown 보고서
 - 항목을 선택한 ZIP 또는 `전체 결과 ZIP 다운로드`를 통한 로그·아티팩트·보고서 일괄 저장
+- 사이드바와 상세 로그를 접고 핵심 결과를 크게 표시하는 발표 모드 (`P`로 전환, `Esc`로 종료)
 
 대시보드는 저장 데이터를 읽기만 합니다. 취소·재시도·판정 변경·공개 승인을 수행하지 않으며 기본적으로 외부 네트워크에 공개하지 않습니다.
+준비 상태는 현재 컴퓨터를 새로 검사하는 health check가 아니라 분석에 저장된
+provenance와 결과의 존재 여부를 요약합니다. token을 제공하지 않는 Provider 호출은
+사용량 합계에 0으로 추정하지 않고 `token 미제공` 건수로 따로 표시합니다.
 
 CLI 진행 로그는 분석별로 data directory의 `logs/<analysis-id>.log`에도
 저장됩니다. 새 분석에서 발생한 LLM 요청·응답은 credential, token, host 절대

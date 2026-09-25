@@ -5,6 +5,7 @@ const state = {
   events: [],
   selectedArtifacts: new Set(),
   selectedReports: new Set(),
+  presentation: false,
 };
 
 function el(tag, text, className) {
@@ -30,6 +31,10 @@ function formatDuration(milliseconds) {
   if (milliseconds === null || milliseconds === undefined) return "-";
   if (milliseconds < 1000) return `${milliseconds}ms`;
   return `${(milliseconds / 1000).toFixed(1)}초`;
+}
+
+function formatNumber(value) {
+  return Number(value || 0).toLocaleString("ko-KR");
 }
 
 async function getJson(url) {
@@ -112,6 +117,41 @@ function renderStaticTools(items) {
   }) : empty("정적분석 상태가 아직 없습니다."));
 }
 
+function renderReadiness(items) {
+  const required = items.filter((item) => item.required);
+  const ready = required.filter((item) => item.status === "READY").length;
+  replace("readiness", items.length ? items.map((item) => {
+    const card = el("div", undefined, "readiness-card");
+    const row = el("div", undefined, "status-row");
+    row.append(el("strong", item.label_ko), badge(item.status));
+    card.append(row, el("div", item.detail_ko, "meta"));
+    if (!item.required) card.append(el("span", "선택 항목", "optional-label"));
+    return card;
+  }) : empty("저장된 준비 상태가 없습니다."));
+  const title = document.querySelector("#readiness")?.closest(".panel")?.querySelector(".panel-heading .meta");
+  if (title) title.textContent = `필수 ${ready}/${required.length} · 저장 기록 기준`;
+}
+
+function renderUsage(usage) {
+  const values = [
+    ["LLM 호출", formatNumber(usage.invocation_count)],
+    ["성공 / 실패", `${formatNumber(usage.succeeded_count)} / ${formatNumber(usage.failed_count)}`],
+    ["재시도", formatNumber(usage.retry_count)],
+    ["입력 token", formatNumber(usage.input_tokens)],
+    ["출력 token", formatNumber(usage.output_tokens)],
+    ["총 token", formatNumber(usage.total_tokens)],
+    ["LLM 누적 시간", formatDuration(usage.elapsed_ms)],
+  ];
+  replace("usage", values.map(([label, value]) => {
+    const metric = el("div", undefined, "usage-metric");
+    metric.append(el("span", label, "meta"), el("strong", value));
+    return metric;
+  }));
+  document.getElementById("usage-coverage").textContent = usage.unknown_usage_count
+    ? `token 미제공 ${formatNumber(usage.unknown_usage_count)}건`
+    : `token 기록 ${formatNumber(usage.known_usage_count)}건`;
+}
+
 function renderPipeline(items) {
   replace("pipeline", items.length ? items.map((item) => {
     const card = el("div", undefined, `stage stage-${item.status.toLowerCase()}`);
@@ -130,8 +170,10 @@ function renderHypotheses(items) {
   replace("hypotheses", items.length ? items.map((item) => {
     const card = el("div", undefined, "card");
     const row = el("div", undefined, "status-row");
-    row.append(el("strong", item.hypothesis_id, "mono"), badge(item.status));
+    row.append(el("strong", item.title || item.hypothesis_id), badge(item.status));
     card.append(row);
+    if (item.title) card.append(el("div", item.hypothesis_id, "mono meta truncate"));
+    if (item.vulnerability_type) card.append(el("div", item.vulnerability_type, "hypothesis-type"));
     card.append(el("div", `${item.current_stage} · ${item.completed_count}/${item.stage_count}`, "meta"));
     if (item.verdict) card.append(el("div", `판정: ${item.verdict}`));
     if (item.validated_poc) card.append(el("div", "검증된 PoC 있음", "success"));
@@ -141,13 +183,34 @@ function renderHypotheses(items) {
 }
 
 function renderChains(items) {
-  const chained = items.filter((item) => item.chain_depth || item.parent_hypothesis_ids.length);
-  replace("chains", chained.length ? chained.map((item) => {
-    const card = el("div", undefined, "card chain-card");
-    card.append(el("strong", `${item.hypothesis_id} (깊이 ${item.chain_depth})`, "mono"));
-    card.append(el("div", `부모: ${item.parent_hypothesis_ids.join(", ") || "없음"}`, "meta"));
+  replace("chains", items.length ? items.map((item) => {
+    const card = el("article", undefined, "chain-flow");
+    const heading = el("div", undefined, "status-row");
+    const identity = el("div");
+    identity.append(el("strong", item.title || item.hypothesis_id));
+    identity.append(el("div", `${item.hypothesis_id} · 깊이 ${item.chain_depth}`, "mono meta"));
+    heading.append(identity, badge(item.verdict || item.status));
+    card.append(heading);
+
+    if (item.parent_hypothesis_ids.length) {
+      const parents = el("div", undefined, "chain-parents");
+      parents.append(el("span", "부모", "meta"));
+      item.parent_hypothesis_ids.forEach((parent) => parents.append(el("span", parent, "parent-chip mono")));
+      card.append(parents);
+    }
+
+    const flow = el("div", undefined, "flow-lane");
+    const source = el("div", undefined, "flow-node flow-source");
+    source.append(el("span", "SOURCE", "flow-label"), el("strong", item.source || "source 미기록"));
+    const finding = el("div", undefined, "flow-node flow-finding");
+    finding.append(el("span", item.vulnerability_type || "HYPOTHESIS", "flow-label"), el("strong", item.summary || item.title || item.hypothesis_id));
+    const sink = el("div", undefined, "flow-node flow-sink");
+    sink.append(el("span", "SINK", "flow-label"), el("strong", item.sink || "sink 미기록"));
+    flow.append(source, el("span", "→", "flow-arrow"), finding, el("span", "→", "flow-arrow"), sink);
+    card.append(flow);
+    if (item.code_locations.length) card.append(el("div", item.code_locations.join(" · "), "mono meta locations"));
     return card;
-  }) : empty("연계된 가설이 없습니다."));
+  }) : empty("시각화할 가설이 없습니다."));
 }
 
 function renderEvents() {
@@ -366,6 +429,8 @@ function renderDetail(detail, events) {
   state.detail = detail;
   state.events = events;
   renderOverview(detail);
+  renderReadiness(detail.readiness || []);
+  renderUsage(detail.usage || {});
   renderStaticTools(detail.static_tools || []);
   renderPipeline(detail.pipeline || []);
   renderHypotheses(detail.hypotheses || []);
@@ -389,10 +454,20 @@ function clearDetail(message) {
   state.detail = null;
   state.events = [];
   replace("overview", empty(message));
-  ["static-tools", "pipeline", "hypotheses", "events", "chains", "artifacts", "llm-invocations", "poc", "evidence", "reports"].forEach((id) => replace(id, []));
+  ["readiness", "usage", "static-tools", "pipeline", "hypotheses", "events", "chains", "artifacts", "llm-invocations", "poc", "evidence", "reports"].forEach((id) => replace(id, []));
+  document.getElementById("usage-coverage").textContent = "";
   document.getElementById("bundle-download").classList.add("hidden");
   document.getElementById("selection-download").classList.add("hidden");
   document.getElementById("logs-selection").classList.add("hidden");
+}
+
+function setPresentationMode(enabled) {
+  state.presentation = enabled;
+  document.body.classList.toggle("presentation", enabled);
+  const toggle = document.getElementById("presentation-toggle");
+  toggle.setAttribute("aria-pressed", String(enabled));
+  toggle.textContent = enabled ? "발표 모드 종료" : "발표 모드";
+  if (enabled) window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 async function refresh() {
@@ -430,5 +505,11 @@ document.getElementById("log-search").addEventListener("input", renderEvents);
 document.getElementById("log-status").addEventListener("change", renderEvents);
 document.getElementById("artifact-search").addEventListener("input", renderArtifacts);
 document.getElementById("include-logs").addEventListener("change", updateSelectionLink);
+document.getElementById("presentation-toggle").addEventListener("click", () => setPresentationMode(!state.presentation));
+document.addEventListener("keydown", (event) => {
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement) return;
+  if (event.key.toLowerCase() === "p") setPresentationMode(!state.presentation);
+  if (event.key === "Escape" && state.presentation) setPresentationMode(false);
+});
 refresh();
 window.setInterval(refresh, 2000);

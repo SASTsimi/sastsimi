@@ -58,6 +58,27 @@ class StaticToolProgressView(ContractModel):
     finding_count: int | None = None
 
 
+class ReadinessCheckView(ContractModel):
+    key: str
+    label_ko: str
+    status: str
+    detail_ko: str
+    required: bool = True
+
+
+class UsageSummaryView(ContractModel):
+    invocation_count: int = 0
+    succeeded_count: int = 0
+    failed_count: int = 0
+    retry_count: int = 0
+    known_usage_count: int = 0
+    unknown_usage_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    elapsed_ms: int = 0
+
+
 class ArtifactView(ContractModel):
     artifact_id: str
     kind: str
@@ -111,6 +132,12 @@ class HypothesisProgressView(ContractModel):
     validated_poc: bool = False
     parent_hypothesis_ids: tuple[str, ...] = ()
     chain_depth: int = 0
+    title: str | None = None
+    vulnerability_type: str | None = None
+    summary: str | None = None
+    source: str | None = None
+    sink: str | None = None
+    code_locations: tuple[str, ...] = ()
     updated_at: datetime | None = None
 
 
@@ -149,6 +176,8 @@ class AnalysisDetailView(AnalysisSummaryView):
     reports: tuple[FindingReportView, ...] = ()
     pipeline: tuple[StageProgressView, ...] = ()
     static_tools: tuple[StaticToolProgressView, ...] = ()
+    readiness: tuple[ReadinessCheckView, ...] = ()
+    usage: UsageSummaryView = UsageSummaryView()
     artifacts: tuple[ArtifactView, ...] = ()
     llm_invocations: tuple[LLMInvocationView, ...] = ()
     poc_artifact_ids: tuple[str, ...] = ()
@@ -166,6 +195,8 @@ __all__ = [
     "FindingReportView",
     "HypothesisProgressView",
     "LLMInvocationView",
+    "ReadinessCheckView",
     "StageProgressView",
     "StaticToolProgressView",
+    "UsageSummaryView",
 ]

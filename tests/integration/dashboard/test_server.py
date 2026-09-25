@@ -84,6 +84,17 @@ def seed(data_dir) -> None:
     hypothesis_proposal = artifacts.put_json(
         {
             "kind": "simple_hypothesis_proposal",
+            "analysis_id": "analysis-1",
+            "hypothesis_id": "hypothesis-1",
+            "proposal": {
+                "title": "Unsafe command flow",
+                "vulnerability_type": "Command Injection",
+                "summary": "User input can reach a process execution call.",
+                "code_locations": ["app.py:10", "app.py:24"],
+                "source": "request.args['command']",
+                "sink": "subprocess.run(command)",
+                "rationale": "The value is not validated before execution.",
+            },
             "llm_request_ref": hypothesis_request.model_dump(mode="json"),
             "llm_response_ref": hypothesis_response.model_dump(mode="json"),
         }
@@ -214,6 +225,10 @@ def test_server_is_local_read_only_and_serves_current_state(tmp_path) -> None:
         assert response.headers["X-Content-Type-Options"] == "nosniff"
         assert request(f"{base}/api/analyses", method="POST").status == 405
         assert request(f"{base}/analyses/A-001").status == 200
+        page = request(f"{base}/analyses/A-001").read().decode()
+        assert 'id="presentation-toggle"' in page
+        assert 'id="readiness"' in page
+        assert 'id="usage"' in page
         assert (
             json.loads(request(f"{base}/api/analyses/A-001").read())["analysis_id"]
             == "analysis-1"
@@ -236,6 +251,26 @@ def test_server_serves_redacted_artifacts_reports_logs_and_bundle(tmp_path) -> N
         assert detail["profile_ref"] == "profile-test"
         assert detail["provider"] == "codex-cli"
         assert detail["model"] == "gpt-test"
+        assert detail["hypotheses"][0]["source"] == "request.args['command']"
+        assert detail["hypotheses"][0]["sink"] == "subprocess.run(command)"
+        assert detail["hypotheses"][0]["vulnerability_type"] == ("Command Injection")
+        assert detail["usage"] == {
+            "invocation_count": 2,
+            "succeeded_count": 2,
+            "failed_count": 0,
+            "retry_count": 0,
+            "known_usage_count": 1,
+            "unknown_usage_count": 1,
+            "input_tokens": 10,
+            "output_tokens": 4,
+            "total_tokens": 14,
+            "elapsed_ms": 0,
+        }
+        readiness = {item["key"]: item for item in detail["readiness"]}
+        assert readiness["exact-target"]["status"] == "READY"
+        assert readiness["llm-provider"]["status"] == "READY"
+        assert readiness["static-core"]["status"] == "WAITING"
+        assert readiness["presentation-output"]["status"] == "READY"
         assert len(detail["llm_invocations"]) == 2
         invocation = next(
             item

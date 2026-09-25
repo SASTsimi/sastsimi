@@ -40,8 +40,10 @@ from .models import (
     FindingReportView,
     HypothesisProgressView,
     LLMInvocationView,
+    ReadinessCheckView,
     StageProgressView,
     StaticToolProgressView,
+    UsageSummaryView,
 )
 
 _ANALYSIS_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
@@ -392,7 +394,7 @@ class DashboardQuery:
         self,
         repository: SimpleArtifactRepository,
         ref: StoredDataRef,
-    ) -> tuple[str, bytes, Any | None]:
+    ) -> tuple[str, bytes, Any | None, tuple[int | None, int | None] | None]:
         try:
             raw = repository.read(ref)
         except (OSError, sqlite3.Error, ValueError) as error:
@@ -400,9 +402,31 @@ class DashboardQuery:
         if len(raw) > _MAX_ARTIFACT_BYTES:
             raise DashboardNotFound("DASHBOARD_ARTIFACT_TOO_LARGE")
         try:
-            json.loads(raw)
+            original = json.loads(raw)
+            token_usage: tuple[int | None, int | None] | None = None
+            if (
+                isinstance(original, dict)
+                and original.get("kind") == "simple_llm_response"
+                and isinstance(original.get("usage"), dict)
+            ):
+                usage = original["usage"]
+
+                def token_count(key: str) -> int | None:
+                    value = usage.get(key)
+                    return (
+                        value
+                        if isinstance(value, int)
+                        and not isinstance(value, bool)
+                        and value >= 0
+                        else None
+                    )
+
+                token_usage = (
+                    token_count("input_tokens"),
+                    token_count("output_tokens"),
+                )
             safe = redact_projected_json(raw).data
-            return "application/json", safe, json.loads(safe)
+            return "application/json", safe, json.loads(safe), token_usage
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
             try:
                 safe = redact_untrusted_text(raw).data
@@ -413,7 +437,7 @@ class DashboardQuery:
                 if safe.lstrip().startswith(b"#")
                 else "text/plain"
             )
-            return media, safe, None
+            return media, safe, None, None
 
     def _artifact_projection(
         self,
@@ -479,6 +503,7 @@ class DashboardQuery:
                 enqueue(ref, event.stage, event.hypothesis_id)
 
         contents: dict[str, tuple[str, str, bytes, Any | None]] = {}
+        token_usage: dict[str, tuple[int | None, int | None]] = {}
         index = 0
         while index < len(queue) and len(contents) < _MAX_ARTIFACTS:
             ref, stage, hypothesis = queue[index]
@@ -486,9 +511,11 @@ class DashboardQuery:
             if ref.content_hash in contents:
                 continue
             try:
-                media_type, raw, parsed = self._safe_ref_bytes(repository, ref)
+                media_type, raw, parsed, usage = self._safe_ref_bytes(repository, ref)
             except DashboardNotFound:
                 continue
+            if usage is not None:
+                token_usage[ref.content_hash] = usage
             kind = ref.data_kind
             if isinstance(parsed, dict):
                 kind = str(
@@ -518,7 +545,9 @@ class DashboardQuery:
                 contents.items(), key=lambda pair: (pair[1][0], pair[0])
             )
         )
-        invocations = self._llm_invocations(events, contents, sources, values)
+        invocations = self._llm_invocations(
+            events, contents, sources, values, token_usage
+        )
         poc_ids = tuple(
             item.artifact_id
             for item in artifacts
@@ -544,6 +573,7 @@ class DashboardQuery:
         contents: dict[str, tuple[str, str, bytes, Any | None]],
         sources: dict[str, dict[str, set[str]]],
         checkpoints: list[StageCheckpoint],
+        token_usage: dict[str, tuple[int | None, int | None]],
     ) -> tuple[LLMInvocationView, ...]:
         result: list[LLMInvocationView] = []
         seen: set[str] = set()
@@ -585,12 +615,8 @@ class DashboardQuery:
             if invocation_id in seen:
                 continue
             seen.add(invocation_id)
-            usage = (response or {}).get("usage")
-            input_tokens = (
-                usage.get("input_tokens") if isinstance(usage, dict) else None
-            )
-            output_tokens = (
-                usage.get("output_tokens") if isinstance(usage, dict) else None
+            input_tokens, output_tokens = token_usage.get(
+                response_id or "", (None, None)
             )
             result.append(
                 LLMInvocationView(
@@ -656,13 +682,8 @@ class DashboardQuery:
                 role = ROLE_BY_STAGE[SimpleStage(stage)]
             except (KeyError, ValueError):
                 role = "LLM Agent"
-            response_payload = response_entry[1] if response_entry else {}
-            usage = response_payload.get("usage")
-            input_tokens = (
-                usage.get("input_tokens") if isinstance(usage, dict) else None
-            )
-            output_tokens = (
-                usage.get("output_tokens") if isinstance(usage, dict) else None
+            input_tokens, output_tokens = token_usage.get(
+                response_entry[0] if response_entry else "", (None, None)
             )
             result.append(
                 LLMInvocationView(
@@ -822,21 +843,31 @@ class DashboardQuery:
         )
         if detail:
             artifacts: tuple[ArtifactView, ...] = ()
+            contents: dict[str, tuple[str, str, bytes, Any | None]] = {}
             invocations: tuple[LLMInvocationView, ...] = ()
             poc_ids: tuple[str, ...] = ()
             evidence_ids: tuple[str, ...] = ()
             static_tools: tuple[StaticToolProgressView, ...] = ()
             if run is not None:
-                artifacts, _, invocations, poc_ids, evidence_ids = (
+                artifacts, contents, invocations, poc_ids, evidence_ids = (
                     self._artifact_projection(analysis_id, values, run)
                 )
                 static_tools = self._static_tools(run, values)
+                hypotheses = self._with_hypothesis_metadata(hypotheses, contents)
             return AnalysisDetailView(
                 **data.model_dump(),
                 hypotheses=hypotheses,
                 reports=reports,
                 pipeline=self._pipeline(values, run),
                 static_tools=static_tools,
+                readiness=self._readiness(
+                    analysis_id,
+                    run,
+                    static_tools,
+                    artifacts,
+                    reports,
+                ),
+                usage=self._usage_summary(invocations),
                 artifacts=artifacts,
                 llm_invocations=invocations,
                 poc_artifact_ids=poc_ids,
@@ -845,6 +876,188 @@ class DashboardQuery:
                 bundle_url=f"/api/analyses/{analysis_id}/bundle.zip",
             )
         return data
+
+    @staticmethod
+    def _with_hypothesis_metadata(
+        hypotheses: tuple[HypothesisProgressView, ...],
+        contents: dict[str, tuple[str, str, bytes, Any | None]],
+    ) -> tuple[HypothesisProgressView, ...]:
+        proposals: dict[str, dict[str, Any]] = {}
+        for _kind, _media_type, _raw, parsed in contents.values():
+            if not isinstance(parsed, dict):
+                continue
+            if parsed.get("kind") != "simple_hypothesis_proposal":
+                continue
+            hypothesis_id = parsed.get("hypothesis_id")
+            proposal = parsed.get("proposal")
+            if isinstance(hypothesis_id, str) and isinstance(proposal, dict):
+                proposals[hypothesis_id] = proposal
+
+        def text(value: object, limit: int = 500) -> str | None:
+            return str(value)[:limit] if isinstance(value, str) and value else None
+
+        enriched: list[HypothesisProgressView] = []
+        for hypothesis in hypotheses:
+            proposal = proposals.get(hypothesis.hypothesis_id, {})
+            raw_locations = proposal.get("code_locations", [])
+            locations = (
+                tuple(str(item)[:300] for item in raw_locations[:12])
+                if isinstance(raw_locations, list)
+                else ()
+            )
+            enriched.append(
+                hypothesis.model_copy(
+                    update={
+                        "title": text(proposal.get("title"), 300),
+                        "vulnerability_type": text(
+                            proposal.get("vulnerability_type"), 160
+                        ),
+                        "summary": text(proposal.get("summary"), 700),
+                        "source": text(proposal.get("source")),
+                        "sink": text(proposal.get("sink")),
+                        "code_locations": locations,
+                    }
+                )
+            )
+        return tuple(enriched)
+
+    def _readiness(
+        self,
+        analysis_id: str,
+        run: SimpleAnalysisRun | None,
+        static_tools: tuple[StaticToolProgressView, ...],
+        artifacts: tuple[ArtifactView, ...],
+        reports: tuple[FindingReportView, ...],
+    ) -> tuple[ReadinessCheckView, ...]:
+        def present(value: object) -> bool:
+            return value is not None and str(value).strip() != ""
+
+        tool_status = {item.tool: item.status for item in static_tools}
+        core = [tool_status.get("AST"), tool_status.get("OpenGrep")]
+        if any(status in {"FAILED", "BLOCKED"} for status in core):
+            static_status = "BLOCKED"
+        elif core and all(status == "SUCCEEDED" for status in core):
+            static_status = "READY"
+        elif any(status == "RUNNING" for status in core):
+            static_status = "RUNNING"
+        else:
+            static_status = "WAITING"
+        codeql = tool_status.get("CodeQL")
+        codeql_status = (
+            "READY"
+            if codeql == "SUCCEEDED"
+            else "OPTIONAL"
+            if codeql == "SKIPPED"
+            else "BLOCKED"
+            if codeql in {"FAILED", "BLOCKED"}
+            else "RUNNING"
+            if codeql == "RUNNING"
+            else "WAITING"
+        )
+        log_ready = (self._data_dir / "logs" / f"{analysis_id}.log").is_file()
+        return (
+            ReadinessCheckView(
+                key="exact-target",
+                label_ko="저장소·commit 고정",
+                status=(
+                    "READY"
+                    if run is not None
+                    and present(run.repository)
+                    and present(run.commit_id)
+                    else "BLOCKED"
+                ),
+                detail_ko=(
+                    "재현 가능한 분석 대상을 기록했습니다."
+                    if run is not None
+                    and present(run.repository)
+                    and present(run.commit_id)
+                    else "저장소 또는 commit 기록이 없습니다."
+                ),
+            ),
+            ReadinessCheckView(
+                key="runtime-profile",
+                label_ko="실행 프로필",
+                status=(
+                    "READY"
+                    if run is not None and present(run.profile_ref)
+                    else "WAITING"
+                ),
+                detail_ko=(
+                    "분석 실행 프로필이 연결되어 있습니다."
+                    if run is not None and present(run.profile_ref)
+                    else "이전 분석이어서 프로필 기록이 없을 수 있습니다."
+                ),
+            ),
+            ReadinessCheckView(
+                key="llm-provider",
+                label_ko="LLM Provider·모델",
+                status=(
+                    "READY"
+                    if run is not None and present(run.provider) and present(run.model)
+                    else "WAITING"
+                ),
+                detail_ko=(
+                    "Provider와 모델 provenance를 확인했습니다."
+                    if run is not None and present(run.provider) and present(run.model)
+                    else "Provider 또는 모델 기록을 기다리는 중입니다."
+                ),
+            ),
+            ReadinessCheckView(
+                key="static-core",
+                label_ko="AST·OpenGrep",
+                status=static_status,
+                detail_ko="필수 정적분석 도구의 저장 결과 기준 상태입니다.",
+            ),
+            ReadinessCheckView(
+                key="codeql",
+                label_ko="CodeQL",
+                status=codeql_status,
+                detail_ko=(
+                    "선택 프로필에서 CodeQL을 사용하지 않았습니다."
+                    if codeql_status == "OPTIONAL"
+                    else "CodeQL 저장 결과 기준 상태입니다."
+                ),
+                required=False,
+            ),
+            ReadinessCheckView(
+                key="presentation-output",
+                label_ko="발표 결과물",
+                status=("READY" if artifacts and (reports or log_ready) else "WAITING"),
+                detail_ko=(
+                    f"아티팩트 {len(artifacts)}개·보고서 {len(reports)}개"
+                    + ("·로그 있음" if log_ready else "·로그 없음")
+                ),
+                required=False,
+            ),
+        )
+
+    @staticmethod
+    def _usage_summary(
+        invocations: tuple[LLMInvocationView, ...],
+    ) -> UsageSummaryView:
+        input_tokens = sum(item.input_tokens or 0 for item in invocations)
+        output_tokens = sum(item.output_tokens or 0 for item in invocations)
+        known = sum(
+            item.input_tokens is not None or item.output_tokens is not None
+            for item in invocations
+        )
+        return UsageSummaryView(
+            invocation_count=len(invocations),
+            succeeded_count=sum(
+                item.status in {"SUCCEEDED", "COMPLETE"} for item in invocations
+            ),
+            failed_count=sum(
+                item.status in {"FAILED", "BLOCKED", "TIMED_OUT", "CANCELLED"}
+                for item in invocations
+            ),
+            retry_count=sum(item.retry_count for item in invocations),
+            known_usage_count=known,
+            unknown_usage_count=len(invocations) - known,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+            elapsed_ms=sum(item.elapsed_ms or 0 for item in invocations),
+        )
 
     @staticmethod
     def _pipeline(
