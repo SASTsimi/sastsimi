@@ -158,11 +158,18 @@ def render_history(document: dict[str, Any]) -> str:
             )
         sources = entry.get("sources") or {}
         for item in sources.get("served", ()):
-            suffix = str(item.get("path", "")).rsplit(".", 1)[-1]
+            suffix = str(item.get("path", "")).partition(":")[0].rsplit(".", 1)[-1]
             parts.append(f"#### {item.get('path')}")
             parts.append(
                 fenced(str(item.get("content", "")), _FENCE_LANGUAGE.get(suffix, ""))
             )
+            if item.get("tool_findings"):
+                parts.append(
+                    "Static tool hits in this file:\n\n"
+                    + fenced(
+                        json.dumps(item["tool_findings"], ensure_ascii=False), "json"
+                    )
+                )
         refused = list(sources.get("refused", ()))
         ast = entry.get("ast") or {}
         for item in ast.get("served", ()):

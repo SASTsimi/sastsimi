@@ -136,6 +136,7 @@ You have not read the code yet. Read it before you decide:
 - Read every repository-defined step on a flow that reaches something that
   matters - a request, a file, a query, a redirect, a template, a command - and
   the handler around it.
+- A requested file comes with the static tool hits recorded for it.
 - `requested_ast_paths` gives a file's parsed definitions and calls instead.
 - Leave both empty when you have read what you need.
 
@@ -158,6 +159,38 @@ bypassed, stating how; verification decides whether it holds.
 ## Form of each hypothesis
 
 """
+
+
+def _findings_by_file(bundle: dict[str, object]) -> dict[str, list[dict[str, object]]]:
+    by_file: dict[str, list[dict[str, object]]] = {}
+    for key in ("codeql_findings", "opengrep_findings"):
+        values = bundle.get(key)
+        for value in values if isinstance(values, list) else []:
+            if isinstance(value, dict) and value.get("path"):
+                path = str(value["path"]).lstrip("/")
+                by_file.setdefault(path, []).append({"tool": key[:-9], **value})
+    return by_file
+
+
+def _attach_findings(
+    sources: dict[str, object], findings: dict[str, list[dict[str, object]]]
+) -> None:
+    """Give each served file the tool hits recorded for it, within its lines."""
+
+    served = sources.get("served")
+    for item in served if isinstance(served, list) else []:
+        path, _, span = str(item.get("path", "")).partition(":")
+        hits = findings.get(path, [])
+        if span:
+            start, _, end = span.partition("-")
+            low, high = int(start), int(end or start)
+            hits = [
+                hit
+                for hit in hits
+                if isinstance(hit.get("line"), int) and low <= hit["line"] <= high
+            ]
+        if hits:
+            item["tool_findings"] = hits
 
 
 # Bodies of rejected proposals, held only until the one repair call reads them.
@@ -848,6 +881,7 @@ class DirectHypothesisBootstrap:
         context: bytes,
         static: StaticBootstrapResult,
         artifacts: SimpleArtifactRepository,
+        findings: dict[str, list[dict[str, object]]] | None = None,
     ) -> tuple[SimpleLLMCallResult, Exploration]:
         """Ask, serve what was asked for, ask again - in one conversation.
 
@@ -875,6 +909,8 @@ class DirectHypothesisBootstrap:
                 if wanted
                 else None
             )
+            if sources is not None and findings:
+                _attach_findings(sources, findings)
             ast = (
                 collect_requested_ast(
                     wanted_ast, facts=self._ast_facts(artifacts, static)
@@ -940,7 +976,13 @@ class DirectHypothesisBootstrap:
             for value in values:
                 path = value.get("path") if isinstance(value, dict) else None
                 path = str(path).lstrip("/") if path else ""
-                if path in mine or (batch.number == 1 and path not in fed):
+                # With the code feed, only excluded files lie outside every
+                # batch.  With the fact feed most files do, and their hits -
+                # measured at over two megabytes - arrive with the file when
+                # the agent asks for it instead.
+                if path in mine or (
+                    feeding.kind == "code" and batch.number == 1 and path not in fed
+                ):
                     chosen.append(value)
             return chosen
 
@@ -1019,6 +1061,7 @@ class DirectHypothesisBootstrap:
         )
         instructions = (opening + PROPOSAL_INSTRUCTIONS + "\n").encode("utf-8")
         registry = Registry(bundle_hash=str(static.static_bundle_ref.content_hash))
+        findings = _findings_by_file(bundle)
         provenance: dict[
             str, tuple[int, SimpleLLMCallResult, list[dict[str, object]]]
         ] = {}
@@ -1029,7 +1072,12 @@ class DirectHypothesisBootstrap:
                 client, output_schema=schema, timeout_ms=self._call_timeout_ms
             ) as talk:
                 result, history = await self._read_then_propose(
-                    talk, instructions, context, static, artifacts
+                    talk,
+                    instructions,
+                    context,
+                    static,
+                    artifacts,
+                    findings if feeding.kind == "facts" else None,
                 )
                 proposed = result.value.get("hypotheses", [])
                 proposed = list(proposed) if isinstance(proposed, list) else []
