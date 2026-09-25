@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from sastsimi.sandbox.docker_adapter import DockerCommandOutcome
+from sastsimi.sandbox.docker_adapter import DockerCommandOutcome, DockerOperationError
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
     STAGE_VERSION,
@@ -58,6 +58,127 @@ class _BuildDocker:
         del workspace, cache_key, labels
         self.dockerfiles.append(dockerfile)
         return "sha256:" + "a" * 64
+
+
+class _FailingBuildDocker(_BuildDocker):
+    def __init__(self, failures: list[bytes]) -> None:
+        super().__init__()
+        self.failures = failures
+
+    async def build_or_reuse(
+        self,
+        *,
+        workspace: Path,
+        dockerfile: bytes,
+        cache_key: str,
+        labels: Mapping[str, str],
+    ) -> str:
+        result = await super().build_or_reuse(
+            workspace=workspace,
+            dockerfile=dockerfile,
+            cache_key=cache_key,
+            labels=labels,
+        )
+        if self.failures:
+            raise DockerOperationError(
+                "DOCKER_BUILD_FAILED",
+                DockerCommandOutcome(1, b"", self.failures.pop(0), False),
+            )
+        return result
+
+
+@pytest.mark.asyncio
+async def test_dependency_failure_uses_recorded_source_only_fallback(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "Dockerfile").write_bytes(
+        b"FROM python:3.12-slim\nRUN pip install -r requirements.txt\n"
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-fallback",
+        workspace_id="workspace-fallback",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-fallback",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    checkpoint = _environment_checkpoint(artifacts, action="RETRY_STAGE", patch="")
+    docker = _FailingBuildDocker([b"RUN pip install -r requirements.txt: exit code 1"])
+
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    ).prepare(checkpoint, {}, ())
+
+    recipe = json.loads(artifacts.read(result.recipe_ref))
+    assert recipe["dockerfile_source"] == "GENERATED_NO_INSTALL"
+    assert recipe["degraded"] is True
+    assert len(recipe["build_attempt_refs"]) == 2
+    assert b"pip install" not in docker.dockerfiles[1]
+    assert json.loads(artifacts.read(result.recipe_ref))["status"] == "BUILT"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "diagnostics", [b"syntax error near FROM", b"pull access denied"]
+)
+async def test_unrelated_build_failure_does_not_fallback(
+    tmp_path: Path, diagnostics: bytes
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "Dockerfile").write_bytes(b"FROM invalid\n")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-no-fallback",
+        workspace_id="workspace-no-fallback",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-no-fallback",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    checkpoint = _environment_checkpoint(artifacts, action="RETRY_STAGE", patch="")
+    docker = _FailingBuildDocker([diagnostics])
+
+    with pytest.raises(DockerOperationError, match="DOCKER_BUILD_FAILED") as failure:
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+        ).prepare(checkpoint, {}, ())
+
+    assert len(docker.dockerfiles) == 1
+    assert len(failure.value.attempt_refs) == 1  # type: ignore[attr-defined]
+    attempt = json.loads(artifacts.read(failure.value.attempt_refs[0]))  # type: ignore[attr-defined]
+    assert attempt["status"] == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_both_build_failures_recorded_without_success(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "requirements.txt").write_text("broken==1\n", encoding="utf-8")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-both-fail",
+        workspace_id="workspace-both-fail",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-both-fail",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    checkpoint = _environment_checkpoint(artifacts, action="RETRY_STAGE", patch="")
+    docker = _FailingBuildDocker(
+        [b"RUN pip install -r requirements.txt: exit code 1", b"network timeout"]
+    )
+
+    with pytest.raises(DockerOperationError) as failure:
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+        ).prepare(checkpoint, {}, ())
+
+    assert len(docker.dockerfiles) == 2
+    assert len(failure.value.attempt_refs) == 2  # type: ignore[attr-defined]
 
 
 def _environment_checkpoint(

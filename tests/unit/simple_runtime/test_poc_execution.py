@@ -16,6 +16,7 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
+from sastsimi.simple_runtime.runner import StageBlocked
 from sastsimi.simple_runtime.stages import PoCExecutionStage
 
 
@@ -46,8 +47,15 @@ class _Docker:
 
 
 class _Containers:
+    def __init__(self) -> None:
+        self.released: list[str] = []
+
     async def acquire(self, _checkpoint: StageCheckpoint) -> str:
         return "a" * 64
+
+    async def release(self, _checkpoint: StageCheckpoint, container_id: str) -> bool:
+        self.released.append(container_id)
+        return True
 
 
 @pytest.mark.asyncio
@@ -91,11 +99,12 @@ async def test_runtime_pins_interpretation_to_exact_execution_ref(
         input_hash=input_reference_hash(input_refs),
         attempt_id="attempt-1",
     )
+    containers = _Containers()
     stage = PoCExecutionStage(
         client=_InterpretationClient(),
         artifacts=artifacts,
         docker=_Docker(),  # type: ignore[arg-type]
-        containers=_Containers(),
+        containers=containers,
     )
 
     result = await stage(
@@ -104,7 +113,67 @@ async def test_runtime_pins_interpretation_to_exact_execution_ref(
     )
 
     assert result.validated_poc_ref is not None
-    execution_ref, interpretation_ref, _validated_ref = result.output_refs
+    execution_ref, interpretation_ref, _validated_ref, cleanup_ref = result.output_refs
     interpretation = json.loads(artifacts.read(interpretation_ref))
     assert interpretation["execution_ref"] == execution_ref.model_dump(mode="json")
     assert "execution_ref" not in interpretation["result"]
+    assert json.loads(artifacts.read(cleanup_ref))["status"] == "REMOVED"
+    assert containers.released == ["a" * 64]
+
+
+@pytest.mark.asyncio
+async def test_poc_execution_error_is_blocked_and_releases_container(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-error",
+        workspace_id="workspace-error",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-error",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    content_ref = artifacts.put_bytes(b"#!/bin/sh\nexit 2\n", "text/x-shellscript")
+    candidate_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_candidate",
+            "content_ref": content_ref.model_dump(mode="json"),
+            "attempt_id": "attempt-error",
+        }
+    )
+    refs = (candidate_ref, content_ref)
+    candidate = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        output_refs=refs,
+        attempt_id="attempt-error",
+        image_digest=f"sha256:{'1' * 64}",
+    )
+    current = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_EXECUTION_DONE,
+        status=StageStatus.PENDING,
+        input_refs=refs,
+        input_hash=input_reference_hash(refs),
+        attempt_id="attempt-error",
+    )
+
+    class _FailingDocker(_Docker):
+        async def execute(self, *_args: Any, **_kwargs: Any) -> DockerCommandOutcome:
+            return DockerCommandOutcome(2, b"", b"script failed", False)
+
+    containers = _Containers()
+    stage = PoCExecutionStage(
+        client=_InterpretationClient(),
+        artifacts=artifacts,
+        docker=_FailingDocker(),  # type: ignore[arg-type]
+        containers=containers,
+    )
+
+    with pytest.raises(StageBlocked) as blocked:
+        await stage(current, {SimpleStage.POC_CANDIDATE_DONE: candidate})
+
+    assert blocked.value.failure.code == "POC_EXECUTION_FAILED"
+    assert containers.released == ["a" * 64]

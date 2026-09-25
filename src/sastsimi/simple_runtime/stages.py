@@ -59,6 +59,8 @@ _ROLE_BY_STAGE: dict[SimpleStage, str] = {
 class SimpleContainerFactory(Protocol):
     async def acquire(self, checkpoint: StageCheckpoint) -> str: ...
 
+    async def release(self, checkpoint: StageCheckpoint, container_id: str) -> bool: ...
+
 
 @dataclass(frozen=True, slots=True)
 class ReproductionEnvironment:
@@ -393,6 +395,8 @@ class PoCExecutionStage:
         content = self._artifacts.read(content_ref)
         validate_candidate(content, allowed_environment_names=frozenset())
         container_id = await self._container(candidate)
+        evidence_refs: list[StoredDataRef] = []
+        execution_error: DockerOperationError | OSError | ValueError | None = None
         try:
             await self._docker.materialize_poc(
                 container_id,
@@ -405,37 +409,100 @@ class PoCExecutionStage:
                 _POC_TIMEOUT_MS,
                 working_directory="/workspace",
             )
+            stdout_ref = self._artifacts.put_bytes(outcome.stdout, "text/plain")
+            stderr_ref = self._artifacts.put_bytes(outcome.stderr, "text/plain")
+            execution_ref = self._artifacts.put_json(
+                {
+                    "kind": "simple_poc_execution",
+                    "candidate_ref": candidate_ref.model_dump(mode="json"),
+                    "content_ref": content_ref.model_dump(mode="json"),
+                    "stdout_ref": stdout_ref.model_dump(mode="json"),
+                    "stderr_ref": stderr_ref.model_dump(mode="json"),
+                    "exit_code": outcome.exit_code,
+                    "timed_out": outcome.timed_out,
+                    "container_id": container_id,
+                    "image_digest": candidate.image_digest,
+                    "attempt_id": checkpoint.attempt_id,
+                }
+            )
+            evidence_refs.extend((execution_ref, stdout_ref, stderr_ref))
         except (DockerOperationError, OSError, ValueError) as error:
+            docker_outcome = (
+                error.outcome if isinstance(error, DockerOperationError) else None
+            )
+            error_stdout_ref = (
+                self._artifacts.put_bytes(docker_outcome.stdout, "text/plain")
+                if docker_outcome is not None
+                else None
+            )
+            error_stderr_ref = (
+                self._artifacts.put_bytes(docker_outcome.stderr, "text/plain")
+                if docker_outcome is not None
+                else None
+            )
+            error_ref = self._artifacts.put_json(
+                {
+                    "kind": "simple_poc_execution_error",
+                    "candidate_ref": candidate_ref.model_dump(mode="json"),
+                    "container_id": container_id,
+                    "attempt_id": checkpoint.attempt_id,
+                    "error_code": getattr(error, "code", "POC_EXECUTION_FAILED"),
+                    "stdout_ref": (
+                        error_stdout_ref.model_dump(mode="json")
+                        if error_stdout_ref is not None
+                        else None
+                    ),
+                    "stderr_ref": (
+                        error_stderr_ref.model_dump(mode="json")
+                        if error_stderr_ref is not None
+                        else None
+                    ),
+                }
+            )
+            evidence_refs.extend(
+                ref
+                for ref in (error_ref, error_stdout_ref, error_stderr_ref)
+                if ref is not None
+            )
+            execution_error = error
+        finally:
+            try:
+                removed = await self._containers.release(candidate, container_id)
+            except (DockerOperationError, OSError, ValueError):
+                removed = False
+            cleanup_ref = self._artifacts.put_json(
+                {
+                    "kind": "simple_container_cleanup",
+                    "container_id": container_id,
+                    "attempt_id": checkpoint.attempt_id,
+                    "status": "REMOVED" if removed else "BLOCKED",
+                }
+            )
+            if not removed:
+                raise StageBlocked(
+                    StageFailure(
+                        code="OWNED_CONTAINER_CLEANUP_FAILED",
+                        retryable=True,
+                        safe_message="Owned container cleanup was not confirmed",
+                        evidence_refs=(*evidence_refs, cleanup_ref),
+                    )
+                )
+        if execution_error is not None:
             raise StageBlocked(
                 StageFailure(
-                    code=getattr(error, "code", "POC_EXECUTION_FAILED"),
+                    code=getattr(execution_error, "code", "POC_EXECUTION_FAILED"),
                     retryable=True,
                     safe_message="PoC execution could not complete",
+                    evidence_refs=(*evidence_refs, cleanup_ref),
                 )
-            ) from error
-        stdout_ref = self._artifacts.put_bytes(outcome.stdout, "text/plain")
-        stderr_ref = self._artifacts.put_bytes(outcome.stderr, "text/plain")
-        execution_ref = self._artifacts.put_json(
-            {
-                "kind": "simple_poc_execution",
-                "candidate_ref": candidate_ref.model_dump(mode="json"),
-                "content_ref": content_ref.model_dump(mode="json"),
-                "stdout_ref": stdout_ref.model_dump(mode="json"),
-                "stderr_ref": stderr_ref.model_dump(mode="json"),
-                "exit_code": outcome.exit_code,
-                "timed_out": outcome.timed_out,
-                "container_id": container_id,
-                "image_digest": candidate.image_digest,
-                "attempt_id": checkpoint.attempt_id,
-            }
-        )
+            ) from execution_error
         if outcome.timed_out or outcome.exit_code >= 2:
             raise StageBlocked(
                 StageFailure(
                     code="POC_EXECUTION_FAILED",
                     retryable=True,
                     safe_message="PoC script did not produce a usable observation",
-                    evidence_refs=(execution_ref, stdout_ref, stderr_ref),
+                    evidence_refs=(execution_ref, stdout_ref, stderr_ref, cleanup_ref),
                 )
             )
         interpretation_schema = _object_schema(
@@ -491,7 +558,7 @@ artifact. Do not reinterpret an execution error as DISPROVED.
             )
         if outcome_name == "DISPROVED":
             return StageResult(
-                output_refs=(execution_ref, interpretation_ref),
+                output_refs=(execution_ref, interpretation_ref, cleanup_ref),
                 recipe_ref=candidate.recipe_ref,
                 image_digest=candidate.image_digest,
                 container_id=container_id,
@@ -528,7 +595,7 @@ artifact. Do not reinterpret an execution error as DISPROVED.
             }
         )
         return StageResult(
-            output_refs=(execution_ref, interpretation_ref, validated_ref),
+            output_refs=(execution_ref, interpretation_ref, validated_ref, cleanup_ref),
             validated_poc_ref=validated_ref,
             recipe_ref=candidate.recipe_ref,
             image_digest=candidate.image_digest,
@@ -551,7 +618,24 @@ artifact. Do not reinterpret an execution error as DISPROVED.
         if checkpoint.container_id and checkpoint.image_digest:
             try:
                 state = await self._docker.inspect(checkpoint.container_id)
-                if state.running and state.image_digest == checkpoint.image_digest:
+                expected = {
+                    "sastsimi.owner": "simple-runtime",
+                    "sastsimi.analysis-id": checkpoint.identity.analysis_id,
+                    "sastsimi.workspace-id": checkpoint.identity.workspace_id,
+                    "sastsimi.commit-id": checkpoint.identity.commit_id,
+                    "sastsimi.hypothesis-id": (
+                        checkpoint.identity.hypothesis_id or "analysis"
+                    ),
+                    "sastsimi.attempt-id": checkpoint.attempt_id,
+                }
+                if (
+                    state.running
+                    and state.image_digest == checkpoint.image_digest
+                    and all(
+                        state.labels.get(key) == value
+                        for key, value in expected.items()
+                    )
+                ):
                     return checkpoint.container_id
             except (DockerOperationError, OSError, ValueError):
                 pass
@@ -735,6 +819,11 @@ or tool errors are not vulnerability FALSE.
             )
         except (OSError, RuntimeError, ValueError) as error:
             code = str(error)
+            attempt_refs = getattr(error, "attempt_refs", ())
+            failed_recipe_ref = getattr(error, "recipe_ref", None)
+            failed_recipe_refs = (
+                (failed_recipe_ref,) if failed_recipe_ref is not None else ()
+            )
             if not code or not all(
                 character.isupper() or character.isdigit() or character in "_:"
                 for character in code
@@ -745,7 +834,7 @@ or tool errors are not vulnerability FALSE.
                     code=code[:160],
                     retryable=True,
                     safe_message="Reproduction environment did not complete",
-                    evidence_refs=(output_ref,),
+                    evidence_refs=(output_ref, *attempt_refs, *failed_recipe_refs),
                 )
             ) from error
         return StageResult(
