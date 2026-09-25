@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -94,7 +95,7 @@ def _foreign_ref() -> StoredDataRef:
 
 
 @pytest.mark.asyncio
-async def test_non_retryable_failure_never_calls_recovery_llm(tmp_path) -> None:
+async def test_non_retryable_failure_never_calls_recovery_llm(tmp_path: Path) -> None:
     running_checkpoint = _running_checkpoint()
     client = DecisionClient({})
     artifacts = SimpleArtifactRepository(tmp_path, running_checkpoint.identity)
@@ -114,7 +115,9 @@ async def test_non_retryable_failure_never_calls_recovery_llm(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_valid_environment_rebuild_is_stored_as_exact_artifact(tmp_path) -> None:
+async def test_valid_environment_rebuild_is_stored_as_exact_artifact(
+    tmp_path: Path,
+) -> None:
     running_checkpoint = _running_checkpoint()
     client = DecisionClient(
         {
@@ -182,7 +185,7 @@ def test_environment_patch_accepts_allowlisted_package_commands(patch: str) -> N
 
 
 @pytest.mark.asyncio
-async def test_provider_failure_becomes_stored_stop(tmp_path) -> None:
+async def test_provider_failure_becomes_stored_stop(tmp_path: Path) -> None:
     checkpoint = _running_checkpoint()
     client = DecisionClient(
         StageFailure(
@@ -211,7 +214,7 @@ async def test_provider_failure_becomes_stored_stop(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_provider_exception_becomes_stored_stop(tmp_path) -> None:
+async def test_provider_exception_becomes_stored_stop(tmp_path: Path) -> None:
     checkpoint = _running_checkpoint()
     client = RaisingDecisionClient({})
     artifacts = SimpleArtifactRepository(tmp_path, checkpoint.identity)
@@ -234,7 +237,9 @@ async def test_provider_exception_becomes_stored_stop(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_coordinator_rejects_a_different_hypothesis_identity(tmp_path) -> None:
+async def test_coordinator_rejects_a_different_hypothesis_identity(
+    tmp_path: Path,
+) -> None:
     checkpoint = _running_checkpoint()
     foreign_identity = checkpoint.identity.model_copy(
         update={"hypothesis_id": "hypothesis-foreign"}
@@ -258,7 +263,7 @@ async def test_coordinator_rejects_a_different_hypothesis_identity(tmp_path) -> 
 
 
 @pytest.mark.asyncio
-async def test_invalid_category_action_pair_becomes_stored_stop(tmp_path) -> None:
+async def test_invalid_category_action_pair_becomes_stored_stop(tmp_path: Path) -> None:
     checkpoint = _running_checkpoint()
     client = DecisionClient(
         {
@@ -287,7 +292,9 @@ async def test_invalid_category_action_pair_becomes_stored_stop(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_recovery_prompt_redacts_and_bounds_failure_evidence(tmp_path) -> None:
+async def test_recovery_prompt_redacts_and_bounds_failure_evidence(
+    tmp_path: Path,
+) -> None:
     checkpoint = _running_checkpoint()
     artifacts = SimpleArtifactRepository(tmp_path, checkpoint.identity)
     evidence_ref = artifacts.put_bytes(
@@ -322,7 +329,9 @@ async def test_recovery_prompt_redacts_and_bounds_failure_evidence(tmp_path) -> 
 
 
 @pytest.mark.asyncio
-async def test_foreign_reference_is_rejected_before_recovery_llm(tmp_path) -> None:
+async def test_foreign_reference_is_rejected_before_recovery_llm(
+    tmp_path: Path,
+) -> None:
     checkpoint = _running_checkpoint(_foreign_ref())
     client = DecisionClient(
         {

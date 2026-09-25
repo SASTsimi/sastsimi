@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import cast
+
+import pytest
 
 from sastsimi.composition import simple_runtime_composition as composition
 from sastsimi.config.user_config import (
@@ -12,6 +15,7 @@ from sastsimi.config.user_config import (
 from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.application import StaticBootstrapResult
+from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import CheckpointIdentity
 
 
@@ -72,12 +76,17 @@ def _ref(identity: CheckpointIdentity, name: str) -> StoredDataRef:
 
 def test_composition_injects_identity_scoped_recovery_into_app_and_runner(
     tmp_path: Path,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     created: list[CheckpointIdentity] = []
 
     class Coordinator:
-        def __init__(self, *, client, artifacts) -> None:
+        def __init__(
+            self,
+            *,
+            client: object,
+            artifacts: SimpleArtifactRepository,
+        ) -> None:
             del client
             self.identity = artifacts.identity
             created.append(self.identity)
@@ -99,9 +108,11 @@ def test_composition_injects_identity_scoped_recovery_into_app_and_runner(
         workspace_path=tmp_path / "workspace",
     )
 
-    app_recovery = application._recovery_factory(identity)
+    assert application._recovery_factory is not None
+    app_recovery = cast(Coordinator, application._recovery_factory(identity))
     runner = application._runner_factory(application._store, identity, static)
 
     assert app_recovery.identity == identity
-    assert runner.recovery.identity == identity
+    assert runner.recovery is not None
+    assert cast(Coordinator, runner.recovery).identity == identity
     assert created == [identity, identity]
