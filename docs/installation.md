@@ -108,9 +108,11 @@ sastsimi setup
 
 자동화 환경에서는 값을 명시합니다.
 
-```text
-sastsimi setup --non-interactive --auth subscription --provider codex --model <model> --profile full --docker-network none
+```powershell
+sastsimi setup --non-interactive --auth subscription --provider codex --model gpt-6-sol --profile full --docker-network none
 ```
+
+새 Codex `setup`은 모델을 생략해도 `gpt-6-sol`을 기본으로 제안하지만, 기존 설정을 자동 변경하지는 않습니다. 실행 전 본인 계정에서 모델 사용 가능 여부를 확인하세요. Codex CLI의 호출별 토큰·비용은 현재 측정되지 않아 설정한 토큰·비용 상한이 실제 사용량을 제한하지 못합니다. [Provider 설정](provider-setup.md#codex-회원-로그인)에 제한을 설명했습니다.
 
 API 방식은 다음과 같습니다.
 

@@ -18,6 +18,8 @@ The blocked PoCs failed inside generated reproduction scripts. Safe stderr excer
 
 The persisted LLM-attempt table recorded 62 calls, all using `gpt-6-sol`. The Codex CLI adapter returned no per-call token or cost measurements, so both totals are unavailable. The configured token and cost caps cannot currently be enforced for this provider: missing usage is counted as zero by `RunUsageBudget`. The elapsed-time cap is checked before LLM calls, but it is not a wall-clock kill switch for an already running request, build, or PoC. Do not describe these three limits as equally effective for Codex.
 
+After the generic progress fix, `resume A-002 --format json` returned the same `BLOCKED` result in about eight seconds. The persisted LLM-attempt count remained 62 before and after resume; previously completed Agent work was not repeated, and recovery-exhausted PoCs were not silently re-run.
+
 ## Product diagnosis and next steps
 
 `ProgressProjector._status` currently gives any historical `BLOCKED` checkpoint priority over an actively `RUNNING` checkpoint. During this run, `status A-002` reported `BLOCKED` at an earlier hypothesis while later hypotheses were still executing. This is a reproducible, repository-independent progress-reporting defect. Add a regression test with one blocked and one running hypothesis, then show the active hypothesis until processing stops; when processing has stopped, preserve the terminal `FAILED`/`BLOCKED` precedence.

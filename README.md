@@ -44,19 +44,23 @@
 ```powershell
 git clone https://github.com/SASTsimi/sastsimi.git
 cd sastsimi
-python -m pip install .
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e .
 sastsimi --help
 ```
 
-소스 개발자는 `uv sync --frozen` 후 `uv run sastsimi ...`를 사용할 수 있지만, 일반 사용자는 설치 후 `sastsimi` 명령만 사용하면 됩니다.
+위 명령은 각각 PowerShell 한 줄입니다. 가상환경이 활성화된 터미널에서는 `sastsimi`를 바로 실행할 수 있습니다. 새 터미널에서는 `.\.venv\Scripts\Activate.ps1`을 다시 실행하세요.
 
 ### 3. 최초 설정
 
-```text
-sastsimi setup
+```powershell
+codex login
+codex login status
+sastsimi setup --non-interactive --auth subscription --provider codex --model gpt-6-sol --profile full --docker-network none
 ```
 
-`setup`은 기본 저장 위치, LLM 인증 방식, Provider와 모델, 사용할 분석 도구, 비용·시간·토큰 제한과 Docker 네트워크 설정을 한 번에 구성합니다. API key와 로그인 token은 설정 파일에 직접 저장하지 않습니다.
+`setup`은 기본 저장 위치, Provider·모델, 분석 도구, 사용 제한과 Docker 네트워크를 구성합니다. Codex에서 모델을 생략하면 새 설정의 기본 제안은 `gpt-6-sol`이며, 기존 설치 설정은 자동으로 바뀌지 않습니다. 다른 모델은 `--model`로 지정하세요. API key와 로그인 token은 설정 파일에 직접 저장하지 않습니다. `full`에는 CodeQL query pack이 필요합니다.
 
 API를 사용한다면 key는 환경변수로 전달합니다.
 
@@ -65,59 +69,29 @@ $env:OPENAI_API_KEY = "<현재 터미널에만 설정>"
 sastsimi setup --auth api-key --provider openai --model <사용할-model>
 ```
 
-ChatGPT 회원 로그인을 사용한다면 브라우저 cookie를 복사하지 않고 공식 Codex CLI로 인증합니다.
+ChatGPT 회원 로그인은 공식 Codex CLI의 본인 계정으로 처리하며 브라우저 cookie를 복사하지 않습니다.
 
-```text
-codex login
-codex login status
-sastsimi setup --auth subscription --provider codex --model <사용할-model>
-```
-
-### Cursor 회원 로그인으로 분석하기 (Windows PowerShell)
-
-Cursor의 [공식 CLI](https://cursor.com/help/integrations/cli)는 브라우저 계정 로그인과 비대화형 실행을 지원합니다. SASTSIMI는 CLI가 보관한 본인 로그인 상태를 사용하며 비밀번호·세션 파일을 복사하거나 공유하지 않습니다. API 키를 쓰는 [공식 Python SDK](https://cursor.com/docs/sdk/python) 경로는 선택사항으로 남겨두었습니다.
-
-아래 명령은 각각 PowerShell 한 줄입니다. 모델은 먼저 계정별 목록에서 확인한 **정확한 ID**를 사용하세요. Grok/Composer 계열을 기본 모델로, Claude/GPT 계열을 `verification_result` 등에 지정할 수 있지만 목록에 표시된 경우에만 유효합니다. 모델 목록 표시는 무료 플랜에서의 실제 호출 권한까지 보장하지 않습니다. 무료 계정은 제한된 요청량을 쓰므로 전체 저장소 분석 전에 사용량을 확인하세요.
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-.\.venv\Scripts\python.exe -m pip install -e .
-irm 'https://cursor.com/install?win32=true' | iex
-& "$env:LOCALAPPDATA\cursor-agent\agent.cmd" login
-& "$env:LOCALAPPDATA\cursor-agent\agent.cmd" status
-.\.venv\Scripts\sastsimi.exe cursor-models
-.\.venv\Scripts\sastsimi.exe setup --non-interactive --auth subscription --provider cursor --model '<목록에서 확인한 기본 모델 ID>' --agent-model 'verification_result=<목록에서 확인한 최종 검증 모델 ID>' --cursor-allow-on-demand
-.\.venv\Scripts\sastsimi.exe analyze https://github.com/adeyosemanputra/pygoat.git --commit <정확한-SHA>
-```
-
-설정의 `provider`, `model`, `[agent_models]`, `llm_timeout_seconds`, `llm_max_retries`, `llm_max_concurrency`, `cursor_allow_on_demand`, `fallback_provider`, `fallback_model`은 `%LOCALAPPDATA%\sastsimi\sastsimi\config.toml` 및 같은 폴더의 `profile.toml`에 저장됩니다. `--agent-model`은 여러 번 지정할 수 있습니다. 역할 키: `hypothesis`, `pro_evidence`, `con_evidence`, `initial_verification`, `poc_candidate`, `poc_interpretation`, `verification_result`, `cwe_label`, `technical_gate`, `rule_scope_gate`, `chaining`, `report_draft`, `recovery`. 지정하지 않은 역할은 공통 기본 모델을 씁니다. 선택적으로 `--fallback-provider openai --fallback-model '<OpenAI 모델>'` 또는 `codex`를 설정할 수 있으며, 장애 시에만 사용합니다. OpenAI fallback은 별도 `OPENAI_API_KEY`가 필요합니다.
-
-기존 분석 방식은 기본값으로 유지됩니다. `profile.toml`에서만 `hypothesis_feed = "facts_survey"`를 선택형으로 활성화하고 `max_parallel_hypotheses`, `max_parallel_builds`, `max_parallel_containers`를 조절할 수 있습니다. Docker 의존성 설치가 실패하면 근거를 기록한 뒤 소스 전용 빌드를 한 번 시도하며, 이 image의 생성만으로 PoC를 검증 완료로 처리하지 않습니다. 자세한 설정과 제한은 [Provider 설정](docs/provider-setup.md#선택형-분석-설정) 및 [오류 해결](docs/troubleshooting.md#docker-또는-poc-실패)을 참고하세요.
-
-Cursor 설정은 기본 `sastsimi analyze <저장소> --commit <SHA>`와 그 `resume`에 사용하는 SimpleRuntime의 전체 분석 Agent에 적용됩니다. 별도 레거시 `analyze --profile`과 `evaluate` 파이프라인은 다른 provider 구성을 사용하므로 이 설정을 적용하지 않습니다.
-
-Cursor CLI/SDK는 일반 completion API가 아니며 서버 측 JSON Schema 강제를 보장하지 않습니다. SASTSIMI가 응답을 직접 검증하고 제한된 횟수만 재요청합니다. CLI는 읽기 전용 Ask 모드의 비대화형 실행을 사용하며 프롬프트는 빈 임시 작업 디렉터리에서 처리합니다. CLI가 반환하는 모델 목록은 표시 텍스트이므로 현재 검증한 `id - 이름` 형식이 달라지면 모델 검증을 실패 처리합니다. CLI JSON 결과에는 토큰·비용이 없어 이 값은 미제공으로 표시됩니다. SDK에는 토큰/비용 정보가 있으나 결제 금액은 늦게 확정될 수 있습니다. 어느 경로에도 요청별 on-demand 차단 옵션이 문서화되어 있지 않아 `--cursor-allow-on-demand` 없이는 Cursor 호출을 안전하게 중단합니다. 이 옵션은 과금 허용을 뜻하기보다 **과금 가능성 인지** 확인입니다. 사용 전 [Cursor 사용량·초과 과금 설정](https://cursor.com/help/account-and-billing/overages)에서 on-demand를 꺼두거나 지출 한도를 설정하세요. 대시보드에 경고가 표시됩니다.
+Cursor와 Claude도 선택할 수 있습니다. 계정별 인증, 모델 목록 확인, Agent별 모델, fallback, on-demand 사용량 설정은 [Provider 설정](docs/provider-setup.md)을 참고하세요. 기존 분석 방식의 선택형 `facts_survey`와 Docker 복구 동작은 [운영 설정](docs/provider-setup.md#선택형-분석-설정) 및 [오류 해결](docs/troubleshooting.md#docker-또는-poc-실패)에 정리했습니다.
 
 ### 4. 저장소 분석
 
 정확한 40자리 또는 64자리 commit SHA를 사용합니다.
 
-```text
-sastsimi analyze https://github.com/adeyosemanputra/pygoat.git --commit <exact-SHA>
+```powershell
+sastsimi analyze https://github.com/owner/repository.git --commit <정확한-40자리-SHA>
 ```
 
 분석 중단 후에는 완료된 앞 단계를 다시 실행하지 않고 이어서 진행할 수 있습니다.
 
-```text
+```powershell
 sastsimi status A-001
 sastsimi resume A-001
+sastsimi result A-001
 ```
 
 ### 5. 결과 확인
 
-```text
-sastsimi result A-001
+```powershell
 sastsimi dashboard
 sastsimi poc F-001
 sastsimi report F-001
@@ -164,6 +138,7 @@ Reporter는 검증 결과, CWE, validated PoC와 Gate 결과에 없는 새로운
 - Windows clean wheel 환경과 WSL/Linux Docker 흐름을 확인했지만, 설치한 컴퓨터에서 `sastsimi setup`으로 외부 도구와 인증 상태를 다시 확인해야 합니다.
 - CodeQL은 query pack이 포함된 공식 platform bundle이 필요합니다. 준비되지 않으면 `full` 프로필을 활성화하지 않습니다.
 - 인증 실패, 도구 미설치, timeout, Docker build 실패와 LLM 출력 오류는 취약점 `FALSE`로 바꾸지 않고 `BLOCKED` 또는 판정 없는 `FAILED`로 기록합니다.
+- Codex CLI 경로의 요청별 토큰·비용은 현재 미제공입니다. 설정된 토큰·비용 상한으로 실제 사용량을 강제할 수 없으므로 계정 사용량을 별도로 확인하세요. 자세한 내용은 [Provider 설정](docs/provider-setup.md#codex-회원-로그인)을 참고하세요.
 - 공식 분석 정책이 없거나 대상 범위 밖이어도 기술 검증 결과를 내부 보고서로 남길 수 있습니다. 외부 제출·공개 제한은 보고서에 함께 표시합니다.
 - 자동 외부 제출·공개, HTML/PDF 보고서와 대시보드 쓰기 기능은 지원하지 않습니다.
 

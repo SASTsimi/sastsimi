@@ -26,6 +26,7 @@ sastsimi analyze https://github.com/adeyosemanputra/pygoat.git --commit 19d17cc8
 ```
 
 진행률은 시간으로 만든 가짜 값이 아니라 저장에 성공한 작업 수와 현재 알려진 전체 작업 수로 계산합니다. Chaining이 새 가설을 만들면 전체 작업 수가 늘어 일시적으로 비율이 낮아질 수 있습니다.
+한 가설이 `BLOCKED`여도 다른 가설의 단계가 실제로 실행 중이면 전체 상태는 `RUNNING`과 현재 가설을 표시합니다. 실행이 끝나면 남은 `FAILED` 또는 `BLOCKED`를 표시합니다.
 
 자동화에서 구조화된 값만 필요하면 다음을 사용합니다.
 
@@ -43,6 +44,7 @@ sastsimi resume A-001
 ```
 
 `resume`은 저장된 성공 결과와 같은 commit의 Docker image를 재사용하고 실패하거나 끝나지 않은 단계부터 이어갑니다. 성공한 clone·정적 분석·가설·Pro·Con을 다시 실행하지 않습니다.
+자동 복구 횟수를 이미 소진한 PoC는 `resume`만으로 새 시도를 만들지 않으며 계속 `BLOCKED`로 남습니다. 실행 오류는 취약점 `FALSE` 판정이 아닙니다.
 
 선택형 `facts_survey`와 병렬 처리 설정도 성공한 가설·Agent 단계를 중복 실행하지 않도록 체크포인트를 사용합니다. 기본값은 기존 `current` 가설 생성과 가설 1개씩 처리입니다. 설정과 주의사항은 [Provider 설정](provider-setup.md#선택형-분석-설정)을 참조하세요.
 
