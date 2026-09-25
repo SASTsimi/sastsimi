@@ -69,6 +69,7 @@ def _environment_checkpoint(
     decision_ref = artifacts.put_json(
         {
             "kind": "simple_recovery_decision",
+            "identity": artifacts.identity.model_dump(mode="json"),
             "decision": {
                 "category": (
                     "ENVIRONMENT"
@@ -283,6 +284,78 @@ async def test_non_rebuild_decision_does_not_patch_environment(
 
 
 @pytest.mark.asyncio
+async def test_retry_after_rebuild_keeps_the_latest_rebuild_patch(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "Dockerfile").write_bytes(b"FROM python:3.12-slim\n")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-rebuild-retry",
+        workspace_id="workspace-rebuild-retry",
+        commit_id="e" * 40,
+        hypothesis_id="hypothesis-rebuild-retry",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    rebuild = _environment_checkpoint(
+        artifacts,
+        action="REBUILD_ENVIRONMENT",
+        patch="RUN python -m pip install -e '.[test]'",
+    )
+    retry = _environment_checkpoint(
+        artifacts,
+        action="RETRY_STAGE",
+        patch="",
+    )
+    inputs = rebuild.input_refs + retry.input_refs
+    checkpoint = retry.model_copy(
+        update={"input_refs": inputs, "input_hash": input_reference_hash(inputs)}
+    )
+    docker = _BuildDocker()
+
+    await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    ).prepare(checkpoint, {}, ())
+
+    assert b"RUN python -m pip install -e '.[test]'" in docker.dockerfiles[0]
+
+
+@pytest.mark.asyncio
+async def test_rebuild_rejects_a_different_hypothesis_decision(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "Dockerfile").write_bytes(b"FROM python:3.12-slim\n")
+    target_identity = CheckpointIdentity(
+        analysis_id="analysis-scope",
+        workspace_id="workspace-scope",
+        commit_id="f" * 40,
+        hypothesis_id="hypothesis-target",
+    )
+    foreign_identity = target_identity.model_copy(
+        update={"hypothesis_id": "hypothesis-foreign"}
+    )
+    foreign_artifacts = SimpleArtifactRepository(tmp_path / "data", foreign_identity)
+    foreign = _environment_checkpoint(
+        foreign_artifacts,
+        action="REBUILD_ENVIRONMENT",
+        patch="RUN python -m pip install pytest",
+    )
+    checkpoint = foreign.model_copy(update={"identity": target_identity})
+    docker = _BuildDocker()
+
+    with pytest.raises(ValueError, match="RECOVERY_DECISION_IDENTITY_MISMATCH"):
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=SimpleArtifactRepository(tmp_path / "data", target_identity),
+            workspace=workspace,
+        ).prepare(checkpoint, {}, ())
+
+    assert docker.dockerfiles == []
+
+
+@pytest.mark.asyncio
 async def test_invalid_recovery_decision_artifact_fails_before_docker_build(
     tmp_path: Path,
 ) -> None:
@@ -296,7 +369,11 @@ async def test_invalid_recovery_decision_artifact_fails_before_docker_build(
     )
     artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
     invalid_ref = artifacts.put_json(
-        {"kind": "simple_recovery_decision", "decision": {"action": "STOP"}}
+        {
+            "kind": "simple_recovery_decision",
+            "identity": identity.model_dump(mode="json"),
+            "decision": {"action": "STOP"},
+        }
     )
     checkpoint = StageCheckpoint(
         identity=identity,

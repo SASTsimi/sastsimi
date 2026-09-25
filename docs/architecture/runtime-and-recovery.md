@@ -19,7 +19,7 @@
 
 재시도 가능한 오류는 LLM 복구 결정으로 도구 재시도, 생성 입력 재작성 또는 일회용
 Docker 환경 재구성을 최대 3회 수행합니다. 각 결정과 변경은 artifact와 checkpoint에
-남고 대시보드에는 현재 복구 시도 횟수가 표시됩니다. 한 계보가 소진되면
+남고 `status`와 대시보드에는 현재 복구 시도 횟수가 표시됩니다. 한 계보가 소진되면
 `RECOVERY_EXHAUSTED`로 중단하지만 다른 독립 가설은 계속 처리합니다.
 
 Technical Gate의 `REVISE`는 같은 가설의 최종 Verification을 다시 수행하도록

@@ -20,7 +20,7 @@ from sastsimi.sandbox.docker_adapter import (
 )
 
 from .artifacts import SimpleArtifactRepository
-from .models import SimpleStage, StageCheckpoint
+from .models import CheckpointIdentity, SimpleStage, StageCheckpoint
 from .recovery import (
     RecoveryAction,
     RecoveryDecision,
@@ -379,6 +379,9 @@ class DirectEnvironmentPreparer:
                 "simple_recovery_decision"
             ):
                 continue
+            decision_identity = CheckpointIdentity.model_validate(value.get("identity"))
+            if decision_identity != checkpoint.identity:
+                raise ValueError("RECOVERY_DECISION_IDENTITY_MISMATCH")
             decision_value = value.get("decision")
             if not isinstance(decision_value, dict):
                 raise ValueError("RECOVERY_DECISION_ARTIFACT_INVALID")
@@ -386,7 +389,7 @@ class DirectEnvironmentPreparer:
                 canonical_bytes(decision_value)
             )
             if decision.action is not RecoveryAction.REBUILD_ENVIRONMENT:
-                return b""
+                continue
             patch = validate_environment_patch(decision.environment_patch)
             return (
                 b"\n# SASTSIMI validated recovery patch\n"

@@ -56,6 +56,12 @@ class DecisionClient:
         )
 
 
+class RaisingDecisionClient(DecisionClient):
+    async def call(self, **_kwargs: Any) -> SimpleLLMCallResult | StageFailure:
+        self.calls += 1
+        raise RuntimeError("provider process crashed")
+
+
 def _running_checkpoint(*refs: StoredDataRef) -> StageCheckpoint:
     inputs = tuple(refs)
     return StageCheckpoint(
@@ -202,6 +208,53 @@ async def test_provider_failure_becomes_stored_stop(tmp_path) -> None:
     assert result.decision.category is RecoveryCategory.TERMINAL
     assert result.decision.action is RecoveryAction.STOP
     assert b'"action":"STOP"' in artifacts.read(result.decision_ref)
+
+
+@pytest.mark.asyncio
+async def test_provider_exception_becomes_stored_stop(tmp_path) -> None:
+    checkpoint = _running_checkpoint()
+    client = RaisingDecisionClient({})
+    artifacts = SimpleArtifactRepository(tmp_path, checkpoint.identity)
+
+    result = await SimpleRecoveryCoordinator(
+        client=client,
+        artifacts=artifacts,
+    ).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_EXECUTION_FAILED",
+            retryable=True,
+            safe_message="poc failed",
+        ),
+    )
+
+    assert result.decision.action is RecoveryAction.STOP
+    assert b'"action":"STOP"' in artifacts.read(result.decision_ref)
+    assert client.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_coordinator_rejects_a_different_hypothesis_identity(tmp_path) -> None:
+    checkpoint = _running_checkpoint()
+    foreign_identity = checkpoint.identity.model_copy(
+        update={"hypothesis_id": "hypothesis-foreign"}
+    )
+    client = DecisionClient({})
+
+    with pytest.raises(ValueError, match="RECOVERY_IDENTITY_SCOPE_MISMATCH"):
+        await SimpleRecoveryCoordinator(
+            client=client,
+            artifacts=SimpleArtifactRepository(tmp_path, foreign_identity),
+        ).decide(
+            checkpoint,
+            StageFailure(
+                code="POC_EXECUTION_FAILED",
+                retryable=True,
+                safe_message="poc failed",
+            ),
+        )
+
+    assert client.calls == 0
 
 
 @pytest.mark.asyncio

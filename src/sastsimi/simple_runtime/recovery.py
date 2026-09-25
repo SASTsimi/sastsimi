@@ -172,6 +172,8 @@ class SimpleRecoveryCoordinator:
         checkpoint: StageCheckpoint,
         failure: StageFailure,
     ) -> RecoveryResolution:
+        if checkpoint.identity != self._artifacts.identity:
+            raise ValueError("RECOVERY_IDENTITY_SCOPE_MISMATCH")
         if not failure.retryable or failure.code in TERMINAL_ERROR_CODES:
             return self._store(
                 checkpoint,
@@ -203,11 +205,18 @@ class SimpleRecoveryCoordinator:
                 context,
             )
         )
-        response = await self._client.call(
-            prompt=prompt,
-            output_schema=_DECISION_SCHEMA,
-            timeout_ms=_RECOVERY_TIMEOUT_MS,
-        )
+        try:
+            response = await self._client.call(
+                prompt=prompt,
+                output_schema=_DECISION_SCHEMA,
+                timeout_ms=_RECOVERY_TIMEOUT_MS,
+            )
+        except Exception:
+            response = StageFailure(
+                code="RECOVERY_PROVIDER_FAILED",
+                retryable=False,
+                safe_message="Recovery provider did not return a decision",
+            )
         if isinstance(response, StageFailure):
             decision = self._stop(
                 "recovery provider did not return a decision",

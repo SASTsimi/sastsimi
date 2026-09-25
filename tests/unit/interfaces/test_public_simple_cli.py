@@ -30,6 +30,7 @@ class _PublicApplication:
             "percent": 40,
             "attempt_number": 3,
             "attempt_limit": 3,
+            "error_code": "RECOVERY_EXHAUSTED",
         }
 
     def resume(self, analysis_id: str) -> dict[str, object]:
@@ -189,6 +190,26 @@ def test_public_analyze_renders_checkpoint_progress_when_enabled(
     assert "현재 단계: STATIC_DONE (1/4)" in output
     assert "현재 단계: REPORT_DONE (4/4)" in output
     assert "분석 ID: A-001" in output
+
+
+def test_public_status_shows_recovery_attempt_and_terminal_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert (
+        main(
+            ["status", "A-001"],
+            public_application=_PublicApplication(),
+            user_config_store=_config(tmp_path),
+        )
+        == 0
+    )
+
+    output = capsys.readouterr().out
+    assert "복구 시도: 3/3" in output
+    assert "오류: RECOVERY_EXHAUSTED" in output
+    assert "수동 검토가 필요합니다" in output
+    assert "sastsimi resume" not in output
 
 
 def test_public_poc_and_report_aliases_keep_legacy_report_commands(
