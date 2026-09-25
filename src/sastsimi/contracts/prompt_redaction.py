@@ -16,7 +16,11 @@ _SECRET_KEY = re.compile(
 )
 _HIDDEN_KEY = re.compile(r"(?:chain[_-]?of[_-]?thought|hidden[_-]?reasoning)", re.I)
 _OPAQUE_TOKEN = re.compile(
-    r"(?i)(?:\b(?:bearer|basic)\s+[^\s,;]+|\bsk-[A-Za-z0-9_-]{8,}|"
+    # The value after a scheme must look like a credential.  Matching any
+    # non-space run also matched prose - a report explaining that a stolen key
+    # is reusable "like a Bearer token" was refused as if it carried one - and
+    # a real bearer value is always an ASCII token of some length.
+    r"(?i)(?:\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}|\bsk-[A-Za-z0-9_-]{8,}|"
     r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}|"
     r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{8,}|"
     r"\bglpat-[A-Za-z0-9_-]{8,}|\bxox[A-Za-z0-9]*-[A-Za-z0-9-]{8,}|"
