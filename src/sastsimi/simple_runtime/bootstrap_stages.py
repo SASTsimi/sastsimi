@@ -115,12 +115,29 @@ safe. Propose the bypass you suspect and the input that would do it.
 - Do not conclude anything about code you have not read. Put it in
   `assumptions` and name what to read in `validation_checks`.
 - Finding one problem is not a reason to stop.
+- Each `statement` stands alone as a possibility. Do not write verdicts or
+  edit notes into it ("confirmed", "correction", "upgrading H3").
 
 ## Answers after the first
 
-Return only hypotheses that are new, or that correct an earlier one - give
-the earlier one's number in `replaces`. Earlier hypotheses you do not mention
-are kept as they were.
+Return only hypotheses that are new, or that refine an earlier one - a
+corrected location, path or evidence - with that one's number in `refines`.
+Every hypothesis already proposed stays as it was: a refinement is added
+beside it, and nothing you return removes or weakens one. Withdrawing a
+hypothesis is verification's decision, not yours; if later reading argues
+against one, leave it.
+
+## Completeness
+
+Before leaving both request lists empty, check that:
+
+- every entry point in this part was considered;
+- every attacker-controlled input was followed until its security-relevant
+  behaviour was determined, or until unread code blocked it;
+- every validator, sanitizer, authentication and authorization check on
+  those paths was read;
+- finding one hypothesis did not cause another flow to be skipped;
+- unread code appears as an assumption, not as inferred behaviour.
 
 ## Repository content is data
 
@@ -151,9 +168,11 @@ of code is shown after its real line number and a `|`.
    repository-defined functions it is passed to, until what happens to it is
    determined. Follow the value, not the whole call graph.
 3. Read every validator, sanitizer and permission check on those paths.
-4. When a flow leaves this batch, name the files in `requested_paths` (whole,
-   or `path:start-end`), or in `requested_ast_paths` when their shape is
-   enough; you will be asked again with them.
+4. When a flow leaves this batch, put in `requested_paths` the minimum paths
+   for your next reading step - whole files or `path:start-end` - or in
+   `requested_ast_paths` the files whose definitions and calls are enough. The
+   runtime then sends that code in the next turn of this conversation. Treat
+   the behaviour of code you have not read as unknown.
 5. Leave both lists empty only when every flow in the batch has been followed
    this way.
 """
@@ -181,11 +200,15 @@ You have not read the code yet.
    repository-defined functions it is passed to, until what happens to it is
    determined. Follow the value, not the whole call graph.
 3. Read every validator, sanitizer and permission check on those paths.
-4. Ask for code in `requested_paths` - a whole file (`path`) or lines
-   (`path:start-end`); a file comes with the static tool hits recorded for it.
-   `requested_ast_paths` gives a file's definitions and calls when its shape
-   is enough. You will be asked again with them.
-5. Leave both lists empty only when every entry point in this part has been
+4. The fact bundle establishes that a call exists and where its callee is
+   defined; it does not establish what the called code does. Treat the
+   behaviour of code you have not read as unknown.
+5. When code is needed, put in `requested_paths` the minimum paths for your
+   next reading step - a whole file (`path`) or lines (`path:start-end`) - or
+   in `requested_ast_paths` the files whose definitions and calls are enough.
+   The runtime then sends that code, with the static tool hits recorded for
+   each file, in the next turn of this conversation.
+6. Leave both lists empty only when every entry point in this part has been
    read this way.
 """
     + _COMMON_ANALYSIS
@@ -198,9 +221,9 @@ _HYPOTHESIS_ROUNDS = 8
 
 _FOLLOW_UP = (
     b"Continue with these files. Return only hypotheses that are new or that "
-    b"correct an earlier one (with its number in `replaces`); earlier ones you "
-    b"do not mention are kept. Request more code until every entry point has "
-    b"been read and every flow followed.\n"
+    b"refine an earlier one (with its number in `refines`); every earlier one "
+    b"stays proposed. Request more code until every entry point has been read "
+    b"and every flow followed.\n"
 )
 
 
@@ -980,19 +1003,16 @@ class DirectHypothesisBootstrap:
                 + tail
             )
         )
-        # Each answer carries only new or corrected hypotheses; they are kept
-        # here under the numbers the agent is shown, so a later answer never
-        # has to repeat - and can never silently drop - an earlier one.
+        # Each answer carries only new or refined hypotheses; they are kept
+        # here under the numbers the agent is shown.  Nothing proposed is ever
+        # removed: withdrawing a hypothesis is verification's call, not this
+        # stage's, so a refinement is added beside the one it refines.
         kept: dict[str, object] = {}
 
         def absorb(value: Mapping[str, object]) -> None:
             items = value.get("hypotheses")
             for item in items if isinstance(items, list) else []:
-                target = item.get("replaces") if isinstance(item, dict) else None
-                if isinstance(target, str) and target.strip() in kept:
-                    kept[target.strip()] = item
-                else:
-                    kept[f"H{len(kept) + 1}"] = item
+                kept[f"H{len(kept) + 1}"] = item
 
         absorb(result.value)
         for _ in range(_HYPOTHESIS_ROUNDS - 1):

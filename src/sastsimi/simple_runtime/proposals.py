@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -76,14 +77,23 @@ PROPOSAL_ITEM_SCHEMA: dict[str, Any] = {
         },
         "attacker_control": {"type": "array", "items": {"type": "string"}},
         "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
-        "replaces": {"type": "string"},
+        "potential_impact": {"type": "string"},
+        "refines": {"type": "string"},
     },
 }
 
 CONFIDENCE_LEVELS = ("low", "medium", "high")
+# A statement that opens as a verdict or an edit of another hypothesis.
+_EDITORIAL = re.compile(
+    r"\s*[\(\[]?\s*(confirmed|correction|corrected|updated|upgrading|upgraded|"
+    r"downgrading|downgraded|withdrawn|retracted|refuted)\b",
+    re.IGNORECASE,
+)
 
-PROPOSAL_INSTRUCTIONS = """Each hypothesis is a JSON object with these fields.
-One line per item is enough; say what you know and what you do not.
+PROPOSAL_INSTRUCTIONS = """Every answer is one JSON object: `hypotheses`, an array with
+one object per hypothesis (empty when there is nothing new), and the two
+request lists. One line per item is enough; say what you know and what you do not.
+Each hypothesis object has these fields:
 
 - `statement`: the claim, as a possibility - "this flow may allow ...", never
   "this is vulnerable".
@@ -95,19 +105,26 @@ One line per item is enough; say what you know and what you do not.
   (a dependency, a decorator, a check). Without evidence, `who` is `unknown`;
   do not guess.
 - `attacker_control`: the values the attacker chooses.
-- `confidence`: `low`, `medium` or `high`.
-- `target_locations`: where the defect would be, as repository file paths with
-  the real line numbers.
+- `confidence`: `low`, `medium` or `high` - how strongly the code read so far
+  supports proposing this, not how sure you are that it is exploitable.
+- `potential_impact`: what could result if it is confirmed, phrased
+  conditionally.
+- `target_locations`: where the suspected security-relevant behaviour occurs,
+  as repository file paths with the real line numbers. Do not claim a precise
+  defect location that has not been established.
 - `suspected_path`: the flow from source to where it matters, one location per
-  step, each with its `role` (source, transform, check, sink, state change).
+  step, each with the one `role` that best describes its security-relevant
+  operation: `source`, `transform`, `check`, `sink` or `state_change`.
 - `observed_facts`: the evidence - what the code you read shows.
-- `restrictions`: checks or conditions that limit the attack.
-- `assumptions`: the uncertainty - what must hold but is not yet established,
-  including code you have not read.
-- `falsification_questions`: what, if answered, would rule it out.
-- `validation_checks`: what verification must do to confirm or reject it -
-  which code to read, which input to try, what to observe.
-- `replaces`: only when correcting an earlier hypothesis, its number (`H3`).
+- `restrictions`: attack conditions the code you read establishes - a required
+  role, an accepted method or content type, a non-empty value.
+- `assumptions`: what must hold but is not yet established, including the
+  behaviour of code you have not read.
+- `falsification_questions`: questions whose answer would show it wrong.
+- `validation_checks`: the work that would confirm or reject it - which code
+  to read, which input to try, what to compare or observe.
+- `refines`: only when this refines an earlier hypothesis, its number (`H3`);
+  omitted otherwise. The earlier one stays proposed.
 """
 
 
@@ -218,6 +235,13 @@ def validate_proposal(
     checks = _strings(value.get("validation_checks"))
     if not checks:
         errors.append("validation_checks needs at least one check")
+    if isinstance(statement, str) and _EDITORIAL.match(statement):
+        # A label such as "CORRECTION to H4:" is dropped rather than the
+        # proposal rejected: rejecting it would withdraw a hypothesis, and
+        # that is verification's decision.
+        head, colon, rest = statement.partition(":")
+        if colon and len(head) <= 80 and rest.strip():
+            statement = rest
     confidence = value.get("confidence")
     if confidence not in CONFIDENCE_LEVELS:
         errors.append("confidence must be low, medium or high")
@@ -246,6 +270,14 @@ def validate_proposal(
             },
             "attacker_control": control,
             "confidence": confidence,
+            **(
+                {"refines": value["refines"]}
+                if isinstance(value.get("refines"), str)
+                else {}
+            ),
+            "potential_impact": value.get("potential_impact")
+            if isinstance(value.get("potential_impact"), str)
+            else "",
             "target_locations": [
                 {
                     "file_path": item.file_path,
