@@ -111,7 +111,9 @@ class ProgressProjector:
         hypothesis_count: int,
     ) -> tuple[Literal["RUNNING", "BLOCKED", "FAILED", "COMPLETE"], StageCheckpoint]:
         current = max(checkpoints, key=lambda item: item.updated_at)
-        for status in (StageStatus.BLOCKED, StageStatus.FAILED, StageStatus.RUNNING):
+        # An active stage is the current analysis, even when an earlier
+        # hypothesis has already stopped. Once idle, failed outranks blocked.
+        for status in (StageStatus.RUNNING, StageStatus.FAILED, StageStatus.BLOCKED):
             matches = [item for item in checkpoints if item.status is status]
             if matches:
                 result_status: Literal["BLOCKED", "FAILED", "RUNNING"] = (

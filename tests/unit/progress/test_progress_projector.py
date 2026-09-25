@@ -37,6 +37,7 @@ def _save(
     status: StageStatus = StageStatus.SUCCEEDED,
     verdict: Literal["TRUE", "FALSE", "HOLD"] | None = None,
     attempt_number: int = 0,
+    error_code: str | None = None,
 ) -> None:
     checkpoint = StageCheckpoint(
         identity=identity,
@@ -49,6 +50,7 @@ def _save(
         else (),
         verdict=verdict,
         attempt_number=attempt_number,
+        error_code=error_code,
     )
     store.save_checkpoint(checkpoint)
 
@@ -174,3 +176,62 @@ def test_progress_projects_the_current_recovery_attempt(tmp_path: Path) -> None:
 
     assert snapshot.attempt_number == 2
     assert snapshot.attempt_limit == 3
+
+
+def test_running_hypothesis_takes_priority_over_earlier_blocked_one(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    blocked = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-a",
+    )
+    running = blocked.model_copy(update={"hypothesis_id": "hypothesis-b"})
+    _save(
+        store,
+        blocked,
+        SimpleStage.POC_EXECUTION_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="RECOVERY_EXHAUSTED",
+    )
+    _save(store, running, SimpleStage.PRO_CON_DONE, status=StageStatus.RUNNING)
+
+    snapshot = ProgressProjector(store).snapshot("analysis-1")
+
+    assert snapshot.status == "RUNNING"
+    assert snapshot.current_hypothesis_id == "hypothesis-b"
+    assert snapshot.current_stage == SimpleStage.PRO_CON_DONE.value
+    assert snapshot.error_code is None
+
+
+def test_failed_hypothesis_takes_priority_over_blocked_one(tmp_path: Path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    blocked = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-a",
+    )
+    failed = blocked.model_copy(update={"hypothesis_id": "hypothesis-b"})
+    _save(
+        store,
+        blocked,
+        SimpleStage.POC_EXECUTION_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="RECOVERY_EXHAUSTED",
+    )
+    _save(
+        store,
+        failed,
+        SimpleStage.PRO_CON_DONE,
+        status=StageStatus.FAILED,
+        error_code="TEST_FAILURE",
+    )
+
+    snapshot = ProgressProjector(store).snapshot("analysis-1")
+
+    assert snapshot.status == "FAILED"
+    assert snapshot.current_hypothesis_id == "hypothesis-b"
+    assert snapshot.error_code == "TEST_FAILURE"
