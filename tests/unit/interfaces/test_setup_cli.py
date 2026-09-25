@@ -344,6 +344,9 @@ def test_cursor_setup_keeps_models_and_fallback_without_secret(tmp_path: Path) -
             llm_timeout_seconds=45,
             llm_max_retries=1,
             llm_max_concurrency=3,
+            max_parallel_hypotheses=2,
+            max_parallel_builds=2,
+            max_parallel_containers=3,
             cursor_allow_on_demand=True,
             fallback_provider="openai",
             fallback_model="fallback-model",
@@ -358,6 +361,9 @@ def test_cursor_setup_keeps_models_and_fallback_without_secret(tmp_path: Path) -
 
     profile = load_simple_execution_profile(result.profile_path)
     assert profile.llm_max_concurrency == 3
+    assert profile.max_parallel_hypotheses == 2
+    assert profile.max_parallel_builds == 2
+    assert profile.max_parallel_containers == 3
     assert profile.cursor_allow_on_demand
     assert "test-key" not in result.profile_path.read_text(encoding="utf-8")
 

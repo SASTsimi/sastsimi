@@ -322,6 +322,7 @@ def build_analysis_application(
         ),
         runner_factory=runner_factory,
         recovery_factory=recovery_factory,
+        max_parallel_hypotheses=profile.max_parallel_hypotheses,
     )
 
 

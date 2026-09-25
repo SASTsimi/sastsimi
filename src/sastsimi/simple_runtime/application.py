@@ -1,7 +1,8 @@
-"""Small sequential application service for new and resumed repository analyses."""
+"""Application service for new and resumed local repository analyses."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Callable
@@ -97,7 +98,10 @@ class SimpleAnalysisApplication:
         id_factory: Callable[[], str] | None = None,
         llm_provider: str | None = None,
         on_demand_possible: bool = False,
+        max_parallel_hypotheses: int = 1,
     ) -> None:
+        if not 1 <= max_parallel_hypotheses <= 32:
+            raise ValueError("PARALLEL_HYPOTHESIS_LIMIT_INVALID")
         self._data_dir = data_dir
         self._store = store
         self._static = static_bootstrap
@@ -108,6 +112,7 @@ class SimpleAnalysisApplication:
         self._display = AnalysisDisplayIdStore(store.database_path)
         self._llm_provider = llm_provider
         self._on_demand_possible = on_demand_possible
+        self._max_parallel_hypotheses = max_parallel_hypotheses
 
     async def analyze(
         self,
@@ -400,24 +405,33 @@ class SimpleAnalysisApplication:
         incomplete: RunOutcome | None = None
         index = 0
         while index < len(run.hypothesis_ids):
-            hypothesis_id = run.hypothesis_ids[index]
-            index += 1
-            child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
-            outcome = await self._runner_factory(
-                self._store,
-                child,
-                static,
-            ).resume_hypothesis(child)
-            latest_stage = outcome.current_stage
-            if outcome.status in {StageStatus.BLOCKED, StageStatus.FAILED}:
-                if (
-                    incomplete is None
-                    or outcome.status is StageStatus.FAILED
-                    and incomplete.status is StageStatus.BLOCKED
-                ):
-                    incomplete = outcome
-                continue
-            run = self._register_chain_children(run, child, static)
+            batch_ids = run.hypothesis_ids[
+                index : index + self._max_parallel_hypotheses
+            ]
+            children = tuple(
+                identity.model_copy(update={"hypothesis_id": hypothesis_id})
+                for hypothesis_id in batch_ids
+            )
+            outcomes = await asyncio.gather(
+                *(
+                    self._runner_factory(self._store, child, static).resume_hypothesis(
+                        child
+                    )
+                    for child in children
+                )
+            )
+            index += len(children)
+            for child, outcome in zip(children, outcomes, strict=True):
+                latest_stage = outcome.current_stage
+                if outcome.status in {StageStatus.BLOCKED, StageStatus.FAILED}:
+                    if (
+                        incomplete is None
+                        or outcome.status is StageStatus.FAILED
+                        and incomplete.status is StageStatus.BLOCKED
+                    ):
+                        incomplete = outcome
+                    continue
+                run = self._register_chain_children(run, child, static)
         if incomplete is not None:
             outcome_status: Literal["BLOCKED", "FAILED"] = (
                 "BLOCKED" if incomplete.status is StageStatus.BLOCKED else "FAILED"

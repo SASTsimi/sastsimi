@@ -67,6 +67,9 @@ class SetupChoices(BaseModel):
     llm_max_retries: int = Field(default=2, ge=0, le=5)
     llm_max_concurrency: int = Field(default=2, gt=0, le=32)
     hypothesis_feed: Literal["current", "facts_survey"] = "current"
+    max_parallel_hypotheses: int = Field(default=1, gt=0, le=32)
+    max_parallel_builds: int = Field(default=1, gt=0, le=32)
+    max_parallel_containers: int = Field(default=1, gt=0, le=32)
     cursor_allow_on_demand: bool = False
     fallback_provider: Literal["none", "openai", "codex"] = "none"
     fallback_model: str | None = None
@@ -470,6 +473,9 @@ class SetupService:
             llm_max_retries=choices.llm_max_retries,
             llm_max_concurrency=choices.llm_max_concurrency,
             hypothesis_feed=choices.hypothesis_feed,
+            max_parallel_hypotheses=choices.max_parallel_hypotheses,
+            max_parallel_builds=choices.max_parallel_builds,
+            max_parallel_containers=choices.max_parallel_containers,
             cursor_allow_on_demand=choices.cursor_allow_on_demand,
             fallback_provider=choices.fallback_provider,
             fallback_model=choices.fallback_model,
@@ -505,6 +511,9 @@ class SetupService:
             llm_max_retries=choices.llm_max_retries,
             llm_max_concurrency=choices.llm_max_concurrency,
             hypothesis_feed=choices.hypothesis_feed,
+            max_parallel_hypotheses=choices.max_parallel_hypotheses,
+            max_parallel_builds=choices.max_parallel_builds,
+            max_parallel_containers=choices.max_parallel_containers,
             cursor_allow_on_demand=choices.cursor_allow_on_demand,
             fallback_provider=choices.fallback_provider,
             fallback_model=choices.fallback_model,

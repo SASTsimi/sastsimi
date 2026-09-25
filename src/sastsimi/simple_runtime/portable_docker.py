@@ -43,8 +43,34 @@ class PortableDockerRuntime:
             raise ValueError("DOCKER_NOT_CONFIGURED") from None
         self._network = "default" if profile.docker_network == "BRIDGE" else "none"
         self._timeout = max(30, profile.max_elapsed_seconds)
+        self._build_slots = asyncio.Semaphore(profile.max_parallel_builds)
+        self._container_slots = asyncio.Semaphore(profile.max_parallel_containers)
 
     async def build_or_reuse(
+        self,
+        *,
+        workspace: Path,
+        dockerfile: bytes,
+        cache_key: str,
+        labels: Mapping[str, str],
+    ) -> str:
+        gate = getattr(self, "_build_slots", None)
+        if gate is None:
+            return await self._build_or_reuse(
+                workspace=workspace,
+                dockerfile=dockerfile,
+                cache_key=cache_key,
+                labels=labels,
+            )
+        async with gate:
+            return await self._build_or_reuse(
+                workspace=workspace,
+                dockerfile=dockerfile,
+                cache_key=cache_key,
+                labels=labels,
+            )
+
+    async def _build_or_reuse(
         self,
         *,
         workspace: Path,
@@ -86,6 +112,15 @@ class PortableDockerRuntime:
         self,
         image_digest: str,
         labels: Mapping[str, str],
+    ) -> str:
+        gate = getattr(self, "_container_slots", None)
+        if gate is None:
+            return await self._create_container(image_digest, labels)
+        async with gate:
+            return await self._create_container(image_digest, labels)
+
+    async def _create_container(
+        self, image_digest: str, labels: Mapping[str, str]
     ) -> str:
         if _IMAGE_DIGEST.fullmatch(image_digest) is None:
             raise ValueError("IMAGE_DIGEST_REQUIRED")

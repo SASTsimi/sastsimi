@@ -194,13 +194,31 @@ def test_hypothesis_feed_is_opt_in_and_round_trips(tmp_path: Path) -> None:
         tools={},
     )
     old = tmp_path / "old.toml"
+    legacy_text = profile.to_toml().replace('hypothesis_feed = "current"\n', "")
+    for name in (
+        "max_parallel_hypotheses",
+        "max_parallel_builds",
+        "max_parallel_containers",
+    ):
+        legacy_text = legacy_text.replace(f"{name} = 1\n", "")
     old.write_text(
-        profile.to_toml().replace('hypothesis_feed = "current"\n', ""),
+        legacy_text,
         encoding="utf-8",
     )
     assert load_simple_execution_profile(old).hypothesis_feed == "current"
+    assert load_simple_execution_profile(old).max_parallel_hypotheses == 1
 
-    selected = profile.model_copy(update={"hypothesis_feed": "facts_survey"})
+    selected = profile.model_copy(
+        update={
+            "hypothesis_feed": "facts_survey",
+            "max_parallel_hypotheses": 2,
+            "max_parallel_builds": 2,
+            "max_parallel_containers": 3,
+        }
+    )
     new = tmp_path / "new.toml"
     selected.write(new)
     assert load_simple_execution_profile(new).hypothesis_feed == "facts_survey"
+    assert load_simple_execution_profile(new).max_parallel_hypotheses == 2
+    assert load_simple_execution_profile(new).max_parallel_builds == 2
+    assert load_simple_execution_profile(new).max_parallel_containers == 3
