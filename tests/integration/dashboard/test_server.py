@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import threading
 import urllib.error
@@ -12,8 +11,6 @@ from io import BytesIO
 
 import pytest
 
-from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
-from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.dashboard.server import create_server
 from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
@@ -84,6 +81,17 @@ def seed(data_dir) -> None:
     hypothesis_proposal = artifacts.put_json(
         {
             "kind": "simple_hypothesis_proposal",
+            "analysis_id": "analysis-1",
+            "hypothesis_id": "hypothesis-1",
+            "proposal": {
+                "title": "Unsafe command flow",
+                "vulnerability_type": "Command Injection",
+                "summary": "User input can reach a process execution call.",
+                "code_locations": ["app.py:10", "app.py:24"],
+                "source": "request.args['command']",
+                "sink": "subprocess.run(command)",
+                "rationale": "The value is not validated before execution.",
+            },
             "llm_request_ref": hypothesis_request.model_dump(mode="json"),
             "llm_response_ref": hypothesis_response.model_dump(mode="json"),
         }
@@ -99,9 +107,39 @@ def seed(data_dir) -> None:
     static_bundle = artifacts.put_json(
         {
             "kind": "simple_static_fact_bundle",
-            "opengrep_findings": [{"path": "app.py"}],
-            "codeql_findings": [],
+            "ast_summary": {
+                "facts": [
+                    {"path": "app.py", "line": 10, "name": "request.args"}
+                ]
+            },
+            "opengrep_findings": [
+                {
+                    "path": "app.py",
+                    "line": 24,
+                    "check_id": "opengrep.command-injection",
+                }
+            ],
+            "codeql_findings": [
+                {
+                    "path": "app.py",
+                    "line": 24,
+                    "rule_id": "py/command-line-injection",
+                }
+            ],
             "codeql_executed": True,
+        }
+    )
+    finding_ref = artifacts.put_json(
+        {
+            "kind": "simple_finding",
+            "status": "CONFIRMED_INTERNAL",
+            "analysis_id": "analysis-1",
+            "hypothesis_id": "hypothesis-1",
+            "validated_poc_ref": poc.model_dump(mode="json"),
+            "source_refs": [
+                static_bundle.model_dump(mode="json"),
+                hypothesis_proposal.model_dump(mode="json"),
+            ],
         }
     )
     store = SimpleCheckpointStore(database)
@@ -140,6 +178,18 @@ def seed(data_dir) -> None:
         ),
         outputs=(poc,),
     )
+    store.save_success(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.FINDING_DONE,
+            status=StageStatus.PENDING,
+            input_refs=(poc,),
+            input_hash=input_reference_hash((poc,)),
+            validated_poc_ref=poc,
+            verdict="TRUE",
+        ),
+        outputs=(finding_ref,),
+    )
     AgentActivityStore(database).append(
         AgentActivityEvent(
             event_id="event-llm-1",
@@ -162,14 +212,6 @@ def seed(data_dir) -> None:
             output_digest="1" * 64,
             started_at=datetime.now(UTC),
         )
-    )
-    finding_ref = StoredDataRef(
-        stored_data_id=StoredDataId("finding-stored"),
-        data_kind="finding",
-        content_hash=hashlib.sha256(b"finding").hexdigest(),
-        workspace_id=WorkspaceId("workspace-1"),
-        commit_id=CommitId("commit-1"),
-        record_id=None,
     )
     FindingDisplayIdStore(database).get_or_allocate("analysis-1", finding_ref)
     report = data_dir / "reports" / "analysis-1" / "F-001.md"
@@ -214,6 +256,14 @@ def test_server_is_local_read_only_and_serves_current_state(tmp_path) -> None:
         assert response.headers["X-Content-Type-Options"] == "nosniff"
         assert request(f"{base}/api/analyses", method="POST").status == 405
         assert request(f"{base}/analyses/A-001").status == 200
+        page = request(f"{base}/analyses/A-001").read().decode()
+        assert 'id="presentation-toggle"' in page
+        assert 'id="compare-analysis"' in page
+        assert 'id="replay-toggle"' in page
+        assert 'id="finding-traces"' in page
+        assert 'id="artifact-relations"' in page
+        assert 'id="readiness"' in page
+        assert 'id="usage"' in page
         assert (
             json.loads(request(f"{base}/api/analyses/A-001").read())["analysis_id"]
             == "analysis-1"
@@ -232,10 +282,51 @@ def test_server_serves_redacted_artifacts_reports_logs_and_bundle(tmp_path) -> N
             "status": "NOT_STARTED",
             "finding_count": 1,
         }
+        assert detail["static_tools"][2]["finding_count"] == 1
+        overlap = next(
+            item
+            for item in detail["static_tool_findings"]
+            if item["location"] == "app.py:24"
+        )
+        assert overlap["overlap"] is True
+        assert overlap["tools"] == ["CodeQL", "OpenGrep"]
         assert detail["commit_id"] == "commit-1"
         assert detail["profile_ref"] == "profile-test"
         assert detail["provider"] == "codex-cli"
         assert detail["model"] == "gpt-test"
+        assert detail["hypotheses"][0]["source"] == "request.args['command']"
+        assert detail["hypotheses"][0]["sink"] == "subprocess.run(command)"
+        assert detail["hypotheses"][0]["vulnerability_type"] == ("Command Injection")
+        assert detail["usage"] == {
+            "invocation_count": 2,
+            "succeeded_count": 2,
+            "failed_count": 0,
+            "retry_count": 0,
+            "known_usage_count": 1,
+            "unknown_usage_count": 1,
+            "input_tokens": 10,
+            "output_tokens": 4,
+            "total_tokens": 14,
+            "elapsed_ms": 0,
+        }
+        readiness = {item["key"]: item for item in detail["readiness"]}
+        assert readiness["exact-target"]["status"] == "READY"
+        assert readiness["llm-provider"]["status"] == "READY"
+        assert readiness["static-core"]["status"] == "WAITING"
+        assert readiness["presentation-output"]["status"] == "READY"
+        assert detail["presentation_bundle_url"].endswith("/presentation.zip")
+        assert detail["reports"][0]["english_available"] is True
+        assert detail["reports"][0]["english_view_url"].endswith("?lang=en")
+        assert detail["artifact_relations"]
+        trace = detail["finding_traces"][0]
+        assert trace["display_id"] == "F-001"
+        assert trace["hypothesis_id"] == "hypothesis-1"
+        assert trace["source"] == "request.args['command']"
+        assert trace["sink"] == "subprocess.run(command)"
+        assert trace["validated_poc"] is True
+        assert trace["poc_artifact_ids"]
+        assert trace["evidence_artifact_ids"]
+        assert trace["english_available"] is True
         assert len(detail["llm_invocations"]) == 2
         invocation = next(
             item
@@ -266,9 +357,36 @@ def test_server_serves_redacted_artifacts_reports_logs_and_bundle(tmp_path) -> N
             request(f"{base}/api/analyses/A-001/reports/F-001").read()
         )
         assert report["markdown"] == "# 한국어 보고서"
+        english_report = json.loads(
+            request(
+                f"{base}/api/analyses/A-001/reports/F-001?lang=en"
+            ).read()
+        )
+        assert english_report == {
+            "display_id": "F-001",
+            "language": "en",
+            "markdown": "# English report",
+        }
+        english_download = request(
+            f"{base}/api/analyses/A-001/reports/F-001/download?lang=en"
+        )
+        assert "F-001.en.md" in english_download.headers["Content-Disposition"]
+        assert english_download.read().decode() == "# English report"
+        assert request(
+            f"{base}/api/analyses/A-001/reports/F-001?lang=fr"
+        ).status == 404
         assert "POC_CANDIDATE_DONE" in request(
             f"{base}/api/analyses/A-001/logs/download"
         ).read().decode()
+
+        assert json.loads(
+            request(
+                f"{base}/api/analyses/A-001/events?after=event-llm-1"
+            ).read()
+        ) == []
+        assert request(
+            f"{base}/api/analyses/A-001/events?after=missing-event"
+        ).status == 404
 
         bundle = request(f"{base}/api/analyses/A-001/bundle.zip").read()
         with zipfile.ZipFile(BytesIO(bundle)) as archive:
@@ -281,6 +399,19 @@ def test_server_serves_redacted_artifacts_reports_logs_and_bundle(tmp_path) -> N
                 name.startswith("artifacts/simple_validated_poc-")
                 for name in names
             )
+
+        presentation = request(
+            f"{base}/api/analyses/A-001/presentation.zip"
+        ).read()
+        with zipfile.ZipFile(BytesIO(presentation)) as archive:
+            names = set(archive.namelist())
+            assert "presentation/README.md" in names
+            assert "presentation/summary.json" in names
+            assert "reports/F-001.md" in names
+            assert "reports/en/F-001.md" in names
+            summary = json.loads(archive.read("presentation/summary.json"))
+            assert summary["analysis_id"] == "analysis-1"
+            assert summary["english_report_ids"] == ["F-001"]
 
         selected_bundle = request(
             f"{base}/api/analyses/A-001/bundle.zip?selected=1&artifact={request_id}"

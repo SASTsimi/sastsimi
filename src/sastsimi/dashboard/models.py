@@ -49,6 +49,7 @@ class StageProgressView(ContractModel):
     output_count: int = 0
     retryable: bool = False
     error_code: str | None = None
+    guidance_ko: str | None = None
     updated_at: datetime | None = None
 
 
@@ -56,6 +57,34 @@ class StaticToolProgressView(ContractModel):
     tool: str
     status: str
     finding_count: int | None = None
+
+
+class StaticToolFindingView(ContractModel):
+    location: str
+    tools: tuple[str, ...] = ()
+    rule_ids: tuple[str, ...] = ()
+    overlap: bool = False
+
+
+class ReadinessCheckView(ContractModel):
+    key: str
+    label_ko: str
+    status: str
+    detail_ko: str
+    required: bool = True
+
+
+class UsageSummaryView(ContractModel):
+    invocation_count: int = 0
+    succeeded_count: int = 0
+    failed_count: int = 0
+    retry_count: int = 0
+    known_usage_count: int = 0
+    unknown_usage_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    elapsed_ms: int = 0
 
 
 class ArtifactView(ContractModel):
@@ -99,6 +128,14 @@ class ArtifactContentView(ContractModel):
     content: JsonValue | str
 
 
+class ArtifactRelationView(ContractModel):
+    source_artifact_id: str
+    target_artifact_id: str
+    relation: str
+    source_kind: str
+    target_kind: str
+
+
 class HypothesisProgressView(ContractModel):
     analysis_id: str
     hypothesis_id: str
@@ -111,6 +148,12 @@ class HypothesisProgressView(ContractModel):
     validated_poc: bool = False
     parent_hypothesis_ids: tuple[str, ...] = ()
     chain_depth: int = 0
+    title: str | None = None
+    vulnerability_type: str | None = None
+    summary: str | None = None
+    source: str | None = None
+    sink: str | None = None
+    code_locations: tuple[str, ...] = ()
     updated_at: datetime | None = None
 
 
@@ -142,6 +185,26 @@ class FindingReportView(ContractModel):
     url: str
     view_url: str
     download_url: str
+    english_available: bool = False
+    english_view_url: str | None = None
+    english_download_url: str | None = None
+
+
+class FindingTraceView(ContractModel):
+    display_id: str
+    hypothesis_id: str | None = None
+    title: str | None = None
+    vulnerability_type: str | None = None
+    source: str | None = None
+    sink: str | None = None
+    verdict: str | None = None
+    validated_poc: bool = False
+    artifact_ids: tuple[str, ...] = ()
+    poc_artifact_ids: tuple[str, ...] = ()
+    evidence_artifact_ids: tuple[str, ...] = ()
+    report_view_url: str
+    report_download_url: str
+    english_available: bool = False
 
 
 class AnalysisDetailView(AnalysisSummaryView):
@@ -149,23 +212,34 @@ class AnalysisDetailView(AnalysisSummaryView):
     reports: tuple[FindingReportView, ...] = ()
     pipeline: tuple[StageProgressView, ...] = ()
     static_tools: tuple[StaticToolProgressView, ...] = ()
+    static_tool_findings: tuple[StaticToolFindingView, ...] = ()
+    readiness: tuple[ReadinessCheckView, ...] = ()
+    usage: UsageSummaryView = UsageSummaryView()
     artifacts: tuple[ArtifactView, ...] = ()
+    artifact_relations: tuple[ArtifactRelationView, ...] = ()
+    finding_traces: tuple[FindingTraceView, ...] = ()
     llm_invocations: tuple[LLMInvocationView, ...] = ()
     poc_artifact_ids: tuple[str, ...] = ()
     evidence_artifact_ids: tuple[str, ...] = ()
     logs_url: str | None = None
     bundle_url: str | None = None
+    presentation_bundle_url: str | None = None
 
 
 __all__ = [
     "AgentActivityView",
     "ArtifactContentView",
+    "ArtifactRelationView",
     "ArtifactView",
     "AnalysisDetailView",
     "AnalysisSummaryView",
     "FindingReportView",
+    "FindingTraceView",
     "HypothesisProgressView",
     "LLMInvocationView",
+    "ReadinessCheckView",
     "StageProgressView",
     "StaticToolProgressView",
+    "StaticToolFindingView",
+    "UsageSummaryView",
 ]

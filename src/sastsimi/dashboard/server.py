@@ -10,6 +10,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
+from typing import Literal, cast
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from .query import DashboardNotFound, DashboardQuery
@@ -121,10 +122,17 @@ def create_server(
                     and parts[:2] == ("api", "analyses")
                     and parts[3] == "reports"
                 ):
+                    language = parse_qs(parsed.query).get("lang", ["ko"])[0]
+                    if language not in {"ko", "en"}:
+                        raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
+                    report_language = cast(Literal["ko", "en"], language)
                     self._json(
                         {
                             "display_id": parts[4],
-                            "markdown": query.report_markdown(parts[2], parts[4]),
+                            "language": language,
+                            "markdown": query.report_markdown(
+                                parts[2], parts[4], language=report_language
+                            ),
                         },
                         send_body,
                     )
@@ -134,10 +142,16 @@ def create_server(
                     and parts[3] == "reports"
                     and parts[5] == "download"
                 ):
+                    language = parse_qs(parsed.query).get("lang", ["ko"])[0]
+                    if language not in {"ko", "en"}:
+                        raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
+                    report_language = cast(Literal["ko", "en"], language)
                     self._download(
-                        query.report_markdown(parts[2], parts[4]).encode("utf-8"),
+                        query.report_markdown(
+                            parts[2], parts[4], language=report_language
+                        ).encode("utf-8"),
                         "text/markdown; charset=utf-8",
-                        f"{parts[4]}.md",
+                        f"{parts[4]}{'.en' if language == 'en' else ''}.md",
                         send_body,
                     )
                 elif (
@@ -149,6 +163,25 @@ def create_server(
                         query.logs_bytes(parts[2]),
                         "application/x-ndjson; charset=utf-8",
                         f"{parts[2]}-console.log",
+                        send_body,
+                    )
+                elif (
+                    len(parts) == 4
+                    and parts[:2] == ("api", "analyses")
+                    and parts[3] == "presentation.zip"
+                ):
+                    buffer = BytesIO()
+                    with zipfile.ZipFile(
+                        buffer, "w", compression=zipfile.ZIP_DEFLATED
+                    ) as archive:
+                        for name, body in query.presentation_bundle_members(
+                            parts[2]
+                        ).items():
+                            archive.writestr(name, body)
+                    self._download(
+                        buffer.getvalue(),
+                        "application/zip",
+                        f"{parts[2]}-presentation.zip",
                         send_body,
                     )
                 elif (
@@ -202,8 +235,14 @@ def create_server(
                 elif len(parts) == 3 and parts[0] == "reports":
                     if not parts[2].endswith(".md"):
                         raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
+                    english = parts[2].endswith(".en.md")
+                    display_id = parts[2][:-6] if english else parts[2][:-3]
                     self._file(
-                        query.report_path(parts[1], parts[2][:-3]),
+                        query.report_path(
+                            parts[1],
+                            display_id,
+                            language="en" if english else "ko",
+                        ),
                         "text/markdown; charset=utf-8",
                         send_body,
                     )

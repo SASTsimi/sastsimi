@@ -36,12 +36,17 @@ from .models import (
     AnalysisDetailView,
     AnalysisSummaryView,
     ArtifactContentView,
+    ArtifactRelationView,
     ArtifactView,
     FindingReportView,
+    FindingTraceView,
     HypothesisProgressView,
     LLMInvocationView,
+    ReadinessCheckView,
     StageProgressView,
+    StaticToolFindingView,
     StaticToolProgressView,
+    UsageSummaryView,
 )
 
 _ANALYSIS_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
@@ -258,10 +263,18 @@ class DashboardQuery:
         kind, media_type, raw, _ = item
         return kind, media_type, raw
 
-    def report_markdown(self, analysis_id: str, display_id: str) -> str:
+    def report_markdown(
+        self,
+        analysis_id: str,
+        display_id: str,
+        *,
+        language: Literal["ko", "en"] = "ko",
+    ) -> str:
         exact = self._resolved(analysis_id)
         try:
-            return self.report_path(exact, display_id).read_text(encoding="utf-8")
+            return self.report_path(
+                exact, display_id, language=language
+            ).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as error:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
 
@@ -342,6 +355,44 @@ class DashboardQuery:
                     pass
         return members
 
+    def presentation_bundle_members(self, analysis_id: str) -> dict[str, bytes]:
+        exact = self._resolved(analysis_id)
+        detail = self.get_analysis(exact)
+        members = self.bundle_members(exact)
+        english = [
+            report.display_id
+            for report in detail.reports
+            if report.english_available
+        ]
+        steps = (
+            "# SASTSIMI 발표 패키지\n\n"
+            "1. manifest.json에서 저장소·commit·분석 상태를 확인합니다.\n"
+            "2. logs/console.log에서 단계별 진행 상황을 보여 줍니다.\n"
+            "3. artifacts/에서 정적분석·PoC·증거·LLM 안전 사본을 확인합니다.\n"
+            "4. reports/에서 한국어 보고서와 준비된 영문 보고서를 엽니다.\n\n"
+            f"영문 보고서 준비: {', '.join(english) if english else '없음'}\n"
+        )
+        members["presentation/README.md"] = steps.encode("utf-8")
+        members["presentation/summary.json"] = json.dumps(
+            {
+                "analysis_id": detail.analysis_id,
+                "display_analysis_id": detail.display_analysis_id,
+                "repository": detail.repository,
+                "commit_id": detail.commit_id,
+                "status": detail.status,
+                "progress_percent": detail.progress_percent,
+                "finding_count": detail.finding_count,
+                "english_report_ids": english,
+                "usage": detail.usage.model_dump(mode="json"),
+                "readiness": [
+                    item.model_dump(mode="json") for item in detail.readiness
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ).encode("utf-8")
+        return members
+
     def _resolved(self, value: str) -> str:
         try:
             exact = self._resolve_analysis_id(value)
@@ -392,7 +443,7 @@ class DashboardQuery:
         self,
         repository: SimpleArtifactRepository,
         ref: StoredDataRef,
-    ) -> tuple[str, bytes, Any | None]:
+    ) -> tuple[str, bytes, Any | None, tuple[int | None, int | None] | None]:
         try:
             raw = repository.read(ref)
         except (OSError, sqlite3.Error, ValueError) as error:
@@ -400,9 +451,31 @@ class DashboardQuery:
         if len(raw) > _MAX_ARTIFACT_BYTES:
             raise DashboardNotFound("DASHBOARD_ARTIFACT_TOO_LARGE")
         try:
-            json.loads(raw)
+            original = json.loads(raw)
+            token_usage: tuple[int | None, int | None] | None = None
+            if (
+                isinstance(original, dict)
+                and original.get("kind") == "simple_llm_response"
+                and isinstance(original.get("usage"), dict)
+            ):
+                usage = original["usage"]
+
+                def token_count(key: str) -> int | None:
+                    value = usage.get(key)
+                    return (
+                        value
+                        if isinstance(value, int)
+                        and not isinstance(value, bool)
+                        and value >= 0
+                        else None
+                    )
+
+                token_usage = (
+                    token_count("input_tokens"),
+                    token_count("output_tokens"),
+                )
             safe = redact_projected_json(raw).data
-            return "application/json", safe, json.loads(safe)
+            return "application/json", safe, json.loads(safe), token_usage
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
             try:
                 safe = redact_untrusted_text(raw).data
@@ -413,7 +486,7 @@ class DashboardQuery:
                 if safe.lstrip().startswith(b"#")
                 else "text/plain"
             )
-            return media, safe, None
+            return media, safe, None, None
 
     def _artifact_projection(
         self,
@@ -479,6 +552,7 @@ class DashboardQuery:
                 enqueue(ref, event.stage, event.hypothesis_id)
 
         contents: dict[str, tuple[str, str, bytes, Any | None]] = {}
+        token_usage: dict[str, tuple[int | None, int | None]] = {}
         index = 0
         while index < len(queue) and len(contents) < _MAX_ARTIFACTS:
             ref, stage, hypothesis = queue[index]
@@ -486,9 +560,11 @@ class DashboardQuery:
             if ref.content_hash in contents:
                 continue
             try:
-                media_type, raw, parsed = self._safe_ref_bytes(repository, ref)
+                media_type, raw, parsed, usage = self._safe_ref_bytes(repository, ref)
             except DashboardNotFound:
                 continue
+            if usage is not None:
+                token_usage[ref.content_hash] = usage
             kind = ref.data_kind
             if isinstance(parsed, dict):
                 kind = str(
@@ -518,7 +594,9 @@ class DashboardQuery:
                 contents.items(), key=lambda pair: (pair[1][0], pair[0])
             )
         )
-        invocations = self._llm_invocations(events, contents, sources, values)
+        invocations = self._llm_invocations(
+            events, contents, sources, values, token_usage
+        )
         poc_ids = tuple(
             item.artifact_id
             for item in artifacts
@@ -544,6 +622,7 @@ class DashboardQuery:
         contents: dict[str, tuple[str, str, bytes, Any | None]],
         sources: dict[str, dict[str, set[str]]],
         checkpoints: list[StageCheckpoint],
+        token_usage: dict[str, tuple[int | None, int | None]],
     ) -> tuple[LLMInvocationView, ...]:
         result: list[LLMInvocationView] = []
         seen: set[str] = set()
@@ -585,12 +664,8 @@ class DashboardQuery:
             if invocation_id in seen:
                 continue
             seen.add(invocation_id)
-            usage = (response or {}).get("usage")
-            input_tokens = (
-                usage.get("input_tokens") if isinstance(usage, dict) else None
-            )
-            output_tokens = (
-                usage.get("output_tokens") if isinstance(usage, dict) else None
+            input_tokens, output_tokens = token_usage.get(
+                response_id or "", (None, None)
             )
             result.append(
                 LLMInvocationView(
@@ -656,13 +731,8 @@ class DashboardQuery:
                 role = ROLE_BY_STAGE[SimpleStage(stage)]
             except (KeyError, ValueError):
                 role = "LLM Agent"
-            response_payload = response_entry[1] if response_entry else {}
-            usage = response_payload.get("usage")
-            input_tokens = (
-                usage.get("input_tokens") if isinstance(usage, dict) else None
-            )
-            output_tokens = (
-                usage.get("output_tokens") if isinstance(usage, dict) else None
+            input_tokens, output_tokens = token_usage.get(
+                response_entry[0] if response_entry else "", (None, None)
             )
             result.append(
                 LLMInvocationView(
@@ -694,7 +764,13 @@ class DashboardQuery:
             )
         return tuple(result)
 
-    def report_path(self, analysis_id: str, display_id: str) -> Path:
+    def report_path(
+        self,
+        analysis_id: str,
+        display_id: str,
+        *,
+        language: Literal["ko", "en"] = "ko",
+    ) -> Path:
         self._validate_analysis_id(analysis_id)
         if _DISPLAY_ID.fullmatch(display_id) is None:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
@@ -706,7 +782,8 @@ class DashboardQuery:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
         root = (self._data_dir / "reports").resolve()
         expected_parent = root / analysis_id
-        path = expected_parent / f"{display_id}.md"
+        suffix = ".en.md" if language == "en" else ".md"
+        path = expected_parent / f"{display_id}{suffix}"
         try:
             resolved = path.resolve(strict=True)
         except OSError as error:
@@ -822,29 +899,442 @@ class DashboardQuery:
         )
         if detail:
             artifacts: tuple[ArtifactView, ...] = ()
+            contents: dict[str, tuple[str, str, bytes, Any | None]] = {}
             invocations: tuple[LLMInvocationView, ...] = ()
             poc_ids: tuple[str, ...] = ()
             evidence_ids: tuple[str, ...] = ()
             static_tools: tuple[StaticToolProgressView, ...] = ()
             if run is not None:
-                artifacts, _, invocations, poc_ids, evidence_ids = (
+                artifacts, contents, invocations, poc_ids, evidence_ids = (
                     self._artifact_projection(analysis_id, values, run)
                 )
                 static_tools = self._static_tools(run, values)
+                hypotheses = self._with_hypothesis_metadata(hypotheses, contents)
             return AnalysisDetailView(
                 **data.model_dump(),
                 hypotheses=hypotheses,
                 reports=reports,
                 pipeline=self._pipeline(values, run),
                 static_tools=static_tools,
+                static_tool_findings=self._static_tool_findings(contents),
+                readiness=self._readiness(
+                    analysis_id,
+                    run,
+                    static_tools,
+                    artifacts,
+                    reports,
+                ),
+                usage=self._usage_summary(invocations),
                 artifacts=artifacts,
+                artifact_relations=self._artifact_relations(contents),
+                finding_traces=self._finding_traces(
+                    analysis_id,
+                    reports,
+                    hypotheses,
+                    artifacts,
+                    contents,
+                    poc_ids,
+                    evidence_ids,
+                ),
                 llm_invocations=invocations,
                 poc_artifact_ids=poc_ids,
                 evidence_artifact_ids=evidence_ids,
                 logs_url=f"/api/analyses/{analysis_id}/logs/download",
                 bundle_url=f"/api/analyses/{analysis_id}/bundle.zip",
+                presentation_bundle_url=(
+                    f"/api/analyses/{analysis_id}/presentation.zip"
+                ),
             )
         return data
+
+    @staticmethod
+    def _artifact_relations(
+        contents: dict[str, tuple[str, str, bytes, Any | None]],
+    ) -> tuple[ArtifactRelationView, ...]:
+        relations: list[ArtifactRelationView] = []
+        seen: set[tuple[str, str]] = set()
+        for target_id, target in contents.items():
+            parsed = target[3]
+            if not isinstance(parsed, dict):
+                continue
+            for ref in DashboardQuery._nested_refs(parsed):
+                source_id = ref.content_hash
+                if source_id not in contents or source_id == target_id:
+                    continue
+                identity = (source_id, target_id)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                relations.append(
+                    ArtifactRelationView(
+                        source_artifact_id=source_id,
+                        target_artifact_id=target_id,
+                        relation="INPUT_TO_OUTPUT",
+                        source_kind=contents[source_id][0],
+                        target_kind=target[0],
+                    )
+                )
+        return tuple(
+            sorted(
+                relations,
+                key=lambda item: (
+                    item.target_kind,
+                    item.source_kind,
+                    item.source_artifact_id,
+                ),
+            )
+        )
+
+    @staticmethod
+    def _static_tool_findings(
+        contents: dict[str, tuple[str, str, bytes, Any | None]],
+    ) -> tuple[StaticToolFindingView, ...]:
+        bundle = next(
+            (
+                item[3]
+                for item in contents.values()
+                if item[0] == "simple_static_fact_bundle"
+                and isinstance(item[3], dict)
+            ),
+            None,
+        )
+        if not isinstance(bundle, dict):
+            return ()
+        grouped: dict[str, dict[str, set[str]]] = defaultdict(
+            lambda: {"tools": set(), "rules": set()}
+        )
+        ast_summary = bundle.get("ast_summary")
+        findings_by_tool = (
+            (
+                "AST",
+                (
+                    bundle.get("ast_findings"),
+                    bundle.get("ast_facts"),
+                    (
+                        ast_summary.get("facts")
+                        if isinstance(ast_summary, dict)
+                        else None
+                    ),
+                ),
+            ),
+            ("OpenGrep", (bundle.get("opengrep_findings"),)),
+            ("CodeQL", (bundle.get("codeql_findings"),)),
+        )
+        for tool, finding_groups in findings_by_tool:
+            for raw in finding_groups:
+                if not isinstance(raw, list):
+                    continue
+                for value in raw[:500]:
+                    if not isinstance(value, dict):
+                        continue
+                    path = next(
+                        (
+                            str(value[name])
+                            for name in ("path", "file", "uri")
+                            if isinstance(value.get(name), str)
+                        ),
+                        "위치 미기록",
+                    )
+                    line = next(
+                        (
+                            value[name]
+                            for name in ("line", "start_line", "line_number")
+                            if isinstance(value.get(name), int)
+                        ),
+                        None,
+                    )
+                    location = f"{path}:{line}" if line is not None else path
+                    grouped[location]["tools"].add(tool)
+                    rule = next(
+                        (
+                            str(value[name])
+                            for name in ("rule_id", "check_id", "query", "name")
+                            if isinstance(value.get(name), str)
+                        ),
+                        None,
+                    )
+                    if rule:
+                        grouped[location]["rules"].add(rule[:200])
+        return tuple(
+            StaticToolFindingView(
+                location=location[:500],
+                tools=tuple(sorted(values["tools"])),
+                rule_ids=tuple(sorted(values["rules"])),
+                overlap=len(values["tools"]) > 1,
+            )
+            for location, values in sorted(grouped.items())
+        )
+
+    def _finding_traces(
+        self,
+        analysis_id: str,
+        reports: tuple[FindingReportView, ...],
+        hypotheses: tuple[HypothesisProgressView, ...],
+        artifacts: tuple[ArtifactView, ...],
+        contents: dict[str, tuple[str, str, bytes, Any | None]],
+        poc_ids: tuple[str, ...],
+        evidence_ids: tuple[str, ...],
+    ) -> tuple[FindingTraceView, ...]:
+        hypothesis_map = {item.hypothesis_id: item for item in hypotheses}
+        traces: list[FindingTraceView] = []
+        for report in reports:
+            try:
+                finding_ref = FindingDisplayIdStore.resolve_existing(
+                    self._database, analysis_id, report.display_id
+                )
+            except (LookupError, OSError, sqlite3.Error, ValueError):
+                continue
+            parsed = contents.get(finding_ref.content_hash, ("", "", b"", None))[3]
+            hypothesis_id = (
+                str(parsed.get("hypothesis_id"))
+                if isinstance(parsed, dict)
+                and isinstance(parsed.get("hypothesis_id"), str)
+                else None
+            )
+            hypothesis = hypothesis_map.get(hypothesis_id or "")
+            related = {
+                item.artifact_id
+                for item in artifacts
+                if hypothesis_id and hypothesis_id in item.hypothesis_ids
+            }
+            if finding_ref.content_hash in contents:
+                related.add(finding_ref.content_hash)
+            if isinstance(parsed, dict):
+                related.update(
+                    ref.content_hash
+                    for ref in self._nested_refs(parsed)
+                    if ref.content_hash in contents
+                )
+            traces.append(
+                FindingTraceView(
+                    display_id=report.display_id,
+                    hypothesis_id=hypothesis_id,
+                    title=(hypothesis.title if hypothesis else None),
+                    vulnerability_type=(
+                        hypothesis.vulnerability_type if hypothesis else None
+                    ),
+                    source=(hypothesis.source if hypothesis else None),
+                    sink=(hypothesis.sink if hypothesis else None),
+                    verdict=(hypothesis.verdict if hypothesis else None),
+                    validated_poc=(hypothesis.validated_poc if hypothesis else False),
+                    artifact_ids=tuple(sorted(related)),
+                    poc_artifact_ids=tuple(
+                        item for item in poc_ids if item in related
+                    ),
+                    evidence_artifact_ids=tuple(
+                        item for item in evidence_ids if item in related
+                    ),
+                    report_view_url=report.view_url,
+                    report_download_url=report.download_url,
+                    english_available=report.english_available,
+                )
+            )
+        return tuple(traces)
+
+    @staticmethod
+    def _with_hypothesis_metadata(
+        hypotheses: tuple[HypothesisProgressView, ...],
+        contents: dict[str, tuple[str, str, bytes, Any | None]],
+    ) -> tuple[HypothesisProgressView, ...]:
+        proposals: dict[str, dict[str, Any]] = {}
+        for _kind, _media_type, _raw, parsed in contents.values():
+            if not isinstance(parsed, dict):
+                continue
+            if parsed.get("kind") != "simple_hypothesis_proposal":
+                continue
+            hypothesis_id = parsed.get("hypothesis_id")
+            proposal = parsed.get("proposal")
+            if isinstance(hypothesis_id, str) and isinstance(proposal, dict):
+                proposals[hypothesis_id] = proposal
+
+        def text(value: object, limit: int = 500) -> str | None:
+            return str(value)[:limit] if isinstance(value, str) and value else None
+
+        enriched: list[HypothesisProgressView] = []
+        for hypothesis in hypotheses:
+            proposal = proposals.get(hypothesis.hypothesis_id, {})
+            raw_locations = proposal.get("code_locations", [])
+            locations = (
+                tuple(str(item)[:300] for item in raw_locations[:12])
+                if isinstance(raw_locations, list)
+                else ()
+            )
+            enriched.append(
+                hypothesis.model_copy(
+                    update={
+                        "title": text(proposal.get("title"), 300),
+                        "vulnerability_type": text(
+                            proposal.get("vulnerability_type"), 160
+                        ),
+                        "summary": text(proposal.get("summary"), 700),
+                        "source": text(proposal.get("source")),
+                        "sink": text(proposal.get("sink")),
+                        "code_locations": locations,
+                    }
+                )
+            )
+        return tuple(enriched)
+
+    def _readiness(
+        self,
+        analysis_id: str,
+        run: SimpleAnalysisRun | None,
+        static_tools: tuple[StaticToolProgressView, ...],
+        artifacts: tuple[ArtifactView, ...],
+        reports: tuple[FindingReportView, ...],
+    ) -> tuple[ReadinessCheckView, ...]:
+        def present(value: object) -> bool:
+            return value is not None and str(value).strip() != ""
+
+        tool_status = {item.tool: item.status for item in static_tools}
+        core = [tool_status.get("AST"), tool_status.get("OpenGrep")]
+        if any(status in {"FAILED", "BLOCKED"} for status in core):
+            static_status = "BLOCKED"
+        elif core and all(status == "SUCCEEDED" for status in core):
+            static_status = "READY"
+        elif any(status == "RUNNING" for status in core):
+            static_status = "RUNNING"
+        else:
+            static_status = "WAITING"
+        codeql = tool_status.get("CodeQL")
+        codeql_status = (
+            "READY"
+            if codeql == "SUCCEEDED"
+            else "OPTIONAL"
+            if codeql == "SKIPPED"
+            else "BLOCKED"
+            if codeql in {"FAILED", "BLOCKED"}
+            else "RUNNING"
+            if codeql == "RUNNING"
+            else "WAITING"
+        )
+        log_ready = (self._data_dir / "logs" / f"{analysis_id}.log").is_file()
+        return (
+            ReadinessCheckView(
+                key="exact-target",
+                label_ko="저장소·commit 고정",
+                status=(
+                    "READY"
+                    if run is not None
+                    and present(run.repository)
+                    and present(run.commit_id)
+                    else "BLOCKED"
+                ),
+                detail_ko=(
+                    "재현 가능한 분석 대상을 기록했습니다."
+                    if run is not None
+                    and present(run.repository)
+                    and present(run.commit_id)
+                    else "저장소 또는 commit 기록이 없습니다."
+                ),
+            ),
+            ReadinessCheckView(
+                key="runtime-profile",
+                label_ko="실행 프로필",
+                status=(
+                    "READY"
+                    if run is not None and present(run.profile_ref)
+                    else "WAITING"
+                ),
+                detail_ko=(
+                    "분석 실행 프로필이 연결되어 있습니다."
+                    if run is not None and present(run.profile_ref)
+                    else "이전 분석이어서 프로필 기록이 없을 수 있습니다."
+                ),
+            ),
+            ReadinessCheckView(
+                key="llm-provider",
+                label_ko="LLM Provider·모델",
+                status=(
+                    "READY"
+                    if run is not None and present(run.provider) and present(run.model)
+                    else "WAITING"
+                ),
+                detail_ko=(
+                    "Provider와 모델 provenance를 확인했습니다."
+                    if run is not None and present(run.provider) and present(run.model)
+                    else "Provider 또는 모델 기록을 기다리는 중입니다."
+                ),
+            ),
+            ReadinessCheckView(
+                key="static-core",
+                label_ko="AST·OpenGrep",
+                status=static_status,
+                detail_ko="필수 정적분석 도구의 저장 결과 기준 상태입니다.",
+            ),
+            ReadinessCheckView(
+                key="codeql",
+                label_ko="CodeQL",
+                status=codeql_status,
+                detail_ko=(
+                    "선택 프로필에서 CodeQL을 사용하지 않았습니다."
+                    if codeql_status == "OPTIONAL"
+                    else "CodeQL 저장 결과 기준 상태입니다."
+                ),
+                required=False,
+            ),
+            ReadinessCheckView(
+                key="presentation-output",
+                label_ko="발표 결과물",
+                status=("READY" if artifacts and (reports or log_ready) else "WAITING"),
+                detail_ko=(
+                    f"아티팩트 {len(artifacts)}개·보고서 {len(reports)}개"
+                    + ("·로그 있음" if log_ready else "·로그 없음")
+                ),
+                required=False,
+            ),
+        )
+
+    @staticmethod
+    def _usage_summary(
+        invocations: tuple[LLMInvocationView, ...],
+    ) -> UsageSummaryView:
+        input_tokens = sum(item.input_tokens or 0 for item in invocations)
+        output_tokens = sum(item.output_tokens or 0 for item in invocations)
+        known = sum(
+            item.input_tokens is not None or item.output_tokens is not None
+            for item in invocations
+        )
+        return UsageSummaryView(
+            invocation_count=len(invocations),
+            succeeded_count=sum(
+                item.status in {"SUCCEEDED", "COMPLETE"} for item in invocations
+            ),
+            failed_count=sum(
+                item.status in {"FAILED", "BLOCKED", "TIMED_OUT", "CANCELLED"}
+                for item in invocations
+            ),
+            retry_count=sum(item.retry_count for item in invocations),
+            known_usage_count=known,
+            unknown_usage_count=len(invocations) - known,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+            elapsed_ms=sum(item.elapsed_ms or 0 for item in invocations),
+        )
+
+    @staticmethod
+    def _failure_guidance(error_code: str | None) -> str | None:
+        if not error_code:
+            return None
+        code = error_code.upper()
+        if any(value in code for value in ("AUTH", "CREDENTIAL", "PROVIDER")):
+            return "Provider 인증 상태를 확인한 뒤 같은 분석을 resume 하세요."
+        if any(value in code for value in ("DOCKER", "SANDBOX", "CONTAINER")):
+            return "Docker 실행 상태와 승인된 격리 프로필을 확인하세요."
+        if "CODEQL" in code:
+            return "CodeQL bundle·query pack과 출력 quota 준비 상태를 확인하세요."
+        if any(value in code for value in ("OPENGREP", "AST", "TOOL")):
+            return "setup에서 선택한 정적분석 도구 경로와 실행 권한을 확인하세요."
+        if any(value in code for value in ("RATE_LIMIT", "TIMEOUT")):
+            return (
+                "Provider 한도와 네트워크 상태를 확인한 뒤 실패 단계부터 "
+                "resume 하세요."
+            )
+        return (
+            "오류 코드를 기록하고 docs/troubleshooting.md의 안전한 복구 "
+            "절차를 확인하세요."
+        )
 
     @staticmethod
     def _pipeline(
@@ -870,6 +1360,9 @@ class DashboardQuery:
                     output_count=(len(checkpoint.output_refs) if checkpoint else 0),
                     retryable=(checkpoint.retryable if checkpoint else False),
                     error_code=(checkpoint.error_code if checkpoint else None),
+                    guidance_ko=DashboardQuery._failure_guidance(
+                        checkpoint.error_code if checkpoint else None
+                    ),
                     updated_at=(checkpoint.updated_at if checkpoint else None),
                 )
             )
@@ -1032,6 +1525,9 @@ class DashboardQuery:
                 self.report_path(analysis_id, display_id)
             except DashboardNotFound:
                 continue
+            english_available = self._english_report_available(
+                analysis_id, display_id
+            )
             reports.append(
                 FindingReportView(
                     analysis_id=analysis_id,
@@ -1043,9 +1539,27 @@ class DashboardQuery:
                     download_url=(
                         f"/api/analyses/{analysis_id}/reports/{display_id}/download"
                     ),
+                    english_available=english_available,
+                    english_view_url=(
+                        f"/api/analyses/{analysis_id}/reports/{display_id}?lang=en"
+                        if english_available
+                        else None
+                    ),
+                    english_download_url=(
+                        f"/api/analyses/{analysis_id}/reports/{display_id}/download?lang=en"
+                        if english_available
+                        else None
+                    ),
                 )
             )
         return tuple(reports)
+
+    def _english_report_available(self, analysis_id: str, display_id: str) -> bool:
+        try:
+            self.report_path(analysis_id, display_id, language="en")
+        except DashboardNotFound:
+            return False
+        return True
 
     def _full_runtime_summaries(self) -> tuple[AnalysisSummaryView, ...]:
         with self._connect() as connection:

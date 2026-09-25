@@ -110,6 +110,7 @@ def test_query_projects_current_progress_without_cross_analysis_data(tmp_path) -
     assert all(item.analysis_id == "analysis-a" for item in detail.hypotheses)
     assert "C:\\" not in detail.model_dump_json()
     assert detail.reports[0].display_id == "F-001"
+    assert detail.reports[0].english_available is False
     assert detail.display_analysis_id == "A-001"
     assert detail.progress_percent < 100
     assert detail.hypotheses[0].parent_hypothesis_ids == ("parent-1", "parent-2")
@@ -117,6 +118,16 @@ def test_query_projects_current_progress_without_cross_analysis_data(tmp_path) -
     assert DashboardQuery(tmp_path).list_events("analysis-a")[0].agent_role == (
         "Pro·Con Agents"
     )
+    assert DashboardQuery(tmp_path).list_events(
+        "analysis-a", after_event_id="event-1"
+    ) == ()
+
+
+def test_failure_guidance_maps_common_recovery_actions() -> None:
+    assert "인증" in (DashboardQuery._failure_guidance("PROVIDER_AUTH_FAILED") or "")
+    assert "Docker" in (DashboardQuery._failure_guidance("SANDBOX_FAILED") or "")
+    assert "CodeQL" in (DashboardQuery._failure_guidance("CODEQL_QUERY_FAILED") or "")
+    assert DashboardQuery._failure_guidance(None) is None
 
 
 def test_report_path_rejects_traversal_and_unknown_report(tmp_path) -> None:
