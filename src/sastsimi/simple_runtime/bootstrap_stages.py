@@ -22,8 +22,8 @@ from .application import (
     StaticBootstrapResult,
 )
 from .artifacts import SimpleArtifactRepository
-from .exploration import MAX_ROUNDS, Exploration
-from .feeding import Batch, Feeding, plan_feeding, render_batch
+from .exploration import MAX_ROUNDS, Exploration, render_history
+from .feeding import Batch, Feeding, fenced, plan_feeding, render_batch
 from .models import CheckpointIdentity, StageFailure
 from .proposals import (
     PROPOSAL_INSTRUCTIONS,
@@ -53,6 +53,46 @@ _SOURCE_SUFFIXES = (".py", ".pyi", ".js", ".jsx", ".ts", ".tsx")
 
 
 type _Provenance = tuple[int, SimpleLLMCallResult, list[dict[str, object]]]
+
+_HYPOTHESIS_INSTRUCTIONS = """# Role: Hypothesis Agent
+
+You are reading one batch of this repository's source in full. Every file of
+the checkout is read in exactly one batch, and the repository map names every
+definition in the others. Each line of code is shown after its real line
+number and a `|`.
+
+## What to return
+
+- Every concrete web-security hypothesis this code supports - as many as the
+  code gives, and none when it gives none.
+- Static tool hits are facts, not verdicts. A defect a tool is silent about is
+  the one worth finding: a guard that is present but subtly wrong produces no
+  finding at all.
+- Do not invent missing code.
+
+## Guards are candidates, not proof
+
+A sanitizer, validator or permission check is a candidate defence, not proof
+of safety.
+
+- When input reaches a sink through one, do not drop the flow because the guard
+  exists, and do not cite it as the reason another flow is safe.
+- Read the guard itself: its loop bounds, the order of decoding and checking,
+  what it does when a bound is reached, what it normalises and what it
+  compares.
+- Propose the hypothesis that it can be bypassed, stating how. Verification
+  decides whether it holds.
+
+## Following a flow out of this batch
+
+Name in `requested_paths` the files you need to follow it, or in
+`requested_ast_paths` those you only need the shape of, and you will be asked
+again with them. Leave both empty when you have what you need.
+
+## Form of each hypothesis
+
+"""
+
 
 # Bodies of rejected proposals, held only until the one repair call reads them.
 _REJECTED_BODIES: dict[str, object] = {}
@@ -742,7 +782,11 @@ class DirectHypothesisBootstrap:
         async def ask() -> SimpleLLMCallResult:
             body = context
             if history.rounds:
-                body = body + b"\n" + canonical_bytes(history.as_prompt_document())
+                body = (
+                    body
+                    + b"\n\n"
+                    + render_history(history.as_prompt_document()).encode("utf-8")
+                )
             answer = await client.call(
                 prompt=(
                     instructions
@@ -832,24 +876,26 @@ class DirectHypothesisBootstrap:
                     chosen.append(value)
             return chosen
 
-        header = canonical_bytes(
-            {
-                "kind": "simple_hypothesis_batch",
-                "batch": batch.number,
-                "batches": len(feeding.batches),
-                "files_in_this_batch": list(batch.paths),
-                "excluded_from_every_batch": feeding.excluded,
-                "codeql_findings": findings("codeql_findings"),
-                "opengrep_findings": findings("opengrep_findings"),
-            }
+        header = {
+            "batch": batch.number,
+            "batches": len(feeding.batches),
+            "files_in_this_batch": list(batch.paths),
+            "excluded_from_every_batch": feeding.excluded,
+            "codeql_findings": findings("codeql_findings"),
+            "opengrep_findings": findings("opengrep_findings"),
+        }
+        document = "\n\n".join(
+            (
+                f"# Batch {batch.number} of {len(feeding.batches)}",
+                "## Batch facts and tool findings for these files",
+                fenced(json.dumps(header, ensure_ascii=False, indent=1), "json"),
+                "## Repository map (every definition in the checkout)",
+                fenced(feeding.signature_map, "text"),
+                "## Source of this batch",
+                render_batch(batch),
+            )
         )
-        return (
-            header
-            + b"\n=== REPOSITORY MAP (every definition in the checkout) ===\n"
-            + feeding.signature_map.encode("utf-8")
-            + b"\n=== SOURCE OF THIS BATCH ===\n"
-            + render_batch(batch).encode("utf-8")
-        )
+        return document.encode("utf-8")
 
     async def propose(
         self,
@@ -887,29 +933,8 @@ class DirectHypothesisBootstrap:
         feeding = plan_feeding(static.workspace_path, sources)
         feeding_ref = artifacts.put_json(feeding.coverage())
         lines = _line_counts(static.workspace_path, sources)
-        instructions = (
-            b"You are the Hypothesis Agent. You are reading one batch of this "
-            b"repository's source in full; every file of the checkout is read in "
-            b"exactly one batch, and the repository map names every definition "
-            b"in the others. Each line of code is shown after its real line "
-            b"number and a `|`. Return every concrete web-security hypothesis "
-            b"this code supports - as many as the code gives and none when it "
-            b"gives none. Static tool hits are facts, not verdicts, and a defect "
-            b"a tool is silent about is the one worth finding: a guard that is "
-            b"present but subtly wrong produces no finding at all. A sanitizer, "
-            b"validator or permission check is a candidate defence, not proof of "
-            b"safety: when input reaches a sink through one, do not drop the flow "
-            b"because the guard exists and do not cite it as the reason another "
-            b"flow is safe. Read the guard itself - its loop bounds, the order of "
-            b"decoding and checking, what it does when a bound is reached, what it "
-            b"normalises and what it compares - and propose the hypothesis that it "
-            b"can be bypassed, stating how; verification decides whether it "
-            b"holds. Do not invent missing code. When a flow leaves this batch, "
-            b"name in "
-            b"`requested_paths` the files you need to follow it (or in "
-            b"`requested_ast_paths` those you only need the shape of) and you "
-            b"will be asked again with them; leave both empty when you have what "
-            b"you need. " + PROPOSAL_INSTRUCTIONS.encode() + b"\n"
+        instructions = (_HYPOTHESIS_INSTRUCTIONS + PROPOSAL_INSTRUCTIONS + "\n").encode(
+            "utf-8"
         )
         registry = Registry(bundle_hash=str(static.static_bundle_ref.content_hash))
         provenance: dict[

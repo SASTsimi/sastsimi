@@ -69,17 +69,16 @@ PROPOSAL_ITEM_SCHEMA: dict[str, Any] = {
     },
 }
 
-PROPOSAL_INSTRUCTIONS = (
-    "Each hypothesis states one claim in `statement` and never asserts it is "
-    "confirmed. Give `vulnerability_type_candidates`, `target_locations` and the "
-    "`suspected_path` from source to sink, every location as a repository file "
-    "path with the real line numbers shown in the code; separate "
-    "`observed_facts` (what the code shows), `restrictions` (checks or "
-    "boundaries that limit the attack) and `assumptions` (what must hold but "
-    "is not shown); and add at least one `falsification_questions` entry that "
-    "real evidence could answer and one `validation_checks` entry that says "
-    "what must be confirmed."
-)
+PROPOSAL_INSTRUCTIONS = """- `statement`: one claim; never assert it is confirmed.
+- `vulnerability_type_candidates`: the types it could be.
+- `target_locations` and `suspected_path` (source to sink): each a repository
+  file path with the real line numbers shown in the code.
+- `observed_facts`: what the code shows.
+- `restrictions`: checks or boundaries that limit the attack.
+- `assumptions`: what must hold but is not shown.
+- `falsification_questions`: at least one question real evidence could answer.
+- `validation_checks`: at least one thing that must be confirmed.
+"""
 
 
 @dataclass(frozen=True, slots=True)

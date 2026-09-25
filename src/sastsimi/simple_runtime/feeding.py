@@ -18,6 +18,7 @@ named as left out, never silently.
 from __future__ import annotations
 
 import ast
+import re
 import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -212,12 +213,42 @@ def plan_feeding(
     return feeding
 
 
+_LANGUAGE = {
+    ".py": "python",
+    ".pyi": "python",
+    ".js": "javascript",
+    ".jsx": "jsx",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+}
+
+
+def fenced(text: str, language: str = "") -> str:
+    """Wrap ``text`` in a code fence longer than any backtick run inside it.
+
+    Source files and model output can contain triple backticks of their own
+    (in Markdown strings, docstrings, templates); a fixed fence would end early
+    and turn the rest of the file into prose.
+    """
+
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}{language}\n{text}\n{fence}"
+
+
 def render_batch(batch: Batch) -> str:
-    return "\n\n".join(f"=== FILE {item.path} ===\n{item.text}" for item in batch.files)
+    """The batch's code as Markdown: a heading and a code block per file."""
+
+    return "\n\n".join(
+        f"### {item.path}\n\n"
+        + fenced(item.text, _LANGUAGE.get(PurePosixPath(item.path).suffix, ""))
+        for item in batch.files
+    )
 
 
 __all__ = [
     "BATCH_BYTES",
+    "fenced",
     "SOURCE_SUFFIXES",
     "Batch",
     "FedFile",

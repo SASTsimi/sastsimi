@@ -15,6 +15,7 @@ so a long exploration costs a bounded prompt rather than a growing one.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -132,6 +133,61 @@ class Exploration:
         }
 
 
+def render_history(document: dict[str, Any]) -> str:
+    """The reading so far as Markdown: what was asked, what came back.
+
+    Served files appear as code blocks under their own headings, so the agent
+    reads them as it read its batch; a compacted round keeps its notes and
+    says the text was dropped.
+    """
+
+    from .feeding import fenced
+
+    parts = ["## What you have read so far"]
+    for entry in document.get("rounds", ()):
+        parts.append(f"### Round {entry['round']}")
+        parts.append(
+            "Requested: " + ", ".join(f"`{p}`" for p in entry["requested_paths"])
+        )
+        if entry.get("notes"):
+            parts.append(
+                "Your notes from that round:\n\n"
+                + fenced(
+                    json.dumps(entry["notes"], ensure_ascii=False, indent=1), "json"
+                )
+            )
+        sources = entry.get("sources") or {}
+        for item in sources.get("served", ()):
+            suffix = str(item.get("path", "")).rsplit(".", 1)[-1]
+            parts.append(f"#### {item.get('path')}")
+            parts.append(
+                fenced(str(item.get("content", "")), _FENCE_LANGUAGE.get(suffix, ""))
+            )
+        refused = list(sources.get("refused", ()))
+        ast = entry.get("ast") or {}
+        for item in ast.get("served", ()):
+            parts.append(f"#### Parsed facts: {item.get('path')}")
+            parts.append(
+                fenced(json.dumps(item.get("facts", []), ensure_ascii=False), "json")
+            )
+        refused.extend(ast.get("refused", ()))
+        if refused:
+            parts.append(
+                "Refused:\n"
+                + "\n".join(f"- `{r.get('path')}`: {r.get('reason')}" for r in refused)
+            )
+        if entry.get("read_but_no_longer_quoted"):
+            parts.append(f"_{entry['why']}_")
+    return "\n\n".join(parts)
+
+
+def _json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=1)
+
+
+_FENCE_LANGUAGE = {"py": "python", "js": "javascript", "ts": "typescript", "tsx": "tsx"}
+
+
 def _weight(rounds: Sequence[Round]) -> int:
     total = 0
     for entry in rounds:
@@ -157,4 +213,5 @@ __all__ = [
     "MAX_ROUNDS",
     "Exploration",
     "Round",
+    "render_history",
 ]

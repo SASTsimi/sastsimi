@@ -27,7 +27,7 @@ from sastsimi.sandbox.docker_adapter import DockerAdapter, DockerOperationError
 
 from .artifacts import SimpleArtifactRepository
 from .chaining import PrimitiveAdmissionStage, SimpleChainingStage
-from .exploration import MAX_ROUNDS, Exploration
+from .exploration import MAX_ROUNDS, Exploration, render_history
 from .models import (
     STAGE_ORDER,
     SimpleStage,
@@ -665,7 +665,11 @@ class _StructuredStage:
     ) -> SimpleLLMCallResult:
         body = context
         if history is not None and history.rounds:
-            body = body + b"\n" + canonical_bytes(history.as_prompt_document())
+            body = (
+                body
+                + b"\n\n"
+                + render_history(history.as_prompt_document()).encode("utf-8")
+            )
         result = await self._client.call(
             prompt=_prompt(self._instructions, body),
             output_schema=self._schema,

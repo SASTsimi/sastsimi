@@ -78,7 +78,7 @@ class _ReadingAgent:
         prompt = kwargs.get("prompt")
         text = prompt if isinstance(prompt, bytes) else b""
         self.prompts.append(text)
-        has_read = b"simple_exploration_history" in text
+        has_read = b"## What you have read so far" in text
         return SimpleLLMCallResult(
             value={
                 "hypotheses": [_proposal(2)] if has_read else [],
@@ -146,7 +146,7 @@ async def test_the_code_is_read_without_anyone_choosing_it(
 
     opening = agent.prompts[0]
     assert b"for _ in range(8):" in opening
-    assert b"REPOSITORY MAP" in opening
+    assert b"## Repository map" in opening
     # No pre-digested map of what someone decided was interesting.
     assert b"notable_calls" not in opening
 
@@ -183,7 +183,7 @@ async def test_a_path_outside_the_checkout_is_refused_not_read(
             prompt = kwargs.get("prompt")
             text = prompt if isinstance(prompt, bytes) else b""
             self.prompts.append(text)
-            done = b"simple_exploration_history" in text
+            done = b"## What you have read so far" in text
             return SimpleLLMCallResult(
                 value={
                     "hypotheses": [],

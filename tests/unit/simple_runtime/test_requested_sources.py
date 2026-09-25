@@ -194,8 +194,8 @@ class _RequestingClient:
         self.calls += 1
         prompt = kwargs.get("prompt")
         text = prompt if isinstance(prompt, bytes) else b""
-        rounds = text.count(b'"round"')
-        self.saw_history.append(b"simple_exploration_history" in text)
+        rounds = text.count(b"### Round ")
+        self.saw_history.append(b"## What you have read so far" in text)
         if rounds == 0:
             # One file it may have, one it may not.
             wanted = ["backend/chainlit/markdown.py", "../outside.txt"]
