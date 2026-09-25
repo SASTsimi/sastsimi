@@ -7,6 +7,7 @@ the checkout's file list instead, and may read before it decides.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, cast
 
@@ -215,3 +216,34 @@ def test_a_repository_with_no_source_lists_nothing_rather_than_guessing() -> Non
     from sastsimi.simple_runtime.bootstrap_stages import _source_listing
 
     assert _source_listing(("README.md", "LICENSE")) == []
+
+
+@pytest.mark.asyncio
+async def test_each_proposal_records_which_files_were_read(
+    tmp_path: Path, repository: Path
+) -> None:
+    """A run that misses a defect must be able to say whether the file was read.
+
+    One run proposed four hypotheses, none about the target file, and nothing
+    recorded whether the agent had opened that file and dismissed it or never
+    opened it at all.
+    """
+
+    await _propose(tmp_path, repository, _ReadingAgent())
+
+    data = tmp_path / "data"
+    proposals = [
+        json.loads(path.read_bytes())
+        for path in data.rglob("*")
+        if path.is_file() and b"simple_hypothesis_proposal" in path.read_bytes()
+    ]
+    assert proposals
+    reading = proposals[0]["reading"]
+    assert reading == [
+        {
+            "round": 1,
+            "requested": ["app/proxy.py"],
+            "served": ["app/proxy.py"],
+            "refused": [],
+        }
+    ]

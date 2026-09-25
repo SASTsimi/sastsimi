@@ -45,6 +45,33 @@ _MAX_LITERAL_CHARS = 60
 _SOURCE_SUFFIXES = (".py", ".pyi", ".js", ".jsx", ".ts", ".tsx")
 
 
+def _reading_record(history: Exploration) -> list[dict[str, object]]:
+    """Name what each round asked for, got and was refused - not the text."""
+
+    rounds: list[dict[str, object]] = []
+    for entry in history.rounds:
+        served: list[str] = []
+        refused: list[object] = []
+        for batch in (entry.sources, entry.ast):
+            if not batch:
+                continue
+            served.extend(
+                str(item.get("path"))
+                for item in batch.get("served", ())
+                if isinstance(item, dict)
+            )
+            refused.extend(batch.get("refused", ()))
+        rounds.append(
+            {
+                "round": entry.number,
+                "requested": list(entry.requested_paths),
+                "served": served,
+                "refused": refused,
+            }
+        )
+    return rounds
+
+
 def _count(value: object) -> int:
     return len(value) if isinstance(value, list) else 0
 
@@ -680,7 +707,7 @@ class DirectHypothesisBootstrap:
         schema: dict[str, object],
         static: StaticBootstrapResult,
         artifacts: SimpleArtifactRepository,
-    ) -> SimpleLLMCallResult:
+    ) -> tuple[SimpleLLMCallResult, Exploration]:
         """Ask, serve what was asked for, ask again.
 
         Which files a run ever looks at is decided here, so this is the stage
@@ -736,7 +763,7 @@ class DirectHypothesisBootstrap:
             )
             history.compact()
             result = await ask()
-        return result
+        return result, history
 
     def _ast_facts(
         self, artifacts: SimpleArtifactRepository, static: StaticBootstrapResult
@@ -824,9 +851,13 @@ class DirectHypothesisBootstrap:
             + str(self._max_hypotheses).encode()
             + b" hypotheses.\n"
         )
-        result = await self._read_then_propose(
+        result, history = await self._read_then_propose(
             client, instructions, context, schema, static, artifacts
         )
+        # Which files were read before these hypotheses were chosen.  Without
+        # it a run that never proposes the defect cannot say whether the agent
+        # read the file and dismissed it or never opened it.
+        reading = _reading_record(history)
         raw = result.value.get("hypotheses", [])
         if not isinstance(raw, list):
             raise RuntimeError("HYPOTHESIS_OUTPUT_INVALID")
@@ -856,6 +887,7 @@ class DirectHypothesisBootstrap:
                         mode="json"
                     ),
                     "proposal": value,
+                    "reading": reading,
                     "prompt_digest": result.prompt_digest,
                     "output_digest": result.output_digest,
                 }
