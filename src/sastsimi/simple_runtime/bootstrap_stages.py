@@ -241,19 +241,44 @@ empty in this answer.
 
 _POINTS_PER_TURN = 8
 
-_POINTS_TURN = (
-    b"These are the next points from your survey. Ask in `requested_paths` or "
-    b"`requested_ast_paths` for the code of each that you have not read yet, and "
-    b"return only the hypotheses these points give you that you have not "
-    b"returned before, from code you have read. Leave `suspicious_points` empty "
-    b"from now on.\n"
-)
+_POINTS_TURN = b"""
+These are the next points from your survey. Ask in `requested_paths` or
+`requested_ast_paths` for the code of each that you have not read yet, and
+return the hypotheses these points give you that you have not returned
+before. Leave `suspicious_points` empty from now on.
+
+A hypothesis is a possibility: when you can see how a point would become a
+vulnerability - "if this input takes this path, this happens" - propose it.
+Whether a defence stops it is for verification to settle, not a reason to
+leave it out.
+
+Record each point you have read in `point_decisions` with its number:
+`PROPOSED` if you returned a hypothesis for it, `NOT_PROPOSED` if you saw no
+such possibility.
+"""
 
 _POINTS_FOLLOW_UP = (
     b"Continue with these files. Return only the hypotheses they give you that "
-    b"you have not returned before. Request more code until every point of "
-    b"this turn has been read and its flow followed.\n"
+    b"you have not returned before, and a `point_decisions` entry for each point "
+    b"you have now read. Request more code until every point of this turn has "
+    b"been read and its flow followed.\n"
 )
+
+_POINTS_UNDECIDED = (
+    b"These points of the last turn have no entry in `point_decisions`. Read "
+    b"what you have not read of them, return the hypotheses they give you, and "
+    b"record each in `point_decisions`.\n"
+)
+
+_DECISION_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "point": {"type": "integer"},
+        "decision": {"type": "string", "enum": ["PROPOSED", "NOT_PROPOSED"]},
+    },
+    "required": ["point", "decision"],
+    "additionalProperties": False,
+}
 
 _POINT_SCHEMA: dict[str, object] = {
     "type": "object",
@@ -1049,6 +1074,7 @@ class DirectHypothesisBootstrap:
         read_first: bool = False,
         follow_up: bytes = _FOLLOW_UP,
         failures: list[str] | None = None,
+        decisions: list[object] | None = None,
     ) -> tuple[SimpleLLMCallResult, Exploration, list[object]]:
         """Ask, serve what was asked for, ask again - in one conversation.
 
@@ -1078,6 +1104,9 @@ class DirectHypothesisBootstrap:
         def absorb(value: Mapping[str, object]) -> None:
             items = value.get("hypotheses")
             kept.extend(items if isinstance(items, list) else [])
+            decided = value.get("point_decisions")
+            if decisions is not None and isinstance(decided, list):
+                decisions.extend(decided)
 
         if read_first:
             # With the fact feed nothing has been read yet, so the first answer
@@ -1182,6 +1211,7 @@ class DirectHypothesisBootstrap:
                 )
             ]
         turns: list[tuple[SimpleLLMCallResult, Exploration, list[object]]] = []
+        decisions_log: list[object] = []
         for start in range(0, len(points), _POINTS_PER_TURN):
             chunk = points[start : start + _POINTS_PER_TURN]
             listing = [
@@ -1195,6 +1225,8 @@ class DirectHypothesisBootstrap:
                 )
             )
             unread = len(points) - start - len(chunk)
+            decided: list[object] = []
+            walked = False
             try:
                 turns.append(
                     await self._read_then_propose(
@@ -1207,16 +1239,52 @@ class DirectHypothesisBootstrap:
                         tail=_POINTS_TURN,
                         follow_up=_POINTS_FOLLOW_UP,
                         failures=failures,
+                        decisions=decided,
                     )
                 )
+                walked = True
+                # A point left without a decision was skipped rather than
+                # judged; it is asked once more.
+                numbers = {
+                    item.get("point") for item in decided if isinstance(item, dict)
+                }
+                missing = [item for item in listing if item["point"] not in numbers]
+                if missing and not failures:
+                    turns.append(
+                        await self._read_then_propose(
+                            talk,
+                            b"",
+                            fenced(
+                                json.dumps(missing, ensure_ascii=False, indent=1),
+                                "json",
+                            ).encode("utf-8"),
+                            static,
+                            artifacts,
+                            findings,
+                            tail=_POINTS_UNDECIDED,
+                            follow_up=_POINTS_FOLLOW_UP,
+                            failures=failures,
+                            decisions=decided,
+                        )
+                    )
             except RuntimeError as error:
                 failures.append(str(error))
-                unread += len(chunk)
+                if not walked:
+                    unread += len(chunk)
+            decisions_log.extend(decided)
             if failures:
                 # The conversation is gone; the points after this turn are
                 # recorded as unread rather than asked of a dead client.
                 failures.append(f"UNREAD_POINTS:{unread}")
                 break
+        artifacts.put_json(
+            {
+                "kind": "simple_hypothesis_point_decisions",
+                "batch": batch,
+                "points": len(points),
+                "decisions": decisions_log,
+            }
+        )
         return turns
 
     def _ast_facts(
@@ -1383,8 +1451,13 @@ class DirectHypothesisBootstrap:
                 "properties": {
                     **schema["properties"],  # type: ignore[dict-item]
                     "suspicious_points": {"type": "array", "items": _POINT_SCHEMA},
+                    "point_decisions": {"type": "array", "items": _DECISION_SCHEMA},
                 },
-                "required": [*schema["required"], "suspicious_points"],  # type: ignore[misc]
+                "required": [
+                    *schema["required"],
+                    "suspicious_points",
+                    "point_decisions",
+                ],  # type: ignore[misc]
             }
         registry = Registry(bundle_hash=str(static.static_bundle_ref.content_hash))
         findings = _findings_by_file(bundle)

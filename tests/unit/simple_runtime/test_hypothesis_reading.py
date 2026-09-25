@@ -373,8 +373,14 @@ async def test_a_survey_walks_every_listed_point_a_few_at_a_time(
                 value["requested_paths"] = ["app/proxy.py"]
             elif len(self.prompts) == 3:
                 value["hypotheses"] = [_proposal(2)]
+                value["point_decisions"] = [
+                    {"point": n, "decision": "PROPOSED"} for n in range(1, 9)
+                ]
             elif len(self.prompts) == 4:
                 value["hypotheses"] = [_proposal(3, "second")]
+                value["point_decisions"] = [
+                    {"point": n, "decision": "NOT_PROPOSED"} for n in (9, 10)
+                ]
             return SimpleLLMCallResult(
                 value=value, prompt_digest="a" * 64, output_digest="b" * 64
             )
