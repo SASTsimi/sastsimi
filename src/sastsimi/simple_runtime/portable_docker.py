@@ -436,9 +436,26 @@ class DirectEnvironmentPreparer:
         # need tooling a plain Python image does not carry - one repository here
         # needs npm to generate its own metadata - and a failure there would
         # otherwise block every hypothesis in the run.
+        #
+        # A repository's own Dockerfile can fail for a reason that has nothing
+        # to do with its Python dependencies - one pins Node 18 against a base
+        # image too old for its glibc - while a plain Python image with those
+        # dependencies installed would work fine.  Before giving up on
+        # installing anything, a small ladder of Python versions is tried: the
+        # version the repository states for itself first (its own Dockerfile,
+        # pyproject.toml, or .python-version), then a fixed descending list.
+        # Old pinned dependencies are frequently built against one exact range
+        # - one target's urllib3 breaks on 3.10, its Pillow on 3.12 - and a
+        # requirements file does not say which; installing is what finds out.
+        installs = [
+            self._generated_dockerfile(
+                target_requirements, python_version=version, install=True
+            )
+            for version in self._install_attempt_versions()
+        ]
         fallback = self._generated_dockerfile(target_requirements, install=False)
         image_digest, dockerfile, source = await self._built_image(
-            checkpoint, dockerfile, source, fallback
+            checkpoint, dockerfile, source, installs, fallback
         )
         dockerfile_ref = self._artifacts.put_bytes(dockerfile, "text/x-dockerfile")
         recipe = {
@@ -467,14 +484,25 @@ class DirectEnvironmentPreparer:
         checkpoint: StageCheckpoint,
         dockerfile: bytes,
         source: str,
+        installs: Sequence[bytes],
         fallback: bytes,
     ) -> tuple[str, bytes, str]:
-        """Build the full environment, or the source-only one it falls back to."""
+        """Build the full environment, an installed fallback, or a bare one."""
 
         bare = "GENERATED_NO_INSTALL"
-        attempts = [(dockerfile, source), (fallback, bare)]
-        if hashlib.sha256(dockerfile).hexdigest() in self._unbuildable:
-            attempts = attempts[1:]
+        candidates = [(dockerfile, source)]
+        candidates.extend(
+            (candidate, f"GENERATED_INSTALL_{index}")
+            for index, candidate in enumerate(installs)
+        )
+        # The bare fallback never fails a build, so it is never cached as
+        # unbuildable and always stays as the last resort.
+        attempts = [
+            (candidate, label)
+            for candidate, label in candidates
+            if hashlib.sha256(candidate).hexdigest() not in self._unbuildable
+        ]
+        attempts.append((fallback, bare))
         for candidate, label in attempts:
             try:
                 digest = await self._build(checkpoint, candidate)
@@ -637,6 +665,7 @@ class DirectEnvironmentPreparer:
         target_requirements: str | None = None,
         *,
         install: bool = True,
+        python_version: str = "3.12",
     ) -> bytes:
         directory = self._installable_directory() if install else None
         if install and (self._workspace / "requirements.txt").is_file():
@@ -645,8 +674,19 @@ class DirectEnvironmentPreparer:
             install_layer = f"RUN pip install --no-cache-dir {shlex.quote(directory)}"
         else:
             install_layer = ""
+        # Old pinned dependencies frequently need a native build - a C
+        # extension, a database driver - that a bare Python image has no
+        # toolchain for.  Installed once, cheap when nothing needs it.
+        build_tools = (
+            "RUN apt-get update && apt-get install -y --no-install-recommends "
+            "build-essential libpq-dev libjpeg-dev zlib1g-dev "
+            "&& rm -rf /var/lib/apt/lists/*\n"
+            if install_layer
+            else ""
+        )
         return (
-            "FROM python:3.12-slim\n"
+            f"FROM python:{python_version}-slim\n"
+            f"{build_tools}"
             "WORKDIR /workspace\n"
             "COPY . /workspace\n"
             f"{install_layer}\n"
@@ -654,6 +694,67 @@ class DirectEnvironmentPreparer:
             "RUN chmod -R a+rX /workspace && mkdir -p /tmp && chmod 1777 /tmp\n"
             'CMD ["sleep", "infinity"]\n'
         ).encode()
+
+    # A repository rarely states an exact upper bound, and old pinned
+    # dependencies often have one anyway - one target's urllib3 breaks on
+    # 3.10, its Pillow on 3.12.  Building is what finds out; this only bounds
+    # how many times it is tried before falling back to installing nothing.
+    _PYTHON_VERSION_LADDER: ClassVar[tuple[str, ...]] = (
+        "3.12",
+        "3.11",
+        "3.10",
+        "3.9",
+    )
+
+    def _declared_python_version(self) -> str | None:
+        """Return the Python version the repository states for itself, if any.
+
+        Checked even when the file that states it could not be built here -
+        a Dockerfile that fails on an unrelated step, such as a Node install
+        against a base image too old for it, still names the right Python.
+        """
+
+        dockerfile_path = self._workspace / "Dockerfile"
+        if dockerfile_path.is_file():
+            try:
+                text = dockerfile_path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                text = ""
+            match = re.search(r"(?im)^\s*FROM\s+python:(\d+\.\d+)", text)
+            if match:
+                return match.group(1)
+        pyproject_path = self._workspace / "pyproject.toml"
+        if pyproject_path.is_file():
+            try:
+                document = tomllib.loads(
+                    pyproject_path.read_text(encoding="utf-8", errors="ignore")
+                )
+            except (OSError, tomllib.TOMLDecodeError):
+                document = {}
+            requires = document.get("project", {}).get("requires-python")
+            if isinstance(requires, str):
+                match = re.search(r"(\d+\.\d+)", requires)
+                if match:
+                    return match.group(1)
+        version_file = self._workspace / ".python-version"
+        if version_file.is_file():
+            try:
+                text = version_file.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                text = ""
+            match = re.search(r"(\d+\.\d+)", text)
+            if match:
+                return match.group(1)
+        return None
+
+    def _install_attempt_versions(self) -> tuple[str, ...]:
+        """Versions to try installing under, the repository's own stated one first."""
+
+        declared = self._declared_python_version()
+        ladder = self._PYTHON_VERSION_LADDER
+        if declared is None or declared in ladder:
+            return ladder
+        return (declared, *ladder)
 
 
 __all__ = [

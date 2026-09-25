@@ -235,9 +235,11 @@ async def test_a_failed_install_falls_back_to_the_source_only_image(
 
     environment = await preparer.prepare(checkpoint, {}, ())
 
-    assert len(docker.attempts) == 2
-    assert b"pip install" in docker.attempts[0]
-    assert b"pip install" not in docker.attempts[1]
+    # The primary generated image, a Python-version install ladder, and the
+    # bare fallback that finally succeeds.
+    assert len(docker.attempts) == 6
+    assert all(b"pip install" in attempt for attempt in docker.attempts[:-1])
+    assert b"pip install" not in docker.attempts[-1]
     recipe = json.loads(artifacts.read(environment.recipe_ref))
     # The recipe says the environment is bare, so the agent is not left to
     # assume dependencies it does not have.
@@ -314,13 +316,14 @@ async def test_a_dockerfile_that_failed_once_is_not_built_again(
     )
 
     await preparer.prepare(checkpoint, {}, ())
-    assert len(docker.attempts) == 2
+    assert len(docker.attempts) == 6
 
     await preparer.prepare(checkpoint, {}, ())
 
-    # The second hypothesis goes straight to the image that works.
-    assert len(docker.attempts) == 3
-    assert b"pip install" not in docker.attempts[2]
+    # The second hypothesis skips every cached-unbuildable candidate and goes
+    # straight to the image that works.
+    assert len(docker.attempts) == 7
+    assert b"pip install" not in docker.attempts[-1]
     DirectEnvironmentPreparer._unbuildable.clear()
 
 
@@ -367,3 +370,102 @@ async def test_sweep_removes_only_containers_of_dead_runs_on_this_host() -> None
 
     assert removed == ("dead", "unlabelled")
     assert runtime.calls[-1] == ("rm", "--force", "--volumes", "dead", "unlabelled")
+
+
+class _NeedsDeclaredVersionDocker:
+    """Fails every build except the one naming the repository's own version."""
+
+    def __init__(self) -> None:
+        self.attempts: list[bytes] = []
+
+    async def build_or_reuse(
+        self,
+        *,
+        workspace: Path,
+        dockerfile: bytes,
+        cache_key: str,
+        labels: dict[str, str],
+    ) -> str:
+        self.attempts.append(dockerfile)
+        if b"FROM python:3.8-slim" in dockerfile:
+            return "sha256:" + "b" * 64
+        raise DockerOperationError("DOCKER_BUILD_FAILED")
+
+
+@pytest.mark.asyncio
+async def test_a_declared_python_version_is_tried_before_the_fixed_ladder(
+    tmp_path: Path,
+) -> None:
+    # A repository's own Dockerfile can fail for a reason that has nothing to
+    # do with its Python version - a Node install against too old a base
+    # image - while stating the right version for anything generated instead.
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    (workspace / "Dockerfile").write_text(
+        "FROM python:3.8-stretch\nRUN npm -g install pnpm\n", encoding="utf-8"
+    )
+    (workspace / "requirements.txt").write_text("requests==2.27.1\n", encoding="utf-8")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    docker = _NeedsDeclaredVersionDocker()
+    preparer = DirectEnvironmentPreparer(
+        docker=cast(Any, docker), artifacts=artifacts, workspace=workspace
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+
+    environment = await preparer.prepare(checkpoint, {}, ())
+
+    # The repository's own (failing) Dockerfile, then straight to the
+    # declared version - not the whole 3.12-first ladder first.
+    assert len(docker.attempts) == 2
+    assert b"FROM python:3.8-slim" in docker.attempts[1]
+    recipe = json.loads(artifacts.read(environment.recipe_ref))
+    assert recipe["dockerfile_source"] == "GENERATED_INSTALL_0"
+    assert environment.image_digest == "sha256:" + "b" * 64
+
+
+@pytest.mark.asyncio
+async def test_declared_version_detection_reads_dockerfile_pyproject_and_pin_file(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    preparer = DirectEnvironmentPreparer(
+        docker=cast(Any, object()),
+        artifacts=SimpleArtifactRepository(tmp_path / "data", identity),
+        workspace=workspace,
+    )
+
+    assert preparer._declared_python_version() is None
+
+    (workspace / "Dockerfile").write_text("FROM python:3.7-stretch\n", encoding="utf-8")
+    assert preparer._declared_python_version() == "3.7"
+    (workspace / "Dockerfile").unlink()
+
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "thing"\nrequires-python = ">=3.9,<3.11"\n',
+        encoding="utf-8",
+    )
+    assert preparer._declared_python_version() == "3.9"
+    (workspace / "pyproject.toml").unlink()
+
+    (workspace / ".python-version").write_text("3.11\n", encoding="utf-8")
+    assert preparer._declared_python_version() == "3.11"
