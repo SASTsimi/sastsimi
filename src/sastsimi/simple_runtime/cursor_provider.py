@@ -15,7 +15,7 @@ import random
 import re
 import subprocess
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from time import monotonic
 from typing import Any, Protocol
@@ -371,6 +371,7 @@ class CursorProvider:
         transport: CursorTransport | None = None,
         use_cli_login: bool = False,
         model_catalog: CursorModelCatalog | None = None,
+        budget_check: Callable[[], StageFailure | None] | None = None,
     ) -> None:
         self._artifacts = artifacts
         self._default_model = default_model
@@ -384,6 +385,7 @@ class CursorProvider:
         self._transport = transport or OfficialCursorTransport(str(artifacts.data_dir))
         self._attempt_store = SimpleCheckpointStore(artifacts.paths.database)
         self._catalog = model_catalog or CursorModelCatalog()
+        self._budget_check = budget_check
 
     async def _models(self, key: str) -> set[str]:
         async with self._catalog.lock:
@@ -475,6 +477,10 @@ class CursorProvider:
         correction = ""
         async with self._semaphore:
             for attempt in range(1, self._max_retries + 2):
+                if self._budget_check is not None:
+                    budget_failure = self._budget_check()
+                    if budget_failure is not None:
+                        return budget_failure
                 started_at = datetime.now(UTC)
                 started = monotonic()
                 invocation_id = f"cursor-{uuid4().hex}"

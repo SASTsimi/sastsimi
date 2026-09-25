@@ -22,6 +22,11 @@ class AnalysisSummaryView(ContractModel):
     finding_count: int
     llm_provider: str | None = None
     on_demand_possible: bool = False
+    llm_attempt_count: int = 0
+    llm_input_tokens: int = 0
+    llm_output_tokens: int = 0
+    llm_cost_minor_units: float | None = None
+    llm_unknown_cost_calls: int = 0
     cursor_input_tokens: int = 0
     cursor_output_tokens: int = 0
     cursor_cost_cents: float | None = None

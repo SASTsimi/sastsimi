@@ -39,6 +39,7 @@ from sastsimi.simple_runtime.bootstrap_stages import (
     DirectHypothesisBootstrap,
     DirectStaticBootstrap,
 )
+from sastsimi.simple_runtime.call_queue import RunLimitedClient, RunUsageBudget
 from sastsimi.simple_runtime.claude_provider import (
     ClaudeProvider,
     OfficialClaudeCLITransport,
@@ -95,6 +96,41 @@ class SimpleClientFactory:
         self._profile = profile
         self._semaphore = asyncio.Semaphore(profile.llm_max_concurrency)
         self._cursor_models = CursorModelCatalog()
+        self._store = SimpleCheckpointStore(
+            profile.data_dir / "db" / "sastsimi.sqlite3"
+        )
+
+    def _budget(self, identity: CheckpointIdentity) -> RunUsageBudget:
+        return RunUsageBudget(
+            store=self._store,
+            analysis_id=identity.analysis_id,
+            max_tokens=self._profile.max_tokens,
+            max_cost_minor_units=self._profile.max_cost_minor_units,
+            max_elapsed_seconds=self._profile.max_elapsed_seconds,
+        )
+
+    def _limited(
+        self,
+        inner: SimpleLLMClient,
+        identity: CheckpointIdentity,
+        artifacts: SimpleArtifactRepository,
+        model: str,
+        *,
+        max_retries: int | None = None,
+    ) -> RunLimitedClient:
+        return RunLimitedClient(
+            inner=inner,
+            semaphore=self._semaphore,
+            artifacts=artifacts,
+            store=self._store,
+            model=model,
+            max_retries=self._profile.llm_max_retries
+            if max_retries is None
+            else max_retries,
+            max_tokens=self._profile.max_tokens,
+            max_cost_minor_units=self._profile.max_cost_minor_units,
+            max_elapsed_seconds=self._profile.max_elapsed_seconds,
+        )
 
     def __call__(
         self,
@@ -114,20 +150,33 @@ class SimpleClientFactory:
                 default_model=self._profile.model,
                 agent_models=self._profile.agent_models,
                 timeout_seconds=self._profile.llm_timeout_seconds,
-                max_retries=self._profile.llm_max_retries,
+                max_retries=min(self._profile.llm_max_retries, 2),
                 semaphore=self._semaphore,
                 transport=OfficialClaudeCLITransport(tool, config_dir),
+                budget_check=self._budget(identity).check,
             )
         if self._profile.provider == "cursor":
             fallback: SimpleLLMClient | None = None
             if self._profile.fallback_provider == "openai":
-                fallback = SimpleOpenAIClient(
-                    credential_ref="env:OPENAI_API_KEY",
-                    model=self._profile.fallback_model or "",
+                fallback = self._limited(
+                    SimpleOpenAIClient(
+                        credential_ref="env:OPENAI_API_KEY",
+                        model=self._profile.fallback_model or "",
+                    ),
+                    identity,
+                    artifacts,
+                    self._profile.fallback_model or "",
+                    max_retries=0,
                 )
             elif self._profile.fallback_provider == "codex":
-                fallback = self._codex(
-                    identity, artifacts, self._profile.fallback_model or ""
+                fallback = self._limited(
+                    self._codex(
+                        identity, artifacts, self._profile.fallback_model or ""
+                    ),
+                    identity,
+                    artifacts,
+                    self._profile.fallback_model or "",
+                    max_retries=0,
                 )
             cli_login = self._profile.auth_mode == "SUBSCRIPTION_LOGIN"
             transport = None
@@ -141,8 +190,12 @@ class SimpleClientFactory:
                 default_model=self._profile.model,
                 agent_models=self._profile.agent_models,
                 timeout_seconds=self._profile.llm_timeout_seconds,
-                max_retries=self._profile.llm_max_retries,
+                max_retries=min(
+                    self._profile.llm_max_retries,
+                    1 if fallback is not None else 2,
+                ),
                 semaphore=self._semaphore,
+                budget_check=self._budget(identity).check,
                 allow_on_demand=self._profile.cursor_allow_on_demand,
                 fallback=fallback,
                 transport=transport,
@@ -150,11 +203,21 @@ class SimpleClientFactory:
                 model_catalog=self._cursor_models,
             )
         if self._profile.provider == "openai":
-            return SimpleOpenAIClient(
-                credential_ref=self._profile.credential_ref,
-                model=self._profile.model,
+            return self._limited(
+                SimpleOpenAIClient(
+                    credential_ref=self._profile.credential_ref,
+                    model=self._profile.model,
+                ),
+                identity,
+                artifacts,
+                self._profile.model,
             )
-        return self._codex(identity, artifacts, self._profile.model)
+        return self._limited(
+            self._codex(identity, artifacts, self._profile.model),
+            identity,
+            artifacts,
+            self._profile.model,
+        )
 
     def _codex(
         self,

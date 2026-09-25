@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -134,6 +135,53 @@ def test_report_path_rejects_traversal_and_unknown_report(tmp_path) -> None:
     with pytest.raises(DashboardNotFound):
         query.report_path("analysis-a", "F-999")
     assert query.report_path("analysis-a", "F-001").name == "F-001.md"
+
+
+def test_claude_usage_shows_unknown_cost_and_generic_on_demand_warning(
+    tmp_path,
+) -> None:
+    seed(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = store.require_analysis_run("analysis-a")
+    store.save_analysis_run(
+        run.model_copy(
+            update={
+                "llm_provider": "claude",
+                "on_demand_possible": True,
+            }
+        )
+    )
+    store.record_llm_attempt(
+        attempt_id="claude-attempt",
+        analysis_id="analysis-a",
+        agent="hypothesis",
+        model="operator-model",
+        attempt_number=1,
+        status="SUCCEEDED",
+        elapsed_ms=100,
+        input_tokens=12,
+        output_tokens=3,
+        cost_cents=None,
+        artifact_ref=ref("attempt"),
+    )
+
+    detail = DashboardQuery(tmp_path).get_analysis("analysis-a")
+
+    assert detail.on_demand_possible is True
+    assert detail.llm_attempt_count == 1
+    assert detail.llm_input_tokens == 12
+    assert detail.llm_unknown_cost_calls == 1
+    assert detail.llm_cost_minor_units is None
+    script = (
+        Path(__file__).resolve().parents[3]
+        / "src"
+        / "sastsimi"
+        / "dashboard"
+        / "static"
+        / "app.js"
+    )
+    assert "추가 사용량 과금 가능" in script.read_text(encoding="utf-8")
+    assert "Cursor 추가 사용량 과금 가능" not in script.read_text(encoding="utf-8")
 
 
 # mypy: disable-error-code="no-untyped-def"

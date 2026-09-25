@@ -72,6 +72,7 @@ class SimpleAnalysisRun(ContractModel):
     workspace_id: str
     commit_id: str
     repository: str
+    started_at: datetime | None = None
     llm_provider: str | None = None
     on_demand_possible: bool = False
     workspace_path: Path | None = None

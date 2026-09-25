@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Protocol
 from uuid import uuid4
@@ -129,6 +130,7 @@ class SimpleAnalysisApplication:
             workspace_id=workspace_id,
             commit_id=request.commit.lower(),
             repository=request.repository,
+            started_at=datetime.now(UTC),
             llm_provider=self._llm_provider,
             on_demand_possible=self._on_demand_possible,
         )

@@ -520,6 +520,7 @@ class ClaudeProvider:
         max_retries: int,
         semaphore: asyncio.Semaphore,
         transport: ClaudeTransport,
+        budget_check: Callable[[], StageFailure | None] | None = None,
     ) -> None:
         self._artifacts = artifacts
         self._default_model = default_model
@@ -529,6 +530,7 @@ class ClaudeProvider:
         self._semaphore = semaphore
         self._transport = transport
         self._attempt_store = SimpleCheckpointStore(artifacts.paths.database)
+        self._budget_check = budget_check
 
     async def call(
         self,
@@ -550,6 +552,10 @@ class ClaudeProvider:
         )
         async with self._semaphore:
             for attempt in range(1, self._max_retries + 2):
+                if self._budget_check is not None:
+                    budget_failure = self._budget_check()
+                    if budget_failure is not None:
+                        return budget_failure
                 started_at = datetime.now(UTC)
                 started = monotonic()
                 raw_ref: StoredDataRef | None = None

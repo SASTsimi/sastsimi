@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +61,7 @@ def provider(
     agent_models: Mapping[str, str] | None = None,
     use_cli_login: bool = False,
     model_catalog: CursorModelCatalog | None = None,
+    budget_check: Callable[[], StageFailure | None] | None = None,
 ) -> CursorProvider:
     identity = CheckpointIdentity(
         analysis_id="analysis-1",
@@ -79,6 +80,7 @@ def provider(
         transport=transport,
         use_cli_login=use_cli_login,
         model_catalog=model_catalog,
+        budget_check=budget_check,
     )
 
 
@@ -198,6 +200,23 @@ async def test_missing_model_and_on_demand_guard(
     result = await call(provider(tmp_path, fake, allow_on_demand=False))
     assert isinstance(result, StageFailure)
     assert result.code == "CURSOR_ON_DEMAND_CONTROL_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_cursor_budget_blocks_completion_before_charging(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CURSOR_API_KEY", "test-key")
+    fake = FakeTransport(['{"verdict":"TRUE"}'])
+    blocked = StageFailure(
+        code="LLM_COST_BUDGET_EXHAUSTED",
+        retryable=False,
+        safe_message="limit",
+    )
+    result = await call(provider(tmp_path, fake, budget_check=lambda: blocked))
+    assert isinstance(result, StageFailure)
+    assert result.code == "LLM_COST_BUDGET_EXHAUSTED"
+    assert fake.calls == []
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,7 @@ from sastsimi.simple_runtime.models import (
     StageCheckpoint,
     StageStatus,
 )
+from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 from .models import (
     AgentActivityView,
@@ -224,7 +225,7 @@ class DashboardQuery:
             if checkpoint.identity.hypothesis_id is not None:
                 hypothesis_groups[checkpoint.identity.hypothesis_id].append(checkpoint)
         run = self._simple_run(analysis_id)
-        cursor_input, cursor_output, cursor_cost = self._cursor_usage(analysis_id)
+        usage = self._usage_summary(analysis_id)
         hypotheses = tuple(
             self._project_hypothesis(
                 analysis_id,
@@ -259,9 +260,22 @@ class DashboardQuery:
             finding_count=len(reports),
             llm_provider=(run.llm_provider if run else None),
             on_demand_possible=(run.on_demand_possible if run else False),
-            cursor_input_tokens=cursor_input,
-            cursor_output_tokens=cursor_output,
-            cursor_cost_cents=cursor_cost,
+            llm_attempt_count=int(usage["calls"] or 0),
+            llm_input_tokens=int(usage["input_tokens"] or 0),
+            llm_output_tokens=int(usage["output_tokens"] or 0),
+            llm_cost_minor_units=(
+                float(usage["cost_minor_units"])
+                if usage["cost_minor_units"] is not None
+                else None
+            ),
+            llm_unknown_cost_calls=int(usage["unknown_cost_calls"] or 0),
+            cursor_input_tokens=int(usage["input_tokens"] or 0),
+            cursor_output_tokens=int(usage["output_tokens"] or 0),
+            cursor_cost_cents=(
+                float(usage["cost_minor_units"])
+                if usage["cost_minor_units"] is not None
+                else None
+            ),
             progress_percent=progress.percent,
             completed_units=progress.completed_units,
             known_units=progress.known_units,
@@ -332,20 +346,19 @@ class DashboardQuery:
         except ValueError:
             return None
 
-    def _cursor_usage(self, analysis_id: str) -> tuple[int, int, float | None]:
+    def _usage_summary(self, analysis_id: str) -> dict[str, int | float | None]:
         with self._connect() as connection:
             if not self._table_exists(connection, "simple_llm_attempts"):
-                return 0, 0, None
-            row = connection.execute(
-                """
-                SELECT COALESCE(SUM(input_tokens), 0),
-                       COALESCE(SUM(output_tokens), 0), SUM(cost_cents)
-                FROM simple_llm_attempts WHERE analysis_id = ?
-                """,
-                (analysis_id,),
-            ).fetchone()
-        assert row is not None
-        return int(row[0]), int(row[1]), float(row[2]) if row[2] is not None else None
+                return {
+                    "calls": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cost_minor_units": None,
+                    "unknown_cost_calls": 0,
+                }
+            return SimpleCheckpointStore.usage_summary_from_connection(
+                connection, analysis_id
+            )
 
     def _resolve_analysis_id(self, value: str) -> str:
         """Resolve public A-NNN names without breaking older exact-ID data."""

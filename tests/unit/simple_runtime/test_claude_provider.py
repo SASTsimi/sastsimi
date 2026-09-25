@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -421,7 +421,11 @@ class FakeTransport:
 
 
 def _provider(
-    tmp_path: Path, fake: FakeTransport, *, retries: int = 2
+    tmp_path: Path,
+    fake: FakeTransport,
+    *,
+    retries: int = 2,
+    budget_check: Callable[[], StageFailure | None] | None = None,
 ) -> ClaudeProvider:
     identity = CheckpointIdentity(
         analysis_id="analysis-1",
@@ -437,6 +441,7 @@ def _provider(
         max_retries=retries,
         semaphore=asyncio.Semaphore(1),
         transport=fake,
+        budget_check=budget_check,
     )
 
 
@@ -471,6 +476,24 @@ async def test_claude_adapter_preserves_schema_model_and_distinct_artifacts(
     assert result.raw_output_ref != result.parsed_output_ref
     assert fake.calls == [("verification-model", b"Verification Agent prompt")]
     assert result.input_tokens == 4
+
+
+@pytest.mark.asyncio
+async def test_claude_budget_blocks_completion_before_charging(tmp_path: Path) -> None:
+    fake = FakeTransport([])
+    blocked = StageFailure(
+        code="LLM_TOKEN_BUDGET_EXHAUSTED",
+        retryable=False,
+        safe_message="limit",
+    )
+    result = await _provider(tmp_path, fake, budget_check=lambda: blocked).call(
+        prompt=b"safe",
+        output_schema={},
+        timeout_ms=1000,
+    )
+    assert isinstance(result, StageFailure)
+    assert result.code == "LLM_TOKEN_BUDGET_EXHAUSTED"
+    assert fake.calls == []
 
 
 @pytest.mark.asyncio
