@@ -131,7 +131,11 @@ class OfficialCursorCLITransport:
 
     async def _run(self, *args: str, timeout: float) -> str:
         with tempfile.TemporaryDirectory(prefix="sastsimi-cursor-") as workspace:
-            flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            flags = (
+                int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                if os.name == "nt"
+                else 0
+            )
             allowed_env = {
                 "PATH",
                 "PATHEXT",
@@ -185,7 +189,7 @@ class OfficialCursorCLITransport:
                             "/F",
                             stdout=asyncio.subprocess.DEVNULL,
                             stderr=asyncio.subprocess.DEVNULL,
-                            creationflags=subprocess.CREATE_NO_WINDOW,
+                            creationflags=flags,
                         )
                         await asyncio.wait_for(terminator.wait(), timeout=5)
                     except Exception:
