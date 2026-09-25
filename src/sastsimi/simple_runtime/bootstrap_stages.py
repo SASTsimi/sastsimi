@@ -1158,6 +1158,21 @@ class DirectHypothesisBootstrap:
         artifacts.put_json(
             {"kind": "simple_hypothesis_survey", "batch": batch, "points": points}
         )
+        if not points:
+            # An empty list would leave the part unread; read it as the fact
+            # feed does instead.
+            return [
+                await self._read_then_propose(
+                    talk,
+                    b"",
+                    b"",
+                    static,
+                    artifacts,
+                    findings,
+                    tail=_READ_FIRST,
+                    read_first=True,
+                )
+            ]
         turns: list[tuple[SimpleLLMCallResult, Exploration, list[object]]] = []
         for start in range(0, len(points), _POINTS_PER_TURN):
             chunk = points[start : start + _POINTS_PER_TURN]
