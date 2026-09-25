@@ -65,4 +65,6 @@ model을 바꿔도 Hypothesis·Pro·Con·Verification·Gate·Reporter 역할은 
 - 확인한 exact artifact reference
 - 사람이 읽을 수 있는 근거·행동·판정 이유 요약
 
-숨겨진 내부 사고 원문, 전체 prompt, API key, token, 로그인 session과 민감한 전체 코드는 대시보드에 표시하지 않습니다.
+숨겨진 내부 사고 원문, API key, token, 로그인 session과 민감한 host 경로는
+대시보드에 표시하지 않습니다. 새 분석의 LLM 요청·응답은 credential과 숨겨진
+추론을 제거한 안전한 사본만 단계별 아티팩트로 표시합니다.

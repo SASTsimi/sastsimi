@@ -10,7 +10,9 @@ from uuid import uuid4
 
 from sastsimi import bootstrap
 from sastsimi.config.production_profile import load_production_profile
+from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.config.user_config import UserConfigStore
+from sastsimi.dashboard.query import DashboardQuery
 from sastsimi.interfaces.cli import analyze as analyze_command
 from sastsimi.interfaces.cli import cancel as cancel_command
 from sastsimi.interfaces.cli import capability as capability_command
@@ -499,6 +501,8 @@ def main(
                     renderer = ProgressRenderer(
                         stream=sys.stdout,
                         is_tty=sys.stdout.isatty(),
+                        log_dir=RuntimePaths(config.data_dir).logs,
+                        event_reader=DashboardQuery(config.data_dir).list_events,
                     )
                     data = progress_call(repository, args.commit, renderer.render)
                 else:
@@ -610,6 +614,8 @@ def main(
                     renderer = ProgressRenderer(
                         stream=sys.stdout,
                         is_tty=sys.stdout.isatty(),
+                        log_dir=RuntimePaths(config.data_dir).logs,
+                        event_reader=DashboardQuery(config.data_dir).list_events,
                     )
                     data = progress_call(args.analysis_id, renderer.render)
                 else:

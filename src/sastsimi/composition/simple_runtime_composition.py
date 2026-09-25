@@ -71,6 +71,7 @@ class SimpleClientFactory:
             return SimpleOpenAIClient(
                 credential_ref=self._profile.credential_ref,
                 model=self._profile.model,
+                artifacts=artifacts,
             )
         try:
             tool = self._profile.tools["codex"]
@@ -104,6 +105,7 @@ class SimpleClientFactory:
             runner=CodexCliProcessRunner(binding=binding.binding),
             provider_profile_ref=provider_ref,
             model=self._profile.model,
+            artifacts=artifacts,
         )
 
 
@@ -149,6 +151,9 @@ def build_analysis_application(
             client_factory=client_factory,
         ),
         runner_factory=runner_factory,
+        profile_ref=profile.provider_profile_ref,
+        provider=profile.provider,
+        model=profile.model,
     )
 
 

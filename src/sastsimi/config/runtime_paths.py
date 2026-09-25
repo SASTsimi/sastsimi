@@ -27,3 +27,7 @@ class RuntimePaths:
     @property
     def reports(self) -> Path:
         return self.root / "reports"
+
+    @property
+    def logs(self) -> Path:
+        return self.root / "logs"

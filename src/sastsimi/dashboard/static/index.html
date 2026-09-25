@@ -11,23 +11,75 @@
     <div>
       <p class="eyebrow">LOCAL READ-ONLY DASHBOARD</p>
       <h1>SASTSIMI 분석 현황</h1>
-      <p>실제로 저장된 단계와 Agent 활동만 표시합니다.</p>
+      <p>저장된 단계·Agent 활동·아티팩트·증거만 표시합니다.</p>
     </div>
-    <div id="connection" class="connection">연결 확인 중</div>
+    <div class="header-actions">
+      <div id="last-updated" class="meta">마지막 갱신 확인 중</div>
+      <div id="connection" class="connection" role="status" aria-live="polite">연결 확인 중</div>
+    </div>
   </header>
   <main>
     <aside>
       <h2>분석 목록</h2>
       <div id="analyses" class="stack"></div>
+      <a id="bundle-download" class="download hidden" href="#">전체 결과 ZIP 다운로드</a>
+      <label id="logs-selection" class="selection-option hidden"><input id="include-logs" type="checkbox" checked> 로그 포함</label>
+      <a id="selection-download" class="download hidden" href="#">선택 결과 ZIP 다운로드</a>
     </aside>
     <section class="content">
+      <div id="notice" class="notice" role="status" aria-live="polite">분석 데이터를 불러오는 중입니다.</div>
       <div id="overview" class="panel empty">분석을 선택하세요.</div>
+      <section class="panel">
+        <h2>정적분석 도구</h2>
+        <div id="static-tools" class="tool-grid"></div>
+      </section>
+      <section class="panel">
+        <h2>분석 파이프라인</h2>
+        <div id="pipeline" class="pipeline"></div>
+      </section>
       <div class="grid">
         <section class="panel"><h2>가설 진행 상태</h2><div id="hypotheses" class="stack"></div></section>
-        <section class="panel"><h2>Agent 활동</h2><div id="events" class="timeline"></div></section>
+        <section class="panel">
+          <div class="panel-heading">
+            <h2>Agent 활동·로그</h2>
+            <a id="logs-download" class="text-link" href="#">로그 다운로드</a>
+          </div>
+          <div class="filters">
+            <input id="log-search" type="search" placeholder="로그 검색" aria-label="로그 검색">
+            <select id="log-status" aria-label="로그 상태 필터">
+              <option value="">전체 상태</option>
+              <option value="FAILED">실패</option>
+              <option value="BLOCKED">차단</option>
+              <option value="SUCCEEDED">성공</option>
+            </select>
+          </div>
+          <div id="events" class="timeline" role="log" aria-live="polite"></div>
+        </section>
       </div>
       <section class="panel"><h2>체이닝 관계</h2><div id="chains" class="stack"></div></section>
-      <section class="panel"><h2>보고서</h2><div id="reports" class="reports"></div></section>
+      <section class="panel">
+        <div class="panel-heading"><h2>단계별 JSON·파일 아티팩트</h2><span id="artifact-count" class="meta"></span></div>
+        <div class="filters">
+          <input id="artifact-search" type="search" placeholder="종류·단계·가설 검색" aria-label="아티팩트 검색">
+        </div>
+        <div class="artifact-layout">
+          <div id="artifacts" class="artifact-list"></div>
+          <div id="artifact-viewer" class="viewer empty">아티팩트를 선택하세요.</div>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>LLM 요청·응답</h2>
+        <div id="llm-invocations" class="stack"></div>
+      </section>
+      <div class="grid">
+        <section class="panel"><h2>검증된 PoC</h2><div id="poc" class="stack"></div></section>
+        <section class="panel"><h2>정적·동적 증거</h2><div id="evidence" class="stack"></div></section>
+      </div>
+      <section class="panel">
+        <h2>Markdown 보고서</h2>
+        <div id="reports" class="reports"></div>
+        <article id="report-viewer" class="markdown-viewer empty">보고서를 선택하세요.</article>
+      </section>
     </section>
   </main>
   <script src="/static/app.js" defer></script>
