@@ -6,6 +6,8 @@ import pytest
 
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.observability.agent_activity import ActivityKind
+from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
     STAGE_VERSION,
@@ -18,12 +20,19 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
 )
 from sastsimi.simple_runtime.poc import PoCCandidateRejected, validate_candidate
+from sastsimi.simple_runtime.recovery import (
+    RecoveryAction,
+    RecoveryCategory,
+    RecoveryDecision,
+    RecoveryResolution,
+)
 from sastsimi.simple_runtime.runner import (
     SimpleRuntimeRunner,
     StageBlocked,
 )
 from sastsimi.simple_runtime.stages import internal_report_status
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
+from sastsimi.storage.agent_activity import AgentActivityStore
 
 
 def _ref(name: str) -> StoredDataRef:
@@ -107,6 +116,50 @@ def _recording_handlers(
 
         handlers[current_stage] = handle
     return handlers
+
+
+class _Recovery:
+    def __init__(
+        self,
+        data_dir,
+        *actions: RecoveryAction,
+    ) -> None:
+        self.data_dir = data_dir
+        self.actions = list(actions)
+        self.calls: list[tuple[StageCheckpoint, StageFailure]] = []
+        self.refs: list[StoredDataRef] = []
+
+    async def decide(
+        self,
+        checkpoint: StageCheckpoint,
+        failure: StageFailure,
+    ) -> RecoveryResolution:
+        self.calls.append((checkpoint, failure))
+        action = self.actions.pop(0)
+        decision = RecoveryDecision(
+            category={
+                RecoveryAction.RETRY_STAGE: RecoveryCategory.TRANSIENT_TOOL,
+                RecoveryAction.REGENERATE_INPUT: RecoveryCategory.GENERATED_INPUT,
+                RecoveryAction.REBUILD_ENVIRONMENT: RecoveryCategory.ENVIRONMENT,
+                RecoveryAction.STOP: RecoveryCategory.TERMINAL,
+            }[action],
+            action=action,
+            diagnosis="test diagnosis",
+            guidance="repair the exact recorded failure",
+            environment_patch=(
+                "RUN python -m pip install -e '.[test]'"
+                if action is RecoveryAction.REBUILD_ENVIRONMENT
+                else ""
+            ),
+        )
+        ref = SimpleArtifactRepository(self.data_dir, checkpoint.identity).put_json(
+            {
+                "kind": "simple_recovery_decision",
+                "decision": decision.model_dump(mode="json"),
+            }
+        )
+        self.refs.append(ref)
+        return RecoveryResolution(decision=decision, decision_ref=ref)
 
 
 @pytest.mark.asyncio
@@ -438,6 +491,418 @@ def test_scope_denial_creates_only_a_restricted_internal_report() -> None:
 
     with pytest.raises(ValueError, match="RULE_SCOPE_STATUS_INVALID"):
         internal_report_status("REVISE")
+
+
+@pytest.mark.asyncio
+async def test_retryable_stage_repairs_automatically_on_attempt_two(tmp_path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "retry" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.VERIFICATION_INITIAL_DONE)
+    recovery = _Recovery(tmp_path, RecoveryAction.REGENERATE_INPUT)
+    calls = 0
+    handlers = _recording_handlers([])
+
+    async def candidate(
+        _checkpoint: StageCheckpoint,
+        _prior: object,
+    ) -> StageResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise StageBlocked(
+                StageFailure(
+                    code="POC_GENERATION_FAILED",
+                    retryable=True,
+                    safe_message="candidate failed",
+                    evidence_refs=(_ref("candidate-error"),),
+                )
+            )
+        return StageResult(output_refs=(_ref("candidate-repaired"),))
+
+    handlers[SimpleStage.POC_CANDIDATE_DONE] = candidate
+    outcome = await SimpleRuntimeRunner(
+        store,
+        handlers,
+        recovery=recovery,
+    ).resume_hypothesis(_identity())
+
+    repaired = store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE)
+    assert outcome.status is StageStatus.SUCCEEDED
+    assert calls == 2
+    assert len(recovery.calls) == 1
+    assert repaired.attempt_number == 2
+    assert recovery.refs[0] in repaired.input_refs
+
+
+@pytest.mark.asyncio
+async def test_three_failures_become_non_retryable_recovery_exhausted(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "exhaust" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.POC_CANDIDATE_DONE)
+    recovery = _Recovery(
+        tmp_path,
+        RecoveryAction.RETRY_STAGE,
+        RecoveryAction.RETRY_STAGE,
+    )
+    calls = 0
+    handlers = _recording_handlers([])
+
+    async def execution(
+        _checkpoint: StageCheckpoint,
+        _prior: object,
+    ) -> StageResult:
+        nonlocal calls
+        calls += 1
+        raise StageBlocked(
+            StageFailure(
+                code="POC_EXECUTION_FAILED",
+                retryable=True,
+                safe_message="execution failed",
+                evidence_refs=(_ref(f"execution-error-{calls}"),),
+            )
+        )
+
+    handlers[SimpleStage.POC_EXECUTION_DONE] = execution
+    outcome = await SimpleRuntimeRunner(
+        store,
+        handlers,
+        recovery=recovery,
+    ).resume_hypothesis(_identity())
+
+    exhausted = store.require(_identity(), SimpleStage.POC_EXECUTION_DONE)
+    assert outcome.status is StageStatus.BLOCKED
+    assert outcome.error_code == "RECOVERY_EXHAUSTED"
+    assert calls == 3
+    assert len(recovery.calls) == 2
+    assert exhausted.attempt_number == 3
+    assert exhausted.retryable is False
+    assert exhausted.verdict is None
+    assert store.get(_identity(), SimpleStage.VERIFICATION_FINAL_DONE) is None
+
+
+@pytest.mark.asyncio
+async def test_rebuild_environment_restarts_at_initial_verification(tmp_path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "rebuild" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.POC_CANDIDATE_DONE)
+    recovery = _Recovery(tmp_path, RecoveryAction.REBUILD_ENVIRONMENT)
+    calls: list[SimpleStage] = []
+    execution_calls = 0
+    handlers = _recording_handlers(calls)
+
+    async def execution(
+        checkpoint: StageCheckpoint,
+        _prior: object,
+    ) -> StageResult:
+        nonlocal execution_calls
+        calls.append(SimpleStage.POC_EXECUTION_DONE)
+        execution_calls += 1
+        if execution_calls == 1:
+            raise StageBlocked(
+                StageFailure(
+                    code="POC_EXECUTION_FAILED",
+                    retryable=True,
+                    safe_message="missing runtime dependency",
+                    evidence_refs=(_ref("missing-dependency"),),
+                )
+            )
+        return StageResult(output_refs=(_ref("execution-repaired"),))
+
+    handlers[SimpleStage.POC_EXECUTION_DONE] = execution
+    outcome = await SimpleRuntimeRunner(
+        store,
+        handlers,
+        recovery=recovery,
+    ).resume_hypothesis(_identity())
+
+    assert outcome.status is StageStatus.SUCCEEDED
+    assert calls[:4] == [
+        SimpleStage.POC_EXECUTION_DONE,
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+        SimpleStage.POC_CANDIDATE_DONE,
+        SimpleStage.POC_EXECUTION_DONE,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_restart_does_not_grant_fourth_attempt(tmp_path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "restart" / "sastsimi.sqlite3")
+    inputs = (_ref("proposal"),)
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=_identity(),
+            stage=SimpleStage.PRO_CON_DONE,
+            status=StageStatus.BLOCKED,
+            input_refs=inputs,
+            input_hash=input_reference_hash(inputs),
+            attempt_id="attempt-3",
+            attempt_number=3,
+            error_code="TOOL_FAILED",
+            retryable=True,
+            recovery_lineage_id="a" * 64,
+            recovery_origin_stage=SimpleStage.PRO_CON_DONE,
+        )
+    )
+    calls: list[SimpleStage] = []
+    recovery = _Recovery(tmp_path)
+
+    outcome = await SimpleRuntimeRunner(
+        store,
+        _recording_handlers(calls),
+        recovery=recovery,
+    ).resume_hypothesis(_identity())
+
+    exhausted = store.require(_identity(), SimpleStage.PRO_CON_DONE)
+    assert outcome.error_code == "RECOVERY_EXHAUSTED"
+    assert exhausted.error_code == "RECOVERY_EXHAUSTED"
+    assert exhausted.retryable is False
+    assert calls == []
+    assert recovery.calls == []
+
+
+@pytest.mark.asyncio
+async def test_changed_input_starts_a_new_recovery_lineage(tmp_path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "changed" / "sastsimi.sqlite3")
+    old_inputs = (_ref("proposal-old"),)
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=_identity(),
+            stage=SimpleStage.PRO_CON_DONE,
+            status=StageStatus.BLOCKED,
+            input_refs=old_inputs,
+            input_hash=input_reference_hash(old_inputs),
+            attempt_id="attempt-3",
+            attempt_number=3,
+            error_code="RECOVERY_EXHAUSTED",
+            retryable=False,
+            recovery_lineage_id="b" * 64,
+            recovery_origin_stage=SimpleStage.PRO_CON_DONE,
+        )
+    )
+    new_inputs = (_ref("proposal-new"),)
+    store.invalidate_from(
+        _identity(),
+        SimpleStage.PRO_CON_DONE,
+        new_inputs=new_inputs,
+        force=True,
+    )
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=_identity(),
+            stage=SimpleStage.PRO_CON_DONE,
+            status=StageStatus.PENDING,
+            input_refs=new_inputs,
+            input_hash=input_reference_hash(new_inputs),
+        )
+    )
+
+    outcome = await SimpleRuntimeRunner(
+        store,
+        _recording_handlers([]),
+        recovery=_Recovery(tmp_path),
+    ).resume_hypothesis(_identity())
+
+    assert outcome.status is StageStatus.SUCCEEDED
+    restarted = store.require(_identity(), SimpleStage.PRO_CON_DONE)
+    assert restarted.attempt_number == 1
+    assert restarted.recovery_lineage_id is None
+
+
+@pytest.mark.asyncio
+async def test_environment_restart_carries_one_lineage_through_intermediate_stages(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "lineage" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.POC_CANDIDATE_DONE)
+    recovery = _Recovery(tmp_path, RecoveryAction.REBUILD_ENVIRONMENT)
+    observed: list[tuple[SimpleStage, int, str | None]] = []
+    execution_calls = 0
+    handlers = _recording_handlers([])
+
+    for stage in (
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+        SimpleStage.POC_CANDIDATE_DONE,
+        SimpleStage.POC_EXECUTION_DONE,
+    ):
+
+        async def handler(
+            checkpoint: StageCheckpoint,
+            _prior: object,
+            *,
+            current_stage: SimpleStage = stage,
+        ) -> StageResult:
+            nonlocal execution_calls
+            if current_stage is SimpleStage.POC_EXECUTION_DONE:
+                execution_calls += 1
+                if execution_calls == 1:
+                    raise StageBlocked(
+                        StageFailure(
+                            code="POC_EXECUTION_FAILED",
+                            retryable=True,
+                            safe_message="rebuild required",
+                        )
+                    )
+            observed.append(
+                (
+                    current_stage,
+                    checkpoint.attempt_number,
+                    checkpoint.recovery_lineage_id,
+                )
+            )
+            return StageResult(output_refs=(_ref(f"{current_stage.value}-retry"),))
+
+        handlers[stage] = handler
+
+    await SimpleRuntimeRunner(
+        store,
+        handlers,
+        recovery=recovery,
+    ).resume_hypothesis(_identity())
+
+    repaired = observed[:3]
+    assert [item[0] for item in repaired] == [
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+        SimpleStage.POC_CANDIDATE_DONE,
+        SimpleStage.POC_EXECUTION_DONE,
+    ]
+    assert {item[1] for item in repaired} == {2}
+    assert len({item[2] for item in repaired}) == 1
+    assert repaired[0][2] is not None
+
+
+@pytest.mark.asyncio
+async def test_recovery_decision_is_recorded_in_activity(tmp_path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "activity" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.VERIFICATION_INITIAL_DONE)
+    recovery = _Recovery(tmp_path, RecoveryAction.REGENERATE_INPUT)
+    calls = 0
+    handlers = _recording_handlers([])
+
+    async def candidate(
+        _checkpoint: StageCheckpoint,
+        _prior: object,
+    ) -> StageResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise StageBlocked(
+                StageFailure(
+                    code="POC_GENERATION_FAILED",
+                    retryable=True,
+                    safe_message="secret stderr must not be copied",
+                )
+            )
+        return StageResult(output_refs=(_ref("candidate-ok"),))
+
+    handlers[SimpleStage.POC_CANDIDATE_DONE] = candidate
+    await SimpleRuntimeRunner(
+        store,
+        handlers,
+        recovery=recovery,
+    ).resume_hypothesis(_identity())
+
+    events = AgentActivityStore(store.database_path).list_analysis(
+        _identity().analysis_id,
+        hypothesis_id=_identity().hypothesis_id,
+    )
+    decisions = [
+        event
+        for event in events
+        if event.kind is ActivityKind.DECISION_RECORDED
+        and recovery.refs[0] in event.output_refs
+    ]
+    assert len(decisions) == 1
+    assert "REGENERATE_INPUT" in decisions[0].summary_ko
+    assert "attempt 1/3" in decisions[0].summary_ko
+    assert "secret stderr" not in decisions[0].summary_ko
+
+
+@pytest.mark.asyncio
+async def test_prepare_recovery_rolls_back_decision_and_pending_checkpoint(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "prepare-rollback" / "sastsimi.sqlite3")
+    inputs = (_ref("prepare-input"),)
+    running = store.mark_running(
+        _identity(),
+        SimpleStage.POC_CANDIDATE_DONE,
+        inputs,
+        attempt_id="prepare-attempt-1",
+    )
+    failed = store.mark_failure(
+        running,
+        StageFailure(
+            code="POC_GENERATION_FAILED",
+            retryable=True,
+            safe_message="candidate failed",
+        ),
+        StageStatus.BLOCKED,
+    )
+    recovery = _Recovery(tmp_path, RecoveryAction.REGENERATE_INPUT)
+    resolution = await recovery.decide(
+        failed,
+        StageFailure(
+            code="POC_GENERATION_FAILED",
+            retryable=True,
+            safe_message="candidate failed",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        store.prepare_recovery(
+            failed,
+            resolution,
+            SimpleStage.POC_CANDIDATE_DONE,
+            fail_before_commit=True,
+        )
+
+    assert store.require(_identity(), failed.stage) == failed
+    events = AgentActivityStore(store.database_path).list_analysis(
+        _identity().analysis_id,
+        hypothesis_id=_identity().hypothesis_id,
+    )
+    assert all(resolution.decision_ref not in event.output_refs for event in events)
+
+
+@pytest.mark.asyncio
+async def test_record_recovery_stop_rolls_back_decision_event(tmp_path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "stop-rollback" / "sastsimi.sqlite3")
+    running = store.mark_running(
+        _identity(),
+        SimpleStage.PRO_CON_DONE,
+        (_ref("stop-input"),),
+        attempt_id="stop-attempt-1",
+    )
+    failed = store.mark_failure(
+        running,
+        StageFailure(
+            code="TOOL_FAILED",
+            retryable=True,
+            safe_message="tool failed",
+        ),
+        StageStatus.BLOCKED,
+    )
+    recovery = _Recovery(tmp_path, RecoveryAction.STOP)
+    resolution = await recovery.decide(
+        failed,
+        StageFailure(
+            code="TOOL_FAILED",
+            retryable=True,
+            safe_message="tool failed",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        store.record_recovery_stop(
+            failed,
+            resolution,
+            fail_before_commit=True,
+        )
+
+    events = AgentActivityStore(store.database_path).list_analysis(
+        _identity().analysis_id,
+        hypothesis_id=_identity().hypothesis_id,
+    )
+    assert all(resolution.decision_ref not in event.output_refs for event in events)
 
 
 # mypy: disable-error-code="arg-type,no-untyped-def"
