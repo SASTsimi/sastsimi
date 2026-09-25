@@ -211,6 +211,41 @@ def test_claude_auth_requires_first_party_subscription_even_on_zero_exit(
     assert _default_auth_checker(choices, {"claude": tool}) is True
 
 
+def test_claude_factory_routes_only_selected_provider(tmp_path: Path) -> None:
+    from sastsimi.composition.simple_runtime_composition import SimpleClientFactory
+    from sastsimi.config.user_config import load_simple_execution_profile
+    from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+    from sastsimi.simple_runtime.claude_provider import ClaudeProvider
+    from sastsimi.simple_runtime.models import CheckpointIdentity
+
+    service = _service(tmp_path)
+    configured = service.configure(
+        SetupChoices(
+            data_dir=tmp_path / "data",
+            auth_mode="SUBSCRIPTION_LOGIN",
+            provider="claude",
+            model="operator-model",
+            credential_ref="CLAUDE_CLI_LOGIN",
+            execution_profile="LIGHTWEIGHT",
+            max_cost_minor_units=10_000,
+            max_tokens=500_000,
+            max_elapsed_seconds=3_600,
+            docker_network="NONE",
+        )
+    )
+    profile = load_simple_execution_profile(configured.profile_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    client = SimpleClientFactory(profile)(
+        identity, SimpleArtifactRepository(tmp_path / "data", identity)
+    )
+    assert isinstance(client, ClaudeProvider)
+
+
 def test_setup_cli_blocks_full_profile_when_codeql_is_missing(
     tmp_path: Path, capsys
 ) -> None:

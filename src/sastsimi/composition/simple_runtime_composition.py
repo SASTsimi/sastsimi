@@ -39,6 +39,10 @@ from sastsimi.simple_runtime.bootstrap_stages import (
     DirectHypothesisBootstrap,
     DirectStaticBootstrap,
 )
+from sastsimi.simple_runtime.claude_provider import (
+    ClaudeProvider,
+    OfficialClaudeCLITransport,
+)
 from sastsimi.simple_runtime.cursor_provider import (
     CursorCLIAuthenticationError,
     CursorModelCatalog,
@@ -97,6 +101,23 @@ class SimpleClientFactory:
         identity: CheckpointIdentity,
         artifacts: SimpleArtifactRepository,
     ) -> SimpleLLMClient:
+        if self._profile.provider == "claude":
+            try:
+                tool = self._profile.tools["claude"]
+            except KeyError:
+                raise ValueError("CLAUDE_CLI_NOT_CONFIGURED") from None
+            config_dir = Path(
+                os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude"
+            )
+            return ClaudeProvider(
+                artifacts=artifacts,
+                default_model=self._profile.model,
+                agent_models=self._profile.agent_models,
+                timeout_seconds=self._profile.llm_timeout_seconds,
+                max_retries=self._profile.llm_max_retries,
+                semaphore=self._semaphore,
+                transport=OfficialClaudeCLITransport(tool, config_dir),
+            )
         if self._profile.provider == "cursor":
             fallback: SimpleLLMClient | None = None
             if self._profile.fallback_provider == "openai":
@@ -223,7 +244,9 @@ def build_analysis_application(
         data_dir=data_dir,
         llm_provider=profile.provider,
         on_demand_possible=(
-            profile.provider == "cursor" and profile.cursor_allow_on_demand
+            profile.provider == "claude"
+            or profile.provider == "cursor"
+            and profile.cursor_allow_on_demand
         ),
         store=store,
         static_bootstrap=DirectStaticBootstrap(profile=profile),

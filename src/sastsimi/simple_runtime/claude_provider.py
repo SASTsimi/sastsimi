@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import signal
@@ -12,11 +13,20 @@ import subprocess
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from time import monotonic
+from typing import Any, Protocol, cast
+from uuid import uuid4
 
 from sastsimi.config.user_config import SimpleToolBinding
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.refs import StoredDataRef
+
+from .artifacts import SimpleArtifactRepository
+from .models import StageFailure
+from .provider import SimpleLLMCallResult, _validate_schema
+from .store import SimpleCheckpointStore
 
 _VERIFIED_VERSION = "2.1.280"
 _MAX_STREAM_BYTES = 4 * 1024 * 1024
@@ -24,6 +34,7 @@ _MAX_STDERR_BYTES = 65_536
 _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$")
 _AUTH_METHOD = "claude.ai"
 _SYSTEM_AGENTS = ["claude", "Explore", "general-purpose", "Plan"]
+_LOG = logging.getLogger(__name__)
 
 
 class ClaudeBoundaryError(RuntimeError):
@@ -47,6 +58,17 @@ class ClaudeCLIResponse:
 
 
 type ChildRunner = Callable[..., Awaitable[tuple[int, bytes, bytes]]]
+
+
+class ClaudeTransport(Protocol):
+    async def invoke(
+        self,
+        *,
+        prompt: bytes,
+        output_schema: Mapping[str, Any],
+        model: str,
+        timeout: float,
+    ) -> ClaudeCLIResponse: ...
 
 
 def _strict_json(raw: bytes) -> Any:
@@ -117,6 +139,7 @@ def _parse_stream(raw: bytes, model: str) -> ClaudeCLIResponse:
     session: str | None = None
     result: dict[str, Any] | None = None
     usage: dict[str, Any] = {}
+    total_cost_usd: int | float | None = None
     for line in raw.splitlines():
         if not line.strip():
             continue
@@ -127,12 +150,11 @@ def _parse_stream(raw: bytes, model: str) -> ClaudeCLIResponse:
         if not isinstance(event, dict):
             raise ClaudeBoundaryError("CLAUDE_STREAM_INVALID")
         event_session = event.get("session_id")
-        if not isinstance(event_session, str) or not event_session:
-            raise ClaudeBoundaryError("CLAUDE_STREAM_INVALID")
-        if session is None:
-            session = event_session
-        elif session != event_session:
-            raise ClaudeBoundaryError("CLAUDE_STREAM_INVALID")
+        if isinstance(event_session, str) and event_session:
+            if session is None:
+                session = event_session
+            elif session != event_session:
+                raise ClaudeBoundaryError("CLAUDE_STREAM_INVALID")
         kind = event.get("type")
         if state == "INIT" and kind == "system" and event.get("subtype") == "init":
             if (
@@ -211,10 +233,17 @@ def _parse_stream(raw: bytes, model: str) -> ClaudeCLIResponse:
             usage_value = event.get("usage")
             if isinstance(usage_value, dict):
                 usage = usage_value
+            reported_cost = event.get("total_cost_usd")
+            if (
+                isinstance(reported_cost, (int, float))
+                and not isinstance(reported_cost, bool)
+                and reported_cost >= 0
+            ):
+                total_cost_usd = reported_cost
             state = "DONE"
         else:
             raise ClaudeBoundaryError("CLAUDE_STREAM_INVALID")
-    if state != "DONE" or result is None:
+    if state != "DONE" or result is None or session is None:
         raise ClaudeBoundaryError("CLAUDE_STREAM_INVALID")
 
     def token(name: str) -> int | None:
@@ -225,18 +254,13 @@ def _parse_stream(raw: bytes, model: str) -> ClaudeCLIResponse:
             else None
         )
 
-    cost = usage.get("cost_usd")
     return ClaudeCLIResponse(
         raw_output=raw,
         value=result,
         input_tokens=token("input_tokens"),
         output_tokens=token("output_tokens"),
         cost_minor_units=(
-            float(cost) * 100
-            if isinstance(cost, (int, float))
-            and not isinstance(cost, bool)
-            and cost >= 0
-            else None
+            float(total_cost_usd) * 100 if total_cost_usd is not None else None
         ),
     )
 
@@ -397,7 +421,9 @@ class OfficialClaudeCLITransport:
                 env=env,
                 timeout=min(timeout, 15),
             )
-            if version_code != 0 or version_raw != b"2.1.280 (Claude Code)\n":
+            if version_code != 0 or version_raw.splitlines() != [
+                b"2.1.280 (Claude Code)"
+            ]:
                 raise ClaudeBoundaryError("CLAUDE_CLI_UNSUPPORTED_VERSION")
             self._verify_binding()
             auth_code, auth_raw, _ = await self._runner(
@@ -444,9 +470,223 @@ class OfficialClaudeCLITransport:
             return response
 
 
+class ClaudeProvider:
+    """The unchanged SimpleLLMClient contract backed by the isolated CLI."""
+
+    def __init__(
+        self,
+        *,
+        artifacts: SimpleArtifactRepository,
+        default_model: str,
+        agent_models: Mapping[str, str],
+        timeout_seconds: int,
+        max_retries: int,
+        semaphore: asyncio.Semaphore,
+        transport: ClaudeTransport,
+    ) -> None:
+        self._artifacts = artifacts
+        self._default_model = default_model
+        self._agent_models = dict(agent_models)
+        self._timeout_seconds = timeout_seconds
+        self._max_retries = max_retries
+        self._semaphore = semaphore
+        self._transport = transport
+        self._attempt_store = SimpleCheckpointStore(artifacts.paths.database)
+
+    async def call(
+        self,
+        *,
+        prompt: bytes,
+        output_schema: Mapping[str, Any],
+        timeout_ms: int,
+        agent_name: str = "agent",
+    ) -> SimpleLLMCallResult | StageFailure:
+        model = self._agent_models.get(agent_name, self._default_model)
+        timeout = min(self._timeout_seconds, max(1, timeout_ms) / 1000)
+        digest = hashlib.sha256(prompt).hexdigest()
+        schema_text = canonical_bytes(output_schema).decode("utf-8")
+        correction = b""
+        last_failure = StageFailure(
+            code="CLAUDE_EXECUTION_FAILED",
+            retryable=False,
+            safe_message="Claude call did not complete",
+        )
+        async with self._semaphore:
+            for attempt in range(1, self._max_retries + 2):
+                started_at = datetime.now(UTC)
+                started = monotonic()
+                raw_ref: StoredDataRef | None = None
+                parsed_ref: StoredDataRef | None = None
+                usage: dict[str, int | float | None] = {}
+                code = "SUCCEEDED"
+                retryable = False
+                try:
+                    response = await asyncio.wait_for(
+                        self._transport.invoke(
+                            prompt=prompt + correction,
+                            output_schema=output_schema,
+                            model=model,
+                            timeout=timeout,
+                        ),
+                        timeout=timeout,
+                    )
+                    raw_ref = self._artifacts.put_bytes(
+                        response.raw_output, "application/x-ndjson"
+                    )
+                    usage = {
+                        "input_tokens": response.input_tokens,
+                        "output_tokens": response.output_tokens,
+                        "cost_minor_units": response.cost_minor_units,
+                    }
+                    if not isinstance(response.value, dict):
+                        raise ValueError("$: expected object")
+                    _validate_schema(response.value, output_schema)
+                    canonical = canonical_bytes(response.value)
+                    parsed_ref = self._artifacts.put_bytes(
+                        canonical, "application/json"
+                    )
+                    self._record_attempt(
+                        agent_name,
+                        model,
+                        attempt,
+                        started,
+                        code,
+                        raw_ref,
+                        parsed_ref,
+                        usage,
+                    )
+                    return SimpleLLMCallResult(
+                        value=response.value,
+                        prompt_digest=digest,
+                        output_digest=hashlib.sha256(canonical).hexdigest(),
+                        invocation_id=f"claude-{uuid4().hex}",
+                        provider="claude-cli",
+                        model=model,
+                        started_at=started_at,
+                        finished_at=datetime.now(UTC),
+                        elapsed_ms=max(0, int((monotonic() - started) * 1000)),
+                        raw_output_ref=raw_ref,
+                        parsed_output_ref=parsed_ref,
+                        input_tokens=response.input_tokens,
+                        output_tokens=response.output_tokens,
+                        cost_minor_units=response.cost_minor_units,
+                        on_demand_possible=True,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except (ValueError, TypeError) as error:
+                    code = "CLAUDE_INVALID_OUTPUT"
+                    detail = str(error).splitlines()[0][:200]
+                    correction = (
+                        "\nThe previous JSON failed validation at "
+                        + detail
+                        + ". Return exactly one corrected JSON object "
+                        + "matching this schema:\n"
+                        + schema_text
+                    ).encode("utf-8")
+                    retryable = True
+                    last_failure = StageFailure(
+                        code=code,
+                        retryable=False,
+                        safe_message="Claude returned invalid structured output",
+                        invalid_field=detail if detail.startswith("$") else None,
+                    )
+                except ClaudeBoundaryError as error:
+                    code = str(error)
+                    last_failure = StageFailure(
+                        code=code,
+                        retryable=False,
+                        safe_message="Claude CLI security boundary failed",
+                    )
+                except ClaudeTransportError as error:
+                    code = error.code
+                    retryable = error.retryable
+                    last_failure = StageFailure(
+                        code=code,
+                        retryable=retryable,
+                        safe_message="Claude CLI call did not complete",
+                    )
+                except TimeoutError:
+                    code = "CLAUDE_TIMED_OUT"
+                    retryable = True
+                    last_failure = StageFailure(
+                        code=code,
+                        retryable=True,
+                        safe_message="Claude CLI request timed out",
+                    )
+                self._record_attempt(
+                    agent_name,
+                    model,
+                    attempt,
+                    started,
+                    code,
+                    raw_ref,
+                    parsed_ref,
+                    usage,
+                )
+                if not retryable or attempt > self._max_retries:
+                    break
+                await asyncio.sleep(min(8.0, 0.5 * 2 ** (attempt - 1)))
+        return last_failure
+
+    def _record_attempt(
+        self,
+        agent: str,
+        model: str,
+        attempt: int,
+        started: float,
+        status: str,
+        raw_ref: StoredDataRef | None,
+        parsed_ref: StoredDataRef | None,
+        usage: Mapping[str, int | float | None],
+    ) -> None:
+        elapsed = max(0, int((monotonic() - started) * 1000))
+        _LOG.info(
+            "claude_call analysis_id=%s agent=%s model=%s "
+            "attempt=%d elapsed_ms=%d status=%s",
+            self._artifacts.identity.analysis_id,
+            agent,
+            model,
+            attempt,
+            elapsed,
+            status,
+        )
+        artifact_ref = self._artifacts.put_json(
+            {
+                "kind": "claude_agent_attempt",
+                "analysis_id": self._artifacts.identity.analysis_id,
+                "agent": agent,
+                "model": model,
+                "attempt": attempt,
+                "elapsed_ms": elapsed,
+                "status": status,
+                "raw_output_ref": raw_ref.model_dump(mode="json") if raw_ref else None,
+                "parsed_output_ref": parsed_ref.model_dump(mode="json")
+                if parsed_ref
+                else None,
+                "usage": dict(usage),
+                "on_demand_possible": True,
+            }
+        )
+        self._attempt_store.record_llm_attempt(
+            attempt_id=uuid4().hex,
+            analysis_id=self._artifacts.identity.analysis_id,
+            agent=agent,
+            model=model,
+            attempt_number=attempt,
+            status=status,
+            elapsed_ms=elapsed,
+            input_tokens=cast(int | None, usage.get("input_tokens")),
+            output_tokens=cast(int | None, usage.get("output_tokens")),
+            cost_cents=cast(float | None, usage.get("cost_minor_units")),
+            artifact_ref=artifact_ref,
+        )
+
+
 __all__ = [
     "ClaudeBoundaryError",
     "ClaudeCLIResponse",
+    "ClaudeProvider",
     "ClaudeTransportError",
     "OfficialClaudeCLITransport",
 ]
