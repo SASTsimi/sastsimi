@@ -342,6 +342,8 @@ async def _run_child(
         process = await asyncio.shield(spawn)
         await _terminate_process_tree(process)
         raise
+    except OSError as error:
+        raise ClaudeTransportError("CLAUDE_EXECUTION_FAILED") from error
     assert process.stdout is not None and process.stderr is not None
     stdout_reader = process.stdout
     stderr_reader = process.stderr
@@ -370,6 +372,9 @@ async def _run_child(
     except (TimeoutError, asyncio.CancelledError, ClaudeBoundaryError):
         await _terminate_process_tree(process)
         raise
+    except OSError as error:
+        await _terminate_process_tree(process)
+        raise ClaudeTransportError("CLAUDE_EXECUTION_FAILED") from error
 
 
 class OfficialClaudeCLITransport:
@@ -466,7 +471,7 @@ class OfficialClaudeCLITransport:
             )
             response = _parse_stream(raw, model)
             if code != 0:
-                raise ClaudeTransportError("CLAUDE_EXECUTION_FAILED", retryable=True)
+                raise ClaudeTransportError("CLAUDE_EXECUTION_FAILED")
             return response
 
 

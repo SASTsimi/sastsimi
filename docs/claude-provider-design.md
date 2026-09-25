@@ -1,6 +1,6 @@
 # Selective Claude Provider Integration Design
 
-Status: proposed for user review (2026-09-25)
+Status: implemented in feature branch; live subscription and managed-hook boundary unverified (2026-09-25)
 
 ## Outcome and scope
 
@@ -34,6 +34,7 @@ Three approaches were considered:
 ## Security and operational boundaries
 
 - The CLI is a local coding agent, not a general completion API. The process wrapper must prove that its tool surface is disabled for each call; a flag alone is not treated as proof.
+- Official documentation says managed policy hooks can remain active in `--safe-mode`. The adapter cannot currently prove their absence from the init event; managed environments need operator policy review before this can be claimed as a no-hook boundary.
 - A repository under analysis is untrusted input. Its configuration, scripts, and `CLAUDE.md` must not become CLI instructions or executable hooks. A temporary working directory and disabled setting sources prevent project-level configuration from being loaded.
 - Setup and runtime recheck the executable binding. A changed path, digest, or version is an error, not an implicit upgrade.
 - No live Claude request runs in CI. An optional single low-cost smoke test requires a compatible installed CLI, the operator's own login, and explicit approval because it may consume subscription or extra usage.

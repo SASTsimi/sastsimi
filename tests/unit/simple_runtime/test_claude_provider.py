@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,8 @@ from sastsimi.simple_runtime.claude_provider import (
     ClaudeProvider,
     ClaudeTransportError,
     OfficialClaudeCLITransport,
+    _run_child,
+    _terminate_process_tree,
 )
 from sastsimi.simple_runtime.models import CheckpointIdentity, StageFailure
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
@@ -142,6 +145,173 @@ async def test_claude_cli_rejects_tool_in_effective_init(tmp_path: Path) -> None
             model="operator-model",
             timeout=10,
         )
+
+
+@pytest.mark.asyncio
+async def test_nonzero_exit_after_success_is_not_retried(tmp_path: Path) -> None:
+    async def fake_runner(
+        argv: tuple[str, ...],
+        *,
+        stdin: bytes | None,
+        cwd: Path,
+        env: Mapping[str, str],
+        timeout: float,
+    ) -> tuple[int, bytes, bytes]:
+        if "--version" in argv:
+            return 0, b"2.1.280 (Claude Code)\n", b""
+        if "auth" in argv:
+            return (
+                0,
+                b'{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"pro"}',
+                b"",
+            )
+        return 1, _stream("operator-model"), b""
+
+    transport = OfficialClaudeCLITransport(
+        _binding(tmp_path), tmp_path / "config", runner=fake_runner
+    )
+    with pytest.raises(ClaudeTransportError) as failure:
+        await transport.invoke(
+            prompt=b"hello",
+            output_schema={"type": "object"},
+            model="operator-model",
+            timeout=10,
+        )
+    assert failure.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_broken_stdin_terminates_child_and_becomes_typed_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BrokenStdin:
+        def write(self, _value: bytes) -> None:
+            pass
+
+        async def drain(self) -> None:
+            raise BrokenPipeError("child exited")
+
+        def close(self) -> None:
+            pass
+
+    class FakeProcess:
+        pid = None
+
+        def __init__(self) -> None:
+            self.stdout = asyncio.StreamReader()
+            self.stderr = asyncio.StreamReader()
+            self.stdout.feed_eof()
+            self.stderr.feed_eof()
+            self.stdin = BrokenStdin()
+            self.returncode: int | None = None
+            self.killed = False
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = -9
+
+        async def wait(self) -> int:
+            assert self.returncode is not None
+            return self.returncode
+
+    process = FakeProcess()
+
+    async def fake_spawn(*_args: object, **_kwargs: object) -> FakeProcess:
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+    with pytest.raises(ClaudeTransportError):
+        await _run_child(("fake",), stdin=b"prompt", cwd=tmp_path, env={}, timeout=1)
+    assert process.killed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_timeout_or_cancel_terminates_claude_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cancel: bool,
+) -> None:
+    class HangingProcess:
+        pid = None
+        stdin = None
+
+        def __init__(self) -> None:
+            self.stdout = asyncio.StreamReader()
+            self.stderr = asyncio.StreamReader()
+            self.stdout.feed_eof()
+            self.stderr.feed_eof()
+            self.returncode: int | None = None
+            self.killed = False
+            self.done = asyncio.Event()
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = -9
+            self.done.set()
+
+        async def wait(self) -> int:
+            await self.done.wait()
+            assert self.returncode is not None
+            return self.returncode
+
+    process = HangingProcess()
+
+    async def fake_spawn(*_args: object, **_kwargs: object) -> HangingProcess:
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+    task = asyncio.create_task(
+        _run_child(
+            ("fake",),
+            stdin=None,
+            cwd=tmp_path,
+            env={},
+            timeout=0.05 if not cancel else 10,
+        )
+    )
+    if cancel:
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        with pytest.raises(TimeoutError):
+            await task
+    assert process.killed
+
+
+@pytest.mark.asyncio
+async def test_windows_termination_uses_recursive_taskkill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows process-tree path")
+
+    class Target:
+        pid = 123
+        returncode: int | None = None
+
+        async def wait(self) -> int:
+            assert self.returncode is not None
+            return self.returncode
+
+    target = Target()
+    launched: list[tuple[object, ...]] = []
+
+    class Killer:
+        async def wait(self) -> int:
+            target.returncode = -9
+            return 0
+
+    async def fake_spawn(*argv: object, **_kwargs: object) -> Killer:
+        launched.append(argv)
+        return Killer()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+    await _terminate_process_tree(target)  # type: ignore[arg-type]
+    assert launched == [("taskkill", "/PID", "123", "/T", "/F")]
 
 
 class FakeTransport:
