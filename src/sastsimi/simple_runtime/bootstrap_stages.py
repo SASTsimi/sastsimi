@@ -39,6 +39,8 @@ _MAX_FACTS = 2_000_000
 # by its busiest files; the count says how many were left out rather than hiding
 # them.
 _MAX_INDEXED_FILES = 1_500
+# A constant longer than this is prose or a template, not a decision.
+_MAX_LITERAL_CHARS = 60
 # Which callee names are worth naming in the index.  Counting facts says how
 # much a file does, not what it does, and the name is what tells an agent a
 # file is worth asking for: measured on open-webui, ``unquote`` together with a
@@ -471,14 +473,16 @@ class DirectStaticBootstrap:
                 elif isinstance(node, ast.Call):
                     name = self._call_name(node.func)
                     if name:
-                        facts.append(
-                            {
-                                "kind": "Call",
-                                "path": relative,
-                                "line": node.lineno,
-                                "name": name,
-                            }
-                        )
+                        fact: dict[str, object] = {
+                            "kind": "Call",
+                            "path": relative,
+                            "line": node.lineno,
+                            "name": name,
+                        }
+                        literals = self._literal_arguments(node)
+                        if literals:
+                            fact["args"] = literals
+                        facts.append(fact)
                 if len(facts) >= _MAX_FACTS:
                     skipped.append(
                         {"path": relative, "reason": "FACT_BUDGET_EXHAUSTED"}
@@ -494,6 +498,30 @@ class DirectStaticBootstrap:
             "covered_files": len({str(fact["path"]) for fact in facts}),
             "truncated": bool(skipped),
         }
+
+    @staticmethod
+    def _literal_arguments(node: ast.Call) -> list[object]:
+        """Return the constants written out at the call site.
+
+        The name of a call says what is being done; a constant written beside
+        it is often the whole decision.  ``range(8)`` in open-webui's
+        ``_sanitize_proxy_path`` is the advisory's entire subject - a path
+        encoded more times than the cap leaves the loop still encoded - and
+        without the ``8`` nothing downstream can see it.  Only numbers and
+        short strings are kept, so the cost measured about seven percent.
+        """
+
+        literals: list[object] = []
+        for argument in node.args:
+            if not isinstance(argument, ast.Constant):
+                continue
+            value = argument.value
+            if isinstance(value, bool) or not isinstance(value, (int, str)):
+                continue
+            literals.append(
+                value[:_MAX_LITERAL_CHARS] if isinstance(value, str) else value
+            )
+        return literals
 
     @staticmethod
     def _call_name(node: ast.expr) -> str | None:
