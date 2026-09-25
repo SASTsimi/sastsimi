@@ -154,8 +154,8 @@ async def test_repair_carries_every_rule_broken_so_far(tmp_path: Path) -> None:
     # converges - the run observed exactly that cycle on a real repository.
     client = _TradingClient(
         [
-            '#!/bin/sh\ntoken=fixture\nprintf x\n',  # SENSITIVE
-            '#!/bin/sh\ncat /home/me/f\n',  # HOST_PATH
+            "#!/bin/sh\ntoken=fixture\nprintf x\n",  # SENSITIVE
+            "#!/bin/sh\ncat /home/me/f\n",  # HOST_PATH
             '#!/bin/sh\necho "$OUTSIDE"\n',  # UNDECLARED_INPUT
             '#!/bin/sh\nfixture_value=x\nprintf "%s" "$fixture_value"\n',  # clean
         ]
@@ -181,7 +181,7 @@ async def test_repair_carries_every_rule_broken_so_far(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_repair_gives_up_after_the_configured_attempts(tmp_path: Path) -> None:
-    client = _TradingClient(['#!/bin/sh\ntoken=fixture\nprintf x\n'])
+    client = _TradingClient(["#!/bin/sh\ntoken=fixture\nprintf x\n"])
     stage = PoCCandidateStage(
         client=client,
         artifacts=SimpleArtifactRepository(tmp_path, _IDENTITY),

@@ -7,7 +7,6 @@ import asyncio
 import hashlib
 import json
 import os
-from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,136 +34,19 @@ _MAX_SOURCE_BYTES = 2 * 1024 * 1024
 # measured at 1.3 seconds for 3.1 MB, and what the prompt can carry is decided
 # separately when the bundle is rendered.  This ceiling only stops a runaway.
 _MAX_FACTS = 2_000_000
-# How many files the index may name.  A repository larger than this is summarised
-# by its busiest files; the count says how many were left out rather than hiding
-# them.
-_MAX_INDEXED_FILES = 1_500
 # A constant longer than this is prose or a template, not a decision.
 _MAX_LITERAL_CHARS = 60
-# Which callee names are worth naming in the index.  Counting facts says how
-# much a file does, not what it does, and the name is what tells an agent a
-# file is worth asking for: measured on open-webui, ``unquote`` together with a
-# path normaliser appears in two of two hundred and twenty three files, and
-# those two are the pair the advisory's fix touched.  Static tools said nothing
-# about either, because both already had a sanitiser and only its loop bound
-# was wrong.
-#
-# This is a hint, never a verdict, and the list is knowingly incomplete: a name
-# that is missing costs a hint, and the facts themselves stay retrievable.
-_NOTABLE_CALLS = frozenset(
-    {
-        # taking apart a name the caller supplied
-        "unquote",
-        "unquote_plus",
-        "urlparse",
-        "urlsplit",
-        "urljoin",
-        "normpath",
-        "realpath",
-        "abspath",
-        "relpath",
-        "expanduser",
-        "resolve",
-        "commonpath",
-        "commonprefix",
-        "samefile",
-        "basename",
-        "dirname",
-        # the checks meant to make that safe
-        "startswith",
-        "endswith",
-        "match",
-        "fullmatch",
-        "search",
-        # what a bypass reaches
-        "open",
-        "read_text",
-        "read_bytes",
-        "write_text",
-        "write_bytes",
-        "unlink",
-        "rmtree",
-        "copy",
-        "move",
-        "send_file",
-        "FileResponse",
-        "redirect",
-        "RedirectResponse",
-        "urlopen",
-        "request",
-        "eval",
-        "exec",
-        "system",
-        "popen",
-        "Popen",
-        "check_output",
-        "call",
-        "literal_eval",
-        "loads",
-        "load",
-        "execute",
-        "executescript",
-        "raw",
-    }
-)
+# Which files an agent may ask for.  This is the checkout's own list, not a
+# judgement about what matters: deciding that in advance is what a static rule
+# does, and the point of asking an agent is that it decides.  Everything else
+# about a file - its facts, its text - is served when it is requested.
+_SOURCE_SUFFIXES = (".py", ".pyi", ".js", ".jsx", ".ts", ".tsx")
 
 
-def _is_notable(name: str) -> bool:
-    return name.rsplit(".", 1)[-1] in _NOTABLE_CALLS
-
-
-def _ast_index(ast_result: dict[str, object]) -> dict[str, object]:
-    """Describe the AST facts without carrying them.
-
-    An agent needs to know which file holds what before it can ask for
-    anything, so the index keeps every file's name, how many facts it has and
-    which kinds they are.  The facts stay where they were written; this is the
-    map that says which ones are worth reading.
-    """
-
-    facts = ast_result.get("facts")
-    facts = facts if isinstance(facts, list) else []
-    per_file: dict[str, Counter[str]] = defaultdict(Counter)
-    notable: dict[str, set[str]] = defaultdict(set)
-    for fact in facts:
-        if not isinstance(fact, dict):
-            continue
-        path = fact.get("path")
-        kind = fact.get("kind")
-        if not isinstance(path, str) or not isinstance(kind, str):
-            continue
-        per_file[path][kind] += 1
-        name = fact.get("name")
-        if kind == "Call" and isinstance(name, str) and _is_notable(name):
-            notable[path].add(name)
-    ordered = sorted(
-        per_file.items(), key=lambda item: (-sum(item[1].values()), item[0])
+def _source_listing(tracked: Sequence[str]) -> list[str]:
+    return sorted(
+        value for value in tracked if value.lower().endswith(_SOURCE_SUFFIXES)
     )
-    return {
-        "kind": "simple_python_ast_index",
-        "total_facts": len(facts),
-        "indexed_files": min(len(ordered), _MAX_INDEXED_FILES),
-        "omitted_files": max(0, len(ordered) - _MAX_INDEXED_FILES),
-        "python_files": ast_result.get("python_files"),
-        "covered_files": ast_result.get("covered_files"),
-        "truncated": ast_result.get("truncated"),
-        "skipped_count": ast_result.get("skipped_count"),
-        "skipped_files": ast_result.get("skipped_files"),
-        "parse_errors": ast_result.get("parse_errors"),
-        "files": [
-            {
-                "path": path,
-                "facts": sum(kinds.values()),
-                "kinds": dict(sorted(kinds.items())),
-                **(
-                    {"notable_calls": sorted(notable[path])}
-                    if notable.get(path)
-                    else {}
-                ),
-            }
-            for path, kinds in ordered[:_MAX_INDEXED_FILES]
-        ],
-    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,12 +191,12 @@ class DirectStaticBootstrap:
                         else []
                     ),
                 ],
-                # The facts themselves are three megabytes for a mid-sized
-                # repository and were the reason a prompt reached half a
-                # million tokens.  They stay in their own artifact, which
-                # ``tool_result_refs`` already names, and the bundle carries
-                # the map an agent needs to decide what to ask for.
-                "ast_index": _ast_index(ast_result),
+                # The facts are three megabytes for a mid-sized repository and
+                # were the reason a prompt reached half a million tokens.  They
+                # stay in their own artifact, which ``tool_result_refs`` names,
+                # and are served for the files an agent asks about.
+                "source_files": _source_listing(tracked),
+                "ast_fact_count": len(ast_result["facts"]),  # type: ignore[arg-type]
                 "opengrep_findings": snippets,
                 "codeql_findings": codeql_findings,
                 "codeql_executed": codeql_ref is not None,

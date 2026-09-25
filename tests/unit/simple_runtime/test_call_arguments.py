@@ -22,9 +22,7 @@ def test_the_cap_a_decode_loop_runs_to_is_recorded() -> None:
 
 def test_strings_are_kept_but_bounded() -> None:
     long = "a" * 200
-    assert DirectStaticBootstrap._literal_arguments(_call(f"f({long!r})")) == [
-        "a" * 60
-    ]
+    assert DirectStaticBootstrap._literal_arguments(_call(f"f({long!r})")) == ["a" * 60]
 
 
 def test_a_flag_is_not_a_decision_worth_storing() -> None:

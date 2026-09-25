@@ -137,7 +137,69 @@ def collect_requested_sources(
 
 
 __all__ = [
+    "MAX_AST_FILES",
     "MAX_REQUESTED_FILES",
     "MAX_TOTAL_BYTES",
+    "collect_requested_ast",
     "collect_requested_sources",
 ]
+
+
+MAX_AST_FILES = 40
+
+
+def collect_requested_ast(
+    requests: Iterable[str],
+    *,
+    facts: Sequence[Any],
+) -> dict[str, Any]:
+    """Return the parsed facts for the files an agent asked about.
+
+    The facts were being summarised into a map before an agent ever saw them,
+    which meant deciding in advance which call names mattered - the same
+    judgement a static rule makes, and the reason a rule misses what it was not
+    written for.  Nothing is decided here: the file is named, its facts are
+    served whole, and a name that has none says so.
+    """
+
+    wanted: list[str] = []
+    refused: list[dict[str, str]] = []
+    for request in requests:
+        if not isinstance(request, str):
+            refused.append(_refusal(str(request), "NOT_A_PATH"))
+            continue
+        relative = _normalized(request)
+        if relative is None:
+            refused.append(_refusal(request, "PATH_OUTSIDE_REPOSITORY"))
+            continue
+        if relative in wanted:
+            continue
+        if len(wanted) >= MAX_AST_FILES:
+            refused.append(_refusal(request, "FILE_BUDGET_EXHAUSTED"))
+            continue
+        wanted.append(relative)
+
+    grouped: dict[str, list[Any]] = {path: [] for path in wanted}
+    for fact in facts:
+        if not isinstance(fact, dict):
+            continue
+        path = fact.get("path")
+        if isinstance(path, str) and path in grouped:
+            grouped[path].append(fact)
+
+    served = [
+        {"path": path, "fact_count": len(entries), "facts": entries}
+        for path, entries in grouped.items()
+        if entries
+    ]
+    refused.extend(
+        _refusal(path, "NO_FACTS_FOR_PATH")
+        for path, entries in grouped.items()
+        if not entries
+    )
+    return {
+        "kind": "simple_requested_ast",
+        "served": served,
+        "refused": refused,
+        "limits": {"max_files": MAX_AST_FILES},
+    }

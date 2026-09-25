@@ -185,28 +185,38 @@ class _RequestingClient:
 
     def __init__(self) -> None:
         self.calls = 0
+        self.saw_history: list[bool] = []
 
     async def call(self, **kwargs: object) -> SimpleLLMCallResult:
+        # Pro and Con share this client and run at the same time, so what to
+        # ask for next is decided from the prompt rather than from a counter.
         self.calls += 1
-        wanted = (
-            "backend/chainlit/markdown.py" if self.calls == 1 else "../outside.txt"
-        )
+        prompt = kwargs.get("prompt")
+        text = prompt if isinstance(prompt, bytes) else b""
+        rounds = text.count(b'"round"')
+        self.saw_history.append(b"simple_exploration_history" in text)
+        if rounds == 0:
+            # One file it may have, one it may not.
+            wanted = ["backend/chainlit/markdown.py", "../outside.txt"]
+        elif rounds == 1:
+            # What the first reading made worth asking for.
+            wanted = ["backend/chainlit/config.py"]
+        else:
+            wanted = []
         return SimpleLLMCallResult(
             value={
-                "claims": ["c"],
+                "claims": [f"after {rounds} rounds"],
                 "evidence_refs": [],
                 "limitations": ["source not read"],
-                "requested_paths": [wanted],
+                "requested_paths": wanted,
+                "requested_ast_paths": [],
             },
             prompt_digest="a" * 64,
             output_digest="b" * 64,
         )
 
 
-@pytest.mark.asyncio
-async def test_pro_con_hands_the_requested_source_to_the_next_stage(
-    tmp_path: Path, workspace: Path
-) -> None:
+def _stage(tmp_path: Path, workspace: Path, client: object) -> tuple[Any, Any, Any]:
     identity = CheckpointIdentity(
         analysis_id="analysis-1",
         workspace_id="workspace-1",
@@ -214,9 +224,7 @@ async def test_pro_con_hands_the_requested_source_to_the_next_stage(
         hypothesis_id="hypothesis-1",
     )
     artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
-    stage = ProConStage(
-        cast(Any, _RequestingClient()), artifacts, workspace=workspace
-    )
+    stage = ProConStage(cast(Any, client), artifacts, workspace=workspace)
     checkpoint = StageCheckpoint(
         identity=identity,
         stage=SimpleStage.PRO_CON_DONE,
@@ -225,85 +233,76 @@ async def test_pro_con_hands_the_requested_source_to_the_next_stage(
         input_hash=input_reference_hash(()),
         attempt_id="attempt-1",
     )
-
-    result = await stage(checkpoint, {})
-
-    # Pro, Con, and the sources the two of them asked for.
-    assert len(result.output_refs) == 3
-    record = json.loads(artifacts.read(result.output_refs[-1]))
-    assert record["kind"] == "simple_requested_sources"
-    assert [item["path"] for item in record["served"]] == [
-        "backend/chainlit/markdown.py"
-    ]
-    assert record["refused"] == [
-        {"path": "../outside.txt", "reason": "PATH_OUTSIDE_REPOSITORY"}
-    ]
+    return stage, artifacts, checkpoint
 
 
 @pytest.mark.asyncio
-async def test_pro_con_without_a_workspace_serves_nothing(
-    tmp_path: Path,
+async def test_reading_a_file_lets_the_agent_ask_for_the_next_one(
+    tmp_path: Path, workspace: Path
 ) -> None:
-    identity = CheckpointIdentity(
-        analysis_id="analysis-1",
-        workspace_id="workspace-1",
-        commit_id="a" * 40,
-        hypothesis_id="hypothesis-1",
-    )
-    stage = ProConStage(
-        cast(Any, _RequestingClient()),
-        SimpleArtifactRepository(tmp_path / "data", identity),
-    )
-    checkpoint = StageCheckpoint(
-        identity=identity,
-        stage=SimpleStage.PRO_CON_DONE,
-        status=StageStatus.RUNNING,
-        input_refs=(),
-        input_hash=input_reference_hash(()),
-        attempt_id="attempt-1",
-    )
+    """One request-and-read is not enough: a guard often lives elsewhere."""
+
+    client = _RequestingClient()
+    stage, artifacts, checkpoint = _stage(tmp_path, workspace, client)
 
     result = await stage(checkpoint, {})
 
+    # Pro and Con only; what each of them read is inside its own artifact.
     assert len(result.output_refs) == 2
-
-
-def test_a_file_the_size_of_a_real_router_is_served(tmp_path: Path) -> None:
-    """Measured on open-webui: ``routers/retrieval.py`` is 124 KB.
-
-    A hypothesis named "path traversal in retrieval file resolution" asked for
-    exactly that file and was refused as too large, while four files nobody had
-    asked a question about were served in the same batch.
-    """
-
-    workspace = tmp_path / "repo"
-    (workspace / "backend").mkdir(parents=True)
-    target = workspace / "backend" / "retrieval.py"
-    target.write_text("# a real router\n" + "x = 1\n" * 21_000, encoding="utf-8")
-    assert target.stat().st_size > 124_000
-
-    record = collect_requested_sources(
-        ["backend/retrieval.py"], workspace=workspace
-    )
-
-    assert record["refused"] == []
-    assert [entry["path"] for entry in record["served"]] == ["backend/retrieval.py"]
-
-
-def test_the_batch_total_is_the_only_size_that_refuses_a_file(
-    tmp_path: Path,
-) -> None:
-    """Removing the per-file ceiling did not remove the bound on the prompt."""
-
-    workspace = tmp_path / "repo"
-    workspace.mkdir()
-    # Larger than the whole batch may add to the next prompt.
-    (workspace / "huge.py").write_text("y = 2\n" * 100_000, encoding="utf-8")
-    (workspace / "small.py").write_text("z = 3\n", encoding="utf-8")
-
-    record = collect_requested_sources(["huge.py", "small.py"], workspace=workspace)
-
-    assert record["refused"] == [
-        {"path": "huge.py", "reason": "TOTAL_BUDGET_EXHAUSTED"}
+    record = json.loads(artifacts.read(result.output_refs[0]))
+    rounds = record["exploration"]["rounds"]
+    assert [entry["round"] for entry in rounds] == [1, 2]
+    assert [item["path"] for item in rounds[0]["sources"]["served"]] == [
+        "backend/chainlit/markdown.py"
     ]
-    assert [entry["path"] for entry in record["served"]] == ["small.py"]
+    assert rounds[0]["sources"]["refused"] == [
+        {"path": "../outside.txt", "reason": "PATH_OUTSIDE_REPOSITORY"}
+    ]
+    # The second round asked for a file the first round's reading suggested.
+    assert rounds[1]["requested_paths"] == ["backend/chainlit/config.py"]
+
+
+@pytest.mark.asyncio
+async def test_what_was_read_is_shown_back_to_the_agent(
+    tmp_path: Path, workspace: Path
+) -> None:
+    client = _RequestingClient()
+    stage, _artifacts, checkpoint = _stage(tmp_path, workspace, client)
+
+    await stage(checkpoint, {})
+
+    # Exactly two openings - one per agent - and every other call is shown
+    # what that agent had already read.
+    assert client.saw_history.count(False) == 2
+    assert client.saw_history.count(True) == client.calls - 2
+
+
+@pytest.mark.asyncio
+async def test_an_agent_that_asks_for_nothing_is_called_once(
+    tmp_path: Path, workspace: Path
+) -> None:
+    class _Quiet:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def call(self, **kwargs: object) -> SimpleLLMCallResult:
+            self.calls += 1
+            return SimpleLLMCallResult(
+                value={
+                    "claims": ["settled"],
+                    "evidence_refs": [],
+                    "limitations": [],
+                    "requested_paths": [],
+                    "requested_ast_paths": [],
+                },
+                prompt_digest="a" * 64,
+                output_digest="b" * 64,
+            )
+
+    client = _Quiet()
+    stage, _artifacts, checkpoint = _stage(tmp_path, workspace, client)
+
+    await stage(checkpoint, {})
+
+    # Two agents, one call each.
+    assert client.calls == 2

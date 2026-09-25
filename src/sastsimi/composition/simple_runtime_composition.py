@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from sastsimi.composition.local_claude_binding import build_local_claude_binding
 from sastsimi.composition.local_codex_binding import build_local_codex_binding
@@ -204,6 +205,36 @@ class SimpleClientFactory:
         )
 
 
+def _ast_facts_loader(
+    artifacts: SimpleArtifactRepository, static: StaticBootstrapResult
+) -> Callable[[], Sequence[Any]]:
+    """Read the parsed facts the first time an agent actually asks for them.
+
+    They are three megabytes for a mid-sized repository and most runs never
+    need them, so the read is deferred and then kept.
+    """
+
+    cached: list[Sequence[Any]] = []
+
+    def load() -> Sequence[Any]:
+        if cached:
+            return cached[0]
+        facts: Sequence[Any] = ()
+        try:
+            bundle = json.loads(artifacts.read(static.static_bundle_ref))
+            for raw in bundle.get("tool_result_refs", ()):
+                document = json.loads(artifacts.read(StoredDataRef.model_validate(raw)))
+                if document.get("kind") == "simple_python_ast":
+                    facts = document.get("facts") or ()
+                    break
+        except (OSError, ValueError, KeyError):
+            facts = ()
+        cached.append(facts)
+        return facts
+
+    return load
+
+
 def build_analysis_application(
     config: UserConfig,
     profile: SimpleExecutionProfile,
@@ -235,6 +266,7 @@ def build_analysis_application(
                 environments=environments,
                 store=runtime_store,
                 workspace=static.workspace_path,
+                ast_facts=_ast_facts_loader(artifacts, static),
                 max_parallel_containers=profile.max_parallel_containers,
                 # A stage that exceeds its per-call ceiling is blocked for the
                 # whole run, so the operator's elapsed budget has to reach the

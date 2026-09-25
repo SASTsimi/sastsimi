@@ -132,9 +132,10 @@ def test_a_repository_root_that_is_a_package_is_installed(tmp_path: Path) -> Non
     (tmp_path / "pyproject.toml").write_text(_PACKAGE, encoding="utf-8")
 
     assert _preparer_for(tmp_path)._installable_directory() == "."
-    assert b"pip install --no-cache-dir ." in _preparer_for(
-        tmp_path
-    )._generated_dockerfile()
+    assert (
+        b"pip install --no-cache-dir ."
+        in _preparer_for(tmp_path)._generated_dockerfile()
+    )
 
 
 def test_a_monorepo_root_installs_its_one_package_instead(tmp_path: Path) -> None:
@@ -147,9 +148,10 @@ def test_a_monorepo_root_installs_its_one_package_instead(tmp_path: Path) -> Non
     (tmp_path / "cypress").mkdir()
 
     assert _preparer_for(tmp_path)._installable_directory() == "backend"
-    assert b"pip install --no-cache-dir backend" in _preparer_for(
-        tmp_path
-    )._generated_dockerfile()
+    assert (
+        b"pip install --no-cache-dir backend"
+        in _preparer_for(tmp_path)._generated_dockerfile()
+    )
 
 
 def test_an_ambiguous_layout_skips_the_install_layer(tmp_path: Path) -> None:

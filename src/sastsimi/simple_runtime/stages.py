@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,6 +27,7 @@ from sastsimi.sandbox.docker_adapter import DockerAdapter, DockerOperationError
 
 from .artifacts import SimpleArtifactRepository
 from .chaining import PrimitiveAdmissionStage, SimpleChainingStage
+from .exploration import MAX_ROUNDS, Exploration
 from .models import (
     STAGE_ORDER,
     SimpleStage,
@@ -36,7 +37,7 @@ from .models import (
 )
 from .poc import PoCCandidateRejected, validate_candidate
 from .provider import SimpleLLMCallResult, SimpleLLMClient
-from .retrieval import collect_requested_sources
+from .retrieval import collect_requested_ast, collect_requested_sources
 from .runner import SimpleStageHandler, StageBlocked, StageFailed
 from .store import SimpleCheckpointStore
 
@@ -609,6 +610,9 @@ class _StructuredStage:
         schema: dict[str, Any],
         kind: str,
         call_timeout_ms: int = _LOCAL_TIMEOUT_MS,
+        workspace: Path | None = None,
+        ast_facts: Callable[[], Sequence[Any]] | None = None,
+        max_rounds: int = MAX_ROUNDS,
     ) -> None:
         self._client = client
         self._artifacts = artifacts
@@ -616,30 +620,96 @@ class _StructuredStage:
         self._schema = schema
         self._kind = kind
         self._call_timeout_ms = call_timeout_ms
+        self._workspace = workspace
+        self._ast_facts = ast_facts
+        self._max_rounds = max(1, max_rounds)
+
+    def _serve(
+        self, requested: Sequence[str], asked_for_ast: Sequence[str]
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        sources = (
+            collect_requested_sources(requested, workspace=self._workspace)
+            if requested and self._workspace is not None
+            else None
+        )
+        ast = (
+            collect_requested_ast(asked_for_ast, facts=self._ast_facts())
+            if asked_for_ast and self._ast_facts is not None
+            else None
+        )
+        return sources, ast
+
+    async def _ask(
+        self, context: bytes, history: Exploration | None
+    ) -> SimpleLLMCallResult:
+        body = context
+        if history is not None and history.rounds:
+            body = body + b"\n" + canonical_bytes(history.as_prompt_document())
+        result = await self._client.call(
+            prompt=_prompt(self._instructions, body),
+            output_schema=self._schema,
+            timeout_ms=self._call_timeout_ms,
+        )
+        if isinstance(result, StageFailure):
+            _raise_provider_failure(result)
+        return result
 
     async def call(
         self,
         checkpoint: StageCheckpoint,
         refs: tuple[StoredDataRef, ...],
     ) -> tuple[SimpleLLMCallResult, StoredDataRef]:
-        result = await self._client.call(
-            prompt=_prompt(self._instructions, self._artifacts.prompt_context(refs)),
-            output_schema=self._schema,
-            timeout_ms=self._call_timeout_ms,
-        )
-        if isinstance(result, StageFailure):
-            _raise_provider_failure(result)
+        context = self._artifacts.prompt_context(refs)
+        history = Exploration()
+        result = await self._ask(context, None)
+        # Reading one file is what makes the next one worth asking for, so the
+        # agent is asked again with what it read rather than once with
+        # everything someone decided in advance that it might want.
+        for _ in range(self._max_rounds - 1):
+            requested = _requested(result.value, "requested_paths")
+            asked_for_ast = _requested(result.value, "requested_ast_paths")
+            if not requested and not asked_for_ast:
+                break
+            sources, ast = self._serve(requested, asked_for_ast)
+            if sources is None and ast is None:
+                break
+            history.record(
+                requested_paths=(*requested, *asked_for_ast),
+                sources=sources,
+                ast=ast,
+                notes=_notes(result.value),
+            )
+            history.compact()
+            result = await self._ask(context, history)
         output_ref = self._artifacts.put_json(
             {
                 "kind": self._kind,
                 "source_refs": [ref.model_dump(mode="json") for ref in refs],
                 "result": result.value,
+                "exploration": history.as_prompt_document(),
                 "prompt_digest": result.prompt_digest,
                 "output_digest": result.output_digest,
                 "attempt_id": checkpoint.attempt_id,
             }
         )
         return result, output_ref
+
+
+def _requested(value: Mapping[str, Any], key: str) -> tuple[str, ...]:
+    values = value.get(key)
+    if not isinstance(values, list):
+        return ()
+    return tuple(item for item in values if isinstance(item, str) and item.strip())
+
+
+def _notes(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep what the agent made of what it read, not the reading itself."""
+
+    return {
+        key: value[key]
+        for key in ("claims", "limitations", "summary", "rationale")
+        if key in value
+    }
 
 
 class ProConStage:
@@ -651,32 +721,46 @@ class ProConStage:
         artifacts: SimpleArtifactRepository,
         call_timeout_ms: int = _LOCAL_TIMEOUT_MS,
         workspace: Path | None = None,
+        ast_facts: Callable[[], Sequence[Any]] | None = None,
     ) -> None:
         self._artifacts = artifacts
         self._workspace = workspace
+        self._facts = ast_facts
         schema = _object_schema(
             {
                 "claims": _string_array(),
                 "evidence_refs": _string_array(),
                 "limitations": _string_array(),
                 "requested_paths": _string_array(),
+                "requested_ast_paths": _string_array(),
             },
-            ["claims", "evidence_refs", "limitations", "requested_paths"],
+            [
+                "claims",
+                "evidence_refs",
+                "limitations",
+                "requested_paths",
+                "requested_ast_paths",
+            ],
         )
         self._pro = _StructuredStage(
             client=client,
             call_timeout_ms=call_timeout_ms,
             artifacts=artifacts,
+            workspace=workspace,
+            ast_facts=ast_facts,
             instructions="""
 You are the Pro Agent. Find only evidence that supports the exact vulnerability
 hypothesis. Trace source, propagation, sink, authorization and sanitizer facts.
 Cite supplied exact artifact content hashes. State missing code paths instead of
-inventing them. `ast_index` names every Python file in the checkout with how
-many definitions and calls each holds, and `notable_calls` names the decoding,
-path and sink calls each one makes; it is a map, not the code. Read it to
-decide which files matter, then put those repository-relative paths in
-`requested_paths`. They are fetched and handed to the next agent, so name the
-exact files that would settle a claim you could only state as a limitation.
+inventing them.
+`source_files` lists every source file in the checkout - that is the whole
+list, not a selection someone made for you. Put the repository-relative paths
+you want to read in `requested_paths`, and in `requested_ast_paths` the ones
+you want the parsed definitions and calls for instead, which is cheaper for a
+long file you only need the shape of. You will be asked again with what you
+requested, so read, then ask for whatever that reading makes worth asking for;
+a guard is often in a different file from the flow it guards. Leave both empty
+when you have what you need.
 """,
             schema=schema,
             kind="simple_pro_evidence",
@@ -685,38 +769,26 @@ exact files that would settle a claim you could only state as a limitation.
             client=client,
             call_timeout_ms=call_timeout_ms,
             artifacts=artifacts,
+            workspace=workspace,
+            ast_facts=ast_facts,
             instructions="""
 You are the Con Agent in a new independent review. Search for concrete
 counterevidence: validation, sanitization, authorization, unreachable flows and
 false tool matches. Cite supplied exact artifact content hashes. Never weaken a
 claim merely because information is missing; record the gap in limitations and
-use `requested_paths` for the repository-relative files that would settle it.
-`ast_index` names every Python file with how many definitions and calls each
-holds, and `notable_calls` names the decoding and path calls each one makes, so
-use it to find the file a guard would live in rather than guessing.
-They are fetched and handed to the next agent, so name the exact files rather
-than describing them.
+ask for the files that would settle it rather than guessing.
+`source_files` lists every source file in the checkout - that is the whole
+list, not a selection someone made for you. Put the repository-relative paths
+you want to read in `requested_paths`, and in `requested_ast_paths` the ones
+you want the parsed definitions and calls for instead, which is cheaper for a
+long file you only need the shape of. You will be asked again with what you
+requested, so read, then ask for whatever that reading makes worth asking for;
+a guard is often in a different file from the flow it guards. Leave both empty
+when you have what you need.
 """,
             schema=schema,
             kind="simple_con_evidence",
         )
-
-    def _retrieved_sources(
-        self, pro: SimpleLLMCallResult, con: SimpleLLMCallResult
-    ) -> StoredDataRef | None:
-        if self._workspace is None:
-            return None
-        requested: list[str] = []
-        for result in (pro, con):
-            values = result.value.get("requested_paths")
-            if isinstance(values, list):
-                requested.extend(value for value in values if isinstance(value, str))
-        if not requested:
-            return None
-        record = collect_requested_sources(requested, workspace=self._workspace)
-        if not record["served"] and not record["refused"]:
-            return None
-        return self._artifacts.put_json(record)
 
     async def __call__(
         self,
@@ -730,17 +802,10 @@ than describing them.
             self._pro.call(checkpoint, refs),
             self._con.call(checkpoint, refs),
         )
-        # A static hit rarely settles whether a flow is guarded, so the files
-        # both agents said they still needed are read now and carried forward
-        # instead of being discarded with the rest of their output.
-        sources_ref = self._retrieved_sources(pro, con)
-        output_refs = (
-            (pro_ref, con_ref)
-            if sources_ref is None
-            else (pro_ref, con_ref, sources_ref)
-        )
+        # Each agent already read over several rounds and the artifact it wrote
+        # carries that history, so there is nothing left to fetch here.
         return StageResult(
-            output_refs=output_refs,
+            output_refs=(pro_ref, con_ref),
             activity_events=(
                 _activity_event(
                     checkpoint,
@@ -1505,6 +1570,10 @@ def build_stage_handlers(
     # The checkout the Pro and Con agents may ask to read from; without it the
     # run keeps working and simply serves no requested file.
     workspace: Path | None = None,
+    # The parsed facts an agent may ask for a file's share of.  Loading them is
+    # the caller's business because they live in their own artifact and a run
+    # that never asks should never read them.
+    ast_facts: Callable[[], Sequence[Any]] | None = None,
     max_parallel_containers: int = 1,
     call_timeout_ms: int = _LOCAL_TIMEOUT_MS,
     poc_timeout_ms: int = _POC_TIMEOUT_MS,
@@ -1512,7 +1581,11 @@ def build_stage_handlers(
     environment_preparer = environments or _UnavailableEnvironmentPreparer()
     handlers: dict[SimpleStage, SimpleStageHandler] = {
         SimpleStage.PRO_CON_DONE: ProConStage(
-            client, artifacts, call_timeout_ms=call_timeout_ms, workspace=workspace
+            client,
+            artifacts,
+            call_timeout_ms=call_timeout_ms,
+            workspace=workspace,
+            ast_facts=ast_facts,
         ),
         SimpleStage.VERIFICATION_INITIAL_DONE: InitialVerificationStage(
             client,
