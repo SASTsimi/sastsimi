@@ -26,7 +26,11 @@ class _Discovery:
                 name=name,
                 available=name not in self._missing,
                 executable=None if name in self._missing else Path(f"C:/{name}.exe"),
-                version=None if name in self._missing else "1.0.0",
+                version=None
+                if name in self._missing
+                else "2.1.280"
+                if name == "claude"
+                else "1.0.0",
                 executable_sha256=None if name in self._missing else "a" * 64,
             )
             for name in (
@@ -37,6 +41,7 @@ class _Discovery:
                 "docker",
                 "codex",
                 "cursor_agent",
+                "claude",
             )
         )
 
@@ -88,6 +93,122 @@ def test_setup_cli_writes_ready_secret_free_configuration(
     assert "access_token" not in raw
     assert "refresh_token" not in raw
     assert "sk-" not in raw
+
+
+def test_setup_cli_selects_claude_without_api_key(tmp_path: Path, capsys) -> None:
+    service = _service(tmp_path)
+    code = main(
+        [
+            "setup",
+            "--non-interactive",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--auth",
+            "subscription",
+            "--provider",
+            "claude",
+            "--model",
+            "operator-selected-model",
+            "--profile",
+            "lightweight",
+            "--format",
+            "json",
+        ],
+        setup_service=service,
+    )
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "READY"
+    saved = service.config_store.load()
+    assert saved.provider == "claude"
+    assert saved.credential_ref == "CLAUDE_CLI_LOGIN"
+    from sastsimi.config.user_config import load_simple_execution_profile
+
+    profile = load_simple_execution_profile(service._profile_path)
+    assert "claude" in profile.tools
+
+
+def test_claude_setup_rejects_unverified_cli_version(tmp_path: Path) -> None:
+    class OldDiscovery(_Discovery):
+        def inspect(self) -> tuple[ToolInspection, ...]:
+            return tuple(
+                item.model_copy(update={"version": "2.1.250"})
+                if item.name == "claude"
+                else item
+                for item in super().inspect()
+            )
+
+    service = SetupService(
+        config_store=UserConfigStore(tmp_path / "config.toml"),
+        discovery=OldDiscovery(),
+        profile_path=tmp_path / "profile.toml",
+        auth_checker=lambda _choices, _tools: True,
+    )
+    result = service.configure(
+        SetupChoices(
+            data_dir=tmp_path / "data",
+            auth_mode="SUBSCRIPTION_LOGIN",
+            provider="claude",
+            model="operator-model",
+            credential_ref="CLAUDE_CLI_LOGIN",
+            execution_profile="LIGHTWEIGHT",
+            max_cost_minor_units=10_000,
+            max_tokens=500_000,
+            max_elapsed_seconds=3_600,
+            docker_network="NONE",
+        )
+    )
+    assert result.status == "BLOCKED"
+    assert any("CLAUDE_CLI_UNSUPPORTED_VERSION" in item for item in result.next_actions)
+
+
+def test_claude_auth_requires_first_party_subscription_even_on_zero_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    from sastsimi.setup.service import _default_auth_checker
+
+    choices = SetupChoices(
+        data_dir=Path("C:/data"),
+        auth_mode="SUBSCRIPTION_LOGIN",
+        provider="claude",
+        model="operator-model",
+        credential_ref="CLAUDE_CLI_LOGIN",
+        execution_profile="LIGHTWEIGHT",
+        max_cost_minor_units=10_000,
+        max_tokens=500_000,
+        max_elapsed_seconds=3_600,
+        docker_network="NONE",
+    )
+    tool = ToolInspection(
+        name="claude",
+        available=True,
+        executable=Path("C:/claude.exe"),
+        version="2.1.280",
+        executable_sha256="a" * 64,
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [],
+            0,
+            stdout='{"loggedIn":false,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"pro"}',
+            stderr="",
+        ),
+    )
+    assert _default_auth_checker(choices, {"claude": tool}) is False
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [],
+            0,
+            stdout='{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"pro"}',
+            stderr="",
+        ),
+    )
+    assert _default_auth_checker(choices, {"claude": tool}) is True
 
 
 def test_setup_cli_blocks_full_profile_when_codeql_is_missing(

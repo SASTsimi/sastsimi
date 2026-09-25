@@ -68,6 +68,7 @@ def _credential_ref(auth_mode: str, value: str) -> str:
     if auth_mode == "SUBSCRIPTION_LOGIN" and value in {
         "OFFICIAL_CLIENT_SESSION",
         "CURSOR_CLI_LOGIN",
+        "CLAUDE_CLI_LOGIN",
     }:
         return value
     raise ValueError("USER_CONFIG_CREDENTIAL_REF_INVALID")
@@ -189,6 +190,11 @@ class UserConfig(BaseModel):
             and self.credential_ref == "CURSOR_CLI_LOGIN"
         ):
             raise ValueError("CURSOR_API_KEY_REQUIRED")
+        if self.provider == "claude" and not (
+            self.auth_mode == "SUBSCRIPTION_LOGIN"
+            and self.credential_ref == "CLAUDE_CLI_LOGIN"
+        ):
+            raise ValueError("CLAUDE_SUBSCRIPTION_REQUIRED")
         if self.fallback_provider != "none" and self.fallback_model is None:
             raise ValueError("FALLBACK_MODEL_REQUIRED")
         if len(self.enabled_tools) != len(set(self.enabled_tools)):
@@ -315,6 +321,11 @@ class SimpleExecutionProfile(BaseModel):
             and self.credential_ref == "CURSOR_CLI_LOGIN"
         ):
             raise ValueError("CURSOR_API_KEY_REQUIRED")
+        if self.provider == "claude" and not (
+            self.auth_mode == "SUBSCRIPTION_LOGIN"
+            and self.credential_ref == "CLAUDE_CLI_LOGIN"
+        ):
+            raise ValueError("CLAUDE_SUBSCRIPTION_REQUIRED")
         UserConfig.safe_agent_models(self.agent_models)
         UserConfig.safe_fallback_model(self.fallback_model)
         if self.fallback_provider != "none" and self.fallback_model is None:

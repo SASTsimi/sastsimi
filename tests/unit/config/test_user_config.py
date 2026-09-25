@@ -74,6 +74,44 @@ def test_agent_model_override_rejects_unknown_role() -> None:
         UserConfig.safe_agent_models({"verification_reslut": "some-model"})
 
 
+def test_claude_subscription_profile_round_trip_and_api_key_rejected(
+    tmp_path: Path,
+) -> None:
+    profile = SimpleExecutionProfile(
+        provider_profile_ref="local-claude",
+        provider="claude",
+        model="operator-selected-model",
+        auth_mode="SUBSCRIPTION_LOGIN",
+        credential_ref="CLAUDE_CLI_LOGIN",
+        data_dir=tmp_path / "data",
+        workspace_root=tmp_path / "workspaces",
+        max_cost_minor_units=10_000,
+        max_tokens=500_000,
+        max_elapsed_seconds=3_600,
+        docker_network="NONE",
+        tools={
+            "claude": SimpleToolBinding(
+                executable_path=tmp_path / "claude.exe",
+                version="2.1.280",
+                executable_sha256="a" * 64,
+            )
+        },
+        agent_models={"verification_result": "other-model"},
+    )
+    path = tmp_path / "profile.toml"
+    profile.write(path)
+    assert load_simple_execution_profile(path) == profile
+    assert "CLAUDE_CLI_LOGIN" in path.read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="CLAUDE_SUBSCRIPTION_REQUIRED"):
+        SimpleExecutionProfile.model_validate(
+            {
+                **profile.model_dump(),
+                "auth_mode": "API_KEY",
+                "credential_ref": "env:ANTHROPIC_API_KEY",
+            }
+        )
+
+
 def test_simple_execution_profile_supports_api_and_subscription_without_secret(
     tmp_path: Path,
 ) -> None:

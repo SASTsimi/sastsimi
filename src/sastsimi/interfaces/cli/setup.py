@@ -38,7 +38,9 @@ def choices_from_args(
         "codex" if auth == "subscription" else "openai",
     )
     credential_ref = (
-        "CURSOR_CLI_LOGIN"
+        "CLAUDE_CLI_LOGIN"
+        if provider == "claude" and auth == "subscription"
+        else "CURSOR_CLI_LOGIN"
         if provider == "cursor" and auth == "subscription"
         else "env:CURSOR_API_KEY"
         if provider == "cursor" and auth == "api-key"
@@ -56,8 +58,8 @@ def choices_from_args(
     model = args.model or (
         os.environ.get("SASTSIMI_CURSOR_MODEL") if provider == "cursor" else None
     )
-    if provider == "cursor" and not model and non_interactive:
-        raise ValueError("CURSOR_MODEL_REQUIRED: use cursor-models then --model")
+    if provider in {"cursor", "claude"} and not model and non_interactive:
+        raise ValueError(f"{provider.upper()}_MODEL_REQUIRED: use --model")
     execution_profile_value = (args.execution_profile or "full").upper()
     if execution_profile_value not in {"FULL", "LIGHTWEIGHT"}:
         raise ValueError("SETUP_EXECUTION_PROFILE_INVALID")
@@ -70,7 +72,9 @@ def choices_from_args(
         data_dir=Path(args.setup_data_dir or user_data_dir("sastsimi")).absolute(),
         auth_mode="SUBSCRIPTION_LOGIN" if auth == "subscription" else "API_KEY",
         provider=provider,
-        model=value(model, "모델", "" if provider == "cursor" else "gpt-5.6-sol"),
+        model=value(
+            model, "모델", "" if provider in {"cursor", "claude"} else "gpt-5.6-sol"
+        ),
         credential_ref=credential_ref,
         execution_profile=execution_profile,
         max_cost_minor_units=args.max_cost_minor_units,
