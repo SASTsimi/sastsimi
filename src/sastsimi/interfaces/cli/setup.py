@@ -73,7 +73,13 @@ def choices_from_args(
         auth_mode="SUBSCRIPTION_LOGIN" if auth == "subscription" else "API_KEY",
         provider=provider,
         model=value(
-            model, "모델", "" if provider in {"cursor", "claude"} else "gpt-5.6-sol"
+            model,
+            "모델",
+            ""
+            if provider in {"cursor", "claude"}
+            else "gpt-6-sol"
+            if provider == "codex"
+            else "gpt-5.6-sol",
         ),
         credential_ref=credential_ref,
         execution_profile=execution_profile,

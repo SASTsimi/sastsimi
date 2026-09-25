@@ -88,11 +88,65 @@ def test_setup_cli_writes_ready_secret_free_configuration(
     assert output["data"]["missing_tools"] == []
     saved = service.config_store.load()
     assert saved.credential_ref == "OFFICIAL_CLIENT_SESSION"
+    assert saved.model == "configured-model"
     assert saved.setup_ready is True
     raw = (tmp_path / "config.toml").read_text(encoding="utf-8")
     assert "access_token" not in raw
     assert "refresh_token" not in raw
     assert "sk-" not in raw
+
+
+def test_new_codex_setup_defaults_to_gpt_6_sol(tmp_path: Path, capsys) -> None:
+    from sastsimi.config.user_config import load_simple_execution_profile
+
+    service = _service(tmp_path)
+    code = main(
+        [
+            "setup",
+            "--non-interactive",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--auth",
+            "subscription",
+            "--provider",
+            "codex",
+            "--profile",
+            "full",
+            "--format",
+            "json",
+        ],
+        setup_service=service,
+    )
+
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "READY"
+    assert service.config_store.load().model == "gpt-6-sol"
+    assert load_simple_execution_profile(service._profile_path).model == "gpt-6-sol"
+
+
+def test_openai_setup_keeps_its_existing_default_model(tmp_path: Path, capsys) -> None:
+    service = _service(tmp_path)
+    code = main(
+        [
+            "setup",
+            "--non-interactive",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--auth",
+            "api-key",
+            "--provider",
+            "openai",
+            "--profile",
+            "full",
+            "--format",
+            "json",
+        ],
+        setup_service=service,
+    )
+
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "READY"
+    assert service.config_store.load().model == "gpt-5.6-sol"
 
 
 def test_setup_cli_selects_claude_without_api_key(tmp_path: Path, capsys) -> None:
