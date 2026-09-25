@@ -36,6 +36,11 @@ _CREDENTIAL_ASSIGNMENT = re.compile(
     r"database[_-]?(?:url|uri)|connection[_-]?(?:url|uri|string)|dsn)\b\s*[:=]\s*"
     r'(?:"[^"\r\n]*"|\'[^\'\r\n]*\'|(?:bearer|basic)\s+[^\s,;]+|[^\s,;]+)'
 )
+_ENV_CREDENTIAL_ASSIGNMENT = re.compile(
+    r"(?i)\b[A-Z_][A-Z0-9_]*(?:api[_-]?key|secret|token|password|passwd|pwd|"
+    r"credential|private[_-]?key|access[_-]?key)[A-Z0-9_]*\b\s*[:=]\s*"
+    r'(?:"[^"\r\n]*"|\'[^\'\r\n]*\'|[^\s,;]+)'
+)
 _CREDENTIAL_URI = re.compile(
     r"(?i)\b[a-z][a-z0-9+.-]*://[^\s:/?#]+:[^@\s/]+@[^\s,;\"']+"
 )
@@ -90,6 +95,7 @@ def _replace_string(value: str) -> tuple[str, set[str]]:
         (_COOKIE_ASSIGNMENT, "COOKIE"),
         (_TOKEN_ASSIGNMENT, "TOKEN"),
         (_CREDENTIAL_ASSIGNMENT, "CREDENTIAL"),
+        (_ENV_CREDENTIAL_ASSIGNMENT, "CREDENTIAL"),
         (_CREDENTIAL_URI, "CREDENTIAL"),
     ):
         result, count = pattern.subn(f"[REDACTED:{category}]", result)
