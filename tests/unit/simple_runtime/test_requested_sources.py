@@ -19,7 +19,6 @@ from sastsimi.simple_runtime.models import (
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
 from sastsimi.simple_runtime.retrieval import (
-    MAX_REQUESTED_FILES,
     MAX_TOTAL_BYTES,
     collect_requested_sources,
 )
@@ -108,17 +107,19 @@ def test_a_missing_or_non_file_path_is_reported_not_guessed(
     }
 
 
-def test_the_file_count_is_bounded(workspace: Path) -> None:
+def test_how_many_files_is_the_agents_choice(workspace: Path) -> None:
+    """Only the amount of text is bounded; a count of files was not a reason."""
+
     names = []
-    for index in range(MAX_REQUESTED_FILES + 3):
+    for index in range(40):
         name = f"f{index}.py"
         (workspace / name).write_text("x = 1\n", encoding="utf-8")
         names.append(name)
 
     record = collect_requested_sources(names, workspace=workspace)
 
-    assert len(_paths(record)) == MAX_REQUESTED_FILES
-    assert set(_refusals(record).values()) == {"FILE_BUDGET_EXHAUSTED"}
+    assert len(_paths(record)) == 40
+    assert _refusals(record) == {}
 
 
 def test_a_long_file_is_served_whole_rather_than_refused(
@@ -142,7 +143,7 @@ def test_a_long_file_is_served_whole_rather_than_refused(
 def test_the_batch_stops_at_the_total_budget(workspace: Path) -> None:
     body = "y" * 63_999
     names = []
-    for index in range(MAX_REQUESTED_FILES):
+    for index in range(12):
         name = f"b{index}.py"
         (workspace / name).write_text(body, encoding="utf-8")
         names.append(name)

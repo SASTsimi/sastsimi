@@ -92,7 +92,6 @@ _POLICY_FILENAMES = (
     ".github/SECURITY.rst",
     ".well-known/security.txt",
 )
-_MAX_POLICY_BYTES = 64_000
 
 
 def _security_policy(
@@ -113,7 +112,7 @@ def _security_policy(
             continue
         path = workspace / name
         try:
-            raw = path.read_bytes()[:_MAX_POLICY_BYTES]
+            raw = path.read_bytes()
             text = raw.decode("utf-8")
         except (OSError, UnicodeDecodeError):
             continue
@@ -123,7 +122,6 @@ def _security_policy(
             "kind": "simple_repository_security_policy",
             "path": name,
             "byte_count": len(raw),
-            "truncated": path.stat().st_size > _MAX_POLICY_BYTES,
             "content": text,
         }
     return None
@@ -466,8 +464,8 @@ class DirectStaticBootstrap:
         return {
             "kind": "simple_python_ast",
             "facts": facts,
-            "parse_errors": parse_errors[:100],
-            "skipped_files": skipped[:500],
+            "parse_errors": parse_errors,
+            "skipped_files": skipped,
             "skipped_count": len(skipped),
             "python_files": sum(1 for value in tracked if value.endswith(".py")),
             "covered_files": len({str(fact["path"]) for fact in facts}),
@@ -602,7 +600,7 @@ class DirectStaticBootstrap:
             return []
         output: list[dict[str, object]] = []
         root = workspace.resolve()
-        for item in values[:500]:
+        for item in values:
             try:
                 raw_path = Path(str(item["path"]))
                 path = raw_path if raw_path.is_absolute() else root / raw_path
@@ -617,7 +615,7 @@ class DirectStaticBootstrap:
                         "rule_id": item.get("check_id"),
                         "path": relative,
                         "line": line,
-                        "snippet": snippet[:8000],
+                        "snippet": snippet,
                     }
                 )
             except (KeyError, OSError, UnicodeError, ValueError):
@@ -673,11 +671,9 @@ class DirectStaticBootstrap:
                         "line": int(region.get("startLine", 0))
                         if isinstance(region, dict)
                         else 0,
-                        "message": str(text)[:2000],
+                        "message": str(text),
                     }
                 )
-                if len(output) >= 500:
-                    return output
         return output
 
     def _tool(self, name: str) -> str:
@@ -693,8 +689,6 @@ class DirectHypothesisBootstrap:
         *,
         data_dir: Path,
         client_factory: SimpleClientFactory,
-        # ``None``: as many as the code gives.  A number is an operator's choice.
-        max_hypotheses: int | None = None,
         # Proposing hypotheses reads the whole static bundle, so it needs the
         # same elapsed share the later stages get rather than a fixed three
         # minutes a large repository routinely exceeds.
@@ -702,7 +696,6 @@ class DirectHypothesisBootstrap:
     ) -> None:
         self._data_dir = data_dir
         self._client_factory = client_factory
-        self._max_hypotheses = max_hypotheses
         self._call_timeout_ms = call_timeout_ms
         self._facts_cache: dict[str, Sequence[object]] = {}
 
@@ -1033,8 +1026,6 @@ class DirectHypothesisBootstrap:
         kept = await self._deduplicate(
             client, [value for value, *_ in gathered], artifacts
         )
-        if self._max_hypotheses is not None:
-            kept = kept[: self._max_hypotheses]
         seeds: list[HypothesisSeed] = []
         seen: set[str] = set()
         for index in kept:

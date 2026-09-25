@@ -109,10 +109,7 @@ class SimpleClientFactory:
         # One queue for the whole run.  A client is built per hypothesis, so a
         # ceiling that lived on the client was multiplied by however many
         # hypotheses were in flight.
-        self._queue = CallQueue(
-            max_concurrent=profile.max_parallel_calls,
-            min_interval_ms=profile.min_call_interval_ms,
-        )
+        self._queue = CallQueue(max_concurrent=profile.max_parallel_calls)
 
     @property
     def queue(self) -> CallQueue:

@@ -34,7 +34,6 @@ def test_a_policy_in_the_checkout_is_collected(tmp_path: Path) -> None:
     assert policy is not None
     assert policy["path"] == "docs/SECURITY.md"
     assert "not vulnerabilities" in str(policy["content"])
-    assert policy["truncated"] is False
 
 
 def test_the_root_policy_wins_when_more_than_one_exists(tmp_path: Path) -> None:
@@ -63,14 +62,17 @@ def test_an_empty_policy_file_is_not_a_policy(tmp_path: Path) -> None:
     assert _security_policy(workspace, ("SECURITY.md",)) is None
 
 
-def test_a_long_policy_is_cut_and_says_it_was(tmp_path: Path) -> None:
-    workspace = _repo(tmp_path, "SECURITY.md", "x" * 100_000)
+def test_a_long_policy_is_read_whole(tmp_path: Path) -> None:
+    """An exclusion near the end of a policy is still an exclusion."""
+
+    workspace = _repo(
+        tmp_path, "SECURITY.md", "x" * 100_000 + "\nConfiguration is not a bug.\n"
+    )
 
     policy = _security_policy(workspace, ("SECURITY.md",))
 
     assert policy is not None
-    assert policy["truncated"] is True
-    assert policy["byte_count"] == 64_000
+    assert "Configuration is not a bug." in str(policy["content"])
 
 
 def test_a_file_only_on_disk_is_not_read(tmp_path: Path) -> None:

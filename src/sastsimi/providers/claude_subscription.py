@@ -72,7 +72,11 @@ from .normalization import (
 # adapter's own output channel, so it is the single tool name ever allowed.
 _STRUCTURED_OUTPUT_TOOL = "StructuredOutput"
 
-_MAX_EVENT_STREAM_BYTES = 1_048_576
+# A memory guard, not a content limit.  The client caps one turn at 64,000
+# output tokens, and the stream carries that answer twice - as the tool call and
+# again in the terminal result - JSON-escaped; with no cap on how many
+# hypotheses a batch may return, a megabyte was within reach of a real answer.
+_MAX_EVENT_STREAM_BYTES = 4 * 1_048_576
 _MAX_STDERR_BYTES = 65_536
 # The name the client gives a message it built itself rather than received.
 _CLIENT_SYNTHETIC_MODEL = "<synthetic>"

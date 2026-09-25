@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from time import monotonic
 
 import pytest
 
@@ -51,37 +50,6 @@ async def test_requests_start_in_the_order_they_arrived() -> None:
     await asyncio.wait_for(asyncio.gather(*tasks), timeout=2)
 
     assert order == list(range(8))
-
-
-@pytest.mark.asyncio
-async def test_launches_are_spaced_apart() -> None:
-    queue = CallQueue(max_concurrent=4, min_interval_ms=20)
-    starts: list[float] = []
-
-    async def call() -> None:
-        starts.append(monotonic())
-
-    await asyncio.wait_for(
-        asyncio.gather(*(queue.submit(call) for _ in range(4))), timeout=5
-    )
-
-    gaps = [b - a for a, b in zip(starts, starts[1:], strict=False)]
-    assert all(gap >= 0.015 for gap in gaps), gaps
-
-
-@pytest.mark.asyncio
-async def test_no_spacing_is_configured_by_default() -> None:
-    queue = CallQueue(max_concurrent=4)
-    started = monotonic()
-
-    async def call() -> None:
-        return None
-
-    await asyncio.wait_for(
-        asyncio.gather(*(queue.submit(call) for _ in range(8))), timeout=2
-    )
-
-    assert monotonic() - started < 0.5
 
 
 @pytest.mark.asyncio

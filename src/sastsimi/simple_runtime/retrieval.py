@@ -18,9 +18,9 @@ from .code_redaction import default_host_paths, redact_code
 
 _DRIVE_PREFIX = re.compile(r"^[A-Za-z]:(?:/|$)")
 
-# One agent naming a whole package must not crowd out the static evidence, so
-# the retrieval is bounded by how many files it may name and how much text the
-# batch may add to the next prompt.
+# What one round of requests may add to the next prompt.  This bounds the
+# prompt against the model window; how many files make up that amount is the
+# agent's choice, so there is no count of files.
 #
 # There is deliberately no per-file ceiling.  One was measured refusing the
 # single file a hypothesis was about - open-webui's ``routers/retrieval.py`` is
@@ -28,7 +28,6 @@ _DRIVE_PREFIX = re.compile(r"^[A-Za-z]:(?:/|$)")
 # the same batch.  A file is not less worth reading for being long, and often
 # it is longer because it does more; what the prompt can hold is the total, and
 # that is the only size this needs to decide.
-MAX_REQUESTED_FILES = 12
 MAX_TOTAL_BYTES = 384_000
 
 
@@ -87,9 +86,6 @@ def collect_requested_sources(
         if relative in seen or relative in supplied:
             continue
         seen.add(relative)
-        if len(served) >= MAX_REQUESTED_FILES:
-            refused.append(_refusal(as_written, "FILE_BUDGET_EXHAUSTED"))
-            continue
         try:
             # strict=True resolves symlinks, so a link pointing out of the
             # workspace is caught by the containment check below.
@@ -137,22 +133,16 @@ def collect_requested_sources(
         "refused": refused,
         "served_bytes": total,
         "limits": {
-            "max_files": MAX_REQUESTED_FILES,
             "max_total_bytes": MAX_TOTAL_BYTES,
         },
     }
 
 
 __all__ = [
-    "MAX_AST_FILES",
-    "MAX_REQUESTED_FILES",
     "MAX_TOTAL_BYTES",
     "collect_requested_ast",
     "collect_requested_sources",
 ]
-
-
-MAX_AST_FILES = 40
 
 
 def collect_requested_ast(
@@ -181,9 +171,6 @@ def collect_requested_ast(
             continue
         if relative in wanted:
             continue
-        if len(wanted) >= MAX_AST_FILES:
-            refused.append(_refusal(request, "FILE_BUDGET_EXHAUSTED"))
-            continue
         wanted.append(relative)
 
     grouped: dict[str, list[Any]] = {path: [] for path in wanted}
@@ -208,5 +195,4 @@ def collect_requested_ast(
         "kind": "simple_requested_ast",
         "served": served,
         "refused": refused,
-        "limits": {"max_files": MAX_AST_FILES},
     }
