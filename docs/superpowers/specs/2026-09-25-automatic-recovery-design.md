@@ -123,7 +123,8 @@ Permitted changes:
 - regenerated structured LLM output;
 - regenerated PoC script;
 - generated repair guidance artifact;
-- generated temporary Dockerfile overlay or environment bootstrap script;
+- generated temporary Dockerfile overlay containing only validated,
+  allowlisted package-manager install commands;
 - disposable container/image state for the current analysis.
 
 Forbidden changes:
@@ -133,6 +134,11 @@ Forbidden changes:
 - host files outside the configured data directory;
 - host credentials and Docker socket mounts;
 - policy, scope, or capability approvals.
+
+The recovery model never receives an unrestricted shell. Dockerfile overlays
+reject shell control operators and accept only a small allowlist of dependency
+installer command prefixes. Runtime code, not the model, owns retries, file
+placement, Docker invocation, network policy, and all state transitions.
 
 Environment construction may use the configured package sources needed by the
 repository. PoC execution has no public Internet access. Loopback and an
