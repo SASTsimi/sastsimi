@@ -337,3 +337,79 @@ async def test_a_duplicate_review_that_fails_keeps_every_proposal(
     seeds, _agent = await _propose(tmp_path, repository, _BrokenReview())
 
     assert len(seeds) == 21
+
+
+@pytest.mark.asyncio
+async def test_a_survey_walks_every_listed_point_a_few_at_a_time(
+    tmp_path: Path, repository: Path
+) -> None:
+    """Every listed point is handed over, eight to a turn, in one conversation.
+
+    Given every entry point at once the agent read the router and still wrote
+    up other flows; a listed point is never left out.
+    """
+
+    class _Surveyor(_ReadingAgent):
+        async def call(self, **kwargs: object) -> SimpleLLMCallResult:
+            prompt = kwargs.get("prompt")
+            text = prompt if isinstance(prompt, bytes) else b""
+            self.prompts.append(text)
+            value: dict[str, Any] = {
+                "hypotheses": [],
+                "requested_paths": [],
+                "requested_ast_paths": [],
+                "suspicious_points": [],
+            }
+            if b"reviewing one new proposal" in text:
+                value = {"decision": "NEW", "duplicate_of": None, "rationale": ""}
+            elif len(self.prompts) == 1:
+                value["suspicious_points"] = [
+                    {"entry_point": "proxy", "concern": f"c{n}", "read": "app/proxy.py"}
+                    for n in range(10)
+                ]
+                # Proposed before anything was read: not kept.
+                value["hypotheses"] = [_proposal(5, "unread guess")]
+            elif len(self.prompts) == 2:
+                value["requested_paths"] = ["app/proxy.py"]
+            elif len(self.prompts) == 3:
+                value["hypotheses"] = [_proposal(2)]
+            elif len(self.prompts) == 4:
+                value["hypotheses"] = [_proposal(3, "second")]
+            return SimpleLLMCallResult(
+                value=value, prompt_digest="a" * 64, output_digest="b" * 64
+            )
+
+    data_dir = tmp_path / "data"
+    identity = _identity()
+    artifacts = SimpleArtifactRepository(data_dir, identity)
+    flows_ref = artifacts.put_json(
+        {"entry_points": [{"file": "app/proxy.py", "handler": "guard"}]}
+    )
+    bundle_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_fact_bundle",
+            "source_files": ["app/proxy.py"],
+            "codeql_findings": [],
+            "opengrep_findings": [],
+            "tool_result_refs": [],
+            "route_flows_ref": flows_ref.model_dump(mode="json"),
+        }
+    )
+    agent = _Surveyor()
+    seeds = await DirectHypothesisBootstrap(
+        data_dir=data_dir,
+        client_factory=cast(Any, lambda *a, **k: agent),
+        feed="facts_survey",
+    ).propose(
+        identity,
+        StaticBootstrapResult(
+            repository_profile_ref=bundle_ref,
+            static_bundle_ref=bundle_ref,
+            workspace_path=repository,
+        ),
+    )
+
+    assert b"## Survey" in agent.prompts[0]
+    assert b"# Points 1-8 of 10" in agent.prompts[1]
+    assert b"# Points 9-10 of 10" in agent.prompts[3]
+    assert len(seeds) == 2

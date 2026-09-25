@@ -241,6 +241,31 @@ empty in this answer.
 
 _POINTS_PER_TURN = 8
 
+_POINTS_TURN = (
+    b"These are the next points from your survey. Ask in `requested_paths` or "
+    b"`requested_ast_paths` for the code of each that you have not read yet, and "
+    b"return only the hypotheses these points give you that you have not "
+    b"returned before, from code you have read. Leave `suspicious_points` empty "
+    b"from now on.\n"
+)
+
+_POINTS_FOLLOW_UP = (
+    b"Continue with these files. Return only the hypotheses they give you that "
+    b"you have not returned before. Request more code until every point of "
+    b"this turn has been read and its flow followed.\n"
+)
+
+_POINT_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "entry_point": {"type": "string"},
+        "concern": {"type": "string"},
+        "read": {"type": "string"},
+    },
+    "required": ["entry_point", "concern", "read"],
+    "additionalProperties": False,
+}
+
 _READ_FIRST = (
     b"You have not read any code yet. Ask for the code of this part's handlers "
     b"and the functions their input reaches in `requested_paths`, and leave "
@@ -1002,6 +1027,8 @@ class DirectHypothesisBootstrap:
         call_timeout_ms: int = 180_000,
         # ``code``: every source file is read.  ``facts``: the fact bundle's
         # entry points are read and source is fetched on request.
+        # ``facts_survey``: the same, listing the points to examine first and
+        # then reading them a few at a time.
         feed: str = "code",
     ) -> None:
         self._data_dir = data_dir
@@ -1020,6 +1047,7 @@ class DirectHypothesisBootstrap:
         findings: dict[str, list[dict[str, object]]] | None = None,
         tail: bytes = b"",
         read_first: bool = False,
+        follow_up: bytes = _FOLLOW_UP,
     ) -> tuple[SimpleLLMCallResult, Exploration, list[object]]:
         """Ask, serve what was asked for, ask again - in one conversation.
 
@@ -1087,11 +1115,75 @@ class DirectHypothesisBootstrap:
                     b"<UNTRUSTED_EXACT_INPUTS>\n"
                     + render_round(history.as_prompt_document()).encode("utf-8")
                     + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
-                    + _FOLLOW_UP
+                    + follow_up
                 )
             )
             absorb(result.value)
         return result, history, kept
+
+    async def _survey_then_propose(
+        self,
+        talk: SimpleConversation,
+        instructions: bytes,
+        context: bytes,
+        static: StaticBootstrapResult,
+        artifacts: SimpleArtifactRepository,
+        findings: dict[str, list[dict[str, object]]],
+        batch: int,
+    ) -> list[tuple[SimpleLLMCallResult, Exploration, list[object]]]:
+        """List every point worth a look, then read them a few at a time.
+
+        With every entry point of a part in view at once the agent chose which
+        flows to write up, and read a router without proposing its defect.  A
+        listed point is walked to the end; the list is the only choice made.
+        """
+
+        survey = _required(
+            await talk.ask(
+                instructions
+                + b"<UNTRUSTED_EXACT_INPUTS>\n"
+                + context
+                + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
+                + _SURVEY
+            )
+        )
+        # Nothing is read yet, so anything proposed here stands in for what
+        # reading would find; the survey answer only yields the list.
+        listed = survey.value.get("suspicious_points")
+        points = [
+            point
+            for point in (listed if isinstance(listed, list) else [])
+            if isinstance(point, dict)
+        ]
+        artifacts.put_json(
+            {"kind": "simple_hypothesis_survey", "batch": batch, "points": points}
+        )
+        turns: list[tuple[SimpleLLMCallResult, Exploration, list[object]]] = []
+        for start in range(0, len(points), _POINTS_PER_TURN):
+            chunk = points[start : start + _POINTS_PER_TURN]
+            listing = [
+                {"point": start + offset, **point}
+                for offset, point in enumerate(chunk, start=1)
+            ]
+            document = "\n\n".join(
+                (
+                    f"# Points {start + 1}-{start + len(chunk)} of {len(points)}",
+                    fenced(json.dumps(listing, ensure_ascii=False, indent=1), "json"),
+                )
+            )
+            turns.append(
+                await self._read_then_propose(
+                    talk,
+                    b"",
+                    document.encode("utf-8"),
+                    static,
+                    artifacts,
+                    findings,
+                    tail=_POINTS_TURN,
+                    follow_up=_POINTS_FOLLOW_UP,
+                )
+            )
+        return turns
 
     def _ast_facts(
         self, artifacts: SimpleArtifactRepository, static: StaticBootstrapResult
@@ -1223,7 +1315,9 @@ class DirectHypothesisBootstrap:
         feeding = plan_feeding(static.workspace_path, sources)
         flows_ref = bundle.get("route_flows_ref")
         sequential = self._feed == "facts_sequential"
-        if self._feed in ("facts", "facts_sequential") and isinstance(flows_ref, dict):
+        if self._feed in ("facts", "facts_sequential", "facts_survey") and isinstance(
+            flows_ref, dict
+        ):
             # The fact bundle's entry points are read first; source is read on
             # request, a file or a line range at a time.
             flows = json.loads(artifacts.read(StoredDataRef.model_validate(flows_ref)))
@@ -1234,51 +1328,92 @@ class DirectHypothesisBootstrap:
             )
         feeding_ref = artifacts.put_json(feeding.coverage())
         lines = _line_counts(static.workspace_path, sources)
+        surveyed = self._feed == "facts_survey" and feeding.kind == "facts"
         opening = (
-            _FACT_INSTRUCTIONS if feeding.kind == "facts" else _HYPOTHESIS_INSTRUCTIONS
+            _FACT_SURVEY_INSTRUCTIONS
+            if surveyed
+            else _FACT_INSTRUCTIONS
+            if feeding.kind == "facts"
+            else _HYPOTHESIS_INSTRUCTIONS
         )
         instructions = (opening + PROPOSAL_INSTRUCTIONS + "\n").encode("utf-8")
+        if surveyed:
+            # One schema holds for the whole conversation, so the survey's list
+            # is in every answer and left empty after the first.
+            schema = {
+                **schema,
+                "properties": {
+                    **schema["properties"],  # type: ignore[dict-item]
+                    "suspicious_points": {"type": "array", "items": _POINT_SCHEMA},
+                },
+                "required": [*schema["required"], "suspicious_points"],  # type: ignore[misc]
+            }
         registry = Registry(bundle_hash=str(static.static_bundle_ref.content_hash))
         findings = _findings_by_file(bundle)
-        provenance: dict[
-            str, tuple[int, SimpleLLMCallResult, list[dict[str, object]]]
-        ] = {}
+        provenance: dict[str, _Provenance] = {}
 
         async def read_batch(batch: Batch) -> None:
             context = self._batch_context(bundle, feeding, batch)
+            settled: list[
+                tuple[
+                    list[tuple[str, dict[str, Any]]],
+                    SimpleLLMCallResult,
+                    list[dict[str, object]],
+                ]
+            ] = []
             async with conversation_with(
                 client, output_schema=schema, timeout_ms=self._call_timeout_ms
             ) as talk:
-                result, history, proposed = await self._read_then_propose(
-                    talk,
-                    instructions,
-                    context,
-                    static,
-                    artifacts,
-                    findings if feeding.kind == "facts" else None,
-                    read_first=feeding.kind == "facts",
+                turns = (
+                    await self._survey_then_propose(
+                        talk,
+                        instructions,
+                        context,
+                        static,
+                        artifacts,
+                        findings,
+                        batch.number,
+                    )
+                    if surveyed
+                    else [
+                        await self._read_then_propose(
+                            talk,
+                            instructions,
+                            context,
+                            static,
+                            artifacts,
+                            findings if feeding.kind == "facts" else None,
+                            read_first=feeding.kind == "facts",
+                        )
+                    ]
                 )
-                valid, rejected = self._validate_all(proposed, lines, batch.number)
-                if rejected:
-                    # The design allows a bounded repair before INVALID_OUTPUT.
-                    repaired = await self._repair(talk, rejected)
-                    again, still = self._validate_all(repaired, lines, batch.number)
-                    valid.extend(again)
-                    for proposal_id, errors in still:
-                        registry.record_invalid(proposal_id, batch.number, errors)
-            reading = _reading_record(history)
+                for result, history, proposed in turns:
+                    valid, rejected = self._validate_all(proposed, lines, batch.number)
+                    if rejected:
+                        # The design allows a bounded repair before INVALID_OUTPUT.
+                        repaired = await self._repair(talk, rejected)
+                        again, still = self._validate_all(repaired, lines, batch.number)
+                        valid.extend(again)
+                        for proposal_id, errors in still:
+                            registry.record_invalid(proposal_id, batch.number, errors)
+                    settled.append((valid, result, _reading_record(history)))
             # Registered after the conversation closes, so a batch never holds
             # its slot while waiting on a duplicate review's slot.
-            for proposal_id, proposal in valid:
-                entry = await registry.consider(
-                    proposal,
-                    proposal_id=proposal_id,
-                    batch=batch.number,
-                    client=client,
-                    timeout_ms=self._call_timeout_ms,
-                )
-                if entry is not None:
-                    provenance[entry.hypothesis_id] = (batch.number, result, reading)
+            for valid, result, reading in settled:
+                for proposal_id, proposal in valid:
+                    entry = await registry.consider(
+                        proposal,
+                        proposal_id=proposal_id,
+                        batch=batch.number,
+                        client=client,
+                        timeout_ms=self._call_timeout_ms,
+                    )
+                    if entry is not None:
+                        provenance[entry.hypothesis_id] = (
+                            batch.number,
+                            result,
+                            reading,
+                        )
 
         async def walk() -> None:
             """One conversation at a time over every part, compacting between."""

@@ -222,7 +222,9 @@ class SimpleExecutionProfile(BaseModel):
     max_parallel_containers: int = Field(default=1, ge=1, le=16)
     # What the hypothesis agent is handed first: the source itself, or the
     # route flows from the fact bundle with source read on request.
-    hypothesis_feed: Literal["code", "facts", "facts_sequential"] = "code"
+    hypothesis_feed: Literal["code", "facts", "facts_sequential", "facts_survey"] = (
+        "code"
+    )
     tools: dict[str, SimpleToolBinding]
 
     @field_validator("data_dir", "workspace_root", mode="before")
