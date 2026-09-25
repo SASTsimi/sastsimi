@@ -11,7 +11,7 @@ that reduction cannot be observed:
 * the credential must be an official subscription login; an ambient API key or an
   ``apiKeyHelper`` command is rejected before and during the call.
 
-Measured against the official client ``2.1.197``.  A different client version is
+Measured against the official client ``2.1.280`` (the first that serves Opus 5.5).  A different client version is
 rejected by the pinned binding rather than assumed compatible.
 """
 
