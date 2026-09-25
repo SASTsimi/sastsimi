@@ -57,10 +57,13 @@ def seed(data_dir) -> None:
         hypothesis_id="hypothesis-1",
     )
     inputs: tuple[StoredDataRef, ...] = ()
-    for stage in (
-        SimpleStage.PRO_CON_DONE,
-        SimpleStage.VERIFICATION_INITIAL_DONE,
-        SimpleStage.POC_CANDIDATE_DONE,
+    for attempt_number, stage in enumerate(
+        (
+            SimpleStage.PRO_CON_DONE,
+            SimpleStage.VERIFICATION_INITIAL_DONE,
+            SimpleStage.POC_CANDIDATE_DONE,
+        ),
+        start=1,
     ):
         output = ref(stage.value.lower())
         store.save_success(
@@ -70,6 +73,7 @@ def seed(data_dir) -> None:
                 status=StageStatus.PENDING,
                 input_refs=inputs,
                 input_hash=input_reference_hash(inputs),
+                attempt_number=attempt_number,
             ),
             outputs=(output,),
         )
@@ -113,6 +117,8 @@ def test_query_projects_current_progress_without_cross_analysis_data(tmp_path) -
     assert detail.display_analysis_id == "A-001"
     assert detail.progress_percent < 100
     assert detail.hypotheses[0].parent_hypothesis_ids == ("parent-1", "parent-2")
+    assert detail.hypotheses[0].attempt_number == 3
+    assert detail.hypotheses[0].attempt_limit == 3
     assert DashboardQuery(tmp_path).get_analysis("A-001").analysis_id == "analysis-a"
     assert DashboardQuery(tmp_path).list_events("analysis-a")[0].agent_role == (
         "Pro·Con Agents"

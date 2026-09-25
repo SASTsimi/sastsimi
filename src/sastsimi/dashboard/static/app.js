@@ -37,6 +37,13 @@ function analysisButton(item) {
   return button;
 }
 
+function recoveryAttempt(item) {
+  if (item.attempt_number > 1 || item.error_code === "RECOVERY_EXHAUSTED") {
+    return el("div", `복구 시도 ${item.attempt_number}/${item.attempt_limit}`, "meta");
+  }
+  return null;
+}
+
 function renderDetail(detail, events) {
   const overview = document.getElementById("overview");
   overview.className = "panel";
@@ -61,6 +68,8 @@ function renderDetail(detail, events) {
     card.append(el("strong", item.hypothesis_id));
     card.append(el("div", `${item.current_stage} · ${item.status}`, "status"));
     card.append(el("div", `완료 ${item.completed_count}/${item.stage_count} · 판정 ${item.verdict || "미확정"} · PoC ${item.validated_poc ? "검증됨" : "미검증"}`, "meta"));
+    const attempt = recoveryAttempt(item);
+    if (attempt) card.append(attempt);
     if (item.error_code) card.append(el("div", `오류: ${item.error_code}`, "error"));
     return card;
   }));

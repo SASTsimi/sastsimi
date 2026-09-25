@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.observability.agent_activity import (
     ActivityKind,
@@ -25,6 +26,11 @@ from .models import (
     StageResult,
     StageStatus,
     input_reference_hash,
+)
+from .recovery import (
+    MAX_RECOVERY_ATTEMPTS,
+    RecoveryAction,
+    RecoveryResolution,
 )
 
 ROLE_BY_STAGE: dict[SimpleStage, str] = {
@@ -326,15 +332,30 @@ class SimpleCheckpointStore:
     ) -> StageCheckpoint:
         previous = self.get(identity, stage)
         reusable_state = previous or inherit_from
+        recovery_refs = reusable_state.recovery_decision_refs if reusable_state else ()
+        exact_inputs = tuple(dict.fromkeys(input_refs + recovery_refs))
+        if previous is not None:
+            attempt_number = previous.attempt_number + 1
+        elif inherit_from is not None and inherit_from.recovery_lineage_id is not None:
+            attempt_number = inherit_from.attempt_number
+        else:
+            attempt_number = 1
         checkpoint = StageCheckpoint(
             identity=identity,
             stage=stage,
             stage_version=STAGE_VERSION[stage],
             status=StageStatus.RUNNING,
-            input_refs=input_refs,
-            input_hash=input_reference_hash(input_refs),
+            input_refs=exact_inputs,
+            input_hash=input_reference_hash(exact_inputs),
             attempt_id=attempt_id,
-            attempt_number=(previous.attempt_number if previous else 0) + 1,
+            attempt_number=attempt_number,
+            recovery_lineage_id=(
+                reusable_state.recovery_lineage_id if reusable_state else None
+            ),
+            recovery_origin_stage=(
+                reusable_state.recovery_origin_stage if reusable_state else None
+            ),
+            recovery_decision_refs=recovery_refs,
             recipe_ref=reusable_state.recipe_ref if reusable_state else None,
             image_digest=reusable_state.image_digest if reusable_state else None,
             container_id=reusable_state.container_id if reusable_state else None,
@@ -358,22 +379,27 @@ class SimpleCheckpointStore:
         checkpoint: StageCheckpoint,
         result: StageResult,
     ) -> StageCheckpoint:
-        completed = checkpoint.model_copy(
-            update={
-                "status": StageStatus.SUCCEEDED,
-                "output_refs": result.output_refs,
-                "error_code": None,
-                "retryable": False,
-                "recipe_ref": result.recipe_ref or checkpoint.recipe_ref,
-                "image_digest": result.image_digest or checkpoint.image_digest,
-                "container_id": result.container_id or checkpoint.container_id,
-                "validated_poc_ref": result.validated_poc_ref,
-                "report_ref": result.report_ref,
-                "verdict": result.verdict,
-                "markdown_path": result.markdown_path,
-                "updated_at": datetime.now(UTC),
-            }
-        )
+        updates: dict[str, object] = {
+            "status": StageStatus.SUCCEEDED,
+            "output_refs": result.output_refs,
+            "error_code": None,
+            "retryable": False,
+            "recipe_ref": result.recipe_ref or checkpoint.recipe_ref,
+            "image_digest": result.image_digest or checkpoint.image_digest,
+            "container_id": result.container_id or checkpoint.container_id,
+            "validated_poc_ref": result.validated_poc_ref,
+            "report_ref": result.report_ref,
+            "verdict": result.verdict,
+            "markdown_path": result.markdown_path,
+            "updated_at": datetime.now(UTC),
+        }
+        if checkpoint.recovery_origin_stage is checkpoint.stage:
+            updates.update(
+                recovery_lineage_id=None,
+                recovery_origin_stage=None,
+                recovery_decision_refs=(),
+            )
+        completed = checkpoint.model_copy(update=updates)
         final_sequence = (
             max(
                 (event.sequence for event in result.activity_events),
@@ -435,6 +461,171 @@ class SimpleCheckpointStore:
         )
         return failed
 
+    def prepare_recovery(
+        self,
+        failed: StageCheckpoint,
+        resolution: RecoveryResolution,
+        restart_stage: SimpleStage,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Record one decision and atomically seed its next bounded attempt."""
+
+        if failed.status not in {StageStatus.BLOCKED, StageStatus.FAILED}:
+            raise ValueError("RECOVERY_CHECKPOINT_NOT_FAILED")
+        if resolution.decision.action is RecoveryAction.STOP:
+            raise ValueError("RECOVERY_STOP_CANNOT_PREPARE")
+        if STAGE_ORDER.index(restart_stage) > STAGE_ORDER.index(failed.stage):
+            raise ValueError("RECOVERY_RESTART_STAGE_INVALID")
+        restart = self.get(failed.identity, restart_stage)
+        decision_refs = tuple(
+            dict.fromkeys(failed.recovery_decision_refs + (resolution.decision_ref,))
+        )
+        original_inputs = restart.input_refs if restart is not None else ()
+        inputs = tuple(
+            dict.fromkeys(
+                original_inputs + failed.input_refs + failed.output_refs + decision_refs
+            )
+        )
+        lineage_id = (
+            failed.recovery_lineage_id
+            or hashlib.sha256(
+                canonical_bytes(
+                    {
+                        "identity": failed.identity,
+                        "stage": failed.stage.value,
+                        "stage_version": failed.stage_version,
+                        "input_hash": failed.input_hash,
+                        "error_code": failed.error_code,
+                    }
+                )
+            ).hexdigest()
+        )
+        rebuild = resolution.decision.action is RecoveryAction.REBUILD_ENVIRONMENT
+        pending = StageCheckpoint(
+            identity=failed.identity,
+            stage=restart_stage,
+            stage_version=STAGE_VERSION[restart_stage],
+            status=StageStatus.PENDING,
+            input_refs=inputs,
+            input_hash=input_reference_hash(inputs),
+            attempt_number=failed.attempt_number,
+            recovery_lineage_id=lineage_id,
+            recovery_origin_stage=(failed.recovery_origin_stage or failed.stage),
+            recovery_decision_refs=decision_refs,
+            recipe_ref=None if rebuild else failed.recipe_ref,
+            image_digest=None if rebuild else failed.image_digest,
+            container_id=None,
+        )
+        event = self._recovery_event(failed, resolution)
+        first_index = STAGE_ORDER.index(restart_stage)
+        stages = tuple(item.value for item in STAGE_ORDER[first_index:])
+        placeholders = ",".join("?" for _ in stages)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            AgentActivityStore.append_connection(connection, event)
+            connection.execute(
+                f"""
+                DELETE FROM simple_runtime_checkpoints
+                WHERE analysis_id = ?
+                  AND hypothesis_key = ?
+                  AND stage IN ({placeholders})
+                """,  # noqa: S608 - placeholders are generated, never user supplied.
+                (
+                    failed.identity.analysis_id,
+                    self._hypothesis_key(failed.identity),
+                    *stages,
+                ),
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return pending
+
+    def record_recovery_stop(
+        self,
+        failed: StageCheckpoint,
+        resolution: RecoveryResolution,
+        *,
+        fail_before_commit: bool = False,
+    ) -> None:
+        if resolution.decision.action is not RecoveryAction.STOP:
+            raise ValueError("RECOVERY_STOP_ACTION_REQUIRED")
+        self.record_recovery_decision(
+            failed,
+            resolution,
+            fail_before_commit=fail_before_commit,
+        )
+
+    def record_recovery_decision(
+        self,
+        failed: StageCheckpoint,
+        resolution: RecoveryResolution,
+        *,
+        fail_before_commit: bool = False,
+    ) -> None:
+        self._write(
+            failed,
+            fail_before_commit=fail_before_commit,
+            activity_events=(self._recovery_event(failed, resolution),),
+        )
+
+    def mark_recovery_exhausted(
+        self,
+        checkpoint: StageCheckpoint,
+    ) -> StageCheckpoint:
+        exhausted = checkpoint.model_copy(
+            update={
+                "status": StageStatus.BLOCKED,
+                "error_code": "RECOVERY_EXHAUSTED",
+                "retryable": False,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        self._write(
+            exhausted,
+            activity_events=(
+                self._lifecycle_event(
+                    exhausted,
+                    ActivityKind.STAGE_BLOCKED,
+                    sequence=self._stage_sequence(exhausted.stage, 100),
+                    status=StageStatus.BLOCKED,
+                    summary_ko=(
+                        f"자동 복구가 attempt {exhausted.attempt_number}/"
+                        f"{MAX_RECOVERY_ATTEMPTS}에서 종료됐습니다."
+                    ),
+                    output_refs=exhausted.output_refs,
+                    error_code="RECOVERY_EXHAUSTED",
+                ),
+            ),
+        )
+        return exhausted
+
+    def _recovery_event(
+        self,
+        failed: StageCheckpoint,
+        resolution: RecoveryResolution,
+    ) -> AgentActivityEvent:
+        return self._lifecycle_event(
+            failed,
+            ActivityKind.DECISION_RECORDED,
+            sequence=self._stage_sequence(failed.stage, 40),
+            status=StageStatus.BLOCKED,
+            summary_ko=(
+                f"자동 복구 결정 {resolution.decision.action.value} · "
+                f"attempt {failed.attempt_number}/{MAX_RECOVERY_ATTEMPTS}"
+            ),
+            output_refs=(resolution.decision_ref,),
+            error_code=failed.error_code,
+        )
+
     def require(
         self,
         identity: CheckpointIdentity,
@@ -483,30 +674,7 @@ class SimpleCheckpointStore:
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
-                """
-                INSERT INTO simple_runtime_checkpoints (
-                    analysis_id,
-                    hypothesis_key,
-                    stage,
-                    checkpoint_json,
-                    input_hash,
-                    updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT (analysis_id, hypothesis_key, stage) DO UPDATE SET
-                    checkpoint_json = excluded.checkpoint_json,
-                    input_hash = excluded.input_hash,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    checkpoint.identity.analysis_id,
-                    self._hypothesis_key(checkpoint.identity),
-                    checkpoint.stage.value,
-                    checkpoint.model_dump_json(),
-                    checkpoint.input_hash,
-                    checkpoint.updated_at.isoformat(),
-                ),
-            )
+            self._upsert_checkpoint_connection(connection, checkpoint)
             for event in activity_events:
                 AgentActivityStore.append_connection(connection, event)
             if fail_before_commit:
@@ -517,6 +685,36 @@ class SimpleCheckpointStore:
             raise
         finally:
             connection.close()
+
+    def _upsert_checkpoint_connection(
+        self,
+        connection: sqlite3.Connection,
+        checkpoint: StageCheckpoint,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO simple_runtime_checkpoints (
+                analysis_id,
+                hypothesis_key,
+                stage,
+                checkpoint_json,
+                input_hash,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (analysis_id, hypothesis_key, stage) DO UPDATE SET
+                checkpoint_json = excluded.checkpoint_json,
+                input_hash = excluded.input_hash,
+                updated_at = excluded.updated_at
+            """,
+            (
+                checkpoint.identity.analysis_id,
+                self._hypothesis_key(checkpoint.identity),
+                checkpoint.stage.value,
+                checkpoint.model_dump_json(),
+                checkpoint.input_hash,
+                checkpoint.updated_at.isoformat(),
+            ),
+        )
 
     @staticmethod
     def _stage_sequence(stage: SimpleStage, offset: int) -> int:

@@ -96,6 +96,9 @@ class StageCheckpoint(ContractModel):
     output_refs: tuple[StoredDataRef, ...] = ()
     attempt_id: str | None = None
     attempt_number: int = 0
+    recovery_lineage_id: str | None = None
+    recovery_origin_stage: SimpleStage | None = None
+    recovery_decision_refs: tuple[StoredDataRef, ...] = ()
     error_code: str | None = None
     retryable: bool = False
     recipe_ref: StoredDataRef | None = None

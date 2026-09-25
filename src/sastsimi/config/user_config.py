@@ -30,6 +30,7 @@ _AGENT_NAMES = frozenset(
         "rule_scope_gate",
         "chaining",
         "report_draft",
+        "recovery",
     }
 )
 

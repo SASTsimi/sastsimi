@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Literal
 
 from sastsimi.contracts.base import ContractModel
+from sastsimi.simple_runtime.recovery import MAX_RECOVERY_ATTEMPTS
 
 
 class ProgressSnapshot(ContractModel):
@@ -16,6 +17,8 @@ class ProgressSnapshot(ContractModel):
     current_hypothesis_id: str | None = None
     error_code: str | None = None
     denominator_change_reason: str | None = None
+    attempt_number: int = 1
+    attempt_limit: int = MAX_RECOVERY_ATTEMPTS
 
 
 __all__ = ["ProgressSnapshot"]

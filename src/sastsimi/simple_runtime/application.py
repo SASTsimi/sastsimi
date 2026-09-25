@@ -25,6 +25,11 @@ from .models import (
     StageStatus,
     input_reference_hash,
 )
+from .recovery import (
+    MAX_RECOVERY_ATTEMPTS,
+    RecoveryAction,
+    RecoveryCoordinator,
+)
 from .runner import RunOutcome, SimpleRuntimeRunner
 from .store import SimpleCheckpointStore
 
@@ -74,6 +79,7 @@ type RunnerFactory = Callable[
     [SimpleCheckpointStore, CheckpointIdentity, StaticBootstrapResult],
     SimpleRuntimeRunner,
 ]
+type RecoveryFactory = Callable[[CheckpointIdentity], RecoveryCoordinator]
 
 
 class SimpleAnalysisApplication:
@@ -85,6 +91,7 @@ class SimpleAnalysisApplication:
         static_bootstrap: StaticBootstrap,
         hypothesis_bootstrap: HypothesisBootstrap,
         runner_factory: RunnerFactory,
+        recovery_factory: RecoveryFactory | None = None,
         id_factory: Callable[[], str] | None = None,
         llm_provider: str | None = None,
         on_demand_possible: bool = False,
@@ -94,6 +101,7 @@ class SimpleAnalysisApplication:
         self._static = static_bootstrap
         self._hypotheses = hypothesis_bootstrap
         self._runner_factory = runner_factory
+        self._recovery_factory = recovery_factory
         self._ids = id_factory or (lambda: uuid4().hex)
         self._display = AnalysisDisplayIdStore(store.database_path)
         self._llm_provider = llm_provider
@@ -133,45 +141,55 @@ class SimpleAnalysisApplication:
         run: SimpleAnalysisRun,
         identity: CheckpointIdentity,
     ) -> SimpleAnalysisOutcome:
-        checkpoint = self._store.mark_running(
-            identity,
-            SimpleStage.STATIC_DONE,
-            (),
-            attempt_id=uuid4().hex,
-        )
-        try:
-            static = await self._static.run(
-                SimpleAnalysisRequest(
-                    data_dir=self._data_dir,
-                    repository=run.repository,
-                    commit=run.commit_id,
-                ),
+        while True:
+            should_retry, terminal = await self._resume_bootstrap_failure(
                 identity,
+                SimpleStage.STATIC_DONE,
             )
-        except Exception as error:
-            failed = self._store.mark_failure(
-                checkpoint,
-                StageFailure(
+            if should_retry:
+                continue
+            if terminal is not None:
+                return self._bootstrap_outcome(run, terminal)
+            checkpoint = self._store.mark_running(
+                identity,
+                SimpleStage.STATIC_DONE,
+                self._store.input_refs_for(identity, SimpleStage.STATIC_DONE),
+                attempt_id=uuid4().hex,
+            )
+            try:
+                static = await self._static.run(
+                    SimpleAnalysisRequest(
+                        data_dir=self._data_dir,
+                        repository=run.repository,
+                        commit=run.commit_id,
+                    ),
+                    identity,
+                )
+            except Exception as error:
+                failure = StageFailure(
                     code=self._safe_error_code(error, "STATIC_BOOTSTRAP_BLOCKED"),
                     retryable=True,
                     safe_message="Repository or static analysis did not complete",
+                )
+                failed = self._store.mark_failure(
+                    checkpoint,
+                    failure,
+                    StageStatus.BLOCKED,
+                )
+                if await self._prepare_bootstrap_retry(failed, failure):
+                    continue
+                return self._bootstrap_outcome(
+                    run,
+                    self._store.require(identity, SimpleStage.STATIC_DONE),
+                )
+            self._store.complete(
+                checkpoint,
+                self._stage_result(
+                    static.repository_profile_ref,
+                    static.static_bundle_ref,
                 ),
-                StageStatus.BLOCKED,
             )
-            return SimpleAnalysisOutcome(
-                identity=identity,
-                display_analysis_id=run.display_analysis_id,
-                status="BLOCKED",
-                current_stage=failed.stage,
-                error_code=failed.error_code,
-            )
-        self._store.complete(
-            checkpoint,
-            self._stage_result(
-                static.repository_profile_ref,
-                static.static_bundle_ref,
-            ),
-        )
+            break
         updated_run = run.model_copy(
             update={
                 "workspace_path": static.workspace_path,
@@ -212,52 +230,63 @@ class SimpleAnalysisApplication:
         identity: CheckpointIdentity,
         static: StaticBootstrapResult,
     ) -> SimpleAnalysisOutcome:
-        checkpoint = self._store.mark_running(
-            identity,
-            SimpleStage.HYPOTHESIS_DONE,
-            (static.static_bundle_ref,),
-            attempt_id=uuid4().hex,
-        )
-        try:
-            seeds = await self._hypotheses.propose(identity, static)
-            if isinstance(seeds, StageFailure):
-                failed_status = (
-                    StageStatus.BLOCKED if seeds.retryable else StageStatus.FAILED
+        while True:
+            should_retry, terminal = await self._resume_bootstrap_failure(
+                identity,
+                SimpleStage.HYPOTHESIS_DONE,
+            )
+            if should_retry:
+                continue
+            if terminal is not None:
+                return self._bootstrap_outcome(run, terminal)
+            input_refs = tuple(
+                dict.fromkeys(
+                    (static.static_bundle_ref,)
+                    + self._store.input_refs_for(
+                        identity,
+                        SimpleStage.HYPOTHESIS_DONE,
+                    )
                 )
-                failed = self._store.mark_failure(checkpoint, seeds, failed_status)
-                return SimpleAnalysisOutcome(
-                    identity=identity,
-                    display_analysis_id=run.display_analysis_id,
-                    status="BLOCKED" if seeds.retryable else "FAILED",
-                    current_stage=failed.stage,
-                    error_code=failed.error_code,
-                )
-            if not seeds:
-                raise ValueError("HYPOTHESIS_OUTPUT_EMPTY")
-        except Exception as error:
-            failed = self._store.mark_failure(
-                checkpoint,
-                StageFailure(
+            )
+            checkpoint = self._store.mark_running(
+                identity,
+                SimpleStage.HYPOTHESIS_DONE,
+                input_refs,
+                attempt_id=uuid4().hex,
+            )
+            try:
+                proposed = await self._hypotheses.propose(identity, static)
+                if isinstance(proposed, StageFailure):
+                    failure = proposed
+                elif not proposed:
+                    raise ValueError("HYPOTHESIS_OUTPUT_EMPTY")
+                else:
+                    self._store.complete(
+                        checkpoint,
+                        self._stage_result(*(seed.proposal_ref for seed in proposed)),
+                    )
+                    seeds = proposed
+                    break
+            except Exception as error:
+                failure = StageFailure(
                     code=self._safe_error_code(
                         error,
                         "HYPOTHESIS_BOOTSTRAP_BLOCKED",
                     ),
                     retryable=True,
                     safe_message="Hypothesis generation did not complete",
-                ),
-                StageStatus.BLOCKED,
+                )
+            failed = self._store.mark_failure(
+                checkpoint,
+                failure,
+                StageStatus.BLOCKED if failure.retryable else StageStatus.FAILED,
             )
-            return SimpleAnalysisOutcome(
-                identity=identity,
-                display_analysis_id=run.display_analysis_id,
-                status="BLOCKED",
-                current_stage=failed.stage,
-                error_code=failed.error_code,
+            if await self._prepare_bootstrap_retry(failed, failure):
+                continue
+            return self._bootstrap_outcome(
+                run,
+                self._store.require(identity, SimpleStage.HYPOTHESIS_DONE),
             )
-        self._store.complete(
-            checkpoint,
-            self._stage_result(*(seed.proposal_ref for seed in seeds)),
-        )
         for seed in seeds:
             child = identity.model_copy(update={"hypothesis_id": seed.hypothesis_id})
             inputs = (seed.proposal_ref, static.static_bundle_ref)
@@ -275,6 +304,86 @@ class SimpleAnalysisApplication:
         )
         self._store.save_analysis_run(run)
         return await self._run_hypotheses(run, identity, static)
+
+    async def _resume_bootstrap_failure(
+        self,
+        identity: CheckpointIdentity,
+        stage: SimpleStage,
+    ) -> tuple[bool, StageCheckpoint | None]:
+        if self._recovery_factory is None:
+            return False, None
+        existing = self._store.get(identity, stage)
+        if existing is None or existing.status in {
+            StageStatus.PENDING,
+            StageStatus.SUCCEEDED,
+        }:
+            return False, None
+        if existing.status is StageStatus.RUNNING:
+            failure = StageFailure(
+                code="STAGE_INTERRUPTED",
+                retryable=True,
+                safe_message="Bootstrap execution was interrupted",
+            )
+            failed = self._store.mark_failure(
+                existing,
+                failure,
+                StageStatus.BLOCKED,
+            )
+        else:
+            if not existing.retryable:
+                return False, existing
+            failure = StageFailure(
+                code=existing.error_code or "BOOTSTRAP_RECOVERY_REQUIRED",
+                retryable=True,
+                safe_message="Resume the recorded bootstrap failure",
+                evidence_refs=existing.output_refs,
+            )
+            failed = existing
+        if await self._prepare_bootstrap_retry(failed, failure):
+            return True, None
+        return False, self._store.require(identity, stage)
+
+    async def _prepare_bootstrap_retry(
+        self,
+        failed: StageCheckpoint,
+        failure: StageFailure,
+    ) -> bool:
+        if self._recovery_factory is None or not failure.retryable:
+            return False
+        if failed.attempt_number >= MAX_RECOVERY_ATTEMPTS:
+            self._store.mark_recovery_exhausted(failed)
+            return False
+        resolution = await self._recovery_factory(failed.identity).decide(
+            failed,
+            failure,
+        )
+        if resolution.decision.action in {
+            RecoveryAction.RETRY_STAGE,
+            RecoveryAction.REGENERATE_INPUT,
+        }:
+            self._store.prepare_recovery(failed, resolution, failed.stage)
+            return True
+        if resolution.decision.action is RecoveryAction.STOP:
+            self._store.record_recovery_stop(failed, resolution)
+        else:
+            self._store.record_recovery_decision(failed, resolution)
+        return False
+
+    @staticmethod
+    def _bootstrap_outcome(
+        run: SimpleAnalysisRun,
+        failed: StageCheckpoint,
+    ) -> SimpleAnalysisOutcome:
+        status: Literal["BLOCKED", "FAILED"] = (
+            "FAILED" if failed.status is StageStatus.FAILED else "BLOCKED"
+        )
+        return SimpleAnalysisOutcome(
+            identity=failed.identity,
+            display_analysis_id=run.display_analysis_id,
+            status=status,
+            current_stage=failed.stage,
+            error_code=failed.error_code,
+        )
 
     async def _run_hypotheses(
         self,

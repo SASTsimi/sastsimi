@@ -95,7 +95,7 @@ irm 'https://cursor.com/install?win32=true' | iex
 .\.venv\Scripts\sastsimi.exe analyze https://github.com/adeyosemanputra/pygoat.git --commit <정확한-SHA>
 ```
 
-설정의 `provider`, `model`, `[agent_models]`, `llm_timeout_seconds`, `llm_max_retries`, `llm_max_concurrency`, `cursor_allow_on_demand`, `fallback_provider`, `fallback_model`은 `%LOCALAPPDATA%\sastsimi\sastsimi\config.toml` 및 같은 폴더의 `profile.toml`에 저장됩니다. `--agent-model`은 여러 번 지정할 수 있습니다. 역할 키: `hypothesis`, `pro_evidence`, `con_evidence`, `initial_verification`, `poc_candidate`, `poc_interpretation`, `verification_result`, `cwe_label`, `technical_gate`, `rule_scope_gate`, `chaining`, `report_draft`. 지정하지 않은 역할은 공통 기본 모델을 씁니다. 선택적으로 `--fallback-provider openai --fallback-model '<OpenAI 모델>'` 또는 `codex`를 설정할 수 있으며, 장애 시에만 사용합니다. OpenAI fallback은 별도 `OPENAI_API_KEY`가 필요합니다.
+설정의 `provider`, `model`, `[agent_models]`, `llm_timeout_seconds`, `llm_max_retries`, `llm_max_concurrency`, `cursor_allow_on_demand`, `fallback_provider`, `fallback_model`은 `%LOCALAPPDATA%\sastsimi\sastsimi\config.toml` 및 같은 폴더의 `profile.toml`에 저장됩니다. `--agent-model`은 여러 번 지정할 수 있습니다. 역할 키: `hypothesis`, `pro_evidence`, `con_evidence`, `initial_verification`, `poc_candidate`, `poc_interpretation`, `verification_result`, `cwe_label`, `technical_gate`, `rule_scope_gate`, `chaining`, `report_draft`, `recovery`. 지정하지 않은 역할은 공통 기본 모델을 씁니다. 선택적으로 `--fallback-provider openai --fallback-model '<OpenAI 모델>'` 또는 `codex`를 설정할 수 있으며, 장애 시에만 사용합니다. OpenAI fallback은 별도 `OPENAI_API_KEY`가 필요합니다.
 
 Cursor 설정은 기본 `sastsimi analyze <저장소> --commit <SHA>`와 그 `resume`에 사용하는 SimpleRuntime의 전체 분석 Agent에 적용됩니다. 별도 레거시 `analyze --profile`과 `evaluate` 파이프라인은 다른 provider 구성을 사용하므로 이 설정을 적용하지 않습니다.
 

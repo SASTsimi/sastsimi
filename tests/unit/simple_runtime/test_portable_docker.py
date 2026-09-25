@@ -1,4 +1,7 @@
-from collections.abc import Sequence
+import hashlib
+import json
+import sys
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -40,6 +43,80 @@ class _RecordingPortableDockerRuntime(PortableDockerRuntime):
         )
 
 
+class _BuildDocker:
+    def __init__(self) -> None:
+        self.dockerfiles: list[bytes] = []
+
+    async def build_or_reuse(
+        self,
+        *,
+        workspace: Path,
+        dockerfile: bytes,
+        cache_key: str,
+        labels: Mapping[str, str],
+    ) -> str:
+        del workspace, cache_key, labels
+        self.dockerfiles.append(dockerfile)
+        return "sha256:" + "a" * 64
+
+
+def _environment_checkpoint(
+    artifacts: SimpleArtifactRepository,
+    *,
+    action: str,
+    patch: str,
+) -> StageCheckpoint:
+    decision_ref = artifacts.put_json(
+        {
+            "kind": "simple_recovery_decision",
+            "identity": artifacts.identity.model_dump(mode="json"),
+            "decision": {
+                "category": (
+                    "ENVIRONMENT"
+                    if action == "REBUILD_ENVIRONMENT"
+                    else "TRANSIENT_TOOL"
+                ),
+                "action": action,
+                "diagnosis": "test diagnosis",
+                "guidance": "test guidance",
+                "environment_patch": patch,
+            },
+        }
+    )
+    inputs = (decision_ref,)
+    return StageCheckpoint(
+        identity=artifacts.identity,
+        stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=inputs,
+        input_hash=input_reference_hash(inputs),
+        attempt_id="environment-attempt-2",
+        attempt_number=2,
+    )
+
+
+@pytest.mark.asyncio
+async def test_runtime_process_preserves_programfiles_for_windows_docker_plugins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = PortableDockerRuntime.__new__(PortableDockerRuntime)
+    runtime._executable = Path(sys.executable)
+    monkeypatch.setenv("PROGRAMFILES", r"C:\Program Files")
+    monkeypatch.setenv("SASTSIMI_TEST_SECRET", "must-not-leak")
+
+    outcome = await runtime._run(
+        (
+            "-c",
+            "import json, os; print(json.dumps(dict(os.environ)))",
+        ),
+        timeout_seconds=30,
+    )
+
+    child_environment = json.loads(outcome.stdout)
+    assert child_environment["PROGRAMFILES"] == r"C:\Program Files"
+    assert "SASTSIMI_TEST_SECRET" not in child_environment
+
+
 def test_target_environment_change_invalidates_initial_verification() -> None:
     assert STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE] == "2"
 
@@ -58,6 +135,31 @@ async def test_reproduction_container_keeps_baked_workspace_writable() -> None:
     assert "--read-only" not in create
     assert "--network" in create
     assert "no-new-privileges" in create
+
+
+@pytest.mark.asyncio
+async def test_materialize_poc_replaces_read_only_candidate_from_prior_run() -> None:
+    runtime = _RecordingPortableDockerRuntime.__new__(_RecordingPortableDockerRuntime)
+    runtime._executable = Path("docker")
+    runtime._network = "none"
+    runtime._timeout = 60
+    runtime.calls = []
+    content = b"#!/bin/sh\necho ok\n"
+
+    await runtime.materialize_poc(
+        "container-1",
+        content,
+        hashlib.sha256(content).hexdigest(),
+    )
+
+    assert runtime.calls[0] == (
+        "exec",
+        "-i",
+        "container-1",
+        "sh",
+        "-c",
+        "rm -f /tmp/sastsimi-poc-candidate && cat > /tmp/sastsimi-poc-candidate",
+    )
 
 
 def test_repository_buster_dockerfile_uses_archive_mirrors_before_apt() -> None:
@@ -111,3 +213,224 @@ def test_target_requirements_are_resolved_from_exact_hypothesis(
     resolved = preparer._target_requirements_path({SimpleStage.PRO_CON_DONE: pro_con})
 
     assert resolved == "nested/lab/requirements.txt"
+
+
+@pytest.mark.asyncio
+async def test_rebuild_decision_patches_only_in_memory_dockerfile(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    original = b"FROM python:3.12-slim\n"
+    dockerfile_path = workspace / "Dockerfile"
+    dockerfile_path.write_bytes(original)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-rebuild",
+        workspace_id="workspace-rebuild",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-rebuild",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    checkpoint = _environment_checkpoint(
+        artifacts,
+        action="REBUILD_ENVIRONMENT",
+        patch="RUN python -m pip install -e '.[test]'",
+    )
+    docker = _BuildDocker()
+    before = hashlib.sha256(dockerfile_path.read_bytes()).hexdigest()
+
+    await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    ).prepare(checkpoint, {}, ())
+
+    assert len(docker.dockerfiles) == 1
+    built = docker.dockerfiles[0]
+    assert built.count(b"# SASTSIMI validated recovery patch") == 1
+    assert built.count(b"RUN python -m pip install -e '.[test]'") == 1
+    assert hashlib.sha256(dockerfile_path.read_bytes()).hexdigest() == before
+    assert dockerfile_path.read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_non_rebuild_decision_does_not_patch_environment(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "Dockerfile").write_bytes(b"FROM python:3.12-slim\n")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-retry",
+        workspace_id="workspace-retry",
+        commit_id="b" * 40,
+        hypothesis_id="hypothesis-retry",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    checkpoint = _environment_checkpoint(
+        artifacts,
+        action="RETRY_STAGE",
+        patch="",
+    )
+    docker = _BuildDocker()
+
+    await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    ).prepare(checkpoint, {}, ())
+
+    assert b"SASTSIMI validated recovery patch" not in docker.dockerfiles[0]
+
+
+@pytest.mark.asyncio
+async def test_retry_after_rebuild_keeps_the_latest_rebuild_patch(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "Dockerfile").write_bytes(b"FROM python:3.12-slim\n")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-rebuild-retry",
+        workspace_id="workspace-rebuild-retry",
+        commit_id="e" * 40,
+        hypothesis_id="hypothesis-rebuild-retry",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    rebuild = _environment_checkpoint(
+        artifacts,
+        action="REBUILD_ENVIRONMENT",
+        patch="RUN python -m pip install -e '.[test]'",
+    )
+    retry = _environment_checkpoint(
+        artifacts,
+        action="RETRY_STAGE",
+        patch="",
+    )
+    inputs = rebuild.input_refs + retry.input_refs
+    checkpoint = retry.model_copy(
+        update={"input_refs": inputs, "input_hash": input_reference_hash(inputs)}
+    )
+    docker = _BuildDocker()
+
+    await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    ).prepare(checkpoint, {}, ())
+
+    assert b"RUN python -m pip install -e '.[test]'" in docker.dockerfiles[0]
+
+
+@pytest.mark.asyncio
+async def test_rebuild_rejects_a_different_hypothesis_decision(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "Dockerfile").write_bytes(b"FROM python:3.12-slim\n")
+    target_identity = CheckpointIdentity(
+        analysis_id="analysis-scope",
+        workspace_id="workspace-scope",
+        commit_id="f" * 40,
+        hypothesis_id="hypothesis-target",
+    )
+    foreign_identity = target_identity.model_copy(
+        update={"hypothesis_id": "hypothesis-foreign"}
+    )
+    foreign_artifacts = SimpleArtifactRepository(tmp_path / "data", foreign_identity)
+    foreign = _environment_checkpoint(
+        foreign_artifacts,
+        action="REBUILD_ENVIRONMENT",
+        patch="RUN python -m pip install pytest",
+    )
+    checkpoint = foreign.model_copy(update={"identity": target_identity})
+    docker = _BuildDocker()
+
+    with pytest.raises(ValueError, match="RECOVERY_DECISION_IDENTITY_MISMATCH"):
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=SimpleArtifactRepository(tmp_path / "data", target_identity),
+            workspace=workspace,
+        ).prepare(checkpoint, {}, ())
+
+    assert docker.dockerfiles == []
+
+
+@pytest.mark.asyncio
+async def test_invalid_recovery_decision_artifact_fails_before_docker_build(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    identity = CheckpointIdentity(
+        analysis_id="analysis-invalid",
+        workspace_id="workspace-invalid",
+        commit_id="c" * 40,
+        hypothesis_id="hypothesis-invalid",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    invalid_ref = artifacts.put_json(
+        {
+            "kind": "simple_recovery_decision",
+            "identity": identity.model_dump(mode="json"),
+            "decision": {"action": "STOP"},
+        }
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(invalid_ref,),
+        input_hash=input_reference_hash((invalid_ref,)),
+    )
+    docker = _BuildDocker()
+
+    with pytest.raises(ValueError):
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+        ).prepare(checkpoint, {}, ())
+
+    assert docker.dockerfiles == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "patch",
+    [
+        "RUN python -m pip install pytest && powershell.exe",
+        "RUN python -m pip install pytest > /tmp/output",
+        "RUN echo unbounded-command",
+    ],
+)
+async def test_unsafe_recovery_patch_fails_before_docker_build(
+    tmp_path: Path,
+    patch: str,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    identity = CheckpointIdentity(
+        analysis_id="analysis-unsafe",
+        workspace_id="workspace-unsafe",
+        commit_id="d" * 40,
+        hypothesis_id="hypothesis-unsafe",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    checkpoint = _environment_checkpoint(
+        artifacts,
+        action="REBUILD_ENVIRONMENT",
+        patch=patch,
+    )
+    docker = _BuildDocker()
+
+    with pytest.raises(
+        ValueError,
+        match="RECOVERY_ENVIRONMENT_PATCH_FORBIDDEN",
+    ):
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+        ).prepare(checkpoint, {}, ())
+
+    assert docker.dockerfiles == []

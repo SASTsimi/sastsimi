@@ -9,6 +9,14 @@ def test_benign_sandbox_output_is_preserved() -> None:
     assert DockerAdapter._safe_output(raw) == raw
 
 
+def test_escaped_unc_repr_is_redacted_without_leaving_a_second_path() -> None:
+    raw = rb"stored_next='/protected?probe=\\\\fixture.invalid\\target'" + b"\n"
+
+    assert DockerAdapter._safe_output(raw) == (
+        rb"stored_next='/protected?probe=[REDACTED:HOST_ABSOLUTE_PATH]'" + b"\n"
+    )
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [

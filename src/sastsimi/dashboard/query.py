@@ -313,6 +313,7 @@ class DashboardQuery:
                 run.parent_hypothesis_ids.get(hypothesis_id, ()) if run else ()
             ),
             chain_depth=(run.chain_depths.get(hypothesis_id, 0) if run else 0),
+            attempt_number=max(1, latest.attempt_number),
             updated_at=latest.updated_at,
         )
 
