@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
+from time import monotonic
 from typing import Literal, cast
 
 from pydantic import JsonValue
@@ -123,6 +124,26 @@ async def _claude_process_lock() -> AsyncIterator[None]:
     finally:
         if acquired:
             _PROCESS_LOCK.release()
+
+
+# A launch, not a whole call, is what collides: two children starting at once
+# both find the same credential file's access token expired and race to
+# refresh it, and the loser reports "another Claude Code process is
+# refreshing it".  Spacing launches by this much clears it without
+# serializing the calls themselves, which the process lock above already
+# does and which would undo the run's parallelism.  Measured against the
+# official client refreshing a subscription token.
+_LAUNCH_STAGGER_SECONDS = 0.5
+_LAUNCH_LOCK = asyncio.Lock()
+_LAST_LAUNCH: list[float] = [0.0]
+
+
+async def _stagger_launch() -> None:
+    async with _LAUNCH_LOCK:
+        wait = _LAST_LAUNCH[0] + _LAUNCH_STAGGER_SECONDS - monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _LAST_LAUNCH[0] = monotonic()
 
 
 # The official client resolves its credential directory, and nothing else, from the
@@ -521,6 +542,7 @@ class ClaudeCliProcessRunner:
                 "--input-format",
                 "stream-json",
             )
+            await _stagger_launch()
             process = await asyncio.create_subprocess_exec(
                 *argv,
                 stdin=asyncio.subprocess.PIPE,
@@ -569,6 +591,7 @@ class ClaudeCliProcessRunner:
         environment: Mapping[str, str],
     ) -> _ChildResult:
         self.verify_executable()
+        await _stagger_launch()
         spawn_task = asyncio.create_task(
             asyncio.create_subprocess_exec(
                 *argv,
