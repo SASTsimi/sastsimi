@@ -226,6 +226,92 @@ async def test_broken_stdin_terminates_child_and_becomes_typed_failure(
     assert process.killed
 
 
+class _DelayedChild:
+    pid = None
+    stdin = None
+
+    def __init__(self, delay: float = 0.8) -> None:
+        self.stdout = asyncio.StreamReader()
+        self.stderr = asyncio.StreamReader()
+        self.stdout.feed_eof()
+        self.stderr.feed_eof()
+        self.returncode: int | None = None
+        self.done = asyncio.Event()
+        asyncio.get_running_loop().call_later(delay, self._finish)
+
+    def _finish(self) -> None:
+        if self.returncode is None:
+            self.returncode = 0
+            self.done.set()
+
+    def kill(self) -> None:
+        self.returncode = -9
+        self.done.set()
+
+    async def wait(self) -> int:
+        await self.done.wait()
+        assert self.returncode is not None
+        return self.returncode
+
+
+@pytest.mark.asyncio
+async def test_concurrent_claude_children_stagger_starts_but_overlap_inference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = asyncio.get_running_loop()
+    starts: list[float] = []
+    finishes: list[float] = []
+
+    class TimedChild(_DelayedChild):
+        async def wait(self) -> int:
+            code = await super().wait()
+            finishes.append(loop.time())
+            return code
+
+    async def fake_spawn(*_args: object, **_kwargs: object) -> TimedChild:
+        starts.append(loop.time())
+        return TimedChild()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+    await asyncio.gather(
+        _run_child(("fake",), stdin=None, cwd=tmp_path, env={}, timeout=3),
+        _run_child(("fake",), stdin=None, cwd=tmp_path, env={}, timeout=3),
+    )
+
+    assert len(starts) == 2
+    assert starts[1] - starts[0] >= 0.45
+    assert starts[1] < min(finishes)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_queued_claude_child_never_spawns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spawned = asyncio.Event()
+    starts: list[float] = []
+
+    async def fake_spawn(*_args: object, **_kwargs: object) -> _DelayedChild:
+        starts.append(asyncio.get_running_loop().time())
+        spawned.set()
+        return _DelayedChild()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+    first = asyncio.create_task(
+        _run_child(("fake",), stdin=None, cwd=tmp_path, env={}, timeout=3)
+    )
+    await spawned.wait()
+    second = asyncio.create_task(
+        _run_child(("fake",), stdin=None, cwd=tmp_path, env={}, timeout=3)
+    )
+    await asyncio.sleep(0.05)
+    second.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await second
+    await first
+
+    assert len(starts) == 1
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_timeout_or_cancel_terminates_claude_child(

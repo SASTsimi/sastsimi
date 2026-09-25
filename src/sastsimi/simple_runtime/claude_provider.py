@@ -15,9 +15,11 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Lock
 from time import monotonic
 from typing import Any, Protocol, cast
 from uuid import uuid4
+from weakref import WeakKeyDictionary
 
 from sastsimi.config.user_config import SimpleToolBinding
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -35,6 +37,29 @@ _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$")
 _AUTH_METHOD = "claude.ai"
 _SYSTEM_AGENTS = ["claude", "Explore", "general-purpose", "Plan"]
 _LOG = logging.getLogger(__name__)
+_LAUNCH_STAGGER_SECONDS = 0.5
+
+
+@dataclass
+class _LaunchGate:
+    lock: asyncio.Lock
+    next_start: float = 0.0
+
+
+_LAUNCH_GATES: WeakKeyDictionary[asyncio.AbstractEventLoop, _LaunchGate] = (
+    WeakKeyDictionary()
+)
+_LAUNCH_GATES_LOCK = Lock()
+
+
+def _launch_gate() -> _LaunchGate:
+    loop = asyncio.get_running_loop()
+    with _LAUNCH_GATES_LOCK:
+        gate = _LAUNCH_GATES.get(loop)
+        if gate is None:
+            gate = _LaunchGate(asyncio.Lock())
+            _LAUNCH_GATES[loop] = gate
+        return gate
 
 
 class ClaudeBoundaryError(RuntimeError):
@@ -322,28 +347,35 @@ async def _run_child(
         if os.name == "nt"
         else 0
     )
-    spawn = asyncio.create_task(
-        asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.PIPE
-            if stdin is not None
-            else asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(cwd),
-            env=dict(env),
-            creationflags=flags,
-            start_new_session=os.name != "nt",
+    loop = asyncio.get_running_loop()
+    gate = _launch_gate()
+    async with gate.lock:
+        delay = gate.next_start - loop.time()
+        if delay > 0:
+            await asyncio.sleep(delay)
+        spawn = asyncio.create_task(
+            asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE
+                if stdin is not None
+                else asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(cwd),
+                env=dict(env),
+                creationflags=flags,
+                start_new_session=os.name != "nt",
+            )
         )
-    )
-    try:
-        process = await asyncio.shield(spawn)
-    except asyncio.CancelledError:
-        process = await asyncio.shield(spawn)
-        await _terminate_process_tree(process)
-        raise
-    except OSError as error:
-        raise ClaudeTransportError("CLAUDE_EXECUTION_FAILED") from error
+        try:
+            process = await asyncio.shield(spawn)
+        except asyncio.CancelledError:
+            process = await asyncio.shield(spawn)
+            await _terminate_process_tree(process)
+            raise
+        except OSError as error:
+            raise ClaudeTransportError("CLAUDE_EXECUTION_FAILED") from error
+        gate.next_start = loop.time() + _LAUNCH_STAGGER_SECONDS
     assert process.stdout is not None and process.stderr is not None
     stdout_reader = process.stdout
     stderr_reader = process.stderr
