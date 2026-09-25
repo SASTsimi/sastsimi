@@ -69,6 +69,11 @@ def test_user_config_rejects_literal_credentials(tmp_path: Path) -> None:
         )
 
 
+def test_agent_model_override_rejects_unknown_role() -> None:
+    with pytest.raises(ValueError, match="USER_CONFIG_AGENT_MODEL_INVALID"):
+        UserConfig.safe_agent_models({"verification_reslut": "some-model"})
+
+
 def test_simple_execution_profile_supports_api_and_subscription_without_secret(
     tmp_path: Path,
 ) -> None:

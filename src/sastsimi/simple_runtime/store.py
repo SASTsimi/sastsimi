@@ -89,6 +89,23 @@ class SimpleCheckpointStore:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_llm_attempts (
+                    attempt_id TEXT PRIMARY KEY,
+                    analysis_id TEXT NOT NULL,
+                    agent TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    attempt_number INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    elapsed_ms INTEGER NOT NULL,
+                    input_tokens INTEGER,
+                    output_tokens INTEGER,
+                    cost_cents REAL,
+                    artifact_ref_json TEXT NOT NULL
+                )
+                """
+            )
 
     @property
     def database_path(self) -> Path:
@@ -104,6 +121,45 @@ class SimpleCheckpointStore:
                 ON CONFLICT (analysis_id) DO UPDATE SET run_json = excluded.run_json
                 """,
                 (validated.analysis_id, validated.model_dump_json()),
+            )
+
+    def record_llm_attempt(
+        self,
+        *,
+        attempt_id: str,
+        analysis_id: str,
+        agent: str,
+        model: str,
+        attempt_number: int,
+        status: str,
+        elapsed_ms: int,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        cost_cents: float | None,
+        artifact_ref: StoredDataRef,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO simple_llm_attempts (
+                    attempt_id, analysis_id, agent, model, attempt_number,
+                    status, elapsed_ms, input_tokens, output_tokens,
+                    cost_cents, artifact_ref_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    attempt_id,
+                    analysis_id,
+                    agent,
+                    model,
+                    attempt_number,
+                    status,
+                    elapsed_ms,
+                    input_tokens,
+                    output_tokens,
+                    cost_cents,
+                    artifact_ref.model_dump_json(),
+                ),
             )
 
     def require_analysis_run(self, analysis_id: str) -> SimpleAnalysisRun:

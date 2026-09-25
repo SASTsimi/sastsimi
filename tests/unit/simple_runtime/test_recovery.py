@@ -44,8 +44,10 @@ class DecisionClient:
         prompt: bytes,
         output_schema: Mapping[str, Any],
         timeout_ms: int,
+        agent_name: str = "agent",
     ) -> SimpleLLMCallResult | StageFailure:
         del output_schema, timeout_ms
+        assert agent_name == "recovery"
         self.calls += 1
         self.prompts.append(prompt)
         if isinstance(self.response, StageFailure):

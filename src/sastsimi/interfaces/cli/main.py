@@ -160,6 +160,15 @@ def main(
     setup_parser.add_argument("--auth", choices=["api-key", "subscription"])
     setup_parser.add_argument("--provider")
     setup_parser.add_argument("--model")
+    setup_parser.add_argument("--agent-model", action="append", default=[])
+    setup_parser.add_argument("--llm-timeout-seconds", type=int, default=180)
+    setup_parser.add_argument("--llm-max-retries", type=int, default=2)
+    setup_parser.add_argument("--llm-max-concurrency", type=int, default=2)
+    setup_parser.add_argument("--cursor-allow-on-demand", action="store_true")
+    setup_parser.add_argument(
+        "--fallback-provider", choices=["none", "openai", "codex"], default="none"
+    )
+    setup_parser.add_argument("--fallback-model")
     setup_parser.add_argument(
         "--profile", dest="execution_profile", choices=["full", "lightweight"]
     )
@@ -170,6 +179,11 @@ def main(
     setup_parser.add_argument("--max-tokens", type=int, default=1_000_000)
     setup_parser.add_argument("--max-elapsed-seconds", type=int, default=3_600)
     setup_parser.add_argument("--format", choices=["text", "json"])
+    subparsers.add_parser(
+        "cursor-models",
+        help="list model IDs from the Cursor CLI login or CURSOR_API_KEY",
+        allow_abbrev=False,
+    )
     doctor_parser = subparsers.add_parser(
         "doctor", help="read-only foundation host checks", allow_abbrev=False
     )
@@ -392,7 +406,7 @@ def main(
             output_format = requested_output
         selected_user_store = user_config_store or UserConfigStore()
         user_config = None
-        if args.command != "setup":
+        if args.command not in {"setup", "cursor-models"}:
             try:
                 user_config = selected_user_store.load()
             except ValueError:
@@ -419,6 +433,39 @@ def main(
 
                 public_application = build_public_simple_runtime(selected_user_store)
             return public_application
+
+        if args.command == "cursor-models":
+            from sastsimi.composition.simple_runtime_composition import (
+                list_cursor_models,
+            )
+
+            try:
+                models = asyncio.run(list_cursor_models())
+            except ValueError as error:
+                cursor_setup_code = (
+                    "CURSOR_CLI_NOT_INSTALLED"
+                    if str(error) == "CURSOR_CLI_NOT_INSTALLED"
+                    else "CURSOR_AUTH_REQUIRED"
+                )
+                sys.stderr.write(
+                    cursor_setup_code + ": install or log in to Cursor CLI\n"
+                )
+                return int(ExitCode.CONFIG_ERROR)
+            except Exception as error:
+                name = type(error).__name__
+                cursor_error_code = (
+                    "CURSOR_AUTH_FAILED"
+                    if name in {"AuthenticationError", "CursorCLIAuthenticationError"}
+                    else "CURSOR_MODEL_CATALOG_FAILED"
+                )
+                sys.stderr.write(
+                    cursor_error_code
+                    + ": check Cursor CLI login or API key and connectivity\n"
+                )
+                return int(ExitCode.BLOCKED)
+            for model_id in sorted(models):
+                sys.stdout.write(model_id + "\n")
+            return int(ExitCode.OK)
 
         if args.command == "setup":
             command_name = "setup"

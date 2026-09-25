@@ -16,6 +16,33 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 _ENV_REFERENCE = re.compile(r"^env:[A-Z][A-Z0-9_]{1,127}$")
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _TOOL_NAMES = ("AST", "OPENGREP", "CODEQL", "DOCKER")
+_AGENT_NAMES = frozenset(
+    {
+        "hypothesis",
+        "pro_evidence",
+        "con_evidence",
+        "initial_verification",
+        "poc_candidate",
+        "poc_interpretation",
+        "verification_result",
+        "cwe_label",
+        "technical_gate",
+        "rule_scope_gate",
+        "chaining",
+        "report_draft",
+        "recovery",
+    }
+)
+
+
+def _safe_model_id(value: str) -> bool:
+    # Cursor IDs are discovered from the account catalog, not assumed to be slugs.
+    return bool(
+        value
+        and value == value.strip()
+        and len(value) <= 160
+        and all(32 <= ord(character) < 127 for character in value)
+    )
 
 
 def default_user_config_path() -> Path:
@@ -38,7 +65,10 @@ def _local_path(value: object) -> Path:
 def _credential_ref(auth_mode: str, value: str) -> str:
     if auth_mode == "API_KEY" and _ENV_REFERENCE.fullmatch(value):
         return value
-    if auth_mode == "SUBSCRIPTION_LOGIN" and value == "OFFICIAL_CLIENT_SESSION":
+    if auth_mode == "SUBSCRIPTION_LOGIN" and value in {
+        "OFFICIAL_CLIENT_SESSION",
+        "CURSOR_CLI_LOGIN",
+    }:
         return value
     raise ValueError("USER_CONFIG_CREDENTIAL_REF_INVALID")
 
@@ -92,17 +122,48 @@ class UserConfig(BaseModel):
     enabled_tools: tuple[Literal["AST", "OPENGREP", "CODEQL", "DOCKER"], ...]
     detected_versions: dict[str, str]
     setup_ready: bool
+    agent_models: dict[str, str] = Field(default_factory=dict)
+    llm_timeout_seconds: int = Field(default=180, gt=0, le=3600)
+    llm_max_retries: int = Field(default=2, ge=0, le=5)
+    llm_max_concurrency: int = Field(default=2, gt=0, le=32)
+    cursor_allow_on_demand: bool = False
+    fallback_provider: Literal["none", "openai", "codex"] = "none"
+    fallback_model: str | None = None
 
     @field_validator("data_dir", "profile_path", mode="before")
     @classmethod
     def validate_paths(cls, value: object) -> Path:
         return _local_path(value)
 
-    @field_validator("provider", "model")
+    @field_validator("provider")
     @classmethod
     def safe_names(cls, value: str) -> str:
         if _SAFE_NAME.fullmatch(value) is None:
             raise ValueError("USER_CONFIG_NAME_INVALID")
+        return value
+
+    @field_validator("model")
+    @classmethod
+    def safe_model(cls, value: str) -> str:
+        if not _safe_model_id(value):
+            raise ValueError("USER_CONFIG_MODEL_INVALID")
+        return value
+
+    @field_validator("agent_models")
+    @classmethod
+    def safe_agent_models(cls, values: dict[str, str]) -> dict[str, str]:
+        if any(
+            name not in _AGENT_NAMES or not _safe_model_id(model)
+            for name, model in values.items()
+        ):
+            raise ValueError("USER_CONFIG_AGENT_MODEL_INVALID")
+        return dict(sorted(values.items()))
+
+    @field_validator("fallback_model")
+    @classmethod
+    def safe_fallback_model(cls, value: str | None) -> str | None:
+        if value is not None and not _safe_model_id(value):
+            raise ValueError("USER_CONFIG_FALLBACK_MODEL_INVALID")
         return value
 
     @field_validator("detected_versions")
@@ -121,6 +182,15 @@ class UserConfig(BaseModel):
     @model_validator(mode="after")
     def validate_auth_and_tools(self) -> Self:
         _credential_ref(self.auth_mode, self.credential_ref)
+        if self.provider == "cursor" and not (
+            self.auth_mode == "API_KEY"
+            and self.credential_ref == "env:CURSOR_API_KEY"
+            or self.auth_mode == "SUBSCRIPTION_LOGIN"
+            and self.credential_ref == "CURSOR_CLI_LOGIN"
+        ):
+            raise ValueError("CURSOR_API_KEY_REQUIRED")
+        if self.fallback_provider != "none" and self.fallback_model is None:
+            raise ValueError("FALLBACK_MODEL_REQUIRED")
         if len(self.enabled_tools) != len(set(self.enabled_tools)):
             raise ValueError("USER_CONFIG_TOOL_DUPLICATE")
         if self.execution_profile == "FULL" and set(self.enabled_tools) != set(
@@ -145,6 +215,22 @@ class UserConfig(BaseModel):
             f"docker_network = {_quoted(self.docker_network)}",
             f"enabled_tools = {_string_array(tuple(self.enabled_tools))}",
             f"setup_ready = {str(self.setup_ready).lower()}",
+            f"llm_timeout_seconds = {self.llm_timeout_seconds}",
+            f"llm_max_retries = {self.llm_max_retries}",
+            f"llm_max_concurrency = {self.llm_max_concurrency}",
+            f"cursor_allow_on_demand = {str(self.cursor_allow_on_demand).lower()}",
+            f"fallback_provider = {_quoted(self.fallback_provider)}",
+            *(
+                [f"fallback_model = {_quoted(self.fallback_model)}"]
+                if self.fallback_model
+                else []
+            ),
+            "",
+            "[agent_models]",
+            *(
+                f"{name} = {_quoted(model)}"
+                for name, model in self.agent_models.items()
+            ),
             "",
             "[detected_versions]",
         ]
@@ -192,22 +278,47 @@ class SimpleExecutionProfile(BaseModel):
     max_elapsed_seconds: int = Field(gt=0)
     docker_network: Literal["NONE", "BRIDGE"]
     tools: dict[str, SimpleToolBinding]
+    agent_models: dict[str, str] = Field(default_factory=dict)
+    llm_timeout_seconds: int = Field(default=180, gt=0, le=3600)
+    llm_max_retries: int = Field(default=2, ge=0, le=5)
+    llm_max_concurrency: int = Field(default=2, gt=0, le=32)
+    cursor_allow_on_demand: bool = False
+    fallback_provider: Literal["none", "openai", "codex"] = "none"
+    fallback_model: str | None = None
 
     @field_validator("data_dir", "workspace_root", mode="before")
     @classmethod
     def validate_paths(cls, value: object) -> Path:
         return _local_path(value)
 
-    @field_validator("provider_profile_ref", "provider", "model")
+    @field_validator("provider_profile_ref", "provider")
     @classmethod
     def safe_names(cls, value: str) -> str:
         if _SAFE_NAME.fullmatch(value) is None:
             raise ValueError("SIMPLE_PROFILE_NAME_INVALID")
         return value
 
+    @field_validator("model")
+    @classmethod
+    def safe_model(cls, value: str) -> str:
+        if not _safe_model_id(value):
+            raise ValueError("SIMPLE_PROFILE_MODEL_INVALID")
+        return value
+
     @model_validator(mode="after")
     def validate_credential(self) -> Self:
         _credential_ref(self.auth_mode, self.credential_ref)
+        if self.provider == "cursor" and not (
+            self.auth_mode == "API_KEY"
+            and self.credential_ref == "env:CURSOR_API_KEY"
+            or self.auth_mode == "SUBSCRIPTION_LOGIN"
+            and self.credential_ref == "CURSOR_CLI_LOGIN"
+        ):
+            raise ValueError("CURSOR_API_KEY_REQUIRED")
+        UserConfig.safe_agent_models(self.agent_models)
+        UserConfig.safe_fallback_model(self.fallback_model)
+        if self.fallback_provider != "none" and self.fallback_model is None:
+            raise ValueError("FALLBACK_MODEL_REQUIRED")
         return self
 
     def to_toml(self) -> str:
@@ -224,6 +335,22 @@ class SimpleExecutionProfile(BaseModel):
             f"max_tokens = {self.max_tokens}",
             f"max_elapsed_seconds = {self.max_elapsed_seconds}",
             f"docker_network = {_quoted(self.docker_network)}",
+            f"llm_timeout_seconds = {self.llm_timeout_seconds}",
+            f"llm_max_retries = {self.llm_max_retries}",
+            f"llm_max_concurrency = {self.llm_max_concurrency}",
+            f"cursor_allow_on_demand = {str(self.cursor_allow_on_demand).lower()}",
+            f"fallback_provider = {_quoted(self.fallback_provider)}",
+            *(
+                [f"fallback_model = {_quoted(self.fallback_model)}"]
+                if self.fallback_model
+                else []
+            ),
+            "",
+            "[agent_models]",
+            *(
+                f"{name} = {_quoted(model)}"
+                for name, model in self.agent_models.items()
+            ),
             "",
             "[tools]",
         ]

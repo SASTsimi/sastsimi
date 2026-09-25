@@ -23,6 +23,7 @@ build/
 /pocs/
 /provider-request-response/
 /.env*
+!/.env.example
 /secrets/
 /credentials/
 /sessions/

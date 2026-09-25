@@ -30,6 +30,12 @@ class SimpleLLMCallResult(ContractModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     elapsed_ms: int | None = None
+    raw_output_ref: StoredDataRef | None = None
+    parsed_output_ref: StoredDataRef | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_minor_units: float | None = None
+    on_demand_possible: bool = False
 
 
 class SimpleLLMClient(Protocol):
@@ -39,6 +45,7 @@ class SimpleLLMClient(Protocol):
         prompt: bytes,
         output_schema: Mapping[str, Any],
         timeout_ms: int,
+        agent_name: str = "agent",
     ) -> SimpleLLMCallResult | StageFailure: ...
 
 
@@ -104,6 +111,7 @@ class SimpleCodexClient:
         prompt: bytes,
         output_schema: Mapping[str, Any],
         timeout_ms: int,
+        agent_name: str = "agent",
     ) -> SimpleLLMCallResult | StageFailure:
         prompt_digest = hashlib.sha256(prompt).hexdigest()
         invocation_id = f"simple-{uuid4().hex}"
@@ -177,6 +185,7 @@ class SimpleOpenAIClient:
         prompt: bytes,
         output_schema: Mapping[str, Any],
         timeout_ms: int,
+        agent_name: str = "agent",
     ) -> SimpleLLMCallResult | StageFailure:
         credential = os.environ.get(self._variable)
         if credential is None or not credential or credential != credential.strip():

@@ -72,7 +72,7 @@ class HypothesisBootstrap(Protocol):
         self,
         identity: CheckpointIdentity,
         static: StaticBootstrapResult,
-    ) -> tuple[HypothesisSeed, ...]: ...
+    ) -> tuple[HypothesisSeed, ...] | StageFailure: ...
 
 
 type RunnerFactory = Callable[
@@ -93,6 +93,8 @@ class SimpleAnalysisApplication:
         runner_factory: RunnerFactory,
         recovery_factory: RecoveryFactory | None = None,
         id_factory: Callable[[], str] | None = None,
+        llm_provider: str | None = None,
+        on_demand_possible: bool = False,
     ) -> None:
         self._data_dir = data_dir
         self._store = store
@@ -102,6 +104,8 @@ class SimpleAnalysisApplication:
         self._recovery_factory = recovery_factory
         self._ids = id_factory or (lambda: uuid4().hex)
         self._display = AnalysisDisplayIdStore(store.database_path)
+        self._llm_provider = llm_provider
+        self._on_demand_possible = on_demand_possible
 
     async def analyze(
         self,
@@ -124,6 +128,8 @@ class SimpleAnalysisApplication:
             workspace_id=workspace_id,
             commit_id=request.commit.lower(),
             repository=request.repository,
+            llm_provider=self._llm_provider,
+            on_demand_possible=self._on_demand_possible,
         )
         self._store.save_analysis_run(run)
         if on_analysis_started is not None:
@@ -249,9 +255,18 @@ class SimpleAnalysisApplication:
                 attempt_id=uuid4().hex,
             )
             try:
-                seeds = await self._hypotheses.propose(identity, static)
-                if not seeds:
+                proposed = await self._hypotheses.propose(identity, static)
+                if isinstance(proposed, StageFailure):
+                    failure = proposed
+                elif not proposed:
                     raise ValueError("HYPOTHESIS_OUTPUT_EMPTY")
+                else:
+                    self._store.complete(
+                        checkpoint,
+                        self._stage_result(*(seed.proposal_ref for seed in proposed)),
+                    )
+                    seeds = proposed
+                    break
             except Exception as error:
                 failure = StageFailure(
                     code=self._safe_error_code(
@@ -261,22 +276,17 @@ class SimpleAnalysisApplication:
                     retryable=True,
                     safe_message="Hypothesis generation did not complete",
                 )
-                failed = self._store.mark_failure(
-                    checkpoint,
-                    failure,
-                    StageStatus.BLOCKED,
-                )
-                if await self._prepare_bootstrap_retry(failed, failure):
-                    continue
-                return self._bootstrap_outcome(
-                    run,
-                    self._store.require(identity, SimpleStage.HYPOTHESIS_DONE),
-                )
-            self._store.complete(
+            failed = self._store.mark_failure(
                 checkpoint,
-                self._stage_result(*(seed.proposal_ref for seed in seeds)),
+                failure,
+                StageStatus.BLOCKED if failure.retryable else StageStatus.FAILED,
             )
-            break
+            if await self._prepare_bootstrap_retry(failed, failure):
+                continue
+            return self._bootstrap_outcome(
+                run,
+                self._store.require(identity, SimpleStage.HYPOTHESIS_DONE),
+            )
         for seed in seeds:
             child = identity.model_copy(update={"hypothesis_id": seed.hypothesis_id})
             inputs = (seed.proposal_ref, static.static_bundle_ref)

@@ -57,12 +57,19 @@ wheels = [
 ]
 
 [[package]]
-name = "execnet"
-version = "2.1.2"
+name = "cursor-sdk"
+version = "1.0.32"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/bf/89/780e11f9588d9e7128a3f87788354c7946a9cbb1401ad38a48c4db9a4f07/execnet-2.1.2.tar.gz", hash = "sha256:63d83bfdd9a23e35b9c6a3261412324f964c2ec8dcd8d3c6916ee9373e0befcd", size = 166622, upload-time = "2025-11-12T09:56:37.75Z" }
+dependencies = [
+    { name = "httpx" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/14/27/f018b131088f5053bc89f50d22d414fd0f92f418ce465b0de6609bf5d7d1/cursor_sdk-1.0.32.tar.gz", hash = "sha256:c02442ff190c804dac0061587d616226721d23bdea2e87592331df368f6f4a88", size = 1177, upload-time = "2026-09-22T18:50:39.838Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ab/84/02fc1827e8cdded4aa65baef11296a9bbe595c474f0d6d758af082d849fd/execnet-2.1.2-py3-none-any.whl", hash = "sha256:67fba928dd5a544b783f6056f449e5e3931a5c378b128bc18501f7ea79e296ec", size = 40708, upload-time = "2025-11-12T09:56:36.333Z" },
+    { url = "https://files.pythonhosted.org/packages/61/47/aee9bb9247606bc7be06416250922bab320ae1db75ace8d94e2b20553f1e/cursor_sdk-1.0.32-py3-none-macosx_11_0_arm64.whl", hash = "sha256:8d604fcfd9269ec0682a5775b4679427eb5ca53ce3f4c2e295554dede40a3184", size = 48993368, upload-time = "2026-09-22T18:50:25.168Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/de/69f1c0d5dda3b57a190f9d17e370b688a4f853599de7980e4e9917c9f443/cursor_sdk-1.0.32-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:e0d28fb4f477128771733d1006e9e3d012c0f7bd238a1d44baf90d20790cb763", size = 50502106, upload-time = "2026-09-22T18:50:28.004Z" },
+    { url = "https://files.pythonhosted.org/packages/11/a2/84db69794aadfabdbf5ed5b45ebf1237e4183b9ac5b48a71cc23d953ed1f/cursor_sdk-1.0.32-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:77ec88589a76137febabf8787713e6167c7a2c359049c4d23a6aa355aed69f19", size = 58109097, upload-time = "2026-09-22T18:50:30.655Z" },
+    { url = "https://files.pythonhosted.org/packages/2a/4d/68b6e075d30191eefffd7707ed42a8eebdf0e82a2b1080a1463c603609da/cursor_sdk-1.0.32-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:c90a458b86d76ab9e0c1eb8590f6da728c48af330d14adc834a158013b448a92", size = 58798913, upload-time = "2026-09-22T18:50:35.064Z" },
+    { url = "https://files.pythonhosted.org/packages/9a/ca/473c26bc1e2dbae52eac857cba012174e83025fddacab4c5548d67392da3/cursor_sdk-1.0.32-py3-none-win_amd64.whl", hash = "sha256:a92ac2c82f340631b21c005ef2d622d9a60c605224bc4fd13ffc08ae80440ba9", size = 45083805, upload-time = "2026-09-22T18:50:37.871Z" },
 ]
 
 [[package]]
@@ -72,6 +79,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/fc/f8/98eea607f65de6527f8a2e8885fc8015d3e6f5775df186e443e0964a11c3/distro-1.9.0.tar.gz", hash = "sha256:2fa77c6fd8940f116ee1d6b94a2f90b13b5ea8d019b98bc8bafdcabcdd9bdbed", size = 60722, upload-time = "2023-12-24T09:54:32.31Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/12/b3/231ffd4ab1fc9d679809f356cebee130ac7daa00d6d6f3206dd4fd137e9e/distro-1.9.0-py3-none-any.whl", hash = "sha256:7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2", size = 20277, upload-time = "2023-12-24T09:54:30.421Z" },
+]
+
+[[package]]
+name = "execnet"
+version = "2.1.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/bf/89/780e11f9588d9e7128a3f87788354c7946a9cbb1401ad38a48c4db9a4f07/execnet-2.1.2.tar.gz", hash = "sha256:63d83bfdd9a23e35b9c6a3261412324f964c2ec8dcd8d3c6916ee9373e0befcd", size = 166622, upload-time = "2025-11-12T09:56:37.75Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ab/84/02fc1827e8cdded4aa65baef11296a9bbe595c474f0d6d758af082d849fd/execnet-2.1.2-py3-none-any.whl", hash = "sha256:67fba928dd5a544b783f6056f449e5e3931a5c378b128bc18501f7ea79e296ec", size = 40708, upload-time = "2025-11-12T09:56:36.333Z" },
 ]
 
 [[package]]
@@ -471,6 +487,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
+    { name = "cursor-sdk" },
     { name = "openai" },
     { name = "platformdirs" },
     { name = "pydantic" },
@@ -491,6 +508,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.13,<2" },
+    { name = "cursor-sdk", specifier = "==1.0.32" },
     { name = "openai", specifier = ">=2,<3" },
     { name = "platformdirs", specifier = ">=4,<5" },
     { name = "pydantic", specifier = ">=2.8,<3" },

@@ -210,6 +210,7 @@ class SimpleRecoveryCoordinator:
                 prompt=prompt,
                 output_schema=_DECISION_SCHEMA,
                 timeout_ms=_RECOVERY_TIMEOUT_MS,
+                agent_name="recovery",
             )
         except Exception:
             response = StageFailure(

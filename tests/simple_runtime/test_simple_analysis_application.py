@@ -316,6 +316,48 @@ async def test_hypothesis_generation_recovers_without_manual_resume(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("retryable", "expected_status"),
+    [(False, StageStatus.FAILED), (True, StageStatus.BLOCKED)],
+)
+async def test_hypothesis_provider_failure_preserves_retryability(
+    tmp_path: Path, retryable: bool, expected_status: StageStatus
+) -> None:
+    class FailedHypotheses:
+        async def propose(
+            self, identity: CheckpointIdentity, static: StaticBootstrapResult
+        ) -> StageFailure:
+            del identity, static
+            return StageFailure(
+                code="CURSOR_INVALID_OUTPUT",
+                retryable=retryable,
+                safe_message="Invalid structured output",
+            )
+
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=FailedHypotheses(),
+        runner_factory=_runner,
+        id_factory=iter(("analysis-1", "workspace-1")).__next__,
+    )
+    outcome = await application.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        )
+    )
+    checkpoint = store.require(outcome.identity, SimpleStage.HYPOTHESIS_DONE)
+    assert checkpoint.status is expected_status
+    assert checkpoint.retryable is retryable
+    assert checkpoint.error_code == "CURSOR_INVALID_OUTPUT"
+    assert outcome.status == ("BLOCKED" if retryable else "FAILED")
+
+
+@pytest.mark.asyncio
 async def test_resume_reuses_static_and_hypothesis_results(tmp_path: Path) -> None:
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
     static = _Static()
@@ -340,6 +382,59 @@ async def test_resume_reuses_static_and_hypothesis_results(tmp_path: Path) -> No
 
     assert resumed.status == "COMPLETE"
     assert len(store.list_checkpoints("analysis-1")) >= 4
+
+
+@pytest.mark.asyncio
+async def test_resume_does_not_rerun_completed_agents(tmp_path: Path) -> None:
+    calls: list[SimpleStage] = []
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+
+    def counting_runner(
+        runtime_store: SimpleCheckpointStore,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+    ) -> SimpleRuntimeRunner:
+        del identity, static
+        handlers: dict[SimpleStage, Any] = {}
+        for stage in tuple(SimpleStage)[2:]:
+
+            async def handle(
+                _checkpoint: StageCheckpoint,
+                _prior: Mapping[SimpleStage, StageCheckpoint],
+                *,
+                current: SimpleStage = stage,
+            ) -> StageResult:
+                calls.append(current)
+                return StageResult(
+                    output_refs=(_ref(current.value.lower()),),
+                    verdict="FALSE"
+                    if current is SimpleStage.VERIFICATION_FINAL_DONE
+                    else None,
+                )
+
+            handlers[stage] = handle
+        return SimpleRuntimeRunner(runtime_store, handlers)
+
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=counting_runner,
+        id_factory=iter(("analysis-1", "workspace-1")).__next__,
+    )
+    first = await application.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        )
+    )
+    before = tuple(calls)
+    assert before
+    resumed = await application.resume(first.display_analysis_id)
+    assert resumed.status == "COMPLETE"
+    assert tuple(calls) == before
 
 
 @pytest.mark.asyncio

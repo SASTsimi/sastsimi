@@ -72,6 +72,8 @@ class SimpleAnalysisRun(ContractModel):
     workspace_id: str
     commit_id: str
     repository: str
+    llm_provider: str | None = None
+    on_demand_possible: bool = False
     workspace_path: Path | None = None
     repository_profile_ref: StoredDataRef | None = None
     static_bundle_ref: StoredDataRef | None = None
