@@ -213,3 +213,37 @@ def test_every_repair_note_says_what_to_do_instead() -> None:
             word in guidance.lower()
             for word in ("use ", "begin ", "emit ", "plant ", "start ", "assign ")
         ), code
+
+
+def test_no_rule_is_first_learned_by_breaking_it() -> None:
+    """Every rule the validator enforces must be stated before the first try.
+
+    A resumed run produced a candidate refused for having no shebang - a rule
+    the opening instructions never mentioned, so the agent could only discover
+    it by failing and spending one of three repair attempts on it.
+    """
+
+    import inspect
+
+    import sastsimi.simple_runtime.stages as stages
+    from sastsimi.simple_runtime.stages import _CANDIDATE_REPAIR_GUIDANCE
+
+    source = inspect.getsource(stages)
+    start = source.index("You are the Dynamic Reproduction Agent")
+    opening = source[start : source.index('"""', start)].lower()
+
+    # A word from each rule that the opening must already carry.
+    stated_by = {
+        "POC_SENSITIVE_CONTENT": "fixture_value",
+        "POC_UNDECLARED_INPUT": "environment variable",
+        "POC_HOST_PATH_FORBIDDEN": "/workspace",
+        "POC_EXTERNAL_URL_FORBIDDEN": "127.0.0.1",
+        "POC_PLACEHOLDER_FORBIDDEN": "placeholder",
+        "POC_SHEBANG_REQUIRED": "shebang",
+        "POC_CONTENT_ENCODING_INVALID": "utf-8",
+    }
+
+    # A new rule with repair guidance and no entry here is the bug this catches.
+    assert set(stated_by) == set(_CANDIDATE_REPAIR_GUIDANCE)
+    for code, word in stated_by.items():
+        assert word in opening, code

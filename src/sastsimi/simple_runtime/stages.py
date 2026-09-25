@@ -287,9 +287,12 @@ class PoCCandidateStage:
         context = self._artifacts.prompt_context(exact_refs)
         instructions = """
 You are the Dynamic Reproduction Agent. Return exactly one JSON object with a
-single `content` field containing a complete POSIX `/bin/sh` script. The script
-must execute locally inside the prepared container using only `/workspace`,
-`/tmp`, repository code, and harmless fixtures or mocks it creates itself.
+single `content` field containing a complete POSIX `/bin/sh` script. Begin it
+with a `#!/bin/sh` shebang line, and emit plain UTF-8 text with Unix line
+endings and no NUL bytes. The script must execute locally inside the prepared
+container using only `/workspace`, `/tmp`, repository code, and harmless
+fixtures or mocks it creates itself. Any URL it uses must address 127.0.0.1,
+localhost or 0.0.0.0, with the server started inside the container.
 It must not require caller-provided URLs, cookies, credentials, secrets, or
 undeclared environment variables. It must exit 0 only when the exact hypothesis
 is reproduced, exit 1 when it is actually disproved, and use exit 2 only for a
