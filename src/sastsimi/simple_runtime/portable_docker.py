@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 
 from sastsimi.config.user_config import SimpleExecutionProfile
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.ports.docker_state import DockerContainerState
 from sastsimi.sandbox.docker_adapter import (
     DockerCommandOutcome,
@@ -19,7 +20,12 @@ from sastsimi.sandbox.docker_adapter import (
 )
 
 from .artifacts import SimpleArtifactRepository
-from .models import SimpleStage, StageCheckpoint
+from .models import CheckpointIdentity, SimpleStage, StageCheckpoint
+from .recovery import (
+    RecoveryAction,
+    RecoveryDecision,
+    validate_environment_patch,
+)
 from .stages import ReproductionEnvironment
 
 _RESOURCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -123,7 +129,14 @@ class PortableDockerRuntime:
             raise ValueError("POC_CONTENT_DIGEST_MISMATCH")
         path = "/tmp/sastsimi-poc-candidate"
         written = await self._run(
-            ("exec", "-i", container_id, "sh", "-c", f"cat > {path}"),
+            (
+                "exec",
+                "-i",
+                container_id,
+                "sh",
+                "-c",
+                f"rm -f {path} && cat > {path}",
+            ),
             input_bytes=content,
             timeout_seconds=30,
         )
@@ -244,6 +257,7 @@ class PortableDockerRuntime:
             "TMPDIR",
             "HOME",
             "USERPROFILE",
+            "PROGRAMFILES",
             "DOCKER_HOST",
             "DOCKER_CONTEXT",
         }
@@ -322,6 +336,7 @@ class DirectEnvironmentPreparer:
         else:
             dockerfile = self._generated_dockerfile(target_requirements)
             source = "GENERATED"
+        dockerfile += self._recovery_patch(checkpoint)
         dockerfile_ref = self._artifacts.put_bytes(dockerfile, "text/x-dockerfile")
         recipe = {
             "kind": "simple_environment_recipe",
@@ -353,6 +368,35 @@ class DirectEnvironmentPreparer:
             },
         )
         return ReproductionEnvironment(recipe_ref, image_digest)
+
+    def _recovery_patch(self, checkpoint: StageCheckpoint) -> bytes:
+        for ref in reversed(checkpoint.input_refs):
+            try:
+                value = json.loads(self._artifacts.read(ref))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(value, dict) or value.get("kind") != (
+                "simple_recovery_decision"
+            ):
+                continue
+            decision_identity = CheckpointIdentity.model_validate(value.get("identity"))
+            if decision_identity != checkpoint.identity:
+                raise ValueError("RECOVERY_DECISION_IDENTITY_MISMATCH")
+            decision_value = value.get("decision")
+            if not isinstance(decision_value, dict):
+                raise ValueError("RECOVERY_DECISION_ARTIFACT_INVALID")
+            decision = RecoveryDecision.model_validate_json(
+                canonical_bytes(decision_value)
+            )
+            if decision.action is not RecoveryAction.REBUILD_ENVIRONMENT:
+                continue
+            patch = validate_environment_patch(decision.environment_patch)
+            return (
+                b"\n# SASTSIMI validated recovery patch\n"
+                + patch.encode("utf-8")
+                + b"\n"
+            )
+        return b""
 
     @staticmethod
     def _portable_repository_dockerfile(dockerfile: bytes) -> bytes:

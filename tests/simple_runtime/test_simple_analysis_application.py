@@ -26,8 +26,44 @@ from sastsimi.simple_runtime.models import (
     StageStatus,
     input_reference_hash,
 )
+from sastsimi.simple_runtime.recovery import (
+    RecoveryAction,
+    RecoveryCategory,
+    RecoveryDecision,
+    RecoveryResolution,
+)
 from sastsimi.simple_runtime.runner import SimpleRuntimeRunner, StageBlocked
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
+
+
+class _RecoveryFactory:
+    def __init__(self, data_dir: Path) -> None:
+        self.data_dir = data_dir
+        self.calls: list[tuple[StageCheckpoint, StageFailure]] = []
+
+    def __call__(self, _identity: CheckpointIdentity) -> _RecoveryFactory:
+        return self
+
+    async def decide(
+        self,
+        checkpoint: StageCheckpoint,
+        failure: StageFailure,
+    ) -> RecoveryResolution:
+        self.calls.append((checkpoint, failure))
+        decision = RecoveryDecision(
+            category=RecoveryCategory.TRANSIENT_TOOL,
+            action=RecoveryAction.RETRY_STAGE,
+            diagnosis="temporary test failure",
+            guidance="retry the owning stage",
+            environment_patch="",
+        )
+        ref = SimpleArtifactRepository(self.data_dir, checkpoint.identity).put_json(
+            {
+                "kind": "simple_recovery_decision",
+                "decision": decision.model_dump(mode="json"),
+            }
+        )
+        return RecoveryResolution(decision=decision, decision_ref=ref)
 
 
 def _ref(name: str) -> StoredDataRef:
@@ -158,14 +194,18 @@ class _BlockedStatic:
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_failure_is_visible_and_never_false(tmp_path: Path) -> None:
+async def test_bootstrap_failure_recovers_automatically_and_never_false(
+    tmp_path: Path,
+) -> None:
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    recovery = _RecoveryFactory(tmp_path)
     application = SimpleAnalysisApplication(
         data_dir=tmp_path,
         store=store,
         static_bootstrap=(static := _BlockedStatic()),
         hypothesis_bootstrap=_Hypotheses(),
         runner_factory=_runner,
+        recovery_factory=recovery,
         id_factory=iter(("analysis-1", "workspace-1")).__next__,
     )
 
@@ -177,18 +217,102 @@ async def test_bootstrap_failure_is_visible_and_never_false(tmp_path: Path) -> N
         )
     )
 
-    assert outcome.status == "BLOCKED"
-    failed = store.require(outcome.identity, SimpleStage.STATIC_DONE)
-    assert failed.status == StageStatus.BLOCKED
-    assert failed.error_code == "OPENGREP_EXECUTION_FAILED"
-    assert failed.verdict is None
-    assert store.list_checkpoints("analysis-1") == (failed,)
-
-    resumed = await application.resume(outcome.display_analysis_id)
-
-    assert resumed.identity.analysis_id == "analysis-1"
-    assert resumed.status == "COMPLETE"
+    assert outcome.status == "COMPLETE"
     assert static.calls == 2
+    repaired = store.require(outcome.identity, SimpleStage.STATIC_DONE)
+    assert repaired.status is StageStatus.SUCCEEDED
+    assert repaired.attempt_number == 2
+    assert len(recovery.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_static_bootstrap_exhausts_after_three_automatic_attempts(
+    tmp_path: Path,
+) -> None:
+    class AlwaysBlockedStatic:
+        calls = 0
+
+        async def run(
+            self,
+            _request: SimpleAnalysisRequest,
+            _identity: CheckpointIdentity,
+        ) -> StaticBootstrapResult:
+            self.calls += 1
+            raise RuntimeError("DOCKER_BUILD_FAILED")
+
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    static = AlwaysBlockedStatic()
+    recovery = _RecoveryFactory(tmp_path)
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=static,
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=_runner,
+        recovery_factory=recovery,
+        id_factory=iter(("analysis-1", "workspace-1")).__next__,
+    )
+
+    outcome = await application.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        )
+    )
+
+    exhausted = store.require(outcome.identity, SimpleStage.STATIC_DONE)
+    assert outcome.status == "BLOCKED"
+    assert outcome.error_code == "RECOVERY_EXHAUSTED"
+    assert static.calls == 3
+    assert len(recovery.calls) == 2
+    assert exhausted.attempt_number == 3
+    assert exhausted.retryable is False
+    assert exhausted.verdict is None
+
+
+@pytest.mark.asyncio
+async def test_hypothesis_generation_recovers_without_manual_resume(
+    tmp_path: Path,
+) -> None:
+    class FlakyHypotheses(_Hypotheses):
+        calls = 0
+
+        async def propose(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+        ) -> tuple[HypothesisSeed, ...]:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("HYPOTHESIS_PROVIDER_FAILED")
+            return await super().propose(identity, static)
+
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    hypotheses = FlakyHypotheses()
+    recovery = _RecoveryFactory(tmp_path)
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=hypotheses,
+        runner_factory=_runner,
+        recovery_factory=recovery,
+        id_factory=iter(("analysis-1", "workspace-1")).__next__,
+    )
+
+    outcome = await application.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        )
+    )
+
+    hypothesis = store.require(outcome.identity, SimpleStage.HYPOTHESIS_DONE)
+    assert outcome.status == "COMPLETE"
+    assert hypotheses.calls == 2
+    assert hypothesis.attempt_number == 2
 
 
 @pytest.mark.asyncio
@@ -222,6 +346,9 @@ async def test_resume_reuses_static_and_hypothesis_results(tmp_path: Path) -> No
 async def test_blocked_hypothesis_does_not_stop_independent_sibling(
     tmp_path: Path,
 ) -> None:
+    recovery = _RecoveryFactory(tmp_path)
+    blocked_calls: list[SimpleStage] = []
+
     class TwoHypotheses:
         async def propose(
             self,
@@ -257,6 +384,7 @@ async def test_blocked_hypothesis_does_not_stop_independent_sibling(
                     identity.hypothesis_id == "hypothesis-blocked"
                     and current is SimpleStage.PRO_CON_DONE
                 ):
+                    blocked_calls.append(current)
                     raise StageBlocked(
                         StageFailure(
                             code="PROVIDER_TEMPORARY_FAILURE",
@@ -274,7 +402,11 @@ async def test_blocked_hypothesis_does_not_stop_independent_sibling(
                 )
 
             handlers[stage] = handle
-        return SimpleRuntimeRunner(store, handlers)
+        return SimpleRuntimeRunner(
+            store,
+            handlers,
+            recovery=recovery(identity),
+        )
 
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
     application = SimpleAnalysisApplication(
@@ -283,6 +415,7 @@ async def test_blocked_hypothesis_does_not_stop_independent_sibling(
         static_bootstrap=_Static(),
         hypothesis_bootstrap=TwoHypotheses(),
         runner_factory=runner,
+        recovery_factory=recovery,
         id_factory=iter(("analysis-1", "workspace-1")).__next__,
     )
 
@@ -295,6 +428,13 @@ async def test_blocked_hypothesis_does_not_stop_independent_sibling(
     )
 
     assert outcome.status == "BLOCKED"
+    blocked = outcome.identity.model_copy(
+        update={"hypothesis_id": "hypothesis-blocked"}
+    )
+    exhausted = store.require(blocked, SimpleStage.PRO_CON_DONE)
+    assert len(blocked_calls) == 3
+    assert exhausted.error_code == "RECOVERY_EXHAUSTED"
+    assert exhausted.retryable is False
     completed = outcome.identity.model_copy(
         update={"hypothesis_id": "hypothesis-complete"}
     )

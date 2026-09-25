@@ -6,6 +6,7 @@ from datetime import datetime
 
 from sastsimi.contracts.base import ContractModel
 from sastsimi.observability.agent_activity import ActivityKind
+from sastsimi.simple_runtime.recovery import MAX_RECOVERY_ATTEMPTS
 
 
 class AnalysisSummaryView(ContractModel):
@@ -41,6 +42,8 @@ class HypothesisProgressView(ContractModel):
     validated_poc: bool = False
     parent_hypothesis_ids: tuple[str, ...] = ()
     chain_depth: int = 0
+    attempt_number: int = 1
+    attempt_limit: int = MAX_RECOVERY_ATTEMPTS
     updated_at: datetime | None = None
 
 

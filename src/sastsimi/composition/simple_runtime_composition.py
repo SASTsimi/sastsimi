@@ -48,6 +48,7 @@ from sastsimi.simple_runtime.provider import (
     SimpleCodexClient,
     SimpleOpenAIClient,
 )
+from sastsimi.simple_runtime.recovery import SimpleRecoveryCoordinator
 from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
 from sastsimi.simple_runtime.stages import build_stage_handlers
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
@@ -116,6 +117,15 @@ def build_analysis_application(
     client_factory = SimpleClientFactory(profile)
     docker = PortableDockerRuntime(profile)
 
+    def recovery_factory(
+        identity: CheckpointIdentity,
+    ) -> SimpleRecoveryCoordinator:
+        artifacts = SimpleArtifactRepository(data_dir, identity)
+        return SimpleRecoveryCoordinator(
+            client=client_factory(identity, artifacts),
+            artifacts=artifacts,
+        )
+
     def runner_factory(
         runtime_store: SimpleCheckpointStore,
         identity: CheckpointIdentity,
@@ -138,6 +148,7 @@ def build_analysis_application(
                 environments=environments,
                 store=runtime_store,
             ),
+            recovery=recovery_factory(identity),
         )
 
     return SimpleAnalysisApplication(
@@ -149,6 +160,7 @@ def build_analysis_application(
             client_factory=client_factory,
         ),
         runner_factory=runner_factory,
+        recovery_factory=recovery_factory,
     )
 
 
@@ -265,6 +277,9 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             "known_units": snapshot.known_units,
             "current_stage": snapshot.current_stage,
             "current_hypothesis_id": snapshot.current_hypothesis_id,
+            "attempt_number": snapshot.attempt_number,
+            "attempt_limit": snapshot.attempt_limit,
+            "error_code": snapshot.error_code,
         }
 
     def result(self, analysis_id: str) -> dict[str, object]:

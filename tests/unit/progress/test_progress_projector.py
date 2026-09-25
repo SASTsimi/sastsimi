@@ -36,6 +36,7 @@ def _save(
     *,
     status: StageStatus = StageStatus.SUCCEEDED,
     verdict: Literal["TRUE", "FALSE", "HOLD"] | None = None,
+    attempt_number: int = 0,
 ) -> None:
     checkpoint = StageCheckpoint(
         identity=identity,
@@ -47,6 +48,7 @@ def _save(
         if status is StageStatus.SUCCEEDED
         else (),
         verdict=verdict,
+        attempt_number=attempt_number,
     )
     store.save_checkpoint(checkpoint)
 
@@ -72,6 +74,8 @@ def test_progress_counts_known_work_and_only_complete_reaches_100(
     assert running.known_units == 2 + len(HYPOTHESIS_STAGES)
     assert running.percent < 100
     assert running.status == "RUNNING"
+    assert running.attempt_number == 1
+    assert running.attempt_limit == 3
 
     for stage in HYPOTHESIS_STAGES[1:]:
         _save(
@@ -148,3 +152,25 @@ def test_blocked_and_failed_stages_are_not_counted_complete(tmp_path: Path) -> N
     failed = ProgressProjector(store).snapshot("analysis-1")
     assert failed.completed_units == 0
     assert failed.status == "FAILED"
+
+
+def test_progress_projects_the_current_recovery_attempt(tmp_path: Path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    _save(
+        store,
+        identity,
+        SimpleStage.POC_EXECUTION_DONE,
+        status=StageStatus.BLOCKED,
+        attempt_number=2,
+    )
+
+    snapshot = ProgressProjector(store).snapshot("analysis-1")
+
+    assert snapshot.attempt_number == 2
+    assert snapshot.attempt_limit == 3

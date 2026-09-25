@@ -98,6 +98,7 @@ class ProgressProjector:
             current_stage=current.stage.value,
             current_hypothesis_id=current.identity.hypothesis_id,
             error_code=current.error_code,
+            attempt_number=max(1, current.attempt_number),
             denominator_change_reason=(
                 "NEW_HYPOTHESIS_REGISTERED" if len(by_hypothesis) > 1 else None
             ),

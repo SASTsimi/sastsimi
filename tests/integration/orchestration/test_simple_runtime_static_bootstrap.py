@@ -94,6 +94,25 @@ class _Process:
         return ProcessResult(0, b"", b"")
 
 
+class _RecordingProcess(_Process):
+    def __init__(self) -> None:
+        self.commands: list[tuple[str, ...]] = []
+
+    async def run(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        timeout_seconds: int,
+    ) -> ProcessResult:
+        self.commands.append(tuple(argv))
+        return await super().run(
+            argv,
+            cwd=cwd,
+            timeout_seconds=timeout_seconds,
+        )
+
+
 def _profile(tmp_path: Path) -> SimpleExecutionProfile:
     executable = tmp_path / "tool"
     executable.write_bytes(b"tool")
@@ -115,6 +134,42 @@ def _profile(tmp_path: Path) -> SimpleExecutionProfile:
         max_elapsed_seconds=3600,
         docker_network="NONE",
         tools={"git": binding, "opengrep": binding, "codeql": binding},
+    )
+
+
+@pytest.mark.asyncio
+async def test_clone_disables_host_autocrlf_for_container_workspaces(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    process = _RecordingProcess()
+    identity = CheckpointIdentity(
+        analysis_id="analysis-line-endings",
+        workspace_id="workspace-line-endings",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+
+    await DirectStaticBootstrap(
+        profile=profile,
+        process=process,
+        static_material_root=tmp_path,
+    ).run(
+        SimpleAnalysisRequest(
+            data_dir=profile.data_dir,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        ),
+        identity,
+    )
+
+    clone = next(command for command in process.commands if command[1] == "clone")
+    assert clone[1:-2] == (
+        "clone",
+        "--no-checkout",
+        "--config",
+        "core.autocrlf=false",
+        "--",
     )
 
 

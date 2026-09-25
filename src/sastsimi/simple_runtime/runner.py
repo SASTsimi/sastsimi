@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import uuid4
 
 from sastsimi.contracts.base import ContractModel
 
 from .models import (
     HYPOTHESIS_STAGES,
+    STAGE_ORDER,
     STAGE_VERSION,
     CheckpointIdentity,
     SimpleStage,
@@ -16,6 +17,11 @@ from .models import (
     StageResult,
     StageStatus,
     input_reference_hash,
+)
+from .recovery import (
+    MAX_RECOVERY_ATTEMPTS,
+    RecoveryAction,
+    RecoveryCoordinator,
 )
 from .store import SimpleCheckpointStore
 
@@ -51,158 +57,270 @@ class SimpleRuntimeRunner:
         self,
         store: SimpleCheckpointStore,
         handlers: Mapping[SimpleStage, SimpleStageHandler],
+        *,
+        recovery: RecoveryCoordinator | None = None,
     ) -> None:
         self.store = store
         self.handlers = handlers
+        self.recovery = recovery
 
     async def resume_analysis(self, identity: CheckpointIdentity) -> RunOutcome:
         return await self.resume_hypothesis(identity)
 
     async def resume_hypothesis(self, identity: CheckpointIdentity) -> RunOutcome:
-        self._reset_incomplete_poc_attempt(identity)
+        if self.recovery is None:
+            self._reset_incomplete_poc_attempt(identity)
         self._reset_technical_revision(identity)
-        for stage in HYPOTHESIS_STAGES:
-            final = self.store.get(identity, SimpleStage.VERIFICATION_FINAL_DONE)
-            if (
-                final is not None
-                and final.status is StageStatus.SUCCEEDED
-                and final.verdict == "HOLD"
-                and stage
-                in {
-                    SimpleStage.CWE_DONE,
-                    SimpleStage.TECH_GATE_DONE,
-                    SimpleStage.SCOPE_GATE_DONE,
-                    SimpleStage.FINDING_DONE,
-                    SimpleStage.REPORT_DONE,
-                }
-            ):
-                continue
-            input_refs = self.store.input_refs_for(identity, stage)
-            if self.store.reusable(identity, stage, input_refs):
-                reusable = self.store.require(identity, stage)
+        while True:
+            restart_requested = False
+            for stage in HYPOTHESIS_STAGES:
+                final = self.store.get(
+                    identity,
+                    SimpleStage.VERIFICATION_FINAL_DONE,
+                )
                 if (
-                    stage is SimpleStage.VERIFICATION_FINAL_DONE
-                    and reusable.verdict == "FALSE"
+                    final is not None
+                    and final.status is StageStatus.SUCCEEDED
+                    and final.verdict == "HOLD"
+                    and stage
+                    in {
+                        SimpleStage.CWE_DONE,
+                        SimpleStage.TECH_GATE_DONE,
+                        SimpleStage.SCOPE_GATE_DONE,
+                        SimpleStage.FINDING_DONE,
+                        SimpleStage.REPORT_DONE,
+                    }
                 ):
+                    continue
+                existing = self.store.get(identity, stage)
+                if self.recovery is not None and existing is not None:
+                    recovery_outcome = await self._recover_existing(existing)
+                    if recovery_outcome is False:
+                        pass
+                    elif recovery_outcome is None:
+                        restart_requested = True
+                        break
+                    else:
+                        return recovery_outcome
+                input_refs = self.store.input_refs_for(identity, stage)
+                if self.store.reusable(identity, stage, input_refs):
+                    reusable = self.store.require(identity, stage)
+                    if (
+                        stage is SimpleStage.VERIFICATION_FINAL_DONE
+                        and reusable.verdict == "FALSE"
+                    ):
+                        return RunOutcome(
+                            current_stage=stage,
+                            status=StageStatus.SUCCEEDED,
+                        )
+                    continue
+                existing = self.store.get(identity, stage)
+                prior = self.store.prior(identity, stage)
+                preceding = next(reversed(prior.values()), None)
+                inherit_from = (
+                    existing
+                    if existing is not None
+                    and existing.recipe_ref is not None
+                    and existing.image_digest is not None
+                    else preceding
+                )
+                attempt_id = (
+                    preceding.attempt_id
+                    if stage is SimpleStage.POC_EXECUTION_DONE
+                    and preceding is not None
+                    and preceding.stage is SimpleStage.POC_CANDIDATE_DONE
+                    and preceding.attempt_id is not None
+                    else uuid4().hex
+                )
+                retry_seed = (
+                    existing
+                    if existing is not None and existing.status is StageStatus.PENDING
+                    else None
+                )
+                if retry_seed is None:
+                    self.store.invalidate_from(identity, stage, new_inputs=input_refs)
+                checkpoint = self.store.mark_running(
+                    identity,
+                    stage,
+                    input_refs,
+                    attempt_id=attempt_id,
+                    inherit_from=inherit_from,
+                )
+                handler = self.handlers.get(stage)
+                if handler is None:
+                    failure = StageFailure(
+                        code="STAGE_HANDLER_MISSING",
+                        retryable=False,
+                        safe_message=f"No handler registered for {stage.value}",
+                    )
+                    self.store.mark_failure(
+                        checkpoint,
+                        failure,
+                        StageStatus.FAILED,
+                    )
                     return RunOutcome(
                         current_stage=stage,
-                        status=StageStatus.SUCCEEDED,
+                        status=StageStatus.FAILED,
+                        error_code=failure.code,
                     )
+                try:
+                    result = await handler(checkpoint, prior)
+                except StageBlocked as error:
+                    outcome = await self._recover_or_stop(
+                        checkpoint,
+                        error.failure,
+                        StageStatus.BLOCKED,
+                    )
+                except StageFailed as error:
+                    outcome = await self._recover_or_stop(
+                        checkpoint,
+                        error.failure,
+                        StageStatus.FAILED,
+                    )
+                except Exception as error:
+                    code = getattr(error, "code", "STAGE_UNEXPECTED_ERROR")
+                    if not isinstance(code, str) or not code:
+                        code = "STAGE_UNEXPECTED_ERROR"
+                    outcome = await self._recover_or_stop(
+                        checkpoint,
+                        StageFailure(
+                            code=code[:160],
+                            retryable=True,
+                            safe_message=(
+                                "Stage execution ended unexpectedly; retry is allowed"
+                            ),
+                        ),
+                        StageStatus.BLOCKED,
+                    )
+                else:
+                    completed = self.store.complete(checkpoint, result)
+                    if (
+                        stage is SimpleStage.VERIFICATION_FINAL_DONE
+                        and completed.verdict == "FALSE"
+                    ):
+                        return RunOutcome(
+                            current_stage=stage,
+                            status=StageStatus.SUCCEEDED,
+                        )
+                    if (
+                        stage is SimpleStage.CHAINING_DONE
+                        and final is not None
+                        and final.verdict == "HOLD"
+                    ):
+                        return RunOutcome(
+                            current_stage=stage,
+                            status=StageStatus.SUCCEEDED,
+                        )
+                    continue
+                if outcome is None:
+                    restart_requested = True
+                    break
+                return outcome
+            if restart_requested:
                 continue
-            existing = self.store.get(identity, stage)
-            prior = self.store.prior(identity, stage)
-            preceding = next(reversed(prior.values()), None)
-            inherit_from = (
-                existing
-                if existing is not None
-                and existing.recipe_ref is not None
-                and existing.image_digest is not None
-                else preceding
+            return RunOutcome(
+                current_stage=SimpleStage.REPORT_DONE,
+                status=StageStatus.SUCCEEDED,
             )
-            attempt_id = (
-                preceding.attempt_id
-                if stage is SimpleStage.POC_EXECUTION_DONE
-                and preceding is not None
-                and preceding.stage is SimpleStage.POC_CANDIDATE_DONE
-                and preceding.attempt_id is not None
-                else uuid4().hex
-            )
-            retry_seed = (
-                existing
-                if existing is not None and existing.status is StageStatus.PENDING
-                else None
-            )
-            self.store.invalidate_from(identity, stage, new_inputs=input_refs)
-            if retry_seed is not None:
-                self.store.save_checkpoint(retry_seed)
-            checkpoint = self.store.mark_running(
-                identity,
-                stage,
-                input_refs,
-                attempt_id=attempt_id,
-                inherit_from=inherit_from,
-            )
-            handler = self.handlers.get(stage)
-            if handler is None:
-                failure = StageFailure(
-                    code="STAGE_HANDLER_MISSING",
-                    retryable=False,
-                    safe_message=f"No handler registered for {stage.value}",
-                )
-                self.store.mark_failure(
-                    checkpoint,
-                    failure,
-                    StageStatus.FAILED,
-                )
-                return RunOutcome(
-                    current_stage=stage,
-                    status=StageStatus.FAILED,
-                    error_code=failure.code,
-                )
-            try:
-                result = await handler(checkpoint, prior)
-            except StageBlocked as error:
-                self.store.mark_failure(
-                    checkpoint,
-                    error.failure,
-                    StageStatus.BLOCKED,
-                )
-                return RunOutcome(
-                    current_stage=stage,
-                    status=StageStatus.BLOCKED,
-                    error_code=error.failure.code,
-                )
-            except StageFailed as error:
-                self.store.mark_failure(
-                    checkpoint,
-                    error.failure,
-                    StageStatus.FAILED,
-                )
-                return RunOutcome(
-                    current_stage=stage,
-                    status=StageStatus.FAILED,
-                    error_code=error.failure.code,
-                )
-            except Exception as error:
-                code = getattr(error, "code", "STAGE_UNEXPECTED_ERROR")
-                if not isinstance(code, str) or not code:
-                    code = "STAGE_UNEXPECTED_ERROR"
-                failure = StageFailure(
-                    code=code[:160],
+
+    async def _recover_existing(
+        self,
+        checkpoint: StageCheckpoint,
+    ) -> RunOutcome | None | Literal[False]:
+        if checkpoint.status is StageStatus.PENDING:
+            return False
+        if checkpoint.status is StageStatus.SUCCEEDED:
+            return False
+        if checkpoint.status is StageStatus.RUNNING:
+            return await self._recover_or_stop(
+                checkpoint,
+                StageFailure(
+                    code="STAGE_INTERRUPTED",
                     retryable=True,
-                    safe_message="Stage execution ended unexpectedly; retry is allowed",
-                )
-                self.store.mark_failure(
-                    checkpoint,
-                    failure,
-                    StageStatus.BLOCKED,
-                )
-                return RunOutcome(
-                    current_stage=stage,
-                    status=StageStatus.BLOCKED,
-                    error_code=failure.code,
-                )
-            completed = self.store.complete(checkpoint, result)
-            if stage is SimpleStage.VERIFICATION_FINAL_DONE and completed.verdict == (
-                "FALSE"
-            ):
-                return RunOutcome(
-                    current_stage=stage,
-                    status=StageStatus.SUCCEEDED,
-                )
-            if (
-                stage is SimpleStage.CHAINING_DONE
-                and final is not None
-                and final.verdict == "HOLD"
-            ):
-                return RunOutcome(
-                    current_stage=stage,
-                    status=StageStatus.SUCCEEDED,
-                )
-        return RunOutcome(
-            current_stage=SimpleStage.REPORT_DONE,
-            status=StageStatus.SUCCEEDED,
+                    safe_message="Stage execution was interrupted before completion",
+                ),
+                StageStatus.BLOCKED,
+            )
+        if not checkpoint.retryable:
+            return RunOutcome(
+                current_stage=checkpoint.stage,
+                status=checkpoint.status,
+                error_code=checkpoint.error_code,
+            )
+        return await self._recover_or_stop(
+            checkpoint,
+            StageFailure(
+                code=checkpoint.error_code or "STAGE_RECOVERY_REQUIRED",
+                retryable=True,
+                safe_message="Resume the recorded retryable stage failure",
+                evidence_refs=checkpoint.output_refs,
+            ),
+            checkpoint.status,
+            already_failed=True,
         )
+
+    async def _recover_or_stop(
+        self,
+        checkpoint: StageCheckpoint,
+        failure: StageFailure,
+        original_status: StageStatus,
+        *,
+        already_failed: bool = False,
+    ) -> RunOutcome | None:
+        failed = (
+            checkpoint
+            if already_failed
+            else self.store.mark_failure(checkpoint, failure, original_status)
+        )
+        if self.recovery is None or not failure.retryable:
+            return RunOutcome(
+                current_stage=checkpoint.stage,
+                status=original_status,
+                error_code=failure.code,
+            )
+        if failed.attempt_number >= MAX_RECOVERY_ATTEMPTS:
+            exhausted = self.store.mark_recovery_exhausted(failed)
+            return RunOutcome(
+                current_stage=checkpoint.stage,
+                status=StageStatus.BLOCKED,
+                error_code=exhausted.error_code,
+            )
+        resolution = await self.recovery.decide(failed, failure)
+        if resolution.decision.action is RecoveryAction.STOP:
+            self.store.record_recovery_stop(failed, resolution)
+            return RunOutcome(
+                current_stage=checkpoint.stage,
+                status=original_status,
+                error_code=failure.code,
+            )
+        restart_stage = self._recovery_restart_stage(
+            checkpoint.stage,
+            resolution.decision.action,
+        )
+        if restart_stage is None:
+            self.store.record_recovery_decision(failed, resolution)
+            return RunOutcome(
+                current_stage=checkpoint.stage,
+                status=original_status,
+                error_code=failure.code,
+            )
+        self.store.prepare_recovery(failed, resolution, restart_stage)
+        return None
+
+    @staticmethod
+    def _recovery_restart_stage(
+        failed_stage: SimpleStage,
+        action: RecoveryAction,
+    ) -> SimpleStage | None:
+        if action is RecoveryAction.REBUILD_ENVIRONMENT:
+            if STAGE_ORDER.index(failed_stage) < STAGE_ORDER.index(
+                SimpleStage.VERIFICATION_INITIAL_DONE
+            ):
+                return None
+            return SimpleStage.VERIFICATION_INITIAL_DONE
+        if failed_stage is SimpleStage.POC_EXECUTION_DONE:
+            return SimpleStage.POC_CANDIDATE_DONE
+        return failed_stage
 
     def _reset_incomplete_poc_attempt(self, identity: CheckpointIdentity) -> None:
         candidate = self.store.get(identity, SimpleStage.POC_CANDIDATE_DONE)
