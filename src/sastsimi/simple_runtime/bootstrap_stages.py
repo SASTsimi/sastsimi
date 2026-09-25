@@ -633,6 +633,16 @@ class DirectHypothesisBootstrap:
                     "proposal": value,
                     "prompt_digest": result.prompt_digest,
                     "output_digest": result.output_digest,
+                    "llm_request_ref": (
+                        result.request_ref.model_dump(mode="json")
+                        if result.request_ref is not None
+                        else None
+                    ),
+                    "llm_response_ref": (
+                        result.response_ref.model_dump(mode="json")
+                        if result.response_ref is not None
+                        else None
+                    ),
                 }
             )
             seeds.append(

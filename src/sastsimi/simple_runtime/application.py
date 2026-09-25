@@ -86,6 +86,9 @@ class SimpleAnalysisApplication:
         hypothesis_bootstrap: HypothesisBootstrap,
         runner_factory: RunnerFactory,
         id_factory: Callable[[], str] | None = None,
+        profile_ref: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
     ) -> None:
         self._data_dir = data_dir
         self._store = store
@@ -94,6 +97,9 @@ class SimpleAnalysisApplication:
         self._runner_factory = runner_factory
         self._ids = id_factory or (lambda: uuid4().hex)
         self._display = AnalysisDisplayIdStore(store.database_path)
+        self._profile_ref = profile_ref
+        self._provider = provider
+        self._model = model
 
     async def analyze(
         self,
@@ -116,6 +122,9 @@ class SimpleAnalysisApplication:
             workspace_id=workspace_id,
             commit_id=request.commit.lower(),
             repository=request.repository,
+            profile_ref=self._profile_ref,
+            provider=self._provider,
+            model=self._model,
         )
         self._store.save_analysis_run(run)
         if on_analysis_started is not None:

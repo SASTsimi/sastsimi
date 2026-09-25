@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import re
+import zipfile
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -92,6 +95,98 @@ def create_server(
                     )
                 elif parts == ("api", "analyses"):
                     self._json(query.list_analyses(), send_body)
+                elif (
+                    len(parts) == 5
+                    and parts[:2] == ("api", "analyses")
+                    and parts[3] == "artifacts"
+                ):
+                    if parse_qs(parsed.query).get("download") == ["1"]:
+                        kind, media_type, body = query.artifact_bytes(
+                            parts[2], parts[4]
+                        )
+                        suffix = ".json" if media_type == "application/json" else ".txt"
+                        filename = re.sub(r"[^A-Za-z0-9_.-]", "-", kind)[:80]
+                        self._download(
+                            body,
+                            media_type,
+                            f"{filename or 'artifact'}-{parts[4][:12]}{suffix}",
+                            send_body,
+                        )
+                    else:
+                        self._json(
+                            query.artifact_content(parts[2], parts[4]), send_body
+                        )
+                elif (
+                    len(parts) == 5
+                    and parts[:2] == ("api", "analyses")
+                    and parts[3] == "reports"
+                ):
+                    self._json(
+                        {
+                            "display_id": parts[4],
+                            "markdown": query.report_markdown(parts[2], parts[4]),
+                        },
+                        send_body,
+                    )
+                elif (
+                    len(parts) == 6
+                    and parts[:2] == ("api", "analyses")
+                    and parts[3] == "reports"
+                    and parts[5] == "download"
+                ):
+                    self._download(
+                        query.report_markdown(parts[2], parts[4]).encode("utf-8"),
+                        "text/markdown; charset=utf-8",
+                        f"{parts[4]}.md",
+                        send_body,
+                    )
+                elif (
+                    len(parts) == 5
+                    and parts[:2] == ("api", "analyses")
+                    and parts[3:] == ("logs", "download")
+                ):
+                    self._download(
+                        query.logs_bytes(parts[2]),
+                        "application/x-ndjson; charset=utf-8",
+                        f"{parts[2]}-console.log",
+                        send_body,
+                    )
+                elif (
+                    len(parts) == 4
+                    and parts[:2] == ("api", "analyses")
+                    and parts[3] == "bundle.zip"
+                ):
+                    parameters = parse_qs(parsed.query)
+                    selected = parameters.get("selected") == ["1"]
+                    artifact_ids = (
+                        frozenset(parameters.get("artifact", ()))
+                        if selected
+                        else None
+                    )
+                    report_ids = (
+                        frozenset(parameters.get("report", ()))
+                        if selected
+                        else None
+                    )
+                    buffer = BytesIO()
+                    with zipfile.ZipFile(
+                        buffer, "w", compression=zipfile.ZIP_DEFLATED
+                    ) as archive:
+                        for name, body in query.bundle_members(
+                            parts[2],
+                            artifact_ids=artifact_ids,
+                            report_ids=report_ids,
+                            include_logs=(
+                                not selected or parameters.get("logs") == ["1"]
+                            ),
+                        ).items():
+                            archive.writestr(name, body)
+                    self._download(
+                        buffer.getvalue(),
+                        "application/zip",
+                        f"{parts[2]}-results.zip",
+                        send_body,
+                    )
                 elif len(parts) == 3 and parts[:2] == ("api", "analyses"):
                     self._json(query.get_analysis(parts[2]), send_body)
                 elif (
@@ -161,6 +256,24 @@ def create_server(
                 raise DashboardNotFound("DASHBOARD_FILE_NOT_FOUND") from error
             self._response(HTTPStatus.OK, body, content_type, send_body)
 
+        def _download(
+            self,
+            body: bytes,
+            content_type: str,
+            filename: str,
+            send_body: bool,
+        ) -> None:
+            safe_name = re.sub(r"[^A-Za-z0-9_.-]", "-", filename)
+            self._response(
+                HTTPStatus.OK,
+                body,
+                content_type,
+                send_body,
+                extra_headers={
+                    "Content-Disposition": f'attachment; filename="{safe_name}"'
+                },
+            )
+
         def _method_not_allowed(self) -> None:
             self._response(
                 HTTPStatus.METHOD_NOT_ALLOWED,
@@ -175,6 +288,8 @@ def create_server(
             body: bytes,
             content_type: str,
             send_body: bool,
+            *,
+            extra_headers: dict[str, str] | None = None,
         ) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
@@ -183,6 +298,8 @@ def create_server(
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Security-Policy", _CSP)
             self.send_header("Referrer-Policy", "no-referrer")
+            for name, value in (extra_headers or {}).items():
+                self.send_header(name, value)
             self.end_headers()
             if send_body:
                 self.wfile.write(body)
