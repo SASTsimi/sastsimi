@@ -275,6 +275,21 @@ async def test_failed_transaction_never_publishes_success_or_false(tmp_path) -> 
     )
 
 
+def test_poc_candidate_validator_allows_localhost_url() -> None:
+    assert validate_candidate(
+        b"#!/bin/sh\nset -eu\nprintf '%s\\n' 'http://localhost/test'\n",
+        allowed_environment_names=frozenset(),
+    )
+
+
+def test_poc_candidate_validator_rejects_windows_host_path() -> None:
+    with pytest.raises(PoCCandidateRejected, match="POC_HOST_PATH_FORBIDDEN"):
+        validate_candidate(
+            b"#!/bin/sh\nset -eu\nprintf '%s\\n' 'C:\\\\Users\\\\name\\\\file'\n",
+            allowed_environment_names=frozenset(),
+        )
+
+
 @pytest.mark.asyncio
 async def test_unexpected_stage_error_is_retryable_blocked_not_orphaned_running(
     tmp_path,

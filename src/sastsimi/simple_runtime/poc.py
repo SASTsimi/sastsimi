@@ -16,7 +16,9 @@ _SHELL_ASSIGNMENT = re.compile(
     rb"(?P<name>[A-Za-z_][A-Za-z0-9_]*)="
 )
 _URL = re.compile(rb"https?://[^\s'\"<>]+", re.IGNORECASE)
-_WINDOWS_PATH = re.compile(rb"(?:[A-Za-z]:[\\/]|\\\\)[^\r\n]+")
+_WINDOWS_PATH = re.compile(
+    rb"(?:(?<![A-Za-z0-9_])[A-Za-z]:[\\/]|\\\\)[^\r\n]+"
+)
 _FORBIDDEN_HOST_PATHS = (
     b"/var/run/docker.sock",
     b"/run/docker.sock",

@@ -49,7 +49,7 @@ _PRIVATE_KEY_HEADER = re.compile(
     re.IGNORECASE,
 )
 _WINDOWS_PATH = re.compile(
-    r"(?i)(?<![\w])(?:[A-Z]:[\\/]|\\\\(?![\\\"]))[^\r\n,;\"'<>]+"
+    r"(?i)(?<![\w])(?:[A-Z]:[\\/]|\\{2,}(?![\\\"]))[^\r\n,;\"'<>]+"
 )
 _POSIX_HOST_PATH = re.compile(
     r"(?<![\w/])/(?:root|home|Users|tmp|etc|var|opt|srv|usr|private)"

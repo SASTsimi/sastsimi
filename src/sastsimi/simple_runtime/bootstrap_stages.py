@@ -206,7 +206,16 @@ class DirectStaticBootstrap:
         workspace.parent.mkdir(parents=True, exist_ok=True)
         git = self._tool("git")
         clone = await self._process.run(
-            (git, "clone", "--no-checkout", "--", request.repository, str(workspace)),
+            (
+                git,
+                "clone",
+                "--no-checkout",
+                "--config",
+                "core.autocrlf=false",
+                "--",
+                request.repository,
+                str(workspace),
+            ),
             timeout_seconds=min(self._profile.max_elapsed_seconds, 900),
         )
         if clone.returncode != 0:

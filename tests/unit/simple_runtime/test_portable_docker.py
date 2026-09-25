@@ -1,3 +1,6 @@
+import hashlib
+import json
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -40,6 +43,28 @@ class _RecordingPortableDockerRuntime(PortableDockerRuntime):
         )
 
 
+@pytest.mark.asyncio
+async def test_runtime_process_preserves_programfiles_for_windows_docker_plugins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = PortableDockerRuntime.__new__(PortableDockerRuntime)
+    runtime._executable = Path(sys.executable)
+    monkeypatch.setenv("PROGRAMFILES", r"C:\Program Files")
+    monkeypatch.setenv("SASTSIMI_TEST_SECRET", "must-not-leak")
+
+    outcome = await runtime._run(
+        (
+            "-c",
+            "import json, os; print(json.dumps(dict(os.environ)))",
+        ),
+        timeout_seconds=30,
+    )
+
+    child_environment = json.loads(outcome.stdout)
+    assert child_environment["PROGRAMFILES"] == r"C:\Program Files"
+    assert "SASTSIMI_TEST_SECRET" not in child_environment
+
+
 def test_target_environment_change_invalidates_initial_verification() -> None:
     assert STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE] == "2"
 
@@ -58,6 +83,32 @@ async def test_reproduction_container_keeps_baked_workspace_writable() -> None:
     assert "--read-only" not in create
     assert "--network" in create
     assert "no-new-privileges" in create
+
+
+@pytest.mark.asyncio
+async def test_materialize_poc_replaces_read_only_candidate_from_prior_run() -> None:
+    runtime = _RecordingPortableDockerRuntime.__new__(_RecordingPortableDockerRuntime)
+    runtime._executable = Path("docker")
+    runtime._network = "none"
+    runtime._timeout = 60
+    runtime.calls = []
+    content = b"#!/bin/sh\necho ok\n"
+
+    await runtime.materialize_poc(
+        "container-1",
+        content,
+        hashlib.sha256(content).hexdigest(),
+    )
+
+    assert runtime.calls[0] == (
+        "exec",
+        "-i",
+        "container-1",
+        "sh",
+        "-c",
+        "rm -f /tmp/sastsimi-poc-candidate && "
+        "cat > /tmp/sastsimi-poc-candidate",
+    )
 
 
 def test_repository_buster_dockerfile_uses_archive_mirrors_before_apt() -> None:

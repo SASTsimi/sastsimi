@@ -123,7 +123,14 @@ class PortableDockerRuntime:
             raise ValueError("POC_CONTENT_DIGEST_MISMATCH")
         path = "/tmp/sastsimi-poc-candidate"
         written = await self._run(
-            ("exec", "-i", container_id, "sh", "-c", f"cat > {path}"),
+            (
+                "exec",
+                "-i",
+                container_id,
+                "sh",
+                "-c",
+                f"rm -f {path} && cat > {path}",
+            ),
             input_bytes=content,
             timeout_seconds=30,
         )
@@ -244,6 +251,7 @@ class PortableDockerRuntime:
             "TMPDIR",
             "HOME",
             "USERPROFILE",
+            "PROGRAMFILES",
             "DOCKER_HOST",
             "DOCKER_CONTEXT",
         }
