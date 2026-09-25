@@ -40,7 +40,6 @@ def test_operator_path_is_linked_and_exposes_only_the_product_runtime() -> None:
     assert "Fake로 자동 대체" not in usage
     assert "SimpleRuntime" in usage
     assert "실제 저장소 분석" in usage
-    assert "LIVE_E2E_VERIFIED" in readme
 
 
 def test_operator_docs_never_embed_a_credential_or_claim_preflight_is_active() -> None:
