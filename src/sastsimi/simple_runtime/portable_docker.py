@@ -8,11 +8,13 @@ import json
 import os
 import re
 import shlex
+import socket
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 
 from sastsimi.config.user_config import SimpleExecutionProfile
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.ports.docker_state import DockerContainerState
 from sastsimi.sandbox.docker_adapter import (
     DockerCommandOutcome,
@@ -31,6 +33,23 @@ from .stages import ReproductionEnvironment
 _RESOURCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_OUTPUT = 1024 * 1024
+_DEPENDENCY_INSTALL = re.compile(
+    rb"(?:pip3? install|python -m pip install|npm (?:ci|install)|"
+    rb"apt-get install|yarn install|poetry install)",
+    re.IGNORECASE,
+)
+
+
+class DockerBuildAttemptsError(DockerOperationError):
+    def __init__(
+        self,
+        error: DockerOperationError,
+        attempt_refs: tuple[StoredDataRef, ...],
+        recipe_ref: StoredDataRef,
+    ) -> None:
+        super().__init__(error.code, error.outcome)
+        self.attempt_refs = attempt_refs
+        self.recipe_ref = recipe_ref
 
 
 class PortableDockerRuntime:
@@ -43,8 +62,35 @@ class PortableDockerRuntime:
             raise ValueError("DOCKER_NOT_CONFIGURED") from None
         self._network = "default" if profile.docker_network == "BRIDGE" else "none"
         self._timeout = max(30, profile.max_elapsed_seconds)
+        self._build_slots = asyncio.Semaphore(profile.max_parallel_builds)
+        self._container_slots = asyncio.Semaphore(profile.max_parallel_containers)
+        self._container_limit = profile.max_parallel_containers
 
     async def build_or_reuse(
+        self,
+        *,
+        workspace: Path,
+        dockerfile: bytes,
+        cache_key: str,
+        labels: Mapping[str, str],
+    ) -> str:
+        gate = getattr(self, "_build_slots", None)
+        if gate is None:
+            return await self._build_or_reuse(
+                workspace=workspace,
+                dockerfile=dockerfile,
+                cache_key=cache_key,
+                labels=labels,
+            )
+        async with gate:
+            return await self._build_or_reuse(
+                workspace=workspace,
+                dockerfile=dockerfile,
+                cache_key=cache_key,
+                labels=labels,
+            )
+
+    async def _build_or_reuse(
         self,
         *,
         workspace: Path,
@@ -87,8 +133,39 @@ class PortableDockerRuntime:
         image_digest: str,
         labels: Mapping[str, str],
     ) -> str:
+        gate = getattr(self, "_container_slots", None)
+        if gate is None:
+            return await self._create_container(image_digest, labels)
+        async with gate:
+            return await self._create_container(image_digest, labels)
+
+    async def _create_container(
+        self, image_digest: str, labels: Mapping[str, str]
+    ) -> str:
         if _IMAGE_DIGEST.fullmatch(image_digest) is None:
             raise ValueError("IMAGE_DIGEST_REQUIRED")
+        if labels.get("sastsimi.owner") == "simple-runtime":
+            analysis_id = labels.get("sastsimi.analysis-id")
+            if not analysis_id:
+                raise ValueError("DOCKER_OWNER_LABELS_INCOMPLETE")
+            active = await self._run(
+                (
+                    "ps",
+                    "--quiet",
+                    "--filter",
+                    "label=sastsimi.owner=simple-runtime",
+                    "--filter",
+                    f"label=sastsimi.analysis-id={analysis_id}",
+                    "--filter",
+                    "status=running",
+                ),
+                timeout_seconds=30,
+            )
+            self._require_success("DOCKER_CONTAINER_COUNT_FAILED", active)
+            if len(active.stdout) >= _MAX_OUTPUT:
+                raise DockerOperationError("DOCKER_CONTAINER_COUNT_TRUNCATED")
+            if len(active.stdout.splitlines()) >= getattr(self, "_container_limit", 1):
+                raise DockerOperationError("DOCKER_CONTAINER_LIMIT_REACHED")
         args: list[str] = [
             "create",
             "--network",
@@ -115,7 +192,17 @@ class PortableDockerRuntime:
         self._require_success("DOCKER_CREATE_FAILED", created)
         container_id = created.stdout.decode("ascii", errors="strict").strip()
         self._require_resource_id(container_id)
-        await self._require_success_call("DOCKER_START_FAILED", ("start", container_id))
+        try:
+            await self._require_success_call(
+                "DOCKER_START_FAILED", ("start", container_id)
+            )
+        except (DockerOperationError, asyncio.CancelledError):
+            if labels.get("sastsimi.owner") == "simple-runtime":
+                try:
+                    await self._remove_with_expected_labels(container_id, labels)
+                except (DockerOperationError, OSError, ValueError):
+                    pass
+            raise
         return container_id
 
     async def materialize_poc(
@@ -197,6 +284,98 @@ class PortableDockerRuntime:
                 outcome,
             ) from error
 
+    @staticmethod
+    def _owner_labels(identity: CheckpointIdentity, attempt_id: str) -> dict[str, str]:
+        return {
+            "sastsimi.owner": "simple-runtime",
+            "sastsimi.analysis-id": identity.analysis_id,
+            "sastsimi.workspace-id": identity.workspace_id,
+            "sastsimi.commit-id": identity.commit_id,
+            "sastsimi.hypothesis-id": identity.hypothesis_id or "analysis",
+            "sastsimi.attempt-id": attempt_id,
+        }
+
+    async def remove_owned(
+        self, container_id: str, identity: CheckpointIdentity, attempt_id: str
+    ) -> bool:
+        return await self._remove_with_expected_labels(
+            container_id, self._owner_labels(identity, attempt_id)
+        )
+
+    async def _remove_with_expected_labels(
+        self, container_id: str, expected: Mapping[str, str]
+    ) -> bool:
+        state = await self.inspect(container_id)
+        if state.container_id != container_id or any(
+            state.labels.get(key) != value for key, value in expected.items()
+        ):
+            return False
+        removed = await self._run(("rm", "--force", container_id), timeout_seconds=30)
+        self._require_success("DOCKER_OWNED_REMOVE_FAILED", removed)
+        return True
+
+    async def sweep_orphans(self) -> tuple[str, ...]:
+        listed = await self._run(
+            (
+                "ps",
+                "--all",
+                "--quiet",
+                "--filter",
+                "label=sastsimi.owner=simple-runtime",
+            ),
+            timeout_seconds=30,
+        )
+        self._require_success("DOCKER_OWNED_LIST_FAILED", listed)
+        if len(listed.stdout) >= _MAX_OUTPUT:
+            raise DockerOperationError("DOCKER_OWNED_LIST_TRUNCATED")
+        removed: list[str] = []
+        for raw in listed.stdout.splitlines():
+            container_id = raw.decode("ascii", errors="strict").strip()
+            if _RESOURCE_ID.fullmatch(container_id) is None:
+                continue
+            try:
+                state = await self.inspect(container_id)
+            except DockerOperationError:
+                continue
+            labels = state.labels
+            if (
+                state.container_id != container_id
+                or labels.get("sastsimi.owner") != "simple-runtime"
+                or labels.get("sastsimi.host") != socket.gethostname()
+            ):
+                continue
+            try:
+                pid = int(labels["sastsimi.pid"])
+                identity = CheckpointIdentity(
+                    analysis_id=labels["sastsimi.analysis-id"],
+                    workspace_id=labels["sastsimi.workspace-id"],
+                    commit_id=labels["sastsimi.commit-id"],
+                    hypothesis_id=(
+                        None
+                        if labels["sastsimi.hypothesis-id"] == "analysis"
+                        else labels["sastsimi.hypothesis-id"]
+                    ),
+                )
+                attempt_id = labels["sastsimi.attempt-id"]
+            except (KeyError, TypeError, ValueError):
+                continue
+            if pid > 0 and self._pid_known_dead(pid):
+                if await self.remove_owned(container_id, identity, attempt_id):
+                    removed.append(container_id)
+        return tuple(removed)
+
+    @staticmethod
+    def _pid_known_dead(pid: int, *, platform_name: str | None = None) -> bool:
+        if (platform_name or os.name) != "posix" or pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        return False
+
     async def _require_success_call(
         self,
         code: str,
@@ -244,6 +423,10 @@ class PortableDockerRuntime:
                 stderr=stderr[:_MAX_OUTPUT],
                 timed_out=True,
             )
+        except asyncio.CancelledError:
+            process.kill()
+            await process.communicate()
+            raise
 
     @staticmethod
     def _environment() -> dict[str, str]:
@@ -284,21 +467,29 @@ class PortableDockerRuntime:
 class PortableContainerFactory:
     def __init__(self, docker: PortableDockerRuntime) -> None:
         self._docker = docker
+        self._swept = False
 
     async def acquire(self, checkpoint: StageCheckpoint) -> str:
         if checkpoint.image_digest is None or checkpoint.attempt_id is None:
             raise ValueError("SIMPLE_DOCKER_CHECKPOINT_INCOMPLETE")
+        if not self._swept:
+            await self._docker.sweep_orphans()
+            self._swept = True
         identity = checkpoint.identity
         return await self._docker.create_container(
             checkpoint.image_digest,
             {
-                "sastsimi.owner": "simple-runtime",
-                "sastsimi.analysis-id": identity.analysis_id,
-                "sastsimi.workspace-id": identity.workspace_id,
-                "sastsimi.commit-id": identity.commit_id,
-                "sastsimi.hypothesis-id": identity.hypothesis_id or "analysis",
-                "sastsimi.attempt-id": checkpoint.attempt_id,
+                **self._docker._owner_labels(identity, checkpoint.attempt_id),
+                "sastsimi.host": socket.gethostname(),
+                "sastsimi.pid": str(os.getpid()),
             },
+        )
+
+    async def release(self, checkpoint: StageCheckpoint, container_id: str) -> bool:
+        if checkpoint.attempt_id is None:
+            return False
+        return await self._docker.remove_owned(
+            container_id, checkpoint.identity, checkpoint.attempt_id
         )
 
 
@@ -338,7 +529,141 @@ class DirectEnvironmentPreparer:
             source = "GENERATED"
         dockerfile += self._recovery_patch(checkpoint)
         dockerfile_ref = self._artifacts.put_bytes(dockerfile, "text/x-dockerfile")
-        recipe = {
+        labels = PortableDockerRuntime._owner_labels(
+            checkpoint.identity, checkpoint.attempt_id or "initial"
+        )
+        attempt_refs: list[StoredDataRef] = []
+        degraded = False
+        while True:
+            try:
+                image_digest = await self._docker.build_or_reuse(
+                    workspace=self._workspace,
+                    dockerfile=dockerfile,
+                    cache_key=(
+                        f"{checkpoint.identity.commit_id}:{dockerfile_ref.content_hash}"
+                    ),
+                    labels=labels,
+                )
+            except DockerOperationError as error:
+                attempt_refs.append(
+                    self._build_attempt_ref(
+                        checkpoint, source, dockerfile_ref, "FAILED", error
+                    )
+                )
+                if not degraded and self._dependency_install_failed(error, dockerfile):
+                    dockerfile = self._generated_dockerfile(include_dependencies=False)
+                    dockerfile_ref = self._artifacts.put_bytes(
+                        dockerfile, "text/x-dockerfile"
+                    )
+                    source = "GENERATED_NO_INSTALL"
+                    degraded = True
+                    continue
+                recipe_ref = self._artifacts.put_json(
+                    self._recipe(
+                        checkpoint,
+                        source,
+                        dockerfile_ref,
+                        target_requirements,
+                        requirements,
+                        attempt_refs,
+                        degraded,
+                        status="BLOCKED",
+                    )
+                )
+                raise DockerBuildAttemptsError(
+                    error, tuple(attempt_refs), recipe_ref
+                ) from error
+            attempt_refs.append(
+                self._build_attempt_ref(
+                    checkpoint, source, dockerfile_ref, "BUILT", None
+                )
+            )
+            recipe_ref = self._artifacts.put_json(
+                self._recipe(
+                    checkpoint,
+                    source,
+                    dockerfile_ref,
+                    target_requirements,
+                    requirements,
+                    attempt_refs,
+                    degraded,
+                    status="BUILT",
+                )
+            )
+            return ReproductionEnvironment(recipe_ref, image_digest)
+
+    def _build_attempt_ref(
+        self,
+        checkpoint: StageCheckpoint,
+        source: str,
+        dockerfile_ref: StoredDataRef,
+        status: str,
+        error: DockerOperationError | None,
+    ) -> StoredDataRef:
+        stderr_ref = (
+            self._artifacts.put_bytes(error.outcome.stderr, "text/plain")
+            if error is not None and error.outcome is not None
+            else None
+        )
+        stdout_ref = (
+            self._artifacts.put_bytes(error.outcome.stdout, "text/plain")
+            if error is not None and error.outcome is not None
+            else None
+        )
+        return self._artifacts.put_json(
+            {
+                "kind": "simple_docker_build_attempt",
+                "identity": checkpoint.identity.model_dump(mode="json"),
+                "attempt_id": checkpoint.attempt_id,
+                "dockerfile_source": source,
+                "dockerfile_ref": dockerfile_ref.model_dump(mode="json"),
+                "status": status,
+                "error_code": error.code if error is not None else None,
+                "stderr_ref": (
+                    stderr_ref.model_dump(mode="json")
+                    if stderr_ref is not None
+                    else None
+                ),
+                "stdout_ref": (
+                    stdout_ref.model_dump(mode="json")
+                    if stdout_ref is not None
+                    else None
+                ),
+                "timed_out": (
+                    error.outcome.timed_out
+                    if error is not None and error.outcome is not None
+                    else False
+                ),
+            }
+        )
+
+    @staticmethod
+    def _dependency_install_failed(
+        error: DockerOperationError, dockerfile: bytes
+    ) -> bool:
+        return bool(
+            error.code == "DOCKER_BUILD_FAILED"
+            and error.outcome is not None
+            and not error.outcome.timed_out
+            and _DEPENDENCY_INSTALL.search(dockerfile)
+            and _DEPENDENCY_INSTALL.search(
+                error.outcome.stderr + b"\n" + error.outcome.stdout
+            )
+        )
+
+    @staticmethod
+    def _recipe(
+        checkpoint: StageCheckpoint,
+        source: str,
+        dockerfile_ref: StoredDataRef,
+        target_requirements: str | None,
+        requirements: tuple[str, ...],
+        attempt_refs: list[StoredDataRef],
+        degraded: bool,
+        *,
+        status: str,
+    ) -> dict[str, object]:
+        return {
             "kind": "simple_environment_recipe",
             "analysis_id": checkpoint.identity.analysis_id,
             "workspace_id": checkpoint.identity.workspace_id,
@@ -349,25 +674,10 @@ class DirectEnvironmentPreparer:
             "dockerfile_ref": dockerfile_ref.model_dump(mode="json"),
             "target_requirements_path": target_requirements,
             "requirements": requirements,
+            "build_attempt_refs": [ref.model_dump(mode="json") for ref in attempt_refs],
+            "degraded": degraded,
+            "status": status,
         }
-        recipe_ref = self._artifacts.put_json(recipe)
-        image_digest = await self._docker.build_or_reuse(
-            workspace=self._workspace,
-            dockerfile=dockerfile,
-            cache_key=(
-                f"{checkpoint.identity.commit_id}:{dockerfile_ref.content_hash}"
-            ),
-            labels={
-                "sastsimi.owner": "simple-runtime",
-                "sastsimi.analysis-id": checkpoint.identity.analysis_id,
-                "sastsimi.workspace-id": checkpoint.identity.workspace_id,
-                "sastsimi.commit-id": checkpoint.identity.commit_id,
-                "sastsimi.hypothesis-id": checkpoint.identity.hypothesis_id
-                or "analysis",
-                "sastsimi.attempt-id": checkpoint.attempt_id or "initial",
-            },
-        )
-        return ReproductionEnvironment(recipe_ref, image_digest)
 
     def _recovery_patch(self, checkpoint: StageCheckpoint) -> bytes:
         for ref in reversed(checkpoint.input_refs):
@@ -491,8 +801,13 @@ class DirectEnvironmentPreparer:
     def _generated_dockerfile(
         self,
         target_requirements: str | None = None,
+        *,
+        include_dependencies: bool = True,
     ) -> bytes:
-        if (self._workspace / "requirements.txt").is_file():
+        if not include_dependencies:
+            install = ""
+            target_requirements = None
+        elif (self._workspace / "requirements.txt").is_file():
             install = "RUN pip install --no-cache-dir -r requirements.txt"
         elif (self._workspace / "pyproject.toml").is_file():
             install = "RUN pip install --no-cache-dir ."

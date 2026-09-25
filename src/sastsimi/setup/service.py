@@ -29,6 +29,7 @@ _TOOL_COMMANDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("docker", ("docker", "version", "--format", "{{.Client.Version}}")),
     ("codex", ("codex", "--version")),
     ("cursor_agent", ("agent", "--version")),
+    ("claude", ("claude", "--version")),
 )
 
 
@@ -65,6 +66,10 @@ class SetupChoices(BaseModel):
     llm_timeout_seconds: int = Field(default=180, gt=0, le=3600)
     llm_max_retries: int = Field(default=2, ge=0, le=5)
     llm_max_concurrency: int = Field(default=2, gt=0, le=32)
+    hypothesis_feed: Literal["current", "facts_survey"] = "current"
+    max_parallel_hypotheses: int = Field(default=1, gt=0, le=32)
+    max_parallel_builds: int = Field(default=1, gt=0, le=32)
+    max_parallel_containers: int = Field(default=1, gt=0, le=32)
     cursor_allow_on_demand: bool = False
     fallback_provider: Literal["none", "openai", "codex"] = "none"
     fallback_model: str | None = None
@@ -111,6 +116,17 @@ class SystemToolDiscovery:
         if executable is None or not executable.is_file():
             return ToolInspection(name=name, available=False)
         executable = SystemToolDiscovery._native_codex_executable(name, executable)
+        if name == "claude":
+            native = (
+                executable.parent
+                / "node_modules"
+                / "@anthropic-ai"
+                / "claude-code"
+                / "bin"
+                / "claude.exe"
+            )
+            if native.is_file():
+                executable = native
         try:
             completed = subprocess.run(
                 (str(executable), *command[1:]),
@@ -133,6 +149,11 @@ class SystemToolDiscovery:
             if not version.startswith(prefix):
                 return ToolInspection(name=name, available=False)
             version = version.removeprefix(prefix)
+        if name == "claude":
+            suffix = " (Claude Code)"
+            if not version.endswith(suffix):
+                return ToolInspection(name=name, available=False)
+            version = version.removesuffix(suffix)
         if (
             completed.returncode != 0
             or not version
@@ -282,6 +303,33 @@ def _default_auth_checker(
     if choices.auth_mode == "API_KEY":
         variable = choices.credential_ref.removeprefix("env:")
         return bool(variable and os.environ.get(variable))
+    if choices.provider == "claude":
+        claude = tools.get("claude")
+        if claude is None or not claude.available or claude.executable is None:
+            return False
+        try:
+            completed = subprocess.run(
+                (str(claude.executable), "auth", "status", "--json"),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                shell=False,
+            )
+            if completed.returncode != 0 or len(completed.stdout) > 65_536:
+                return False
+            payload = json.loads(completed.stdout)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return False
+        return (
+            isinstance(payload, dict)
+            and payload.get("loggedIn") is True
+            and payload.get("authMethod") == "claude.ai"
+            and payload.get("apiProvider") == "firstParty"
+            and "apiKeySource" not in payload
+            and isinstance(payload.get("subscriptionType"), str)
+            and bool(payload["subscriptionType"].strip())
+        )
     if choices.provider == "cursor":
         cursor = tools.get("cursor_agent")
         if cursor is None or not cursor.available or cursor.executable is None:
@@ -345,6 +393,11 @@ class SetupService:
         return SetupInspection(tools=self._discovery.inspect())
 
     def configure(self, choices: SetupChoices) -> SetupResult:
+        if choices.provider == "claude" and not (
+            choices.auth_mode == "SUBSCRIPTION_LOGIN"
+            and choices.credential_ref == "CLAUDE_CLI_LOGIN"
+        ):
+            raise ValueError("CLAUDE_SUBSCRIPTION_REQUIRED")
         if choices.provider == "cursor" and not (
             choices.auth_mode == "API_KEY"
             and choices.credential_ref == "env:CURSOR_API_KEY"
@@ -357,8 +410,13 @@ class SetupService:
         required = {"git", "python", "opengrep", "docker"}
         if choices.execution_profile == "FULL":
             required.add("codeql")
-        if choices.auth_mode == "SUBSCRIPTION_LOGIN" and choices.provider != "cursor":
+        if choices.auth_mode == "SUBSCRIPTION_LOGIN" and choices.provider not in {
+            "cursor",
+            "claude",
+        }:
             required.add("codex")
+        if choices.provider == "claude":
+            required.add("claude")
         if choices.provider == "cursor" and choices.auth_mode == "SUBSCRIPTION_LOGIN":
             required.add("cursor_agent")
         if choices.fallback_provider == "codex":
@@ -374,7 +432,17 @@ class SetupService:
         cursor_usage_acknowledged = (
             choices.provider != "cursor" or choices.cursor_allow_on_demand
         )
-        ready = not missing and auth_ready and cursor_usage_acknowledged
+        claude_version_ready = (
+            choices.provider != "claude"
+            or tools.get("claude") is not None
+            and tools["claude"].version == "2.1.280"
+        )
+        ready = (
+            not missing
+            and auth_ready
+            and cursor_usage_acknowledged
+            and claude_version_ready
+        )
         enabled_tools: tuple[Literal["AST", "OPENGREP", "CODEQL", "DOCKER"], ...] = (
             ("AST", "OPENGREP", "CODEQL", "DOCKER")
             if choices.execution_profile == "FULL"
@@ -404,6 +472,10 @@ class SetupService:
             llm_timeout_seconds=choices.llm_timeout_seconds,
             llm_max_retries=choices.llm_max_retries,
             llm_max_concurrency=choices.llm_max_concurrency,
+            hypothesis_feed=choices.hypothesis_feed,
+            max_parallel_hypotheses=choices.max_parallel_hypotheses,
+            max_parallel_builds=choices.max_parallel_builds,
+            max_parallel_containers=choices.max_parallel_containers,
             cursor_allow_on_demand=choices.cursor_allow_on_demand,
             fallback_provider=choices.fallback_provider,
             fallback_model=choices.fallback_model,
@@ -438,6 +510,10 @@ class SetupService:
             llm_timeout_seconds=choices.llm_timeout_seconds,
             llm_max_retries=choices.llm_max_retries,
             llm_max_concurrency=choices.llm_max_concurrency,
+            hypothesis_feed=choices.hypothesis_feed,
+            max_parallel_hypotheses=choices.max_parallel_hypotheses,
+            max_parallel_builds=choices.max_parallel_builds,
+            max_parallel_containers=choices.max_parallel_containers,
             cursor_allow_on_demand=choices.cursor_allow_on_demand,
             fallback_provider=choices.fallback_provider,
             fallback_model=choices.fallback_model,
@@ -446,7 +522,23 @@ class SetupService:
         config_path = self.config_store.save(config)
         next_actions = tuple(
             [*(f"Install or configure {name}." for name in missing)]
-            + ([] if auth_ready else ["Complete the selected Provider authentication."])
+            + (
+                []
+                if auth_ready
+                else [
+                    "CLAUDE_AUTH_REQUIRED: run claude auth login with your own "
+                    "claude.ai subscription account."
+                    if choices.provider == "claude"
+                    else "Complete the selected Provider authentication."
+                ]
+            )
+            + (
+                []
+                if claude_version_ready
+                else [
+                    "CLAUDE_CLI_UNSUPPORTED_VERSION: install Claude Code CLI 2.1.280."
+                ]
+            )
             + (
                 []
                 if cursor_usage_acknowledged

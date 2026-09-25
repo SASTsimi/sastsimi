@@ -72,11 +72,13 @@ class SimpleAnalysisRun(ContractModel):
     workspace_id: str
     commit_id: str
     repository: str
+    started_at: datetime | None = None
     llm_provider: str | None = None
     on_demand_possible: bool = False
     workspace_path: Path | None = None
     repository_profile_ref: StoredDataRef | None = None
     static_bundle_ref: StoredDataRef | None = None
+    security_policy_ref: StoredDataRef | None = None
     hypothesis_ids: tuple[str, ...] = ()
     parent_hypothesis_ids: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     chain_depths: dict[str, int] = Field(default_factory=dict)

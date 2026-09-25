@@ -74,6 +74,44 @@ def test_agent_model_override_rejects_unknown_role() -> None:
         UserConfig.safe_agent_models({"verification_reslut": "some-model"})
 
 
+def test_claude_subscription_profile_round_trip_and_api_key_rejected(
+    tmp_path: Path,
+) -> None:
+    profile = SimpleExecutionProfile(
+        provider_profile_ref="local-claude",
+        provider="claude",
+        model="operator-selected-model",
+        auth_mode="SUBSCRIPTION_LOGIN",
+        credential_ref="CLAUDE_CLI_LOGIN",
+        data_dir=tmp_path / "data",
+        workspace_root=tmp_path / "workspaces",
+        max_cost_minor_units=10_000,
+        max_tokens=500_000,
+        max_elapsed_seconds=3_600,
+        docker_network="NONE",
+        tools={
+            "claude": SimpleToolBinding(
+                executable_path=tmp_path / "claude.exe",
+                version="2.1.280",
+                executable_sha256="a" * 64,
+            )
+        },
+        agent_models={"verification_result": "other-model"},
+    )
+    path = tmp_path / "profile.toml"
+    profile.write(path)
+    assert load_simple_execution_profile(path) == profile
+    assert "CLAUDE_CLI_LOGIN" in path.read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="CLAUDE_SUBSCRIPTION_REQUIRED"):
+        SimpleExecutionProfile.model_validate(
+            {
+                **profile.model_dump(),
+                "auth_mode": "API_KEY",
+                "credential_ref": "env:ANTHROPIC_API_KEY",
+            }
+        )
+
+
 def test_simple_execution_profile_supports_api_and_subscription_without_secret(
     tmp_path: Path,
 ) -> None:
@@ -138,3 +176,49 @@ def test_simple_execution_profile_preserves_an_empty_tool_table(
     profile.write(path)
 
     assert load_simple_execution_profile(path) == profile
+
+
+def test_hypothesis_feed_is_opt_in_and_round_trips(tmp_path: Path) -> None:
+    profile = SimpleExecutionProfile(
+        provider_profile_ref="local-openai",
+        provider="openai",
+        model="configured-model",
+        auth_mode="API_KEY",
+        credential_ref="env:OPENAI_API_KEY",
+        data_dir=tmp_path / "data",
+        workspace_root=tmp_path / "workspaces",
+        max_cost_minor_units=10_000,
+        max_tokens=500_000,
+        max_elapsed_seconds=3_600,
+        docker_network="NONE",
+        tools={},
+    )
+    old = tmp_path / "old.toml"
+    legacy_text = profile.to_toml().replace('hypothesis_feed = "current"\n', "")
+    for name in (
+        "max_parallel_hypotheses",
+        "max_parallel_builds",
+        "max_parallel_containers",
+    ):
+        legacy_text = legacy_text.replace(f"{name} = 1\n", "")
+    old.write_text(
+        legacy_text,
+        encoding="utf-8",
+    )
+    assert load_simple_execution_profile(old).hypothesis_feed == "current"
+    assert load_simple_execution_profile(old).max_parallel_hypotheses == 1
+
+    selected = profile.model_copy(
+        update={
+            "hypothesis_feed": "facts_survey",
+            "max_parallel_hypotheses": 2,
+            "max_parallel_builds": 2,
+            "max_parallel_containers": 3,
+        }
+    )
+    new = tmp_path / "new.toml"
+    selected.write(new)
+    assert load_simple_execution_profile(new).hypothesis_feed == "facts_survey"
+    assert load_simple_execution_profile(new).max_parallel_hypotheses == 2
+    assert load_simple_execution_profile(new).max_parallel_builds == 2
+    assert load_simple_execution_profile(new).max_parallel_containers == 3

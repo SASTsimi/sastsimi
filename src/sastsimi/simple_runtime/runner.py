@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from typing import Literal, Protocol
 from uuid import uuid4
@@ -165,6 +166,17 @@ class SimpleRuntimeRunner:
                     )
                 try:
                     result = await handler(checkpoint, prior)
+                except asyncio.CancelledError:
+                    self.store.mark_failure(
+                        checkpoint,
+                        StageFailure(
+                            code="STAGE_CANCELLED",
+                            retryable=True,
+                            safe_message="Stage was cancelled before completion",
+                        ),
+                        StageStatus.BLOCKED,
+                    )
+                    raise
                 except StageBlocked as error:
                     outcome = await self._recover_or_stop(
                         checkpoint,

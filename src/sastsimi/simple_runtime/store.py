@@ -106,10 +106,57 @@ class SimpleCheckpointStore:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_hypothesis_survey_progress (
+                    analysis_id TEXT NOT NULL,
+                    bundle_hash TEXT NOT NULL,
+                    item_key TEXT NOT NULL,
+                    ref_json TEXT NOT NULL,
+                    PRIMARY KEY (analysis_id, bundle_hash, item_key)
+                )
+                """
+            )
 
     @property
     def database_path(self) -> Path:
         return self._database_path
+
+    def save_survey_progress(
+        self, analysis_id: str, bundle_hash: str, item_key: str, ref: StoredDataRef
+    ) -> None:
+        """Durably record one immutable survey decision before advancing."""
+
+        encoded = ref.model_dump_json()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT ref_json FROM simple_hypothesis_survey_progress "
+                "WHERE analysis_id = ? AND bundle_hash = ? AND item_key = ?",
+                (analysis_id, bundle_hash, item_key),
+            ).fetchone()
+            if row is not None:
+                if StoredDataRef.model_validate_json(row[0]) != ref:
+                    raise ValueError("SURVEY_PROGRESS_CONFLICT")
+                return
+            connection.execute(
+                "INSERT INTO simple_hypothesis_survey_progress "
+                "(analysis_id, bundle_hash, item_key, ref_json) VALUES (?, ?, ?, ?)",
+                (analysis_id, bundle_hash, item_key, encoded),
+            )
+
+    def survey_progress(
+        self, analysis_id: str, bundle_hash: str
+    ) -> dict[str, StoredDataRef]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT item_key, ref_json FROM simple_hypothesis_survey_progress "
+                "WHERE analysis_id = ? AND bundle_hash = ? ORDER BY item_key",
+                (analysis_id, bundle_hash),
+            ).fetchall()
+        return {
+            str(row["item_key"]): StoredDataRef.model_validate_json(row["ref_json"])
+            for row in rows
+        }
 
     def save_analysis_run(self, run: object) -> None:
         validated = SimpleAnalysisRun.model_validate(run)
@@ -138,29 +185,70 @@ class SimpleCheckpointStore:
         cost_cents: float | None,
         artifact_ref: StoredDataRef,
     ) -> None:
+        values = (
+            attempt_id,
+            analysis_id,
+            agent,
+            model,
+            attempt_number,
+            status,
+            elapsed_ms,
+            input_tokens,
+            output_tokens,
+            cost_cents,
+            artifact_ref.model_dump_json(),
+        )
         with self._connect() as connection:
-            connection.execute(
+            cursor = connection.execute(
                 """
-                INSERT INTO simple_llm_attempts (
+                INSERT OR IGNORE INTO simple_llm_attempts (
                     attempt_id, analysis_id, agent, model, attempt_number,
                     status, elapsed_ms, input_tokens, output_tokens,
                     cost_cents, artifact_ref_json
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    attempt_id,
-                    analysis_id,
-                    agent,
-                    model,
-                    attempt_number,
-                    status,
-                    elapsed_ms,
-                    input_tokens,
-                    output_tokens,
-                    cost_cents,
-                    artifact_ref.model_dump_json(),
-                ),
+                values,
             )
+            if cursor.rowcount == 0:
+                row = connection.execute(
+                    "SELECT * FROM simple_llm_attempts WHERE attempt_id = ?",
+                    (attempt_id,),
+                ).fetchone()
+                if row is None or tuple(row) != values:
+                    raise ValueError("LLM_ATTEMPT_CONFLICT")
+
+    @staticmethod
+    def usage_summary_from_connection(
+        connection: sqlite3.Connection, analysis_id: str
+    ) -> dict[str, int | float | None]:
+        row = connection.execute(
+            """
+            SELECT COUNT(*) AS calls,
+                   COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                   COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                   SUM(cost_cents) AS cost_minor_units,
+                   COALESCE(SUM(CASE WHEN cost_cents IS NULL THEN 1 ELSE 0 END), 0)
+                       AS unknown_cost_calls
+            FROM simple_llm_attempts WHERE analysis_id = ?
+            """,
+            (analysis_id,),
+        ).fetchone()
+        assert row is not None
+        return {
+            "calls": int(row["calls"]),
+            "input_tokens": int(row["input_tokens"]),
+            "output_tokens": int(row["output_tokens"]),
+            "cost_minor_units": (
+                float(row["cost_minor_units"])
+                if row["cost_minor_units"] is not None
+                else None
+            ),
+            "unknown_cost_calls": int(row["unknown_cost_calls"]),
+        }
+
+    def usage_summary(self, analysis_id: str) -> dict[str, int | float | None]:
+        with self._connect() as connection:
+            return self.usage_summary_from_connection(connection, analysis_id)
 
     def require_analysis_run(self, analysis_id: str) -> SimpleAnalysisRun:
         with self._connect() as connection:

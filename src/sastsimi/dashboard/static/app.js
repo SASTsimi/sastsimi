@@ -27,7 +27,7 @@ function analysisButton(item) {
   if (state.selected === routeId) button.classList.add("selected");
   button.append(el("strong", item.display_analysis_id || item.analysis_id));
   button.append(el("div", `${item.current_stage} · ${item.status}`, "status"));
-  if (item.on_demand_possible) button.append(el("div", "Cursor 추가 사용량 과금 가능", "meta"));
+  if (item.on_demand_possible) button.append(el("div", "추가 사용량 과금 가능", "meta"));
   button.append(el("div", `진행 ${item.progress_percent}% · ${item.completed_units}/${item.known_units}`, "meta"));
   button.addEventListener("click", () => {
     state.selected = routeId;
@@ -50,8 +50,8 @@ function renderDetail(detail, events) {
   overview.replaceChildren(
     el("h2", detail.display_analysis_id || detail.analysis_id),
     el("div", `현재 단계: ${detail.current_stage}`, "status"),
-    ...(detail.on_demand_possible ? [el("div", "Cursor 추가 사용량 과금 가능", "meta")] : []),
-    ...(detail.llm_provider === "cursor" ? [el("div", `Cursor 토큰 입력 ${detail.cursor_input_tokens} · 출력 ${detail.cursor_output_tokens} · 확인된 비용 ${detail.cursor_cost_cents ?? "미제공"}¢`, "meta")] : []),
+    ...(detail.on_demand_possible ? [el("div", "추가 사용량 과금 가능", "meta")] : []),
+    ...(detail.llm_attempt_count ? [el("div", `LLM 시도 ${detail.llm_attempt_count} · 토큰 입력 ${detail.llm_input_tokens} · 출력 ${detail.llm_output_tokens} · 확인된 비용 ${detail.llm_cost_minor_units ?? "미제공"}¢ · 비용 미제공 ${detail.llm_unknown_cost_calls}건`, "meta")] : []),
     (() => {
       const wrap = el("div", undefined, "progress-wrap");
       const bar = el("div", undefined, "progress-bar");

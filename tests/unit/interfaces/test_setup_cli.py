@@ -26,7 +26,11 @@ class _Discovery:
                 name=name,
                 available=name not in self._missing,
                 executable=None if name in self._missing else Path(f"C:/{name}.exe"),
-                version=None if name in self._missing else "1.0.0",
+                version=None
+                if name in self._missing
+                else "2.1.280"
+                if name == "claude"
+                else "1.0.0",
                 executable_sha256=None if name in self._missing else "a" * 64,
             )
             for name in (
@@ -37,6 +41,7 @@ class _Discovery:
                 "docker",
                 "codex",
                 "cursor_agent",
+                "claude",
             )
         )
 
@@ -88,6 +93,182 @@ def test_setup_cli_writes_ready_secret_free_configuration(
     assert "access_token" not in raw
     assert "refresh_token" not in raw
     assert "sk-" not in raw
+
+
+def test_setup_cli_selects_claude_without_api_key(tmp_path: Path, capsys) -> None:
+    service = _service(tmp_path)
+    code = main(
+        [
+            "setup",
+            "--non-interactive",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--auth",
+            "subscription",
+            "--provider",
+            "claude",
+            "--model",
+            "operator-selected-model",
+            "--profile",
+            "lightweight",
+            "--format",
+            "json",
+        ],
+        setup_service=service,
+    )
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "READY"
+    saved = service.config_store.load()
+    assert saved.provider == "claude"
+    assert saved.credential_ref == "CLAUDE_CLI_LOGIN"
+    from sastsimi.config.user_config import load_simple_execution_profile
+
+    profile = load_simple_execution_profile(service._profile_path)
+    assert "claude" in profile.tools
+
+
+def test_claude_setup_rejects_unverified_cli_version(tmp_path: Path) -> None:
+    class OldDiscovery(_Discovery):
+        def inspect(self) -> tuple[ToolInspection, ...]:
+            return tuple(
+                item.model_copy(update={"version": "2.1.250"})
+                if item.name == "claude"
+                else item
+                for item in super().inspect()
+            )
+
+    service = SetupService(
+        config_store=UserConfigStore(tmp_path / "config.toml"),
+        discovery=OldDiscovery(),
+        profile_path=tmp_path / "profile.toml",
+        auth_checker=lambda _choices, _tools: True,
+    )
+    result = service.configure(
+        SetupChoices(
+            data_dir=tmp_path / "data",
+            auth_mode="SUBSCRIPTION_LOGIN",
+            provider="claude",
+            model="operator-model",
+            credential_ref="CLAUDE_CLI_LOGIN",
+            execution_profile="LIGHTWEIGHT",
+            max_cost_minor_units=10_000,
+            max_tokens=500_000,
+            max_elapsed_seconds=3_600,
+            docker_network="NONE",
+        )
+    )
+    assert result.status == "BLOCKED"
+    assert any("CLAUDE_CLI_UNSUPPORTED_VERSION" in item for item in result.next_actions)
+
+
+def test_claude_setup_reports_actionable_auth_failure(tmp_path: Path) -> None:
+    service = SetupService(
+        config_store=UserConfigStore(tmp_path / "config.toml"),
+        discovery=_Discovery(),
+        profile_path=tmp_path / "profile.toml",
+        auth_checker=lambda _choices, _tools: False,
+    )
+    result = service.configure(
+        SetupChoices(
+            data_dir=tmp_path / "data",
+            auth_mode="SUBSCRIPTION_LOGIN",
+            provider="claude",
+            model="operator-model",
+            credential_ref="CLAUDE_CLI_LOGIN",
+            execution_profile="LIGHTWEIGHT",
+            max_cost_minor_units=10_000,
+            max_tokens=500_000,
+            max_elapsed_seconds=3_600,
+            docker_network="NONE",
+        )
+    )
+    assert result.status == "BLOCKED"
+    assert any("CLAUDE_AUTH_REQUIRED" in action for action in result.next_actions)
+
+
+def test_claude_auth_requires_first_party_subscription_even_on_zero_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    from sastsimi.setup.service import _default_auth_checker
+
+    choices = SetupChoices(
+        data_dir=Path("C:/data"),
+        auth_mode="SUBSCRIPTION_LOGIN",
+        provider="claude",
+        model="operator-model",
+        credential_ref="CLAUDE_CLI_LOGIN",
+        execution_profile="LIGHTWEIGHT",
+        max_cost_minor_units=10_000,
+        max_tokens=500_000,
+        max_elapsed_seconds=3_600,
+        docker_network="NONE",
+    )
+    tool = ToolInspection(
+        name="claude",
+        available=True,
+        executable=Path("C:/claude.exe"),
+        version="2.1.280",
+        executable_sha256="a" * 64,
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [],
+            0,
+            stdout='{"loggedIn":false,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"pro"}',
+            stderr="",
+        ),
+    )
+    assert _default_auth_checker(choices, {"claude": tool}) is False
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [],
+            0,
+            stdout='{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"pro"}',
+            stderr="",
+        ),
+    )
+    assert _default_auth_checker(choices, {"claude": tool}) is True
+
+
+def test_claude_factory_routes_only_selected_provider(tmp_path: Path) -> None:
+    from sastsimi.composition.simple_runtime_composition import SimpleClientFactory
+    from sastsimi.config.user_config import load_simple_execution_profile
+    from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+    from sastsimi.simple_runtime.claude_provider import ClaudeProvider
+    from sastsimi.simple_runtime.models import CheckpointIdentity
+
+    service = _service(tmp_path)
+    configured = service.configure(
+        SetupChoices(
+            data_dir=tmp_path / "data",
+            auth_mode="SUBSCRIPTION_LOGIN",
+            provider="claude",
+            model="operator-model",
+            credential_ref="CLAUDE_CLI_LOGIN",
+            execution_profile="LIGHTWEIGHT",
+            max_cost_minor_units=10_000,
+            max_tokens=500_000,
+            max_elapsed_seconds=3_600,
+            docker_network="NONE",
+        )
+    )
+    profile = load_simple_execution_profile(configured.profile_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    client = SimpleClientFactory(profile)(
+        identity, SimpleArtifactRepository(tmp_path / "data", identity)
+    )
+    assert isinstance(client, ClaudeProvider)
 
 
 def test_setup_cli_blocks_full_profile_when_codeql_is_missing(
@@ -163,6 +344,9 @@ def test_cursor_setup_keeps_models_and_fallback_without_secret(tmp_path: Path) -
             llm_timeout_seconds=45,
             llm_max_retries=1,
             llm_max_concurrency=3,
+            max_parallel_hypotheses=2,
+            max_parallel_builds=2,
+            max_parallel_containers=3,
             cursor_allow_on_demand=True,
             fallback_provider="openai",
             fallback_model="fallback-model",
@@ -177,6 +361,9 @@ def test_cursor_setup_keeps_models_and_fallback_without_secret(tmp_path: Path) -
 
     profile = load_simple_execution_profile(result.profile_path)
     assert profile.llm_max_concurrency == 3
+    assert profile.max_parallel_hypotheses == 2
+    assert profile.max_parallel_builds == 2
+    assert profile.max_parallel_containers == 3
     assert profile.cursor_allow_on_demand
     assert "test-key" not in result.profile_path.read_text(encoding="utf-8")
 
