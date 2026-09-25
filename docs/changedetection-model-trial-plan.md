@@ -16,7 +16,7 @@
 - Keep `provider = "codex"`; change only the default `model` in both user config files, preserving all other values and Agent overrides.
 - Validate `gpt-6-sol` with a minimal official Codex CLI call before writing either setting; on rejection, retain both original files.
 - Pin `dgtlmoon/changedetection.io` to the exact SHA verified immediately before execution; candidate: `d789fe3ea5809eef0134943917ef50f47259121b`.
-- Use the public SimpleRuntime command without `--profile`; retain the current one-hour, one-million-token and cost caps.
+- Use the public SimpleRuntime command without `--profile`; retain the configured one-hour, one-million-token and cost limits. The Codex CLI does not currently return per-call token or cost measurements to SimpleRuntime, so the latter two limits cannot be enforced for this provider; record this limitation in the validation result.
 - Never emit credentials, full prompts, or sensitive source into ordinary logs; do not convert tool errors to vulnerability `FALSE`.
 - No target-name, SHA, or host-path special cases; no external disclosure or target repository modification.
 
@@ -304,7 +304,7 @@ Expected: exit code 0 and short `OK` response. Official API documentation confir
 git ls-remote https://github.com/dgtlmoon/changedetection.io.git refs/heads/master
 ```
 
-- [ ] **Step 2: Run the public SimpleRuntime path with the pinned SHA, not `analyze --profile`.** Require Step 1 output to equal `d789fe3ea5809eef0134943917ef50f47259121b`; if it changed, record the new SHA and amend this command before running. The existing profile's cost, time, and token ceilings remain effective. Keep the final JSON in the current PowerShell session for Step 3.
+- [ ] **Step 2: Run the public SimpleRuntime path with the pinned SHA, not `analyze --profile`.** Require Step 1 output to equal `d789fe3ea5809eef0134943917ef50f47259121b`; if it changed, record the new SHA and amend this command before running. Keep the final JSON in the current PowerShell session for Step 3. The configured cost and token limits are not enforceable when Codex CLI reports no usage.
 
 ```powershell
 $analysis = .\.venv\Scripts\sastsimi.exe analyze https://github.com/dgtlmoon/changedetection.io.git --commit d789fe3ea5809eef0134943917ef50f47259121b --format json | ConvertFrom-Json
