@@ -221,9 +221,11 @@ class SimpleExecutionProfile(BaseModel):
     max_parallel_builds: int = Field(default=1, ge=1, le=8)
     max_parallel_containers: int = Field(default=1, ge=1, le=16)
     # What the hypothesis agent is handed first: the source itself, or the
-    # route flows from the fact bundle with source read on request.
+    # route flows from the fact bundle with source read on request.  The
+    # survey found a decode-cap defect the plain fact feed read and missed; a
+    # checkout with no route entry points falls back to the source.
     hypothesis_feed: Literal["code", "facts", "facts_sequential", "facts_survey"] = (
-        "code"
+        "facts_survey"
     )
     tools: dict[str, SimpleToolBinding]
 

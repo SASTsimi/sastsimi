@@ -413,3 +413,41 @@ async def test_a_survey_walks_every_listed_point_a_few_at_a_time(
     assert b"# Points 1-8 of 10" in agent.prompts[1]
     assert b"# Points 9-10 of 10" in agent.prompts[3]
     assert len(seeds) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_checkout_with_no_entry_point_is_read_as_source(
+    tmp_path: Path, repository: Path
+) -> None:
+    """No route decorator found means no fact batch; the source is read instead."""
+
+    data_dir = tmp_path / "data"
+    identity = _identity()
+    artifacts = SimpleArtifactRepository(data_dir, identity)
+    flows_ref = artifacts.put_json({"entry_points": []})
+    bundle_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_fact_bundle",
+            "source_files": ["app/proxy.py"],
+            "codeql_findings": [],
+            "opengrep_findings": [],
+            "tool_result_refs": [],
+            "route_flows_ref": flows_ref.model_dump(mode="json"),
+        }
+    )
+    agent = _ReadingAgent()
+    seeds = await DirectHypothesisBootstrap(
+        data_dir=data_dir,
+        client_factory=cast(Any, lambda *a, **k: agent),
+        feed="facts_survey",
+    ).propose(
+        identity,
+        StaticBootstrapResult(
+            repository_profile_ref=bundle_ref,
+            static_bundle_ref=bundle_ref,
+            workspace_path=repository,
+        ),
+    )
+
+    assert b"for _ in range(8):" in agent.prompts[0]
+    assert len(seeds) == 1

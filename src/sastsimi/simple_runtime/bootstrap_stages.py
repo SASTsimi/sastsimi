@@ -1321,11 +1321,15 @@ class DirectHypothesisBootstrap:
             # The fact bundle's entry points are read first; source is read on
             # request, a file or a line range at a time.
             flows = json.loads(artifacts.read(StoredDataRef.model_validate(flows_ref)))
-            feeding = (
+            fact_feeding = (
                 plan_fact_feeding(flows, feeding, batch_bytes=_PART_BYTES)
                 if sequential
                 else plan_fact_feeding(flows, feeding)
             )
+            # Entry points are found only where a route decorator names them;
+            # a checkout with none would otherwise be read not at all.
+            if fact_feeding.batches:
+                feeding = fact_feeding
         feeding_ref = artifacts.put_json(feeding.coverage())
         lines = _line_counts(static.workspace_path, sources)
         surveyed = self._feed == "facts_survey" and feeding.kind == "facts"
@@ -1491,7 +1495,7 @@ class DirectHypothesisBootstrap:
                         if sent > _COMPACT_AT_BYTES:
                             break
 
-        if sequential:
+        if sequential and feeding.kind == "facts":
             await walk()
         else:
             await asyncio.gather(*(read_batch(batch) for batch in feeding.batches))
