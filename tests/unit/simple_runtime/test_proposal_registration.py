@@ -33,6 +33,11 @@ def _raw(line: int = 10, **overrides: object) -> dict[str, object]:
         "assumptions": ["upstream decodes again"],
         "falsification_questions": ["Is a nine-times-encoded path rejected?"],
         "validation_checks": ["Send a path encoded nine times."],
+        "confidence": "medium",
+        "reachability": {
+            "who": "any authenticated user",
+            "evidence": "Depends(get_verified_user)",
+        },
     }
     value.update(overrides)
     return value

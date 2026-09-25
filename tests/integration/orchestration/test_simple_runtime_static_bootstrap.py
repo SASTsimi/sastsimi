@@ -149,6 +149,8 @@ class _Client:
                         "assumptions": [],
                         "falsification_questions": ["Is the value parameterised?"],
                         "validation_checks": ["Send a quote through the input."],
+                        "confidence": "medium",
+                        "reachability": {"who": "unknown", "evidence": ""},
                     }
                 ],
                 "requested_paths": [],

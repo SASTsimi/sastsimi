@@ -66,18 +66,48 @@ PROPOSAL_ITEM_SCHEMA: dict[str, Any] = {
         "assumptions": {"type": "array", "items": {"type": "string"}},
         "falsification_questions": {"type": "array", "items": {"type": "string"}},
         "validation_checks": {"type": "array", "items": {"type": "string"}},
+        "entry_point": {"type": "string"},
+        "reachability": {
+            "type": "object",
+            "properties": {
+                "who": {"type": "string"},
+                "evidence": {"type": "string"},
+            },
+        },
+        "attacker_control": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+        "replaces": {"type": "string"},
     },
 }
 
-PROPOSAL_INSTRUCTIONS = """- `statement`: one claim; never assert it is confirmed.
-- `vulnerability_type_candidates`: the types it could be.
-- `target_locations` and `suspected_path` (source to sink): each a repository
-  file path with the real line numbers shown in the code.
-- `observed_facts`: what the code shows.
-- `restrictions`: checks or boundaries that limit the attack.
-- `assumptions`: what must hold but is not shown.
-- `falsification_questions`: at least one question real evidence could answer.
-- `validation_checks`: at least one thing that must be confirmed.
+CONFIDENCE_LEVELS = ("low", "medium", "high")
+
+PROPOSAL_INSTRUCTIONS = """Each hypothesis is a JSON object with these fields.
+One line per item is enough; say what you know and what you do not.
+
+- `statement`: the claim, as a possibility - "this flow may allow ...", never
+  "this is vulnerable".
+- `vulnerability_type_candidates`: the classes it could be.
+- `entry_point`: the route, event or handler it starts from, as the flow names
+  it; empty when it has none.
+- `reachability`: `who` can reach it - `unauthenticated`, `any authenticated
+  user`, `admin`, another role, or `unknown` - and the `evidence` in the code
+  (a dependency, a decorator, a check). Without evidence, `who` is `unknown`;
+  do not guess.
+- `attacker_control`: the values the attacker chooses.
+- `confidence`: `low`, `medium` or `high`.
+- `target_locations`: where the defect would be, as repository file paths with
+  the real line numbers.
+- `suspected_path`: the flow from source to where it matters, one location per
+  step, each with its `role` (source, transform, check, sink, state change).
+- `observed_facts`: the evidence - what the code you read shows.
+- `restrictions`: checks or conditions that limit the attack.
+- `assumptions`: the uncertainty - what must hold but is not yet established,
+  including code you have not read.
+- `falsification_questions`: what, if answered, would rule it out.
+- `validation_checks`: what verification must do to confirm or reject it -
+  which code to read, which input to try, what to observe.
+- `replaces`: only when correcting an earlier hypothesis, its number (`H3`).
 """
 
 
@@ -188,6 +218,16 @@ def validate_proposal(
     checks = _strings(value.get("validation_checks"))
     if not checks:
         errors.append("validation_checks needs at least one check")
+    confidence = value.get("confidence")
+    if confidence not in CONFIDENCE_LEVELS:
+        errors.append("confidence must be low, medium or high")
+    reach = value.get("reachability")
+    who = reach.get("who") if isinstance(reach, dict) else None
+    if not isinstance(who, str) or not who.strip():
+        errors.append("reachability.who is missing (use `unknown` without evidence)")
+    evidence = reach.get("evidence") if isinstance(reach, dict) else None
+    entry_point = value.get("entry_point")
+    control = _strings(value.get("attacker_control")) or []
     if errors:
         return None, errors
     assert isinstance(statement, str) and types is not None
@@ -199,6 +239,13 @@ def validate_proposal(
             "origin": "INITIAL",
             "statement": statement.strip(),
             "vulnerability_type_candidates": types,
+            "entry_point": entry_point.strip() if isinstance(entry_point, str) else "",
+            "reachability": {
+                "who": str(who).strip(),
+                "evidence": evidence.strip() if isinstance(evidence, str) else "",
+            },
+            "attacker_control": control,
+            "confidence": confidence,
             "target_locations": [
                 {
                     "file_path": item.file_path,

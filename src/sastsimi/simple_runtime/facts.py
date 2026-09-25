@@ -98,7 +98,10 @@ def _route_of(decorator: ast.expr) -> dict[str, Any] | None:
         value = decorator.args[0].value
         path = value if isinstance(value, str) else None
     methods: list[str] = []
+    dependencies: list[str] = []
     for keyword in decorator.keywords:
+        if keyword.arg == "dependencies":
+            dependencies.append(ast.unparse(keyword.value))
         if keyword.arg == "methods":
             if isinstance(keyword.value, (ast.List, ast.Tuple, ast.Set)):
                 methods = [
@@ -115,6 +118,7 @@ def _route_of(decorator: ast.expr) -> dict[str, Any] | None:
         "router": _name(decorator.func.value)
         if isinstance(decorator.func, ast.Attribute)
         else None,
+        **({"dependencies": dependencies} if dependencies else {}),
     }
 
 
@@ -269,6 +273,21 @@ def _outermost(node: ast.AST) -> ast.AST | None:
     return node
 
 
+def _router_dependencies(tree: ast.Module) -> dict[str, str]:
+    """``router = APIRouter(dependencies=[...])``: guards on every route of it."""
+
+    found: dict[str, str] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+            continue
+        for keyword in node.value.keywords:
+            if keyword.arg == "dependencies":
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        found[target.id] = ast.unparse(keyword.value)
+    return found
+
+
 def _parse(path: Path) -> ast.Module | None:
     try:
         with warnings.catch_warnings():
@@ -297,6 +316,7 @@ def extract_flows(workspace: Path, sources: Sequence[str]) -> dict[str, Any]:
                 defined.setdefault(node.name, []).append(f"{path}:{node.lineno}")
     entries: list[dict[str, Any]] = []
     for path, tree in trees.items():
+        router_guards = _router_dependencies(tree)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -320,6 +340,17 @@ def extract_flows(workspace: Path, sources: Sequence[str]) -> dict[str, Any]:
                 if argument.arg not in ("self", "cls")
                 and not _injected(argument, default)
             ]
+            # What the framework fills in before the handler runs - where
+            # authentication and permission checks usually are.
+            injected = [
+                {"parameter": argument.arg, "dependency": ast.unparse(default)}
+                for argument, default in zip(arguments, defaults, strict=False)
+                if default is not None and _injected(argument, default)
+            ]
+            for route in routes:
+                guard = router_guards.get(str(route.get("router")))
+                if guard:
+                    route["router_dependencies"] = guard
             tracer = _FlowTracer(set(inputs), defined)
             for statement in node.body:
                 tracer.visit(statement)
@@ -330,6 +361,7 @@ def extract_flows(workspace: Path, sources: Sequence[str]) -> dict[str, Any]:
                     "handler": node.name,
                     "routes": routes,
                     "inputs": inputs,
+                    **({"injected": injected} if injected else {}),
                     "steps": [
                         step.as_dict()
                         for step in sorted(tracer.steps, key=lambda s: s.line)

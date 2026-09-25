@@ -65,6 +65,11 @@ def _proposal(line: int, statement: str = "decode cap bypass") -> dict[str, obje
         "assumptions": ["the upstream decodes once more"],
         "falsification_questions": ["Does a nine-times-encoded path reach it?"],
         "validation_checks": ["Send a path encoded nine times."],
+        "confidence": "medium",
+        "reachability": {
+            "who": "any authenticated user",
+            "evidence": "Depends(get_verified_user)",
+        },
     }
 
 
