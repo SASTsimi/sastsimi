@@ -122,6 +122,34 @@ _FOLLOW_UP = (
 )
 
 
+# One conversation walking the whole bundle takes it a part at a time.  A part
+# is small so several share a conversation, and the map is sent once per
+# conversation rather than once per part.
+_PART_BYTES = 120_000
+# Past this much sent and received, the next part starts a fresh conversation
+# carrying the agent's notes and the hypotheses so far.
+_COMPACT_AT_BYTES = 600_000
+
+_SEQUENTIAL_INSTRUCTIONS = """
+## Reading the whole repository in parts
+
+This conversation reads the fact bundle one part at a time, in order.
+
+- For each part return only hypotheses that are new: not in "Hypotheses
+  already proposed" and not returned for an earlier part here.
+- Keep `notes` current in every answer: what you have read, what each guard or
+  helper you read actually does, and code worth coming back to. When this
+  conversation is replaced by a fresh one, the notes and the hypothesis list
+  are all that carry over.
+- A later part may show a flow into code you read earlier; use what you read.
+"""
+
+_NEXT_PART = (
+    b"This is the next part of the fact bundle. Read it as before and return "
+    b"only the hypotheses that are new.\n"
+)
+
+
 def _required(result: SimpleLLMCallResult | StageFailure) -> SimpleLLMCallResult:
     if isinstance(result, StageFailure):
         raise RuntimeError(result.code)
@@ -896,6 +924,7 @@ class DirectHypothesisBootstrap:
         static: StaticBootstrapResult,
         artifacts: SimpleArtifactRepository,
         findings: dict[str, list[dict[str, object]]] | None = None,
+        tail: bytes = b"",
     ) -> tuple[SimpleLLMCallResult, Exploration]:
         """Ask, serve what was asked for, ask again - in one conversation.
 
@@ -911,6 +940,7 @@ class DirectHypothesisBootstrap:
                 + b"<UNTRUSTED_EXACT_INPUTS>\n"
                 + context
                 + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
+                + tail
             )
         )
         for _ in range(MAX_ROUNDS - 1):
@@ -971,7 +1001,11 @@ class DirectHypothesisBootstrap:
 
     @staticmethod
     def _batch_context(
-        bundle: dict[str, object], feeding: Feeding, batch: Batch
+        bundle: dict[str, object],
+        feeding: Feeding,
+        batch: Batch,
+        *,
+        standing: bool = True,
     ) -> bytes:
         """Everything one call reads: its code, the map of the rest, the hits.
 
@@ -1004,10 +1038,14 @@ class DirectHypothesisBootstrap:
             "batch": batch.number,
             "batches": len(feeding.batches),
             "files_in_this_batch": list(batch.paths),
-            "excluded_from_every_batch": feeding.excluded,
             **(
-                {"files_with_no_entry_point_read_on_request": feeding.unfed}
-                if feeding.kind == "facts"
+                {"excluded_from_every_batch": feeding.excluded}
+                | (
+                    {"files_with_no_entry_point_read_on_request": feeding.unfed}
+                    if feeding.kind == "facts"
+                    else {}
+                )
+                if standing
                 else {}
             ),
             "codeql_findings": findings("codeql_findings"),
@@ -1018,8 +1056,14 @@ class DirectHypothesisBootstrap:
                 f"# Batch {batch.number} of {len(feeding.batches)}",
                 "## Batch facts and tool findings for these files",
                 fenced(json.dumps(header, ensure_ascii=False, indent=1), "json"),
-                "## Repository map (every definition in the checkout)",
-                fenced(feeding.signature_map, "text"),
+                *(
+                    (
+                        "## Repository map (every definition in the checkout)",
+                        fenced(feeding.signature_map, "text"),
+                    )
+                    if standing
+                    else ()
+                ),
                 "## Source of this batch"
                 if feeding.kind == "code"
                 else "## Entry points in these files and the calls their input reaches",
@@ -1063,11 +1107,16 @@ class DirectHypothesisBootstrap:
         # the target defect was in.
         feeding = plan_feeding(static.workspace_path, sources)
         flows_ref = bundle.get("route_flows_ref")
-        if self._feed == "facts" and isinstance(flows_ref, dict):
+        sequential = self._feed == "facts_sequential"
+        if self._feed in ("facts", "facts_sequential") and isinstance(flows_ref, dict):
             # The fact bundle's entry points are read first; source is read on
             # request, a file or a line range at a time.
             flows = json.loads(artifacts.read(StoredDataRef.model_validate(flows_ref)))
-            feeding = plan_fact_feeding(flows, feeding)
+            feeding = (
+                plan_fact_feeding(flows, feeding, batch_bytes=_PART_BYTES)
+                if sequential
+                else plan_fact_feeding(flows, feeding)
+            )
         feeding_ref = artifacts.put_json(feeding.coverage())
         lines = _line_counts(static.workspace_path, sources)
         opening = (
@@ -1117,7 +1166,87 @@ class DirectHypothesisBootstrap:
                 if entry is not None:
                     provenance[entry.hypothesis_id] = (batch.number, result, reading)
 
-        await asyncio.gather(*(read_batch(batch) for batch in feeding.batches))
+        async def walk() -> None:
+            """One conversation at a time over every part, compacting between."""
+
+            walk_schema = {
+                **schema,
+                "properties": {**schema["properties"], "notes": {"type": "string"}},  # type: ignore[dict-item]
+                "required": [*schema["required"], "notes"],  # type: ignore[misc]
+            }
+            lead = instructions + _SEQUENTIAL_INSTRUCTIONS.encode("utf-8")
+            parts = list(feeding.batches)
+            notes = ""
+            index = 0
+            while index < len(parts):
+                opening = self._session_opening(feeding, notes, registry)
+                sent = 0
+                async with conversation_with(
+                    client, output_schema=walk_schema, timeout_ms=self._call_timeout_ms
+                ) as talk:
+                    first = True
+                    while index < len(parts):
+                        part = parts[index]
+                        context = self._batch_context(
+                            bundle, feeding, part, standing=False
+                        )
+                        body = opening + b"\n\n" + context if first else context
+                        result, history = await self._read_then_propose(
+                            talk,
+                            lead if first else b"",
+                            body,
+                            static,
+                            artifacts,
+                            findings,
+                            tail=b"" if first else _NEXT_PART,
+                        )
+                        sent += (
+                            (len(lead) if first else 0)
+                            + len(body)
+                            + len(json.dumps(history.as_prompt_document()))
+                            + len(canonical_bytes(result.value))
+                        )
+                        first = False
+                        index += 1
+                        proposed = result.value.get("hypotheses", [])
+                        proposed = list(proposed) if isinstance(proposed, list) else []
+                        valid, rejected = self._validate_all(
+                            proposed, lines, part.number
+                        )
+                        if rejected:
+                            repaired = await self._repair(talk, rejected)
+                            again, still = self._validate_all(
+                                repaired, lines, part.number
+                            )
+                            valid.extend(again)
+                            for proposal_id, errors in still:
+                                registry.record_invalid(
+                                    proposal_id, part.number, errors
+                                )
+                        written = result.value.get("notes")
+                        notes = written if isinstance(written, str) else notes
+                        reading = _reading_record(history)
+                        for proposal_id, proposal in valid:
+                            entry = await registry.consider(
+                                proposal,
+                                proposal_id=proposal_id,
+                                batch=part.number,
+                                client=client,
+                                timeout_ms=self._call_timeout_ms,
+                            )
+                            if entry is not None:
+                                provenance[entry.hypothesis_id] = (
+                                    part.number,
+                                    result,
+                                    reading,
+                                )
+                        if sent > _COMPACT_AT_BYTES:
+                            break
+
+        if sequential:
+            await walk()
+        else:
+            await asyncio.gather(*(read_batch(batch) for batch in feeding.batches))
         states_ref = artifacts.put_json(registry.record())
         seeds: list[HypothesisSeed] = []
         for entry in registry.registered:
@@ -1169,6 +1298,37 @@ class DirectHypothesisBootstrap:
             else:
                 valid.append((proposal_id, normalized))
         return valid, rejected
+
+    @staticmethod
+    def _session_opening(feeding: Feeding, notes: str, registry: Registry) -> bytes:
+        """What a fresh conversation over the parts starts from."""
+
+        standing = {
+            "parts": len(feeding.batches),
+            "excluded_from_every_part": feeding.excluded,
+            "files_with_no_entry_point_read_on_request": feeding.unfed,
+        }
+        sections = [
+            "# Standing facts for every part",
+            fenced(json.dumps(standing, ensure_ascii=False, indent=1), "json"),
+            "## Repository map (every definition in the checkout)",
+            fenced(feeding.signature_map, "text"),
+        ]
+        if notes:
+            sections += ["## Your notes from earlier reading", fenced(notes, "text")]
+        earlier = [
+            {
+                "statement": entry.proposal.get("statement"),
+                "target_locations": entry.proposal.get("target_locations"),
+            }
+            for entry in registry.registered
+        ]
+        if earlier:
+            sections += [
+                "## Hypotheses already proposed",
+                fenced(json.dumps(earlier, ensure_ascii=False, indent=1), "json"),
+            ]
+        return "\n\n".join(sections).encode("utf-8")
 
     async def _repair(
         self, talk: SimpleConversation, rejected: list[tuple[str, list[str]]]
