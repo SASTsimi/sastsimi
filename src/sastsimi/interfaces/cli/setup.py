@@ -85,6 +85,7 @@ def choices_from_args(
         llm_timeout_seconds=getattr(args, "llm_timeout_seconds", 180),
         llm_max_retries=getattr(args, "llm_max_retries", 2),
         llm_max_concurrency=getattr(args, "llm_max_concurrency", 2),
+        hypothesis_feed=getattr(args, "hypothesis_feed", "current"),
         cursor_allow_on_demand=bool(getattr(args, "cursor_allow_on_demand", False)),
         fallback_provider=getattr(args, "fallback_provider", "none"),
         fallback_model=getattr(args, "fallback_model", None),

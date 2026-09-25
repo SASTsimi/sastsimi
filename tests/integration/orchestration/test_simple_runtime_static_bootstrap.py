@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from sastsimi.config.user_config import SimpleExecutionProfile, SimpleToolBinding
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.application import SimpleAnalysisRequest
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.bootstrap_stages import (
@@ -231,6 +232,12 @@ async def test_real_static_tools_feed_exact_hypothesis_input(tmp_path: Path) -> 
 
     assert bundle["opengrep_findings"][0]["path"] == "app.py"
     assert bundle["codeql_findings"][0]["rule_id"] == "py/sql-injection"
+    manifest = json.loads(
+        SimpleArtifactRepository(profile.data_dir, identity).read(
+            StoredDataRef.model_validate(bundle["source_manifest_ref"])
+        )
+    )
+    assert manifest["paths"] == ["app.py", "requirements.txt"]
 
     seeds = await DirectHypothesisBootstrap(
         data_dir=profile.data_dir,

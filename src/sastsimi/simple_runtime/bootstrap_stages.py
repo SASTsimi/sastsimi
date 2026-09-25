@@ -24,6 +24,8 @@ from .application import (
 from .artifacts import SimpleArtifactRepository
 from .models import CheckpointIdentity, StageFailure
 from .provider import SimpleLLMCallResult, SimpleLLMClient
+from .store import SimpleCheckpointStore
+from .survey import HypothesisSurvey
 
 _MAX_TRACKED_FILES = 200_000
 _MAX_SOURCE_BYTES = 2 * 1024 * 1024
@@ -194,6 +196,9 @@ class DirectStaticBootstrap:
         snippets = self._opengrep_snippets(workspace, opengrep_raw)
         policy = _security_policy(workspace, tracked)
         policy_ref = artifacts.put_json(policy) if policy is not None else None
+        source_manifest_ref = artifacts.put_json(
+            {"kind": "simple_tracked_sources", "paths": list(tracked)}
+        )
         bundle_ref = artifacts.put_json(
             {
                 "kind": "simple_static_fact_bundle",
@@ -201,6 +206,7 @@ class DirectStaticBootstrap:
                 "workspace_id": identity.workspace_id,
                 "commit_id": identity.commit_id,
                 "repository_profile_ref": repository_ref.model_dump(mode="json"),
+                "source_manifest_ref": source_manifest_ref.model_dump(mode="json"),
                 "tool_result_refs": [
                     ast_ref.model_dump(mode="json"),
                     opengrep_ref.model_dump(mode="json"),
@@ -584,10 +590,16 @@ class DirectHypothesisBootstrap:
         data_dir: Path,
         client_factory: SimpleClientFactory,
         max_hypotheses: int = 12,
+        feed: str = "current",
+        store: SimpleCheckpointStore | None = None,
     ) -> None:
         self._data_dir = data_dir
         self._client_factory = client_factory
         self._max_hypotheses = max_hypotheses
+        if feed not in {"current", "facts_survey"}:
+            raise ValueError("HYPOTHESIS_FEED_INVALID")
+        self._feed = feed
+        self._store = store
 
     async def propose(
         self,
@@ -596,6 +608,15 @@ class DirectHypothesisBootstrap:
     ) -> tuple[HypothesisSeed, ...] | StageFailure:
         artifacts = SimpleArtifactRepository(self._data_dir, identity)
         client = self._client_factory(identity, artifacts)
+        if self._feed == "facts_survey":
+            if self._store is None:
+                raise RuntimeError("HYPOTHESIS_SURVEY_STORE_REQUIRED")
+            return await HypothesisSurvey(
+                artifacts=artifacts,
+                store=self._store,
+                client=client,
+                max_hypotheses=self._max_hypotheses,
+            ).run(identity, static)
         schema = {
             "type": "object",
             "properties": {

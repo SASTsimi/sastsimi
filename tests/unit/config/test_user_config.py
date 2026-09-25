@@ -176,3 +176,31 @@ def test_simple_execution_profile_preserves_an_empty_tool_table(
     profile.write(path)
 
     assert load_simple_execution_profile(path) == profile
+
+
+def test_hypothesis_feed_is_opt_in_and_round_trips(tmp_path: Path) -> None:
+    profile = SimpleExecutionProfile(
+        provider_profile_ref="local-openai",
+        provider="openai",
+        model="configured-model",
+        auth_mode="API_KEY",
+        credential_ref="env:OPENAI_API_KEY",
+        data_dir=tmp_path / "data",
+        workspace_root=tmp_path / "workspaces",
+        max_cost_minor_units=10_000,
+        max_tokens=500_000,
+        max_elapsed_seconds=3_600,
+        docker_network="NONE",
+        tools={},
+    )
+    old = tmp_path / "old.toml"
+    old.write_text(
+        profile.to_toml().replace('hypothesis_feed = "current"\n', ""),
+        encoding="utf-8",
+    )
+    assert load_simple_execution_profile(old).hypothesis_feed == "current"
+
+    selected = profile.model_copy(update={"hypothesis_feed": "facts_survey"})
+    new = tmp_path / "new.toml"
+    selected.write(new)
+    assert load_simple_execution_profile(new).hypothesis_feed == "facts_survey"

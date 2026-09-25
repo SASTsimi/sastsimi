@@ -254,6 +254,8 @@ def build_analysis_application(
         hypothesis_bootstrap=DirectHypothesisBootstrap(
             data_dir=data_dir,
             client_factory=client_factory,
+            feed=profile.hypothesis_feed,
+            store=store,
         ),
         runner_factory=runner_factory,
         recovery_factory=recovery_factory,

@@ -106,10 +106,57 @@ class SimpleCheckpointStore:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_hypothesis_survey_progress (
+                    analysis_id TEXT NOT NULL,
+                    bundle_hash TEXT NOT NULL,
+                    item_key TEXT NOT NULL,
+                    ref_json TEXT NOT NULL,
+                    PRIMARY KEY (analysis_id, bundle_hash, item_key)
+                )
+                """
+            )
 
     @property
     def database_path(self) -> Path:
         return self._database_path
+
+    def save_survey_progress(
+        self, analysis_id: str, bundle_hash: str, item_key: str, ref: StoredDataRef
+    ) -> None:
+        """Durably record one immutable survey decision before advancing."""
+
+        encoded = ref.model_dump_json()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT ref_json FROM simple_hypothesis_survey_progress "
+                "WHERE analysis_id = ? AND bundle_hash = ? AND item_key = ?",
+                (analysis_id, bundle_hash, item_key),
+            ).fetchone()
+            if row is not None:
+                if StoredDataRef.model_validate_json(row[0]) != ref:
+                    raise ValueError("SURVEY_PROGRESS_CONFLICT")
+                return
+            connection.execute(
+                "INSERT INTO simple_hypothesis_survey_progress "
+                "(analysis_id, bundle_hash, item_key, ref_json) VALUES (?, ?, ?, ?)",
+                (analysis_id, bundle_hash, item_key, encoded),
+            )
+
+    def survey_progress(
+        self, analysis_id: str, bundle_hash: str
+    ) -> dict[str, StoredDataRef]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT item_key, ref_json FROM simple_hypothesis_survey_progress "
+                "WHERE analysis_id = ? AND bundle_hash = ? ORDER BY item_key",
+                (analysis_id, bundle_hash),
+            ).fetchall()
+        return {
+            str(row["item_key"]): StoredDataRef.model_validate_json(row["ref_json"])
+            for row in rows
+        }
 
     def save_analysis_run(self, run: object) -> None:
         validated = SimpleAnalysisRun.model_validate(run)

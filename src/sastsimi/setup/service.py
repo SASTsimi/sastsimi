@@ -66,6 +66,7 @@ class SetupChoices(BaseModel):
     llm_timeout_seconds: int = Field(default=180, gt=0, le=3600)
     llm_max_retries: int = Field(default=2, ge=0, le=5)
     llm_max_concurrency: int = Field(default=2, gt=0, le=32)
+    hypothesis_feed: Literal["current", "facts_survey"] = "current"
     cursor_allow_on_demand: bool = False
     fallback_provider: Literal["none", "openai", "codex"] = "none"
     fallback_model: str | None = None
@@ -468,6 +469,7 @@ class SetupService:
             llm_timeout_seconds=choices.llm_timeout_seconds,
             llm_max_retries=choices.llm_max_retries,
             llm_max_concurrency=choices.llm_max_concurrency,
+            hypothesis_feed=choices.hypothesis_feed,
             cursor_allow_on_demand=choices.cursor_allow_on_demand,
             fallback_provider=choices.fallback_provider,
             fallback_model=choices.fallback_model,
@@ -502,6 +504,7 @@ class SetupService:
             llm_timeout_seconds=choices.llm_timeout_seconds,
             llm_max_retries=choices.llm_max_retries,
             llm_max_concurrency=choices.llm_max_concurrency,
+            hypothesis_feed=choices.hypothesis_feed,
             cursor_allow_on_demand=choices.cursor_allow_on_demand,
             fallback_provider=choices.fallback_provider,
             fallback_model=choices.fallback_model,
