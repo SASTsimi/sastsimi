@@ -23,7 +23,13 @@
     <aside>
       <h2>분석 목록</h2>
       <div id="analyses" class="stack"></div>
+      <div class="compare-controls">
+        <label for="compare-analysis" class="meta">다른 분석과 비교</label>
+        <select id="compare-analysis" aria-label="비교할 분석"></select>
+        <button id="compare-button" class="small-button" type="button">비교</button>
+      </div>
       <a id="bundle-download" class="download hidden" href="#">전체 결과 ZIP 다운로드</a>
+      <a id="presentation-download" class="download hidden" href="#">발표 패키지 ZIP 다운로드</a>
       <label id="logs-selection" class="selection-option hidden"><input id="include-logs" type="checkbox" checked> 로그 포함</label>
       <a id="selection-download" class="download hidden" href="#">선택 결과 ZIP 다운로드</a>
     </aside>
@@ -43,17 +49,34 @@
       <section class="panel">
         <h2>정적분석 도구</h2>
         <div id="static-tools" class="tool-grid"></div>
+        <div id="static-tool-findings" class="tool-overlap"></div>
       </section>
       <section class="panel">
-        <h2>분석 파이프라인</h2>
+        <div class="panel-heading">
+          <h2>분석 파이프라인</h2>
+          <div class="actions replay-controls">
+            <button id="replay-toggle" class="small-button" type="button">재생</button>
+            <button id="replay-reset" class="small-button" type="button">초기화</button>
+          </div>
+        </div>
+        <input id="replay-slider" class="replay-slider" type="range" min="0" max="0" value="0" aria-label="분석 재생 위치">
+        <div id="replay-status" class="meta"></div>
         <div id="pipeline" class="pipeline"></div>
+      </section>
+      <section id="comparison-panel" class="panel hidden">
+        <div class="panel-heading"><h2>분석 실행 비교</h2><button id="compare-close" class="small-button" type="button">닫기</button></div>
+        <div id="comparison" class="comparison-grid"></div>
+      </section>
+      <section class="panel failure-panel">
+        <h2>실패 원인·해결 안내</h2>
+        <div id="failure-guidance" class="stack"></div>
       </section>
       <div class="grid">
         <section class="panel"><h2>가설 진행 상태</h2><div id="hypotheses" class="stack"></div></section>
         <section class="panel presentation-detail">
           <div class="panel-heading">
             <h2>Agent 활동·로그</h2>
-            <a id="logs-download" class="text-link" href="#">로그 다운로드</a>
+            <div class="actions"><span id="log-stream-status" class="stream-status">증분 로그 연결 중</span><a id="logs-download" class="text-link" href="#">로그 다운로드</a></div>
           </div>
           <div class="filters">
             <input id="log-search" type="search" placeholder="로그 검색" aria-label="로그 검색">
@@ -71,6 +94,10 @@
         <div class="panel-heading"><h2>Source → Sink·체이닝 시각화</h2><span class="meta">가설·부모 관계 기준</span></div>
         <div id="chains" class="chain-graph"></div>
       </section>
+      <section class="panel finding-trace-panel">
+        <div class="panel-heading"><h2>Finding 전체 추적</h2><span id="finding-pin-status" class="meta"></span></div>
+        <div id="finding-traces" class="stack"></div>
+      </section>
       <section class="panel presentation-detail">
         <div class="panel-heading"><h2>단계별 JSON·파일 아티팩트</h2><span id="artifact-count" class="meta"></span></div>
         <div class="filters">
@@ -84,6 +111,10 @@
       <section class="panel presentation-detail">
         <h2>LLM 요청·응답</h2>
         <div id="llm-invocations" class="stack"></div>
+      </section>
+      <section class="panel presentation-detail">
+        <h2>아티팩트 관계 추적</h2>
+        <div id="artifact-relations" class="relation-graph"></div>
       </section>
       <div class="grid">
         <section class="panel"><h2>검증된 PoC</h2><div id="poc" class="stack"></div></section>
