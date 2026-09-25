@@ -19,7 +19,6 @@ from sastsimi.simple_runtime.models import (
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
 from sastsimi.simple_runtime.retrieval import (
-    MAX_FILE_BYTES,
     MAX_REQUESTED_FILES,
     MAX_TOTAL_BYTES,
     collect_requested_sources,
@@ -122,19 +121,26 @@ def test_the_file_count_is_bounded(workspace: Path) -> None:
     assert set(_refusals(record).values()) == {"FILE_BUDGET_EXHAUSTED"}
 
 
-def test_an_oversized_file_is_refused_rather_than_truncated(
+def test_a_long_file_is_served_whole_rather_than_refused(
     workspace: Path,
 ) -> None:
-    (workspace / "big.py").write_text("x" * (MAX_FILE_BYTES + 1), encoding="utf-8")
+    """A file is not less worth reading for being long.
+
+    Measured on open-webui: the one file a path-traversal hypothesis named,
+    ``routers/retrieval.py`` at 124 KB, was refused while four files nobody had
+    asked about were served in the same batch.
+    """
+
+    (workspace / "big.py").write_text("x" * 124_000, encoding="utf-8")
 
     record = collect_requested_sources(["big.py"], workspace=workspace)
 
-    assert _paths(record) == []
-    assert _refusals(record) == {"big.py": "FILE_TOO_LARGE"}
+    assert _paths(record) == ["big.py"]
+    assert _refusals(record) == {}
 
 
 def test_the_batch_stops_at_the_total_budget(workspace: Path) -> None:
-    body = "y" * (MAX_FILE_BYTES - 1)
+    body = "y" * 63_999
     names = []
     for index in range(MAX_REQUESTED_FILES):
         name = f"b{index}.py"
@@ -260,3 +266,44 @@ async def test_pro_con_without_a_workspace_serves_nothing(
     result = await stage(checkpoint, {})
 
     assert len(result.output_refs) == 2
+
+
+def test_a_file_the_size_of_a_real_router_is_served(tmp_path: Path) -> None:
+    """Measured on open-webui: ``routers/retrieval.py`` is 124 KB.
+
+    A hypothesis named "path traversal in retrieval file resolution" asked for
+    exactly that file and was refused as too large, while four files nobody had
+    asked a question about were served in the same batch.
+    """
+
+    workspace = tmp_path / "repo"
+    (workspace / "backend").mkdir(parents=True)
+    target = workspace / "backend" / "retrieval.py"
+    target.write_text("# a real router\n" + "x = 1\n" * 21_000, encoding="utf-8")
+    assert target.stat().st_size > 124_000
+
+    record = collect_requested_sources(
+        ["backend/retrieval.py"], workspace=workspace
+    )
+
+    assert record["refused"] == []
+    assert [entry["path"] for entry in record["served"]] == ["backend/retrieval.py"]
+
+
+def test_the_batch_total_is_the_only_size_that_refuses_a_file(
+    tmp_path: Path,
+) -> None:
+    """Removing the per-file ceiling did not remove the bound on the prompt."""
+
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    # Larger than the whole batch may add to the next prompt.
+    (workspace / "huge.py").write_text("y = 2\n" * 100_000, encoding="utf-8")
+    (workspace / "small.py").write_text("z = 3\n", encoding="utf-8")
+
+    record = collect_requested_sources(["huge.py", "small.py"], workspace=workspace)
+
+    assert record["refused"] == [
+        {"path": "huge.py", "reason": "TOTAL_BUDGET_EXHAUSTED"}
+    ]
+    assert [entry["path"] for entry in record["served"]] == ["small.py"]

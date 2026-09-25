@@ -17,11 +17,17 @@ from typing import Any
 _DRIVE_PREFIX = re.compile(r"^[A-Za-z]:(?:/|$)")
 
 # One agent naming a whole package must not crowd out the static evidence, so
-# the retrieval is bounded three ways: how many files, how large each one is,
-# and how much text the batch may add to the next prompt.
+# the retrieval is bounded by how many files it may name and how much text the
+# batch may add to the next prompt.
+#
+# There is deliberately no per-file ceiling.  One was measured refusing the
+# single file a hypothesis was about - open-webui's ``routers/retrieval.py`` is
+# 124 KB - while four files nobody had asked a question about were served in
+# the same batch.  A file is not less worth reading for being long, and often
+# it is longer because it does more; what the prompt can hold is the total, and
+# that is the only size this needs to decide.
 MAX_REQUESTED_FILES = 12
-MAX_FILE_BYTES = 64_000
-MAX_TOTAL_BYTES = 256_000
+MAX_TOTAL_BYTES = 384_000
 
 
 def _refusal(path: str, reason: str) -> dict[str, str]:
@@ -100,9 +106,6 @@ def collect_requested_sources(
         except OSError:
             refused.append(_refusal(as_written, "UNREADABLE"))
             continue
-        if len(raw) > MAX_FILE_BYTES:
-            refused.append(_refusal(as_written, "FILE_TOO_LARGE"))
-            continue
         if total + len(raw) > MAX_TOTAL_BYTES:
             refused.append(_refusal(as_written, "TOTAL_BUDGET_EXHAUSTED"))
             continue
@@ -128,14 +131,12 @@ def collect_requested_sources(
         "served_bytes": total,
         "limits": {
             "max_files": MAX_REQUESTED_FILES,
-            "max_file_bytes": MAX_FILE_BYTES,
             "max_total_bytes": MAX_TOTAL_BYTES,
         },
     }
 
 
 __all__ = [
-    "MAX_FILE_BYTES",
     "MAX_REQUESTED_FILES",
     "MAX_TOTAL_BYTES",
     "collect_requested_sources",
