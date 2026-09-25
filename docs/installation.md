@@ -62,7 +62,7 @@ python -m pip install .
 sastsimi --help
 ```
 
-개발자는 `uv sync --frozen --all-groups`를 사용할 수 있습니다. 설치된 일반 사용자는 `uv run`, `UV_PROJECT_ENVIRONMENT`, `--data-dir`, `--profile`을 반복 입력하지 않습니다.
+개발자는 `uv sync --frozen --all-groups`로 의존성을 준비한 뒤 `uv run sastsimi ...`로 소스 CLI를 실행할 수 있습니다. 설치된 일반 사용자는 `uv run`, `UV_PROJECT_ENVIRONMENT`, `--data-dir`, `--profile`을 반복 입력하지 않습니다.
 
 ## 3. LLM 인증
 
