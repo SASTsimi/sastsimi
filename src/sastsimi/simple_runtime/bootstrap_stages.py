@@ -218,10 +218,46 @@ answers, from the code you have read.
 # the other stages' four rounds would end it early; this only stops a runaway.
 _HYPOTHESIS_ROUNDS = 8
 
+_SURVEY_OPENING = """You have not read the code yet. Your first answer is a survey, not
+a reading request or hypotheses: see "Survey" below.
+"""
+
+_SURVEY = b"""
+## Survey
+
+Go through every entry point in this part and list in `suspicious_points`
+every point that deserves a closer look - however minor. A point is anything
+the analysis above would examine: a defence to test, a transformation of
+controlled input, a check that differs from a sibling's or is missing, a trust
+boundary the input crosses, an authorization, state or resource decision.
+
+For each point give the `entry_point`, the `concern` in one line, and `read`:
+the code to read for it (`path:start-end`, or several separated by spaces).
+
+The runtime will then take you through the points a few at a time; a point
+you do not list is never examined. Leave `hypotheses` and both request lists
+empty in this answer.
+"""
+
+_POINTS_PER_TURN = 8
+
 _READ_FIRST = (
     b"You have not read any code yet. Ask for the code of this part's handlers "
     b"and the functions their input reaches in `requested_paths`, and leave "
     b"`hypotheses` empty.\n"
+)
+
+_FACT_SURVEY_INSTRUCTIONS = _FACT_INSTRUCTIONS.replace(
+    """You have not read the code yet. Your first answer only asks for code: leave
+`hypotheses` empty and fill `requested_paths`. Hypotheses come in later
+answers, from the code you have read.
+""",
+    _SURVEY_OPENING,
+).replace(
+    """6. Leave both lists empty only when every entry point in this part has been
+   read this way.""",
+    """6. Leave both lists empty only when every point you were given in the
+   current turn has been read this way.""",
 )
 
 _FOLLOW_UP = (
