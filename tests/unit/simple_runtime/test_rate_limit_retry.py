@@ -220,4 +220,4 @@ async def test_a_burst_with_no_window_still_uses_the_short_ladder() -> None:
     result = await _call(_windowed(runner, waits, now))
 
     assert not isinstance(result, StageFailure)
-    assert waits == [3.0, 12.0]
+    assert waits == [5.0, 10.0]

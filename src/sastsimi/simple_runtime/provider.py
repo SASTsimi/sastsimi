@@ -27,12 +27,25 @@ from sastsimi.simple_runtime.call_queue import CallQueue
 from .models import StageFailure
 
 # Measured against the official client: the server turns away a burst of large
-# prompts with a 429 that clears on its own, so a refused call is retried a few
-# times with a widening wait before the stage gives up.
-_RATE_LIMIT_BACKOFF_MS: tuple[int, ...] = (3_000, 12_000, 45_000)
+# prompts with a 429 that clears on its own, so a refused call is retried with
+# a widening wait before the stage gives up.  One burst on open-webui lasted
+# past ten minutes and a one-minute ladder blocked every hypothesis in flight;
+# doubling from five seconds reaches about twenty-one minutes without ever
+# repeating a wait, which a plateaued tail did.
+_RATE_LIMIT_BACKOFF_MS: tuple[int, ...] = (
+    5_000,
+    10_000,
+    20_000,
+    40_000,
+    80_000,
+    160_000,
+    320_000,
+    640_000,
+)
 # The subscription window was measured at five hours, so a wait longer than
 # that is not a window reopening and is not worth holding the run for.
 _MAX_WINDOW_WAIT_SECONDS = 6 * 60 * 60
+_ANSWER_ABOVE = b"Answer the message above; it was not answered.\n"
 
 
 class SimpleLLMCallResult(ContractModel):
@@ -290,7 +303,10 @@ class SimpleClaudeClient:
                 break
             await self._sleep(wait)
             attempts += 1
-            result = await live.send(prompt, timeout_ms=timeout_ms)
+            # The refused message stays in the conversation, so sending it
+            # again doubled the prompt: a turn refused twice was answered with
+            # three copies of a 145k-token prompt.  Only a nudge is sent.
+            result = await live.send(_ANSWER_ABOVE, timeout_ms=timeout_ms)
         return self._finish(
             result,
             prompt,

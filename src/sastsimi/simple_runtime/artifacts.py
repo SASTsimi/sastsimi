@@ -16,6 +16,20 @@ from .code_redaction import default_host_paths, redact_code
 from .models import CheckpointIdentity
 
 _MAX_CONTEXT_BYTES = 512 * 1024
+# What a shared document leaves for a hypothesis's own inputs, so its cut does
+# not depend on them and stays the same prefix for every hypothesis.
+_OWN_RESERVE = 128 * 1024
+_SHARED_KINDS = frozenset({"simple_static_fact_bundle"})
+
+
+def _is_shared(raw: bytes) -> bool:
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return isinstance(value, dict) and value.get("kind") in _SHARED_KINDS
+
+
 # What a tool actually flagged is the point of the bundle; the AST summary is a
 # structural dump of the whole checkout that happens to be far larger.  Naming
 # the findings here keeps them whole while the dump gives up entries.
@@ -138,12 +152,21 @@ class SimpleArtifactRepository:
     def prompt_context(self, refs: tuple[StoredDataRef, ...]) -> bytes:
         items: list[dict[str, Any]] = []
         used = 0
-        for ref in refs:
-            raw = self.read(ref)
+        documents = [(ref, self.read(ref)) for ref in refs]
+        # The static bundle is the same for every hypothesis of a run and is
+        # most of the prompt.  After a hypothesis's own proposal it made every
+        # agent's prefix unique, so each agent wrote the bundle to the prompt
+        # cache afresh (145k tokens, $0.58 an agent on open-webui).  Placed
+        # first and cut to a fixed size, it is read from the cache instead.
+        shared = [pair for pair in documents if _is_shared(pair[1])]
+        ordered = shared + [pair for pair in documents if pair not in shared]
+        for ref, raw in ordered:
             redacted = self._redacted(raw)
             remaining = self._max_context_bytes - used
             if remaining <= 0:
                 break
+            if (ref, raw) in shared:
+                remaining = min(remaining, self._max_context_bytes - _OWN_RESERVE)
             data, consumed, omitted = _fit_document(redacted, remaining)
             used += consumed
             item: dict[str, Any] = {
