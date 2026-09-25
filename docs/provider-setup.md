@@ -2,17 +2,22 @@
 
 Agent 이름·역할·입출력은 특정 Provider나 model에 고정되지 않습니다. 실제 연결은 setup이 만든 `provider_profile_ref + model` 설정으로 선택합니다.
 
-현재 SimpleRuntime에서 직접 사용할 수 있는 경로는 다음 두 가지입니다.
+현재 SimpleRuntime에서 직접 사용할 수 있는 경로는 다음 네 가지입니다.
 
 - OpenAI Responses API: 환경변수의 API key 사용
 - 공식 Codex CLI: ChatGPT 회원 로그인 사용
+- Cursor SDK API key 또는 Cursor Agent CLI 회원 로그인
+- 공식 Claude Code CLI: 본인의 claude.ai 유료 구독 로그인 사용 (`2.1.280` 검증 경계)
 
-Anthropic API나 Claude Code 회원 로그인을 위한 검증된 SimpleRuntime adapter는 현재 포함하지 않습니다. 이름만 설정해 사용할 수 있는 것처럼 취급하지 않습니다.
+Claude 경로는 별도의 Anthropic API key를 사용하지 않습니다. 아직 실제 유료 계정 smoke test는 하지 않았으므로, 모의 CLI 테스트 통과와 실제 계정에서의 동작 검증을 구분해야 합니다.
 
 공식 안내:
 
 - [OpenAI API quickstart](https://developers.openai.com/api/docs/quickstart)
 - [Codex 인증](https://developers.openai.com/codex/auth)
+- [Claude Code CLI](https://code.claude.com/docs/en/cli-reference)
+- [Claude Code 시작 및 로그인](https://code.claude.com/docs/en/setup)
+- [Claude Code 환경변수](https://code.claude.com/docs/en/env-vars)
 
 ## OpenAI API
 
@@ -43,6 +48,28 @@ sastsimi setup --auth subscription --provider codex --model <model>
 SASTSIMI는 현재 컴퓨터의 공식 CLI 실행 파일과 SHA-256을 profile에 기록하고 호출 직전에 다시 확인합니다. 브라우저 cookie를 읽거나 browser profile, 다른 사용자의 인증 파일을 복사하지 않습니다.
 
 Agent 호출은 같은 인증 파일을 동시에 갱신하는 충돌을 줄이기 위해 SimpleRuntime에서 순차 처리합니다. 각 역할은 독립 Prompt와 구조화 출력 계약을 사용하지만, 사람이 Codex Desktop에서 채팅 창을 직접 여는 방식은 아닙니다.
+
+## Claude 회원 로그인 (선택형)
+
+현재 검증된 Claude Code CLI 버전은 `2.1.280`입니다. 다른 버전이면 setup은 `CLAUDE_CLI_UNSUPPORTED_VERSION`으로 차단하며 자동 업그레이드하거나 추측해 호출하지 않습니다. 무료 claude.ai 계정만으로는 Claude Code를 사용할 수 없을 수 있습니다. 본인 계정으로 로그인하고 구독·추가 사용량 설정을 먼저 확인하세요. API key나 다른 팀원의 로그인 세션을 공유하지 않습니다.
+
+PowerShell에서 각 줄을 따로 실행합니다.
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+npm install -g @anthropic-ai/claude-code@2.1.280
+claude --version
+claude auth login
+claude auth status --json
+sastsimi setup --non-interactive --auth subscription --provider claude --model <본인-계정에서-확인한-모델> --profile full
+sastsimi analyze https://github.com/owner/repository.git --commit <정확한-40자리-SHA>
+```
+
+Claude CLI에서 직접 `/model` 명령으로 계정에 보이는 모델을 확인한 뒤 `--model`에 입력하세요. SASTSIMI는 Claude 모델 ID를 코드에 고정하지 않습니다. 최종 검증 Agent만 다른 모델을 쓸 경우 setup에 `--agent-model verification_result=<확인한-모델>`을 추가합니다. 나머지 Agent는 `--model`의 공통 모델을 사용합니다.
+
+`ANTHROPIC_API_KEY`는 Claude 회원 로그인 경로에 필요하지 않습니다. CLI 호출 시 이 변수와 `PATH`, 저장소 설정·MCP·도구를 자식 프로세스에 전달하지 않고, 빈 임시 작업 디렉터리에서 실행합니다. 출력 이벤트가 이 격리를 증명하지 못하면 분석 Agent는 성공하지 않습니다. 응답 원문·검증된 JSON·시도 메타데이터는 별도 artifact/DB에 기록하며, 일반 로그에는 프롬프트와 인증정보를 기록하지 않습니다. 실패한 Agent는 제한 횟수만 재시도하고 체크포인트에 실패를 남겨 resume할 수 있습니다.
+
+Claude 구독에서도 사용량 제한이나 추가 사용량 과금이 가능하므로 대시보드에는 잠재 추가 사용량으로 표시됩니다. 실제 비용 정보가 CLI에서 제공되지 않으면 0으로 추정하지 않고 미확인으로 남깁니다.
 
 ## model 변경
 

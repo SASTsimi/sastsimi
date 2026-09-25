@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -64,8 +66,15 @@ def _stream(model: str, *, tools: list[str] | None = None) -> bytes:
 async def test_claude_cli_uses_no_tools_and_stdin_only(tmp_path: Path) -> None:
     calls: list[tuple[tuple[str, ...], bytes | None, dict[str, str]]] = []
 
-    async def fake_runner(argv, *, stdin, cwd, env, timeout):
-        calls.append((argv, stdin, env))
+    async def fake_runner(
+        argv: tuple[str, ...],
+        *,
+        stdin: bytes | None,
+        cwd: Path,
+        env: Mapping[str, str],
+        timeout: float,
+    ) -> tuple[int, bytes, bytes]:
+        calls.append((argv, stdin, dict(env)))
         if "--version" in argv:
             return 0, b"2.1.280 (Claude Code)\n", b""
         if "auth" in argv:
@@ -105,7 +114,14 @@ async def test_claude_cli_uses_no_tools_and_stdin_only(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_claude_cli_rejects_tool_in_effective_init(tmp_path: Path) -> None:
-    async def fake_runner(argv, *, stdin, cwd, env, timeout):
+    async def fake_runner(
+        argv: tuple[str, ...],
+        *,
+        stdin: bytes | None,
+        cwd: Path,
+        env: Mapping[str, str],
+        timeout: float,
+    ) -> tuple[int, bytes, bytes]:
         if "--version" in argv:
             return 0, b"2.1.280 (Claude Code)\n", b""
         if "auth" in argv:
@@ -133,7 +149,14 @@ class FakeTransport:
         self.outcomes = outcomes
         self.calls: list[tuple[str, bytes]] = []
 
-    async def invoke(self, *, prompt, output_schema, model, timeout):
+    async def invoke(
+        self,
+        *,
+        prompt: bytes,
+        output_schema: Mapping[str, Any],
+        model: str,
+        timeout: float,
+    ) -> ClaudeCLIResponse:
         self.calls.append((model, prompt))
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):

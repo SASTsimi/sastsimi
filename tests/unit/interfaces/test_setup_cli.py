@@ -161,6 +161,31 @@ def test_claude_setup_rejects_unverified_cli_version(tmp_path: Path) -> None:
     assert any("CLAUDE_CLI_UNSUPPORTED_VERSION" in item for item in result.next_actions)
 
 
+def test_claude_setup_reports_actionable_auth_failure(tmp_path: Path) -> None:
+    service = SetupService(
+        config_store=UserConfigStore(tmp_path / "config.toml"),
+        discovery=_Discovery(),
+        profile_path=tmp_path / "profile.toml",
+        auth_checker=lambda _choices, _tools: False,
+    )
+    result = service.configure(
+        SetupChoices(
+            data_dir=tmp_path / "data",
+            auth_mode="SUBSCRIPTION_LOGIN",
+            provider="claude",
+            model="operator-model",
+            credential_ref="CLAUDE_CLI_LOGIN",
+            execution_profile="LIGHTWEIGHT",
+            max_cost_minor_units=10_000,
+            max_tokens=500_000,
+            max_elapsed_seconds=3_600,
+            docker_network="NONE",
+        )
+    )
+    assert result.status == "BLOCKED"
+    assert any("CLAUDE_AUTH_REQUIRED" in action for action in result.next_actions)
+
+
 def test_claude_auth_requires_first_party_subscription_even_on_zero_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

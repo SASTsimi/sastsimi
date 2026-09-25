@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -135,7 +136,14 @@ async def test_executable_digest_is_rechecked_before_inference(tmp_path: Path) -
     )
     called = False
 
-    async def fake_runner(argv, *, stdin, cwd, env, timeout):
+    async def fake_runner(
+        argv: tuple[str, ...],
+        *,
+        stdin: bytes | None,
+        cwd: Path,
+        env: Mapping[str, str],
+        timeout: float,
+    ) -> tuple[int, bytes, bytes]:
         nonlocal called
         called = True
         return 0, b"", b""

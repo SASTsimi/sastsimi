@@ -510,7 +510,16 @@ class SetupService:
         config_path = self.config_store.save(config)
         next_actions = tuple(
             [*(f"Install or configure {name}." for name in missing)]
-            + ([] if auth_ready else ["Complete the selected Provider authentication."])
+            + (
+                []
+                if auth_ready
+                else [
+                    "CLAUDE_AUTH_REQUIRED: run claude auth login with your own "
+                    "claude.ai subscription account."
+                    if choices.provider == "claude"
+                    else "Complete the selected Provider authentication."
+                ]
+            )
             + (
                 []
                 if claude_version_ready
