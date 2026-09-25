@@ -181,6 +181,16 @@ def render_history(document: dict[str, Any]) -> str:
     return "\n\n".join(parts)
 
 
+def render_round(document: dict[str, Any]) -> str:
+    """Only the newest round, for a turn in a conversation that has the rest."""
+
+    rounds = document.get("rounds") or []
+    latest = {"rounds": rounds[-1:]}
+    return render_history(latest).replace(
+        "## What you have read so far", "## The files you asked for", 1
+    )
+
+
 def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, indent=1)
 
@@ -214,4 +224,5 @@ __all__ = [
     "Exploration",
     "Round",
     "render_history",
+    "render_round",
 ]

@@ -78,7 +78,7 @@ class _ReadingAgent:
         prompt = kwargs.get("prompt")
         text = prompt if isinstance(prompt, bytes) else b""
         self.prompts.append(text)
-        has_read = b"## What you have read so far" in text
+        has_read = b"## The files you asked for" in text
         return SimpleLLMCallResult(
             value={
                 "hypotheses": [_proposal(2)] if has_read else [],
@@ -183,7 +183,7 @@ async def test_a_path_outside_the_checkout_is_refused_not_read(
             prompt = kwargs.get("prompt")
             text = prompt if isinstance(prompt, bytes) else b""
             self.prompts.append(text)
-            done = b"## What you have read so far" in text
+            done = b"## The files you asked for" in text
             return SimpleLLMCallResult(
                 value={
                     "hypotheses": [],

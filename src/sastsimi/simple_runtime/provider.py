@@ -4,7 +4,8 @@ import asyncio
 import hashlib
 import json
 import os
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from time import monotonic, time
 from typing import Any, Protocol
@@ -251,6 +252,54 @@ class SimpleClaudeClient:
             return None
         return self._rate_limit_backoff_ms[attempts] / 1000
 
+    @asynccontextmanager
+    async def conversation(
+        self, *, output_schema: Mapping[str, Any], timeout_ms: int
+    ) -> AsyncIterator[SimpleConversation]:
+        """Hold one queue slot and one client process for several turns."""
+
+        opener = getattr(self._runner, "conversation", None)
+        if opener is None:
+            yield _ReplayConversation(self, output_schema, timeout_ms)
+            return
+        request = CodexProcessRequest(
+            invocation_id=f"simple-{uuid4().hex}",
+            provider_profile_ref=self._provider_profile_ref,
+            model=self._model,
+            prompt=b"",
+            output_schema=canonical_bytes(output_schema),
+            timeout_ms=timeout_ms,
+        )
+        async with self._queue.hold(), opener(request) as live:
+            yield _LiveConversation(self, live, output_schema, timeout_ms)
+
+    async def _ask_live(
+        self,
+        live: Any,
+        prompt: bytes,
+        output_schema: Mapping[str, Any],
+        timeout_ms: int,
+    ) -> SimpleLLMCallResult | StageFailure:
+        started_at = datetime.now(UTC)
+        started = monotonic()
+        result = await live.send(prompt, timeout_ms=timeout_ms)
+        attempts = 0
+        while result.status == "RATE_LIMITED":
+            wait = self._wait_for(result, attempts)
+            if wait is None:
+                break
+            await self._sleep(wait)
+            attempts += 1
+            result = await live.send(prompt, timeout_ms=timeout_ms)
+        return self._finish(
+            result,
+            prompt,
+            output_schema,
+            invocation_id=f"simple-{uuid4().hex}",
+            started_at=started_at,
+            started=started,
+        )
+
     async def call(
         self,
         *,
@@ -258,7 +307,6 @@ class SimpleClaudeClient:
         output_schema: Mapping[str, Any],
         timeout_ms: int,
     ) -> SimpleLLMCallResult | StageFailure:
-        prompt_digest = hashlib.sha256(prompt).hexdigest()
         invocation_id = f"simple-{uuid4().hex}"
         request = CodexProcessRequest(
             invocation_id=invocation_id,
@@ -271,6 +319,26 @@ class SimpleClaudeClient:
         started_at = datetime.now(UTC)
         started = monotonic()
         result = await self._call_through_rate_limits(request)
+        return self._finish(
+            result,
+            prompt,
+            output_schema,
+            invocation_id=invocation_id,
+            started_at=started_at,
+            started=started,
+        )
+
+    def _finish(
+        self,
+        result: CodexProcessResult,
+        prompt: bytes,
+        output_schema: Mapping[str, Any],
+        *,
+        invocation_id: str,
+        started_at: datetime,
+        started: float,
+    ) -> SimpleLLMCallResult | StageFailure:
+        prompt_digest = hashlib.sha256(prompt).hexdigest()
         finished_at = datetime.now(UTC)
         elapsed_ms = max(0, int((monotonic() - started) * 1000))
         if result.status != "SUCCEEDED" or result.final_message is None:
@@ -310,6 +378,73 @@ class SimpleClaudeClient:
             finished_at=finished_at,
             elapsed_ms=elapsed_ms,
         )
+
+
+class SimpleConversation(Protocol):
+    async def ask(self, prompt: bytes) -> SimpleLLMCallResult | StageFailure: ...
+
+
+class _ReplayConversation:
+    """Turns replayed as one prompt each time, for a client with no live mode.
+
+    This is what every call used to be; it keeps callers on one shape.
+    """
+
+    def __init__(
+        self, client: SimpleLLMClient, schema: Mapping[str, Any], timeout_ms: int
+    ) -> None:
+        self._client = client
+        self._schema = schema
+        self._timeout_ms = timeout_ms
+        self._turns: list[bytes] = []
+
+    async def ask(self, prompt: bytes) -> SimpleLLMCallResult | StageFailure:
+        self._turns.append(prompt)
+        result = await self._client.call(
+            prompt=b"\n\n".join(self._turns),
+            output_schema=self._schema,
+            timeout_ms=self._timeout_ms,
+        )
+        if isinstance(result, SimpleLLMCallResult):
+            self._turns.append(
+                b"Your previous answer:\n" + canonical_bytes(result.value)
+            )
+        return result
+
+
+class _LiveConversation:
+    """Turns sent to one client process; earlier turns come from the cache."""
+
+    def __init__(
+        self,
+        client: SimpleClaudeClient,
+        live: Any,
+        schema: Mapping[str, Any],
+        timeout_ms: int,
+    ) -> None:
+        self._client = client
+        self._live = live
+        self._schema = schema
+        self._timeout_ms = timeout_ms
+
+    async def ask(self, prompt: bytes) -> SimpleLLMCallResult | StageFailure:
+        return await self._client._ask_live(
+            self._live, prompt, self._schema, self._timeout_ms
+        )
+
+
+@asynccontextmanager
+async def conversation_with(
+    client: SimpleLLMClient, *, output_schema: Mapping[str, Any], timeout_ms: int
+) -> AsyncIterator[SimpleConversation]:
+    """Open a conversation with any client: live when it can, replayed if not."""
+
+    opener = getattr(client, "conversation", None)
+    if opener is None:
+        yield _ReplayConversation(client, output_schema, timeout_ms)
+        return
+    async with opener(output_schema=output_schema, timeout_ms=timeout_ms) as talk:
+        yield talk
 
 
 class SimpleOpenAIClient:

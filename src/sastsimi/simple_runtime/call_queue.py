@@ -13,7 +13,8 @@ flight, not how fast it arrives.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import TypeVar
 
 T = TypeVar("T")
@@ -35,6 +36,23 @@ class CallQueue:
     @property
     def max_concurrent(self) -> int:
         return self._max_concurrent
+
+    @asynccontextmanager
+    async def hold(self) -> AsyncIterator[None]:
+        """Keep one slot for as long as a conversation's process is alive.
+
+        A conversation's process exists between its turns too, so its slot is
+        held for the whole conversation: otherwise twenty batches would start
+        twenty client processes and wait on slots only to send.
+        """
+
+        async with self._slots:
+            self._running += 1
+            self.peak_running = max(self.peak_running, self._running)
+            try:
+                yield
+            finally:
+                self._running -= 1
 
     async def submit(self, run: Callable[[], Awaitable[T]]) -> T:
         """Run ``run`` once a slot is free, then release the slot."""

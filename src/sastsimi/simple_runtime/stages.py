@@ -27,7 +27,7 @@ from sastsimi.sandbox.docker_adapter import DockerAdapter, DockerOperationError
 
 from .artifacts import SimpleArtifactRepository
 from .chaining import PrimitiveAdmissionStage, SimpleChainingStage
-from .exploration import MAX_ROUNDS, Exploration, render_history
+from .exploration import MAX_ROUNDS, Exploration, render_round
 from .models import (
     STAGE_ORDER,
     SimpleStage,
@@ -36,7 +36,7 @@ from .models import (
     StageResult,
 )
 from .poc import PoCCandidateRejected, validate_candidate
-from .provider import SimpleLLMCallResult, SimpleLLMClient
+from .provider import SimpleLLMCallResult, SimpleLLMClient, conversation_with
 from .retrieval import collect_requested_ast, collect_requested_sources
 from .runner import SimpleStageHandler, StageBlocked, StageFailed
 from .store import SimpleCheckpointStore
@@ -660,21 +660,8 @@ class _StructuredStage:
         )
         return sources, ast
 
-    async def _ask(
-        self, context: bytes, history: Exploration | None
-    ) -> SimpleLLMCallResult:
-        body = context
-        if history is not None and history.rounds:
-            body = (
-                body
-                + b"\n\n"
-                + render_history(history.as_prompt_document()).encode("utf-8")
-            )
-        result = await self._client.call(
-            prompt=_prompt(self._instructions, body),
-            output_schema=self._schema,
-            timeout_ms=self._call_timeout_ms,
-        )
+    @staticmethod
+    def _checked(result: SimpleLLMCallResult | StageFailure) -> SimpleLLMCallResult:
         if isinstance(result, StageFailure):
             _raise_provider_failure(result)
         return result
@@ -686,26 +673,40 @@ class _StructuredStage:
     ) -> tuple[SimpleLLMCallResult, StoredDataRef]:
         context = self._artifacts.prompt_context(refs)
         history = Exploration()
-        result = await self._ask(context, None)
-        # Reading one file is what makes the next one worth asking for, so the
-        # agent is asked again with what it read rather than once with
-        # everything someone decided in advance that it might want.
-        for _ in range(self._max_rounds - 1):
-            requested = _requested(result.value, "requested_paths")
-            asked_for_ast = _requested(result.value, "requested_ast_paths")
-            if not requested and not asked_for_ast:
-                break
-            sources, ast = self._serve(requested, asked_for_ast)
-            if sources is None and ast is None:
-                break
-            history.record(
-                requested_paths=(*requested, *asked_for_ast),
-                sources=sources,
-                ast=ast,
-                notes=_notes(result.value),
-            )
-            history.compact()
-            result = await self._ask(context, history)
+        # One conversation per agent: each later turn carries only the files
+        # just served, and what came before is read from the prompt cache.
+        async with conversation_with(
+            self._client,
+            output_schema=self._schema,
+            timeout_ms=self._call_timeout_ms,
+        ) as talk:
+            result = self._checked(await talk.ask(_prompt(self._instructions, context)))
+            # Reading one file is what makes the next one worth asking for, so
+            # the agent is asked again with what it read rather than once with
+            # everything someone decided in advance that it might want.
+            for _ in range(self._max_rounds - 1):
+                requested = _requested(result.value, "requested_paths")
+                asked_for_ast = _requested(result.value, "requested_ast_paths")
+                if not requested and not asked_for_ast:
+                    break
+                sources, ast = self._serve(requested, asked_for_ast)
+                if sources is None and ast is None:
+                    break
+                history.record(
+                    requested_paths=(*requested, *asked_for_ast),
+                    sources=sources,
+                    ast=ast,
+                    notes=_notes(result.value),
+                )
+                result = self._checked(
+                    await talk.ask(
+                        b"<UNTRUSTED_EXACT_INPUTS>\n"
+                        + render_round(history.as_prompt_document()).encode("utf-8")
+                        + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
+                        + b"Continue with these files and return your complete "
+                        b"answer again, since only this answer is kept.\n"
+                    )
+                )
         output_ref = self._artifacts.put_json(
             {
                 "kind": self._kind,

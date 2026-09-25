@@ -22,7 +22,7 @@ from .application import (
     StaticBootstrapResult,
 )
 from .artifacts import SimpleArtifactRepository
-from .exploration import MAX_ROUNDS, Exploration, render_history
+from .exploration import MAX_ROUNDS, Exploration, render_round
 from .feeding import Batch, Feeding, fenced, plan_feeding, render_batch
 from .models import CheckpointIdentity, StageFailure
 from .proposals import (
@@ -31,7 +31,12 @@ from .proposals import (
     Registry,
     validate_proposal,
 )
-from .provider import SimpleLLMCallResult, SimpleLLMClient
+from .provider import (
+    SimpleConversation,
+    SimpleLLMCallResult,
+    SimpleLLMClient,
+    conversation_with,
+)
 from .retrieval import collect_requested_ast, collect_requested_sources
 
 _MAX_TRACKED_FILES = 200_000
@@ -92,6 +97,20 @@ again with them. Leave both empty when you have what you need.
 ## Form of each hypothesis
 
 """
+
+
+_FOLLOW_UP = (
+    b"Continue with these files. Return the complete list of hypotheses for "
+    b"this batch again - every earlier one that still holds, corrected where "
+    b"these files change it, and any new ones - because only this answer is "
+    b"kept. Request more files only if a flow still leaves what you have.\n"
+)
+
+
+def _required(result: SimpleLLMCallResult | StageFailure) -> SimpleLLMCallResult:
+    if isinstance(result, StageFailure):
+        raise RuntimeError(result.code)
+    return result
 
 
 # Bodies of rejected proposals, held only until the one repair call reads them.
@@ -762,47 +781,28 @@ class DirectHypothesisBootstrap:
 
     async def _read_then_propose(
         self,
-        client: SimpleLLMClient,
+        talk: SimpleConversation,
         instructions: bytes,
         context: bytes,
-        schema: dict[str, object],
         static: StaticBootstrapResult,
         artifacts: SimpleArtifactRepository,
     ) -> tuple[SimpleLLMCallResult, Exploration]:
-        """Ask, serve what was asked for, ask again.
+        """Ask, serve what was asked for, ask again - in one conversation.
 
-        Which files a run ever looks at is decided here, so this is the stage
-        that most needs to look before it decides.  A defect behind a guard
-        that is present but wrong produces no static finding, and an agent that
-        can only read static findings can never propose it.
+        Each follow-up turn carries only the files just served; the batch and
+        everything read before are already in the conversation and are read
+        from the prompt cache rather than sent again.
         """
 
         history = Exploration()
-
-        async def ask() -> SimpleLLMCallResult:
-            body = context
-            if history.rounds:
-                body = (
-                    body
-                    + b"\n\n"
-                    + render_history(history.as_prompt_document()).encode("utf-8")
-                )
-            answer = await client.call(
-                prompt=(
-                    instructions
-                    + b"<UNTRUSTED_EXACT_INPUTS>\n"
-                    + body
-                    + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
-                ),
-                output_schema=schema,
-                timeout_ms=self._call_timeout_ms,
+        result = _required(
+            await talk.ask(
+                instructions
+                + b"<UNTRUSTED_EXACT_INPUTS>\n"
+                + context
+                + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
             )
-            if isinstance(answer, StageFailure):
-                raise RuntimeError(answer.code)
-            assert isinstance(answer, SimpleLLMCallResult)
-            return answer
-
-        result = await ask()
+        )
         for _ in range(MAX_ROUNDS - 1):
             wanted = _string_list(result.value.get("requested_paths"))
             wanted_ast = _string_list(result.value.get("requested_ast_paths"))
@@ -826,8 +826,14 @@ class DirectHypothesisBootstrap:
                 ast=ast,
                 notes={"proposed_so_far": _count(result.value.get("hypotheses"))},
             )
-            history.compact()
-            result = await ask()
+            result = _required(
+                await talk.ask(
+                    b"<UNTRUSTED_EXACT_INPUTS>\n"
+                    + render_round(history.as_prompt_document()).encode("utf-8")
+                    + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
+                    + _FOLLOW_UP
+                )
+            )
         return result, history
 
     def _ast_facts(
@@ -943,22 +949,25 @@ class DirectHypothesisBootstrap:
 
         async def read_batch(batch: Batch) -> None:
             context = self._batch_context(bundle, feeding, batch)
-            result, history = await self._read_then_propose(
-                client, instructions, context, schema, static, artifacts
-            )
-            reading = _reading_record(history)
-            proposed = result.value.get("hypotheses", [])
-            proposed = list(proposed) if isinstance(proposed, list) else []
-            valid, rejected = self._validate_all(proposed, lines, batch.number)
-            if rejected:
-                # The design allows a bounded repair before INVALID_OUTPUT.
-                repaired = await self._repair(
-                    client, instructions, context, schema, rejected
+            async with conversation_with(
+                client, output_schema=schema, timeout_ms=self._call_timeout_ms
+            ) as talk:
+                result, history = await self._read_then_propose(
+                    talk, instructions, context, static, artifacts
                 )
-                again, still = self._validate_all(repaired, lines, batch.number)
-                valid.extend(again)
-                for proposal_id, errors in still:
-                    registry.record_invalid(proposal_id, batch.number, errors)
+                proposed = result.value.get("hypotheses", [])
+                proposed = list(proposed) if isinstance(proposed, list) else []
+                valid, rejected = self._validate_all(proposed, lines, batch.number)
+                if rejected:
+                    # The design allows a bounded repair before INVALID_OUTPUT.
+                    repaired = await self._repair(talk, rejected)
+                    again, still = self._validate_all(repaired, lines, batch.number)
+                    valid.extend(again)
+                    for proposal_id, errors in still:
+                        registry.record_invalid(proposal_id, batch.number, errors)
+            reading = _reading_record(history)
+            # Registered after the conversation closes, so a batch never holds
+            # its slot while waiting on a duplicate review's slot.
             for proposal_id, proposal in valid:
                 entry = await registry.consider(
                     proposal,
@@ -1024,33 +1033,21 @@ class DirectHypothesisBootstrap:
         return valid, rejected
 
     async def _repair(
-        self,
-        client: SimpleLLMClient,
-        instructions: bytes,
-        context: bytes,
-        schema: dict[str, object],
-        rejected: list[tuple[str, list[str]]],
+        self, talk: SimpleConversation, rejected: list[tuple[str, list[str]]]
     ) -> list[object]:
-        """Ask once more for the rejected proposals, told what was wrong."""
+        """Ask once more, in the same conversation, for the rejected proposals."""
 
         listing = [
             {"proposal": _REJECTED_BODIES.pop(pid, None), "errors": errors}
             for pid, errors in rejected
         ]
-        answer = await client.call(
-            prompt=(
-                instructions
-                + b"These proposals were rejected for the reasons given. Return "
-                b"each corrected in `hypotheses`, or leave it out if it cannot "
-                b"be corrected from the code; leave both request lists empty.\n"
-                b"<REJECTED>\n"
-                + canonical_bytes(listing)
-                + b"\n</REJECTED>\n<UNTRUSTED_EXACT_INPUTS>\n"
-                + context
-                + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
-            ),
-            output_schema=schema,
-            timeout_ms=self._call_timeout_ms,
+        answer = await talk.ask(
+            b"## Rejected proposals\n\nThese proposals were rejected for the "
+            b"reasons given. Return each corrected in `hypotheses`, or leave it "
+            b"out if it cannot be corrected from the code; leave both request "
+            b"lists empty. Return only these corrected proposals.\n\n```json\n"
+            + canonical_bytes(listing)
+            + b"\n```\n"
         )
         if not isinstance(answer, SimpleLLMCallResult):
             return []

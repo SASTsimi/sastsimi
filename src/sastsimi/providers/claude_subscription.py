@@ -82,6 +82,8 @@ _MAX_STDERR_BYTES = 65_536
 _CLIENT_SYNTHETIC_MODEL = "<synthetic>"
 _MAX_AUTH_STATUS_BYTES = 65_536
 _TREE_KILLER_TIMEOUT_SECONDS = 2.0
+# How long a closed conversation may take to exit before it is killed.
+_CONVERSATION_EXIT_SECONDS = 10.0
 _ARRAY_ENVELOPE_KEY = "items"
 _PROCESS_LOCK = Lock()
 
@@ -261,9 +263,15 @@ class ClaudeCliProcessRunner:
         if digest != self.executable.sha256:
             raise ProviderExecutableBindingError
 
-    def verify_binding(self, request: CodexProcessRequest) -> None:
-        """Revalidate exact approved records and request identity before a call."""
-        _validate_process_request(request)
+    def verify_binding(
+        self, request: CodexProcessRequest, *, conversation: bool = False
+    ) -> None:
+        """Revalidate exact approved records and request identity before a call.
+
+        A conversation is opened before its first turn exists, so its prompt is
+        checked per turn instead of here.
+        """
+        _validate_process_request(request, require_prompt=not conversation)
         self._verify_approval()
         if (
             request.provider_profile_ref != reference(self.binding.provider_profile)
@@ -295,6 +303,8 @@ class ClaudeCliProcessRunner:
         request: CodexProcessRequest,
         work_directory: Path,
         schema: bytes,
+        *,
+        conversation: bool = False,
     ) -> tuple[str, ...]:
         """Return the fixed no-tools invocation; prompt bytes are stdin-only.
 
@@ -302,7 +312,7 @@ class ClaudeCliProcessRunner:
         ``apiKeyHelper`` command, which is both an API credential path and
         arbitrary command execution inside this boundary.
         """
-        _validate_process_request(request)
+        _validate_process_request(request, require_prompt=not conversation)
         if not work_directory.is_absolute():
             raise ValueError("CLAUDE_BOUNDARY_PATH_MUST_BE_ABSOLUTE")
         return (
@@ -414,6 +424,99 @@ class ClaudeCliProcessRunner:
             )
             return CodexProcessResult("FAILED", None, None)
 
+    @asynccontextmanager
+    async def conversation(
+        self, request: CodexProcessRequest
+    ) -> AsyncIterator[ClaudeConversation]:
+        """Open one client process that answers turn after turn.
+
+        The same preflight a single call runs - binding, pinned version and an
+        exact subscription login - runs once, before the process starts.
+        """
+
+        self.verify_binding(request, conversation=True)
+        environment = self.child_environment(os.environ)
+        with tempfile.TemporaryDirectory(prefix="sastsimi-claude-") as temporary:
+            root = Path(temporary).resolve()
+            work_directory = root / "work"
+            auth_check_directory = root / "auth-check"
+            auth_check_directory.mkdir()
+            schema = _strict_json(request.output_schema, ProviderInputMismatchError)
+            if not isinstance(schema, dict):
+                raise ProviderInputMismatchError
+            schema_bytes = canonical_bytes(_claude_output_schema(schema))
+            async with asyncio.timeout(request.timeout_ms / 1_000):
+                version = await self._run_child(
+                    (str(self.executable.path), "--version"),
+                    stdin=None,
+                    cwd=auth_check_directory,
+                    environment=environment,
+                )
+                _require_claude_cli_version(
+                    version, self.binding.provider_profile.client_version
+                )
+                auth = await self._run_child(
+                    (str(self.executable.path), "auth", "status", "--json"),
+                    stdin=None,
+                    cwd=auth_check_directory,
+                    environment=environment,
+                )
+            if auth.returncode != 0 or not _is_exact_subscription_login(auth):
+                yield ClaudeConversation(
+                    self,
+                    request,
+                    None,
+                    unavailable=CodexProcessResult("AUTH_REQUIRED", None, None),
+                )
+                return
+            self.verify_executable()
+            work_directory.mkdir()
+            argv = (
+                *self.execution_argv(
+                    request, work_directory, schema_bytes, conversation=True
+                ),
+                "--input-format",
+                "stream-json",
+            )
+            process = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=work_directory,
+                env=dict(environment),
+                creationflags=_windows_creation_flags(),
+                start_new_session=os.name != "nt",
+                # One result line carries a whole structured answer.
+                limit=_MAX_EVENT_STREAM_BYTES,
+            )
+            assert process.stderr is not None
+            stderr_task = asyncio.create_task(
+                _drain_bounded(process.stderr, _MAX_STDERR_BYTES)
+            )
+            try:
+                yield ClaudeConversation(self, request, process)
+            finally:
+                if process.stdin is not None and not process.stdin.is_closing():
+                    process.stdin.close()
+                try:
+                    async with asyncio.timeout(_CONVERSATION_EXIT_SECONDS):
+                        await process.wait()
+                except TimeoutError:
+                    pass
+                if process.returncode is None:
+                    await _terminate_process_tree(process)
+                code = process.returncode
+                if code is not None and code != 0:
+                    self._record_child_failure(
+                        request.invocation_id,
+                        code,
+                        await asyncio.shield(stderr_task),
+                    )
+                if not stderr_task.done():
+                    stderr_task.cancel()
+                await asyncio.gather(stderr_task, return_exceptions=True)
+
     async def _run_child(
         self,
         argv: tuple[str, ...],
@@ -480,6 +583,99 @@ class ClaudeCliProcessRunner:
                 *(task for task in (stdin_task, stdout_task, stderr_task) if task),
                 return_exceptions=True,
             )
+
+
+class ClaudeConversation:
+    """One official client process answering several turns of one conversation.
+
+    Sending a follow-up as a new process re-sends everything before it, and the
+    client was measured never reading that repeated prefix from the prompt
+    cache: the same 67,000-token prompt sent twice was written to the cache
+    both times and read neither time.  In one process the second turn read
+    66,952 tokens from the cache and wrote 2,033.
+
+    The client emits a complete ``system/init`` ... ``result`` sequence for
+    every turn, so each turn is validated by exactly the checks a single call
+    gets, and the session may not change between turns.
+    """
+
+    def __init__(
+        self,
+        runner: ClaudeCliProcessRunner,
+        request: CodexProcessRequest,
+        process: asyncio.subprocess.Process | None,
+        *,
+        unavailable: CodexProcessResult | None = None,
+    ) -> None:
+        self._runner = runner
+        self._request = request
+        self._process = process
+        self._session_id: str | None = None
+        self._dead: CodexProcessResult | None = unavailable
+
+    async def send(self, prompt: bytes, *, timeout_ms: int) -> CodexProcessResult:
+        if self._dead is not None:
+            return self._dead
+        process = self._process
+        assert process is not None and process.stdin is not None
+        assert process.stdout is not None
+        try:
+            text = prompt.decode("utf-8")
+        except UnicodeDecodeError:
+            return CodexProcessResult("FAILED", None, None)
+        if not text.strip():
+            return CodexProcessResult("FAILED", None, None)
+        line = json.dumps(
+            {"type": "user", "message": {"role": "user", "content": text}}
+        )
+        segment = bytearray()
+        try:
+            async with asyncio.timeout(timeout_ms / 1_000):
+                process.stdin.write(line.encode("utf-8") + b"\n")
+                await process.stdin.drain()
+                while True:
+                    raw = await process.stdout.readline()
+                    if not raw:
+                        # The client exited mid-turn; nothing more will come.
+                        return self._die(CodexProcessResult("FAILED", None, None))
+                    segment.extend(raw)
+                    if len(segment) >= _MAX_EVENT_STREAM_BYTES:
+                        return self._die(
+                            CodexProcessResult("INVALID_OUTPUT", None, None)
+                        )
+                    if b'"result"' in raw and _is_result_event(raw):
+                        break
+        except TimeoutError:
+            return self._die(CodexProcessResult("TIMED_OUT", None, None))
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return self._die(CodexProcessResult("FAILED", None, None))
+        try:
+            status, final_message, session_id, reopens_at = _validated_event_stream(
+                bytes(segment),
+                model=self._request.model,
+                client_version=self._runner.binding.provider_profile.client_version,
+            )
+        except ProviderInvalidOutputError:
+            return self._die(CodexProcessResult("INVALID_OUTPUT", None, None))
+        if self._session_id is None:
+            self._session_id = session_id
+        elif session_id != self._session_id:
+            return self._die(CodexProcessResult("INVALID_OUTPUT", None, None))
+        if status != "SUCCEEDED":
+            return CodexProcessResult(status, None, None, reopens_at)
+        return CodexProcessResult("SUCCEEDED", final_message, session_id)
+
+    def _die(self, result: CodexProcessResult) -> CodexProcessResult:
+        self._dead = CodexProcessResult("FAILED", None, None)
+        return result
+
+
+def _is_result_event(raw: bytes) -> bool:
+    try:
+        event = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return isinstance(event, dict) and event.get("type") == "result"
 
 
 class ClaudeSubscriptionAdapter:
@@ -1084,7 +1280,9 @@ def _is_exact_subscription_login(result: _ChildResult) -> bool:
     )
 
 
-def _validate_process_request(request: CodexProcessRequest) -> None:
+def _validate_process_request(
+    request: CodexProcessRequest, *, require_prompt: bool = True
+) -> None:
     if (
         not request.invocation_id.strip()
         or not isinstance(request.provider_profile_ref, StoredDataRef)
@@ -1095,7 +1293,7 @@ def _validate_process_request(request: CodexProcessRequest) -> None:
             for character in request.model
         )
         or request.timeout_ms <= 0
-        or not request.prompt
+        or (require_prompt and not request.prompt)
         or not request.output_schema
     ):
         raise ProviderInputMismatchError
