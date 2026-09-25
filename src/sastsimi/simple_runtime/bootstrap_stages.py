@@ -23,7 +23,15 @@ from .application import (
 )
 from .artifacts import SimpleArtifactRepository
 from .exploration import MAX_ROUNDS, Exploration, render_round
-from .feeding import Batch, Feeding, fenced, plan_feeding, render_batch
+from .facts import extract_flows
+from .feeding import (
+    Batch,
+    Feeding,
+    fenced,
+    plan_fact_feeding,
+    plan_feeding,
+    render_batch,
+)
 from .models import CheckpointIdentity, StageFailure
 from .proposals import (
     PROPOSAL_INSTRUCTIONS,
@@ -111,6 +119,45 @@ def _required(result: SimpleLLMCallResult | StageFailure) -> SimpleLLMCallResult
     if isinstance(result, StageFailure):
         raise RuntimeError(result.code)
     return result
+
+
+_FACT_INSTRUCTIONS = """# Role: Hypothesis Agent
+
+You are reading one batch of this repository's fact bundle. Every entry point of
+the checkout - a route, websocket or event handler - is in exactly one batch.
+For each one you have its inputs and every call its input reaches, in order,
+with the line, the arguments that carry input and, where the callee is defined
+in this repository, where. The repository map names every definition.
+
+You have not read the code yet. Read it before you decide:
+
+- Ask in `requested_paths` for a whole file (`path`) or for lines
+  (`path:start-end`); you will be asked again with them.
+- Read every repository-defined step on a flow that reaches something that
+  matters - a request, a file, a query, a redirect, a template, a command - and
+  the handler around it.
+- `requested_ast_paths` gives a file's parsed definitions and calls instead.
+- Leave both empty when you have read what you need.
+
+## What to return
+
+- Every concrete web-security hypothesis these flows and the code you read
+  support - as many as they give, and none when they give none.
+- Static tool hits are facts, not verdicts. A defect a tool is silent about is
+  the one worth finding.
+- Do not invent missing code.
+
+## Guards are candidates, not proof
+
+A repository function on a flow - a sanitizer, a validator, a permission check -
+is a candidate defence, not proof of safety. Read it: its loop bounds, the
+order of decoding and checking, what it does when a bound is reached, what it
+normalises and what it compares. Propose the hypothesis that it can be
+bypassed, stating how; verification decides whether it holds.
+
+## Form of each hypothesis
+
+"""
 
 
 # Bodies of rejected proposals, held only until the one repair call reads them.
@@ -327,6 +374,11 @@ class DirectStaticBootstrap:
 
         ast_result = self._python_ast(workspace, tracked)
         ast_ref = artifacts.put_json(ast_result)
+        # Kept out of the bundle itself: the bundle is quoted into every later
+        # prompt, and the flows of a mid-sized repository are over half a
+        # megabyte.  The hypothesis stage reads them by reference.
+        flows = extract_flows(workspace, tracked)
+        flows_ref = artifacts.put_json(flows)
         opengrep_raw = await self._run_opengrep(
             workspace,
             request.data_dir,
@@ -366,6 +418,12 @@ class DirectStaticBootstrap:
                 # stay in their own artifact, which ``tool_result_refs`` names,
                 # and are served for the files an agent asks about.
                 "source_files": _source_listing(tracked),
+                "route_flows_ref": flows_ref.model_dump(mode="json"),
+                "route_flow_summary": {
+                    "entry_points": len(flows["entry_points"]),
+                    "files_with_entry_points": flows["files_with_entry_points"],
+                    "python_files": flows["python_files"],
+                },
                 "security_policy": _security_policy(workspace, tracked),
                 "ast_fact_count": len(ast_result["facts"]),  # type: ignore[arg-type]
                 "opengrep_findings": snippets,
@@ -773,11 +831,15 @@ class DirectHypothesisBootstrap:
         # same elapsed share the later stages get rather than a fixed three
         # minutes a large repository routinely exceeds.
         call_timeout_ms: int = 180_000,
+        # ``code``: every source file is read.  ``facts``: the fact bundle's
+        # entry points are read and source is fetched on request.
+        feed: str = "code",
     ) -> None:
         self._data_dir = data_dir
         self._client_factory = client_factory
         self._call_timeout_ms = call_timeout_ms
         self._facts_cache: dict[str, Sequence[object]] = {}
+        self._feed = feed
 
     async def _read_then_propose(
         self,
@@ -887,6 +949,11 @@ class DirectHypothesisBootstrap:
             "batches": len(feeding.batches),
             "files_in_this_batch": list(batch.paths),
             "excluded_from_every_batch": feeding.excluded,
+            **(
+                {"files_with_no_entry_point_read_on_request": feeding.unfed}
+                if feeding.kind == "facts"
+                else {}
+            ),
             "codeql_findings": findings("codeql_findings"),
             "opengrep_findings": findings("opengrep_findings"),
         }
@@ -897,7 +964,9 @@ class DirectHypothesisBootstrap:
                 fenced(json.dumps(header, ensure_ascii=False, indent=1), "json"),
                 "## Repository map (every definition in the checkout)",
                 fenced(feeding.signature_map, "text"),
-                "## Source of this batch",
+                "## Source of this batch"
+                if feeding.kind == "code"
+                else "## Entry points in these files and the calls their input reaches",
                 render_batch(batch),
             )
         )
@@ -937,11 +1006,18 @@ class DirectHypothesisBootstrap:
         # the agent, because one that chose by name never opened the router
         # the target defect was in.
         feeding = plan_feeding(static.workspace_path, sources)
+        flows_ref = bundle.get("route_flows_ref")
+        if self._feed == "facts" and isinstance(flows_ref, dict):
+            # The fact bundle's entry points are read first; source is read on
+            # request, a file or a line range at a time.
+            flows = json.loads(artifacts.read(StoredDataRef.model_validate(flows_ref)))
+            feeding = plan_fact_feeding(flows, feeding)
         feeding_ref = artifacts.put_json(feeding.coverage())
         lines = _line_counts(static.workspace_path, sources)
-        instructions = (_HYPOTHESIS_INSTRUCTIONS + PROPOSAL_INSTRUCTIONS + "\n").encode(
-            "utf-8"
+        opening = (
+            _FACT_INSTRUCTIONS if feeding.kind == "facts" else _HYPOTHESIS_INSTRUCTIONS
         )
+        instructions = (opening + PROPOSAL_INSTRUCTIONS + "\n").encode("utf-8")
         registry = Registry(bundle_hash=str(static.static_bundle_ref.content_hash))
         provenance: dict[
             str, tuple[int, SimpleLLMCallResult, list[dict[str, object]]]

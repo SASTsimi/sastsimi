@@ -42,6 +42,8 @@ class FedFile:
     path: str
     text: str
     redacted: tuple[str, ...] = ()
+    # Set when the text is not the file's source, such as its entry points.
+    language: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +65,10 @@ class Feeding:
     batches: list[Batch] = field(default_factory=list)
     excluded: list[dict[str, str]] = field(default_factory=list)
     signature_map: str = ""
+    # ``code``: each batch is source.  ``facts``: each batch is entry points
+    # and the calls their input reaches, with the source read on request.
+    kind: str = "code"
+    unfed: list[str] = field(default_factory=list)
 
     def coverage(self) -> dict[str, object]:
         """Say where every file went, so a miss can be traced to its cause."""
@@ -73,8 +79,10 @@ class Feeding:
                 {"batch": batch.number, "paths": list(batch.paths)}
                 for batch in self.batches
             ],
+            "feed": self.kind,
             "excluded": list(self.excluded),
             "fed_files": sum(len(batch.files) for batch in self.batches),
+            "files_read_only_on_request": list(self.unfed),
         }
 
 
@@ -241,12 +249,63 @@ def render_batch(batch: Batch) -> str:
 
     return "\n\n".join(
         f"### {item.path}\n\n"
-        + fenced(item.text, _LANGUAGE.get(PurePosixPath(item.path).suffix, ""))
+        + fenced(
+            item.text,
+            item.language
+            if item.language is not None
+            else _LANGUAGE.get(PurePosixPath(item.path).suffix, ""),
+        )
         for item in batch.files
     )
 
 
+def plan_fact_feeding(
+    flows: dict[str, object],
+    code: Feeding,
+    *,
+    batch_bytes: int = BATCH_BYTES,
+) -> Feeding:
+    """Batch the entry points by file, in the same one-pass-over-all way.
+
+    Every entry point goes into exactly one batch.  Files with no entry point
+    are named so the agent can ask for them; they are not read unless asked,
+    which is what this feed trades for its size.
+    """
+
+    import json
+
+    feeding = Feeding(
+        excluded=list(code.excluded), signature_map=code.signature_map, kind="facts"
+    )
+    by_file: dict[str, list[object]] = {}
+    entries = flows.get("entry_points")
+    for entry in entries if isinstance(entries, list) else []:
+        if isinstance(entry, dict):
+            by_file.setdefault(str(entry.get("file")), []).append(
+                {key: value for key, value in entry.items() if key != "file"}
+            )
+    current: list[FedFile] = []
+    size = 0
+    for path in sorted(by_file):
+        text = json.dumps(by_file[path], ensure_ascii=False, indent=1)
+        item = FedFile(path=path, text=text, language="json")
+        weight = len(text.encode("utf-8"))
+        if current and size + weight > batch_bytes:
+            feeding.batches.append(Batch(len(feeding.batches) + 1, tuple(current)))
+            current, size = [], 0
+        current.append(item)
+        size += weight
+    if current:
+        feeding.batches.append(Batch(len(feeding.batches) + 1, tuple(current)))
+    fed = set(by_file)
+    feeding.unfed = sorted(
+        path for batch in code.batches for path in batch.paths if path not in fed
+    )
+    return feeding
+
+
 __all__ = [
+    "plan_fact_feeding",
     "BATCH_BYTES",
     "fenced",
     "SOURCE_SUFFIXES",

@@ -285,6 +285,7 @@ def build_analysis_application(
             data_dir=data_dir,
             client_factory=client_factory,
             call_timeout_ms=_call_timeout_ms(profile),
+            feed=os.environ.get("SASTSIMI_HYPOTHESIS_FEED", "code"),
         ),
         runner_factory=runner_factory,
         max_parallel_hypotheses=profile.max_parallel_hypotheses,

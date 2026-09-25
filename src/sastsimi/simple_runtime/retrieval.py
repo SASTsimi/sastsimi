@@ -17,6 +17,7 @@ from typing import Any
 from .code_redaction import default_host_paths, redact_code
 
 _DRIVE_PREFIX = re.compile(r"^[A-Za-z]:(?:/|$)")
+_LINE_SPAN = re.compile(r"^(?P<path>[^:]+):(?P<start>\d+)(?:-(?P<end>\d+))?$")
 
 # What one round of requests may add to the next prompt.  This bounds the
 # prompt against the model window; how many files make up that amount is the
@@ -76,16 +77,25 @@ def collect_requested_sources(
         if not isinstance(request, str):
             refused.append(_refusal(str(request), "NOT_A_PATH"))
             continue
-        relative = _normalized(request)
+        # ``path:start-end`` asks for those lines only, so a guard or a single
+        # handler can be read without the rest of a large module.
+        span = _LINE_SPAN.match(request.strip())
+        wanted_lines = (
+            (int(span.group("start")), int(span.group("end") or span.group("start")))
+            if span
+            else None
+        )
+        relative = _normalized(span.group("path") if span else request)
         if relative is None:
             refused.append(_refusal(request, "PATH_OUTSIDE_REPOSITORY"))
             continue
         # Refusals name the path as the agent wrote it, so it can tell which of
         # its own requests was turned down.
         as_written = request.strip()
-        if relative in seen or relative in supplied:
+        key = f"{relative}:{wanted_lines}" if wanted_lines else relative
+        if key in seen or relative in supplied:
             continue
-        seen.add(relative)
+        seen.add(key)
         try:
             # strict=True resolves symlinks, so a link pointing out of the
             # workspace is caught by the containment check below.
@@ -112,6 +122,17 @@ def collect_requested_sources(
         except UnicodeDecodeError:
             refused.append(_refusal(as_written, "NOT_UTF8_TEXT"))
             continue
+        if wanted_lines is not None:
+            start, end = wanted_lines
+            lines = text.splitlines()
+            if start < 1 or end < start or start > len(lines):
+                refused.append(_refusal(as_written, "LINES_OUTSIDE_FILE"))
+                continue
+            text = "\n".join(
+                f"{number}|{line}"
+                for number, line in enumerate(lines[start - 1 : end], start=start)
+            )
+            raw = text.encode("utf-8")
         # Repository text reaches a model prompt from here, so a credential a
         # project committed must be removed first, exactly as the static bundle
         # is.  The categories say what was removed without repeating it.
@@ -119,7 +140,9 @@ def collect_requested_sources(
         total += len(raw)
         served.append(
             {
-                "path": relative,
+                "path": relative
+                if wanted_lines is None
+                else f"{relative}:{wanted_lines[0]}-{wanted_lines[1]}",
                 "line_count": text.count("\n") + 1,
                 "byte_count": len(raw),
                 "content": content,
