@@ -75,6 +75,7 @@ class SimpleAnalysisRun(ContractModel):
     workspace_path: Path | None = None
     repository_profile_ref: StoredDataRef | None = None
     static_bundle_ref: StoredDataRef | None = None
+    security_policy_ref: StoredDataRef | None = None
     hypothesis_ids: tuple[str, ...] = ()
     parent_hypothesis_ids: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     chain_depths: dict[str, int] = Field(default_factory=dict)

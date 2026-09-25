@@ -36,10 +36,14 @@ class _Process:
                 "def query(user):\n    return db.execute(user)\n",
                 encoding="utf-8",
             )
+            (root / "SECURITY.md").write_text(
+                "# Security Policy\n\nConfiguration options are not vulnerabilities.\n",
+                encoding="utf-8",
+            )
         elif argv[1:3] == ("rev-parse", "HEAD"):
             return ProcessResult(0, ("a" * 40).encode(), b"")
         elif argv[1:3] == ("ls-files", "-z"):
-            return ProcessResult(0, b"app.py\0requirements.txt\0", b"")
+            return ProcessResult(0, b"app.py\0requirements.txt\0SECURITY.md\0", b"")
         elif argv[1] == "scan":
             output = Path(argv[argv.index("--output") + 1])
             output.parent.mkdir(parents=True, exist_ok=True)
@@ -198,3 +202,58 @@ async def test_real_static_tools_feed_exact_hypothesis_input(tmp_path: Path) -> 
 
     assert len(seeds) == 1
     assert seeds[0].hypothesis_id.startswith("hypothesis-")
+
+    # The bundle no longer carries the policy text itself; a later stage
+    # that needs it reads the dedicated ref the static stage recorded.
+    assert bundle["security_policy_ref"]["record_id"] is None
+    assert result.security_policy_ref is not None
+    policy = json.loads(
+        SimpleArtifactRepository(profile.data_dir, identity).read(
+            result.security_policy_ref
+        )
+    )
+    assert policy["path"] == "SECURITY.md"
+    assert "Configuration options are not vulnerabilities" in policy["content"]
+
+
+@pytest.mark.asyncio
+async def test_static_bootstrap_leaves_the_policy_ref_unset_without_a_policy_file(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-2",
+        workspace_id="workspace-2",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+
+    class _NoPolicyProcess(_Process):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            outcome = await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+            if argv[1] == "clone":
+                (Path(argv[-1]) / "SECURITY.md").unlink()
+            if argv[1:3] == ("ls-files", "-z"):
+                return ProcessResult(0, b"app.py\0requirements.txt\0", b"")
+            return outcome
+
+    result = await DirectStaticBootstrap(
+        profile=profile,
+        process=_NoPolicyProcess(),
+        static_material_root=tmp_path,
+    ).run(
+        SimpleAnalysisRequest(
+            data_dir=profile.data_dir,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        ),
+        identity,
+    )
+
+    assert result.security_policy_ref is None

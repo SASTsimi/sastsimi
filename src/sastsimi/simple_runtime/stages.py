@@ -1185,8 +1185,14 @@ class RuleScopeGateStage:
         client: SimpleLLMClient,
         artifacts: SimpleArtifactRepository,
         call_timeout_ms: int = _LOCAL_TIMEOUT_MS,
+        # Recorded once for the whole analysis by the static stage, and handed
+        # here directly rather than reached for through a hypothesis-scoped
+        # checkpoint chain that this stage - running after the hypothesis
+        # split - cannot see back through to an analysis-scoped result.
+        security_policy_ref: StoredDataRef | None = None,
     ) -> None:
         self._artifacts = artifacts
+        self._security_policy_ref = security_policy_ref
         self._stage = _StructuredStage(
             client=client,
             call_timeout_ms=call_timeout_ms,
@@ -1228,25 +1234,6 @@ the sentence you relied on in `checks`.
             kind="simple_rule_scope_gate",
         )
 
-    def _repository_policy(
-        self,
-        prior: Mapping[SimpleStage, StageCheckpoint],
-        checkpoint: StageCheckpoint,
-    ) -> bool:
-        """Say whether the checkout states a reporting policy of its own."""
-
-        for ref in _unique_refs(checkpoint.input_refs + _prior_refs(prior)):
-            try:
-                document = json.loads(self._artifacts.read(ref))
-            except (OSError, ValueError):
-                continue
-            if not isinstance(document, dict):
-                continue
-            policy = document.get("security_policy")
-            if isinstance(policy, dict) and policy.get("content"):
-                return True
-        return False
-
     async def __call__(
         self,
         checkpoint: StageCheckpoint,
@@ -1255,11 +1242,16 @@ the sentence you relied on in `checks`.
         policy_refs = self._artifacts.published_refs(self._POLICY_KINDS)
         # A published program policy is the authority when one exists.  Most
         # projects never have one here and instead write what they will accept
-        # in the repository itself, which the static bundle carries; ignoring
-        # that left every run ending "no official policy, internal only" while
-        # the project had said plainly what it does not consider a report.
-        has_repository_policy = self._repository_policy(prior, checkpoint)
-        if not policy_refs and not has_repository_policy:
+        # in the repository itself, which the static stage recorded as its
+        # own artifact when it ran; ignoring that left every run ending "no
+        # official policy, internal only" while the project had said plainly
+        # what it does not consider a report.
+        repository_policy = (
+            (self._security_policy_ref,)
+            if self._security_policy_ref is not None
+            else ()
+        )
+        if not policy_refs and not repository_policy:
             output_ref = self._artifacts.put_json(
                 {
                     "kind": "simple_rule_scope_gate",
@@ -1296,7 +1288,7 @@ the sentence you relied on in `checks`.
             )
         result, output_ref = await self._stage.call(
             checkpoint,
-            _unique_refs(_prior_refs(prior) + policy_refs),
+            _unique_refs(_prior_refs(prior) + policy_refs + repository_policy),
         )
         internal_report_status(str(result.value["status"]))
         return StageResult(
@@ -1653,6 +1645,10 @@ def build_stage_handlers(
     # the caller's business because they live in their own artifact and a run
     # that never asks should never read them.
     ast_facts: Callable[[], Sequence[Any]] | None = None,
+    # The repository's own reporting policy, recorded once by the static
+    # stage; without it the rule scope gate falls back to a published
+    # program policy, or UNCERTAIN when there is neither.
+    security_policy_ref: StoredDataRef | None = None,
     max_parallel_containers: int = 1,
     # One gate for the whole run.  Without it each hypothesis holds its own.
     container_slots: asyncio.Semaphore | None = None,
@@ -1701,7 +1697,10 @@ def build_stage_handlers(
             client, artifacts, call_timeout_ms=call_timeout_ms
         ),
         SimpleStage.SCOPE_GATE_DONE: RuleScopeGateStage(
-            client, artifacts, call_timeout_ms=call_timeout_ms
+            client,
+            artifacts,
+            call_timeout_ms=call_timeout_ms,
+            security_policy_ref=security_policy_ref,
         ),
         SimpleStage.PRIMITIVE_ADMISSION_DONE: PrimitiveAdmissionStage(artifacts),
         SimpleStage.FINDING_DONE: FindingStage(artifacts),

@@ -272,6 +272,7 @@ def build_analysis_application(
                 store=runtime_store,
                 workspace=static.workspace_path,
                 ast_facts=_ast_facts_loader(artifacts, static),
+                security_policy_ref=static.security_policy_ref,
                 max_parallel_containers=profile.max_parallel_containers,
                 container_slots=container_slots,
                 # A stage that exceeds its per-call ceiling is blocked for the

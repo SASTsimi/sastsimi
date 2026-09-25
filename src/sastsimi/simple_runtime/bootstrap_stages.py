@@ -621,6 +621,14 @@ class DirectStaticBootstrap:
             codeql_ref = artifacts.put_bytes(codeql_raw, "application/sarif+json")
             codeql_findings = self._codeql_findings(workspace, codeql_raw)
         snippets = self._opengrep_snippets(workspace, opengrep_raw)
+        # Recorded once here, not folded into the bundle: the bundle is quoted
+        # into every hypothesis's prompt, which is a hypothesis-scoped chain
+        # that a stage running after the hypothesis split cannot see back
+        # through to this analysis-scoped result.  A stage that needs the
+        # policy - the rule scope gate - is instead handed this ref directly
+        # at composition time, the same way it is handed the workspace path.
+        policy = _security_policy(workspace, tracked)
+        policy_ref = artifacts.put_json(policy) if policy is not None else None
         bundle_ref = artifacts.put_json(
             {
                 "kind": "simple_static_fact_bundle",
@@ -648,7 +656,11 @@ class DirectStaticBootstrap:
                     "files_with_entry_points": flows["files_with_entry_points"],
                     "python_files": flows["python_files"],
                 },
-                "security_policy": _security_policy(workspace, tracked),
+                "security_policy_ref": (
+                    policy_ref.model_dump(mode="json")
+                    if policy_ref is not None
+                    else None
+                ),
                 "ast_fact_count": len(ast_result["facts"]),  # type: ignore[arg-type]
                 "opengrep_findings": snippets,
                 "codeql_findings": codeql_findings,
@@ -659,6 +671,7 @@ class DirectStaticBootstrap:
             repository_profile_ref=repository_ref,
             static_bundle_ref=bundle_ref,
             workspace_path=workspace,
+            security_policy_ref=policy_ref,
         )
 
     async def _prepare_repository(
