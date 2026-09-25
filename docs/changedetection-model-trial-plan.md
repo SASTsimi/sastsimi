@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Pydantic, pytest, official Codex CLI membership login, Windows PowerShell, existing SASTSIMI CLI and Docker runtime.
 
-**Spec:** `docs/superpowers/specs/2026-09-26-changedetection-generic-stability-design.md`
+**Spec:** `docs/changedetection-stability-design.md`
 
 ## Global Constraints
 
