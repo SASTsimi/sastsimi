@@ -15,10 +15,6 @@
 
 </div>
 
-> **현재 상태**<br>
-> 실제 저장소 입력, 정적 분석, LLM 검토, Docker PoC, 두 단계 Gate, 연계형 취약점 탐색, 실패 단계 재개, 로컬 대시보드와 `F-001.md` 보고서 생성을 구현했습니다. 2026-09-21 기준 WSL의 PyGoat와 Windows clean wheel 환경의 ItsDangerous로 통합 흐름을 확인했습니다. 이는 확인한 조합의 결과이며 모든 Provider·모델·저장소의 운영 가능성을 보장하지는 않습니다.
->
-> 확인된 통합 상태: `LIVE_E2E_VERIFIED`
 
 ## 핵심 특징
 
