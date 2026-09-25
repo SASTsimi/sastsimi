@@ -51,5 +51,8 @@ strict = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "."]
-addopts = ["--import-mode=importlib"]
+# The suite is mostly waiting on sqlite commits rather than on the CPU, so
+# running it in one process took ten minutes and sixteen workers take three.
+# A targeted run pays about two seconds of worker startup; pass -n0 to skip it.
+addopts = ["--import-mode=importlib", "-n", "auto"]
 asyncio_default_fixture_loop_scope = "function"
