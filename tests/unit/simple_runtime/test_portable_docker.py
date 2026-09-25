@@ -322,3 +322,48 @@ async def test_a_dockerfile_that_failed_once_is_not_built_again(
     assert len(docker.attempts) == 3
     assert b"pip install" not in docker.attempts[2]
     DirectEnvironmentPreparer._unbuildable.clear()
+
+
+class _ListingRuntime(PortableDockerRuntime):
+    calls: list[tuple[str, ...]]
+    listing: bytes
+
+    async def _run(
+        self,
+        args: Sequence[str],
+        *,
+        timeout_seconds: int,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        del timeout_seconds, input_bytes
+        self.calls.append(tuple(args))
+        return DockerCommandOutcome(
+            exit_code=0,
+            stdout=self.listing if args[0] == "ps" else b"",
+            stderr=b"",
+            timed_out=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_sweep_removes_only_containers_of_dead_runs_on_this_host() -> None:
+    import os
+    import socket
+
+    runtime = _ListingRuntime.__new__(_ListingRuntime)
+    runtime._executable = Path("docker")
+    runtime.calls = []
+    host = socket.gethostname()
+    runtime.listing = "\n".join(
+        (
+            f"live\t{host}\t{os.getpid()}",
+            f"dead\t{host}\t{2**22 + 7}",
+            f"elsewhere\tanother-host\t{2**22 + 7}",
+            "unlabelled\t\t",
+        )
+    ).encode()
+
+    removed = await runtime.sweep_orphans()
+
+    assert removed == ("dead", "unlabelled")
+    assert runtime.calls[-1] == ("rm", "--force", "--volumes", "dead", "unlabelled")

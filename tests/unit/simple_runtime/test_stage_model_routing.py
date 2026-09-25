@@ -38,6 +38,12 @@ class _Containers:
     async def acquire(self, checkpoint: StageCheckpoint) -> str:
         raise AssertionError("not invoked")
 
+    async def changes(self, _container_id: str) -> tuple[str, ...] | None:
+        return ()
+
+    async def release(self, _container_id: str) -> None:
+        return None
+
 
 def _clients(handlers: dict[SimpleStage, object]) -> dict[SimpleStage, set[str]]:
     found: dict[SimpleStage, set[str]] = {}

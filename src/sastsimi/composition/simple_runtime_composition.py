@@ -294,6 +294,7 @@ def build_analysis_application(
         ),
         runner_factory=runner_factory,
         max_parallel_hypotheses=profile.max_parallel_hypotheses,
+        before_run=docker.sweep_orphans,
     )
 
 

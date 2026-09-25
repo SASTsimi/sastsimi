@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shlex
+import socket
 import tomllib
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
@@ -27,6 +28,24 @@ from .stages import ReproductionEnvironment
 _RESOURCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_OUTPUT = 1024 * 1024
+_OWNER = "sastsimi.owner=simple-runtime"
+# Which process on which machine owns a container, so a later run can tell a
+# container left by a dead run from one a live run is still using.
+_HOST = socket.gethostname()
+
+
+def _alive(pid: int) -> bool:
+    if os.name == "nt":
+        # Signal 0 terminates the process on Windows rather than probing it, so
+        # there a container is kept rather than risk a live run's.
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 class PortableDockerRuntime:
@@ -129,6 +148,64 @@ class PortableDockerRuntime:
         self._require_resource_id(container_id)
         await self._require_success_call("DOCKER_START_FAILED", ("start", container_id))
         return container_id
+
+    async def changes(self, container_id: str) -> tuple[str, ...] | None:
+        """What the container changed in its file system, or None if unknown.
+
+        Recorded before the container is removed, to learn whether returning
+        to a failed reproduction ever needs more than its image and PoC.
+        """
+
+        self._require_resource_id(container_id)
+        outcome = await self._run(("diff", container_id), timeout_seconds=60)
+        if outcome.exit_code != 0:
+            return None
+        return tuple(outcome.stdout.decode("utf-8", errors="replace").splitlines())
+
+    async def remove(self, container_ids: Sequence[str]) -> None:
+        """Remove containers; a failure is left to the next run's sweep."""
+
+        for container_id in container_ids:
+            self._require_resource_id(container_id)
+        if container_ids:
+            await self._run(
+                ("rm", "--force", "--volumes", *container_ids), timeout_seconds=60
+            )
+
+    async def sweep_orphans(self) -> tuple[str, ...]:
+        """Remove this runtime's containers whose run is no longer alive.
+
+        A run removes each container after its reproduction, but a killed
+        process or a stopped machine skips that.
+        """
+
+        try:
+            listed = await self._run(
+                (
+                    "ps",
+                    "--all",
+                    "--filter",
+                    f"label={_OWNER}",
+                    "--format",
+                    '{{.ID}}\t{{.Label "sastsimi.host"}}'
+                    '\t{{.Label "sastsimi.host-pid"}}',
+                ),
+                timeout_seconds=60,
+            )
+            if listed.exit_code != 0:
+                return ()
+            orphans: list[str] = []
+            for line in listed.stdout.decode("utf-8", errors="replace").splitlines():
+                container_id, host, pid = (line.split("\t") + ["", ""])[:3]
+                if host and host != _HOST:
+                    continue
+                if pid.isdigit() and _alive(int(pid)):
+                    continue
+                orphans.append(container_id)
+            await self.remove(orphans)
+        except (DockerOperationError, OSError, ValueError):
+            return ()
+        return tuple(orphans)
 
     async def materialize_poc(
         self,
@@ -302,8 +379,22 @@ class PortableContainerFactory:
                 "sastsimi.commit-id": identity.commit_id,
                 "sastsimi.hypothesis-id": identity.hypothesis_id or "analysis",
                 "sastsimi.attempt-id": checkpoint.attempt_id,
+                "sastsimi.host": _HOST,
+                "sastsimi.host-pid": str(os.getpid()),
             },
         )
+
+    async def changes(self, container_id: str) -> tuple[str, ...] | None:
+        try:
+            return await self._docker.changes(container_id)
+        except (DockerOperationError, OSError, ValueError):
+            return None
+
+    async def release(self, container_id: str) -> None:
+        try:
+            await self._docker.remove((container_id,))
+        except (DockerOperationError, OSError, ValueError):
+            pass
 
 
 class DirectEnvironmentPreparer:

@@ -17,7 +17,7 @@ from sastsimi.contracts.ids import (
 )
 from sastsimi.contracts.refs import HostConfigurationRef
 from sastsimi.ports.dynamic_sandbox import SandboxRunSpec, TrustedDockerTarget
-from sastsimi.sandbox.docker_adapter import DockerAdapter
+from sastsimi.sandbox.docker_adapter import DockerAdapter, DockerOperationError
 
 from .models import CheckpointIdentity, StageCheckpoint
 
@@ -138,6 +138,15 @@ class SimpleLocalContainerFactory:
         await self._docker.verify_created_mounts(container_id, spec)
         await self._docker.start(container_id)
         return container_id
+
+    async def changes(self, container_id: str) -> tuple[str, ...] | None:
+        return None
+
+    async def release(self, container_id: str) -> None:
+        try:
+            await self._docker.remove((container_id,))
+        except (DockerOperationError, OSError, ValueError):
+            pass
 
 
 __all__ = ["SimpleLocalContainerFactory", "build_simple_docker_adapter"]

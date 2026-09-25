@@ -110,6 +110,10 @@ _ROLE_BY_STAGE: dict[SimpleStage, str] = {
 class SimpleContainerFactory(Protocol):
     async def acquire(self, checkpoint: StageCheckpoint) -> str: ...
 
+    async def changes(self, container_id: str) -> tuple[str, ...] | None: ...
+
+    async def release(self, container_id: str) -> None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class ReproductionEnvironment:
@@ -455,8 +459,10 @@ class PoCExecutionStage:
         validate_candidate(content, allowed_environment_names=frozenset())
         # The gate is held across the whole reproduction, so the ceiling counts
         # containers that are running rather than containers being created.
+        # A container lives for one execution: the image holds the source, so
+        # a retry starts a fresh one in seconds, and nothing is left running.
         async with self._container_slots:
-            container_id = await self._container(candidate)
+            container_id = await self._containers.acquire(candidate)
             try:
                 await self._docker.materialize_poc(
                     container_id,
@@ -469,6 +475,7 @@ class PoCExecutionStage:
                     self._poc_timeout_ms,
                     working_directory="/workspace",
                 )
+                changes = await self._containers.changes(container_id)
             except (DockerOperationError, OSError, ValueError) as error:
                 raise StageBlocked(
                     StageFailure(
@@ -477,6 +484,8 @@ class PoCExecutionStage:
                         safe_message="PoC execution could not complete",
                     )
                 ) from error
+            finally:
+                await self._containers.release(container_id)
         stdout_ref = self._artifacts.put_bytes(outcome.stdout, "text/plain")
         stderr_ref = self._artifacts.put_bytes(outcome.stderr, "text/plain")
         execution_ref = self._artifacts.put_json(
@@ -489,6 +498,7 @@ class PoCExecutionStage:
                 "exit_code": outcome.exit_code,
                 "timed_out": outcome.timed_out,
                 "container_id": container_id,
+                "container_changes": list(changes) if changes is not None else None,
                 "image_digest": candidate.image_digest,
                 "attempt_id": checkpoint.attempt_id,
             }
@@ -609,16 +619,6 @@ artifact. Do not reinterpret an execution error as DISPROVED.
                 ),
             ),
         )
-
-    async def _container(self, checkpoint: StageCheckpoint) -> str:
-        if checkpoint.container_id and checkpoint.image_digest:
-            try:
-                state = await self._docker.inspect(checkpoint.container_id)
-                if state.running and state.image_digest == checkpoint.image_digest:
-                    return checkpoint.container_id
-            except (DockerOperationError, OSError, ValueError):
-                pass
-        return await self._containers.acquire(checkpoint)
 
 
 class _StructuredStage:

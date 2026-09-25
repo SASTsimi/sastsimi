@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Literal, Protocol
 from uuid import uuid4
@@ -89,7 +89,11 @@ class SimpleAnalysisApplication:
         runner_factory: RunnerFactory,
         id_factory: Callable[[], str] | None = None,
         max_parallel_hypotheses: int = 1,
+        # Run before an analysis starts or resumes: what earlier runs left
+        # behind, such as containers of a killed process, is cleared here.
+        before_run: Callable[[], Awaitable[object]] | None = None,
     ) -> None:
+        self._before_run = before_run
         self._data_dir = data_dir
         self._store = store
         self._static = static_bootstrap
@@ -105,6 +109,8 @@ class SimpleAnalysisApplication:
         *,
         on_analysis_started: Callable[[str], None] | None = None,
     ) -> SimpleAnalysisOutcome:
+        if self._before_run is not None:
+            await self._before_run()
         analysis_id = self._ids()
         workspace_id = self._ids()
         display_id = self._display.get_or_allocate(analysis_id)
@@ -181,6 +187,8 @@ class SimpleAnalysisApplication:
         return await self._propose_and_run(updated_run, identity, static)
 
     async def resume(self, analysis_id_or_display: str) -> SimpleAnalysisOutcome:
+        if self._before_run is not None:
+            await self._before_run()
         exact = self._display.resolve(analysis_id_or_display)
         run = self._store.require_analysis_run(exact)
         identity = CheckpointIdentity(

@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from sastsimi.sandbox.docker_adapter import DockerCommandOutcome
+from sastsimi.sandbox.docker_adapter import DockerCommandOutcome, DockerOperationError
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
@@ -16,7 +16,7 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
-from sastsimi.simple_runtime.stages import PoCExecutionStage
+from sastsimi.simple_runtime.stages import PoCExecutionStage, StageBlocked
 
 
 class _InterpretationClient:
@@ -46,8 +46,22 @@ class _Docker:
 
 
 class _Containers:
+    def __init__(self) -> None:
+        self.released: list[str] = []
+
     async def acquire(self, _checkpoint: StageCheckpoint) -> str:
         return "a" * 64
+
+    async def changes(self, _container_id: str) -> tuple[str, ...] | None:
+        return ("C /workspace",)
+
+    async def release(self, container_id: str) -> None:
+        self.released.append(container_id)
+
+
+class _BrokenDocker(_Docker):
+    async def execute(self, *_args: Any, **_kwargs: Any) -> DockerCommandOutcome:
+        raise DockerOperationError("DOCKER_EXEC_FAILED")
 
 
 @pytest.mark.asyncio
@@ -91,11 +105,12 @@ async def test_runtime_pins_interpretation_to_exact_execution_ref(
         input_hash=input_reference_hash(input_refs),
         attempt_id="attempt-1",
     )
+    containers = _Containers()
     stage = PoCExecutionStage(
         client=_InterpretationClient(),
         artifacts=artifacts,
         docker=_Docker(),  # type: ignore[arg-type]
-        containers=_Containers(),
+        containers=containers,
     )
 
     result = await stage(
@@ -108,3 +123,18 @@ async def test_runtime_pins_interpretation_to_exact_execution_ref(
     interpretation = json.loads(artifacts.read(interpretation_ref))
     assert interpretation["execution_ref"] == execution_ref.model_dump(mode="json")
     assert "execution_ref" not in interpretation["result"]
+    execution = json.loads(artifacts.read(execution_ref))
+    assert execution["container_changes"] == ["C /workspace"]
+    assert containers.released == ["a" * 64]
+
+    # A container is removed even when its execution fails.
+    containers = _Containers()
+    stage = PoCExecutionStage(
+        client=_InterpretationClient(),
+        artifacts=artifacts,
+        docker=_BrokenDocker(),  # type: ignore[arg-type]
+        containers=containers,
+    )
+    with pytest.raises(StageBlocked):
+        await stage(current, {SimpleStage.POC_CANDIDATE_DONE: candidate})
+    assert containers.released == ["a" * 64]
