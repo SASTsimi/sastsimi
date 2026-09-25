@@ -71,6 +71,8 @@ Claude CLI에서 직접 `/model` 명령으로 계정에 보이는 모델을 확�
 
 Claude 구독에서도 사용량 제한이나 추가 사용량 과금이 가능하므로 대시보드에는 잠재 추가 사용량으로 표시됩니다. 실제 비용 정보가 CLI에서 제공되지 않으면 0으로 추정하지 않고 미확인으로 남깁니다.
 
+분석별 대시보드는 Provider와 무관하게 호출 수, 확인된 입력·출력 토큰, 확인된 비용과 비용 미제공 호출 수를 분리해 보여 줍니다. 비용 미제공은 무료나 0원이 아닙니다. `max_cost_minor_units`는 확인된 비용에만 적용되며, Provider가 비용을 보내지 않으면 실제 청구액을 보장할 수 없습니다.
+
 운영 제한: 공식 문서에 따르면 `--safe-mode`에서도 조직의 managed policy hook은 적용될 수 있습니다. 현재 격리 검사는 도구·MCP·플러그인 이벤트를 검증하지만, 그 hook의 실행 부재까지 증명하지는 못합니다. 조직 관리형 Claude 환경에서는 관리자의 hook 정책을 확인하기 전까지 이 경로를 안전한 무도구 실행으로 간주하지 마세요. 실제 구독 계정의 최소 호출 검증도 아직 수행하지 않았습니다.
 
 ## model 변경
@@ -82,6 +84,21 @@ sastsimi setup --auth subscription --provider codex --model <new-model>
 ```
 
 model을 바꿔도 Hypothesis·Pro·Con·Verification·Gate·Reporter 역할은 바뀌지 않습니다. 다만 현재 계정에 model 접근 권한이 없거나 구조화 출력이 맞지 않으면 분석은 `AUTH_REQUIRED`, `BLOCKED` 또는 verdict 없는 `FAILED`로 중단됩니다. 이를 취약점 `FALSE`로 바꾸지 않습니다.
+
+## 선택형 분석 설정
+
+기존 설정은 그대로 작동합니다. 새 분석에서만 다른 가설 생성 방식을 시험하려면 setup 후 `profile.toml`을 열어 `hypothesis_feed = "facts_survey"`로 바꿉니다. 기본값 `current`는 기존 가설 생성 경로입니다. `facts_survey`는 Git 추적 파일에서 사실 후보를 만들고 각 후보의 판단을 저장해 재개 시 완료된 판단을 재사용합니다. 입력은 크기 제한이 있어 큰 저장소에서 `FACTS_BUDGET_EXHAUSTED`가 남으면 전체 저장소를 조사했다고 간주하지 마세요.
+
+PowerShell에서 다음은 각각 한 줄 명령입니다.
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+notepad "$env:LOCALAPPDATA\sastsimi\sastsimi\profile.toml"
+sastsimi status A-001
+sastsimi resume A-001
+```
+
+같은 파일의 `max_parallel_hypotheses`, `max_parallel_builds`, `max_parallel_containers`는 각각 동시에 처리할 가설, Docker 빌드, 실행 중인 소유 컨테이너 상한입니다. 모두 기본값 `1`이며, 가설 병렬 처리를 늘리면 LLM 사용량과 Docker 자원 사용이 빨라질 수 있습니다. `llm_max_concurrency`는 이와 별도의 전체 LLM 호출 상한입니다. 진행 중인 분석의 설정을 바꾸기보다 새 분석에서 시험하세요.
 
 ## 호출 기록
 

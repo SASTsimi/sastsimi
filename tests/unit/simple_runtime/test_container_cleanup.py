@@ -9,7 +9,14 @@ import pytest
 
 from sastsimi.ports.docker_state import DockerContainerState
 from sastsimi.sandbox.docker_adapter import DockerCommandOutcome, DockerOperationError
-from sastsimi.simple_runtime.models import CheckpointIdentity
+from sastsimi.simple_runtime.container import SimpleLocalContainerFactory
+from sastsimi.simple_runtime.models import (
+    CheckpointIdentity,
+    SimpleStage,
+    StageCheckpoint,
+    StageStatus,
+    input_reference_hash,
+)
 from sastsimi.simple_runtime.portable_docker import PortableDockerRuntime
 
 
@@ -171,3 +178,45 @@ async def test_container_limit_covers_running_lifetime() -> None:
         await runtime.create_container(digest, labels)
     assert await runtime.remove_owned("owned", identity, "attempt-owned") is True
     assert await runtime.create_container(digest, labels) == "owned"
+
+
+@pytest.mark.asyncio
+async def test_local_evaluation_factory_releases_only_its_exact_container() -> None:
+    identity = _identity()
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-owned",
+    )
+    owned_labels = {
+        **_labels(identity),
+        "sastsimi.owner": "reproduction-setup-automation",
+        "sastsimi.resource-kind": "container",
+        "sastsimi.resource-id": "resource-owned",
+    }
+
+    class _LegacyDocker:
+        def __init__(self) -> None:
+            self.removed: list[str] = []
+
+        async def inspect(self, container_id: str) -> DockerContainerState:
+            labels = (
+                owned_labels
+                if container_id == "owned"
+                else {**owned_labels, "sastsimi.attempt-id": "foreign"}
+            )
+            return _state(container_id, labels)
+
+        async def remove(self, resource_ids: tuple[str, ...]) -> None:
+            self.removed.extend(resource_ids)
+
+    docker = _LegacyDocker()
+    factory = SimpleLocalContainerFactory.__new__(SimpleLocalContainerFactory)
+    factory._docker = docker  # type: ignore[assignment]
+
+    assert await factory.release(checkpoint, "owned") is True
+    assert await factory.release(checkpoint, "foreign") is False
+    assert docker.removed == ["owned"]

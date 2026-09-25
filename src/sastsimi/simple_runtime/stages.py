@@ -619,7 +619,6 @@ artifact. Do not reinterpret an execution error as DISPROVED.
             try:
                 state = await self._docker.inspect(checkpoint.container_id)
                 expected = {
-                    "sastsimi.owner": "simple-runtime",
                     "sastsimi.analysis-id": checkpoint.identity.analysis_id,
                     "sastsimi.workspace-id": checkpoint.identity.workspace_id,
                     "sastsimi.commit-id": checkpoint.identity.commit_id,
@@ -631,6 +630,16 @@ artifact. Do not reinterpret an execution error as DISPROVED.
                 if (
                     state.running
                     and state.image_digest == checkpoint.image_digest
+                    and (
+                        state.labels.get("sastsimi.owner") == "simple-runtime"
+                        or (
+                            state.labels.get("sastsimi.owner")
+                            == "reproduction-setup-automation"
+                            and state.labels.get("sastsimi.resource-kind")
+                            == "container"
+                            and bool(state.labels.get("sastsimi.resource-id"))
+                        )
+                    )
                     and all(
                         state.labels.get(key) == value
                         for key, value in expected.items()
