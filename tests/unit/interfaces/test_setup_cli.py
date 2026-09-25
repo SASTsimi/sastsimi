@@ -11,6 +11,7 @@ from sastsimi.interfaces.cli.main import main
 from sastsimi.setup.service import (
     SetupChoices,
     SetupService,
+    SystemToolDiscovery,
     ToolInspection,
 )
 
@@ -230,6 +231,10 @@ def test_cursor_factory_rediscovers_cli_after_installer_update(
     from sastsimi.composition.simple_runtime_composition import SimpleClientFactory
     from sastsimi.config.user_config import load_simple_execution_profile
     from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+    from sastsimi.simple_runtime.cursor_provider import (
+        CursorProvider,
+        OfficialCursorCLITransport,
+    )
     from sastsimi.simple_runtime.models import CheckpointIdentity
 
     service = _service(tmp_path)
@@ -255,18 +260,25 @@ def test_cursor_factory_rediscovers_cli_after_installer_update(
     monkeypatch.setattr(
         "sastsimi.composition.simple_runtime_composition.SystemToolDiscovery._inspect_cursor_agent",
         lambda: ToolInspection(
-            name="cursor_agent", available=True, executable=native,
-            version="current", executable_sha256="b" * 64,
+            name="cursor_agent",
+            available=True,
+            executable=native,
+            version="current",
+            executable_sha256="b" * 64,
         ),
     )
     profile = load_simple_execution_profile(configured.profile_path)
     identity = CheckpointIdentity(
-        analysis_id="analysis-1", workspace_id="workspace-1",
-        commit_id="a" * 40, hypothesis_id=None,
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
     )
     client = SimpleClientFactory(profile)(
         identity, SimpleArtifactRepository(tmp_path / "data", identity)
     )
+    assert isinstance(client, CursorProvider)
+    assert isinstance(client._transport, OfficialCursorCLITransport)
     assert client._transport._executable == str(native)
 
 
@@ -310,10 +322,11 @@ async def test_cursor_model_listing_uses_optional_key_after_cli_logout(
 
     monkeypatch.setenv("CURSOR_API_KEY", "test-key")
     monkeypatch.setattr(
-        composition.SystemToolDiscovery,
+        SystemToolDiscovery,
         "_inspect_cursor_agent",
         lambda: ToolInspection(
-            name="cursor_agent", available=True,
+            name="cursor_agent",
+            available=True,
             executable=Path("C:/cursor-agent/node.exe"),
         ),
     )
@@ -326,9 +339,17 @@ def test_cursor_cli_setup_defaults_to_subscription_auth(tmp_path: Path) -> None:
     service = _service(tmp_path)
     code = main(
         [
-            "setup", "--non-interactive", "--provider", "cursor",
-            "--model", "auto", "--profile", "lightweight",
-            "--cursor-allow-on-demand", "--data-dir", str(tmp_path / "data"),
+            "setup",
+            "--non-interactive",
+            "--provider",
+            "cursor",
+            "--model",
+            "auto",
+            "--profile",
+            "lightweight",
+            "--cursor-allow-on-demand",
+            "--data-dir",
+            str(tmp_path / "data"),
         ],
         setup_service=service,
     )

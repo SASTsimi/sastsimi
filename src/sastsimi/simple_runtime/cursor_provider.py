@@ -133,11 +133,27 @@ class OfficialCursorCLITransport:
         with tempfile.TemporaryDirectory(prefix="sastsimi-cursor-") as workspace:
             flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             allowed_env = {
-                "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC",
-                "PROGRAMFILES", "PROGRAMDATA", "USERPROFILE", "HOME",
-                "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
-                "TEMP", "TMP", "TMPDIR", "HTTP_PROXY", "HTTPS_PROXY",
-                "NO_PROXY", "SSL_CERT_FILE", "CURSOR_API_ENDPOINT",
+                "PATH",
+                "PATHEXT",
+                "SYSTEMROOT",
+                "WINDIR",
+                "COMSPEC",
+                "PROGRAMFILES",
+                "PROGRAMDATA",
+                "USERPROFILE",
+                "HOME",
+                "HOMEDRIVE",
+                "HOMEPATH",
+                "APPDATA",
+                "LOCALAPPDATA",
+                "TEMP",
+                "TMP",
+                "TMPDIR",
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "NO_PROXY",
+                "SSL_CERT_FILE",
+                "CURSOR_API_ENDPOINT",
             }
             child_env = {
                 name: value
@@ -626,6 +642,8 @@ class CursorProvider:
 
 
 __all__ = [
-    "CursorModelCatalog", "CursorProvider", "OfficialCursorTransport",
+    "CursorModelCatalog",
+    "CursorProvider",
+    "OfficialCursorTransport",
     "OfficialCursorCLITransport",
 ]

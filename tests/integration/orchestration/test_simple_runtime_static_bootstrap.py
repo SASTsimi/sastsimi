@@ -16,7 +16,7 @@ from sastsimi.simple_runtime.bootstrap_stages import (
     DirectStaticBootstrap,
     ProcessResult,
 )
-from sastsimi.simple_runtime.models import CheckpointIdentity
+from sastsimi.simple_runtime.models import CheckpointIdentity, StageFailure
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
 
 
@@ -237,5 +237,6 @@ async def test_real_static_tools_feed_exact_hypothesis_input(tmp_path: Path) -> 
         client_factory=lambda _identity, _artifacts: _Client(),
     ).propose(identity, result)
 
+    assert not isinstance(seeds, StageFailure)
     assert len(seeds) == 1
     assert seeds[0].hypothesis_id.startswith("hypothesis-")

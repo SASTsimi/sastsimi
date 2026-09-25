@@ -148,9 +148,17 @@ class SimpleCheckpointStore:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    attempt_id, analysis_id, agent, model, attempt_number,
-                    status, elapsed_ms, input_tokens, output_tokens,
-                    cost_cents, artifact_ref.model_dump_json(),
+                    attempt_id,
+                    analysis_id,
+                    agent,
+                    model,
+                    attempt_number,
+                    status,
+                    elapsed_ms,
+                    input_tokens,
+                    output_tokens,
+                    cost_cents,
+                    artifact_ref.model_dump_json(),
                 ),
             )
 
