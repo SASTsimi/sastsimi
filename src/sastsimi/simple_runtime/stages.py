@@ -671,9 +671,11 @@ class ProConStage:
 You are the Pro Agent. Find only evidence that supports the exact vulnerability
 hypothesis. Trace source, propagation, sink, authorization and sanitizer facts.
 Cite supplied exact artifact content hashes. State missing code paths instead of
-inventing them. `requested_paths` lists the repository-relative files you still
-need to read; they are fetched and handed to the next agent, so name the exact
-files that would settle a claim you could only state as a limitation.
+inventing them. `ast_index` names every Python file in the checkout with how
+many definitions and calls each holds; it is a map, not the code. Read it to
+decide which files matter, then put those repository-relative paths in
+`requested_paths`. They are fetched and handed to the next agent, so name the
+exact files that would settle a claim you could only state as a limitation.
 """,
             schema=schema,
             kind="simple_pro_evidence",
@@ -687,9 +689,11 @@ You are the Con Agent in a new independent review. Search for concrete
 counterevidence: validation, sanitization, authorization, unreachable flows and
 false tool matches. Cite supplied exact artifact content hashes. Never weaken a
 claim merely because information is missing; record the gap in limitations and
-use `requested_paths` for the repository-relative files that would
-settle it. They are fetched and handed to the next agent, so name the exact
-files rather than describing them.
+use `requested_paths` for the repository-relative files that would settle it.
+`ast_index` names every Python file with how many definitions and calls each
+holds, so use it to find the file a guard would live in rather than guessing.
+They are fetched and handed to the next agent, so name the exact files rather
+than describing them.
 """,
             schema=schema,
             kind="simple_con_evidence",

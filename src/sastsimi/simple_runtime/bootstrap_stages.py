@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import json
 import os
+from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,54 @@ _MAX_SOURCE_BYTES = 2 * 1024 * 1024
 # measured at 1.3 seconds for 3.1 MB, and what the prompt can carry is decided
 # separately when the bundle is rendered.  This ceiling only stops a runaway.
 _MAX_FACTS = 2_000_000
+# How many files the index may name.  A repository larger than this is summarised
+# by its busiest files; the count says how many were left out rather than hiding
+# them.
+_MAX_INDEXED_FILES = 1_500
+
+
+def _ast_index(ast_result: dict[str, object]) -> dict[str, object]:
+    """Describe the AST facts without carrying them.
+
+    An agent needs to know which file holds what before it can ask for
+    anything, so the index keeps every file's name, how many facts it has and
+    which kinds they are.  The facts stay where they were written; this is the
+    map that says which ones are worth reading.
+    """
+
+    facts = ast_result.get("facts")
+    facts = facts if isinstance(facts, list) else []
+    per_file: dict[str, Counter[str]] = defaultdict(Counter)
+    for fact in facts:
+        if not isinstance(fact, dict):
+            continue
+        path = fact.get("path")
+        kind = fact.get("kind")
+        if isinstance(path, str) and isinstance(kind, str):
+            per_file[path][kind] += 1
+    ordered = sorted(
+        per_file.items(), key=lambda item: (-sum(item[1].values()), item[0])
+    )
+    return {
+        "kind": "simple_python_ast_index",
+        "total_facts": len(facts),
+        "indexed_files": min(len(ordered), _MAX_INDEXED_FILES),
+        "omitted_files": max(0, len(ordered) - _MAX_INDEXED_FILES),
+        "python_files": ast_result.get("python_files"),
+        "covered_files": ast_result.get("covered_files"),
+        "truncated": ast_result.get("truncated"),
+        "skipped_count": ast_result.get("skipped_count"),
+        "skipped_files": ast_result.get("skipped_files"),
+        "parse_errors": ast_result.get("parse_errors"),
+        "files": [
+            {
+                "path": path,
+                "facts": sum(kinds.values()),
+                "kinds": dict(sorted(kinds.items())),
+            }
+            for path, kinds in ordered[:_MAX_INDEXED_FILES]
+        ],
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,7 +227,12 @@ class DirectStaticBootstrap:
                         else []
                     ),
                 ],
-                "ast_summary": ast_result,
+                # The facts themselves are three megabytes for a mid-sized
+                # repository and were the reason a prompt reached half a
+                # million tokens.  They stay in their own artifact, which
+                # ``tool_result_refs`` already names, and the bundle carries
+                # the map an agent needs to decide what to ask for.
+                "ast_index": _ast_index(ast_result),
                 "opengrep_findings": snippets,
                 "codeql_findings": codeql_findings,
                 "codeql_executed": codeql_ref is not None,
@@ -356,9 +410,7 @@ class DirectStaticBootstrap:
             "parse_errors": parse_errors[:100],
             "skipped_files": skipped[:500],
             "skipped_count": len(skipped),
-            "python_files": sum(
-                1 for value in tracked if value.endswith(".py")
-            ),
+            "python_files": sum(1 for value in tracked if value.endswith(".py")),
             "covered_files": len({str(fact["path"]) for fact in facts}),
             "truncated": bool(skipped),
         }
