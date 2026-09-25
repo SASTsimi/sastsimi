@@ -451,3 +451,79 @@ async def test_a_checkout_with_no_entry_point_is_read_as_source(
 
     assert b"for _ in range(8):" in agent.prompts[0]
     assert len(seeds) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_turn_keeps_what_the_batch_found_before_it(
+    tmp_path: Path, repository: Path
+) -> None:
+    """One rejected answer once discarded every batch of a run."""
+
+    from sastsimi.simple_runtime.models import StageFailure
+
+    class _FailsLater(_ReadingAgent):
+        async def call(self, **kwargs: object) -> SimpleLLMCallResult:
+            prompt = kwargs.get("prompt")
+            text = prompt if isinstance(prompt, bytes) else b""
+            self.prompts.append(text)
+            value: dict[str, Any] = {
+                "hypotheses": [],
+                "requested_paths": [],
+                "requested_ast_paths": [],
+                "suspicious_points": [],
+            }
+            if b"reviewing one new proposal" in text:
+                value = {"decision": "NEW", "duplicate_of": None, "rationale": ""}
+            elif len(self.prompts) == 1:
+                value["suspicious_points"] = [
+                    {"entry_point": "proxy", "concern": f"c{n}", "read": "app/proxy.py"}
+                    for n in range(10)
+                ]
+            elif len(self.prompts) == 2:
+                value["requested_paths"] = ["app/proxy.py"]
+            elif len(self.prompts) == 3:
+                value["hypotheses"] = [_proposal(2)]
+            else:
+                return StageFailure(  # type: ignore[return-value]
+                    code="INVALID_OUTPUT", retryable=False, safe_message="rejected"
+                )
+            return SimpleLLMCallResult(
+                value=value, prompt_digest="a" * 64, output_digest="b" * 64
+            )
+
+    data_dir = tmp_path / "data"
+    identity = _identity()
+    artifacts = SimpleArtifactRepository(data_dir, identity)
+    flows_ref = artifacts.put_json(
+        {"entry_points": [{"file": "app/proxy.py", "handler": "guard"}]}
+    )
+    bundle_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_fact_bundle",
+            "source_files": ["app/proxy.py"],
+            "codeql_findings": [],
+            "opengrep_findings": [],
+            "tool_result_refs": [],
+            "route_flows_ref": flows_ref.model_dump(mode="json"),
+        }
+    )
+    seeds = await DirectHypothesisBootstrap(
+        data_dir=data_dir,
+        client_factory=cast(Any, lambda *a, **k: _FailsLater()),
+        feed="facts_survey",
+    ).propose(
+        identity,
+        StaticBootstrapResult(
+            repository_profile_ref=bundle_ref,
+            static_bundle_ref=bundle_ref,
+            workspace_path=repository,
+        ),
+    )
+
+    assert len(seeds) == 1
+    failures = [
+        json.loads(path.read_bytes())
+        for path in data_dir.rglob("*")
+        if path.is_file() and b"simple_hypothesis_batch_failure" in path.read_bytes()
+    ]
+    assert failures[0]["failures"] == ["INVALID_OUTPUT", "UNREAD_POINTS:2"]

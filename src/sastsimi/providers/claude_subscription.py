@@ -709,7 +709,14 @@ class ClaudeConversation:
                 client_version=self._runner.binding.provider_profile.client_version,
             )
         except ProviderInvalidOutputError:
+            self._runner._record_child_failure(
+                self._request.invocation_id, -1, _stream_outline(bytes(segment))
+            )
             return self._die(CodexProcessResult("INVALID_OUTPUT", None, None))
+        if status != "SUCCEEDED":
+            self._runner._record_child_failure(
+                self._request.invocation_id, -1, _stream_outline(bytes(segment))
+            )
         if self._session_id is None:
             self._session_id = session_id
         elif session_id != self._session_id:
@@ -721,6 +728,45 @@ class ClaudeConversation:
     def _die(self, result: CodexProcessResult) -> CodexProcessResult:
         self._dead = CodexProcessResult("FAILED", None, None)
         return result
+
+
+def _stream_outline(stream: bytes) -> bytes:
+    """Which events a rejected turn held, and its result event without output.
+
+    Without it a rejected turn is an unexplained ``INVALID_OUTPUT``.  The
+    structured output is left out and the result text cut short.
+    """
+
+    lines: list[str] = []
+    for raw in stream.splitlines():
+        try:
+            event = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            lines.append(f"unparsed {len(raw)} bytes")
+            continue
+        if not isinstance(event, dict):
+            lines.append(f"non-object {type(event).__name__}")
+            continue
+        kind = f"{event.get('type')}/{event.get('subtype')}"
+        if event.get("type") == "result":
+            kept = {
+                key: value
+                for key, value in event.items()
+                if key not in ("structured_output", "usage", "modelUsage")
+            }
+            if isinstance(kept.get("result"), str):
+                kept["result"] = kept["result"][:1000]
+            kind += " " + json.dumps(kept, ensure_ascii=False)
+        elif event.get("type") == "assistant":
+            message = event.get("message")
+            blocks = message.get("content") if isinstance(message, dict) else None
+            kind += " " + ",".join(
+                str(block.get("type"))
+                for block in (blocks if isinstance(blocks, list) else [])
+                if isinstance(block, dict)
+            )
+        lines.append(kind)
+    return "\n".join(lines).encode("utf-8")
 
 
 _USAGE_COUNTS = (

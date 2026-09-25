@@ -1048,12 +1048,16 @@ class DirectHypothesisBootstrap:
         tail: bytes = b"",
         read_first: bool = False,
         follow_up: bytes = _FOLLOW_UP,
+        failures: list[str] | None = None,
     ) -> tuple[SimpleLLMCallResult, Exploration, list[object]]:
         """Ask, serve what was asked for, ask again - in one conversation.
 
         Each follow-up turn carries only the files just served; the batch and
         everything read before are already in the conversation and are read
         from the prompt cache rather than sent again.
+
+        With ``failures`` given, a follow-up turn that fails ends the reading
+        with what earlier turns returned, and its code is appended there.
         """
 
         history = Exploration()
@@ -1110,14 +1114,16 @@ class DirectHypothesisBootstrap:
                 ast=ast,
                 notes={"proposed_so_far": len(kept)},
             )
-            result = _required(
-                await talk.ask(
-                    b"<UNTRUSTED_EXACT_INPUTS>\n"
-                    + render_round(history.as_prompt_document()).encode("utf-8")
-                    + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
-                    + follow_up
-                )
+            answer = await talk.ask(
+                b"<UNTRUSTED_EXACT_INPUTS>\n"
+                + render_round(history.as_prompt_document()).encode("utf-8")
+                + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
+                + follow_up
             )
+            if isinstance(answer, StageFailure) and failures is not None:
+                failures.append(answer.code)
+                break
+            result = _required(answer)
             absorb(result.value)
         return result, history, kept
 
@@ -1130,6 +1136,7 @@ class DirectHypothesisBootstrap:
         artifacts: SimpleArtifactRepository,
         findings: dict[str, list[dict[str, object]]],
         batch: int,
+        failures: list[str],
     ) -> list[tuple[SimpleLLMCallResult, Exploration, list[object]]]:
         """List every point worth a look, then read them a few at a time.
 
@@ -1171,6 +1178,7 @@ class DirectHypothesisBootstrap:
                     findings,
                     tail=_READ_FIRST,
                     read_first=True,
+                    failures=failures,
                 )
             ]
         turns: list[tuple[SimpleLLMCallResult, Exploration, list[object]]] = []
@@ -1186,18 +1194,29 @@ class DirectHypothesisBootstrap:
                     fenced(json.dumps(listing, ensure_ascii=False, indent=1), "json"),
                 )
             )
-            turns.append(
-                await self._read_then_propose(
-                    talk,
-                    b"",
-                    document.encode("utf-8"),
-                    static,
-                    artifacts,
-                    findings,
-                    tail=_POINTS_TURN,
-                    follow_up=_POINTS_FOLLOW_UP,
+            unread = len(points) - start - len(chunk)
+            try:
+                turns.append(
+                    await self._read_then_propose(
+                        talk,
+                        b"",
+                        document.encode("utf-8"),
+                        static,
+                        artifacts,
+                        findings,
+                        tail=_POINTS_TURN,
+                        follow_up=_POINTS_FOLLOW_UP,
+                        failures=failures,
+                    )
                 )
-            )
+            except RuntimeError as error:
+                failures.append(str(error))
+                unread += len(chunk)
+            if failures:
+                # The conversation is gone; the points after this turn are
+                # recorded as unread rather than asked of a dead client.
+                failures.append(f"UNREAD_POINTS:{unread}")
+                break
         return turns
 
     def _ast_facts(
@@ -1380,42 +1399,67 @@ class DirectHypothesisBootstrap:
                     list[dict[str, object]],
                 ]
             ] = []
-            async with conversation_with(
-                client, output_schema=schema, timeout_ms=self._call_timeout_ms
-            ) as talk:
-                turns = (
-                    await self._survey_then_propose(
-                        talk,
-                        instructions,
-                        context,
-                        static,
-                        artifacts,
-                        findings,
-                        batch.number,
-                    )
-                    if surveyed
-                    else [
-                        await self._read_then_propose(
+            # A failed turn keeps what the batch returned before it, and a
+            # failed batch leaves the others standing: one rejected answer
+            # once discarded every batch of a run.
+            failures: list[str] = []
+            try:
+                async with conversation_with(
+                    client, output_schema=schema, timeout_ms=self._call_timeout_ms
+                ) as talk:
+                    turns = (
+                        await self._survey_then_propose(
                             talk,
                             instructions,
                             context,
                             static,
                             artifacts,
-                            findings if feeding.kind == "facts" else None,
-                            read_first=feeding.kind == "facts",
+                            findings,
+                            batch.number,
+                            failures,
                         )
-                    ]
+                        if surveyed
+                        else [
+                            await self._read_then_propose(
+                                talk,
+                                instructions,
+                                context,
+                                static,
+                                artifacts,
+                                findings if feeding.kind == "facts" else None,
+                                read_first=feeding.kind == "facts",
+                                failures=failures,
+                            )
+                        ]
+                    )
+                    for result, history, proposed in turns:
+                        valid, rejected = self._validate_all(
+                            proposed, lines, batch.number
+                        )
+                        if rejected:
+                            # The design allows a bounded repair before
+                            # INVALID_OUTPUT.
+                            repaired = await self._repair(talk, rejected)
+                            again, still = self._validate_all(
+                                repaired, lines, batch.number
+                            )
+                            valid.extend(again)
+                            for proposal_id, errors in still:
+                                registry.record_invalid(
+                                    proposal_id, batch.number, errors
+                                )
+                        settled.append((valid, result, _reading_record(history)))
+            except RuntimeError as error:
+                failures.append(str(error))
+            if failures:
+                artifacts.put_json(
+                    {
+                        "kind": "simple_hypothesis_batch_failure",
+                        "batch": batch.number,
+                        "failures": failures,
+                        "turns_kept": len(settled),
+                    }
                 )
-                for result, history, proposed in turns:
-                    valid, rejected = self._validate_all(proposed, lines, batch.number)
-                    if rejected:
-                        # The design allows a bounded repair before INVALID_OUTPUT.
-                        repaired = await self._repair(talk, rejected)
-                        again, still = self._validate_all(repaired, lines, batch.number)
-                        valid.extend(again)
-                        for proposal_id, errors in still:
-                            registry.record_invalid(proposal_id, batch.number, errors)
-                    settled.append((valid, result, _reading_record(history)))
             # Registered after the conversation closes, so a batch never holds
             # its slot while waiting on a duplicate review's slot.
             for valid, result, reading in settled:
