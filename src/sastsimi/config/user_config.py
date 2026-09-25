@@ -220,6 +220,9 @@ class SimpleExecutionProfile(BaseModel):
     max_parallel_calls: int = Field(default=1, ge=1, le=16)
     max_parallel_builds: int = Field(default=1, ge=1, le=8)
     max_parallel_containers: int = Field(default=1, ge=1, le=16)
+    # What the hypothesis agent is handed first: the source itself, or the
+    # route flows from the fact bundle with source read on request.
+    hypothesis_feed: Literal["code", "facts"] = "code"
     tools: dict[str, SimpleToolBinding]
 
     @field_validator("data_dir", "workspace_root", mode="before")
@@ -274,6 +277,7 @@ class SimpleExecutionProfile(BaseModel):
             f"max_parallel_calls = {self.max_parallel_calls}",
             f"max_parallel_builds = {self.max_parallel_builds}",
             f"max_parallel_containers = {self.max_parallel_containers}",
+            f"hypothesis_feed = {_quoted(self.hypothesis_feed)}",
             "",
             "[tools]",
         ]
