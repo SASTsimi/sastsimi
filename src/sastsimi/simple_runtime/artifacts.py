@@ -9,13 +9,10 @@ from typing import Any
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import CommitId, WorkspaceId
-from sastsimi.contracts.prompt_redaction import (
-    redact_projected_json,
-    redact_untrusted_text,
-)
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.storage.artifact_store import LocalArtifactStore
 
+from .code_redaction import default_host_paths, redact_code
 from .models import CheckpointIdentity
 
 _MAX_CONTEXT_BYTES = 512 * 1024
@@ -242,12 +239,22 @@ class SimpleArtifactRepository:
                 break
         return fragments
 
-    @staticmethod
-    def _redacted(raw: bytes) -> bytes:
-        try:
-            return redact_projected_json(raw).data
-        except ValueError:
-            return redact_untrusted_text(raw).data
+    def _redacted(self, raw: bytes) -> bytes:
+        """Keep this machine's paths out of a prompt, and leave the rest as is.
+
+        Pattern redaction was applied here too, and it failed closed: a
+        hypothesis whose statement quoted ``bearer`` handling or a
+        ``password`` assignment from the code raised, and 24 of 94 hypotheses
+        died in Pro/Con before a model was asked anything.  The repositories
+        analysed are public and what these artifacts quote is their code, so
+        only the operator's own locations are replaced, by value.
+        """
+
+        text = raw.decode("utf-8", errors="replace")
+        workspace = self.paths.root / "workspaces" / self.identity.workspace_id
+        return redact_code(text, host_paths=default_host_paths(workspace))[0].encode(
+            "utf-8"
+        )
 
     def _require_scope(self, ref: StoredDataRef) -> None:
         if (

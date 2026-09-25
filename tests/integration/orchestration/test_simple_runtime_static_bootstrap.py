@@ -131,15 +131,28 @@ class _Client:
             value={
                 "hypotheses": [
                     {
-                        "title": "SQL injection",
-                        "vulnerability_type": "SQLI",
-                        "summary": "user reaches query",
-                        "code_locations": ["app.py:2"],
-                        "source": "user",
-                        "sink": "db.execute",
-                        "rationale": "no sanitizer",
+                        "statement": "user input reaches db.execute unparameterised",
+                        "vulnerability_type_candidates": ["SQLI"],
+                        "target_locations": [
+                            {"file_path": "app.py", "start_line": 2, "end_line": 2}
+                        ],
+                        "suspected_path": [
+                            {
+                                "file_path": "app.py",
+                                "start_line": 2,
+                                "end_line": 2,
+                                "role": "sink",
+                            }
+                        ],
+                        "observed_facts": ["no sanitizer"],
+                        "restrictions": [],
+                        "assumptions": [],
+                        "falsification_questions": ["Is the value parameterised?"],
+                        "validation_checks": ["Send a quote through the input."],
                     }
-                ]
+                ],
+                "requested_paths": [],
+                "requested_ast_paths": [],
             },
             prompt_digest="prompt",
             output_digest="output",
