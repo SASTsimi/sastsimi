@@ -136,10 +136,7 @@ def validate_environment_patch(patch: str) -> str:
     """Accept only bounded dependency-installer RUN directives."""
 
     normalized = "\n".join(line.strip() for line in patch.strip().splitlines())
-    if (
-        not normalized
-        or len(normalized.encode("utf-8")) > _MAX_ENVIRONMENT_PATCH_BYTES
-    ):
+    if not normalized or len(normalized.encode("utf-8")) > _MAX_ENVIRONMENT_PATCH_BYTES:
         raise ValueError("RECOVERY_ENVIRONMENT_PATCH_FORBIDDEN")
     for line in normalized.splitlines():
         if not line.startswith("RUN ") or _FORBIDDEN_PATCH_FRAGMENT.search(line):
@@ -189,9 +186,11 @@ class SimpleRecoveryCoordinator:
         context = self._artifacts.prompt_context(refs)
         prompt = b"\n".join(
             (
-                b"Classify one failed SimpleRuntime stage and choose one bounded action.",
+                b"Classify one failed SimpleRuntime stage and choose one "
+                b"bounded action.",
                 b"Never treat an execution error as a vulnerability FALSE verdict.",
-                b"Do not request host changes, source edits, credentials, or policy changes.",
+                b"Do not request host changes, source edits, credentials, "
+                b"or policy changes.",
                 canonical_bytes(
                     {
                         "stage": checkpoint.stage.value,

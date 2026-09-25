@@ -41,7 +41,10 @@ class _HostPathRepairClient(_RepairClient):
         content = (
             "#!/bin/sh\nprintf '%s\\n' '\\\\attacker.example'\n"
             if len(self.prompts) == 1
-            else "#!/bin/sh\npython - <<'PY'\nprint(chr(92) * 2 + 'attacker.example')\nPY\n"
+            else (
+                "#!/bin/sh\npython - <<'PY'\n"
+                "print(chr(92) * 2 + 'attacker.example')\nPY\n"
+            )
         )
         return SimpleLLMCallResult(
             value={"content": content},

@@ -24,7 +24,13 @@ class _PublicApplication:
         }
 
     def status(self, analysis_id: str) -> dict[str, object]:
-        return {"analysis_id": analysis_id, "status": "BLOCKED", "percent": 40}
+        return {
+            "analysis_id": analysis_id,
+            "status": "BLOCKED",
+            "percent": 40,
+            "attempt_number": 3,
+            "attempt_limit": 3,
+        }
 
     def resume(self, analysis_id: str) -> dict[str, object]:
         return {"analysis_id": analysis_id, "status": "COMPLETE", "percent": 100}
@@ -136,6 +142,9 @@ def test_public_commands_emit_json_only_when_requested(
     )
     payload = json.loads(capsys.readouterr().out)
     assert payload["data"]["percent"] == 40
+    status = payload["data"]
+    assert status["attempt_number"] == 3
+    assert status["attempt_limit"] == 3
 
     assert (
         main(

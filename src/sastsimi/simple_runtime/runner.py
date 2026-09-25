@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import uuid4
 
 from sastsimi.contracts.base import ContractModel
@@ -95,10 +95,12 @@ class SimpleRuntimeRunner:
                 existing = self.store.get(identity, stage)
                 if self.recovery is not None and existing is not None:
                     recovery_outcome = await self._recover_existing(existing)
-                    if recovery_outcome is not False:
-                        if recovery_outcome is None:
-                            restart_requested = True
-                            break
+                    if recovery_outcome is False:
+                        pass
+                    elif recovery_outcome is None:
+                        restart_requested = True
+                        break
+                    else:
                         return recovery_outcome
                 input_refs = self.store.input_refs_for(identity, stage)
                 if self.store.reusable(identity, stage, input_refs):
@@ -224,7 +226,7 @@ class SimpleRuntimeRunner:
     async def _recover_existing(
         self,
         checkpoint: StageCheckpoint,
-    ) -> RunOutcome | None | bool:
+    ) -> RunOutcome | None | Literal[False]:
         if checkpoint.status is StageStatus.PENDING:
             return False
         if checkpoint.status is StageStatus.SUCCEEDED:

@@ -103,9 +103,7 @@ async def test_non_retryable_failure_never_calls_recovery_llm(tmp_path) -> None:
 
     assert result.decision.category is RecoveryCategory.TERMINAL
     assert result.decision.action is RecoveryAction.STOP
-    assert b'"kind":"simple_recovery_decision"' in artifacts.read(
-        result.decision_ref
-    )
+    assert b'"kind":"simple_recovery_decision"' in artifacts.read(result.decision_ref)
     assert client.calls == 0
 
 
@@ -140,9 +138,7 @@ async def test_valid_environment_rebuild_is_stored_as_exact_artifact(tmp_path) -
     assert result.decision.environment_patch == (
         "RUN python -m pip install -e '.[test]'"
     )
-    assert b'"kind":"simple_recovery_decision"' in artifacts.read(
-        result.decision_ref
-    )
+    assert b'"kind":"simple_recovery_decision"' in artifacts.read(result.decision_ref)
     assert client.calls == 1
 
 

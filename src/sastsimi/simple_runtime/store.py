@@ -284,9 +284,7 @@ class SimpleCheckpointStore:
     ) -> StageCheckpoint:
         previous = self.get(identity, stage)
         reusable_state = previous or inherit_from
-        recovery_refs = (
-            reusable_state.recovery_decision_refs if reusable_state else ()
-        )
+        recovery_refs = reusable_state.recovery_decision_refs if reusable_state else ()
         exact_inputs = tuple(dict.fromkeys(input_refs + recovery_refs))
         if previous is not None:
             attempt_number = previous.attempt_number + 1
@@ -334,18 +332,18 @@ class SimpleCheckpointStore:
         result: StageResult,
     ) -> StageCheckpoint:
         updates: dict[str, object] = {
-                "status": StageStatus.SUCCEEDED,
-                "output_refs": result.output_refs,
-                "error_code": None,
-                "retryable": False,
-                "recipe_ref": result.recipe_ref or checkpoint.recipe_ref,
-                "image_digest": result.image_digest or checkpoint.image_digest,
-                "container_id": result.container_id or checkpoint.container_id,
-                "validated_poc_ref": result.validated_poc_ref,
-                "report_ref": result.report_ref,
-                "verdict": result.verdict,
-                "markdown_path": result.markdown_path,
-                "updated_at": datetime.now(UTC),
+            "status": StageStatus.SUCCEEDED,
+            "output_refs": result.output_refs,
+            "error_code": None,
+            "retryable": False,
+            "recipe_ref": result.recipe_ref or checkpoint.recipe_ref,
+            "image_digest": result.image_digest or checkpoint.image_digest,
+            "container_id": result.container_id or checkpoint.container_id,
+            "validated_poc_ref": result.validated_poc_ref,
+            "report_ref": result.report_ref,
+            "verdict": result.verdict,
+            "markdown_path": result.markdown_path,
+            "updated_at": datetime.now(UTC),
         }
         if checkpoint.recovery_origin_stage is checkpoint.stage:
             updates.update(
@@ -433,30 +431,28 @@ class SimpleCheckpointStore:
             raise ValueError("RECOVERY_RESTART_STAGE_INVALID")
         restart = self.get(failed.identity, restart_stage)
         decision_refs = tuple(
-            dict.fromkeys(
-                failed.recovery_decision_refs + (resolution.decision_ref,)
-            )
+            dict.fromkeys(failed.recovery_decision_refs + (resolution.decision_ref,))
         )
         original_inputs = restart.input_refs if restart is not None else ()
         inputs = tuple(
             dict.fromkeys(
-                original_inputs
-                + failed.input_refs
-                + failed.output_refs
-                + decision_refs
+                original_inputs + failed.input_refs + failed.output_refs + decision_refs
             )
         )
-        lineage_id = failed.recovery_lineage_id or hashlib.sha256(
-            canonical_bytes(
-                {
-                    "identity": failed.identity,
-                    "stage": failed.stage.value,
-                    "stage_version": failed.stage_version,
-                    "input_hash": failed.input_hash,
-                    "error_code": failed.error_code,
-                }
-            )
-        ).hexdigest()
+        lineage_id = (
+            failed.recovery_lineage_id
+            or hashlib.sha256(
+                canonical_bytes(
+                    {
+                        "identity": failed.identity,
+                        "stage": failed.stage.value,
+                        "stage_version": failed.stage_version,
+                        "input_hash": failed.input_hash,
+                        "error_code": failed.error_code,
+                    }
+                )
+            ).hexdigest()
+        )
         rebuild = resolution.decision.action is RecoveryAction.REBUILD_ENVIRONMENT
         pending = StageCheckpoint(
             identity=failed.identity,
@@ -467,9 +463,7 @@ class SimpleCheckpointStore:
             input_hash=input_reference_hash(inputs),
             attempt_number=failed.attempt_number,
             recovery_lineage_id=lineage_id,
-            recovery_origin_stage=(
-                failed.recovery_origin_stage or failed.stage
-            ),
+            recovery_origin_stage=(failed.recovery_origin_stage or failed.stage),
             recovery_decision_refs=decision_refs,
             recipe_ref=None if rebuild else failed.recipe_ref,
             image_digest=None if rebuild else failed.image_digest,

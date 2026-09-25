@@ -277,6 +277,8 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             "known_units": snapshot.known_units,
             "current_stage": snapshot.current_stage,
             "current_hypothesis_id": snapshot.current_hypothesis_id,
+            "attempt_number": snapshot.attempt_number,
+            "attempt_limit": snapshot.attempt_limit,
         }
 
     def result(self, analysis_id: str) -> dict[str, object]:

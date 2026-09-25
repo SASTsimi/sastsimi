@@ -157,8 +157,7 @@ async def test_materialize_poc_replaces_read_only_candidate_from_prior_run() -> 
         "container-1",
         "sh",
         "-c",
-        "rm -f /tmp/sastsimi-poc-candidate && "
-        "cat > /tmp/sastsimi-poc-candidate",
+        "rm -f /tmp/sastsimi-poc-candidate && cat > /tmp/sastsimi-poc-candidate",
     )
 
 

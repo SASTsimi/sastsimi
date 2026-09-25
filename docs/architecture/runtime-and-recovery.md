@@ -17,6 +17,11 @@
 달라졌거나 불완전한 PoC attempt가 확인되면 그 지점부터 뒤 결과만 무효화합니다.
 예상하지 못한 예외는 재시도 가능한 `BLOCKED`로 저장하며 `FALSE`로 바꾸지 않습니다.
 
+재시도 가능한 오류는 LLM 복구 결정으로 도구 재시도, 생성 입력 재작성 또는 일회용
+Docker 환경 재구성을 최대 3회 수행합니다. 각 결정과 변경은 artifact와 checkpoint에
+남고 대시보드에는 현재 복구 시도 횟수가 표시됩니다. 한 계보가 소진되면
+`RECOVERY_EXHAUSTED`로 중단하지만 다른 독립 가설은 계속 처리합니다.
+
 Technical Gate의 `REVISE`는 같은 가설의 최종 Verification을 다시 수행하도록
 checkpoint를 준비합니다. 이전 Pro·Con과 PoC 결과는 exact reference로 전달하되,
 새 Verification 출력이 확정되기 전까지 current 결과로 취급하지 않습니다.
