@@ -218,8 +218,8 @@ answers, from the code you have read.
 # the other stages' four rounds would end it early; this only stops a runaway.
 _HYPOTHESIS_ROUNDS = 8
 
-_SURVEY_OPENING = """You have not read the code yet. Your first answer is a survey, not
-a reading request or hypotheses: see "Survey" below.
+_SURVEY_OPENING = """You have not read the code yet. Your first answer is a survey and
+the hypotheses it already shows you, not a reading request: see "Survey" below.
 """
 
 _SURVEY = b"""
@@ -234,9 +234,14 @@ boundary the input crosses, an authorization, state or resource decision.
 For each point give the `entry_point`, the `concern` in one line, and `read`:
 the code to read for it (`path:start-end`, or several separated by spaces).
 
+Return in `hypotheses` every hypothesis the points already show you, from
+the flows alone: a hypothesis is a possibility - "if this input takes this
+path, this happens" - and one point may give several. Where the code is not
+read yet, say so in `assumptions`.
+
 The runtime will then take you through the points a few at a time; a point
-you do not list is never examined. Leave `hypotheses` and both request lists
-empty in this answer.
+you do not list is never examined. Leave both request lists empty in this
+answer.
 """
 
 _POINTS_PER_TURN = 8
@@ -1183,8 +1188,14 @@ class DirectHypothesisBootstrap:
                 + _SURVEY
             )
         )
-        # Nothing is read yet, so anything proposed here stands in for what
-        # reading would find; the survey answer only yields the list.
+        # A hypothesis is a possibility, so what the flows alone show is
+        # proposed here; reading the points later adds what the code shows.
+        proposed = survey.value.get("hypotheses")
+        opening: tuple[SimpleLLMCallResult, Exploration, list[object]] = (
+            survey,
+            Exploration(),
+            list(proposed) if isinstance(proposed, list) else [],
+        )
         listed = survey.value.get("suspicious_points")
         points = [
             point
@@ -1198,6 +1209,7 @@ class DirectHypothesisBootstrap:
             # An empty list would leave the part unread; read it as the fact
             # feed does instead.
             return [
+                opening,
                 await self._read_then_propose(
                     talk,
                     b"",
@@ -1208,9 +1220,9 @@ class DirectHypothesisBootstrap:
                     tail=_READ_FIRST,
                     read_first=True,
                     failures=failures,
-                )
+                ),
             ]
-        turns: list[tuple[SimpleLLMCallResult, Exploration, list[object]]] = []
+        turns: list[tuple[SimpleLLMCallResult, Exploration, list[object]]] = [opening]
         decisions_log: list[object] = []
         for start in range(0, len(points), _POINTS_PER_TURN):
             chunk = points[start : start + _POINTS_PER_TURN]

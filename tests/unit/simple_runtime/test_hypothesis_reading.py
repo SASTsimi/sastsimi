@@ -367,7 +367,7 @@ async def test_a_survey_walks_every_listed_point_a_few_at_a_time(
                     {"entry_point": "proxy", "concern": f"c{n}", "read": "app/proxy.py"}
                     for n in range(10)
                 ]
-                # Proposed before anything was read: not kept.
+                # A possibility the flows alone show: kept.
                 value["hypotheses"] = [_proposal(5, "unread guess")]
             elif len(self.prompts) == 2:
                 value["requested_paths"] = ["app/proxy.py"]
@@ -418,7 +418,7 @@ async def test_a_survey_walks_every_listed_point_a_few_at_a_time(
     assert b"## Survey" in agent.prompts[0]
     assert b"# Points 1-8 of 10" in agent.prompts[1]
     assert b"# Points 9-10 of 10" in agent.prompts[3]
-    assert len(seeds) == 2
+    assert len(seeds) == 3
 
 
 @pytest.mark.asyncio
