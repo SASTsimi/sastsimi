@@ -419,10 +419,16 @@ class PoCExecutionStage:
         call_timeout_ms: int = _LOCAL_TIMEOUT_MS,
         poc_timeout_ms: int = _POC_TIMEOUT_MS,
         max_parallel_containers: int = 1,
+        container_slots: asyncio.Semaphore | None = None,
     ) -> None:
         # Held for as long as a container is alive, not merely while it is
-        # created, so the ceiling bounds what actually runs on the host.
-        self._container_slots = asyncio.Semaphore(max_parallel_containers)
+        # created, so the ceiling bounds what actually runs on the host.  The
+        # handlers are built per hypothesis, so a semaphore made here is one
+        # ceiling each: five containers were measured against a limit of four.
+        # The caller passes one shared gate instead.
+        self._container_slots = container_slots or asyncio.Semaphore(
+            max_parallel_containers
+        )
         self._client = client
         self._artifacts = artifacts
         self._docker = docker
@@ -1643,6 +1649,8 @@ def build_stage_handlers(
     # that never asks should never read them.
     ast_facts: Callable[[], Sequence[Any]] | None = None,
     max_parallel_containers: int = 1,
+    # One gate for the whole run.  Without it each hypothesis holds its own.
+    container_slots: asyncio.Semaphore | None = None,
     call_timeout_ms: int = _LOCAL_TIMEOUT_MS,
     poc_timeout_ms: int = _POC_TIMEOUT_MS,
 ) -> dict[SimpleStage, SimpleStageHandler]:
@@ -1674,6 +1682,7 @@ def build_stage_handlers(
             call_timeout_ms=call_timeout_ms,
             poc_timeout_ms=poc_timeout_ms,
             max_parallel_containers=max_parallel_containers,
+            container_slots=container_slots,
         ),
         SimpleStage.VERIFICATION_FINAL_DONE: FinalVerificationStage(
             client,

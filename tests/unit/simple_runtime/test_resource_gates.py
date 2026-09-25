@@ -191,3 +191,65 @@ async def test_pro_and_con_review_at_the_same_time(tmp_path: Path) -> None:
     )
 
     assert client.peak == 2
+
+
+@pytest.mark.asyncio
+async def test_the_container_ceiling_is_shared_by_every_hypothesis() -> None:
+    """Handlers are built per hypothesis, so a gate made inside one is one each.
+
+    Measured on a live run: five containers were alive against a configured
+    limit of four, because six hypotheses each held their own semaphore.
+    """
+
+    import asyncio as _asyncio
+
+    from sastsimi.simple_runtime.stages import PoCExecutionStage
+
+    shared = _asyncio.Semaphore(2)
+    stages = [
+        PoCExecutionStage(
+            client=cast(Any, object()),
+            artifacts=cast(Any, object()),
+            docker=cast(Any, object()),
+            containers=cast(Any, object()),
+            max_parallel_containers=2,
+            container_slots=shared,
+        )
+        for _ in range(6)
+    ]
+
+    live = 0
+    peak = 0
+
+    async def hold(stage: Any) -> None:
+        nonlocal live, peak
+        async with stage._container_slots:
+            live += 1
+            peak = max(peak, live)
+            await _asyncio.sleep(0)
+            await _asyncio.sleep(0)
+            live -= 1
+
+    await _asyncio.wait_for(
+        _asyncio.gather(*(hold(stage) for stage in stages)), timeout=2
+    )
+
+    assert peak == 2
+
+
+@pytest.mark.asyncio
+async def test_without_a_shared_gate_each_stage_keeps_its_own() -> None:
+    """The fallback still bounds one stage, for a caller that builds only one."""
+
+
+    from sastsimi.simple_runtime.stages import PoCExecutionStage
+
+    stage = PoCExecutionStage(
+        client=cast(Any, object()),
+        artifacts=cast(Any, object()),
+        docker=cast(Any, object()),
+        containers=cast(Any, object()),
+        max_parallel_containers=3,
+    )
+
+    assert stage._container_slots._value == 3

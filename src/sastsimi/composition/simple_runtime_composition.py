@@ -243,6 +243,9 @@ def build_analysis_application(
     store = SimpleCheckpointStore(data_dir / "db" / "sastsimi.sqlite3")
     client_factory = SimpleClientFactory(profile)
     docker = PortableDockerRuntime(profile)
+    # Shared across every hypothesis, because the host has one set of
+    # containers however many hypotheses are in flight.
+    container_slots = asyncio.Semaphore(profile.max_parallel_containers)
 
     def runner_factory(
         runtime_store: SimpleCheckpointStore,
@@ -268,6 +271,7 @@ def build_analysis_application(
                 workspace=static.workspace_path,
                 ast_facts=_ast_facts_loader(artifacts, static),
                 max_parallel_containers=profile.max_parallel_containers,
+                container_slots=container_slots,
                 # A stage that exceeds its per-call ceiling is blocked for the
                 # whole run, so the operator's elapsed budget has to reach the
                 # LLM calls too, not only the tool subprocesses.
