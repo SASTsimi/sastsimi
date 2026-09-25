@@ -10,7 +10,7 @@ import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from sastsimi.config.user_config import SimpleExecutionProfile
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -25,6 +25,12 @@ from .artifacts import SimpleArtifactRepository
 from .exploration import MAX_ROUNDS, Exploration
 from .feeding import Batch, Feeding, plan_feeding, render_batch
 from .models import CheckpointIdentity, StageFailure
+from .proposals import (
+    PROPOSAL_INSTRUCTIONS,
+    PROPOSAL_ITEM_SCHEMA,
+    Registry,
+    validate_proposal,
+)
 from .provider import SimpleLLMCallResult, SimpleLLMClient
 from .retrieval import collect_requested_ast, collect_requested_sources
 
@@ -46,9 +52,24 @@ _MAX_LITERAL_CHARS = 60
 _SOURCE_SUFFIXES = (".py", ".pyi", ".js", ".jsx", ".ts", ".tsx")
 
 
-type _Gathered = tuple[
-    dict[str, object], Batch, SimpleLLMCallResult, list[dict[str, object]]
-]
+type _Provenance = tuple[int, SimpleLLMCallResult, list[dict[str, object]]]
+
+# Bodies of rejected proposals, held only until the one repair call reads them.
+_REJECTED_BODIES: dict[str, object] = {}
+
+
+def _line_counts(workspace: Path, sources: Sequence[str]) -> dict[str, int]:
+    """Every file a proposal may name, with how many lines it has."""
+
+    counts: dict[str, int] = {}
+    for path in sources:
+        try:
+            counts[path] = len(
+                (workspace / path).read_text(encoding="utf-8").splitlines()
+            )
+        except (OSError, UnicodeError):
+            continue
+    return counts
 
 
 def _reading_record(history: Exploration) -> list[dict[str, object]]:
@@ -830,94 +851,6 @@ class DirectHypothesisBootstrap:
             + render_batch(batch).encode("utf-8")
         )
 
-    async def _deduplicate(
-        self,
-        client: SimpleLLMClient,
-        proposals: list[dict[str, object]],
-        artifacts: SimpleArtifactRepository,
-    ) -> list[int]:
-        """Return the indices to keep once proposals for the same defect merge.
-
-        Batches overlap at their edges - a helper in one module is called from
-        another - so the same defect can be proposed twice.  Whether two are
-        the same is a judgement, made by the model as the design has it; when
-        that call fails every proposal is kept, since a duplicate costs one
-        more verification and a dropped proposal costs the defect.
-        """
-
-        exact: dict[bytes, int] = {}
-        kept: list[int] = []
-        for index, value in enumerate(proposals):
-            key = canonical_bytes(
-                {
-                    "title": value.get("title"),
-                    "locations": sorted(map(str, value.get("code_locations") or [])),  # type: ignore[call-overload]
-                }
-            )
-            if key in exact:
-                continue
-            exact[key] = index
-            kept.append(index)
-        if len(kept) < 2:
-            return kept
-        listing = [
-            {
-                "index": index,
-                "title": proposals[index].get("title"),
-                "vulnerability_type": proposals[index].get("vulnerability_type"),
-                "code_locations": proposals[index].get("code_locations"),
-                "source": proposals[index].get("source"),
-                "sink": proposals[index].get("sink"),
-            }
-            for index in kept
-        ]
-        schema: dict[str, object] = {
-            "type": "object",
-            "properties": {
-                "duplicate_groups": {
-                    "type": "array",
-                    "items": {"type": "array", "items": {"type": "integer"}},
-                }
-            },
-            "required": ["duplicate_groups"],
-            "additionalProperties": False,
-        }
-        prompt = (
-            b"You are the Hypothesis Agent reviewing proposals for duplicates. "
-            b"Group only proposals that describe the same defect: the same "
-            b"source reaching the same sink through the same flow. A different "
-            b"endpoint, sink or precondition is a different hypothesis. When "
-            b"unsure, do not group. Return groups of `index` values; leave out "
-            b"every proposal that has no duplicate.\n<UNTRUSTED_EXACT_INPUTS>\n"
-            + canonical_bytes(listing)
-            + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
-        )
-        answer = await client.call(
-            prompt=prompt, output_schema=schema, timeout_ms=self._call_timeout_ms
-        )
-        groups: list[list[int]] = []
-        if isinstance(answer, SimpleLLMCallResult):
-            raw = answer.value.get("duplicate_groups")
-            if isinstance(raw, list):
-                allowed = set(kept)
-                for group in raw:
-                    if isinstance(group, list):
-                        members = sorted(
-                            {m for m in group if isinstance(m, int) and m in allowed}
-                        )
-                        if len(members) > 1:
-                            groups.append(members)
-        dropped = {member for group in groups for member in group[1:]}
-        artifacts.put_json(
-            {
-                "kind": "simple_hypothesis_duplicate_review",
-                "reviewed": kept,
-                "groups": groups,
-                "review_failed": not isinstance(answer, SimpleLLMCallResult),
-            }
-        )
-        return [index for index in kept if index not in dropped]
-
     async def propose(
         self,
         identity: CheckpointIdentity,
@@ -926,37 +859,10 @@ class DirectHypothesisBootstrap:
         artifacts = SimpleArtifactRepository(self._data_dir, identity)
         # Proposing the hypotheses is the reasoning the whole run is built on.
         client = self._client_factory(identity, artifacts, deep=True)
-        schema = {
+        schema: dict[str, object] = {
             "type": "object",
             "properties": {
-                "hypotheses": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "title": {"type": "string"},
-                            "vulnerability_type": {"type": "string"},
-                            "summary": {"type": "string"},
-                            "code_locations": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                            },
-                            "source": {"type": "string"},
-                            "sink": {"type": "string"},
-                            "rationale": {"type": "string"},
-                        },
-                        "required": [
-                            "title",
-                            "vulnerability_type",
-                            "summary",
-                            "code_locations",
-                            "source",
-                            "sink",
-                            "rationale",
-                        ],
-                        "additionalProperties": False,
-                    },
-                },
+                "hypotheses": {"type": "array", "items": PROPOSAL_ITEM_SCHEMA},
                 "requested_paths": {"type": "array", "items": {"type": "string"}},
                 "requested_ast_paths": {
                     "type": "array",
@@ -980,79 +886,74 @@ class DirectHypothesisBootstrap:
         # the target defect was in.
         feeding = plan_feeding(static.workspace_path, sources)
         feeding_ref = artifacts.put_json(feeding.coverage())
+        lines = _line_counts(static.workspace_path, sources)
         instructions = (
             b"You are the Hypothesis Agent. You are reading one batch of this "
             b"repository's source in full; every file of the checkout is read in "
             b"exactly one batch, and the repository map names every definition "
-            b"in the others. Return every concrete web-security hypothesis this "
-            b"code supports, with exact code locations - as many as the code "
-            b"gives and none when it gives none. Static tool hits are facts, not "
-            b"verdicts, and a defect a tool is silent about is the one worth "
-            b"finding: a guard that is present but subtly wrong produces no "
-            b"finding at all. Do not invent missing code. When a flow leaves "
-            b"this batch, name in `requested_paths` the files you need to follow "
-            b"it (or in `requested_ast_paths` those you only need the shape of) "
-            b"and you will be asked again with them; leave both empty when you "
-            b"have what you need.\n"
+            b"in the others. Each line of code is shown after its real line "
+            b"number and a `|`. Return every concrete web-security hypothesis "
+            b"this code supports - as many as the code gives and none when it "
+            b"gives none. Static tool hits are facts, not verdicts, and a defect "
+            b"a tool is silent about is the one worth finding: a guard that is "
+            b"present but subtly wrong produces no finding at all. Do not invent "
+            b"missing code. When a flow leaves this batch, name in "
+            b"`requested_paths` the files you need to follow it (or in "
+            b"`requested_ast_paths` those you only need the shape of) and you "
+            b"will be asked again with them; leave both empty when you have what "
+            b"you need. " + PROPOSAL_INSTRUCTIONS.encode() + b"\n"
         )
+        registry = Registry(bundle_hash=str(static.static_bundle_ref.content_hash))
+        provenance: dict[
+            str, tuple[int, SimpleLLMCallResult, list[dict[str, object]]]
+        ] = {}
 
-        async def read_batch(
-            batch: Batch,
-        ) -> tuple[Batch, SimpleLLMCallResult, list[dict[str, object]], list[object]]:
+        async def read_batch(batch: Batch) -> None:
+            context = self._batch_context(bundle, feeding, batch)
             result, history = await self._read_then_propose(
-                client,
-                instructions,
-                self._batch_context(bundle, feeding, batch),
-                schema,
-                static,
-                artifacts,
+                client, instructions, context, schema, static, artifacts
             )
+            reading = _reading_record(history)
             proposed = result.value.get("hypotheses", [])
-            if not isinstance(proposed, list):
-                raise RuntimeError("HYPOTHESIS_OUTPUT_INVALID")
-            return batch, result, _reading_record(history), list(proposed)
+            proposed = list(proposed) if isinstance(proposed, list) else []
+            valid, rejected = self._validate_all(proposed, lines, batch.number)
+            if rejected:
+                # The design allows a bounded repair before INVALID_OUTPUT.
+                repaired = await self._repair(
+                    client, instructions, context, schema, rejected
+                )
+                again, still = self._validate_all(repaired, lines, batch.number)
+                valid.extend(again)
+                for proposal_id, errors in still:
+                    registry.record_invalid(proposal_id, batch.number, errors)
+            for proposal_id, proposal in valid:
+                entry = await registry.consider(
+                    proposal,
+                    proposal_id=proposal_id,
+                    batch=batch.number,
+                    client=client,
+                    timeout_ms=self._call_timeout_ms,
+                )
+                if entry is not None:
+                    provenance[entry.hypothesis_id] = (batch.number, result, reading)
 
-        outcomes = await asyncio.gather(*(read_batch(b) for b in feeding.batches))
-        gathered: list[
-            tuple[
-                dict[str, object], Batch, SimpleLLMCallResult, list[dict[str, object]]
-            ]
-        ] = [
-            (value, batch, result, reading)
-            for batch, result, reading, proposed in outcomes
-            for value in proposed
-            if isinstance(value, dict)
-        ]
-        kept = await self._deduplicate(
-            client, [value for value, *_ in gathered], artifacts
-        )
+        await asyncio.gather(*(read_batch(batch) for batch in feeding.batches))
+        states_ref = artifacts.put_json(registry.record())
         seeds: list[HypothesisSeed] = []
-        seen: set[str] = set()
-        for index in kept:
-            value, batch, result, reading = gathered[index]
-            canonical = canonical_bytes(value)
-            hypothesis_id = (
-                "hypothesis-"
-                + hashlib.sha256(
-                    static.static_bundle_ref.content_hash.encode()
-                    + index.to_bytes(4, "big")
-                    + canonical
-                ).hexdigest()[:32]
-            )
-            if hypothesis_id in seen:
-                continue
-            seen.add(hypothesis_id)
+        for entry in registry.registered:
+            batch_number, result, reading = provenance[entry.hypothesis_id]
             proposal_ref = artifacts.put_json(
                 {
                     "kind": "simple_hypothesis_proposal",
                     "analysis_id": identity.analysis_id,
-                    "hypothesis_id": hypothesis_id,
+                    "hypothesis_id": entry.hypothesis_id,
                     "static_bundle_ref": static.static_bundle_ref.model_dump(
                         mode="json"
                     ),
-                    "proposal": value,
-                    "batch": batch.number,
+                    "proposal": entry.proposal,
+                    "batch": batch_number,
                     "feeding_ref": feeding_ref.model_dump(mode="json"),
+                    "process_states_ref": states_ref.model_dump(mode="json"),
                     "reading": reading,
                     "prompt_digest": result.prompt_digest,
                     "output_digest": result.output_digest,
@@ -1060,11 +961,68 @@ class DirectHypothesisBootstrap:
             )
             seeds.append(
                 HypothesisSeed(
-                    hypothesis_id=hypothesis_id,
+                    hypothesis_id=entry.hypothesis_id,
                     proposal_ref=proposal_ref,
                 )
             )
         return tuple(seeds)
+
+    @staticmethod
+    def _validate_all(
+        proposed: Sequence[object], lines: dict[str, int], batch: int
+    ) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, list[str]]]]:
+        valid: list[tuple[str, dict[str, Any]]] = []
+        rejected: list[tuple[str, list[str]]] = []
+        for index, value in enumerate(proposed, start=1):
+            proposal_id = (
+                f"B{batch}-P{index}-"
+                + hashlib.sha256(
+                    canonical_bytes(
+                        value if isinstance(value, (dict, list)) else str(value)
+                    )
+                ).hexdigest()[:8]
+            )
+            normalized, errors = validate_proposal(value, lines=lines)
+            if normalized is None:
+                rejected.append((proposal_id, errors))
+                _REJECTED_BODIES[proposal_id] = value
+            else:
+                valid.append((proposal_id, normalized))
+        return valid, rejected
+
+    async def _repair(
+        self,
+        client: SimpleLLMClient,
+        instructions: bytes,
+        context: bytes,
+        schema: dict[str, object],
+        rejected: list[tuple[str, list[str]]],
+    ) -> list[object]:
+        """Ask once more for the rejected proposals, told what was wrong."""
+
+        listing = [
+            {"proposal": _REJECTED_BODIES.pop(pid, None), "errors": errors}
+            for pid, errors in rejected
+        ]
+        answer = await client.call(
+            prompt=(
+                instructions
+                + b"These proposals were rejected for the reasons given. Return "
+                b"each corrected in `hypotheses`, or leave it out if it cannot "
+                b"be corrected from the code; leave both request lists empty.\n"
+                b"<REJECTED>\n"
+                + canonical_bytes(listing)
+                + b"\n</REJECTED>\n<UNTRUSTED_EXACT_INPUTS>\n"
+                + context
+                + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
+            ),
+            output_schema=schema,
+            timeout_ms=self._call_timeout_ms,
+        )
+        if not isinstance(answer, SimpleLLMCallResult):
+            return []
+        repaired = answer.value.get("hypotheses", [])
+        return list(repaired) if isinstance(repaired, list) else []
 
 
 class SimpleClientFactory(Protocol):

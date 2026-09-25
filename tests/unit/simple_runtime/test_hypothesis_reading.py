@@ -36,10 +36,36 @@ def repository(tmp_path: Path) -> Path:
     workspace = tmp_path / "repo"
     (workspace / "app").mkdir(parents=True)
     (workspace / "app" / "proxy.py").write_text(
-        "def guard(path):\n    for _ in range(8):\n        path = unquote(path)\n",
+        "def guard(path):\n    for _ in range(8):\n        path = unquote(path)\n"
+        + "".join(f"value_{index} = {index}\n" for index in range(40)),
         encoding="utf-8",
     )
     return workspace
+
+
+def _proposal(line: int, statement: str = "decode cap bypass") -> dict[str, object]:
+    """A proposal in the design's form, at one real line of app/proxy.py."""
+
+    return {
+        "statement": statement,
+        "vulnerability_type_candidates": ["PATH_TRAVERSAL"],
+        "target_locations": [
+            {"file_path": "app/proxy.py", "start_line": line, "end_line": line}
+        ],
+        "suspected_path": [
+            {
+                "file_path": "app/proxy.py",
+                "start_line": line,
+                "end_line": line,
+                "role": "sink",
+            }
+        ],
+        "observed_facts": ["the loop stops at eight and proceeds"],
+        "restrictions": [],
+        "assumptions": ["the upstream decodes once more"],
+        "falsification_questions": ["Does a nine-times-encoded path reach it?"],
+        "validation_checks": ["Send a path encoded nine times."],
+    }
 
 
 class _ReadingAgent:
@@ -55,21 +81,7 @@ class _ReadingAgent:
         has_read = b"simple_exploration_history" in text
         return SimpleLLMCallResult(
             value={
-                "hypotheses": (
-                    [
-                        {
-                            "title": "decode cap bypass",
-                            "vulnerability_type": "PATH_TRAVERSAL",
-                            "summary": "the loop stops at eight and proceeds",
-                            "code_locations": ["app/proxy.py:2"],
-                            "source": "path",
-                            "sink": "upstream",
-                            "rationale": "read the file",
-                        }
-                    ]
-                    if has_read
-                    else []
-                ),
+                "hypotheses": [_proposal(2)] if has_read else [],
                 "requested_paths": [] if has_read else ["app/proxy.py"],
                 "requested_ast_paths": [],
             },
@@ -261,25 +273,22 @@ class _Prolific(_ReadingAgent):
         prompt = kwargs.get("prompt")
         text = prompt if isinstance(prompt, bytes) else b""
         self.prompts.append(text)
-        if b"reviewing proposals for duplicates" in text:
+        if b"reviewing one new proposal" in text:
+            import re as _re
+
+            target = _re.search(rb"hypothesis-[0-9a-f]{32}", text)
             return SimpleLLMCallResult(
-                value={"duplicate_groups": [[0, 20]]},
+                value={
+                    "decision": "DUPLICATE",
+                    "duplicate_of": target.group(0).decode() if target else None,
+                    "rationale": "same loop",
+                },
                 prompt_digest="a" * 64,
                 output_digest="b" * 64,
             )
-        hypotheses = [
-            {
-                "title": f"defect {index}",
-                "vulnerability_type": "PATH_TRAVERSAL",
-                "summary": "s",
-                "code_locations": [f"app/proxy.py:{index + 1}"],
-                "source": "path",
-                "sink": "upstream",
-                "rationale": "r",
-            }
-            for index in range(20)
-        ]
-        hypotheses.append({**hypotheses[0], "title": "defect 0, seen again"})
+        hypotheses = [_proposal(index + 2, f"defect {index}") for index in range(20)]
+        # The same defect again, from another batch's point of view.
+        hypotheses.append(_proposal(2, "defect 0, seen again"))
         return SimpleLLMCallResult(
             value={
                 "hypotheses": hypotheses,
@@ -311,7 +320,7 @@ async def test_a_duplicate_review_that_fails_keeps_every_proposal(
     class _BrokenReview(_Prolific):
         async def call(self, **kwargs: object) -> SimpleLLMCallResult:
             prompt = kwargs.get("prompt")
-            if isinstance(prompt, bytes) and b"reviewing proposals" in prompt:
+            if isinstance(prompt, bytes) and b"reviewing one new proposal" in prompt:
                 from sastsimi.simple_runtime.models import StageFailure
 
                 self.prompts.append(prompt)

@@ -8,8 +8,9 @@ makes and fails the same way.
 
 So nothing is chosen here.  Every source file goes into exactly one batch,
 grouped by directory so that a module is read together, and each batch is
-read in full.  Python is re-emitted from its syntax tree without comments or
-docstrings - measured at 77% of the original with the logic intact - and a
+read in full.  Blank lines, comment-only lines and Python docstrings are
+dropped and every other line keeps its real number, so a hypothesis names a
+location that exists in the checkout; a
 file that is generated output rather than code someone wrote is left out and
 named as left out, never silently.
 """
@@ -76,39 +77,53 @@ class Feeding:
         }
 
 
-class _StripDocstrings(ast.NodeTransformer):
-    def _strip(self, node: ast.AST) -> ast.AST:
-        self.generic_visit(node)
-        body = getattr(node, "body", None)
+def _docstring_lines(tree: ast.AST) -> set[int]:
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            continue
+        body = node.body
         if (
-            isinstance(body, list)
-            and body
+            body
             and isinstance(body[0], ast.Expr)
             and isinstance(body[0].value, ast.Constant)
             and isinstance(body[0].value.value, str)
+            and body[0].end_lineno is not None
         ):
-            node.body = body[1:] or [ast.Pass()]  # type: ignore[attr-defined]
-        return node
-
-    visit_Module = _strip  # noqa: N815
-    visit_ClassDef = _strip  # noqa: N815
-    visit_FunctionDef = _strip  # noqa: N815
-    visit_AsyncFunctionDef = _strip  # noqa: N815
+            lines.update(range(body[0].lineno, body[0].end_lineno + 1))
+    return lines
 
 
 def _render(path: str, text: str) -> str:
-    """Return the code as the agent reads it: logic kept, commentary dropped."""
+    """Return the code as the agent reads it, each line under its real number.
 
-    if not path.endswith((".py", ".pyi")):
-        return text
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            tree = ast.parse(text, filename=path)
-        return ast.unparse(_StripDocstrings().visit(tree))
-    except (SyntaxError, ValueError, RecursionError):
-        # Unparseable Python is still code; read it as written.
-        return text
+    A hypothesis must name a real location, and re-emitting Python from its
+    syntax tree renumbers every line, so the lines are kept where they are and
+    numbered: blank lines, comment-only lines and docstrings are dropped, and
+    everything else keeps the number it has in the checkout.
+    """
+
+    source = text.splitlines()
+    dropped: set[int] = set()
+    if path.endswith((".py", ".pyi")):
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                dropped = _docstring_lines(ast.parse(text, filename=path))
+        except (SyntaxError, ValueError, RecursionError):
+            dropped = set()
+        comment = "#"
+    else:
+        comment = "//"
+    kept: list[str] = []
+    for number, line in enumerate(source, start=1):
+        stripped = line.strip()
+        if not stripped or number in dropped or stripped.startswith(comment):
+            continue
+        kept.append(f"{number}|{line.rstrip()}")
+    return "\n".join(kept)
 
 
 def _generated_reason(raw: bytes) -> str | None:
