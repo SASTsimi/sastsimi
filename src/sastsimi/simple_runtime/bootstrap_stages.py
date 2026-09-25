@@ -22,8 +22,10 @@ from .application import (
     StaticBootstrapResult,
 )
 from .artifacts import SimpleArtifactRepository
+from .exploration import MAX_ROUNDS, Exploration
 from .models import CheckpointIdentity, StageFailure
 from .provider import SimpleLLMCallResult, SimpleLLMClient
+from .retrieval import collect_requested_ast, collect_requested_sources
 
 _MAX_TRACKED_FILES = 200_000
 _MAX_SOURCE_BYTES = 2 * 1024 * 1024
@@ -41,6 +43,16 @@ _MAX_LITERAL_CHARS = 60
 # does, and the point of asking an agent is that it decides.  Everything else
 # about a file - its facts, its text - is served when it is requested.
 _SOURCE_SUFFIXES = (".py", ".pyi", ".js", ".jsx", ".ts", ".tsx")
+
+
+def _count(value: object) -> int:
+    return len(value) if isinstance(value, list) else 0
+
+
+def _string_list(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, str) and item.strip())
 
 
 def _source_listing(tracked: Sequence[str]) -> list[str]:
@@ -610,6 +622,94 @@ class DirectHypothesisBootstrap:
         self._client_factory = client_factory
         self._max_hypotheses = max_hypotheses
         self._call_timeout_ms = call_timeout_ms
+        self._facts_cache: dict[str, Sequence[object]] = {}
+
+    async def _read_then_propose(
+        self,
+        client: SimpleLLMClient,
+        instructions: bytes,
+        context: bytes,
+        schema: dict[str, object],
+        static: StaticBootstrapResult,
+        artifacts: SimpleArtifactRepository,
+    ) -> SimpleLLMCallResult:
+        """Ask, serve what was asked for, ask again.
+
+        Which files a run ever looks at is decided here, so this is the stage
+        that most needs to look before it decides.  A defect behind a guard
+        that is present but wrong produces no static finding, and an agent that
+        can only read static findings can never propose it.
+        """
+
+        history = Exploration()
+
+        async def ask() -> SimpleLLMCallResult:
+            body = context
+            if history.rounds:
+                body = body + b"\n" + canonical_bytes(history.as_prompt_document())
+            answer = await client.call(
+                prompt=(
+                    instructions
+                    + b"<UNTRUSTED_EXACT_INPUTS>\n"
+                    + body
+                    + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
+                ),
+                output_schema=schema,
+                timeout_ms=self._call_timeout_ms,
+            )
+            if isinstance(answer, StageFailure):
+                raise RuntimeError(answer.code)
+            assert isinstance(answer, SimpleLLMCallResult)
+            return answer
+
+        result = await ask()
+        for _ in range(MAX_ROUNDS - 1):
+            wanted = _string_list(result.value.get("requested_paths"))
+            wanted_ast = _string_list(result.value.get("requested_ast_paths"))
+            if not wanted and not wanted_ast:
+                break
+            sources = (
+                collect_requested_sources(wanted, workspace=static.workspace_path)
+                if wanted
+                else None
+            )
+            ast = (
+                collect_requested_ast(
+                    wanted_ast, facts=self._ast_facts(artifacts, static)
+                )
+                if wanted_ast
+                else None
+            )
+            history.record(
+                requested_paths=(*wanted, *wanted_ast),
+                sources=sources,
+                ast=ast,
+                notes={"proposed_so_far": _count(result.value.get("hypotheses"))},
+            )
+            history.compact()
+            result = await ask()
+        return result
+
+    def _ast_facts(
+        self, artifacts: SimpleArtifactRepository, static: StaticBootstrapResult
+    ) -> Sequence[object]:
+        """Read the parsed facts only once, and only if something asked."""
+
+        cached = self._facts_cache.get(str(static.static_bundle_ref.content_hash))
+        if cached is not None:
+            return cached
+        facts: Sequence[object] = ()
+        try:
+            bundle = json.loads(artifacts.read(static.static_bundle_ref))
+            for raw in bundle.get("tool_result_refs", ()):
+                document = json.loads(artifacts.read(StoredDataRef.model_validate(raw)))
+                if document.get("kind") == "simple_python_ast":
+                    facts = document.get("facts") or ()
+                    break
+        except (OSError, ValueError, KeyError):
+            facts = ()
+        self._facts_cache[str(static.static_bundle_ref.content_hash)] = facts
+        return facts
 
     async def propose(
         self,
@@ -649,30 +749,36 @@ class DirectHypothesisBootstrap:
                         ],
                         "additionalProperties": False,
                     },
-                }
+                },
+                "requested_paths": {"type": "array", "items": {"type": "string"}},
+                "requested_ast_paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
             },
-            "required": ["hypotheses"],
+            "required": ["hypotheses", "requested_paths", "requested_ast_paths"],
             "additionalProperties": False,
         }
         context = artifacts.prompt_context((static.static_bundle_ref,))
-        prompt = (
-            b"You are the Hypothesis Agent. Use only the supplied static facts and "
-            b"code snippets. Return concrete web-security hypotheses with exact code "
-            b"locations. Static tool hits are facts, not vulnerability verdicts. "
-            b"Do not invent missing code. Return at most "
+        instructions = (
+            b"You are the Hypothesis Agent. Return concrete web-security "
+            b"hypotheses with exact code locations. Static tool hits are facts, "
+            b"not vulnerability verdicts, and a defect a tool is silent about is "
+            b"the one worth finding: a guard that is present but subtly wrong "
+            b"produces no finding at all. Do not invent missing code. "
+            b"`source_files` lists every source file in the checkout - the whole "
+            b"list, not a selection someone made for you. Name in "
+            b"`requested_paths` the files you want to read and in "
+            b"`requested_ast_paths` the ones you want the parsed definitions and "
+            b"calls for, and you will be asked again with them; reading is how a "
+            b"hypothesis stops being a guess. Leave both empty and return your "
+            b"hypotheses when you have read enough. Return at most "
             + str(self._max_hypotheses).encode()
-            + b" hypotheses.\n<UNTRUSTED_EXACT_INPUTS>\n"
-            + context
-            + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
+            + b" hypotheses.\n"
         )
-        result = await client.call(
-            prompt=prompt,
-            output_schema=schema,
-            timeout_ms=self._call_timeout_ms,
+        result = await self._read_then_propose(
+            client, instructions, context, schema, static, artifacts
         )
-        if isinstance(result, StageFailure):
-            raise RuntimeError(result.code)
-        assert isinstance(result, SimpleLLMCallResult)
         raw = result.value.get("hypotheses", [])
         if not isinstance(raw, list):
             raise RuntimeError("HYPOTHESIS_OUTPUT_INVALID")
