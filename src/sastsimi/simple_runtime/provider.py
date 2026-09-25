@@ -6,7 +6,7 @@ import json
 import os
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
-from time import monotonic
+from time import monotonic, time
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -29,6 +29,9 @@ from .models import StageFailure
 # prompts with a 429 that clears on its own, so a refused call is retried a few
 # times with a widening wait before the stage gives up.
 _RATE_LIMIT_BACKOFF_MS: tuple[int, ...] = (3_000, 12_000, 45_000)
+# The subscription window was measured at five hours, so a wait longer than
+# that is not a window reopening and is not worth holding the run for.
+_MAX_WINDOW_WAIT_SECONDS = 6 * 60 * 60
 
 
 class SimpleLLMCallResult(ContractModel):
@@ -189,6 +192,8 @@ class SimpleClaudeClient:
         queue: CallQueue | None = None,
         rate_limit_backoff_ms: tuple[int, ...] = _RATE_LIMIT_BACKOFF_MS,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        now: Callable[[], float] = time,
+        max_window_wait_seconds: float = _MAX_WINDOW_WAIT_SECONDS,
     ) -> None:
         self._runner = runner
         self._provider_profile_ref = provider_profile_ref
@@ -198,6 +203,8 @@ class SimpleClaudeClient:
         self._queue = queue if queue is not None else CallQueue(max_concurrent=1)
         self._rate_limit_backoff_ms = rate_limit_backoff_ms
         self._sleep = sleep
+        self._now = now
+        self._max_window_wait_seconds = max_window_wait_seconds
 
     async def _call_through_rate_limits(
         self, request: CodexProcessRequest
@@ -210,12 +217,39 @@ class SimpleClaudeClient:
         """
 
         result = await self._queue.submit(lambda: self._runner.execute(request))
-        for backoff_ms in self._rate_limit_backoff_ms:
-            if result.status != "RATE_LIMITED":
+        attempts = 0
+        while result.status == "RATE_LIMITED":
+            wait = self._wait_for(result, attempts)
+            if wait is None:
                 return result
-            await self._sleep(backoff_ms / 1000)
+            await self._sleep(wait)
+            attempts += 1
             result = await self._queue.submit(lambda: self._runner.execute(request))
         return result
+
+    def _wait_for(self, result: CodexProcessResult, attempts: int) -> float | None:
+        """Return how long to wait, or ``None`` when waiting is pointless.
+
+        A burst refusal clears in seconds, so a short ladder covers it.  A
+        subscription window does not: it was measured reopening up to five
+        hours later, and spending three short retries on that reports the stage
+        blocked for the rest of the night.  When the client says when the
+        window reopens, that is what is waited for.
+        """
+
+        reopens_at = result.retry_after_epoch
+        if reopens_at is not None:
+            remaining = reopens_at - self._now()
+            if remaining <= 0:
+                # Already past; treat it as a burst and retry at once.
+                return 0.0
+            if remaining > self._max_window_wait_seconds:
+                return None
+            # A moment past the stated time, so the first retry is not early.
+            return remaining + 5
+        if attempts >= len(self._rate_limit_backoff_ms):
+            return None
+        return self._rate_limit_backoff_ms[attempts] / 1000
 
     async def call(
         self,

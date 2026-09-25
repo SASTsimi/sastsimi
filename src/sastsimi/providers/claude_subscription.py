@@ -365,7 +365,12 @@ class ClaudeCliProcessRunner:
                         environment=environment,
                     )
                 try:
-                    status, final_message, session_id = _validated_event_stream(
+                    (
+                        status,
+                        final_message,
+                        session_id,
+                        reopens_at,
+                    ) = _validated_event_stream(
                         execution.stdout,
                         model=request.model,
                         client_version=self.binding.provider_profile.client_version,
@@ -382,7 +387,7 @@ class ClaudeCliProcessRunner:
                         return CodexProcessResult("FAILED", None, None)
                     raise
                 if status != "SUCCEEDED":
-                    return CodexProcessResult(status, None, None)
+                    return CodexProcessResult(status, None, None, reopens_at)
                 if execution.returncode != 0:
                     self._record_child_failure(
                         request.invocation_id, execution.returncode, execution.stderr
@@ -1320,15 +1325,38 @@ def _is_client_error_notice(
     )
 
 
+def _window_reopens_at(event: dict[str, JsonValue]) -> int | None:
+    """Return when the subscription window reopens, if this is that refusal.
+
+    A momentary burst refusal carries no window; a five-hour one does, and a
+    caller that cannot tell them apart spends three short retries on a wait
+    that is hours long and then reports the stage blocked.
+    """
+
+    info = event.get("rate_limit_info")
+    if not isinstance(info, dict) or info.get("status") != "rejected":
+        return None
+    resets_at = info.get("resetsAt")
+    if not isinstance(resets_at, int) or isinstance(resets_at, bool):
+        return None
+    return resets_at if resets_at > 0 else None
+
+
 def _validated_event_stream(
     event_stream: bytes, *, model: str, client_version: str
-) -> tuple[Literal["SUCCEEDED", "AUTH_REQUIRED", "RATE_LIMITED", "FAILED"], bytes, str]:
+) -> tuple[
+    Literal["SUCCEEDED", "AUTH_REQUIRED", "RATE_LIMITED", "FAILED"],
+    bytes,
+    str,
+    int | None,
+]:
     """Validate the exact official event lifecycle and extract the one answer.
 
     Every event is checked against an allowlist; an unknown event type, a second
     session, a forbidden tool or a truncated stream fails closed.
     """
     session_id: str | None = None
+    reopens_at: int | None = None
     state: Literal["INIT", "TURN", "DONE"] = "INIT"
     structured: bytes | None = None
     status: Literal["SUCCEEDED", "AUTH_REQUIRED", "RATE_LIMITED", "FAILED"] = "FAILED"
@@ -1359,6 +1387,7 @@ def _validated_event_stream(
             if event.get("subtype") not in _INFORMATIONAL_SYSTEM_SUBTYPES:
                 raise ProviderInvalidOutputError
         elif state == "TURN" and event_type == "rate_limit_event":
+            reopens_at = reopens_at or _window_reopens_at(event)
             continue
         elif state == "TURN" and event_type == "assistant":
             message = event.get("message")
@@ -1392,10 +1421,10 @@ def _validated_event_stream(
     if requested_tools - refused_tools:
         raise ProviderInvalidOutputError
     if status != "SUCCEEDED":
-        return status, b"", session_id
+        return status, b"", session_id, reopens_at
     if structured is None:
         raise ProviderInvalidOutputError
-    return status, structured, session_id
+    return status, structured, session_id, None
 
 
 def _result_outcome(

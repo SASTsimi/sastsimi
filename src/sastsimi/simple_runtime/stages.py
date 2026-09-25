@@ -858,6 +858,14 @@ Pro and Con evidence. Return an initial TRUE, FALSE, or HOLD assessment, but do
 not call it the final verdict. Define one concrete reproduction goal and the
 minimal environment requirements needed to obtain decisive evidence. Provider
 or tool errors are not vulnerability FALSE.
+
+A value only crosses the trust boundary if it arrives as an HTTP query, path,
+body, header or cookie, an uploaded file, a message, data already stored in the
+database, or a response from an external service - or is derived from one of
+those. Deployment configuration an operator sets, such as an environment
+variable or a settings file, is not attacker input on its own; if that is the
+source, say what authenticated request would let an attacker set it, and if you
+cannot, that is exactly the case for HOLD.
 """,
             schema=_object_schema(
                 {
@@ -948,6 +956,18 @@ current hypothesis, Pro/Con, code, and dynamic inputs. TRUE requires a same-
 attempt successful SUPPORTED execution and validated PoC. Execution/provider
 errors are never FALSE. Return concise rationale, exact supporting artifact
 content hashes, limitations, and unresolved conditions.
+
+A value only crosses the trust boundary if it arrives as an HTTP query, path,
+body, header or cookie, an uploaded file, a message, data already stored in the
+database, or a response from an external service - or is derived from one of
+those. Deployment configuration an operator sets, such as an environment
+variable or a settings file, is not attacker input on its own; if that is the
+source, say what authenticated request would let an attacker set it, and if you
+cannot, that is exactly the case for HOLD.
+
+TRUE also requires that attacker control of the source is established, not
+assumed. An unresolved condition that decides whether anyone but the operator
+can reach the flow is not a footnote to a TRUE; it is a HOLD.
 """,
             schema=_object_schema(
                 {
@@ -1159,9 +1179,17 @@ class RuleScopeGateStage:
             artifacts=artifacts,
             instructions="""
 You are the Rule Scope Gate Agent. Use only supplied exact official policy
-records. Separately assess eligibility, asset scope, impact, testing method,
-and report permission. ALLOW only when every axis passes. Missing or unverified
-policy is UNCERTAIN, never ALLOW. Do not alter the technical verdict.
+records and, when the checkout states one, `security_policy` from the static
+bundle - the project's own written statement of what it will and will not
+accept as a report. Separately assess eligibility, asset scope, impact, testing
+method, and report permission. ALLOW only when every axis passes. Missing or
+unverified policy is UNCERTAIN, never ALLOW. Do not alter the technical verdict.
+
+A policy that excludes a class of issue decides this gate, whatever the
+technical verdict says: open-webui's states that configuration options are not
+vulnerabilities, so a flow whose only source is deployment configuration is
+DENY there even when the code does exactly what the hypothesis claimed. Name
+the sentence you relied on in `checks`.
 """,
             schema=_object_schema(
                 {
@@ -1186,13 +1214,38 @@ policy is UNCERTAIN, never ALLOW. Do not alter the technical verdict.
             kind="simple_rule_scope_gate",
         )
 
+    def _repository_policy(
+        self,
+        prior: Mapping[SimpleStage, StageCheckpoint],
+        checkpoint: StageCheckpoint,
+    ) -> bool:
+        """Say whether the checkout states a reporting policy of its own."""
+
+        for ref in _unique_refs(checkpoint.input_refs + _prior_refs(prior)):
+            try:
+                document = json.loads(self._artifacts.read(ref))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(document, dict):
+                continue
+            policy = document.get("security_policy")
+            if isinstance(policy, dict) and policy.get("content"):
+                return True
+        return False
+
     async def __call__(
         self,
         checkpoint: StageCheckpoint,
         prior: Mapping[SimpleStage, StageCheckpoint],
     ) -> StageResult:
         policy_refs = self._artifacts.published_refs(self._POLICY_KINDS)
-        if not policy_refs:
+        # A published program policy is the authority when one exists.  Most
+        # projects never have one here and instead write what they will accept
+        # in the repository itself, which the static bundle carries; ignoring
+        # that left every run ending "no official policy, internal only" while
+        # the project had said plainly what it does not consider a report.
+        has_repository_policy = self._repository_policy(prior, checkpoint)
+        if not policy_refs and not has_repository_policy:
             output_ref = self._artifacts.put_json(
                 {
                     "kind": "simple_rule_scope_gate",

@@ -263,7 +263,16 @@ def _success_stream(**init_overrides: object) -> bytes:
 
 
 def _validate(stream: bytes) -> tuple[str, bytes, str]:
-    return _validated_event_stream(stream, model=_MODEL, client_version=_CLIENT_VERSION)
+    """The three things every caller here asserts on.
+
+    The stream also reports when a refused subscription window reopens; the one
+    test that cares about it calls the validator directly.
+    """
+
+    status, message, session, _reopens_at = _validated_event_stream(
+        stream, model=_MODEL, client_version=_CLIENT_VERSION
+    )
+    return status, message, session
 
 
 def test_command_is_pinned_isolated_and_prompt_is_stdin_only() -> None:
@@ -1128,7 +1137,12 @@ def test_a_rate_limited_run_is_reported_as_rate_limited_not_failed() -> None:
         {
             "type": "rate_limit_event",
             "session_id": "session-1",
-            "rate_limit_info": {"status": "rejected", "isUsingOverage": False},
+            "rate_limit_info": {
+                "status": "rejected",
+                "isUsingOverage": False,
+                "rateLimitType": "five_hour",
+                "resetsAt": 1790103000,
+            },
         },
         _RATE_LIMIT_NOTICE,
         {

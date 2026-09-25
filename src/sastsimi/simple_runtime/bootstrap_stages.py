@@ -49,6 +49,53 @@ def _count(value: object) -> int:
     return len(value) if isinstance(value, list) else 0
 
 
+# Where a project writes down what it will and will not accept as a report.
+# Ordered by how authoritative the location is when more than one exists.
+_POLICY_FILENAMES = (
+    "SECURITY.md",
+    ".github/SECURITY.md",
+    "docs/SECURITY.md",
+    "SECURITY.rst",
+    ".github/SECURITY.rst",
+    ".well-known/security.txt",
+)
+_MAX_POLICY_BYTES = 64_000
+
+
+def _security_policy(
+    workspace: Path, tracked: Sequence[str]
+) -> dict[str, object] | None:
+    """Return the repository's own reporting policy, if it states one.
+
+    Without it the scope gate has nothing to judge against and every run ends
+    "no official policy, internal review only" - while the project has often
+    said plainly what it does not consider a vulnerability.  Open-webui's says
+    configuration options are not vulnerabilities, which is exactly what one
+    run reported.
+    """
+
+    available = {value.lstrip("./") for value in tracked}
+    for name in _POLICY_FILENAMES:
+        if name not in available:
+            continue
+        path = workspace / name
+        try:
+            raw = path.read_bytes()[:_MAX_POLICY_BYTES]
+            text = raw.decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not text.strip():
+            continue
+        return {
+            "kind": "simple_repository_security_policy",
+            "path": name,
+            "byte_count": len(raw),
+            "truncated": path.stat().st_size > _MAX_POLICY_BYTES,
+            "content": text,
+        }
+    return None
+
+
 def _string_list(value: object) -> tuple[str, ...]:
     if not isinstance(value, list):
         return ()
@@ -208,6 +255,7 @@ class DirectStaticBootstrap:
                 # stay in their own artifact, which ``tool_result_refs`` names,
                 # and are served for the files an agent asks about.
                 "source_files": _source_listing(tracked),
+                "security_policy": _security_policy(workspace, tracked),
                 "ast_fact_count": len(ast_result["facts"]),  # type: ignore[arg-type]
                 "opengrep_findings": snippets,
                 "codeql_findings": codeql_findings,

@@ -69,6 +69,11 @@ class CodexProcessResult:
     status: InvocationStatus
     final_message: bytes | None
     provider_session_id: str | None
+    # When a subscription window rather than a momentary burst was what turned
+    # the call away, the client says when that window reopens.  Waiting a few
+    # seconds cannot outlast a five-hour window, so the caller needs to know
+    # the difference.  Seconds since the epoch, or ``None``.
+    retry_after_epoch: int | None = None
 
 
 @dataclass(frozen=True)

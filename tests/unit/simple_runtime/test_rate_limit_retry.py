@@ -136,3 +136,88 @@ async def test_a_failure_that_is_not_a_burst_refusal_is_not_retried() -> None:
     assert isinstance(result, StageFailure)
     assert runner.attempts == 1
     assert waits == []
+
+
+class _WindowRunner:
+    """Refuses with a window that reopens at a stated time, then succeeds."""
+
+    def __init__(self, reopens_at: int | None, refusals: int = 1) -> None:
+        self._reopens_at = reopens_at
+        self._refusals = refusals
+        self.attempts = 0
+
+    async def execute(self, request: CodexProcessRequest) -> CodexProcessResult:
+        self.attempts += 1
+        if self.attempts <= self._refusals:
+            return CodexProcessResult("RATE_LIMITED", None, None, self._reopens_at)
+        return CodexProcessResult("SUCCEEDED", _ANSWER, "session-1")
+
+
+def _windowed(runner: Any, waits: list[float], now: float) -> SimpleClaudeClient:
+    async def sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    return SimpleClaudeClient(
+        runner=runner,
+        provider_profile_ref=_ref(),
+        model="claude-sonnet-5",
+        queue=CallQueue(max_concurrent=2),
+        sleep=sleep,
+        now=lambda: now,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_window_is_waited_out_rather_than_retried_three_times() -> None:
+    """Three short retries cannot outlast a window measured at five hours."""
+
+    now = 1_000_000.0
+    runner = _WindowRunner(reopens_at=int(now) + 2 * 60 * 60)
+    waits: list[float] = []
+
+    result = await _call(_windowed(runner, waits, now))
+
+    assert not isinstance(result, StageFailure)
+    assert runner.attempts == 2
+    # Waited the stated remainder, not three seconds.
+    assert waits == [2 * 60 * 60 + 5]
+
+
+@pytest.mark.asyncio
+async def test_a_window_that_already_reopened_is_retried_at_once() -> None:
+    now = 1_000_000.0
+    runner = _WindowRunner(reopens_at=int(now) - 30)
+    waits: list[float] = []
+
+    result = await _call(_windowed(runner, waits, now))
+
+    assert not isinstance(result, StageFailure)
+    assert waits == [0.0]
+
+
+@pytest.mark.asyncio
+async def test_a_wait_longer_than_any_real_window_is_not_waited_for() -> None:
+    """Holding the run for a day would be worse than reporting it blocked."""
+
+    now = 1_000_000.0
+    runner = _WindowRunner(reopens_at=int(now) + 24 * 60 * 60, refusals=99)
+    waits: list[float] = []
+
+    result = await _call(_windowed(runner, waits, now))
+
+    assert isinstance(result, StageFailure)
+    assert result.code == "RATE_LIMITED"
+    assert waits == []
+    assert runner.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_a_burst_with_no_window_still_uses_the_short_ladder() -> None:
+    now = 1_000_000.0
+    runner = _WindowRunner(reopens_at=None, refusals=2)
+    waits: list[float] = []
+
+    result = await _call(_windowed(runner, waits, now))
+
+    assert not isinstance(result, StageFailure)
+    assert waits == [3.0, 12.0]
