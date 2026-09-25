@@ -53,7 +53,9 @@ _CANDIDATE_REPAIR_GUIDANCE: dict[str, str] = {
         " Remove secret-shaped identifiers such as cookie, session, token, "
         "password, secret, credential, auth, authorization or api_key from "
         "assignments and fixture names, even when the values are fake; use "
-        "neutral names such as fixture_value."
+        "neutral names such as fixture_value. What the check is for is the "
+        "name, not the idea: an authenticated request is still demonstrable "
+        "with a header whose value you assigned to a neutrally named variable."
     ),
     "POC_UNDECLARED_INPUT": (
         " Every shell variable you expand must be bound in the script itself - "
@@ -62,15 +64,25 @@ _CANDIDATE_REPAIR_GUIDANCE: dict[str, str] = {
     ),
     "POC_HOST_PATH_FORBIDDEN": (
         " Stay inside /workspace and /tmp. Never name a host location such as "
-        "/home, /root, /Users, /mnt/c or a Windows drive path."
+        "/home, /root, /Users, /mnt/c or a Windows drive path. To show a "
+        "traversal, plant your own marker first - write a known string to a "
+        "file under /tmp - and then reach it through the escaping path; "
+        "reading it back proves the escape without naming anything of the "
+        "host's."
     ),
     "POC_EXTERNAL_URL_FORBIDDEN": (
         " Any URL must address 127.0.0.1, localhost or 0.0.0.0; start the "
-        "server yourself inside the container rather than calling out."
+        "server yourself inside the container rather than calling out. A "
+        "request that was supposed to leave the host is proved by a listener "
+        "you started on a local port receiving it, not by reaching the "
+        "internet."
     ),
     "POC_PLACEHOLDER_FORBIDDEN": (
         " Do not print INCONCLUSIVE and exit 2 as a stand-in for work not done; "
-        "exit 2 is reserved for a real script or runtime error."
+        "exit 2 is reserved for a real script or runtime error. Use exit 1 and "
+        "say in the output which condition you could not establish - a "
+        "reproduction that honestly did not fire is a result, and a placeholder "
+        "is not."
     ),
     "POC_SHEBANG_REQUIRED": " Begin the script with a /bin/sh shebang line.",
     "POC_CONTENT_ENCODING_INVALID": (

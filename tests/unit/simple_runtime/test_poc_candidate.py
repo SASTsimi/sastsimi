@@ -193,3 +193,23 @@ async def test_repair_gives_up_after_the_configured_attempts(tmp_path: Path) -> 
 
     assert raised.value.failure.code == "POC_SENSITIVE_CONTENT"
     assert len(client.prompts) == 3  # the first call plus two repairs
+
+
+def test_every_repair_note_says_what_to_do_instead() -> None:
+    """A rule that only forbids leaves the agent with nowhere to go.
+
+    Four of five blocked candidates on open-webui were path-traversal or
+    file-write hypotheses whose natural demonstration the rule refused, and
+    three repair attempts never found the permitted shape because nothing named
+    it.
+    """
+
+    from sastsimi.simple_runtime.stages import _CANDIDATE_REPAIR_GUIDANCE
+
+    for code, guidance in _CANDIDATE_REPAIR_GUIDANCE.items():
+        assert guidance.strip(), code
+        # Something the agent can do, not only something it must not.
+        assert any(
+            word in guidance.lower()
+            for word in ("use ", "begin ", "emit ", "plant ", "start ", "assign ")
+        ), code
