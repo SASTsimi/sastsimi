@@ -28,6 +28,7 @@ from .models import (
 )
 from .runner import RunOutcome, SimpleRuntimeRunner
 from .store import SimpleCheckpointStore
+from .usage import labelled
 
 
 class SimpleAnalysisRequest(ContractModel):
@@ -216,7 +217,8 @@ class SimpleAnalysisApplication:
             attempt_id=uuid4().hex,
         )
         try:
-            seeds = await self._hypotheses.propose(identity, static)
+            with labelled("HYPOTHESIS"):
+                seeds = await self._hypotheses.propose(identity, static)
             if not seeds:
                 raise ValueError("HYPOTHESIS_OUTPUT_EMPTY")
         except Exception as error:

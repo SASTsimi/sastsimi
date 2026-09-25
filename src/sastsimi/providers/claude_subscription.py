@@ -218,8 +218,11 @@ class ClaudeCliProcessRunner:
         binding_validator: Callable[[ApprovedClaudeExecutionBinding], None]
         | None = None,
         diagnostics: Callable[[str, int, bytes], None] | None = None,
+        usage: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         self.binding = binding
+        # Every call's token counts, so a run's cost is measured, not guessed.
+        self._usage = usage
         self.executable = binding.executable
         self.claude_config_dir = binding.claude_config_dir
         self._binding_validator = binding_validator
@@ -238,6 +241,26 @@ class ClaudeCliProcessRunner:
         try:
             self._diagnostics(invocation_id, returncode, stderr[-_MAX_STDERR_BYTES:])
         except Exception:  # noqa: BLE001 - diagnostics must never fail a call
+            return
+
+    def _record_usage(
+        self, invocation_id: str, model: str, stream: bytes, turn: int | None = None
+    ) -> None:
+        if self._usage is None:
+            return
+        try:
+            entry = _result_usage(stream)
+            if entry is None:
+                return
+            self._usage(
+                {
+                    "invocation_id": invocation_id,
+                    "model": model,
+                    **({"turn": turn} if turn is not None else {}),
+                    **entry,
+                }
+            )
+        except Exception:  # noqa: BLE001 - accounting must never fail a call
             return
 
     def _verify_approval(self) -> None:
@@ -378,6 +401,9 @@ class ClaudeCliProcessRunner:
                         cwd=work_directory,
                         environment=environment,
                     )
+                self._record_usage(
+                    request.invocation_id, request.model, execution.stdout
+                )
                 try:
                     (
                         status,
@@ -612,6 +638,7 @@ class ClaudeConversation:
         self._process = process
         self._session_id: str | None = None
         self._dead: CodexProcessResult | None = unavailable
+        self._turns = 0
 
     async def send(self, prompt: bytes, *, timeout_ms: int) -> CodexProcessResult:
         if self._dead is not None:
@@ -649,6 +676,13 @@ class ClaudeConversation:
             return self._die(CodexProcessResult("TIMED_OUT", None, None))
         except (BrokenPipeError, ConnectionResetError, OSError):
             return self._die(CodexProcessResult("FAILED", None, None))
+        self._turns += 1
+        self._runner._record_usage(
+            self._request.invocation_id,
+            self._request.model,
+            bytes(segment),
+            turn=self._turns,
+        )
         try:
             status, final_message, session_id, reopens_at = _validated_event_stream(
                 bytes(segment),
@@ -668,6 +702,43 @@ class ClaudeConversation:
     def _die(self, result: CodexProcessResult) -> CodexProcessResult:
         self._dead = CodexProcessResult("FAILED", None, None)
         return result
+
+
+_USAGE_COUNTS = (
+    "input_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "output_tokens",
+)
+
+
+def _result_usage(stream: bytes) -> dict[str, object] | None:
+    """The counts the client reports on its result event; numbers only."""
+
+    for line in reversed(stream.splitlines()):
+        if b'"result"' not in line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "result":
+            continue
+        usage = event.get("usage")
+        usage = usage if isinstance(usage, dict) else {}
+        entry: dict[str, object] = {
+            key: usage[key] for key in _USAGE_COUNTS if isinstance(usage.get(key), int)
+        }
+        for key in ("total_cost_usd", "duration_ms", "duration_api_ms", "num_turns"):
+            value = event.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                entry[key] = value
+        entry["is_error"] = event.get("is_error") is True
+        subtype = event.get("subtype")
+        if isinstance(subtype, str):
+            entry["subtype"] = subtype[:64]
+        return entry
+    return None
 
 
 def _is_result_event(raw: bytes) -> bool:

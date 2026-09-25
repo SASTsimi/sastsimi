@@ -187,7 +187,7 @@ def _attach_findings(
             hits = [
                 hit
                 for hit in hits
-                if isinstance(hit.get("line"), int) and low <= hit["line"] <= high
+                if isinstance(line := hit.get("line"), int) and low <= line <= high
             ]
         if hits:
             item["tool_findings"] = hits

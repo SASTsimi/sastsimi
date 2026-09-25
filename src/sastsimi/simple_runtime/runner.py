@@ -18,6 +18,7 @@ from .models import (
     input_reference_hash,
 )
 from .store import SimpleCheckpointStore
+from .usage import labelled
 
 
 class SimpleStageHandler(Protocol):
@@ -140,7 +141,8 @@ class SimpleRuntimeRunner:
                     error_code=failure.code,
                 )
             try:
-                result = await handler(checkpoint, prior)
+                with labelled(stage.value, identity.hypothesis_id):
+                    result = await handler(checkpoint, prior)
             except StageBlocked as error:
                 self.store.mark_failure(
                     checkpoint,

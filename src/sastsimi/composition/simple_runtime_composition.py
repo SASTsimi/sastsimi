@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import os
 from collections.abc import Callable, Sequence
@@ -60,6 +61,7 @@ from sastsimi.simple_runtime.provider import (
 from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
 from sastsimi.simple_runtime.stages import build_stage_handlers
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
+from sastsimi.simple_runtime.usage import record_usage
 
 
 def _call_timeout_ms(profile: SimpleExecutionProfile) -> int:
@@ -195,6 +197,9 @@ class SimpleClientFactory:
             runner=ClaudeCliProcessRunner(
                 binding=binding.binding,
                 diagnostics=_child_failure_sink(self._profile.data_dir),
+                usage=functools.partial(
+                    record_usage, self._profile.data_dir, str(scope.analysis_id)
+                ),
             ),
             provider_profile_ref=provider_ref,
             model=model,
