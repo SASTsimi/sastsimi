@@ -1093,3 +1093,78 @@ def test_array_schema_hoists_definitions_for_root_references() -> None:
 
     assert adapted["$defs"] == {"item": {"type": "string"}}
     assert "$defs" not in adapted["properties"]["items"]
+
+
+_RATE_LIMIT_NOTICE: dict[str, object] = {
+    "type": "assistant",
+    "session_id": "session-1",
+    "parent_tool_use_id": None,
+    "error": "rate_limit",
+    "message": {
+        "model": "<synthetic>",
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    "API Error: Server is temporarily limiting requests "
+                    "(not your usage limit)"
+                ),
+            }
+        ],
+    },
+}
+
+
+def test_a_rate_limited_run_is_reported_as_rate_limited_not_failed() -> None:
+    """Measured against a real 429: the client builds its own notice message.
+
+    That notice names ``<synthetic>`` instead of the approved model.  Reading it
+    as a model reroute threw away the terminal event, so every rate-limited call
+    arrived as a bare ``FAILED`` with nothing left to explain it.
+    """
+
+    stream = _stream(
+        _init_event(),
+        {
+            "type": "rate_limit_event",
+            "session_id": "session-1",
+            "rate_limit_info": {"status": "rejected", "isUsingOverage": False},
+        },
+        _RATE_LIMIT_NOTICE,
+        {
+            "type": "result",
+            "subtype": "success",
+            "session_id": "session-1",
+            "is_error": True,
+            "api_error_status": 429,
+            "permission_denials": [],
+        },
+    )
+
+    status, message, session = _validate(stream)
+
+    assert status == "RATE_LIMITED"
+    assert message == b""
+    assert session == "session-1"
+
+
+def test_a_synthetic_notice_carrying_a_tool_request_still_fails_closed() -> None:
+    """The notice is accepted only because it carries nothing but its text."""
+
+    notice = json.loads(json.dumps(_RATE_LIMIT_NOTICE))
+    notice["message"]["content"] = [
+        {"type": "tool_use", "id": "toolu_1", "name": "Bash"}
+    ]
+
+    with pytest.raises(ProviderInvalidOutputError):
+        _validate(_stream_with(notice))
+
+
+def test_a_model_reroute_without_an_error_is_still_rejected() -> None:
+    """Only a notice the client itself marked as an error may name another model."""
+
+    notice = json.loads(json.dumps(_RATE_LIMIT_NOTICE))
+    del notice["error"]
+
+    with pytest.raises(ProviderInvalidOutputError):
+        _validate(_stream_with(notice))

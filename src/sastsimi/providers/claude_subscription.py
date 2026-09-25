@@ -74,6 +74,8 @@ _STRUCTURED_OUTPUT_TOOL = "StructuredOutput"
 
 _MAX_EVENT_STREAM_BYTES = 1_048_576
 _MAX_STDERR_BYTES = 65_536
+# The name the client gives a message it built itself rather than received.
+_CLIENT_SYNTHETIC_MODEL = "<synthetic>"
 _MAX_AUTH_STATUS_BYTES = 65_536
 _TREE_KILLER_TIMEOUT_SECONDS = 2.0
 _ARRAY_ENVELOPE_KEY = "items"
@@ -209,13 +211,28 @@ class ClaudeCliProcessRunner:
         binding: ApprovedClaudeExecutionBinding,
         binding_validator: Callable[[ApprovedClaudeExecutionBinding], None]
         | None = None,
+        diagnostics: Callable[[str, int, bytes], None] | None = None,
     ) -> None:
         self.binding = binding
         self.executable = binding.executable
         self.claude_config_dir = binding.claude_config_dir
         self._binding_validator = binding_validator
+        # A child that dies leaves the caller with a bare ``FAILED``.  The sink
+        # keeps the exit code and a bounded stderr tail where an operator can
+        # read them; it never reaches the normalized result.
+        self._diagnostics = diagnostics
         self._verify_approval()
         self.verify_executable()
+
+    def _record_child_failure(
+        self, invocation_id: str, returncode: int, stderr: bytes
+    ) -> None:
+        if self._diagnostics is None:
+            return
+        try:
+            self._diagnostics(invocation_id, returncode, stderr[-_MAX_STDERR_BYTES:])
+        except Exception:  # noqa: BLE001 - diagnostics must never fail a call
+            return
 
     def _verify_approval(self) -> None:
         _validate_execution_binding(self.binding)
@@ -357,11 +374,19 @@ class ClaudeCliProcessRunner:
                     # A child that died never produced an answer to judge, so this
                     # is a failed call rather than an unusable model output.
                     if execution.returncode != 0:
+                        self._record_child_failure(
+                            request.invocation_id,
+                            execution.returncode,
+                            execution.stderr,
+                        )
                         return CodexProcessResult("FAILED", None, None)
                     raise
                 if status != "SUCCEEDED":
                     return CodexProcessResult(status, None, None)
                 if execution.returncode != 0:
+                    self._record_child_failure(
+                        request.invocation_id, execution.returncode, execution.stderr
+                    )
                     return CodexProcessResult("FAILED", None, None)
                 return CodexProcessResult("SUCCEEDED", final_message, session_id)
         except asyncio.CancelledError:
@@ -370,7 +395,14 @@ class ClaudeCliProcessRunner:
             return CodexProcessResult("TIMED_OUT", None, None)
         except ProviderInvalidOutputError:
             return CodexProcessResult("INVALID_OUTPUT", None, None)
-        except (ProviderExecutableBindingError, ProviderInputMismatchError, OSError):
+        except (
+            ProviderExecutableBindingError,
+            ProviderInputMismatchError,
+            OSError,
+        ) as error:
+            self._record_child_failure(
+                request.invocation_id, -1, f"{type(error).__name__}: {error}".encode()
+            )
             return CodexProcessResult("FAILED", None, None)
 
     async def _run_child(
@@ -1264,6 +1296,30 @@ def _refused_tool_ids(message: dict[str, JsonValue]) -> tuple[str, ...]:
     return tuple(refused)
 
 
+def _is_client_error_notice(
+    event: dict[str, JsonValue], message: dict[str, JsonValue]
+) -> bool:
+    """Say whether this assistant event is the client's own failure notice.
+
+    Such a notice is built locally, so it names ``<synthetic>`` instead of the
+    approved model and carries only the error text.  It is accepted - and
+    ignored - so the terminal event can still be read; anything that also
+    carries a tool request or a non-text block is not a notice and fails closed
+    on the ordinary path.
+    """
+    error = event.get("error")
+    if not isinstance(error, str) or not error.strip():
+        return False
+    if message.get("model") != _CLIENT_SYNTHETIC_MODEL:
+        return False
+    content = message.get("content")
+    if not isinstance(content, list):
+        return False
+    return all(
+        isinstance(block, dict) and block.get("type") == "text" for block in content
+    )
+
+
 def _validated_event_stream(
     event_stream: bytes, *, model: str, client_version: str
 ) -> tuple[Literal["SUCCEEDED", "AUTH_REQUIRED", "RATE_LIMITED", "FAILED"], bytes, str]:
@@ -1310,6 +1366,12 @@ def _validated_event_stream(
                 raise ProviderInvalidOutputError
             if event.get("parent_tool_use_id") is not None:
                 raise ProviderInvalidOutputError
+            if _is_client_error_notice(event, message):
+                # The client reports its own transport failures - a 429, for
+                # one - as a locally built message rather than a model answer.
+                # Rejecting it as a model reroute loses the terminal event that
+                # names the real status, so it is observed and carries nothing.
+                continue
             requested_tools.update(_require_isolated_assistant(message, model=model))
         elif state == "TURN" and event_type == "user":
             if event.get("parent_tool_use_id") is not None:
@@ -1343,8 +1405,9 @@ def _result_outcome(
 ]:
     """Map the terminal event to a common status without copying its text.
 
-    The client exits ``0`` even when the run failed, so the exit code is never the
-    failure signal; ``is_error`` and the structured HTTP status are.
+    A rate-limited run was measured exiting ``1`` and an ordinary refusal
+    exiting ``0``, so the exit code says nothing about which failure happened;
+    ``is_error`` and the structured HTTP status are what name it.
     """
     api_status = event.get("api_error_status")
     if event.get("is_error") is not False:
