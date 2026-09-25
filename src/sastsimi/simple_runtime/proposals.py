@@ -78,7 +78,6 @@ PROPOSAL_ITEM_SCHEMA: dict[str, Any] = {
         "attacker_control": {"type": "array", "items": {"type": "string"}},
         "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
         "potential_impact": {"type": "string"},
-        "refines": {"type": "string"},
     },
 }
 
@@ -123,8 +122,6 @@ Each hypothesis object has these fields:
 - `falsification_questions`: questions whose answer would show it wrong.
 - `validation_checks`: the work that would confirm or reject it - which code
   to read, which input to try, what to compare or observe.
-- `refines`: only when this refines an earlier hypothesis, its number (`H3`);
-  omitted otherwise. The earlier one stays proposed.
 """
 
 
@@ -270,11 +267,6 @@ def validate_proposal(
             },
             "attacker_control": control,
             "confidence": confidence,
-            **(
-                {"refines": value["refines"]}
-                if isinstance(value.get("refines"), str)
-                else {}
-            ),
             "potential_impact": value.get("potential_impact")
             if isinstance(value.get("potential_impact"), str)
             else "",

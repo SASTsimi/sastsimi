@@ -120,12 +120,9 @@ safe. Propose the bypass you suspect and the input that would do it.
 
 ## Answers after the first
 
-Return only hypotheses that are new, or that refine an earlier one - a
-corrected location, path or evidence - with that one's number in `refines`.
-Every hypothesis already proposed stays as it was: a refinement is added
-beside it, and nothing you return removes or weakens one. Withdrawing a
-hypothesis is verification's decision, not yours; if later reading argues
-against one, leave it.
+Each later turn brings the code you asked for. Return only the hypotheses that
+code gives you that you have not returned before. What you returned earlier is
+already recorded and stays proposed; do not revisit or restate it.
 
 ## Completeness
 
@@ -220,10 +217,9 @@ You have not read the code yet.
 _HYPOTHESIS_ROUNDS = 8
 
 _FOLLOW_UP = (
-    b"Continue with these files. Return only hypotheses that are new or that "
-    b"refine an earlier one (with its number in `refines`); every earlier one "
-    b"stays proposed. Request more code until every entry point has been read "
-    b"and every flow followed.\n"
+    b"Continue with these files. Return only the hypotheses they give you that "
+    b"you have not returned before. Request more code until every entry point "
+    b"has been read and every flow followed.\n"
 )
 
 
@@ -336,12 +332,6 @@ def _reading_record(history: Exploration) -> list[dict[str, object]]:
             }
         )
     return rounds
-
-
-def _statement_of(item: object) -> str:
-    statement = item.get("statement") if isinstance(item, dict) else None
-    text = " ".join(str(statement).split()) if statement else "(no statement)"
-    return text[:240]
 
 
 # Where a project writes down what it will and will not accept as a report.
@@ -1003,16 +993,14 @@ class DirectHypothesisBootstrap:
                 + tail
             )
         )
-        # Each answer carries only new or refined hypotheses; they are kept
-        # here under the numbers the agent is shown.  Nothing proposed is ever
-        # removed: withdrawing a hypothesis is verification's call, not this
-        # stage's, so a refinement is added beside the one it refines.
-        kept: dict[str, object] = {}
+        # Each turn reads new code and adds what it finds; earlier answers are
+        # already in the conversation, and nothing proposed is removed -
+        # withdrawing a hypothesis is verification's call.
+        kept: list[object] = []
 
         def absorb(value: Mapping[str, object]) -> None:
             items = value.get("hypotheses")
-            for item in items if isinstance(items, list) else []:
-                kept[f"H{len(kept) + 1}"] = item
+            kept.extend(items if isinstance(items, list) else [])
 
         absorb(result.value)
         for _ in range(_HYPOTHESIS_ROUNDS - 1):
@@ -1040,21 +1028,16 @@ class DirectHypothesisBootstrap:
                 ast=ast,
                 notes={"proposed_so_far": len(kept)},
             )
-            listing = "\n".join(
-                f"- {number}: {_statement_of(item)}" for number, item in kept.items()
-            )
             result = _required(
                 await talk.ask(
                     b"<UNTRUSTED_EXACT_INPUTS>\n"
                     + render_round(history.as_prompt_document()).encode("utf-8")
-                    + b"\n\n## Your hypotheses so far\n\n"
-                    + (listing or "(none yet)").encode("utf-8")
                     + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
                     + _FOLLOW_UP
                 )
             )
             absorb(result.value)
-        return result, history, list(kept.values())
+        return result, history, kept
 
     def _ast_facts(
         self, artifacts: SimpleArtifactRepository, static: StaticBootstrapResult
