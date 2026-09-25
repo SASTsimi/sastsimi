@@ -224,6 +224,7 @@ class DashboardQuery:
             if checkpoint.identity.hypothesis_id is not None:
                 hypothesis_groups[checkpoint.identity.hypothesis_id].append(checkpoint)
         run = self._simple_run(analysis_id)
+        cursor_input, cursor_output, cursor_cost = self._cursor_usage(analysis_id)
         hypotheses = tuple(
             self._project_hypothesis(
                 analysis_id,
@@ -256,6 +257,11 @@ class DashboardQuery:
             stage_count=len(values),
             hypothesis_count=len(hypotheses),
             finding_count=len(reports),
+            llm_provider=(run.llm_provider if run else None),
+            on_demand_possible=(run.on_demand_possible if run else False),
+            cursor_input_tokens=cursor_input,
+            cursor_output_tokens=cursor_output,
+            cursor_cost_cents=cursor_cost,
             progress_percent=progress.percent,
             completed_units=progress.completed_units,
             known_units=progress.known_units,
@@ -324,6 +330,21 @@ class DashboardQuery:
             return SimpleAnalysisRun.model_validate_json(row[0])
         except ValueError:
             return None
+
+    def _cursor_usage(self, analysis_id: str) -> tuple[int, int, float | None]:
+        with self._connect() as connection:
+            if not self._table_exists(connection, "simple_llm_attempts"):
+                return 0, 0, None
+            row = connection.execute(
+                """
+                SELECT COALESCE(SUM(input_tokens), 0),
+                       COALESCE(SUM(output_tokens), 0), SUM(cost_cents)
+                FROM simple_llm_attempts WHERE analysis_id = ?
+                """,
+                (analysis_id,),
+            ).fetchone()
+        assert row is not None
+        return int(row[0]), int(row[1]), float(row[2]) if row[2] is not None else None
 
     def _resolve_analysis_id(self, value: str) -> str:
         """Resolve public A-NNN names without breaking older exact-ID data."""

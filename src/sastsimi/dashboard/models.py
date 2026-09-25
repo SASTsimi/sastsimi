@@ -19,6 +19,11 @@ class AnalysisSummaryView(ContractModel):
     stage_count: int
     hypothesis_count: int
     finding_count: int
+    llm_provider: str | None = None
+    on_demand_possible: bool = False
+    cursor_input_tokens: int = 0
+    cursor_output_tokens: int = 0
+    cursor_cost_cents: float | None = None
     progress_percent: int = 0
     completed_units: int = 0
     known_units: int = 0

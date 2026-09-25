@@ -67,7 +67,7 @@ class HypothesisBootstrap(Protocol):
         self,
         identity: CheckpointIdentity,
         static: StaticBootstrapResult,
-    ) -> tuple[HypothesisSeed, ...]: ...
+    ) -> tuple[HypothesisSeed, ...] | StageFailure: ...
 
 
 type RunnerFactory = Callable[
@@ -86,6 +86,8 @@ class SimpleAnalysisApplication:
         hypothesis_bootstrap: HypothesisBootstrap,
         runner_factory: RunnerFactory,
         id_factory: Callable[[], str] | None = None,
+        llm_provider: str | None = None,
+        on_demand_possible: bool = False,
     ) -> None:
         self._data_dir = data_dir
         self._store = store
@@ -94,6 +96,8 @@ class SimpleAnalysisApplication:
         self._runner_factory = runner_factory
         self._ids = id_factory or (lambda: uuid4().hex)
         self._display = AnalysisDisplayIdStore(store.database_path)
+        self._llm_provider = llm_provider
+        self._on_demand_possible = on_demand_possible
 
     async def analyze(
         self,
@@ -116,6 +120,8 @@ class SimpleAnalysisApplication:
             workspace_id=workspace_id,
             commit_id=request.commit.lower(),
             repository=request.repository,
+            llm_provider=self._llm_provider,
+            on_demand_possible=self._on_demand_possible,
         )
         self._store.save_analysis_run(run)
         if on_analysis_started is not None:
@@ -214,6 +220,18 @@ class SimpleAnalysisApplication:
         )
         try:
             seeds = await self._hypotheses.propose(identity, static)
+            if isinstance(seeds, StageFailure):
+                failed_status = (
+                    StageStatus.BLOCKED if seeds.retryable else StageStatus.FAILED
+                )
+                failed = self._store.mark_failure(checkpoint, seeds, failed_status)
+                return SimpleAnalysisOutcome(
+                    identity=identity,
+                    display_analysis_id=run.display_analysis_id,
+                    status="BLOCKED" if seeds.retryable else "FAILED",
+                    current_stage=failed.stage,
+                    error_code=failed.error_code,
+                )
             if not seeds:
                 raise ValueError("HYPOTHESIS_OUTPUT_EMPTY")
         except Exception as error:

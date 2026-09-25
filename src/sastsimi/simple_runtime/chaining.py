@@ -224,6 +224,7 @@ class SimpleChainingStage:
             prompt=prompt,
             output_schema=schema,
             timeout_ms=180_000,
+            agent_name="chaining",
         )
         if isinstance(called, StageFailure):
             error = StageBlocked if called.retryable else StageFailed

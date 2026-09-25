@@ -41,8 +41,9 @@ class _Client:
         prompt: bytes,
         output_schema: Mapping[str, Any],
         timeout_ms: int,
+        agent_name: str = "agent",
     ) -> SimpleLLMCallResult:
-        del prompt, output_schema, timeout_ms
+        del prompt, output_schema, timeout_ms, agent_name
         return SimpleLLMCallResult(
             value={
                 "children": [

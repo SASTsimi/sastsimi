@@ -545,7 +545,7 @@ class DirectHypothesisBootstrap:
         self,
         identity: CheckpointIdentity,
         static: StaticBootstrapResult,
-    ) -> tuple[HypothesisSeed, ...]:
+    ) -> tuple[HypothesisSeed, ...] | StageFailure:
         artifacts = SimpleArtifactRepository(self._data_dir, identity)
         client = self._client_factory(identity, artifacts)
         schema = {
@@ -598,9 +598,10 @@ class DirectHypothesisBootstrap:
             prompt=prompt,
             output_schema=schema,
             timeout_ms=180_000,
+            agent_name="hypothesis",
         )
         if isinstance(result, StageFailure):
-            raise RuntimeError(result.code)
+            return result
         assert isinstance(result, SimpleLLMCallResult)
         raw = result.value.get("hypotheses", [])
         if not isinstance(raw, list):

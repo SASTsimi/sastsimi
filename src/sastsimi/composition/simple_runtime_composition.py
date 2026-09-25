@@ -27,6 +27,7 @@ from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.runtime.system_support import SystemClock, UUIDIds
 from sastsimi.sandbox.docker_adapter import DockerAdapter
+from sastsimi.setup.service import SystemToolDiscovery
 from sastsimi.simple_runtime.application import (
     SimpleAnalysisApplication,
     SimpleAnalysisOutcome,
@@ -38,6 +39,13 @@ from sastsimi.simple_runtime.bootstrap_stages import (
     DirectHypothesisBootstrap,
     DirectStaticBootstrap,
 )
+from sastsimi.simple_runtime.cursor_provider import (
+    CursorCLIAuthenticationError,
+    CursorModelCatalog,
+    CursorProvider,
+    OfficialCursorCLITransport,
+    OfficialCursorTransport,
+)
 from sastsimi.simple_runtime.models import CheckpointIdentity, SimpleStage
 from sastsimi.simple_runtime.portable_docker import (
     DirectEnvironmentPreparer,
@@ -46,6 +54,7 @@ from sastsimi.simple_runtime.portable_docker import (
 )
 from sastsimi.simple_runtime.provider import (
     SimpleCodexClient,
+    SimpleLLMClient,
     SimpleOpenAIClient,
 )
 from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
@@ -58,20 +67,79 @@ def _codex_home() -> Path:
     return Path(configured).expanduser() if configured else Path.home() / ".codex"
 
 
+async def list_cursor_models() -> set[str]:
+    """Account-specific Cursor model IDs without exposing the credential."""
+    import tempfile
+
+    key = os.environ.get("CURSOR_API_KEY", "")
+    inspection = SystemToolDiscovery._inspect_cursor_agent()
+    if inspection.available and inspection.executable is not None:
+        client = OfficialCursorCLITransport(str(inspection.executable))
+        try:
+            return await client.list_models("")
+        except CursorCLIAuthenticationError:
+            if not key:
+                raise
+    if key and key == key.strip():
+        return await OfficialCursorTransport(tempfile.gettempdir()).list_models(key)
+    raise ValueError("CURSOR_CLI_NOT_INSTALLED")
+
+
 class SimpleClientFactory:
     def __init__(self, profile: SimpleExecutionProfile) -> None:
         self._profile = profile
+        self._semaphore = asyncio.Semaphore(profile.llm_max_concurrency)
+        self._cursor_models = CursorModelCatalog()
 
     def __call__(
         self,
         identity: CheckpointIdentity,
         artifacts: SimpleArtifactRepository,
-    ) -> SimpleCodexClient | SimpleOpenAIClient:
-        if self._profile.auth_mode == "API_KEY":
+    ) -> SimpleLLMClient:
+        if self._profile.provider == "cursor":
+            fallback: SimpleLLMClient | None = None
+            if self._profile.fallback_provider == "openai":
+                fallback = SimpleOpenAIClient(
+                    credential_ref="env:OPENAI_API_KEY",
+                    model=self._profile.fallback_model or "",
+                )
+            elif self._profile.fallback_provider == "codex":
+                fallback = self._codex(
+                    identity, artifacts, self._profile.fallback_model or ""
+                )
+            cli_login = self._profile.auth_mode == "SUBSCRIPTION_LOGIN"
+            transport = None
+            if cli_login:
+                inspection = SystemToolDiscovery._inspect_cursor_agent()
+                if not inspection.available or inspection.executable is None:
+                    raise ValueError("CURSOR_CLI_NOT_INSTALLED")
+                transport = OfficialCursorCLITransport(str(inspection.executable))
+            return CursorProvider(
+                artifacts=artifacts,
+                default_model=self._profile.model,
+                agent_models=self._profile.agent_models,
+                timeout_seconds=self._profile.llm_timeout_seconds,
+                max_retries=self._profile.llm_max_retries,
+                semaphore=self._semaphore,
+                allow_on_demand=self._profile.cursor_allow_on_demand,
+                fallback=fallback,
+                transport=transport,
+                use_cli_login=cli_login,
+                model_catalog=self._cursor_models,
+            )
+        if self._profile.provider == "openai":
             return SimpleOpenAIClient(
                 credential_ref=self._profile.credential_ref,
                 model=self._profile.model,
             )
+        return self._codex(identity, artifacts, self._profile.model)
+
+    def _codex(
+        self,
+        identity: CheckpointIdentity,
+        artifacts: SimpleArtifactRepository,
+        model: str,
+    ) -> SimpleCodexClient:
         try:
             tool = self._profile.tools["codex"]
         except KeyError:
@@ -82,7 +150,7 @@ class SimpleClientFactory:
             executable_sha256=tool.executable_sha256,
             codex_home=_codex_home(),
             client_version=tool.version,
-            model=self._profile.model,
+            model=model,
         )
         scope = PlannedRunScope(
             analysis_id=AnalysisId(identity.analysis_id),
@@ -103,7 +171,7 @@ class SimpleClientFactory:
         return SimpleCodexClient(
             runner=CodexCliProcessRunner(binding=binding.binding),
             provider_profile_ref=provider_ref,
-            model=self._profile.model,
+            model=model,
         )
 
 
@@ -142,6 +210,10 @@ def build_analysis_application(
 
     return SimpleAnalysisApplication(
         data_dir=data_dir,
+        llm_provider=profile.provider,
+        on_demand_possible=(
+            profile.provider == "cursor" and profile.cursor_allow_on_demand
+        ),
         store=store,
         static_bootstrap=DirectStaticBootstrap(profile=profile),
         hypothesis_bootstrap=DirectHypothesisBootstrap(
@@ -393,4 +465,5 @@ __all__ = [
     "SimpleClientFactory",
     "build_analysis_application",
     "build_public_simple_runtime",
+    "list_cursor_models",
 ]
