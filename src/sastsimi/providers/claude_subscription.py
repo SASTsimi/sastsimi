@@ -244,14 +244,29 @@ class ClaudeCliProcessRunner:
             return
 
     def _record_usage(
-        self, invocation_id: str, model: str, stream: bytes, turn: int | None = None
-    ) -> None:
-        if self._usage is None:
-            return
+        self,
+        invocation_id: str,
+        model: str,
+        stream: bytes,
+        turn: int | None = None,
+        cost_before: float = 0.0,
+    ) -> float:
+        """Record one call or turn; return the session's running cost.
+
+        Token counts are per turn, but the client reports a conversation's
+        cost as a running total, so a turn records only what it added.
+        """
+
         try:
             entry = _result_usage(stream)
             if entry is None:
-                return
+                return cost_before
+            running = entry.get("total_cost_usd")
+            if isinstance(running, (int, float)):
+                entry["total_cost_usd"] = max(0.0, float(running) - cost_before)
+                cost_before = float(running)
+            if self._usage is None:
+                return cost_before
             self._usage(
                 {
                     "invocation_id": invocation_id,
@@ -261,7 +276,8 @@ class ClaudeCliProcessRunner:
                 }
             )
         except Exception:  # noqa: BLE001 - accounting must never fail a call
-            return
+            pass
+        return cost_before
 
     def _verify_approval(self) -> None:
         _validate_execution_binding(self.binding)
@@ -639,6 +655,7 @@ class ClaudeConversation:
         self._session_id: str | None = None
         self._dead: CodexProcessResult | None = unavailable
         self._turns = 0
+        self._cost = 0.0
 
     async def send(self, prompt: bytes, *, timeout_ms: int) -> CodexProcessResult:
         if self._dead is not None:
@@ -677,11 +694,12 @@ class ClaudeConversation:
         except (BrokenPipeError, ConnectionResetError, OSError):
             return self._die(CodexProcessResult("FAILED", None, None))
         self._turns += 1
-        self._runner._record_usage(
+        self._cost = self._runner._record_usage(
             self._request.invocation_id,
             self._request.model,
             bytes(segment),
             turn=self._turns,
+            cost_before=self._cost,
         )
         try:
             status, final_message, session_id, reopens_at = _validated_event_stream(
