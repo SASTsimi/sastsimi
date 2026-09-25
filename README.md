@@ -51,6 +51,7 @@ sastsimi --help
 ```
 
 위 명령은 각각 PowerShell 한 줄입니다. 가상환경이 활성화된 터미널에서는 `sastsimi`를 바로 실행할 수 있습니다. 새 터미널에서는 `.\.venv\Scripts\Activate.ps1`을 다시 실행하세요.
+개발 환경에서 uv를 사용한다면 `uv sync --frozen`으로 잠긴 의존성을 설치할 수도 있습니다.
 
 ### 3. 최초 설정
 
