@@ -47,6 +47,7 @@ def test_the_index_names_every_file_and_counts_its_kinds() -> None:
             "path": "a/one.py",
             "facts": 3,
             "kinds": {"Call": 2, "FunctionDef": 1},
+            "notable_calls": ["open", "os.system"],
         },
         {"path": "b/two.py", "facts": 1, "kinds": {"ClassDef": 1}},
     ]
@@ -117,3 +118,50 @@ def test_facts_that_are_not_facts_are_ignored_rather_than_crashing() -> None:
 
     assert index["files"] == []
     assert index["total_facts"] == 4
+
+
+def test_the_index_names_the_calls_that_say_what_a_file_does() -> None:
+    """Counting facts says how much a file does, not what it does.
+
+    Measured on open-webui: ``unquote`` beside a path normaliser appears in two
+    of 223 files, and those two are the pair the advisory's fix touched.  Both
+    already had a sanitiser, so no static tool said anything about either.
+    """
+
+    index = _ast_index(
+        _result(
+            facts=_facts(
+                ("FunctionDef", "routers/proxy.py", 1, "_sanitize"),
+                ("Call", "routers/proxy.py", 5, "unquote"),
+                ("Call", "routers/proxy.py", 7, "posixpath.normpath"),
+                ("Call", "routers/proxy.py", 9, "cleaned.startswith"),
+                ("Call", "routers/proxy.py", 3, "range"),
+                ("Call", "models/plain.py", 2, "build_the_thing"),
+            )
+        )
+    )
+
+    by_path = {entry["path"]: entry for entry in index["files"]}  # type: ignore[index]
+    assert by_path["routers/proxy.py"]["notable_calls"] == [
+        "cleaned.startswith",
+        "posixpath.normpath",
+        "unquote",
+    ]
+    # A file whose calls say nothing carries no list at all rather than an
+    # empty one, so the index stays small on a large repository.
+    assert "notable_calls" not in by_path["models/plain.py"]
+
+
+def test_a_definition_is_never_mistaken_for_a_notable_call() -> None:
+    """A repository may define its own ``open`` or ``resolve``."""
+
+    index = _ast_index(
+        _result(
+            facts=_facts(
+                ("FunctionDef", "a/one.py", 1, "open"),
+                ("ClassDef", "a/one.py", 9, "resolve"),
+            )
+        )
+    )
+
+    assert "notable_calls" not in index["files"][0]  # type: ignore[operator]

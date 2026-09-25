@@ -672,7 +672,8 @@ You are the Pro Agent. Find only evidence that supports the exact vulnerability
 hypothesis. Trace source, propagation, sink, authorization and sanitizer facts.
 Cite supplied exact artifact content hashes. State missing code paths instead of
 inventing them. `ast_index` names every Python file in the checkout with how
-many definitions and calls each holds; it is a map, not the code. Read it to
+many definitions and calls each holds, and `notable_calls` names the decoding,
+path and sink calls each one makes; it is a map, not the code. Read it to
 decide which files matter, then put those repository-relative paths in
 `requested_paths`. They are fetched and handed to the next agent, so name the
 exact files that would settle a claim you could only state as a limitation.
@@ -691,7 +692,8 @@ false tool matches. Cite supplied exact artifact content hashes. Never weaken a
 claim merely because information is missing; record the gap in limitations and
 use `requested_paths` for the repository-relative files that would settle it.
 `ast_index` names every Python file with how many definitions and calls each
-holds, so use it to find the file a guard would live in rather than guessing.
+holds, and `notable_calls` names the decoding and path calls each one makes, so
+use it to find the file a guard would live in rather than guessing.
 They are fetched and handed to the next agent, so name the exact files rather
 than describing them.
 """,

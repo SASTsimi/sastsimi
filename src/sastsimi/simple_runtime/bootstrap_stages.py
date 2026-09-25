@@ -39,6 +39,76 @@ _MAX_FACTS = 2_000_000
 # by its busiest files; the count says how many were left out rather than hiding
 # them.
 _MAX_INDEXED_FILES = 1_500
+# Which callee names are worth naming in the index.  Counting facts says how
+# much a file does, not what it does, and the name is what tells an agent a
+# file is worth asking for: measured on open-webui, ``unquote`` together with a
+# path normaliser appears in two of two hundred and twenty three files, and
+# those two are the pair the advisory's fix touched.  Static tools said nothing
+# about either, because both already had a sanitiser and only its loop bound
+# was wrong.
+#
+# This is a hint, never a verdict, and the list is knowingly incomplete: a name
+# that is missing costs a hint, and the facts themselves stay retrievable.
+_NOTABLE_CALLS = frozenset(
+    {
+        # taking apart a name the caller supplied
+        "unquote",
+        "unquote_plus",
+        "urlparse",
+        "urlsplit",
+        "urljoin",
+        "normpath",
+        "realpath",
+        "abspath",
+        "relpath",
+        "expanduser",
+        "resolve",
+        "commonpath",
+        "commonprefix",
+        "samefile",
+        "basename",
+        "dirname",
+        # the checks meant to make that safe
+        "startswith",
+        "endswith",
+        "match",
+        "fullmatch",
+        "search",
+        # what a bypass reaches
+        "open",
+        "read_text",
+        "read_bytes",
+        "write_text",
+        "write_bytes",
+        "unlink",
+        "rmtree",
+        "copy",
+        "move",
+        "send_file",
+        "FileResponse",
+        "redirect",
+        "RedirectResponse",
+        "urlopen",
+        "request",
+        "eval",
+        "exec",
+        "system",
+        "popen",
+        "Popen",
+        "check_output",
+        "call",
+        "literal_eval",
+        "loads",
+        "load",
+        "execute",
+        "executescript",
+        "raw",
+    }
+)
+
+
+def _is_notable(name: str) -> bool:
+    return name.rsplit(".", 1)[-1] in _NOTABLE_CALLS
 
 
 def _ast_index(ast_result: dict[str, object]) -> dict[str, object]:
@@ -53,13 +123,18 @@ def _ast_index(ast_result: dict[str, object]) -> dict[str, object]:
     facts = ast_result.get("facts")
     facts = facts if isinstance(facts, list) else []
     per_file: dict[str, Counter[str]] = defaultdict(Counter)
+    notable: dict[str, set[str]] = defaultdict(set)
     for fact in facts:
         if not isinstance(fact, dict):
             continue
         path = fact.get("path")
         kind = fact.get("kind")
-        if isinstance(path, str) and isinstance(kind, str):
-            per_file[path][kind] += 1
+        if not isinstance(path, str) or not isinstance(kind, str):
+            continue
+        per_file[path][kind] += 1
+        name = fact.get("name")
+        if kind == "Call" and isinstance(name, str) and _is_notable(name):
+            notable[path].add(name)
     ordered = sorted(
         per_file.items(), key=lambda item: (-sum(item[1].values()), item[0])
     )
@@ -79,6 +154,11 @@ def _ast_index(ast_result: dict[str, object]) -> dict[str, object]:
                 "path": path,
                 "facts": sum(kinds.values()),
                 "kinds": dict(sorted(kinds.items())),
+                **(
+                    {"notable_calls": sorted(notable[path])}
+                    if notable.get(path)
+                    else {}
+                ),
             }
             for path, kinds in ordered[:_MAX_INDEXED_FILES]
         ],
