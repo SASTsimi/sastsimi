@@ -188,7 +188,9 @@ framework injects (authentication usually shows there), and each call its
 input reaches, in order, with line numbers and, where the callee is defined in
 this repository, where. The repository map names every definition.
 
-You have not read the code yet.
+You have not read the code yet. Your first answer only asks for code: leave
+`hypotheses` empty and fill `requested_paths`. Hypotheses come in later
+answers, from the code you have read.
 
 ## Reading
 
@@ -215,6 +217,12 @@ You have not read the code yet.
 # The agent is told to read until every entry point in its part is read, so
 # the other stages' four rounds would end it early; this only stops a runaway.
 _HYPOTHESIS_ROUNDS = 8
+
+_READ_FIRST = (
+    b"You have not read any code yet. Ask for the code of this part's handlers "
+    b"and the functions their input reaches in `requested_paths`, and leave "
+    b"`hypotheses` empty.\n"
+)
 
 _FOLLOW_UP = (
     b"Continue with these files. Return only the hypotheses they give you that "
@@ -975,6 +983,7 @@ class DirectHypothesisBootstrap:
         artifacts: SimpleArtifactRepository,
         findings: dict[str, list[dict[str, object]]] | None = None,
         tail: bytes = b"",
+        read_first: bool = False,
     ) -> tuple[SimpleLLMCallResult, Exploration, list[object]]:
         """Ask, serve what was asked for, ask again - in one conversation.
 
@@ -1002,7 +1011,16 @@ class DirectHypothesisBootstrap:
             items = value.get("hypotheses")
             kept.extend(items if isinstance(items, list) else [])
 
-        absorb(result.value)
+        if read_first:
+            # With the fact feed nothing has been read yet, so the first answer
+            # is a reading plan only; anything proposed from the flows alone
+            # would stand in for what reading the code would have found.
+            if not _string_list(result.value.get("requested_paths")) and not (
+                _string_list(result.value.get("requested_ast_paths"))
+            ):
+                result = _required(await talk.ask(_READ_FIRST))
+        else:
+            absorb(result.value)
         for _ in range(_HYPOTHESIS_ROUNDS - 1):
             wanted = _string_list(result.value.get("requested_paths"))
             wanted_ast = _string_list(result.value.get("requested_ast_paths"))
@@ -1202,6 +1220,7 @@ class DirectHypothesisBootstrap:
                     static,
                     artifacts,
                     findings if feeding.kind == "facts" else None,
+                    read_first=feeding.kind == "facts",
                 )
                 valid, rejected = self._validate_all(proposed, lines, batch.number)
                 if rejected:
@@ -1258,6 +1277,7 @@ class DirectHypothesisBootstrap:
                             artifacts,
                             findings,
                             tail=b"" if first else _NEXT_PART,
+                            read_first=True,
                         )
                         sent += (
                             (len(lead) if first else 0)
