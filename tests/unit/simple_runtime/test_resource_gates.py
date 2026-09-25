@@ -241,7 +241,6 @@ async def test_the_container_ceiling_is_shared_by_every_hypothesis() -> None:
 async def test_without_a_shared_gate_each_stage_keeps_its_own() -> None:
     """The fallback still bounds one stage, for a caller that builds only one."""
 
-
     from sastsimi.simple_runtime.stages import PoCExecutionStage
 
     stage = PoCExecutionStage(

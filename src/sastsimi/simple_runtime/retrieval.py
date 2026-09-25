@@ -14,6 +14,8 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .code_redaction import default_host_paths, redact_code
+
 _DRIVE_PREFIX = re.compile(r"^[A-Za-z]:(?:/|$)")
 
 # One agent naming a whole package must not crowd out the static evidence, so
@@ -114,13 +116,18 @@ def collect_requested_sources(
         except UnicodeDecodeError:
             refused.append(_refusal(as_written, "NOT_UTF8_TEXT"))
             continue
+        # Repository text reaches a model prompt from here, so a credential a
+        # project committed must be removed first, exactly as the static bundle
+        # is.  The categories say what was removed without repeating it.
+        content, removed = redact_code(text, host_paths=default_host_paths(root))
         total += len(raw)
         served.append(
             {
                 "path": relative,
                 "line_count": text.count("\n") + 1,
                 "byte_count": len(raw),
-                "content": text,
+                "content": content,
+                **({"redacted": list(removed)} if removed else {}),
             }
         )
 

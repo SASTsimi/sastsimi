@@ -306,3 +306,29 @@ async def test_an_agent_that_asks_for_nothing_is_called_once(
 
     # Two agents, one call each.
     assert client.calls == 2
+
+
+def test_served_code_is_quoted_as_committed_except_for_this_machine(
+    workspace: Path,
+) -> None:
+    """A public repository's committed secret is a finding, not something to hide.
+
+    Pattern redaction replaced 1,241 spans of open-webui - variables and
+    conditions, not secrets - so served source is left as committed and only
+    this machine's own location is replaced, by value.
+    """
+
+    (workspace / "settings.py").write_text(
+        'API_KEY = "sk-live-0123456789abcdefghij"\n'
+        "client_secret = GOOGLE_CLIENT_SECRET.value\n"
+        f"LOG_DIR = '{workspace.resolve()}/logs'\n",
+        encoding="utf-8",
+    )
+
+    record = collect_requested_sources(["settings.py"], workspace=workspace)
+
+    served = record["served"][0]
+    assert 'API_KEY = "sk-live-0123456789abcdefghij"' in served["content"]
+    assert "client_secret = GOOGLE_CLIENT_SECRET.value" in served["content"]
+    assert str(workspace.resolve()) not in served["content"]
+    assert served["redacted"] == ["HOST_ABSOLUTE_PATH"]

@@ -121,16 +121,21 @@ async def test_the_agent_may_read_before_it_proposes(
 
 
 @pytest.mark.asyncio
-async def test_the_file_list_is_offered_without_a_selection(
+async def test_the_code_is_read_without_anyone_choosing_it(
     tmp_path: Path, repository: Path
 ) -> None:
+    """The first prompt already carries the source; nothing had to be asked for.
+
+    An agent that chose files by name never opened the router whose sanitiser
+    held the target defect.
+    """
+
     _seeds, agent = await _propose(tmp_path, repository, _ReadingAgent())
 
     opening = agent.prompts[0]
-    assert b"source_files" in opening
-    assert b"app/proxy.py" in opening
+    assert b"for _ in range(8):" in opening
+    assert b"REPOSITORY MAP" in opening
     # No pre-digested map of what someone decided was interesting.
-    assert b"ast_index" not in opening
     assert b"notable_calls" not in opening
 
 
@@ -247,3 +252,74 @@ async def test_each_proposal_records_which_files_were_read(
             "refused": [],
         }
     ]
+
+
+class _Prolific(_ReadingAgent):
+    """Proposes many distinct hypotheses and two copies of one."""
+
+    async def call(self, **kwargs: object) -> SimpleLLMCallResult:
+        prompt = kwargs.get("prompt")
+        text = prompt if isinstance(prompt, bytes) else b""
+        self.prompts.append(text)
+        if b"reviewing proposals for duplicates" in text:
+            return SimpleLLMCallResult(
+                value={"duplicate_groups": [[0, 20]]},
+                prompt_digest="a" * 64,
+                output_digest="b" * 64,
+            )
+        hypotheses = [
+            {
+                "title": f"defect {index}",
+                "vulnerability_type": "PATH_TRAVERSAL",
+                "summary": "s",
+                "code_locations": [f"app/proxy.py:{index + 1}"],
+                "source": "path",
+                "sink": "upstream",
+                "rationale": "r",
+            }
+            for index in range(20)
+        ]
+        hypotheses.append({**hypotheses[0], "title": "defect 0, seen again"})
+        return SimpleLLMCallResult(
+            value={
+                "hypotheses": hypotheses,
+                "requested_paths": [],
+                "requested_ast_paths": [],
+            },
+            prompt_digest="a" * 64,
+            output_digest="b" * 64,
+        )
+
+
+@pytest.mark.asyncio
+async def test_as_many_hypotheses_as_the_code_gives_are_kept(
+    tmp_path: Path, repository: Path
+) -> None:
+    """Twenty distinct defects are twenty hypotheses; twelve was an old cap."""
+
+    seeds, _agent = await _propose(tmp_path, repository, _Prolific())
+
+    assert len(seeds) == 20
+
+
+@pytest.mark.asyncio
+async def test_a_duplicate_review_that_fails_keeps_every_proposal(
+    tmp_path: Path, repository: Path
+) -> None:
+    """A dropped proposal costs the defect; a duplicate costs one verification."""
+
+    class _BrokenReview(_Prolific):
+        async def call(self, **kwargs: object) -> SimpleLLMCallResult:
+            prompt = kwargs.get("prompt")
+            if isinstance(prompt, bytes) and b"reviewing proposals" in prompt:
+                from sastsimi.simple_runtime.models import StageFailure
+
+                self.prompts.append(prompt)
+                return StageFailure(  # type: ignore[return-value]
+                    code="FAILED", retryable=True, safe_message="down"
+                )
+            return await super().call(**kwargs)
+
+    seeds, _agent = await _propose(tmp_path, repository, _BrokenReview())
+
+    assert len(seeds) == 21
