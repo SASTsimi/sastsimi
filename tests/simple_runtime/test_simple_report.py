@@ -8,6 +8,7 @@ import pytest
 
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
+    STAGE_VERSION,
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
@@ -60,10 +61,12 @@ def _checkpoint(
     attempt_id: str | None = None,
     validated_poc_ref=None,
     verdict=None,
+    gate_decision=None,
 ) -> StageCheckpoint:
     return StageCheckpoint(
         identity=identity,
         stage=stage,
+        stage_version=STAGE_VERSION[stage],
         status=StageStatus.SUCCEEDED,
         input_refs=(),
         input_hash=input_reference_hash(()),
@@ -71,6 +74,7 @@ def _checkpoint(
         attempt_id=attempt_id,
         validated_poc_ref=validated_poc_ref,
         verdict=verdict,
+        gate_decision=gate_decision,
     )
 
 
@@ -161,7 +165,10 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
             identity, SimpleStage.CWE_DONE, outputs=(cwe_ref,)
         ),
         SimpleStage.TECH_GATE_DONE: _checkpoint(
-            identity, SimpleStage.TECH_GATE_DONE, outputs=(technical_ref,)
+            identity,
+            SimpleStage.TECH_GATE_DONE,
+            outputs=(technical_ref,),
+            gate_decision="ACCEPT",
         ),
         SimpleStage.SCOPE_GATE_DONE: _checkpoint(
             identity, SimpleStage.SCOPE_GATE_DONE, outputs=(scope_ref,)

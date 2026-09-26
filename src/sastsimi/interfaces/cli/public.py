@@ -49,6 +49,13 @@ def emit_public(
         stream.write(f"복구 시도: {attempt_number}/{attempt_limit}\n")
     if data.get("error_code"):
         stream.write(f"오류: {data['error_code']}\n")
+    if command == "resume" and data.get("resume_skipped_reason") == (
+        "ANALYSIS_ALREADY_RUNNING"
+    ):
+        stream.write(
+            "이미 다른 프로세스가 이 분석을 실행 중이어서 재개를 건너뛰었습니다.\n"
+        )
+        return
     if "finding_count" in data:
         stream.write(f"Finding: {data['finding_count']}개\n")
     if data.get("status") in {"BLOCKED", "FAILED"}:

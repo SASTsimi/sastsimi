@@ -16,7 +16,8 @@ from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.application import StaticBootstrapResult
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
-from sastsimi.simple_runtime.models import CheckpointIdentity
+from sastsimi.simple_runtime.models import CheckpointIdentity, SimpleStage
+from sastsimi.simple_runtime.stages import PoCCandidateStage
 
 
 def _config(tmp_path: Path) -> UserConfig:
@@ -115,4 +116,8 @@ def test_composition_injects_identity_scoped_recovery_into_app_and_runner(
     assert app_recovery.identity == identity
     assert runner.recovery is not None
     assert cast(Coordinator, runner.recovery).identity == identity
+    candidate = runner.handlers[SimpleStage.POC_CANDIDATE_DONE]
+    assert isinstance(candidate, PoCCandidateStage)
+    assert candidate._workspace_path == static.workspace_path
+    assert candidate._static_bundle_ref == static.static_bundle_ref
     assert created == [identity, identity]

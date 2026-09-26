@@ -20,6 +20,8 @@ class AnalysisSummaryView(ContractModel):
     stage_count: int
     hypothesis_count: int
     finding_count: int
+    inconclusive_hypothesis_count: int = 0
+    rejected_hypothesis_count: int = 0
     llm_provider: str | None = None
     on_demand_possible: bool = False
     llm_attempt_count: int = 0
@@ -49,6 +51,8 @@ class HypothesisProgressView(ContractModel):
     stage_count: int
     error_code: str | None = None
     verdict: str | None = None
+    disposition: str | None = None
+    resume_available: bool = False
     validated_poc: bool = False
     parent_hypothesis_ids: tuple[str, ...] = ()
     chain_depth: int = 0

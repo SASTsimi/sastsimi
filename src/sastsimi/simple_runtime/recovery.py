@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from enum import StrEnum
 from typing import Protocol
@@ -13,12 +14,16 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 
 from .artifacts import SimpleArtifactRepository
-from .models import StageCheckpoint, StageFailure
+from .models import MAX_RECOVERY_ATTEMPTS, SimpleStage, StageCheckpoint, StageFailure
 from .provider import SimpleLLMClient
 
-MAX_RECOVERY_ATTEMPTS = 3
 _MAX_ENVIRONMENT_PATCH_BYTES = 8 * 1024
 _RECOVERY_TIMEOUT_MS = 120_000
+_PLAYWRIGHT_BROWSERS = ("chromium", "firefox", "webkit")
+_PLAYWRIGHT_PATCH_PREFIX = (
+    "ENV PLAYWRIGHT_BROWSERS_PATH=/opt/sastsimi-playwright-browsers\n"
+    "RUN python -m playwright install --with-deps "
+)
 
 
 class RecoveryCategory(StrEnum):
@@ -133,11 +138,15 @@ _DECISION_SCHEMA: dict[str, object] = {
 
 
 def validate_environment_patch(patch: str) -> str:
-    """Accept only bounded dependency-installer RUN directives."""
+    """Accept bounded installer RUN lines or one fixed Playwright browser recipe."""
 
     normalized = "\n".join(line.strip() for line in patch.strip().splitlines())
     if not normalized or len(normalized.encode("utf-8")) > _MAX_ENVIRONMENT_PATCH_BYTES:
         raise ValueError("RECOVERY_ENVIRONMENT_PATCH_FORBIDDEN")
+    if normalized in {
+        _PLAYWRIGHT_PATCH_PREFIX + browser for browser in _PLAYWRIGHT_BROWSERS
+    }:
+        return normalized
     for line in normalized.splitlines():
         if not line.startswith("RUN ") or _FORBIDDEN_PATCH_FRAGMENT.search(line):
             raise ValueError("RECOVERY_ENVIRONMENT_PATCH_FORBIDDEN")
@@ -181,6 +190,22 @@ class SimpleRecoveryCoordinator:
                 self._stop(
                     "failure is not eligible for automatic recovery",
                     "manual review is required",
+                ),
+            )
+
+        missing_browser = self._missing_playwright_browser(checkpoint, failure)
+        if missing_browser is not None:
+            return self._store(
+                checkpoint,
+                failure,
+                RecoveryDecision(
+                    category=RecoveryCategory.ENVIRONMENT,
+                    action=RecoveryAction.REBUILD_ENVIRONMENT,
+                    diagnosis="Python Playwright browser binary is absent",
+                    guidance="Install the matching browser in the temporary image",
+                    environment_patch=validate_environment_patch(
+                        _PLAYWRIGHT_PATCH_PREFIX + missing_browser
+                    ),
                 ),
             )
 
@@ -235,6 +260,43 @@ class SimpleRecoveryCoordinator:
                     "preserve the failure for manual review",
                 )
         return self._store(checkpoint, failure, decision)
+
+    def _missing_playwright_browser(
+        self, checkpoint: StageCheckpoint, failure: StageFailure
+    ) -> str | None:
+        if (
+            checkpoint.stage is not SimpleStage.POC_EXECUTION_DONE
+            or failure.code != "POC_EXECUTION_FAILED"
+        ):
+            return None
+        for ref in failure.evidence_refs:
+            try:
+                execution = json.loads(self._artifacts.read(ref))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(execution, dict) or execution.get("kind") != (
+                "simple_poc_execution"
+            ):
+                continue
+            raw_stderr_ref = execution.get("stderr_ref")
+            if raw_stderr_ref is None:
+                continue
+            try:
+                stderr_ref = StoredDataRef.model_validate(raw_stderr_ref)
+            except ValueError:
+                continue
+            if stderr_ref not in failure.evidence_refs:
+                continue
+            try:
+                stderr = self._artifacts.read(stderr_ref)[-16_384:]
+            except (OSError, ValueError):
+                continue
+            if b"BrowserType.launch: Executable doesn't exist at " not in stderr:
+                continue
+            for browser in _PLAYWRIGHT_BROWSERS:
+                if b"ms-playwright/" + browser.encode("ascii") in stderr:
+                    return browser
+        return None
 
     @staticmethod
     def _validate_decision(decision: RecoveryDecision) -> RecoveryDecision:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +19,7 @@ from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 
 from .artifacts import SimpleArtifactRepository
 from .models import (
+    STAGE_VERSION,
     CheckpointIdentity,
     SimpleAnalysisRun,
     SimpleStage,
@@ -32,6 +34,7 @@ from .recovery import (
     RecoveryAction,
     RecoveryCoordinator,
 )
+from .run_lease import AnalysisRunBusy, analysis_run_lease
 from .runner import RunOutcome, SimpleRuntimeRunner
 from .store import SimpleCheckpointStore
 
@@ -99,6 +102,7 @@ class SimpleAnalysisApplication:
         llm_provider: str | None = None,
         on_demand_possible: bool = False,
         max_parallel_hypotheses: int = 1,
+        max_elapsed_seconds: int | None = None,
     ) -> None:
         if not 1 <= max_parallel_hypotheses <= 32:
             raise ValueError("PARALLEL_HYPOTHESIS_LIMIT_INVALID")
@@ -113,6 +117,7 @@ class SimpleAnalysisApplication:
         self._llm_provider = llm_provider
         self._on_demand_possible = on_demand_possible
         self._max_parallel_hypotheses = max_parallel_hypotheses
+        self._max_elapsed_seconds = max_elapsed_seconds
 
     async def analyze(
         self,
@@ -139,10 +144,11 @@ class SimpleAnalysisApplication:
             llm_provider=self._llm_provider,
             on_demand_possible=self._on_demand_possible,
         )
-        self._store.save_analysis_run(run)
-        if on_analysis_started is not None:
-            on_analysis_started(analysis_id)
-        return await self._run_static(run, identity)
+        with analysis_run_lease(self._data_dir, analysis_id):
+            self._store.save_analysis_run(run)
+            if on_analysis_started is not None:
+                on_analysis_started(analysis_id)
+            return await self._run_static(run, identity)
 
     async def _run_static(
         self,
@@ -211,7 +217,35 @@ class SimpleAnalysisApplication:
 
     async def resume(self, analysis_id_or_display: str) -> SimpleAnalysisOutcome:
         exact = self._display.resolve(analysis_id_or_display)
+        try:
+            with analysis_run_lease(self._data_dir, exact):
+                return await self._resume_locked(exact)
+        except AnalysisRunBusy:
+            run = self._store.require_analysis_run(exact)
+            checkpoints = self._store.list_checkpoints(exact)
+            current_stage = (
+                max(checkpoints, key=lambda item: item.updated_at).stage
+                if checkpoints
+                else SimpleStage.STATIC_DONE
+            )
+            return SimpleAnalysisOutcome(
+                identity=CheckpointIdentity(
+                    analysis_id=run.analysis_id,
+                    workspace_id=run.workspace_id,
+                    commit_id=run.commit_id,
+                    hypothesis_id=None,
+                ),
+                display_analysis_id=run.display_analysis_id,
+                status="RUNNING",
+                current_stage=current_stage,
+                error_code="ANALYSIS_ALREADY_RUNNING",
+            )
+
+    async def _resume_locked(self, exact: str) -> SimpleAnalysisOutcome:
         run = self._store.require_analysis_run(exact)
+        self._promote_legacy_inconclusive_pocs(exact)
+        if self._max_elapsed_seconds is not None:
+            self._store.reopen_elapsed_budget_failures(exact, self._max_elapsed_seconds)
         identity = CheckpointIdentity(
             analysis_id=run.analysis_id,
             workspace_id=run.workspace_id,
@@ -233,6 +267,55 @@ class SimpleAnalysisApplication:
         if not run.hypothesis_ids:
             return await self._propose_and_run(run, identity, static)
         return await self._run_hypotheses(run, identity, static)
+
+    def _promote_legacy_inconclusive_pocs(self, analysis_id: str) -> int:
+        """Reclassify only exact exhausted PoCs that actually ran inconclusively."""
+
+        promoted = 0
+        for checkpoint in self._store.list_checkpoints(analysis_id):
+            if (
+                checkpoint.stage is not SimpleStage.POC_EXECUTION_DONE
+                or checkpoint.stage_version
+                != STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
+                or checkpoint.status is not StageStatus.BLOCKED
+                or checkpoint.error_code != "RECOVERY_EXHAUSTED"
+                or checkpoint.attempt_number < MAX_RECOVERY_ATTEMPTS
+                or len(checkpoint.output_refs) != 2
+                or checkpoint.validated_poc_ref is not None
+            ):
+                continue
+            execution_ref, interpretation_ref = checkpoint.output_refs
+            artifacts = SimpleArtifactRepository(self._data_dir, checkpoint.identity)
+            try:
+                execution = json.loads(artifacts.read(execution_ref))
+                interpretation = json.loads(artifacts.read(interpretation_ref))
+            except (OSError, ValueError, sqlite3.Error):
+                continue
+            if not isinstance(execution, dict) or not isinstance(interpretation, dict):
+                continue
+            result = interpretation.get("result")
+            exit_code = execution.get("exit_code")
+            if (
+                execution.get("kind") != "simple_poc_execution"
+                or execution.get("attempt_id") != checkpoint.attempt_id
+                or execution.get("timed_out") is not False
+                or type(exit_code) is not int
+                or exit_code != 0
+                or interpretation.get("kind") != "simple_dynamic_interpretation"
+                or interpretation.get("execution_ref")
+                != execution_ref.model_dump(mode="json")
+                or not isinstance(result, dict)
+                or result.get("outcome") != "INCONCLUSIVE"
+            ):
+                continue
+            try:
+                self._store.promote_inconclusive_execution(checkpoint)
+            except ValueError as error:
+                if str(error) != "POC_INCONCLUSIVE_PROMOTION_STALE":
+                    raise
+                continue
+            promoted += 1
+        return promoted
 
     async def _propose_and_run(
         self,

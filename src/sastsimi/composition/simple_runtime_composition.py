@@ -51,6 +51,7 @@ from sastsimi.simple_runtime.cursor_provider import (
     OfficialCursorCLITransport,
     OfficialCursorTransport,
 )
+from sastsimi.simple_runtime.gate_guard import technical_gate_accepted
 from sastsimi.simple_runtime.models import CheckpointIdentity, SimpleStage
 from sastsimi.simple_runtime.portable_docker import (
     DirectEnvironmentPreparer,
@@ -300,6 +301,13 @@ def build_analysis_application(
                 environments=environments,
                 store=runtime_store,
                 security_policy_ref=static.security_policy_ref,
+                workspace_path=static.workspace_path,
+                static_bundle_ref=static.static_bundle_ref,
+                git_executable=(
+                    str(profile.tools["git"].executable_path)
+                    if "git" in profile.tools
+                    else "git"
+                ),
             ),
             recovery=recovery_factory(identity),
         )
@@ -323,6 +331,7 @@ def build_analysis_application(
         runner_factory=runner_factory,
         recovery_factory=recovery_factory,
         max_parallel_hypotheses=profile.max_parallel_hypotheses,
+        max_elapsed_seconds=profile.max_elapsed_seconds,
     )
 
 
@@ -375,11 +384,14 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             build_analysis_application(self._config, self._profile).resume(analysis_id)
         )
         run = self._store.require_analysis_run(outcome.identity.analysis_id)
-        return self._outcome(
+        data = self._outcome(
             outcome.display_analysis_id,
             run.repository,
             run.commit_id,
         )
+        if outcome.error_code == "ANALYSIS_ALREADY_RUNNING":
+            data["resume_skipped_reason"] = outcome.error_code
+        return data
 
     def resume_with_progress(
         self,
@@ -396,11 +408,14 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
 
         outcome = asyncio.run(run())
         stored = self._store.require_analysis_run(outcome.identity.analysis_id)
-        return self._outcome(
+        data = self._outcome(
             outcome.display_analysis_id,
             stored.repository,
             stored.commit_id,
         )
+        if outcome.error_code == "ANALYSIS_ALREADY_RUNNING":
+            data["resume_skipped_reason"] = outcome.error_code
+        return data
 
     async def _track(
         self,
@@ -442,6 +457,8 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             "attempt_number": snapshot.attempt_number,
             "attempt_limit": snapshot.attempt_limit,
             "error_code": snapshot.error_code,
+            "inconclusive_hypothesis_count": snapshot.inconclusive_hypothesis_count,
+            "rejected_hypothesis_count": snapshot.rejected_hypothesis_count,
         }
 
     def result(self, analysis_id: str) -> dict[str, object]:
@@ -451,7 +468,12 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         findings = [
             checkpoint
             for checkpoint in checkpoints
-            if checkpoint.stage is SimpleStage.FINDING_DONE and checkpoint.output_refs
+            if checkpoint.stage is SimpleStage.FINDING_DONE
+            and checkpoint.output_refs
+            and technical_gate_accepted(
+                self._store.get(checkpoint.identity, SimpleStage.TECH_GATE_DONE),
+                SimpleArtifactRepository(self._config.data_dir, checkpoint.identity),
+            )
         ]
         return {
             **self.status(run.display_analysis_id),
@@ -481,6 +503,11 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
     def report(self, finding_id: str) -> str:
         identity, _finding_ref = self._finding_identity(finding_id)
         checkpoint = self._store.require(identity, SimpleStage.REPORT_DONE)
+        if not technical_gate_accepted(
+            self._store.get(identity, SimpleStage.TECH_GATE_DONE),
+            SimpleArtifactRepository(self._config.data_dir, identity),
+        ):
+            raise LookupError("CURRENT_REPORT_NOT_FOUND")
         if (
             not self._store.reusable(
                 identity,

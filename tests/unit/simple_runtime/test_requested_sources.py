@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
+from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.models import CheckpointIdentity
 from sastsimi.simple_runtime.retrieval import collect_requested_sources
 
 
@@ -79,3 +82,78 @@ def test_symlink_classification_is_enforced_without_windows_privilege(
     )
 
     assert result["served"] == []
+
+
+def test_oversized_source_is_refused_before_reading_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "large.py"
+    source.write_bytes(b"x" * 1_000)
+    original = Path.read_bytes
+
+    def guarded_read(path: Path) -> bytes:
+        if path == source:
+            raise AssertionError("oversized source content should not be read")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read)
+
+    result = collect_requested_sources(
+        ("large.py",),
+        workspace=tmp_path,
+        tracked=("large.py",),
+        max_total_bytes=100,
+    )
+
+    assert result["served"] == []
+    assert result["refused"] == [
+        {"path": "large.py", "reason": "TOTAL_BUDGET_EXHAUSTED"}
+    ]
+
+
+def test_requested_path_count_limit_refuses_extra_files(tmp_path: Path) -> None:
+    (tmp_path / "first.py").write_text("first = 1\n", encoding="utf-8")
+    (tmp_path / "second.py").write_text("second = 2\n", encoding="utf-8")
+
+    result = collect_requested_sources(
+        ("first.py", "second.py"),
+        workspace=tmp_path,
+        tracked=("first.py", "second.py"),
+        max_requests=1,
+    )
+
+    assert [item["path"] for item in result["served"]] == ["first.py"]
+    assert result["refused"] == [
+        {"path": "second.py", "reason": "REQUEST_LIMIT_EXCEEDED"}
+    ]
+
+
+def test_escaped_source_never_truncates_prompt_artifact(tmp_path: Path) -> None:
+    (tmp_path / "newlines.py").write_bytes(b"\n" * 128_000)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+
+    result = collect_requested_sources(
+        ("newlines.py",)
+        + tuple(f"missing-{index}-" + "x" * 220 for index in range(31)),
+        workspace=tmp_path,
+        tracked=("newlines.py",),
+        max_total_bytes=128_000,
+        max_requests=32,
+        max_artifact_bytes=240_000,
+    )
+    ref = artifacts.put_json(result)
+    context = json.loads(artifacts.prompt_context((ref,)))
+
+    assert context["exact_inputs"][0]["data"]["kind"] == "simple_requested_sources"
+    assert result["served"] == []
+    assert len(result["refused"]) == 32
+    assert result["refused"][-1] == {
+        "path": "newlines.py",
+        "reason": "PROMPT_BUDGET_EXHAUSTED",
+    }

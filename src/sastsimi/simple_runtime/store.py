@@ -250,6 +250,70 @@ class SimpleCheckpointStore:
         with self._connect() as connection:
             return self.usage_summary_from_connection(connection, analysis_id)
 
+    def llm_elapsed_ms(self, analysis_id: str) -> int:
+        """Return elapsed time of recorded LLM attempts across every resume."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COALESCE(SUM(elapsed_ms), 0) "
+                "FROM simple_llm_attempts WHERE analysis_id = ?",
+                (analysis_id,),
+            ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    def reopen_elapsed_budget_failures(
+        self, analysis_id: str, max_elapsed_seconds: int
+    ) -> int:
+        """Reopen elapsed-limit failures only on explicit resume with headroom."""
+
+        if max_elapsed_seconds < 1:
+            raise ValueError("LLM_ELAPSED_BUDGET_INVALID")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            elapsed = connection.execute(
+                "SELECT COALESCE(SUM(elapsed_ms), 0) "
+                "FROM simple_llm_attempts WHERE analysis_id = ?",
+                (analysis_id,),
+            ).fetchone()
+            assert elapsed is not None
+            if int(elapsed[0]) >= max_elapsed_seconds * 1000:
+                connection.commit()
+                return 0
+            rows = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ?",
+                (analysis_id,),
+            ).fetchall()
+            reopened = 0
+            for row in rows:
+                checkpoint = StageCheckpoint.model_validate_json(row[0])
+                if (
+                    checkpoint.status is not StageStatus.FAILED
+                    or checkpoint.error_code != "LLM_ELAPSED_BUDGET_EXHAUSTED"
+                ):
+                    continue
+                pending = checkpoint.model_copy(
+                    update={
+                        "status": StageStatus.PENDING,
+                        "attempt_id": None,
+                        "output_refs": (),
+                        "error_code": None,
+                        "retryable": False,
+                        "updated_at": datetime.now(UTC),
+                    }
+                )
+                self._upsert_checkpoint_connection(connection, pending)
+                reopened += 1
+            connection.commit()
+            return reopened
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def require_analysis_run(self, analysis_id: str) -> SimpleAnalysisRun:
         with self._connect() as connection:
             row = connection.execute(
@@ -445,6 +509,9 @@ class SimpleCheckpointStore:
             input_hash=input_reference_hash(exact_inputs),
             attempt_id=attempt_id,
             attempt_number=attempt_number,
+            gate_revision_count=(
+                reusable_state.gate_revision_count if reusable_state else 0
+            ),
             recovery_lineage_id=(
                 reusable_state.recovery_lineage_id if reusable_state else None
             ),
@@ -486,6 +553,7 @@ class SimpleCheckpointStore:
             "validated_poc_ref": result.validated_poc_ref,
             "report_ref": result.report_ref,
             "verdict": result.verdict,
+            "gate_decision": result.gate_decision,
             "markdown_path": result.markdown_path,
             "updated_at": datetime.now(UTC),
         }
@@ -606,6 +674,7 @@ class SimpleCheckpointStore:
             input_refs=inputs,
             input_hash=input_reference_hash(inputs),
             attempt_number=failed.attempt_number,
+            gate_revision_count=failed.gate_revision_count,
             recovery_lineage_id=lineage_id,
             recovery_origin_stage=(failed.recovery_origin_stage or failed.stage),
             recovery_decision_refs=decision_refs,
@@ -613,13 +682,13 @@ class SimpleCheckpointStore:
             image_digest=None if rebuild else failed.image_digest,
             container_id=None,
         )
-        event = self._recovery_event(failed, resolution)
         first_index = STAGE_ORDER.index(restart_stage)
         stages = tuple(item.value for item in STAGE_ORDER[first_index:])
         placeholders = ",".join("?" for _ in stages)
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            event = self._recovery_event(connection, failed, resolution)
             AgentActivityStore.append_connection(connection, event)
             connection.execute(
                 f"""
@@ -645,6 +714,108 @@ class SimpleCheckpointStore:
             connection.close()
         return pending
 
+    def prepare_gate_revision(
+        self,
+        gate: StageCheckpoint,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Atomically restart PoC from one accepted revision request."""
+
+        if (
+            gate.stage is not SimpleStage.TECH_GATE_DONE
+            or gate.stage_version != STAGE_VERSION[SimpleStage.TECH_GATE_DONE]
+            or gate.status is not StageStatus.SUCCEEDED
+            or gate.gate_decision != "REVISE"
+            or len(gate.output_refs) != 1
+            or gate.gate_revision_count >= 2
+        ):
+            raise ValueError("GATE_REVISION_NOT_PREPARABLE")
+        identity = gate.identity
+        key = self._hypothesis_key(identity)
+        stages = tuple(
+            stage.value
+            for stage in STAGE_ORDER[
+                STAGE_ORDER.index(SimpleStage.POC_CANDIDATE_DONE) :
+            ]
+        )
+        placeholders = ",".join("?" for _ in stages)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            def checkpoint_at(stage: SimpleStage) -> StageCheckpoint | None:
+                row = connection.execute(
+                    """
+                    SELECT checkpoint_json FROM simple_runtime_checkpoints
+                    WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?
+                    """,
+                    (identity.analysis_id, key, stage.value),
+                ).fetchone()
+                return (
+                    StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                    if row is not None
+                    else None
+                )
+
+            current = checkpoint_at(SimpleStage.TECH_GATE_DONE)
+            candidate = checkpoint_at(SimpleStage.POC_CANDIDATE_DONE)
+            if current is None:
+                if (
+                    candidate is not None
+                    and candidate.status is StageStatus.PENDING
+                    and candidate.gate_revision_count == gate.gate_revision_count + 1
+                    and candidate.input_refs
+                    and candidate.input_refs[0] == gate.output_refs[0]
+                ):
+                    connection.commit()
+                    return candidate
+                raise ValueError("GATE_REVISION_STALE")
+            if current != gate:
+                raise ValueError("GATE_REVISION_STALE")
+            if candidate is None or candidate.status is not StageStatus.SUCCEEDED:
+                raise ValueError("GATE_REVISION_CANDIDATE_MISSING")
+            execution = checkpoint_at(SimpleStage.POC_EXECUTION_DONE)
+            if execution is None or execution.status is not StageStatus.SUCCEEDED:
+                raise ValueError("GATE_REVISION_EXECUTION_MISSING")
+            inputs = tuple(
+                dict.fromkeys(
+                    gate.output_refs
+                    + candidate.input_refs
+                    + candidate.output_refs
+                    + execution.output_refs
+                )
+            )
+            pending = StageCheckpoint(
+                identity=identity,
+                stage=SimpleStage.POC_CANDIDATE_DONE,
+                stage_version=STAGE_VERSION[SimpleStage.POC_CANDIDATE_DONE],
+                status=StageStatus.PENDING,
+                input_refs=inputs,
+                input_hash=input_reference_hash(inputs),
+                gate_revision_count=gate.gate_revision_count + 1,
+                recipe_ref=candidate.recipe_ref or gate.recipe_ref,
+                image_digest=candidate.image_digest or gate.image_digest,
+            )
+            connection.execute(
+                f"""
+                DELETE FROM simple_runtime_checkpoints
+                WHERE analysis_id = ? AND hypothesis_key = ?
+                  AND stage IN ({placeholders})
+                """,  # noqa: S608 - generated stage placeholders only.
+                (identity.analysis_id, key, *stages),
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+            return pending
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def record_recovery_stop(
         self,
         failed: StageCheckpoint,
@@ -667,11 +838,20 @@ class SimpleCheckpointStore:
         *,
         fail_before_commit: bool = False,
     ) -> None:
-        self._write(
-            failed,
-            fail_before_commit=fail_before_commit,
-            activity_events=(self._recovery_event(failed, resolution),),
-        )
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._upsert_checkpoint_connection(connection, failed)
+            event = self._recovery_event(connection, failed, resolution)
+            AgentActivityStore.append_connection(connection, event)
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def mark_recovery_exhausted(
         self,
@@ -704,15 +884,108 @@ class SimpleCheckpointStore:
         )
         return exhausted
 
+    def promote_inconclusive_execution(
+        self, exhausted: StageCheckpoint
+    ) -> StageCheckpoint:
+        """Atomically preserve an executed, evidence-checked PoC as non-reportable."""
+
+        if (
+            exhausted.stage is not SimpleStage.POC_EXECUTION_DONE
+            or exhausted.stage_version != STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
+            or exhausted.status is not StageStatus.BLOCKED
+            or exhausted.error_code != "RECOVERY_EXHAUSTED"
+            or exhausted.attempt_number < MAX_RECOVERY_ATTEMPTS
+            or len(exhausted.output_refs) != 2
+            or exhausted.validated_poc_ref is not None
+        ):
+            raise ValueError("POC_INCONCLUSIVE_PROMOTION_INVALID")
+        completed = exhausted.model_copy(
+            update={
+                "status": StageStatus.SUCCEEDED,
+                "verdict": "HOLD",
+                "error_code": None,
+                "retryable": False,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (
+                    exhausted.identity.analysis_id,
+                    self._hypothesis_key(exhausted.identity),
+                    exhausted.stage.value,
+                ),
+            ).fetchone()
+            if (
+                row is None
+                or StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                != exhausted
+            ):
+                raise ValueError("POC_INCONCLUSIVE_PROMOTION_STALE")
+            self._upsert_checkpoint_connection(connection, completed)
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    completed,
+                    ActivityKind.STAGE_COMPLETED,
+                    sequence=self._stage_sequence(completed.stage, 2),
+                    status=StageStatus.SUCCEEDED,
+                    summary_ko=(
+                        "완료된 PoC 실행의 반복된 근거 부족을 미확정으로 기록했습니다."
+                    ),
+                    output_refs=completed.output_refs,
+                ),
+            )
+            connection.commit()
+            return completed
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def _recovery_event(
         self,
+        connection: sqlite3.Connection,
         failed: StageCheckpoint,
         resolution: RecoveryResolution,
     ) -> AgentActivityEvent:
+        base = self._stage_sequence(failed.stage, 40)
+        rows = connection.execute(
+            "SELECT sequence, event_json FROM agent_activity_events "
+            "WHERE analysis_id = ? AND hypothesis_key = ? AND attempt_id = ? "
+            "AND sequence >= ? AND sequence < ? ORDER BY sequence",
+            (
+                failed.identity.analysis_id,
+                self._hypothesis_key(failed.identity),
+                failed.attempt_id or "checkpoint",
+                base,
+                base + 59,
+            ),
+        ).fetchall()
+        used = {int(row["sequence"]) for row in rows}
+        for row in rows:
+            existing = AgentActivityEvent.model_validate_json(row["event_json"])
+            if (
+                existing.stage == failed.stage.value
+                and existing.kind is ActivityKind.DECISION_RECORDED
+                and existing.output_refs == (resolution.decision_ref,)
+            ):
+                return existing
+        sequence = next(
+            (value for value in range(base, base + 59) if value not in used),
+            None,
+        )
+        if sequence is None:
+            raise ValueError("RECOVERY_EVENT_SEQUENCE_EXHAUSTED")
         return self._lifecycle_event(
             failed,
             ActivityKind.DECISION_RECORDED,
-            sequence=self._stage_sequence(failed.stage, 40),
+            sequence=sequence,
             status=StageStatus.BLOCKED,
             summary_ko=(
                 f"자동 복구 결정 {resolution.decision.action.value} · "
@@ -890,6 +1163,45 @@ class SimpleCheckpointStore:
                 ),
             )
             connection.commit()
+
+    def replace_from(
+        self,
+        pending: StageCheckpoint,
+        *,
+        fail_before_commit: bool = False,
+    ) -> None:
+        """Atomically invalidate downstream stages and seed a replay checkpoint."""
+
+        if pending.status is not StageStatus.PENDING:
+            raise ValueError("REPLAY_CHECKPOINT_NOT_PENDING")
+        first_index = STAGE_ORDER.index(pending.stage)
+        stages = tuple(item.value for item in STAGE_ORDER[first_index:])
+        placeholders = ",".join("?" for _ in stages)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                f"""
+                DELETE FROM simple_runtime_checkpoints
+                WHERE analysis_id = ?
+                  AND hypothesis_key = ?
+                  AND stage IN ({placeholders})
+                """,  # noqa: S608 - placeholders are generated, never user supplied.
+                (
+                    pending.identity.analysis_id,
+                    self._hypothesis_key(pending.identity),
+                    *stages,
+                ),
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def _first_value(
         self,

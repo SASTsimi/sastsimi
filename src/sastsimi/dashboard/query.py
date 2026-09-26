@@ -14,11 +14,16 @@ from sastsimi.observability.agent_activity import AgentActivityEvent
 from sastsimi.progress.projector import ProgressProjector
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
+from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.gate_guard import technical_gate_accepted
 from sastsimi.simple_runtime.models import (
+    STAGE_VERSION,
     SimpleAnalysisRun,
     SimpleStage,
     StageCheckpoint,
     StageStatus,
+    terminal_gate_outcome,
+    terminal_poc_outcome,
 )
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
@@ -179,11 +184,62 @@ class DashboardQuery:
         if _DISPLAY_ID.fullmatch(display_id) is None:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
         try:
-            FindingDisplayIdStore.resolve_existing(
+            finding_ref = FindingDisplayIdStore.resolve_existing(
                 self._database, analysis_id, display_id
             )
         except (LookupError, OSError, sqlite3.Error, ValueError) as error:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
+        checkpoints = tuple(
+            checkpoint
+            for checkpoint in self._checkpoints()
+            if checkpoint.identity.analysis_id == analysis_id
+        )
+        finding = next(
+            (
+                checkpoint
+                for checkpoint in checkpoints
+                if checkpoint.stage is SimpleStage.FINDING_DONE
+                and checkpoint.status is StageStatus.SUCCEEDED
+                and finding_ref in checkpoint.output_refs
+            ),
+            None,
+        )
+        if finding is None:
+            raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
+        report = next(
+            (
+                checkpoint
+                for checkpoint in checkpoints
+                if checkpoint.identity.hypothesis_id == finding.identity.hypothesis_id
+                and checkpoint.stage is SimpleStage.REPORT_DONE
+                and checkpoint.status is StageStatus.SUCCEEDED
+                and checkpoint.stage_version == STAGE_VERSION[SimpleStage.REPORT_DONE]
+                and finding_ref in checkpoint.input_refs
+                and len(checkpoint.output_refs) >= 2
+                and checkpoint.markdown_path is not None
+            ),
+            None,
+        )
+        gate = next(
+            (
+                checkpoint
+                for checkpoint in checkpoints
+                if checkpoint.identity.hypothesis_id == finding.identity.hypothesis_id
+                and checkpoint.stage is SimpleStage.TECH_GATE_DONE
+            ),
+            None,
+        )
+        if report is None or report.markdown_path is None:
+            raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
+        recorded_path = report.markdown_path
+        try:
+            accepted = technical_gate_accepted(
+                gate, SimpleArtifactRepository(self._data_dir, finding.identity)
+            )
+        except (OSError, ValueError, sqlite3.Error) as error:
+            raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
+        if not accepted:
+            raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
         root = (self._data_dir / "reports").resolve()
         expected_parent = root / analysis_id
         path = expected_parent / f"{display_id}.md"
@@ -191,7 +247,11 @@ class DashboardQuery:
             resolved = path.resolve(strict=True)
         except OSError as error:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
-        if resolved.parent != expected_parent or not resolved.is_file():
+        if (
+            resolved.parent != expected_parent
+            or not resolved.is_file()
+            or resolved != Path(recorded_path).resolve()
+        ):
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
         return resolved
 
@@ -252,12 +312,14 @@ class DashboardQuery:
             display_analysis_id=(run.display_analysis_id if run else None),
             workspace_id=latest.identity.workspace_id,
             commit_id=latest.identity.commit_id,
-            current_stage=latest.stage.value,
-            status=self._aggregate_status(values),
+            current_stage=progress.current_stage or latest.stage.value,
+            status=progress.status,
             completed_count=completed,
             stage_count=len(values),
             hypothesis_count=len(hypotheses),
             finding_count=len(reports),
+            inconclusive_hypothesis_count=progress.inconclusive_hypothesis_count,
+            rejected_hypothesis_count=progress.rejected_hypothesis_count,
             llm_provider=(run.llm_provider if run else None),
             on_demand_possible=(run.on_demand_possible if run else False),
             llm_attempt_count=int(usage["calls"] or 0),
@@ -313,21 +375,37 @@ class DashboardQuery:
             ),
             None,
         )
+        execution = next(
+            (item for item in values if item.stage is SimpleStage.POC_EXECUTION_DONE),
+            None,
+        )
+        gate = next(
+            (item for item in values if item.stage is SimpleStage.TECH_GATE_DONE),
+            None,
+        )
+        progress = ProgressProjector(_CheckpointProjection(tuple(values))).snapshot(
+            analysis_id
+        )
         return HypothesisProgressView(
             analysis_id=analysis_id,
             hypothesis_id=hypothesis_id,
-            current_stage=latest.stage.value,
-            status=DashboardQuery._aggregate_status(values),
+            current_stage=progress.current_stage or latest.stage.value,
+            status=progress.status,
             completed_count=completed,
             stage_count=len(values),
-            error_code=latest.error_code,
+            error_code=progress.error_code,
             verdict=final.verdict if final else None,
+            disposition=terminal_poc_outcome(execution) or terminal_gate_outcome(gate),
+            resume_available=(
+                progress.status in {"BLOCKED", "FAILED"}
+                and any(item.retryable for item in values)
+            ),
             validated_poc=any(item.validated_poc_ref is not None for item in values),
             parent_hypothesis_ids=(
                 run.parent_hypothesis_ids.get(hypothesis_id, ()) if run else ()
             ),
             chain_depth=(run.chain_depths.get(hypothesis_id, 0) if run else 0),
-            attempt_number=max(1, latest.attempt_number),
+            attempt_number=progress.attempt_number,
             updated_at=latest.updated_at,
         )
 
@@ -424,23 +502,6 @@ class DashboardQuery:
             except (TypeError, ValueError):
                 continue
         return tuple(summaries)
-
-    @staticmethod
-    def _aggregate_status(values: list[StageCheckpoint]) -> str:
-        for status in (
-            StageStatus.RUNNING,
-            StageStatus.BLOCKED,
-            StageStatus.FAILED,
-        ):
-            if any(item.status is status for item in values):
-                return status.value
-        if any(
-            item.stage is SimpleStage.REPORT_DONE
-            and item.status is StageStatus.SUCCEEDED
-            for item in values
-        ):
-            return "COMPLETE"
-        return "SUCCEEDED"
 
     @staticmethod
     def _validate_analysis_id(analysis_id: str) -> None:

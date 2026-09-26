@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import Mapping
 from pathlib import Path
@@ -9,6 +10,7 @@ import pytest
 
 from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.simple_runtime.application import (
     HypothesisSeed,
     SimpleAnalysisApplication,
@@ -18,6 +20,7 @@ from sastsimi.simple_runtime.application import (
 )
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
+    STAGE_VERSION,
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
@@ -32,7 +35,7 @@ from sastsimi.simple_runtime.recovery import (
     RecoveryDecision,
     RecoveryResolution,
 )
-from sastsimi.simple_runtime.runner import SimpleRuntimeRunner, StageBlocked
+from sastsimi.simple_runtime.runner import RunOutcome, SimpleRuntimeRunner, StageBlocked
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
@@ -131,6 +134,74 @@ def _runner(
 
         handlers[stage] = handle
     return SimpleRuntimeRunner(store, handlers)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_resume_does_not_repeat_gate_replay_or_raise_stale(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    display = AnalysisDisplayIdStore(store.database_path).get_or_allocate(
+        "analysis-concurrent"
+    )
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id="analysis-concurrent",
+            display_analysis_id=display,
+            workspace_id="workspace-1",
+            commit_id="a" * 40,
+            repository="https://example.invalid/repo.git",
+            workspace_path=tmp_path / "workspaces" / "workspace-1",
+            repository_profile_ref=_ref("repository-profile"),
+            static_bundle_ref=_ref("static-bundle"),
+            hypothesis_ids=("hypothesis-1",),
+        )
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    duplicate_calls = 0
+
+    class FirstRunner:
+        async def resume_hypothesis(self, _identity: CheckpointIdentity) -> RunOutcome:
+            entered.set()
+            await release.wait()
+            return RunOutcome(
+                current_stage=SimpleStage.POC_CANDIDATE_DONE,
+                status=StageStatus.BLOCKED,
+                error_code="TEST_PAUSED",
+            )
+
+    class SecondRunner:
+        async def resume_hypothesis(self, _identity: CheckpointIdentity) -> RunOutcome:
+            nonlocal duplicate_calls
+            duplicate_calls += 1
+            raise ValueError("GATE_REVISION_STALE")
+
+    first = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=lambda *_args: FirstRunner(),  # type: ignore[arg-type]
+    )
+    second = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=SimpleCheckpointStore(store.database_path),
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=lambda *_args: SecondRunner(),  # type: ignore[arg-type]
+    )
+
+    active = asyncio.create_task(first.resume(display))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    try:
+        overlapping = await asyncio.wait_for(second.resume(display), timeout=2)
+        assert overlapping.status == "RUNNING"
+        assert overlapping.error_code == "ANALYSIS_ALREADY_RUNNING"
+        assert duplicate_calls == 0
+    finally:
+        release.set()
+        await active
 
 
 @pytest.mark.asyncio
@@ -494,6 +565,86 @@ async def test_resume_does_not_rerun_completed_agents(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure_code", "recorded_llm_ms", "expected_status"),
+    [
+        ("LLM_ELAPSED_BUDGET_EXHAUSTED", 500, "COMPLETE"),
+        ("LLM_ELAPSED_BUDGET_EXHAUSTED", 1000, "FAILED"),
+        ("LLM_TOKEN_BUDGET_EXHAUSTED", 500, "FAILED"),
+    ],
+)
+async def test_resume_reopens_only_elapsed_failure_with_remaining_budget(
+    tmp_path: Path,
+    failure_code: str,
+    recorded_llm_ms: int,
+    expected_status: str,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    recovery = _RecoveryFactory(tmp_path)
+
+    def recovering_runner(
+        current_store: SimpleCheckpointStore,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+    ) -> SimpleRuntimeRunner:
+        baseline = _runner(current_store, identity, static)
+        return SimpleRuntimeRunner(current_store, baseline.handlers, recovery=recovery)
+
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=recovering_runner,
+        recovery_factory=recovery,
+        max_elapsed_seconds=1,
+        id_factory=iter(("analysis-1", "workspace-1")).__next__,
+    )
+    outcome = await application.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        )
+    )
+    child = outcome.identity.model_copy(update={"hypothesis_id": "hypothesis-1"})
+    completed = store.require(child, SimpleStage.PRO_CON_DONE)
+    store.save_checkpoint(
+        completed.model_copy(
+            update={
+                "status": StageStatus.FAILED,
+                "error_code": failure_code,
+                "retryable": False,
+                "output_refs": (),
+            }
+        )
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, outcome.identity)
+    store.record_llm_attempt(
+        attempt_id="recorded",
+        analysis_id=outcome.identity.analysis_id,
+        agent="pro_con",
+        model="test",
+        attempt_number=1,
+        status="SUCCEEDED",
+        elapsed_ms=recorded_llm_ms,
+        input_tokens=None,
+        output_tokens=None,
+        cost_cents=None,
+        artifact_ref=artifacts.put_json({"kind": "attempt"}),
+    )
+
+    resumed = await application.resume(outcome.display_analysis_id)
+
+    assert resumed.status == expected_status
+    assert recovery.calls == []
+    assert store.require(child, SimpleStage.PRO_CON_DONE).status is (
+        StageStatus.SUCCEEDED if expected_status == "COMPLETE" else StageStatus.FAILED
+    )
+    assert store.require(child, SimpleStage.VERIFICATION_FINAL_DONE).attempt_number == 1
+
+
+@pytest.mark.asyncio
 async def test_blocked_hypothesis_does_not_stop_independent_sibling(
     tmp_path: Path,
 ) -> None:
@@ -662,3 +813,86 @@ def test_chaining_child_is_added_once_to_durable_analysis_queue(
     assert repeated.hypothesis_ids == updated.hypothesis_ids
     child_id = updated.hypothesis_ids[-1]
     assert updated.chain_depths[child_id] == 1
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "timed_out", "outcome", "stale", "expected_promotions"),
+    [
+        (0, False, "INCONCLUSIVE", False, 1),
+        (0, False, "INCONCLUSIVE", True, 0),
+        (1, False, "INCONCLUSIVE", False, 0),
+        (2, False, "INCONCLUSIVE", False, 0),
+        (0, True, "INCONCLUSIVE", False, 0),
+        (0, False, "SUPPORTED", False, 0),
+    ],
+)
+def test_resume_promotes_only_verified_legacy_poc_inconclusive_exhaustion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exit_code: int,
+    timed_out: bool,
+    outcome: str,
+    stale: bool,
+    expected_promotions: int,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=_runner,
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-legacy",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-legacy",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "exit_code": exit_code,
+            "timed_out": timed_out,
+            "attempt_id": "attempt-3",
+        }
+    )
+    interpretation_ref = artifacts.put_json(
+        {
+            "kind": "simple_dynamic_interpretation",
+            "execution_ref": execution_ref.model_dump(mode="json"),
+            "result": {"outcome": outcome},
+        }
+    )
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.POC_EXECUTION_DONE,
+            stage_version=STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE],
+            status=StageStatus.BLOCKED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(execution_ref, interpretation_ref),
+            error_code="RECOVERY_EXHAUSTED",
+            attempt_number=3,
+            attempt_id="attempt-3",
+        )
+    )
+    if stale:
+
+        def _stale(_checkpoint: StageCheckpoint) -> None:
+            raise ValueError("POC_INCONCLUSIVE_PROMOTION_STALE")
+
+        monkeypatch.setattr(store, "promote_inconclusive_execution", _stale)
+
+    promoted = application._promote_legacy_inconclusive_pocs("analysis-legacy")
+
+    assert promoted == expected_promotions
+    checkpoint = store.require(identity, SimpleStage.POC_EXECUTION_DONE)
+    assert checkpoint.status is (
+        StageStatus.SUCCEEDED if expected_promotions else StageStatus.BLOCKED
+    )
+    assert checkpoint.verdict == ("HOLD" if expected_promotions else None)
+    assert checkpoint.validated_poc_ref is None
+    assert checkpoint.output_refs == (execution_ref, interpretation_ref)

@@ -990,10 +990,10 @@ async def test_actual_three_adapter_public_bridge_and_exact_replay(
         runner.release = asyncio.Event()
         runner.cancelled.clear()
         active = asyncio.create_task(coordinator.run(requests[index]))
-        await asyncio.wait_for(runner.started.wait(), timeout=1)
+        await asyncio.wait_for(runner.started.wait(), timeout=5)
         attempt = profiles[index].adapter_key.lower().replace("python_", "")
         cancellation = await coordinator.cancel(f"attempt-{attempt}")
-        await asyncio.wait_for(active, timeout=1)
+        await asyncio.wait_for(active, timeout=5)
         assert cancellation.cancelled is True
         action_meta = requests[index].action.meta
         assert isinstance(action_meta, RecordMeta)

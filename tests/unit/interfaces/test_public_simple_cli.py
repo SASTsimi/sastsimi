@@ -79,6 +79,16 @@ class _ProgressApplication(_PublicApplication):
         return self.analyze(repository, commit)
 
 
+class _BusyPublicApplication(_PublicApplication):
+    def resume(self, analysis_id: str) -> dict[str, object]:
+        return {
+            "analysis_id": analysis_id,
+            "status": "RUNNING",
+            "percent": 60,
+            "resume_skipped_reason": "ANALYSIS_ALREADY_RUNNING",
+        }
+
+
 def _config(tmp_path: Path) -> UserConfigStore:
     store = UserConfigStore(tmp_path / "config.toml")
     store.save(
@@ -100,6 +110,22 @@ def _config(tmp_path: Path) -> UserConfigStore:
         )
     )
     return store
+
+
+def test_public_resume_explains_concurrent_run_without_internal_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code = main(
+        ["resume", "A-001", "--no-progress"],
+        public_application=_BusyPublicApplication(),
+        user_config_store=_config(tmp_path),
+    )
+
+    assert code == 0
+    output = capsys.readouterr()
+    assert "이미 다른 프로세스" in output.out
+    assert "INTERNAL_ERROR" not in output.err
 
 
 def test_public_analyze_uses_positional_repo_and_human_output(

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping
-from datetime import UTC, datetime
 from time import monotonic
 from typing import Any
 from uuid import uuid4
@@ -67,14 +66,8 @@ class RunUsageBudget:
                 retryable=False,
                 safe_message="Analysis cost ceiling has been reached",
             )
-        try:
-            run = self._store.require_analysis_run(self._analysis_id)
-        except LookupError:
-            return None
-        if (
-            run.started_at is not None
-            and (datetime.now(UTC) - run.started_at).total_seconds()
-            >= self._max_elapsed_seconds
+        if self._store.llm_elapsed_ms(self._analysis_id) >= (
+            self._max_elapsed_seconds * 1000
         ):
             return StageFailure(
                 code="LLM_ELAPSED_BUDGET_EXHAUSTED",

@@ -33,6 +33,7 @@ class SimpleStage(StrEnum):
 
 STAGE_ORDER: tuple[SimpleStage, ...] = tuple(SimpleStage)
 HYPOTHESIS_STAGES: tuple[SimpleStage, ...] = STAGE_ORDER[2:]
+MAX_RECOVERY_ATTEMPTS = 3
 STAGE_VERSION: dict[SimpleStage, str] = {
     stage: (
         "3"
@@ -42,6 +43,9 @@ STAGE_VERSION: dict[SimpleStage, str] = {
         in {
             SimpleStage.VERIFICATION_INITIAL_DONE,
             SimpleStage.POC_EXECUTION_DONE,
+            SimpleStage.POC_CANDIDATE_DONE,
+            SimpleStage.VERIFICATION_FINAL_DONE,
+            SimpleStage.TECH_GATE_DONE,
         }
         else "1"
     )
@@ -98,6 +102,7 @@ class StageCheckpoint(ContractModel):
     output_refs: tuple[StoredDataRef, ...] = ()
     attempt_id: str | None = None
     attempt_number: int = 0
+    gate_revision_count: int = Field(default=0, ge=0)
     recovery_lineage_id: str | None = None
     recovery_origin_stage: SimpleStage | None = None
     recovery_decision_refs: tuple[StoredDataRef, ...] = ()
@@ -109,6 +114,7 @@ class StageCheckpoint(ContractModel):
     validated_poc_ref: StoredDataRef | None = None
     report_ref: StoredDataRef | None = None
     verdict: Literal["TRUE", "FALSE", "HOLD"] | None = None
+    gate_decision: Literal["ACCEPT", "REVISE", "REJECT"] | None = None
     markdown_path: str | None = None
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -124,6 +130,7 @@ class StageResult(ContractModel):
     validated_poc_ref: StoredDataRef | None = None
     report_ref: StoredDataRef | None = None
     verdict: Literal["TRUE", "FALSE", "HOLD"] | None = None
+    gate_decision: Literal["ACCEPT", "REVISE", "REJECT"] | None = None
     recipe_ref: StoredDataRef | None = None
     image_digest: str | None = None
     container_id: str | None = None
@@ -137,3 +144,41 @@ class StageFailure(ContractModel):
     safe_message: str
     invalid_field: str | None = None
     evidence_refs: tuple[StoredDataRef, ...] = ()
+
+
+def terminal_poc_outcome(
+    checkpoint: StageCheckpoint | None,
+) -> Literal["INCONCLUSIVE"] | None:
+    """Return a completed, non-reportable PoC observation after bounded attempts."""
+
+    if (
+        checkpoint is not None
+        and checkpoint.stage is SimpleStage.POC_EXECUTION_DONE
+        and checkpoint.status is StageStatus.SUCCEEDED
+        and checkpoint.stage_version == STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
+        and checkpoint.verdict == "HOLD"
+        and checkpoint.attempt_number >= MAX_RECOVERY_ATTEMPTS
+        and checkpoint.validated_poc_ref is None
+        and len(checkpoint.output_refs) >= 2
+    ):
+        return "INCONCLUSIVE"
+    return None
+
+
+def terminal_gate_outcome(
+    checkpoint: StageCheckpoint | None,
+) -> Literal["REJECT", "INCONCLUSIVE"] | None:
+    """Return a non-reportable terminal decision, never an execution failure."""
+
+    if (
+        checkpoint is None
+        or checkpoint.stage is not SimpleStage.TECH_GATE_DONE
+        or checkpoint.status is not StageStatus.SUCCEEDED
+        or checkpoint.stage_version != STAGE_VERSION[SimpleStage.TECH_GATE_DONE]
+    ):
+        return None
+    if checkpoint.gate_decision == "REJECT":
+        return "REJECT"
+    if checkpoint.gate_decision == "REVISE" and checkpoint.gate_revision_count >= 2:
+        return "INCONCLUSIVE"
+    return None

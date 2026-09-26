@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.call_queue import RunUsageBudget
-from sastsimi.simple_runtime.models import CheckpointIdentity
+from sastsimi.simple_runtime.models import CheckpointIdentity, SimpleAnalysisRun
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
@@ -113,3 +114,64 @@ def test_known_usage_ceiling_blocks_next_call(tmp_path: Path) -> None:
     failure = budget.check()
     assert failure is not None
     assert failure.code == "LLM_TOKEN_BUDGET_EXHAUSTED"
+
+
+def test_elapsed_budget_uses_durable_llm_attempt_time_not_analysis_age(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-elapsed",
+        workspace_id="workspace-elapsed",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    store = SimpleCheckpointStore(artifacts.paths.database)
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="https://example.invalid/repo.git",
+            started_at=datetime.now(UTC) - timedelta(days=7),
+        )
+    )
+    ref = artifacts.put_json({"kind": "attempt"})
+    store.record_llm_attempt(
+        attempt_id="first",
+        analysis_id=identity.analysis_id,
+        agent="hypothesis",
+        model="test",
+        attempt_number=1,
+        status="SUCCEEDED",
+        elapsed_ms=499,
+        input_tokens=None,
+        output_tokens=None,
+        cost_cents=None,
+        artifact_ref=ref,
+    )
+    reopened = SimpleCheckpointStore(store.database_path)
+    budget = RunUsageBudget(
+        store=reopened,
+        analysis_id=identity.analysis_id,
+        max_tokens=100,
+        max_cost_minor_units=100,
+        max_elapsed_seconds=1,
+    )
+    assert budget.check() is None
+    reopened.record_llm_attempt(
+        attempt_id="second",
+        analysis_id=identity.analysis_id,
+        agent="verification",
+        model="test",
+        attempt_number=1,
+        status="SUCCEEDED",
+        elapsed_ms=501,
+        input_tokens=None,
+        output_tokens=None,
+        cost_cents=None,
+        artifact_ref=ref,
+    )
+    assert (failure := budget.check()) is not None
+    assert failure.code == "LLM_ELAPSED_BUDGET_EXHAUSTED"
