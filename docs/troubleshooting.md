@@ -9,7 +9,7 @@ sastsimi status A-001
 sastsimi resume A-001
 ```
 
-`resume`은 성공한 앞 단계를 재사용하고 실패한 단계부터 이어갑니다.
+`resume`은 성공한 앞 단계를 재사용하고 `BLOCKED` 단계부터 이어갑니다. `FAILED`는 다시 실행하지 않습니다.
 
 ## `sastsimi` 명령이 없음
 

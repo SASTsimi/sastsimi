@@ -276,6 +276,7 @@ class SimpleCheckpointStore:
         attempt_id: str,
         inherit_from: StageCheckpoint | None = None,
         retry_evidence_refs: tuple[StoredDataRef, ...] = (),
+        repair_attempts: int = 0,
     ) -> StageCheckpoint:
         previous = self.get(identity, stage)
         reusable_state = previous or inherit_from
@@ -292,6 +293,7 @@ class SimpleCheckpointStore:
             image_digest=reusable_state.image_digest if reusable_state else None,
             container_id=reusable_state.container_id if reusable_state else None,
             retry_evidence_refs=retry_evidence_refs,
+            repair_attempts=repair_attempts,
         )
         self._write(
             checkpoint,

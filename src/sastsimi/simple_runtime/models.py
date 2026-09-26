@@ -105,6 +105,7 @@ class StageCheckpoint(ContractModel):
     verdict: Literal["TRUE", "FALSE", "HOLD"] | None = None
     markdown_path: str | None = None
     retry_evidence_refs: tuple[StoredDataRef, ...] = ()
+    repair_attempts: int = 0
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @model_validator(mode="after")

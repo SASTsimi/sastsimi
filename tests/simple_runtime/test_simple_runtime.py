@@ -19,8 +19,10 @@ from sastsimi.simple_runtime.models import (
 )
 from sastsimi.simple_runtime.poc import PoCCandidateRejected, validate_candidate
 from sastsimi.simple_runtime.runner import (
+    MAX_REPAIR_ATTEMPTS,
     SimpleRuntimeRunner,
     StageBlocked,
+    StageFailed,
 )
 from sastsimi.simple_runtime.stages import internal_report_status
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
@@ -245,6 +247,61 @@ async def test_a_retryable_block_hands_its_evidence_to_the_next_attempt(
     await SimpleRuntimeRunner(store, handlers).resume_analysis(_identity())
 
     assert seen == [(_ref("rejected-rules"),)]
+
+
+def _failing_report(calls: list[SimpleStage], code: str) -> dict[SimpleStage, object]:
+    handlers = _recording_handlers(calls)
+
+    async def report(checkpoint: StageCheckpoint, _prior: object) -> StageResult:
+        calls.append(SimpleStage.REPORT_DONE)
+        raise StageFailed(
+            StageFailure(code=code, retryable=False, safe_message="refused")
+        )
+
+    handlers[SimpleStage.REPORT_DONE] = report
+    return handlers
+
+
+@pytest.mark.asyncio
+async def test_a_final_failure_is_not_rerun_on_resume(tmp_path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.FINDING_DONE)
+    calls: list[SimpleStage] = []
+    runner = SimpleRuntimeRunner(
+        store, _failing_report(calls, "REPORT_REQUIRES_FINDING")
+    )
+
+    first = await runner.resume_analysis(_identity())
+    second = await runner.resume_analysis(_identity())
+
+    assert calls == [SimpleStage.REPORT_DONE]
+    assert first.status is second.status is StageStatus.FAILED
+    assert second.error_code == "REPORT_REQUIRES_FINDING"
+
+
+@pytest.mark.asyncio
+async def test_a_wording_failure_gets_bounded_resumes_then_is_final(
+    tmp_path,
+) -> None:
+    # Observed on healthchecks: a report refused for its wording passed on a
+    # later resume, while another kept the same wording on every resume.
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.FINDING_DONE)
+    calls: list[SimpleStage] = []
+    runner = SimpleRuntimeRunner(
+        store, _failing_report(calls, "REPORT_SENSITIVE_CONTENT")
+    )
+
+    outcomes = [
+        (await runner.resume_analysis(_identity())).status
+        for _ in range(MAX_REPAIR_ATTEMPTS + 1)
+    ]
+
+    assert outcomes == [StageStatus.BLOCKED] * (MAX_REPAIR_ATTEMPTS - 1) + [
+        StageStatus.FAILED,
+        StageStatus.FAILED,
+    ]
+    assert len(calls) == MAX_REPAIR_ATTEMPTS
 
 
 def test_report_format_upgrade_reuses_earlier_stages_but_not_old_report(

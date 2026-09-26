@@ -42,7 +42,7 @@ sastsimi status A-001
 sastsimi resume A-001
 ```
 
-`resume`은 저장된 성공 결과와 같은 commit의 Docker image를 재사용하고 실패하거나 끝나지 않은 단계부터 이어갑니다. 성공한 clone·정적 분석·가설·Pro·Con을 다시 실행하지 않습니다.
+`resume`은 저장된 성공 결과와 같은 commit의 Docker image를 재사용하고 `BLOCKED`이거나 끝나지 않은 단계부터 이어갑니다. 성공한 clone·정적 분석·가설·Pro·Con을 다시 실행하지 않습니다. `FAILED`는 최종 실패라 다시 실행하지 않습니다. 단, LLM 형식 오류나 리포트 민감 문구처럼 LLM이 쓴 내용에 따라 달라지는 실패는 `resume` 3회까지 `BLOCKED`로 재시도한 뒤 `FAILED`가 됩니다.
 
 다음 변경은 이전 실행을 억지로 재사용하지 않고 새 분석이 필요할 수 있습니다.
 

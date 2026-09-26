@@ -41,6 +41,19 @@ class StageFailed(Exception):
         self.failure = failure
 
 
+# Failures that hinge on what the model happened to write: another attempt
+# on the same inputs can pass, so each gets a bounded number of resumes before
+# it is final.  Every other FAILED is final on the inputs that produced it.
+REPAIRABLE_CODES = frozenset(
+    {
+        "INVALID_OUTPUT",
+        "REPORT_SENSITIVE_CONTENT",
+        "TRUE_WITHOUT_VALIDATED_POC",
+    }
+)
+MAX_REPAIR_ATTEMPTS = 3
+
+
 class RunOutcome(ContractModel):
     current_stage: SimpleStage
     status: StageStatus
@@ -91,6 +104,18 @@ class SimpleRuntimeRunner:
                     )
                 continue
             existing = self.store.get(identity, stage)
+            repairing = existing is not None and existing.error_code in REPAIRABLE_CODES
+            if (
+                existing is not None
+                and existing.status is StageStatus.FAILED
+                and existing.stage_version == STAGE_VERSION[stage]
+                and not (repairing and existing.repair_attempts < MAX_REPAIR_ATTEMPTS)
+            ):
+                return RunOutcome(
+                    current_stage=stage,
+                    status=StageStatus.FAILED,
+                    error_code=existing.error_code,
+                )
             prior = self.store.prior(identity, stage)
             preceding = next(reversed(prior.values()), None)
             inherit_from = (
@@ -132,6 +157,11 @@ class SimpleRuntimeRunner:
                 attempt_id=attempt_id,
                 inherit_from=inherit_from,
                 retry_evidence_refs=retry_evidence_refs,
+                repair_attempts=(
+                    existing.repair_attempts + 1
+                    if existing is not None and repairing
+                    else 1
+                ),
             )
             handler = self.handlers.get(stage)
             if handler is None:
@@ -153,27 +183,22 @@ class SimpleRuntimeRunner:
             try:
                 with labelled(stage.value, identity.hypothesis_id):
                     result = await handler(checkpoint, prior)
-            except StageBlocked as error:
-                self.store.mark_failure(
-                    checkpoint,
-                    error.failure,
-                    StageStatus.BLOCKED,
+            except (StageBlocked, StageFailed) as error:
+                failure = error.failure
+                status = (
+                    StageStatus.BLOCKED
+                    if isinstance(error, StageBlocked)
+                    else StageStatus.FAILED
                 )
+                if failure.code in REPAIRABLE_CODES:
+                    exhausted = checkpoint.repair_attempts >= MAX_REPAIR_ATTEMPTS
+                    status = StageStatus.FAILED if exhausted else StageStatus.BLOCKED
+                    failure = failure.model_copy(update={"retryable": not exhausted})
+                self.store.mark_failure(checkpoint, failure, status)
                 return RunOutcome(
                     current_stage=stage,
-                    status=StageStatus.BLOCKED,
-                    error_code=error.failure.code,
-                )
-            except StageFailed as error:
-                self.store.mark_failure(
-                    checkpoint,
-                    error.failure,
-                    StageStatus.FAILED,
-                )
-                return RunOutcome(
-                    current_stage=stage,
-                    status=StageStatus.FAILED,
-                    error_code=error.failure.code,
+                    status=status,
+                    error_code=failure.code,
                 )
             except Exception as error:
                 code = getattr(error, "code", "STAGE_UNEXPECTED_ERROR")
