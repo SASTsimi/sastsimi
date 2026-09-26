@@ -21,7 +21,14 @@
 재시도 가능한 오류는 LLM 복구 결정으로 도구 재시도, 생성 입력 재작성 또는 일회용
 Docker 환경 재구성을 최대 3회 수행합니다. 각 결정과 변경은 artifact와 checkpoint에
 남고 `status`와 대시보드에는 현재 복구 시도 횟수가 표시됩니다. 한 계보가 소진되면
-`RECOVERY_EXHAUSTED`로 중단하지만 다른 독립 가설은 계속 처리합니다.
+`RECOVERY_EXHAUSTED`로 중단하지만 다른 독립 가설은 계속 처리합니다. 단,
+복구 상한에 이른 마지막 PoC가 종료 코드 0으로 실행됐는데 해석이
+`INCONCLUSIVE`라면 이는
+실행 오류가 아니라 근거 부족이므로 해당 가설을 제보 불가로 종료합니다.
+`POC_EXECUTION_FAILED`·Docker build·Provider 오류는 여전히 `BLOCKED` 또는
+`FAILED`이며 미확정 판정으로 전환하지 않습니다. 재개 시 예전
+`RECOVERY_EXHAUSTED` PoC 기록도 실행 성공·시도 ID·해석 artifact의 정확한 연결이
+확인된 경우에만 미확정으로 정리합니다.
 
 Technical Gate의 `REVISE`는 같은 Gate만 반복 호출하지 않습니다. 저장소가
 Gate 피드백과 기존 실행 근거를 exact reference로 보존하면서 해당 가설의

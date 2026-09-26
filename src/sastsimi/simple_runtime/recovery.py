@@ -14,10 +14,9 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 
 from .artifacts import SimpleArtifactRepository
-from .models import SimpleStage, StageCheckpoint, StageFailure
+from .models import MAX_RECOVERY_ATTEMPTS, SimpleStage, StageCheckpoint, StageFailure
 from .provider import SimpleLLMClient
 
-MAX_RECOVERY_ATTEMPTS = 3
 _MAX_ENVIRONMENT_PATCH_BYTES = 8 * 1024
 _RECOVERY_TIMEOUT_MS = 120_000
 _PLAYWRIGHT_BROWSERS = ("chromium", "firefox", "webkit")

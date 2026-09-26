@@ -18,6 +18,7 @@ from sastsimi.simple_runtime.application import (
 )
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
+    STAGE_VERSION,
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
@@ -742,3 +743,86 @@ def test_chaining_child_is_added_once_to_durable_analysis_queue(
     assert repeated.hypothesis_ids == updated.hypothesis_ids
     child_id = updated.hypothesis_ids[-1]
     assert updated.chain_depths[child_id] == 1
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "timed_out", "outcome", "stale", "expected_promotions"),
+    [
+        (0, False, "INCONCLUSIVE", False, 1),
+        (0, False, "INCONCLUSIVE", True, 0),
+        (1, False, "INCONCLUSIVE", False, 0),
+        (2, False, "INCONCLUSIVE", False, 0),
+        (0, True, "INCONCLUSIVE", False, 0),
+        (0, False, "SUPPORTED", False, 0),
+    ],
+)
+def test_resume_promotes_only_verified_legacy_poc_inconclusive_exhaustion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exit_code: int,
+    timed_out: bool,
+    outcome: str,
+    stale: bool,
+    expected_promotions: int,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=_runner,
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-legacy",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-legacy",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "exit_code": exit_code,
+            "timed_out": timed_out,
+            "attempt_id": "attempt-3",
+        }
+    )
+    interpretation_ref = artifacts.put_json(
+        {
+            "kind": "simple_dynamic_interpretation",
+            "execution_ref": execution_ref.model_dump(mode="json"),
+            "result": {"outcome": outcome},
+        }
+    )
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.POC_EXECUTION_DONE,
+            stage_version=STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE],
+            status=StageStatus.BLOCKED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(execution_ref, interpretation_ref),
+            error_code="RECOVERY_EXHAUSTED",
+            attempt_number=3,
+            attempt_id="attempt-3",
+        )
+    )
+    if stale:
+
+        def _stale(_checkpoint: StageCheckpoint) -> None:
+            raise ValueError("POC_INCONCLUSIVE_PROMOTION_STALE")
+
+        monkeypatch.setattr(store, "promote_inconclusive_execution", _stale)
+
+    promoted = application._promote_legacy_inconclusive_pocs("analysis-legacy")
+
+    assert promoted == expected_promotions
+    checkpoint = store.require(identity, SimpleStage.POC_EXECUTION_DONE)
+    assert checkpoint.status is (
+        StageStatus.SUCCEEDED if expected_promotions else StageStatus.BLOCKED
+    )
+    assert checkpoint.verdict == ("HOLD" if expected_promotions else None)
+    assert checkpoint.validated_poc_ref is None
+    assert checkpoint.output_refs == (execution_ref, interpretation_ref)

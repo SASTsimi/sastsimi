@@ -33,6 +33,7 @@ class SimpleStage(StrEnum):
 
 STAGE_ORDER: tuple[SimpleStage, ...] = tuple(SimpleStage)
 HYPOTHESIS_STAGES: tuple[SimpleStage, ...] = STAGE_ORDER[2:]
+MAX_RECOVERY_ATTEMPTS = 3
 STAGE_VERSION: dict[SimpleStage, str] = {
     stage: (
         "3"
@@ -143,6 +144,25 @@ class StageFailure(ContractModel):
     safe_message: str
     invalid_field: str | None = None
     evidence_refs: tuple[StoredDataRef, ...] = ()
+
+
+def terminal_poc_outcome(
+    checkpoint: StageCheckpoint | None,
+) -> Literal["INCONCLUSIVE"] | None:
+    """Return a completed, non-reportable PoC observation after bounded attempts."""
+
+    if (
+        checkpoint is not None
+        and checkpoint.stage is SimpleStage.POC_EXECUTION_DONE
+        and checkpoint.status is StageStatus.SUCCEEDED
+        and checkpoint.stage_version == STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
+        and checkpoint.verdict == "HOLD"
+        and checkpoint.attempt_number >= MAX_RECOVERY_ATTEMPTS
+        and checkpoint.validated_poc_ref is None
+        and len(checkpoint.output_refs) >= 2
+    ):
+        return "INCONCLUSIVE"
+    return None
 
 
 def terminal_gate_outcome(

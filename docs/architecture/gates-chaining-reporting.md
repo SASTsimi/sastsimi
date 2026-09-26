@@ -10,6 +10,10 @@ Gate 결정은 가설당 최대 세 번이며, 마지막까지 `REVISE`이면 `I
 명시적인 `REJECT`이면 제보 불가로 종료합니다. 두 경우 모두 Finding·보고서를
 만들지 않습니다.
 
+PoC 실행 자체는 끝났지만 보강 상한까지 관찰 근거가 부족한 경우도
+`INCONCLUSIVE`로 종료하고 Final Verification·CWE·Gate·Finding·Reporter를
+건너뜁니다. 이는 Docker·Provider 실행 실패를 미확정으로 바꾸는 규칙이 아닙니다.
+
 Rule Scope Gate는 공식 정책에 따라 범위와 금지 시험 방식을 검토합니다. 정책상 외부
 제보가 허용되지 않아도 기술 검증 결과를 `FALSE`로 바꾸지 않습니다. Gate 결과는
 Finding과 보고서에 남아 사람이 공개 여부를 판단할 수 있게 합니다.

@@ -36,6 +36,7 @@ from .models import (
 )
 from .poc import PoCCandidateRejected, validate_candidate
 from .provider import SimpleLLMCallResult, SimpleLLMClient
+from .recovery import MAX_RECOVERY_ATTEMPTS
 from .retrieval import collect_requested_sources
 from .runner import SimpleStageHandler, StageBlocked, StageFailed
 from .store import SimpleCheckpointStore
@@ -608,7 +609,7 @@ class PoCExecutionStage:
                     evidence_refs=(*evidence_refs, cleanup_ref),
                 )
             ) from execution_error
-        if outcome.timed_out or outcome.exit_code >= 2:
+        if outcome.timed_out or outcome.exit_code not in (0, 1):
             raise StageBlocked(
                 StageFailure(
                     code="POC_EXECUTION_FAILED",
@@ -660,6 +661,45 @@ artifact. Do not reinterpret an execution error as DISPROVED.
         )
         outcome_name = interpreted.value["outcome"]
         if outcome_name == "INCONCLUSIVE":
+            if outcome.exit_code != 0:
+                raise StageBlocked(
+                    StageFailure(
+                        code="POC_EXECUTION_FAILED",
+                        retryable=True,
+                        safe_message=(
+                            "Nonzero PoC exit did not produce usable counterevidence"
+                        ),
+                        evidence_refs=(
+                            execution_ref,
+                            stdout_ref,
+                            stderr_ref,
+                            interpretation_ref,
+                        ),
+                    )
+                )
+            if checkpoint.attempt_number >= MAX_RECOVERY_ATTEMPTS:
+                return StageResult(
+                    output_refs=(execution_ref, interpretation_ref, cleanup_ref),
+                    verdict="HOLD",
+                    recipe_ref=candidate.recipe_ref,
+                    image_digest=candidate.image_digest,
+                    container_id=container_id,
+                    activity_events=(
+                        _activity_event(
+                            checkpoint,
+                            ActivityKind.TOOL_COMPLETED,
+                            offset=10,
+                            summary_ko=(
+                                "PoC 실행은 완료했으나 보강 상한까지 근거가 "
+                                "부족해 미확정으로 기록했습니다."
+                            ),
+                            output_refs=(execution_ref, interpretation_ref),
+                            tool_name="docker",
+                            tool_result_refs=(execution_ref, interpretation_ref),
+                            llm=interpreted,
+                        ),
+                    ),
+                )
             raise StageBlocked(
                 StageFailure(
                     code="POC_INCONCLUSIVE",

@@ -19,6 +19,7 @@ from .models import (
     StageStatus,
     input_reference_hash,
     terminal_gate_outcome,
+    terminal_poc_outcome,
 )
 from .recovery import (
     MAX_RECOVERY_ATTEMPTS,
@@ -106,6 +107,11 @@ class SimpleRuntimeRunner:
                 input_refs = self.store.input_refs_for(identity, stage)
                 if self.store.reusable(identity, stage, input_refs):
                     reusable = self.store.require(identity, stage)
+                    if terminal_poc_outcome(reusable) is not None:
+                        return RunOutcome(
+                            current_stage=stage,
+                            status=StageStatus.SUCCEEDED,
+                        )
                     if (
                         stage is SimpleStage.VERIFICATION_FINAL_DONE
                         and reusable.verdict == "FALSE"
@@ -212,6 +218,11 @@ class SimpleRuntimeRunner:
                     )
                 else:
                     completed = self.store.complete(checkpoint, result)
+                    if terminal_poc_outcome(completed) is not None:
+                        return RunOutcome(
+                            current_stage=stage,
+                            status=StageStatus.SUCCEEDED,
+                        )
                     if (
                         stage is SimpleStage.VERIFICATION_FINAL_DONE
                         and completed.verdict == "FALSE"

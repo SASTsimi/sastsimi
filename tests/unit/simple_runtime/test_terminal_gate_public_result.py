@@ -30,6 +30,7 @@ from sastsimi.simple_runtime.models import (
     StageCheckpoint,
     StageStatus,
     input_reference_hash,
+    terminal_poc_outcome,
 )
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
@@ -42,6 +43,30 @@ def _ref(name: str) -> StoredDataRef:
         workspace_id=WorkspaceId("workspace-1"),
         commit_id=CommitId("a" * 40),
         record_id=None,
+    )
+
+
+@pytest.mark.parametrize("attempt_number", [1, 2, 3])
+def test_terminal_poc_requires_exhausted_attempt(attempt_number: int) -> None:
+    checkpoint = StageCheckpoint(
+        identity=CheckpointIdentity(
+            analysis_id="analysis-1",
+            workspace_id="workspace-1",
+            commit_id="a" * 40,
+            hypothesis_id="hypothesis-1",
+        ),
+        stage=SimpleStage.POC_EXECUTION_DONE,
+        stage_version=STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE],
+        status=StageStatus.SUCCEEDED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        output_refs=(_ref("execution"), _ref("interpretation")),
+        attempt_number=attempt_number,
+        verdict="HOLD",
+    )
+
+    assert terminal_poc_outcome(checkpoint) == (
+        "INCONCLUSIVE" if attempt_number == 3 else None
     )
 
 
@@ -142,3 +167,58 @@ def test_public_result_and_dashboard_agree_on_inconclusive_gate(
     payload = json.loads(capsys.readouterr().out)
     assert payload["data"]["status"] == "COMPLETE"
     assert payload["data"]["inconclusive_hypothesis_count"] == 1
+
+
+def test_dashboard_shows_completed_inconclusive_poc_without_finding(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    store = SimpleCheckpointStore(data_dir / "db" / "sastsimi.sqlite3")
+    display = AnalysisDisplayIdStore(store.database_path).get_or_allocate(
+        "analysis-poc"
+    )
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id="analysis-poc",
+            display_analysis_id=display,
+            workspace_id="workspace-1",
+            commit_id="a" * 40,
+            repository="https://example.invalid/repo.git",
+            hypothesis_ids=("hypothesis-poc",),
+        )
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-poc",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-poc",
+    )
+    for stage in (
+        SimpleStage.PRO_CON_DONE,
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+        SimpleStage.POC_CANDIDATE_DONE,
+        SimpleStage.POC_EXECUTION_DONE,
+    ):
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=identity,
+                stage=stage,
+                stage_version=STAGE_VERSION[stage],
+                status=StageStatus.SUCCEEDED,
+                input_refs=(),
+                input_hash=input_reference_hash(()),
+                output_refs=(_ref(stage.value), _ref("interpretation"))
+                if stage is SimpleStage.POC_EXECUTION_DONE
+                else (_ref(stage.value),),
+                verdict="HOLD" if stage is SimpleStage.POC_EXECUTION_DONE else None,
+                attempt_number=3,
+            )
+        )
+
+    dashboard = DashboardQuery(data_dir).get_analysis(display)
+
+    assert dashboard.status == "COMPLETE"
+    assert dashboard.progress_percent == 100
+    assert dashboard.finding_count == 0
+    assert dashboard.hypotheses[0].disposition == "INCONCLUSIVE"
+    assert dashboard.hypotheses[0].validated_poc is False

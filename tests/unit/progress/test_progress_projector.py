@@ -124,6 +124,45 @@ def test_false_is_terminal_without_becoming_a_failed_analysis(tmp_path: Path) ->
     assert snapshot.skipped_units > 0
 
 
+def test_executed_inconclusive_poc_is_complete_but_not_reportable(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    for stage in (
+        SimpleStage.PRO_CON_DONE,
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+        SimpleStage.POC_CANDIDATE_DONE,
+    ):
+        _save(store, identity, stage)
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.POC_EXECUTION_DONE,
+            stage_version=STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE],
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(_ref("execution"), _ref("interpretation")),
+            verdict="HOLD",
+            attempt_number=3,
+        )
+    )
+
+    snapshot = ProgressProjector(store).snapshot("analysis-1")
+
+    assert snapshot.status == "COMPLETE"
+    assert snapshot.percent == 100
+    assert snapshot.inconclusive_hypothesis_count == 1
+    assert snapshot.rejected_hypothesis_count == 0
+    assert snapshot.skipped_units == len(HYPOTHESIS_STAGES) - 4
+
+
 def test_new_child_expands_denominator_without_losing_progress(tmp_path: Path) -> None:
     store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
     parent = CheckpointIdentity(

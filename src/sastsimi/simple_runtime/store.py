@@ -884,6 +884,70 @@ class SimpleCheckpointStore:
         )
         return exhausted
 
+    def promote_inconclusive_execution(
+        self, exhausted: StageCheckpoint
+    ) -> StageCheckpoint:
+        """Atomically preserve an executed, evidence-checked PoC as non-reportable."""
+
+        if (
+            exhausted.stage is not SimpleStage.POC_EXECUTION_DONE
+            or exhausted.stage_version != STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
+            or exhausted.status is not StageStatus.BLOCKED
+            or exhausted.error_code != "RECOVERY_EXHAUSTED"
+            or exhausted.attempt_number < MAX_RECOVERY_ATTEMPTS
+            or len(exhausted.output_refs) != 2
+            or exhausted.validated_poc_ref is not None
+        ):
+            raise ValueError("POC_INCONCLUSIVE_PROMOTION_INVALID")
+        completed = exhausted.model_copy(
+            update={
+                "status": StageStatus.SUCCEEDED,
+                "verdict": "HOLD",
+                "error_code": None,
+                "retryable": False,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (
+                    exhausted.identity.analysis_id,
+                    self._hypothesis_key(exhausted.identity),
+                    exhausted.stage.value,
+                ),
+            ).fetchone()
+            if (
+                row is None
+                or StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                != exhausted
+            ):
+                raise ValueError("POC_INCONCLUSIVE_PROMOTION_STALE")
+            self._upsert_checkpoint_connection(connection, completed)
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    completed,
+                    ActivityKind.STAGE_COMPLETED,
+                    sequence=self._stage_sequence(completed.stage, 2),
+                    status=StageStatus.SUCCEEDED,
+                    summary_ko=(
+                        "완료된 PoC 실행의 반복된 근거 부족을 미확정으로 기록했습니다."
+                    ),
+                    output_refs=completed.output_refs,
+                ),
+            )
+            connection.commit()
+            return completed
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def _recovery_event(
         self,
         connection: sqlite3.Connection,

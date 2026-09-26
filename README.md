@@ -140,6 +140,7 @@ Reporter는 검증 결과, CWE, validated PoC와 Gate 결과에 없는 새로운
 - CodeQL은 query pack이 포함된 공식 platform bundle이 필요합니다. 준비되지 않으면 `full` 프로필을 활성화하지 않습니다.
 - 인증 실패, 도구 미설치, timeout, Docker build 실패와 LLM 출력 오류는 취약점 `FALSE`로 바꾸지 않고 `BLOCKED` 또는 판정 없는 `FAILED`로 기록합니다.
 - Technical Gate가 근거 보완을 요구하면 PoC 후보·Docker 실행·최종 검증부터 다시 수행합니다. 최대 세 번의 Gate 결정 후에도 승인되지 않으면 해당 가설은 `INCONCLUSIVE`, 명시적으로 거절되면 `REJECT`로 끝나며 Finding·보고서를 만들지 않습니다. 다른 가설도 모두 종료되고 실행 오류가 없을 때만 분석 전체가 `COMPLETE`가 됩니다. `COMPLETE`는 취약점 발견이나 제보 가능을 뜻하지 않습니다.
+- PoC 복구 시도 상한에 도달한 마지막 실행이 정상 종료(종료 코드 0)됐지만 해석 근거가 부족하면 가설을 `INCONCLUSIVE`로 종료합니다. 검증된 PoC·Finding·보고서는 만들지 않으며, Docker 실행 자체가 실패한 경우는 이 판정에 포함하지 않습니다.
 - Docker·인증·Provider·DB 등 실행 오류는 위의 미확정 판정으로 바꾸지 않으며 `BLOCKED` 또는 `FAILED`로 남습니다.
 - Codex CLI 경로의 요청별 토큰·비용은 현재 미제공입니다. 설정된 토큰·비용 상한으로 실제 사용량을 강제할 수 없으므로 계정 사용량을 별도로 확인하세요. 자세한 내용은 [Provider 설정](docs/provider-setup.md#codex-회원-로그인)을 참고하세요.
 - `max_elapsed_seconds`는 재개 간 기록된 LLM 호출시간의 누적 한도입니다. 한도를 넘기면 성공한 작업은 보존하고 중단하며, 추가 사용을 승인한 경우 설정 한도를 높인 후 `resume`할 수 있습니다.

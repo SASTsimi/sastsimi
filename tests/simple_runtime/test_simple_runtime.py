@@ -907,4 +907,44 @@ async def test_resume_can_record_new_recovery_after_prior_stop_on_same_attempt(
     }
 
 
+@pytest.mark.asyncio
+async def test_terminal_inconclusive_poc_skips_final_verification_and_resume(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "poc-inconclusive" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.POC_CANDIDATE_DONE)
+    poc_inputs = store.input_refs_for(_identity(), SimpleStage.POC_EXECUTION_DONE)
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=_identity(),
+            stage=SimpleStage.POC_EXECUTION_DONE,
+            stage_version=STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE],
+            status=StageStatus.PENDING,
+            input_refs=poc_inputs,
+            input_hash=input_reference_hash(poc_inputs),
+            attempt_number=2,
+        )
+    )
+    calls: list[SimpleStage] = []
+    handlers = _recording_handlers(calls)
+
+    async def inconclusive(_checkpoint: StageCheckpoint, _prior: object) -> StageResult:
+        calls.append(SimpleStage.POC_EXECUTION_DONE)
+        return StageResult(
+            output_refs=(_ref("execution-observation"), _ref("interpretation")),
+            verdict="HOLD",
+        )
+
+    handlers[SimpleStage.POC_EXECUTION_DONE] = inconclusive
+    runner = SimpleRuntimeRunner(store, handlers, recovery=_Recovery(tmp_path))
+
+    first = await runner.resume_hypothesis(_identity())
+    second = await runner.resume_hypothesis(_identity())
+
+    assert first.status is second.status is StageStatus.SUCCEEDED
+    assert first.current_stage is second.current_stage is SimpleStage.POC_EXECUTION_DONE
+    assert calls == [SimpleStage.POC_EXECUTION_DONE]
+    assert store.get(_identity(), SimpleStage.VERIFICATION_FINAL_DONE) is None
+
+
 # mypy: disable-error-code="arg-type,no-untyped-def"

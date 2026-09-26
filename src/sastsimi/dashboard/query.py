@@ -23,6 +23,7 @@ from sastsimi.simple_runtime.models import (
     StageCheckpoint,
     StageStatus,
     terminal_gate_outcome,
+    terminal_poc_outcome,
 )
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
@@ -374,6 +375,10 @@ class DashboardQuery:
             ),
             None,
         )
+        execution = next(
+            (item for item in values if item.stage is SimpleStage.POC_EXECUTION_DONE),
+            None,
+        )
         gate = next(
             (item for item in values if item.stage is SimpleStage.TECH_GATE_DONE),
             None,
@@ -390,7 +395,7 @@ class DashboardQuery:
             stage_count=len(values),
             error_code=progress.error_code,
             verdict=final.verdict if final else None,
-            disposition=terminal_gate_outcome(gate),
+            disposition=terminal_poc_outcome(execution) or terminal_gate_outcome(gate),
             resume_available=(
                 progress.status in {"BLOCKED", "FAILED"}
                 and any(item.retryable for item in values)

@@ -11,6 +11,7 @@ from sastsimi.simple_runtime.models import (
     StageCheckpoint,
     StageStatus,
     terminal_gate_outcome,
+    terminal_poc_outcome,
 )
 
 from .models import ProgressSnapshot
@@ -57,6 +58,14 @@ class ProgressProjector:
                 ),
                 None,
             )
+            execution = next(
+                (
+                    item
+                    for item in values
+                    if item.stage is SimpleStage.POC_EXECUTION_DONE
+                ),
+                None,
+            )
             report = next(
                 (
                     item
@@ -71,7 +80,19 @@ class ProgressProjector:
                 None,
             )
             gate_outcome = terminal_gate_outcome(gate)
-            if final is not None and final.verdict in {"FALSE", "HOLD"}:
+            if terminal_poc_outcome(execution) is not None:
+                execution_index = HYPOTHESIS_STAGES.index(
+                    SimpleStage.POC_EXECUTION_DONE
+                )
+                present_after = sum(
+                    item.stage in HYPOTHESIS_STAGES[execution_index + 1 :]
+                    and item.status is StageStatus.SUCCEEDED
+                    for item in values
+                )
+                skipped += len(HYPOTHESIS_STAGES[execution_index + 1 :]) - present_after
+                terminal_hypotheses += 1
+                inconclusive_hypotheses += 1
+            elif final is not None and final.verdict in {"FALSE", "HOLD"}:
                 final_index = HYPOTHESIS_STAGES.index(
                     SimpleStage.VERIFICATION_FINAL_DONE
                 )

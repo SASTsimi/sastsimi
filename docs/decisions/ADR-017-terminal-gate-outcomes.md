@@ -22,6 +22,9 @@ CWE·Gate를 다시 수행합니다. 재시작은 하위 checkpoint를 원자적
 
 Gate 결정은 가설당 최대 세 번으로 제한하고 수정 횟수를 PoC 스크립트 복구 횟수와
 별도로 영속화합니다. 세 번째 결정도 `REVISE`이면 `INCONCLUSIVE`로 종료합니다.
+또한 복구 상한에 이른 마지막 PoC가 Docker 안에서 종료 코드 0으로 실행됐지만
+해석 결과가 `INCONCLUSIVE`이면 해당 가설을 `HOLD`·제보 불가로 종료합니다. 실행 자체의
+실패와 timeout은 이 조건에 포함하지 않습니다.
 `REJECT`와 `INCONCLUSIVE`는 Finding·보고서가 없는 분석상 종료입니다. 다른 가설도
 모두 종료하고 운영 오류가 없을 때 분석은 `COMPLETE`가 되지만 이는 취약점 발견,
 반증 또는 외부 제보 승인을 의미하지 않습니다. 실행 실패, 잘못된 출력, 인증·Docker·
@@ -33,7 +36,10 @@ DB 문제는 기존 오류 코드와 `BLOCKED`/`FAILED`로 남으며 `INCONCLUSI
 CLI, 진행률, 대시보드는 같은 Gate 종료 규칙을 사용합니다. 현재 Gate의 checkpoint와
 artifact가 모두 `ACCEPT`가 아니면 과거 Finding·보고서 파일이 남아 있어도 최신
 결과로 노출하지 않습니다. 완료된 Agent·PoC 작업은 `resume`에서 중복 실행하지
-않습니다. 과거 분석 기록은 소급 변경하지 않으며 새 분석으로 동작을 검증합니다.
+않습니다. 일반적인 과거 분석 기록을 소급 변경하지 않습니다. 다만 명시적
+`resume` 시 과거 PoC의 `RECOVERY_EXHAUSTED` 기록이 세 번째 실행 성공과
+`INCONCLUSIVE` 해석을 같은 attempt·정확한 artifact 참조로 증명하면 그
+checkpoint만 미확정으로 정리합니다. 다른 오류는 그대로 유지합니다.
 
 이 결정은 [ADR-016](./ADR-016-maintainable-workflow-packages.md)에 적힌 과거
 Technical `REVISE` 실행 경로 설명을 현재 `simple_runtime`에 한해 대체합니다.

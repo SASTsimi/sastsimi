@@ -114,6 +114,14 @@ Python Playwright가 PoC 실행 중 `BrowserType.launch: Executable doesn't exis
 지원되지 않으면 실행 오류로 `BLOCKED`에 남깁니다. 대상 저장소나 호스트 파일은
 수정하지 않고 PoC 런타임 네트워크 차단도 해제하지 않습니다.
 
+`POC_INCONCLUSIVE`는 스크립트 실행이 완료됐지만 출력만으로 가설을 지지하거나
+반증할 수 없다는 뜻입니다. 제한된 횟수 안에서 PoC 입력을 보강하고,
+복구 상한에 이른 마지막 실행이 종료 코드 0이면서 여전히 근거 부족이면
+가설을 `INCONCLUSIVE`·제보 불가로 종료합니다.
+전체 가설이 분석상 종료되고 다른 실행 오류가 없으면 분석 상태는 `COMPLETE`입니다.
+반면 `POC_EXECUTION_FAILED`와 Docker/Provider 오류는 완료된 관찰이 아니므로
+계속 `BLOCKED` 또는 판정 없는 `FAILED`로 남습니다.
+
 PoC 초안은 validated PoC가 아닙니다. 같은 attempt에서 실제 실행이 성공하고 가설을 지지해야만 validated PoC가 됩니다.
 
 PoC Agent에는 Pro·Con Agent가 요청한 저장소 상대 경로 중 고정 commit의 Git 추적 파일만 전달합니다. 본문은 현재 작업 폴더가 아니라 고정 commit의 Git blob에서 읽어 재개 중 파일 변경의 영향을 받지 않습니다. 경로 이탈, 심볼릭 링크, 비추적 파일과 크기 한도 초과 파일은 거부하고 `simple_requested_sources` artifact에 제공·거부 내역을 남깁니다. PoC 단계는 원본 소스 총량 128,000바이트, 요청 경로 32개, JSON 변환 후 프롬프트 source artifact 96,000바이트로 제한합니다. 큰 파일은 내용을 읽기 전에 거부하고, 포장 후 한도를 넘는 파일은 `PROMPT_BUDGET_EXHAUSTED`로 남깁니다. 이 근거 제공은 재현 코드의 성공을 보장하지 않습니다.
