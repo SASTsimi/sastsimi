@@ -92,6 +92,26 @@ def test_config_error_and_internal_error_do_not_leak(
     assert output.out == ""
     assert "TEST_ONLY_SECRET" not in output.err
     assert "/home/" not in output.err
+    event = json.loads(output.err.splitlines()[0])
+    assert event["event"] == "internal_error"
+    assert event["fields"]["error_type"] == "RuntimeError"
+
+
+def test_pre_dispatch_error_names_the_requested_command(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from sastsimi import bootstrap
+    from sastsimi.interfaces.cli.main import main
+
+    def broken_config(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("TEST_ONLY_SECRET")
+
+    monkeypatch.setattr(bootstrap, "build_config", broken_config)
+    assert main(["status", "A-001", "--format", "json"]) == 10
+    output = capsys.readouterr()
+    assert "TEST_ONLY_SECRET" not in output.err
+    payload = json.loads(output.err.splitlines()[-1])
+    assert payload["command"] == "status"
 
 
 def test_entrypoints_help_and_doctor_read_only(

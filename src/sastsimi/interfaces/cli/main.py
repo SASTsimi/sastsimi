@@ -407,6 +407,7 @@ def main(
     try:
         raw_argv = list(sys.argv[1:]) if argv is None else argv
         args = parser.parse_args(_normalize_public_argv(raw_argv))
+        command_name = str(args.command or "doctor")
         requested_output = getattr(args, "format", None)
         if requested_output is not None:
             output_format = requested_output
@@ -992,14 +993,22 @@ def main(
         code = ExitCode.INTEGRITY_ERROR
     except public_command.PublicCommandUnavailable:
         code = ExitCode.CONFIG_ERROR
-    except Exception:
+    except Exception as error:
         trace_id = "trace-" + str(uuid4())
         logger = bootstrap.build_diagnostic_logger(sys.stderr, "ERROR")
         logger.error(
-            bootstrap.diagnostic_event("internal_error", {}, trace_id=trace_id)
+            bootstrap.diagnostic_event(
+                "internal_error",
+                {"error_type": type(error).__name__},
+                trace_id=trace_id,
+            )
         )
         emit_result(
-            ExitCode.INTERNAL_ERROR, output_format, sys.stderr, trace_id=trace_id
+            ExitCode.INTERNAL_ERROR,
+            output_format,
+            sys.stderr,
+            command=command_name,
+            trace_id=trace_id,
         )
         return int(ExitCode.INTERNAL_ERROR)
     emit_result(code, output_format, sys.stderr, command=command_name)
