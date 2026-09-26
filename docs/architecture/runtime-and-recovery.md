@@ -30,6 +30,11 @@ Docker 환경 재구성을 최대 3회 수행합니다. 각 결정과 변경은 
 `RECOVERY_EXHAUSTED` PoC 기록도 실행 성공·시도 ID·해석 artifact의 정확한 연결이
 확인된 경우에만 미확정으로 정리합니다.
 
+분석 ID별 OS 파일 잠금은 `analyze`부터 완료까지와 `resume` 전체를 보호합니다.
+동시 재개 요청은 두 번째 Agent·PoC 작업을 실행하지 않고 현재 상태와
+`ANALYSIS_ALREADY_RUNNING` 이유를 돌려줍니다. 잠금 파일은 남겨 두되 잠금 자체는
+프로세스 종료 시 해제되므로 강제 종료 뒤에도 정상적인 `resume`이 가능합니다.
+
 Technical Gate의 `REVISE`는 같은 Gate만 반복 호출하지 않습니다. 저장소가
 Gate 피드백과 기존 실행 근거를 exact reference로 보존하면서 해당 가설의
 `POC_CANDIDATE_DONE`을 새 시도로 원자적으로 준비하고, 이후 PoC 실행·최종

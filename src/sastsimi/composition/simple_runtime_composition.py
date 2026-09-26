@@ -384,11 +384,14 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             build_analysis_application(self._config, self._profile).resume(analysis_id)
         )
         run = self._store.require_analysis_run(outcome.identity.analysis_id)
-        return self._outcome(
+        data = self._outcome(
             outcome.display_analysis_id,
             run.repository,
             run.commit_id,
         )
+        if outcome.error_code == "ANALYSIS_ALREADY_RUNNING":
+            data["resume_skipped_reason"] = outcome.error_code
+        return data
 
     def resume_with_progress(
         self,
@@ -405,11 +408,14 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
 
         outcome = asyncio.run(run())
         stored = self._store.require_analysis_run(outcome.identity.analysis_id)
-        return self._outcome(
+        data = self._outcome(
             outcome.display_analysis_id,
             stored.repository,
             stored.commit_id,
         )
+        if outcome.error_code == "ANALYSIS_ALREADY_RUNNING":
+            data["resume_skipped_reason"] = outcome.error_code
+        return data
 
     async def _track(
         self,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import Mapping
 from pathlib import Path
@@ -9,6 +10,7 @@ import pytest
 
 from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.simple_runtime.application import (
     HypothesisSeed,
     SimpleAnalysisApplication,
@@ -33,7 +35,7 @@ from sastsimi.simple_runtime.recovery import (
     RecoveryDecision,
     RecoveryResolution,
 )
-from sastsimi.simple_runtime.runner import SimpleRuntimeRunner, StageBlocked
+from sastsimi.simple_runtime.runner import RunOutcome, SimpleRuntimeRunner, StageBlocked
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
@@ -132,6 +134,74 @@ def _runner(
 
         handlers[stage] = handle
     return SimpleRuntimeRunner(store, handlers)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_resume_does_not_repeat_gate_replay_or_raise_stale(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    display = AnalysisDisplayIdStore(store.database_path).get_or_allocate(
+        "analysis-concurrent"
+    )
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id="analysis-concurrent",
+            display_analysis_id=display,
+            workspace_id="workspace-1",
+            commit_id="a" * 40,
+            repository="https://example.invalid/repo.git",
+            workspace_path=tmp_path / "workspaces" / "workspace-1",
+            repository_profile_ref=_ref("repository-profile"),
+            static_bundle_ref=_ref("static-bundle"),
+            hypothesis_ids=("hypothesis-1",),
+        )
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    duplicate_calls = 0
+
+    class FirstRunner:
+        async def resume_hypothesis(self, _identity: CheckpointIdentity) -> RunOutcome:
+            entered.set()
+            await release.wait()
+            return RunOutcome(
+                current_stage=SimpleStage.POC_CANDIDATE_DONE,
+                status=StageStatus.BLOCKED,
+                error_code="TEST_PAUSED",
+            )
+
+    class SecondRunner:
+        async def resume_hypothesis(self, _identity: CheckpointIdentity) -> RunOutcome:
+            nonlocal duplicate_calls
+            duplicate_calls += 1
+            raise ValueError("GATE_REVISION_STALE")
+
+    first = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=lambda *_args: FirstRunner(),  # type: ignore[arg-type]
+    )
+    second = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=SimpleCheckpointStore(store.database_path),
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=lambda *_args: SecondRunner(),  # type: ignore[arg-type]
+    )
+
+    active = asyncio.create_task(first.resume(display))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    try:
+        overlapping = await asyncio.wait_for(second.resume(display), timeout=2)
+        assert overlapping.status == "RUNNING"
+        assert overlapping.error_code == "ANALYSIS_ALREADY_RUNNING"
+        assert duplicate_calls == 0
+    finally:
+        release.set()
+        await active
 
 
 @pytest.mark.asyncio

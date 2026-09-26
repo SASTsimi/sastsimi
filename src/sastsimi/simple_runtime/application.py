@@ -34,6 +34,7 @@ from .recovery import (
     RecoveryAction,
     RecoveryCoordinator,
 )
+from .run_lease import AnalysisRunBusy, analysis_run_lease
 from .runner import RunOutcome, SimpleRuntimeRunner
 from .store import SimpleCheckpointStore
 
@@ -143,10 +144,11 @@ class SimpleAnalysisApplication:
             llm_provider=self._llm_provider,
             on_demand_possible=self._on_demand_possible,
         )
-        self._store.save_analysis_run(run)
-        if on_analysis_started is not None:
-            on_analysis_started(analysis_id)
-        return await self._run_static(run, identity)
+        with analysis_run_lease(self._data_dir, analysis_id):
+            self._store.save_analysis_run(run)
+            if on_analysis_started is not None:
+                on_analysis_started(analysis_id)
+            return await self._run_static(run, identity)
 
     async def _run_static(
         self,
@@ -215,6 +217,31 @@ class SimpleAnalysisApplication:
 
     async def resume(self, analysis_id_or_display: str) -> SimpleAnalysisOutcome:
         exact = self._display.resolve(analysis_id_or_display)
+        try:
+            with analysis_run_lease(self._data_dir, exact):
+                return await self._resume_locked(exact)
+        except AnalysisRunBusy:
+            run = self._store.require_analysis_run(exact)
+            checkpoints = self._store.list_checkpoints(exact)
+            current_stage = (
+                max(checkpoints, key=lambda item: item.updated_at).stage
+                if checkpoints
+                else SimpleStage.STATIC_DONE
+            )
+            return SimpleAnalysisOutcome(
+                identity=CheckpointIdentity(
+                    analysis_id=run.analysis_id,
+                    workspace_id=run.workspace_id,
+                    commit_id=run.commit_id,
+                    hypothesis_id=None,
+                ),
+                display_analysis_id=run.display_analysis_id,
+                status="RUNNING",
+                current_stage=current_stage,
+                error_code="ANALYSIS_ALREADY_RUNNING",
+            )
+
+    async def _resume_locked(self, exact: str) -> SimpleAnalysisOutcome:
         run = self._store.require_analysis_run(exact)
         self._promote_legacy_inconclusive_pocs(exact)
         if self._max_elapsed_seconds is not None:
