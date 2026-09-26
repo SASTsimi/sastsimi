@@ -104,11 +104,26 @@ function renderDetail(detail, events) {
     return event;
   }));
   replace("reports", detail.reports.map(item => {
+    const card = el("div", undefined, "card");
     const link = el("a", `${item.display_id} 보고서 열기`);
     link.href = item.url;
     link.target = "_blank";
     link.rel = "noreferrer";
-    return link;
+    card.append(link);
+    const labels = {
+      "report_en.md": "영문 보고서",
+      "report_kr.md": "국문 보고서",
+      "poc.sh": "검증 PoC",
+      "poc.py": "검증 PoC",
+      "bundle.zip": "첨부파일 ZIP"
+    };
+    for (const [name, url] of Object.entries(item.attachment_urls || {})) {
+      const attachment = el("a", labels[name] || name, "report-attachment");
+      attachment.href = url;
+      attachment.download = name.split("/").pop();
+      card.append(attachment);
+    }
+    return card;
   }));
 }
 

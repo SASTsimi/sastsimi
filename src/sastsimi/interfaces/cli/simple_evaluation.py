@@ -10,8 +10,10 @@ from sastsimi.composition.local_codex_binding import build_local_codex_binding
 from sastsimi.config.local_evaluation_profile import load_local_evaluation_profile
 from sastsimi.contracts.ids import AnalysisId, CommitId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.dashboard.query import DashboardNotFound, DashboardQuery
 from sastsimi.orchestration.run_scope_plan import PlannedRunScope
 from sastsimi.providers.codex_subscription import CodexCliProcessRunner
+from sastsimi.reporting.bundle_files import MAX_BUNDLE_ARCHIVE_BYTES
 from sastsimi.runtime.system_support import SystemClock, UUIDIds
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.container import (
@@ -74,6 +76,28 @@ def _report_path_for_result(
     except (OSError, ValueError, TypeError, sqlite3.Error):
         return None
     return report.markdown_path
+
+
+def _bundle_path_for_result(
+    data_dir: Path, identity: CheckpointIdentity, report_path: str | None
+) -> str | None:
+    if report_path is None:
+        return None
+    display_id = Path(report_path).stem
+    try:
+        verified, _ = DashboardQuery(data_dir).report_attachment(
+            identity.analysis_id, display_id, "bundle.zip"
+        )
+        path = data_dir / "reports" / identity.analysis_id / display_id / "bundle.zip"
+        if (
+            path.resolve(strict=True) != path
+            or path.stat().st_size > MAX_BUNDLE_ARCHIVE_BYTES
+            or path.read_bytes() != verified
+        ):
+            return None
+        return path.relative_to(data_dir.resolve()).as_posix()
+    except (DashboardNotFound, OSError, ValueError):
+        return None
 
 
 async def resume(
@@ -207,6 +231,14 @@ async def resume(
         outcome = await runner.resume_hypothesis(identity)
         final = store.get(identity, outcome.current_stage)
         report = store.get(identity, SimpleStage.REPORT_DONE)
+        report_path = _report_path_for_result(
+            store,
+            artifacts,
+            identity,
+            report,
+            policy_snapshot_ref=policy_snapshot_ref,
+            repository_url=repository_url,
+        )
         results.append(
             {
                 "hypothesis_id": identity.hypothesis_id,
@@ -215,14 +247,8 @@ async def resume(
                 "error_code": outcome.error_code,
                 "verdict": store.verdict(identity),
                 "validated_poc": store.validated_poc(identity) is not None,
-                "report_path": _report_path_for_result(
-                    store,
-                    artifacts,
-                    identity,
-                    report,
-                    policy_snapshot_ref=policy_snapshot_ref,
-                    repository_url=repository_url,
-                ),
+                "report_path": report_path,
+                "bundle_path": _bundle_path_for_result(data_dir, identity, report_path),
                 "attempt_number": final.attempt_number if final else 0,
             }
         )

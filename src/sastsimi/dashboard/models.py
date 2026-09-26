@@ -94,6 +94,7 @@ class FindingReportView(ContractModel):
     analysis_id: str
     display_id: str
     url: str
+    attachment_urls: dict[str, str] = {}
 
 
 class AnalysisDetailView(AnalysisSummaryView):

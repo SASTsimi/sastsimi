@@ -9,10 +9,13 @@ from contextlib import contextmanager
 
 import pytest
 
-from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
+from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.dashboard.server import create_server
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
+from sastsimi.reporting.bilingual_bundle import BundleFile
+from sastsimi.reporting.bundle_files import publish_bundle
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
@@ -51,7 +54,7 @@ def seed(data_dir) -> None:
         content_hash=hashlib.sha256(b"finding").hexdigest(),
         workspace_id=WorkspaceId("workspace-1"),
         commit_id=CommitId("commit-1"),
-        record_id=None,
+        record_id=RecordId("finding-record"),
     )
     FindingDisplayIdStore(database).get_or_allocate("analysis-1", finding_ref)
     report = data_dir / "reports" / "analysis-1" / "F-001.md"
@@ -175,6 +178,86 @@ def test_server_serves_exact_report_artifact_not_mutated_file(tmp_path) -> None:
         public = request(f"{base}/reports/analysis-1/F-001.md").read().decode()
 
     assert public == "# 한국어 보고서"
+
+
+def test_server_downloads_only_current_manifest_files(tmp_path) -> None:
+    seed(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    finding = FindingDisplayIdStore.resolve_existing(
+        store.database_path, "analysis-1", "F-001"
+    )
+    poc = b"#!/bin/sh\nprintf ok\n"
+    digest = hashlib.sha256(poc).hexdigest()
+    bundle = publish_bundle(
+        root=tmp_path,
+        analysis_id="analysis-1",
+        display_id="F-001",
+        finding_ref=finding,
+        files=(
+            BundleFile(
+                "report_en.md", b"# English report\n", "text/markdown; charset=utf-8"
+            ),
+            BundleFile(
+                "report_kr.md",
+                "# 한국어 보고서\n".encode(),
+                "text/markdown; charset=utf-8",
+            ),
+            BundleFile("poc.sh", poc, "text/x-shellscript; charset=utf-8"),
+            BundleFile(
+                "evidence/provenance.json",
+                canonical_bytes(
+                    {
+                        "scope_status": "UNCERTAIN",
+                        "poc": {
+                            "path": "poc.sh",
+                            "original_sha256": digest,
+                            "attachment_sha256": digest,
+                            "redacted": False,
+                        },
+                    }
+                ),
+                "application/json",
+            ),
+        ),
+        put_artifact=artifacts.put_bytes,
+    )
+    report = store.require(identity, SimpleStage.REPORT_DONE)
+    store.save_checkpoint(
+        report.model_copy(
+            update={
+                "bundle_manifest_ref": bundle.manifest_ref,
+                "bundle_archive_ref": bundle.archive_ref,
+            }
+        )
+    )
+
+    with running_server(tmp_path) as base:
+        detail = json.loads(request(f"{base}/api/analyses/A-001").read())
+        urls = detail["reports"][0]["attachment_urls"]
+        response = request(f"{base}{urls['poc.sh']}")
+        assert response.status == 200
+        assert response.read() == poc
+        assert (
+            response.headers["Content-Disposition"] == 'attachment; filename="poc.sh"'
+        )
+        assert response.headers["Cache-Control"] == "no-store"
+        assert request(f"{base}{urls['poc.sh']}", method="HEAD").status == 200
+        assert request(f"{base}{urls['bundle.zip']}").read()[:2] == b"PK"
+        assert (
+            request(f"{base}/reports/analysis-1/F-001/files/%2e%2e/poc.sh").status
+            == 404
+        )
+        assert (
+            request(f"{base}/reports/analysis-1/F-001/files/manifest.json").status
+            == 404
+        )
 
 
 def test_server_rejects_non_loopback_bind(tmp_path) -> None:

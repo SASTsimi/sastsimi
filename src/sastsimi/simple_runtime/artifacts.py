@@ -63,6 +63,13 @@ class SimpleArtifactRepository:
             raise ValueError("SIMPLE_RUNTIME_EXACT_REFERENCE_MISMATCH")
         return payload
 
+    def read_bounded(self, ref: StoredDataRef, max_bytes: int) -> bytes:
+        """Read a bounded exact CAS object for public attachment delivery."""
+
+        self._require_scope(ref)
+        with self.artifacts.open_verified_bounded(ref, max_bytes) as stream:
+            return stream.read()
+
     def prompt_context(self, refs: tuple[StoredDataRef, ...]) -> bytes:
         items: list[dict[str, Any]] = []
         used = 0

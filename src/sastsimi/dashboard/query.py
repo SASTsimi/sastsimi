@@ -10,9 +10,19 @@ from pathlib import Path
 from typing import Literal, cast, overload
 
 from sastsimi.config.runtime_paths import RuntimePaths
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.observability.agent_activity import AgentActivityEvent
 from sastsimi.progress.projector import ProgressProjector
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
+from sastsimi.reporting.bundle_files import (
+    MAX_BUNDLE_ARCHIVE_BYTES,
+    MAX_BUNDLE_FILE_BYTES,
+    MAX_BUNDLE_MANIFEST_BYTES,
+    ReportBundleManifest,
+    parse_bundle_manifest,
+    read_bundle_archive,
+    read_bundle_file,
+)
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.gate_guard import technical_gate_accepted
@@ -305,6 +315,113 @@ class DashboardQuery:
         except (LookupError, OSError, ValueError, sqlite3.Error) as error:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
 
+    def _report_bundle(
+        self, analysis_id: str, display_id: str
+    ) -> tuple[ReportBundleManifest, StoredDataRef, SimpleArtifactRepository]:
+        """Authorize the current bundle, not a path found on disk."""
+
+        self.report_path(analysis_id, display_id)
+        try:
+            finding_ref = FindingDisplayIdStore.resolve_existing(
+                self._database, analysis_id, display_id
+            )
+            checkpoints = self._checkpoints()
+            finding = next(
+                item
+                for item in checkpoints
+                if item.identity.analysis_id == analysis_id
+                and item.stage is SimpleStage.FINDING_DONE
+                and item.status is StageStatus.SUCCEEDED
+                and finding_ref in item.output_refs
+            )
+            report = next(
+                item
+                for item in checkpoints
+                if item.identity == finding.identity
+                and item.stage is SimpleStage.REPORT_DONE
+                and item.status is StageStatus.SUCCEEDED
+                and item.stage_version == STAGE_VERSION[SimpleStage.REPORT_DONE]
+                and finding_ref in item.input_refs
+                and item.bundle_manifest_ref is not None
+                and item.bundle_archive_ref is not None
+            )
+            assert report.bundle_manifest_ref is not None
+            assert report.bundle_archive_ref is not None
+            artifacts = SimpleArtifactRepository(self._data_dir, finding.identity)
+            scope = next(
+                (
+                    item
+                    for item in checkpoints
+                    if item.identity == finding.identity
+                    and item.stage is SimpleStage.SCOPE_GATE_DONE
+                ),
+                None,
+            )
+            review = self._scope_review(
+                finding.identity, scope, self._simple_run(analysis_id)
+            )
+            raw_report = artifacts.read(report.output_refs[1])
+            if safe_public_report(raw_report, review) != raw_report:
+                raise ValueError("BUNDLE_SCOPE_RESTRICTED")
+            manifest = parse_bundle_manifest(
+                artifacts.read_bounded(
+                    report.bundle_manifest_ref, MAX_BUNDLE_MANIFEST_BYTES
+                ),
+                finding_ref=finding_ref,
+            )
+            if (manifest.analysis_id, manifest.display_id) != (analysis_id, display_id):
+                raise ValueError("BUNDLE_ID_MISMATCH")
+
+            def bounded(ref: StoredDataRef) -> bytes:
+                return artifacts.read_bounded(ref, MAX_BUNDLE_FILE_BYTES)
+
+            provenance_raw, _ = read_bundle_file(
+                manifest, "evidence/provenance.json", bounded
+            )
+            provenance = json.loads(provenance_raw)
+            if not isinstance(provenance, dict) or provenance.get(
+                "scope_status"
+            ) != review.get("status"):
+                raise ValueError("BUNDLE_SCOPE_MISMATCH")
+            for name in ("report_en.md", "report_kr.md"):
+                content, _ = read_bundle_file(manifest, name, bounded)
+                if safe_public_report(content, review) != content:
+                    raise ValueError("BUNDLE_SCOPE_RESTRICTED")
+            return manifest, report.bundle_archive_ref, artifacts
+        except (
+            LookupError,
+            OSError,
+            ValueError,
+            TypeError,
+            StopIteration,
+            sqlite3.Error,
+        ) as error:
+            raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
+
+    def report_attachment(
+        self, analysis_id: str, display_id: str, path: str
+    ) -> tuple[bytes, str]:
+        manifest, archive_ref, artifacts = self._report_bundle(analysis_id, display_id)
+        try:
+            if path == "bundle.zip":
+                return (
+                    read_bundle_archive(
+                        manifest,
+                        archive_ref,
+                        lambda ref: artifacts.read_bounded(
+                            ref, MAX_BUNDLE_ARCHIVE_BYTES
+                        ),
+                    ),
+                    "application/zip",
+                )
+            return read_bundle_file(
+                manifest,
+                path,
+                lambda ref: artifacts.read_bounded(ref, MAX_BUNDLE_FILE_BYTES),
+            )
+        except (OSError, ValueError) as error:
+            raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
+
     @overload
     def _project_analysis(
         self,
@@ -559,9 +676,21 @@ class DashboardQuery:
                     analysis_id=analysis_id,
                     display_id=display_id,
                     url=f"/reports/{analysis_id}/{display_id}.md",
+                    attachment_urls=self._attachment_urls(analysis_id, display_id),
                 )
             )
         return tuple(reports)
+
+    def _attachment_urls(self, analysis_id: str, display_id: str) -> dict[str, str]:
+        try:
+            manifest, _, _ = self._report_bundle(analysis_id, display_id)
+        except DashboardNotFound:
+            return {}
+        prefix = f"/reports/{analysis_id}/{display_id}"
+        return {
+            **{item.path: f"{prefix}/files/{item.path}" for item in manifest.files},
+            "bundle.zip": f"{prefix}/bundle.zip",
+        }
 
     def _full_runtime_summaries(self) -> tuple[AnalysisSummaryView, ...]:
         with self._connect() as connection:

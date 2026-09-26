@@ -48,6 +48,9 @@ class _PublicApplication:
     def export_report(self, finding_id: str) -> str:
         return f"reports/analysis/{finding_id}.md"
 
+    def export_report_bundle(self, finding_id: str) -> str:
+        return f"reports/analysis/{finding_id}/bundle.zip"
+
 
 class _ProgressApplication(_PublicApplication):
     def analyze_with_progress(
@@ -87,6 +90,24 @@ class _BusyPublicApplication(_PublicApplication):
             "percent": 60,
             "resume_skipped_reason": "ANALYSIS_ALREADY_RUNNING",
         }
+
+
+def test_public_report_export_includes_additive_bundle_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        main(
+            ["report", "export", "F-001", "--format", "markdown"],
+            public_application=_PublicApplication(),
+            user_config_store=_config(tmp_path),
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out) == {
+        "finding_id": "F-001",
+        "path": "reports/analysis/F-001.md",
+        "bundle_path": "reports/analysis/F-001/bundle.zip",
+    }
 
 
 def _config(tmp_path: Path) -> UserConfigStore:

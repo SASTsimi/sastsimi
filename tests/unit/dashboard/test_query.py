@@ -7,11 +7,14 @@ from typing import Literal
 
 import pytest
 
-from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
+from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.dashboard.query import DashboardNotFound, DashboardQuery
 from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
+from sastsimi.reporting.bilingual_bundle import BundleFile
+from sastsimi.reporting.bundle_files import parse_bundle_manifest, publish_bundle
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
@@ -36,7 +39,7 @@ def ref(name: str) -> StoredDataRef:
         content_hash=hashlib.sha256(name.encode()).hexdigest(),
         workspace_id=WorkspaceId("workspace-1"),
         commit_id=CommitId("commit-1"),
-        record_id=None,
+        record_id=RecordId("record-finding") if name == "finding" else None,
     )
 
 
@@ -202,6 +205,136 @@ def test_current_accepted_report_remains_accessible(tmp_path) -> None:
 
     assert detail.reports[0].display_id == "F-001"
     assert query.report_path("analysis-a", "F-001") == report_path
+
+
+def _attach_bundle(tmp_path):
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    poc = b"#!/bin/sh\nprintf ok\n"
+    digest = hashlib.sha256(poc).hexdigest()
+    provenance = canonical_bytes(
+        {
+            "scope_status": "UNCERTAIN",
+            "poc": {
+                "path": "poc.sh",
+                "original_sha256": digest,
+                "attachment_sha256": digest,
+                "redacted": False,
+            },
+        }
+    )
+    bundle = publish_bundle(
+        root=tmp_path,
+        analysis_id="analysis-a",
+        display_id="F-001",
+        finding_ref=ref("finding"),
+        files=(
+            BundleFile(
+                "report_en.md", b"# English report\n", "text/markdown; charset=utf-8"
+            ),
+            BundleFile(
+                "report_kr.md",
+                "# 한국어 보고서\n".encode(),
+                "text/markdown; charset=utf-8",
+            ),
+            BundleFile("poc.sh", poc, "text/x-shellscript; charset=utf-8"),
+            BundleFile("evidence/provenance.json", provenance, "application/json"),
+        ),
+        put_artifact=artifacts.put_bytes,
+    )
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    report = store.require(identity, SimpleStage.REPORT_DONE)
+    store.save_checkpoint(
+        report.model_copy(
+            update={
+                "bundle_manifest_ref": bundle.manifest_ref,
+                "bundle_archive_ref": bundle.archive_ref,
+            }
+        )
+    )
+    return identity, bundle
+
+
+def test_current_bundle_lists_only_verified_attachment_urls(tmp_path) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    _attach_bundle(tmp_path)
+    query = DashboardQuery(tmp_path)
+    report = query.get_analysis("analysis-a").reports[0]
+
+    assert report.attachment_urls["report_en.md"].endswith("/files/report_en.md")
+    assert report.attachment_urls["bundle.zip"].endswith("/bundle.zip")
+    assert query.report_attachment("analysis-a", "F-001", "poc.sh")[0] == (
+        b"#!/bin/sh\nprintf ok\n"
+    )
+    assert query.report_attachment("analysis-a", "F-001", "bundle.zip")[1] == (
+        "application/zip"
+    )
+    for invalid in ("../poc.sh", "manifest.json", "other.txt", "evidence/../../poc.sh"):
+        with pytest.raises(DashboardNotFound):
+            query.report_attachment("analysis-a", "F-001", invalid)
+
+
+def test_bundle_download_fails_for_missing_manifest_and_legacy_allow(tmp_path) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    query = DashboardQuery(tmp_path)
+    with pytest.raises(DashboardNotFound):
+        query.report_attachment("analysis-a", "F-001", "poc.sh")
+
+    identity, _ = _attach_bundle(tmp_path)
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    scope_ref = artifacts.put_json({"result": {"status": "ALLOW"}})
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.SCOPE_GATE_DONE,
+            stage_version=STAGE_VERSION[SimpleStage.SCOPE_GATE_DONE],
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(scope_ref,),
+        )
+    )
+    with pytest.raises(DashboardNotFound):
+        query.report_attachment("analysis-a", "F-001", "poc.sh")
+
+
+def test_bundle_download_rejects_tampered_cas_and_stale_finding(tmp_path) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity, bundle = _attach_bundle(tmp_path)
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    manifest = parse_bundle_manifest(
+        artifacts.read(bundle.manifest_ref), finding_ref=ref("finding")
+    )
+    poc_ref = next(
+        item.artifact_ref for item in manifest.files if item.path == "poc.sh"
+    )
+    query = DashboardQuery(tmp_path)
+    assert query.report_attachment("analysis-a", "F-001", "poc.sh")[0]
+    artifacts.artifacts.path_for(poc_ref.content_hash).write_bytes(b"tampered")
+    with pytest.raises(DashboardNotFound):
+        query.report_attachment("analysis-a", "F-001", "poc.sh")
+    with pytest.raises(DashboardNotFound):
+        query.report_attachment("analysis-a", "F-001", "bundle.zip")
+
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    report = store.require(identity, SimpleStage.REPORT_DONE)
+    stale_input = ref("unrelated")
+    store.save_checkpoint(
+        report.model_copy(
+            update={
+                "input_refs": (stale_input,),
+                "input_hash": input_reference_hash((stale_input,)),
+            }
+        )
+    )
+    with pytest.raises(DashboardNotFound):
+        query.report_attachment("analysis-a", "F-001", "report_en.md")
 
 
 def test_dashboard_does_not_treat_legacy_allow_as_report_permission(tmp_path) -> None:
