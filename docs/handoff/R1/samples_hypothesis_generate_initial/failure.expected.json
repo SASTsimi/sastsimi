@@ -1,0 +1,78 @@
+{
+  "_note": {
+    "how_to_read": "must를 전부 만족하고 must_not에 하나도 걸리지 않으면 통과입니다.",
+    "the_point": "이 사례의 정답은 빈 배열입니다. 다만 '빈 배열이면 통과'가 아니라 '빈 배열이면서 안전하다고 말하지 않아야' 통과입니다. must_not 쪽이 실질적인 판정 기준입니다.",
+    "grading": "각 항목의 grading은 판정 방법입니다. auto는 출력 JSON만 보고 코드로 판정할 수 있는 구조·값·개수이고, judgement는 자연어의 의미를 봐야 해서 LLM-judge나 사람 검토가 필요한 항목입니다. 자동 시험에 연결할 때 auto만 하네스가 강제하고 judgement는 별도 경로로 채점해야 합니다.",
+    "gaps_placement": "이 입력의 gaps·errors는 전부 도구 실행에 귀속되므로 각 ToolRunResult 안에만 있고 bundle 최상위는 빈 배열입니다. 최상위만 읽는 판독은 '실패 없음'으로 오독합니다."
+  },
+  "must": [
+    {
+      "id": "M-01",
+      "check": "proposals가 빈 배열이다.",
+      "grading": "auto",
+      "why": "여섯 CodeFact 목록이 모두 비어 있어 인용할 fact_id가 없다. 03이 proposal 필수 항목으로 '관련 entity와 실제 location', observed facts, 근거가 연결된 restrictions를 요구하는데 이 입력에서는 어느 것도 근거를 댈 수 없다. 유일한 entity인 sym-app-module은 빈 패키지 초기화 파일이라 가설의 대상이 되지 않는다."
+    },
+    {
+      "id": "M-02",
+      "check": "출력이 {\"proposals\": []} 형태의 유효한 JSON이며 그 밖의 key를 추가하지 않는다.",
+      "grading": "auto",
+      "why": "03이 출력을 HypothesisProposal[]로 고정한다. 빈 결과에도 같은 형식을 유지한다."
+    }
+  ],
+  "must_not": [
+    {
+      "id": "N-01",
+      "check": "취약점이 없다, 안전하다, 문제를 발견하지 못했다는 취지의 결론을 출력하지 않는다.",
+      "grading": "judgement",
+      "why": "08이 '빈 배열은 후보가 없다는 현재 관찰일 뿐, 안전함이나 검증 완료를 증명하지 않는다'로 정한다. 도구 셋 중 하나가 FAILED, 하나가 PARTIAL, 하나가 SKIPPED이므로 이 입력은 안전함의 근거가 될 수 없다."
+    },
+    {
+      "id": "N-02",
+      "check": "탐지 0건, 검사 완료, 분석 종료 같은 표현으로 도구 실패를 결과 없음으로 바꾸지 않는다.",
+      "grading": "judgement",
+      "why": "02가 'StaticFactBundle.errors가 비었다는 사실만으로 도구가 성공했다고 추정하지 않고 각 tool_runs.status를 확인한다'로 정한다. 못 본 범위를 없는 것으로 바꾸는 것이 이 단계에서 가장 위험한 오작동이다."
+    },
+    {
+      "id": "N-03",
+      "check": "입력에 없는 file_path, 함수명, fact_id, symbol_id를 만들어 proposal을 생성하지 않는다. app/views/orders.py는 gap의 description에만 등장하는 이름이며 CodeFact도 CodeSymbol도 아니다.",
+      "grading": "judgement",
+      "why": "gap 서술에 나온 경로를 근거로 가설을 세우면 관측되지 않은 사실을 만든 것이다. 03의 출력 검증 2단계에서 거절된다."
+    },
+    {
+      "id": "N-04",
+      "check": "tool_runs[].gaps나 tool_runs[].errors의 내용을 observed_facts로 옮기지 않는다.",
+      "grading": "auto",
+      "why": "08이 'StaticFactBundle.gaps의 DataGap은 도구·조회가 실패해 데이터를 얻지 못한 범위이며 가설의 미확인 조건과 다른 것이다'로 구분한다. DataGap은 CodeFact가 아니다."
+    },
+    {
+      "id": "N-05",
+      "check": "도구를 다시 실행해 달라거나 코드를 추가로 읽어 달라고 요청하는 출력을 만들지 않는다.",
+      "grading": "judgement",
+      "why": "재시도 판단은 work 상태와 runtime의 몫이다. Agent는 받은 입력으로 답한다."
+    },
+    {
+      "id": "N-06",
+      "check": "실패 상황을 설명하는 자유 형식 보고문을 proposals 배열 밖에 출력하지 않는다.",
+      "grading": "auto",
+      "why": "출력 계약은 빈 결과에서도 같다. 실패 사실은 이미 각 tool_runs의 status·gaps·errors에 기록되어 있고 runtime이 그것을 읽는다."
+    },
+    {
+      "id": "N-07",
+      "check": "tool_runs[].gaps의 description에 나온 파일명이나 함수명을 observed_facts의 fact_id로 만들지 않는다.",
+      "grading": "auto",
+      "why": "gap은 확인하지 못한 범위이지 관측된 사실이 아니다. 그 이름으로 fact_id를 지어내면 exact bundle 대조에서 거절된다."
+    }
+  ],
+  "downstream_expectation": {
+    "what": "이 결과를 받는 runtime이 해야 하는 처리입니다. R3 구현 확인용입니다.",
+    "steps": [
+      "빈 proposals는 유효한 출력이므로 INVALID_OUTPUT으로 처리하지 않는다.",
+      "등록할 가설이 없으므로 ProposalProcessState도 만들지 않고 중복 판정 LLM도 호출하지 않는다.",
+      "이 분석의 결과에는 정적 도구 실패가 그대로 남아야 한다. AnalysisRunResult는 COMPLETE가 아니라 PARTIAL일 수 있으며, 가설 0건을 취약점 0건으로 보고하지 않는다.",
+      "gap-001과 gap-003은 retryable=true이므로 재시도 정책의 대상이다. gap-002는 retryable=false다."
+    ]
+  },
+  "example_valid_output": {
+    "proposals": []
+  }
+}
