@@ -14,7 +14,9 @@ from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.dashboard.server import create_server
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
+from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
+    STAGE_VERSION,
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
@@ -55,6 +57,36 @@ def seed(data_dir) -> None:
     report = data_dir / "reports" / "analysis-1" / "F-001.md"
     report.parent.mkdir(parents=True)
     report.write_text("# 한국어 보고서", encoding="utf-8")
+    artifacts = SimpleArtifactRepository(data_dir, identity)
+    gate_ref = artifacts.put_json(
+        {"kind": "simple_technical_gate", "result": {"status": "ACCEPT"}}
+    )
+    store = SimpleCheckpointStore(database)
+    for stage, inputs, outputs in (
+        (SimpleStage.TECH_GATE_DONE, (), (gate_ref,)),
+        (SimpleStage.FINDING_DONE, (), (finding_ref,)),
+        (
+            SimpleStage.REPORT_DONE,
+            (finding_ref,),
+            (
+                artifacts.put_json({"kind": "draft"}),
+                artifacts.put_bytes(b"# report", "text/markdown"),
+            ),
+        ),
+    ):
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=identity,
+                stage=stage,
+                stage_version=STAGE_VERSION[stage],
+                status=StageStatus.SUCCEEDED,
+                input_refs=inputs,
+                input_hash=input_reference_hash(inputs),
+                output_refs=outputs,
+                gate_decision="ACCEPT" if stage is SimpleStage.TECH_GATE_DONE else None,
+                markdown_path=str(report) if stage is SimpleStage.REPORT_DONE else None,
+            )
+        )
 
 
 @contextmanager

@@ -38,6 +38,7 @@ function analysisButton(item) {
 }
 
 function recoveryAttempt(item) {
+  if (item.disposition || item.status === "COMPLETE") return null;
   if (item.attempt_number > 1 || item.error_code === "RECOVERY_EXHAUSTED") {
     return el("div", `복구 시도 ${item.attempt_number}/${item.attempt_limit}`, "meta");
   }
@@ -59,7 +60,7 @@ function renderDetail(detail, events) {
       wrap.append(bar);
       return wrap;
     })(),
-    el("div", `진행 ${detail.progress_percent}% · 완료 ${detail.completed_units}/${detail.known_units} · 가설 ${detail.hypothesis_count} · Finding ${detail.finding_count}`, "meta"),
+    el("div", `진행 ${detail.progress_percent}% · 완료 ${detail.completed_units}/${detail.known_units} · 가설 ${detail.hypothesis_count} · Finding ${detail.finding_count} · 미확정 ${detail.inconclusive_hypothesis_count} · 근거 부족 ${detail.rejected_hypothesis_count}`, "meta"),
     el("div", `Primitive 허용 ${detail.admitted_primitive_count} · 제외 ${detail.excluded_primitive_count} · 체이닝 자식 ${detail.child_hypothesis_count}`, "meta"),
     el("div", `commit: ${detail.commit_id || "미확인"}`, "meta")
   );
@@ -67,7 +68,8 @@ function renderDetail(detail, events) {
     const card = el("article", undefined, "card");
     card.append(el("strong", item.hypothesis_id));
     card.append(el("div", `${item.current_stage} · ${item.status}`, "status"));
-    card.append(el("div", `완료 ${item.completed_count}/${item.stage_count} · 판정 ${item.verdict || "미확정"} · PoC ${item.validated_poc ? "검증됨" : "미검증"}`, "meta"));
+    const gateOutcome = item.disposition === "INCONCLUSIVE" ? "Gate 미확정·제보 불가" : item.disposition === "REJECT" ? "Gate 근거 부족·제보 불가" : null;
+    card.append(el("div", `완료 ${item.completed_count}/${item.stage_count} · ${gateOutcome || `판정 ${item.verdict || "미확정"}`} · PoC ${item.validated_poc ? "검증됨" : "미검증"}`, "meta"));
     const attempt = recoveryAttempt(item);
     if (attempt) card.append(attempt);
     if (item.error_code) card.append(el("div", `오류: ${item.error_code}`, "error"));

@@ -19,6 +19,8 @@ class ProgressSnapshot(ContractModel):
     denominator_change_reason: str | None = None
     attempt_number: int = 1
     attempt_limit: int = MAX_RECOVERY_ATTEMPTS
+    inconclusive_hypothesis_count: int = 0
+    rejected_hypothesis_count: int = 0
 
 
 __all__ = ["ProgressSnapshot"]

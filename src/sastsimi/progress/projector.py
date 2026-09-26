@@ -10,6 +10,7 @@ from sastsimi.simple_runtime.models import (
     SimpleStage,
     StageCheckpoint,
     StageStatus,
+    terminal_gate_outcome,
 )
 
 from .models import ProgressSnapshot
@@ -42,6 +43,8 @@ class ProgressProjector:
         known = len(_ANALYSIS_STAGES) if analysis_level else 0
         skipped = 0
         terminal_hypotheses = 0
+        inconclusive_hypotheses = 0
+        rejected_hypotheses = 0
         for values in by_hypothesis.values():
             known += len(HYPOTHESIS_STAGES)
             completed += sum(item.status is StageStatus.SUCCEEDED for item in values)
@@ -63,6 +66,11 @@ class ProgressProjector:
                 ),
                 None,
             )
+            gate = next(
+                (item for item in values if item.stage is SimpleStage.TECH_GATE_DONE),
+                None,
+            )
+            gate_outcome = terminal_gate_outcome(gate)
             if final is not None and final.verdict in {"FALSE", "HOLD"}:
                 final_index = HYPOTHESIS_STAGES.index(
                     SimpleStage.VERIFICATION_FINAL_DONE
@@ -74,6 +82,19 @@ class ProgressProjector:
                 )
                 skipped += len(HYPOTHESIS_STAGES[final_index + 1 :]) - present_after
                 terminal_hypotheses += 1
+            elif gate_outcome is not None:
+                gate_index = HYPOTHESIS_STAGES.index(SimpleStage.TECH_GATE_DONE)
+                present_after = sum(
+                    item.stage in HYPOTHESIS_STAGES[gate_index + 1 :]
+                    and item.status is StageStatus.SUCCEEDED
+                    for item in values
+                )
+                skipped += len(HYPOTHESIS_STAGES[gate_index + 1 :]) - present_after
+                terminal_hypotheses += 1
+                if gate_outcome == "REJECT":
+                    rejected_hypotheses += 1
+                else:
+                    inconclusive_hypotheses += 1
             elif report is not None:
                 terminal_hypotheses += 1
 
@@ -99,6 +120,8 @@ class ProgressProjector:
             current_hypothesis_id=current.identity.hypothesis_id,
             error_code=current.error_code,
             attempt_number=max(1, current.attempt_number),
+            inconclusive_hypothesis_count=inconclusive_hypotheses,
+            rejected_hypothesis_count=rejected_hypotheses,
             denominator_change_reason=(
                 "NEW_HYPOTHESIS_REGISTERED" if len(by_hypothesis) > 1 else None
             ),
