@@ -194,8 +194,7 @@ def _render_report(
         "",
         *(
             f"- {item.file_path}:{item.start_line}-{item.end_line}"
-            for item in facts.allowed_locations
-            if item in citations
+            for item in citations
         ),
         "",
         heading(4),

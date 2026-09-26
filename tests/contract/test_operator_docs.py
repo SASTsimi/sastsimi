@@ -35,7 +35,8 @@ def test_operator_path_is_linked_and_exposes_only_the_product_runtime() -> None:
     assert "sastsimi status A-001" in usage
     assert "sastsimi resume A-001" in usage
     assert "sastsimi dashboard" in usage
-    assert "sastsimi report F-001 --export markdown" in usage
+    assert "sastsimi report show F-001" in usage
+    assert "sastsimi report export F-001 --format markdown" in usage
     assert "demo analyze" not in usage
     assert "Fake로 자동 대체" not in usage
     assert "SimpleRuntime" in usage

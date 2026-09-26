@@ -22,9 +22,9 @@ from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.prompt_redaction import assert_safe_provider_text
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.ports.report_export import ReportUnavailable
 from sastsimi.reporting.bilingual_bundle import BundleFile
-from sastsimi.reporting.markdown_export import (
-    ReportUnavailable,
+from sastsimi.reporting.safe_windows_directory import (
     _capture_directory_identity,
     _guarded_windows_replace_directory,
     _locked_windows_directory,
@@ -265,6 +265,7 @@ def _verify_zip(
     read_verified: Callable[[StoredDataRef], bytes] | None,
 ) -> None:
     try:
+        files: list[BundleFile] = []
         with zipfile.ZipFile(io.BytesIO(body)) as archive:
             info = archive.infolist()
             if tuple(item.filename for item in info) != tuple(
@@ -285,6 +286,9 @@ def _verify_zip(
                     and data != _verified_member(entry, read_verified)
                 ):
                     raise ValueError
+                files.append(BundleFile(entry.path, data, entry.media_type))
+        if body != _zip_bytes(tuple(files)):
+            raise ValueError
     except (OSError, RuntimeError, ValueError, zipfile.BadZipFile) as error:
         raise ValueError("BUNDLE_ARCHIVE_INVALID") from error
 
@@ -425,9 +429,17 @@ def _read_file(directory: _SafeDirectory, name: str, limit: int) -> bytes:
 
 def _write_file(directory: _SafeDirectory, name: str, body: bytes) -> None:
     if directory.fd is None:
-        from sastsimi.reporting.markdown_export import _atomic_write
-
-        _atomic_write(directory.path / name, body, lambda: None)
+        temporary_path = directory.path / f".{name}.{uuid4().hex}.tmp"
+        try:
+            with temporary_path.open("xb") as stream:
+                stream.write(body)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_path, directory.path / name)
+            if _read_file(directory, name, len(body)) != body:
+                raise ValueError("BUNDLE_PUBLISHED_FILE_INVALID")
+        finally:
+            temporary_path.unlink(missing_ok=True)
         return
     temporary = f".{name}.{uuid4().hex}.tmp"
     descriptor = os.open(

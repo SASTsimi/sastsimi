@@ -17,7 +17,10 @@ from sastsimi.contracts.prompt_redaction import (
     redact_untrusted_text,
 )
 from sastsimi.contracts.refs import StoredDataRef
-from sastsimi.contracts.reporting import BilingualReportContent
+from sastsimi.contracts.reporting import (
+    BilingualReportContent,
+    validate_report_content,
+)
 from sastsimi.observability.agent_activity import (
     ActivityKind,
     AgentActivityEvent,
@@ -55,6 +58,7 @@ _POC_TIMEOUT_MS = 120_000
 _POC_SOURCE_CONTEXT_BYTES = 128_000
 _POC_SOURCE_MAX_REQUESTS = 32
 _POC_SOURCE_ARTIFACT_BYTES = 96_000
+_REPORT_DRAFT_MAX_BYTES = 4 * 1024 * 1024
 
 _ROLE_BY_STAGE: dict[SimpleStage, str] = {
     SimpleStage.PRO_CON_DONE: "Pro·Con Agents",
@@ -1563,10 +1567,12 @@ class ReporterStage:
         client: SimpleLLMClient,
         artifacts: SimpleArtifactRepository,
         *,
+        store: SimpleCheckpointStore | None = None,
         policy_snapshot_ref: StoredDataRef | None = None,
         repository_url: str | None = None,
     ) -> None:
         self._artifacts = artifacts
+        self._store = store
         self._policy_snapshot_ref = policy_snapshot_ref
         self._repository_url = repository_url
         self._stage = _StructuredStage(
@@ -1658,9 +1664,8 @@ this local route requires citations=[].
                     safe_message="Reporter requires an exact Technical Gate ACCEPT",
                 )
             )
-        result, draft_ref = await self._stage.call(checkpoint, _prior_refs(prior))
-        content = BilingualReportContent.model_validate_json(
-            canonical_bytes(result.value)
+        result, draft_ref, content, reused_draft = await self._draft(
+            checkpoint, prior, finding.output_refs[0]
         )
         rendered = self._render(
             content.ko.model_dump(mode="json"),
@@ -1708,10 +1713,68 @@ this local route requires citations=[].
                     offset=10,
                     summary_ko="검증된 근거로 한국어 Markdown 보고서를 생성했습니다.",
                     output_refs=(draft_ref, markdown_ref),
-                    llm=result,
+                    llm=None if reused_draft else result,
                 ),
             ),
         )
+
+    async def _draft(
+        self,
+        checkpoint: StageCheckpoint,
+        prior: Mapping[SimpleStage, StageCheckpoint],
+        finding_ref: StoredDataRef,
+    ) -> tuple[SimpleLLMCallResult, StoredDataRef, BilingualReportContent, bool]:
+        refs = _prior_refs(prior)
+        finding = prior[SimpleStage.FINDING_DONE]
+        execution = prior[SimpleStage.POC_EXECUTION_DONE]
+        source_hash = hashlib.sha256(
+            canonical_bytes(
+                {
+                    "refs": refs,
+                    "finding_attempt_id": finding.attempt_id,
+                    "poc_attempt_id": execution.attempt_id,
+                }
+            )
+        ).hexdigest()
+        cached = (
+            self._store.report_draft(checkpoint.identity, source_hash, finding_ref)
+            if self._store is not None
+            else None
+        )
+        if cached is not None:
+            envelope = json.loads(
+                self._artifacts.read_bounded(cached, _REPORT_DRAFT_MAX_BYTES)
+            )
+            if (
+                not isinstance(envelope, dict)
+                or envelope.get("kind") != "simple_report_draft"
+                or envelope.get("source_refs")
+                != [ref.model_dump(mode="json") for ref in refs]
+                or not isinstance(envelope.get("result"), dict)
+            ):
+                raise ValueError("REPORT_DRAFT_CACHE_INVALID")
+            result = SimpleLLMCallResult(
+                value=envelope["result"],
+                prompt_digest=envelope["prompt_digest"],
+                output_digest=envelope["output_digest"],
+            )
+            content = BilingualReportContent.model_validate_json(
+                canonical_bytes(result.value)
+            )
+            validate_report_content(
+                content.model_dump(mode="json"), allowed_locations=()
+            )
+            return result, cached, content, True
+        result, draft_ref = await self._stage.call(checkpoint, refs)
+        content = BilingualReportContent.model_validate_json(
+            canonical_bytes(result.value)
+        )
+        validate_report_content(content.model_dump(mode="json"), allowed_locations=())
+        if self._store is not None:
+            self._store.save_report_draft(
+                checkpoint.identity, source_hash, finding_ref, draft_ref
+            )
+        return result, draft_ref, content, False
 
     def _publish_bundle(
         self,
@@ -1745,6 +1808,7 @@ this local route requires citations=[].
             ("validated_poc", poc.validated_ref),
             ("execution", poc.execution_ref),
             ("technical", prior[SimpleStage.TECH_GATE_DONE].output_refs[0]),
+            ("scope", prior[SimpleStage.SCOPE_GATE_DONE].output_refs[0]),
             ("stdout", poc.stdout_ref),
             ("stderr", poc.stderr_ref),
         )
@@ -2042,6 +2106,7 @@ def build_stage_handlers(
         SimpleStage.REPORT_DONE: ReporterStage(
             client,
             artifacts,
+            store=store,
             policy_snapshot_ref=policy_snapshot_ref,
             repository_url=repository_url,
         ),

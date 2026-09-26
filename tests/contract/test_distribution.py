@@ -110,7 +110,8 @@ def test_readme_first_screen_contains_the_real_operator_path() -> None:
         "sastsimi status A-001",
         "sastsimi resume A-001",
         "sastsimi dashboard",
-        "sastsimi report F-001 --export markdown",
+        "sastsimi report show F-001",
+        "sastsimi report export F-001 --format markdown",
         "docs/troubleshooting.md",
     ):
         assert required in first_screen

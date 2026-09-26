@@ -637,6 +637,10 @@ def test_top_level_array_is_validated_without_domain_record_hydration() -> None:
     assert observed == [payload]
 
 
+def _validate_report_without_locations(item: object) -> None:
+    validate_report_content(item, allowed_locations=())
+
+
 def test_report_v2_version_marker_is_allowed_only_for_report_schema() -> None:
     prose = {
         "title": "Title",
@@ -654,9 +658,7 @@ def test_report_v2_version_marker_is_allowed_only_for_report_schema() -> None:
         json_schema={"type": "object"},
         result_kind="report_draft",
         agent_role="REPORTER",
-        semantic_validator=lambda item: validate_report_content(
-            item, allowed_locations=()
-        ),
+        semantic_validator=_validate_report_without_locations,
     )
 
     assert result == value
@@ -666,9 +668,7 @@ def test_report_v2_version_marker_is_allowed_only_for_report_schema() -> None:
             json_schema={"type": "object"},
             result_kind="report_draft",
             agent_role="REPORTER",
-            semantic_validator=lambda item: validate_report_content(
-                item, allowed_locations=()
-            ),
+            semantic_validator=_validate_report_without_locations,
         )
 
 

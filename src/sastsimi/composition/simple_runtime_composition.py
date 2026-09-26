@@ -585,31 +585,36 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
     def export_report_bundle(self, finding_id: str) -> str | None:
         """Expose only a current, verified local ZIP; keep older reports unchanged."""
 
-        from sastsimi.dashboard.query import DashboardNotFound, DashboardQuery
-        from sastsimi.reporting.bundle_files import MAX_BUNDLE_ARCHIVE_BYTES
-
-        identity, _finding_ref = self._finding_identity(finding_id)
+        identity, finding_ref = self._finding_identity(finding_id)
         self.report(finding_id)
         try:
-            verified, _ = DashboardQuery(self._config.data_dir).report_attachment(
-                identity.analysis_id, finding_id, "bundle.zip"
+            prior = {
+                item.stage: item
+                for item in self._store.list_checkpoints(identity.analysis_id)
+                if item.identity == identity
+            }
+            artifacts = SimpleArtifactRepository(self._config.data_dir, identity)
+            try:
+                run = self._store.require_analysis_run(identity.analysis_id)
+            except LookupError:
+                run = None
+            review = project_scope_review(
+                prior.get(SimpleStage.SCOPE_GATE_DONE),
+                artifacts,
+                policy_snapshot_ref=run.policy_snapshot_ref if run else None,
+                repository_url=run.repository if run else None,
             )
-            path = (
-                self._config.data_dir
-                / "reports"
-                / identity.analysis_id
-                / finding_id
-                / "bundle.zip"
+            artifacts.verified_report_bundle(
+                checkpoints=prior,
+                finding_ref=finding_ref,
+                display_id=finding_id,
+                scope_status=str(review["status"]),
+                public_projection=lambda body: safe_public_report(body, review),
             )
-            resolved = path.resolve(strict=True)
-            if (
-                resolved != path
-                or path.stat().st_size > MAX_BUNDLE_ARCHIVE_BYTES
-                or path.read_bytes() != verified
-            ):
-                return None
-            return path.relative_to(self._config.data_dir.resolve()).as_posix()
-        except (DashboardNotFound, OSError, ValueError):
+            return (
+                Path("reports") / identity.analysis_id / finding_id / "bundle.zip"
+            ).as_posix()
+        except (KeyError, OSError, ValueError):
             return None
 
     def _finding_identity(

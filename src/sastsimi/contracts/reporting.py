@@ -31,6 +31,42 @@ _LOCATION = re.compile(
 _HIDDEN_REASONING = re.compile(
     r"(?i)(?:chain[ _-]?of[ _-]?thought|hidden[ _-]?reasoning|internal reasoning)"
 )
+_UNSUPPORTED_ADVISORY_CLAIMS = (
+    re.compile(r"\bcvss\b[^\n]{0,32}?\d+(?:\.\d+)?", re.IGNORECASE),
+    re.compile(
+        r"\b(?:critical|high|moderate|medium|low)[ -]?"
+        r"(?:severity|risk|vulnerability)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bv?\d+(?:\.\d+){1,3}\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:all|every|latest|current)\s+(?:versions?|releases?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bseverity\s*(?:is|:|=)\s*(?:low|moderate|medium|high|critical)\b"
+        r"|심각도\s*(?:는|가|:|=)?\s*(?:낮음|보통|중간|높음|긴급|치명적)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:affected\s+)?versions?\s+(?:before|after|through|up\s+to|<=|>=)\s*v?\d"
+        r"|\b(?:affected|vulnerable)\s+versions?\s*(?::|is|are)\s*v?\d"
+        r"|\d+(?:\.\d+){1,3}\s*(?:이전|이하|이상|부터)\s*버전[^\n]{0,24}영향",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:fixed|patched)\s+in\s+v?\d"
+        r"|\d+(?:\.\d+){1,3}\s*버전[^\n]{0,16}(?:수정|패치)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:safe|ready)\s+to\s+(?:publish|disclose|submit)\b"
+        r"|\bpublic\s+disclosure\b"
+        r"|(?:공개\s*)?(?:제보|공개)(?:가|이)?\s*가능"
+        r"(?:합니다|하다|함|하다고|해졌)",
+        re.IGNORECASE,
+    ),
+)
 
 
 class ReportContent(ContractModel):
@@ -64,6 +100,23 @@ class BilingualReportContent(ContractModel):
     citations: tuple[CodeLocation, ...]
 
 
+def _reject_unverified_advisory_claims(content: BilingualReportContent) -> None:
+    """Version, CVSS, and disclosure fields come from facts, not LLM prose."""
+
+    for prose in (content.en, content.ko):
+        for value in (
+            prose.title,
+            prose.summary,
+            prose.details,
+            prose.impact,
+            prose.recommendation,
+            *prose.limitations,
+            *prose.review_items,
+        ):
+            if any(pattern.search(value) for pattern in _UNSUPPORTED_ADVISORY_CLAIMS):
+                raise ValueError("REPORT_UNSUPPORTED_METADATA_CLAIM")
+
+
 def validate_report_content(
     content: object, *, allowed_locations: tuple[CodeLocation, ...]
 ) -> bytes:
@@ -78,7 +131,9 @@ def validate_report_content(
         if content.get("schema_version") == 2:
             if "en" not in content or "ko" not in content:
                 raise ValueError("REPORT_LANGUAGE_REQUIRED")
-            citations = BilingualReportContent.model_validate_json(encoded).citations
+            bilingual = BilingualReportContent.model_validate_json(encoded)
+            _reject_unverified_advisory_claims(bilingual)
+            citations = bilingual.citations
         else:
             citations = ReportContent.model_validate_json(encoded).citations
         for citation in citations:

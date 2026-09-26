@@ -56,8 +56,9 @@ from sastsimi.storage.report_export import SQLiteCurrentReportSource
 
 
 class Source:
-    def __init__(self, report: CurrentReport) -> None:
+    def __init__(self, report: CurrentReport, data_dir: Path | None = None) -> None:
         self.report = report
+        self.data_dir = data_dir
 
     def list_current(self, analysis_id: str) -> tuple[CurrentReport, ...]:
         return (self.report,) if analysis_id == self.report.analysis_id else ()
@@ -66,6 +67,27 @@ class Source:
         if finding_id != self.report.finding_id:
             raise ReportUnavailable("REPORT_NOT_FOUND")
         return self.report
+
+    def read_artifact(self, ref: StoredDataRef) -> bytes:
+        from sastsimi.storage.artifact_store import LocalArtifactStore
+
+        assert self.data_dir is not None
+        store = LocalArtifactStore(
+            self.data_dir / "artifacts", ref.workspace_id, ref.commit_id
+        )
+        with store.open_verified(ref) as stream:
+            return stream.read()
+
+    def put_artifact(
+        self, scope_ref: StoredDataRef, body: bytes, media_type: str
+    ) -> StoredDataRef:
+        from sastsimi.storage.artifact_store import LocalArtifactStore
+
+        assert self.data_dir is not None
+        store = LocalArtifactStore(
+            self.data_dir / "artifacts", scope_ref.workspace_id, scope_ref.commit_id
+        )
+        return store.commit(store.stage_bytes(body, media_type))
 
 
 class StaleSource(Source):
@@ -256,7 +278,7 @@ def test_markdown_export_contains_human_review_sections_and_exact_path(
     assert not path.with_suffix("").exists()
 
 
-def test_v2_export_keeps_legacy_markdown_and_publishes_bundle(tmp_path: Path) -> None:
+def _v2_current_report(tmp_path: Path) -> CurrentReport:
     from sastsimi.config.runtime_paths import RuntimePaths
     from sastsimi.contracts.ids import CommitId, WorkspaceId
     from sastsimi.storage.artifact_store import LocalArtifactStore
@@ -316,16 +338,157 @@ def test_v2_export_keeps_legacy_markdown_and_publishes_bundle(tmp_path: Path) ->
         poc_text=script.decode(),
         execution_exit_code=0,
     )
-    path = ReportMarkdownService(tmp_path, Source(report)).export(report.finding_id)
+    return report
+
+
+def test_v2_export_keeps_legacy_markdown_and_publishes_bundle(tmp_path: Path) -> None:
+    report = _v2_current_report(tmp_path)
+    path = ReportMarkdownService(tmp_path, Source(report, tmp_path)).export(
+        report.finding_id
+    )
 
     assert path.name == "F-001.md"
     assert "검증된 SQL 인젝션" in path.read_text(encoding="utf-8")
     bundle = path.with_suffix("")
     assert (bundle / "report_en.md").is_file()
     assert (bundle / "report_kr.md").is_file()
-    assert (bundle / "poc.sh").read_bytes() == script
+    assert (bundle / "poc.sh").read_bytes() == report.poc_text.encode("utf-8")
     assert (bundle / "manifest.json").is_file()
     assert (bundle / "bundle.zip").is_file()
+
+
+def test_bundle_reference_rejects_old_v2_content_for_same_finding(
+    tmp_path: Path,
+) -> None:
+    report = _v2_current_report(tmp_path)
+    source = Source(report, tmp_path)
+    service = ReportMarkdownService(tmp_path, source)
+    path = service.export(report.finding_id)
+
+    content = report.content
+    assert isinstance(content, BilingualReportContent)
+    changed = content.model_copy(
+        update={
+            "en": content.en.model_copy(
+                update={
+                    "details": "The current report has a different technical claim."
+                }
+            )
+        }
+    )
+    source.report = replace(report, content=changed)
+
+    with pytest.raises(ReportUnavailable, match="STALE_REPORT"):
+        service.bundle_reference(path)
+
+
+def test_bundle_reference_rechecks_current_report_after_reading_bundle(
+    tmp_path: Path,
+) -> None:
+    class ChangesDuringReadSource(Source):
+        change_on_read = False
+
+        def read_artifact(self, ref: StoredDataRef) -> bytes:
+            body = super().read_artifact(ref)
+            if self.change_on_read:
+                self.change_on_read = False
+                content = self.report.content
+                assert isinstance(content, BilingualReportContent)
+                self.report = replace(
+                    self.report,
+                    content=content.model_copy(
+                        update={
+                            "en": content.en.model_copy(
+                                update={"details": "A newer report was stored."}
+                            )
+                        }
+                    ),
+                )
+            return body
+
+    report = _v2_current_report(tmp_path)
+    source = ChangesDuringReadSource(report, tmp_path)
+    service = ReportMarkdownService(tmp_path, source)
+    path = service.export(report.finding_id)
+
+    source.change_on_read = True
+    with pytest.raises(ReportUnavailable, match="STALE_REPORT"):
+        service.bundle_reference(path)
+
+
+def test_bundle_reference_accepts_valid_output_attachments(tmp_path: Path) -> None:
+    from sastsimi.config.runtime_paths import RuntimePaths
+    from sastsimi.storage.artifact_store import LocalArtifactStore
+
+    report = _v2_current_report(tmp_path)
+    finding = report.draft.finding_ref
+    store = LocalArtifactStore(
+        RuntimePaths(tmp_path).artifacts, finding.workspace_id, finding.commit_id
+    )
+    stdout = b"validated output\n"
+    stderr = b"diagnostic output\n"
+    report = replace(
+        report,
+        stdout_bytes=stdout,
+        stdout_ref=store.commit(store.stage_bytes(stdout, "text/plain")),
+        stderr_bytes=stderr,
+        stderr_ref=store.commit(store.stage_bytes(stderr, "text/plain")),
+    )
+    service = ReportMarkdownService(tmp_path, Source(report, tmp_path))
+
+    path = service.export(report.finding_id)
+
+    assert service.bundle_reference(path) == (
+        f"reports/{report.analysis_id}/F-001/bundle.zip"
+    )
+
+
+def test_export_rechecks_current_after_bundle_publication(tmp_path: Path) -> None:
+    class ChangesDuringPublication(Source):
+        changed = False
+
+        def put_artifact(
+            self, scope_ref: StoredDataRef, body: bytes, media_type: str
+        ) -> StoredDataRef:
+            ref = super().put_artifact(scope_ref, body, media_type)
+            if not self.changed:
+                self.changed = True
+                assert isinstance(self.report.content, BilingualReportContent)
+                self.report = replace(
+                    self.report,
+                    content=self.report.content.model_copy(
+                        update={
+                            "en": self.report.content.en.model_copy(
+                                update={"details": "A different current report."}
+                            )
+                        }
+                    ),
+                )
+            return ref
+
+    report = _v2_current_report(tmp_path)
+    source = ChangesDuringPublication(report, tmp_path)
+    service = ReportMarkdownService(tmp_path, source)
+
+    with pytest.raises(ReportUnavailable, match="STALE_REPORT"):
+        service.export(report.finding_id)
+
+
+def test_v1_reexport_does_not_advertise_old_v2_bundle(tmp_path: Path) -> None:
+    report = _v2_current_report(tmp_path)
+    source = Source(report, tmp_path)
+    service = ReportMarkdownService(tmp_path, source)
+    service.export(report.finding_id)
+    assert (
+        service.bundle_reference(tmp_path / "reports" / report.analysis_id / "F-001.md")
+        == f"reports/{report.analysis_id}/F-001/bundle.zip"
+    )
+
+    source.report = replace(report, content=current_report().content)
+    legacy_path = service.export(report.finding_id)
+
+    assert (legacy_path.with_suffix("") / "bundle.zip").is_file()
+    assert service.bundle_reference(legacy_path) is None
 
 
 def test_local_evaluation_report_is_never_presented_as_production_ready(

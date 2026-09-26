@@ -79,6 +79,12 @@ class CurrentReportSource(Protocol):
 
     def get_current(self, finding_id: str) -> CurrentReport: ...
 
+    def read_artifact(self, ref: StoredDataRef) -> bytes: ...
+
+    def put_artifact(
+        self, scope_ref: StoredDataRef, body: bytes, media_type: str
+    ) -> StoredDataRef: ...
+
 
 __all__ = [
     "CurrentReport",

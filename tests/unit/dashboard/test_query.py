@@ -7,14 +7,12 @@ from typing import Literal
 
 import pytest
 
-from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.dashboard.query import DashboardNotFound, DashboardQuery
 from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
-from sastsimi.reporting.bilingual_bundle import BundleFile
-from sastsimi.reporting.bundle_files import parse_bundle_manifest, publish_bundle
+from sastsimi.reporting.bundle_files import PublishedBundle, parse_bundle_manifest
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
@@ -30,6 +28,7 @@ from sastsimi.simple_runtime.models import (
 from sastsimi.simple_runtime.scope_policy import validate_scope_decision
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from sastsimi.storage.agent_activity import AgentActivityStore
+from tests.support.current_bundle import attach_current_bundle
 
 
 def ref(name: str) -> StoredDataRef:
@@ -207,57 +206,14 @@ def test_current_accepted_report_remains_accessible(tmp_path) -> None:
     assert query.report_path("analysis-a", "F-001") == report_path
 
 
-def _attach_bundle(tmp_path):
+def _attach_bundle(tmp_path: Path) -> tuple[CheckpointIdentity, PublishedBundle]:
     identity = CheckpointIdentity(
         analysis_id="analysis-a",
         workspace_id="workspace-1",
         commit_id="commit-1",
         hypothesis_id="hypothesis-1",
     )
-    artifacts = SimpleArtifactRepository(tmp_path, identity)
-    poc = b"#!/bin/sh\nprintf ok\n"
-    digest = hashlib.sha256(poc).hexdigest()
-    provenance = canonical_bytes(
-        {
-            "scope_status": "UNCERTAIN",
-            "poc": {
-                "path": "poc.sh",
-                "original_sha256": digest,
-                "attachment_sha256": digest,
-                "redacted": False,
-            },
-        }
-    )
-    bundle = publish_bundle(
-        root=tmp_path,
-        analysis_id="analysis-a",
-        display_id="F-001",
-        finding_ref=ref("finding"),
-        files=(
-            BundleFile(
-                "report_en.md", b"# English report\n", "text/markdown; charset=utf-8"
-            ),
-            BundleFile(
-                "report_kr.md",
-                "# 한국어 보고서\n".encode(),
-                "text/markdown; charset=utf-8",
-            ),
-            BundleFile("poc.sh", poc, "text/x-shellscript; charset=utf-8"),
-            BundleFile("evidence/provenance.json", provenance, "application/json"),
-        ),
-        put_artifact=artifacts.put_bytes,
-    )
-    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
-    report = store.require(identity, SimpleStage.REPORT_DONE)
-    store.save_checkpoint(
-        report.model_copy(
-            update={
-                "bundle_manifest_ref": bundle.manifest_ref,
-                "bundle_archive_ref": bundle.archive_ref,
-            }
-        )
-    )
-    return identity, bundle
+    return identity, attach_current_bundle(tmp_path, identity, ref("finding"), "F-001")
 
 
 def test_current_bundle_lists_only_verified_attachment_urls(tmp_path) -> None:
@@ -277,6 +233,25 @@ def test_current_bundle_lists_only_verified_attachment_urls(tmp_path) -> None:
     for invalid in ("../poc.sh", "manifest.json", "other.txt", "evidence/../../poc.sh"):
         with pytest.raises(DashboardNotFound):
             query.report_attachment("analysis-a", "F-001", invalid)
+
+
+def test_bundle_rejects_poc_without_current_execution_closure(tmp_path) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity, _ = _attach_bundle(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    candidate = store.require(identity, SimpleStage.POC_CANDIDATE_DONE)
+    unrelated = SimpleArtifactRepository(tmp_path, identity).put_bytes(
+        b"#!/bin/sh\nprintf different\n", "text/x-shellscript"
+    )
+    store.save_checkpoint(
+        candidate.model_copy(
+            update={
+                "output_refs": (candidate.output_refs[0], unrelated),
+            }
+        )
+    )
+    with pytest.raises(DashboardNotFound):
+        DashboardQuery(tmp_path).report_attachment("analysis-a", "F-001", "poc.sh")
 
 
 def test_bundle_download_fails_for_missing_manifest_and_legacy_allow(tmp_path) -> None:

@@ -30,7 +30,11 @@ from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
 class _ReporterClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
     async def call(self, **_kwargs: Any) -> SimpleLLMCallResult:
+        self.calls += 1
         ko = {
             "title": "검증된 명령어 삽입 취약점",
             "summary": "검증되지 않은 입력으로 운영체제 명령을 실행할 수 있습니다.",
@@ -215,7 +219,23 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
         attempt_id="report-attempt",
     )
 
-    result = await ReporterStage(_ReporterClient(), artifacts)(current, prior)  # type: ignore[arg-type]
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    client = _ReporterClient()
+
+    def fail_publication(**_kwargs: Any) -> None:
+        raise ValueError("BUNDLE_PUBLICATION_FAILED")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            "sastsimi.simple_runtime.stages.publish_bundle", fail_publication
+        )
+        with pytest.raises(ValueError, match="BUNDLE_PUBLICATION_FAILED"):
+            await ReporterStage(client, artifacts, store=store)(current, prior)
+    assert client.calls == 1
+    retry = current.model_copy(update={"attempt_id": "report-attempt-2"})
+    resumed_store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    result = await ReporterStage(client, artifacts, store=resumed_store)(retry, prior)
+    assert client.calls == 1
 
     assert result.markdown_path is not None
     path = Path(result.markdown_path)
@@ -246,15 +266,23 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
     )
     original_legacy = path.read_bytes()
 
-    def fail_publication(**_kwargs: Any) -> None:
-        raise ValueError("BUNDLE_PUBLICATION_FAILED")
-
     monkeypatch.setattr(
         "sastsimi.simple_runtime.stages.publish_bundle", fail_publication
     )
     with pytest.raises(ValueError, match="BUNDLE_PUBLICATION_FAILED"):
-        await ReporterStage(_ReporterClient(), artifacts)(current, prior)  # type: ignore[arg-type]
+        await ReporterStage(client, artifacts, store=resumed_store)(retry, prior)
+    assert client.calls == 1
     assert path.read_bytes() == original_legacy
+
+    # A new Finding attempt is not a publication retry, even when its
+    # content-addressed output reference happens to be identical.
+    refreshed = dict(prior)
+    refreshed[SimpleStage.FINDING_DONE] = prior[SimpleStage.FINDING_DONE].model_copy(
+        update={"attempt_id": "finding-attempt-2"}
+    )
+    with pytest.raises(ValueError, match="BUNDLE_PUBLICATION_FAILED"):
+        await ReporterStage(client, artifacts, store=resumed_store)(retry, refreshed)
+    assert client.calls == 2
 
 
 @pytest.mark.asyncio

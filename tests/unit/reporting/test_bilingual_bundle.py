@@ -2,11 +2,14 @@
 
 import hashlib
 import json
+from dataclasses import replace
+from typing import Any, cast
 
 import pytest
 
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.reporting import BilingualReportContent
+from sastsimi.contracts.static import CodeLocation
 from sastsimi.reporting.bilingual_bundle import (
     BundleFacts,
     BundleFile,
@@ -29,31 +32,32 @@ def _ref(kind: str, digest: str) -> StoredDataRef:
 
 def _facts(**changes: object) -> BundleFacts:
     poc_digest = hashlib.sha256(b"#!/bin/sh\necho safe\n").hexdigest()
-    values = {
-        "analysis_id": "A-004",
-        "display_id": "F-002",
-        "finding_id": "finding-2",
-        "repository": "example/project",
-        "tested_commit": "a" * 40,
-        "cwe": "CWE-79",
-        "ecosystem": None,
-        "package_name": None,
-        "affected_versions": None,
-        "patched_versions": None,
-        "severity": None,
-        "technical_status": "ACCEPTED",
-        "scope_status": "UNCERTAIN",
-        "report_permission": "REVIEW_REQUIRED",
-        "execution_command": "/bin/sh /tmp/sastsimi-poc-candidate",
-        "exit_code": 0,
-        "poc_language": "shell",
-        "poc_original_sha256": poc_digest,
-        "source_refs": (
+    base = BundleFacts(
+        analysis_id="A-004",
+        display_id="F-002",
+        finding_id="finding-2",
+        repository="example/project",
+        tested_commit="a" * 40,
+        cwe="CWE-79",
+        ecosystem=None,
+        package_name=None,
+        affected_versions=None,
+        patched_versions=None,
+        severity=None,
+        technical_status="ACCEPTED",
+        scope_status="UNCERTAIN",
+        report_permission="REVIEW_REQUIRED",
+        execution_command="/bin/sh /tmp/sastsimi-poc-candidate",
+        exit_code=0,
+        poc_language="shell",
+        poc_original_sha256=poc_digest,
+        source_refs=(
             ("finding", _ref("finding", "b" * 64)),
             ("poc", _ref("poc_bundle", "c" * 64)),
         ),
-    }
-    return BundleFacts(**(values | changes))
+    )
+    # Tests intentionally pass invalid field values to exercise runtime validation.
+    return replace(base, **cast(dict[str, Any], changes))
 
 
 def _content() -> BilingualReportContent:
@@ -149,6 +153,62 @@ def test_unverified_metadata_cannot_be_filled_by_reporter_prose() -> None:
     assert "영향받는 버전: 검토 필요" in ko
     assert "수정된 버전: 검토 필요" in ko
     assert "심각도: 검토 필요" in ko
+
+
+@pytest.mark.parametrize(
+    ("language", "field", "text"),
+    [
+        ("en", "impact", "CVSS 3.1 score: 9.8."),
+        ("en", "summary", "Severity is Critical."),
+        ("en", "details", "Versions before 1.2.3 are affected."),
+        ("en", "recommendation", "This was fixed in v1.2.4."),
+        ("en", "summary", "This is safe to publish."),
+        ("ko", "impact", "CVSS 점수는 9.8입니다."),
+        ("ko", "details", "1.2.3 이전 버전이 영향을 받습니다."),
+        ("ko", "summary", "공개 제보가 가능합니다."),
+    ],
+)
+def test_unsupported_metadata_claims_in_prose_are_rejected(
+    language: str, field: str, text: str
+) -> None:
+    content = _content()
+    prose = getattr(content, language).model_copy(update={field: text})
+    content = content.model_copy(update={language: prose})
+
+    with pytest.raises(ValueError, match="REPORT_UNSUPPORTED_METADATA_CLAIM"):
+        render_bundle_files(
+            _facts(), content, poc=b"#!/bin/sh\necho safe\n", stdout=None, stderr=None
+        )
+
+
+def test_citation_subrange_is_rendered_in_both_reports() -> None:
+    allowed = CodeLocation.model_validate(
+        {
+            "workspace_id": "ws-1",
+            "commit_id": "a" * 40,
+            "file_path": "src/app.py",
+            "start_line": 10,
+            "start_column": None,
+            "end_line": 20,
+            "end_column": None,
+        }
+    )
+    citation = allowed.model_copy(update={"start_line": 12, "end_line": 13})
+    content = _content().model_copy(update={"citations": (citation,)})
+
+    files = {
+        item.path: item
+        for item in render_bundle_files(
+            _facts(allowed_locations=(allowed,)),
+            content,
+            poc=b"#!/bin/sh\necho safe\n",
+            stdout=None,
+            stderr=None,
+        )
+    }
+
+    for path in ("report_en.md", "report_kr.md"):
+        assert "- src/app.py:12-13" in files[path].body.decode()
 
 
 def test_redacted_poc_and_output_are_labeled_not_exactly_executed() -> None:

@@ -5,7 +5,7 @@
 **코드의 의심 지점을, 검토 가능한 보안 보고서로.**
 
 정적 분석, AI 근거 검토, Docker 재현 검증을 결합해<br>
-보안 분석 결과를 한국어 Markdown 보고서로 정리하는 로컬 도구입니다.
+보안 분석 결과를 영문 제보 초안·국문 검토 보고서와 PoC·근거 파일로 정리하는 로컬 도구입니다.
 
 [![CI](https://github.com/SASTsimi/sastsimi/actions/workflows/ci.yml/badge.svg)](https://github.com/SASTsimi/sastsimi/actions/workflows/ci.yml)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
@@ -23,7 +23,7 @@
 - **연계형 취약점 탐색**: 이미 확인한 취약 조건을 연결해 더 큰 영향으로 이어지는 새 가설을 검증합니다.
 - **중단 지점부터 재개**: 성공한 저장소 준비·정적 분석·Agent 결과·Docker 이미지는 재사용하고 실패한 단계부터 이어서 실행합니다. Technical Gate의 근거 보완 요청은 새 PoC 후보부터 다시 검증합니다.
 - **진행 상황 확인**: CLI 진행 표시와 로컬 읽기 전용 대시보드에서 단계, 가설, 오류, Finding과 보고서를 확인할 수 있습니다.
-- **검토 가능한 결과물**: 확인된 근거만 사용해 한국어 Markdown 보고서를 만들며 외부 공개 여부는 사람이 결정합니다.
+- **검토 가능한 결과물**: 기존 한국어 Markdown과 함께, 새 Finding에는 영문·국문 보고서 및 검증된 PoC·근거 파일을 묶어 제공합니다. 외부 제보·공개 여부는 사람이 결정합니다.
 - **정책 근거별 Scope Gate**: 공개 GitHub 저장소의 공식 `SECURITY.md`를 확인하고 정책 출처·개정과 인용 근거를 보고서와 대시보드에 표시합니다. 정책이 없거나 근거가 부족하면 외부 제보 가능 여부는 `UNCERTAIN`입니다.
 
 ## 빠른 시작
@@ -96,8 +96,8 @@ sastsimi result A-001
 ```powershell
 sastsimi dashboard
 sastsimi poc F-001
-sastsimi report F-001
-sastsimi report F-001 --export markdown
+sastsimi report show F-001
+sastsimi report export F-001 --format markdown
 ```
 
 대시보드는 기본적으로 `http://127.0.0.1:8765`에서 열립니다. 조회 전용이며 판정, 재시도 또는 공개 승인 상태를 직접 변경하지 않습니다.
@@ -110,7 +110,7 @@ sastsimi report F-001 --export markdown
 → AI가 가설과 찬성·반대 근거 검토
 → 필요한 경우 Docker에서 PoC 재현
 → 기술 근거와 공식 정책의 범위·시험·제보 조건 검토
-→ Finding과 한국어 Markdown 보고서 생성
+→ Finding, 기존 한국어 Markdown 및 영문·국문 보고서 번들 생성
 ```
 
 정적 분석 도구는 취약점을 단독으로 확정하지 않습니다. 실행 관리 프로그램이 작업 순서, 저장, 재시도와 권한을 관리하고, LLM Agent는 주어진 코드와 근거를 분석합니다. Agent의 이름과 역할은 특정 Provider나 모델에 고정되지 않습니다.
@@ -119,18 +119,27 @@ sastsimi report F-001 --export markdown
 
 ## 결과 예시
 
-Finding 보고서는 기본 데이터 폴더 아래에 분석별로 저장됩니다.
+Finding 보고서는 기본 데이터 폴더 아래에 분석별로 저장됩니다. 기존 단일 Markdown은 유지하고, 새 보고서에는 개별 첨부파일과 ZIP이 추가됩니다.
 
 ```text
-reports/<analysis_id>/F-001.md
+reports/<analysis_id>/
+  F-001.md
+  F-001/
+    report_en.md
+    report_kr.md
+    poc.sh
+    evidence/provenance.json
+    evidence/stdout.txt     (안전하게 내보낼 수 있을 때만)
+    evidence/stderr.txt     (안전하게 내보낼 수 있을 때만)
+    manifest.json
+    bundle.zip
 ```
 
-보고서는 다음 네 구역을 중심으로 구성됩니다.
+두 새 보고서는 같은 검증 근거와 아홉 개 섹션을 공유합니다: 요약, 영향 대상·테스트 버전, 심각도·CWE, 기술 설명, 재현 방법·PoC, 근거, 영향, Scope Gate·한계, 수정 제안. `report_en.md`는 GitHub 비공개 보안 제보에 옮기기 쉽게, `report_kr.md`는 사용자가 검토하기 쉽게 작성됩니다. 현재 분석 경로의 검증된 셸 PoC는 `poc.sh`로 저장됩니다. 번들 형식은 `poc.py`도 허용하지만 현재 분석 경로에서 Python PoC를 자동 선택하지는 않습니다.
 
-- `Summary`: 취약점과 영향 요약
-- `Details`: 코드 위치, 입력부터 위험 함수까지의 흐름, 찬성·반대 근거와 판정 이유
-- `PoC`: 검증된 재현 코드, 실행 방법과 실행 결과
-- `Impact`: 영향받는 사용자·기능, 위험도와 제한사항
+`report export`의 기존 `path` 값은 그대로 유지되며, 검증된 새 번들이 있으면 `bundle_path`가 추가됩니다.
+
+테스트한 commit만으로 전체 영향 버전, 패치 버전, 심각도·CVSS를 확정하지 않습니다. 미확인 필드는 `Needs review`/`검토 필요`로 남겨 사람이 확인해야 하며, 영문 파일을 그대로 공개하라는 뜻이 아닙니다. 민감정보 가림으로 첨부 PoC가 실제 실행된 원본과 달라지면 그 사실과 두 해시를 보고서에 표시합니다. 각 파일은 검증된 참조와 해시가 맞는 경우에만 내려받을 수 있습니다.
 
 Reporter는 검증 결과, CWE, validated PoC와 Gate 결과에 없는 새로운 사실을 만들지 않습니다. 보고서에는 Scope Gate의 정책 수집 상태·출처·개정과 항목별 인용 근거가 표시됩니다. 오래된 근거 또는 민감정보 검사를 통과하지 못한 내용은 최신 보고서로 내보내지 않습니다.
 

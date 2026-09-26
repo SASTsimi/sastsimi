@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import stat
 import subprocess
 import zipfile
 from pathlib import Path
@@ -80,7 +81,7 @@ def _files() -> tuple[BundleFile, ...]:
 
 def _publish(
     root: Path, artifacts: Artifacts, files: tuple[BundleFile, ...] | None = None
-):
+) -> bundle_files.PublishedBundle:
     return publish_bundle(
         root=root,
         analysis_id="a1",
@@ -160,6 +161,37 @@ def test_reader_rejects_bad_path_bad_bytes_and_archive_substitution(
         read_bundle_archive(manifest, published.archive_ref, lambda _ref: b"bad zip")
 
 
+def test_reader_rejects_symlink_mode_even_when_member_bytes_match(
+    tmp_path: Path,
+) -> None:
+    artifacts = Artifacts()
+    published = _publish(tmp_path, artifacts)
+    manifest = parse_bundle_manifest(
+        artifacts.read(published.manifest_ref),
+        finding_ref=_ref("finding", "b" * 64, record_id="finding-2"),
+    )
+    original = artifacts.read(published.archive_ref)
+    output = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(original)) as source,
+        zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as target,
+    ):
+        for member in source.infolist():
+            info = zipfile.ZipInfo(member.filename, date_time=member.date_time)
+            info.compress_type = zipfile.ZIP_STORED
+            info.create_system = member.create_system
+            info.external_attr = (
+                (stat.S_IFLNK | 0o777) << 16
+                if member.filename == "poc.sh"
+                else member.external_attr
+            )
+            target.writestr(info, source.read(member))
+    tampered_ref = artifacts.put(output.getvalue(), "application/zip")
+
+    with pytest.raises(ValueError, match="BUNDLE_ARCHIVE_INVALID"):
+        read_bundle_archive(manifest, tampered_ref, artifacts.read)
+
+
 def test_oversized_and_unsafe_bytes_are_rejected_before_publication(
     tmp_path: Path,
 ) -> None:
@@ -184,7 +216,9 @@ def test_partial_write_never_advertises_manifest(
     original = bundle_files._write_file
     calls = 0
 
-    def failing_write(directory: Path, name: str, body: bytes) -> None:
+    def failing_write(
+        directory: bundle_files._SafeDirectory, name: str, body: bytes
+    ) -> None:
         nonlocal calls
         calls += 1
         if calls == 2:

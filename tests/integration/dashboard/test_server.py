@@ -9,13 +9,10 @@ from contextlib import contextmanager
 
 import pytest
 
-from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.dashboard.server import create_server
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
-from sastsimi.reporting.bilingual_bundle import BundleFile
-from sastsimi.reporting.bundle_files import publish_bundle
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
@@ -27,6 +24,7 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
 )
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
+from tests.support.current_bundle import attach_current_bundle
 
 
 def seed(data_dir) -> None:
@@ -189,54 +187,11 @@ def test_server_downloads_only_current_manifest_files(tmp_path) -> None:
         hypothesis_id="hypothesis-1",
     )
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
-    artifacts = SimpleArtifactRepository(tmp_path, identity)
     finding = FindingDisplayIdStore.resolve_existing(
         store.database_path, "analysis-1", "F-001"
     )
+    attach_current_bundle(tmp_path, identity, finding, "F-001")
     poc = b"#!/bin/sh\nprintf ok\n"
-    digest = hashlib.sha256(poc).hexdigest()
-    bundle = publish_bundle(
-        root=tmp_path,
-        analysis_id="analysis-1",
-        display_id="F-001",
-        finding_ref=finding,
-        files=(
-            BundleFile(
-                "report_en.md", b"# English report\n", "text/markdown; charset=utf-8"
-            ),
-            BundleFile(
-                "report_kr.md",
-                "# 한국어 보고서\n".encode(),
-                "text/markdown; charset=utf-8",
-            ),
-            BundleFile("poc.sh", poc, "text/x-shellscript; charset=utf-8"),
-            BundleFile(
-                "evidence/provenance.json",
-                canonical_bytes(
-                    {
-                        "scope_status": "UNCERTAIN",
-                        "poc": {
-                            "path": "poc.sh",
-                            "original_sha256": digest,
-                            "attachment_sha256": digest,
-                            "redacted": False,
-                        },
-                    }
-                ),
-                "application/json",
-            ),
-        ),
-        put_artifact=artifacts.put_bytes,
-    )
-    report = store.require(identity, SimpleStage.REPORT_DONE)
-    store.save_checkpoint(
-        report.model_copy(
-            update={
-                "bundle_manifest_ref": bundle.manifest_ref,
-                "bundle_archive_ref": bundle.archive_ref,
-            }
-        )
-    )
 
     with running_server(tmp_path) as base:
         detail = json.loads(request(f"{base}/api/analyses/A-001").read())

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
@@ -54,7 +56,7 @@ def test_legacy_report_checkpoint_has_no_bundle_refs() -> None:
     assert restored.bundle_archive_ref is None
 
 
-def test_checkpoint_completion_persists_both_bundle_refs(tmp_path) -> None:
+def test_checkpoint_completion_persists_both_bundle_refs(tmp_path: Path) -> None:
     identity = CheckpointIdentity(
         analysis_id="a1",
         workspace_id="ws1",

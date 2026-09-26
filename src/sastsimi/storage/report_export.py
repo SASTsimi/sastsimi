@@ -102,6 +102,23 @@ class SQLiteCurrentReportSource:
             raise ReportUnavailable("REPORT_NOT_FOUND")
         return self._resolve(matched[0])
 
+    def read_artifact(self, ref: StoredDataRef) -> bytes:
+        artifacts = LocalArtifactStore(
+            RuntimePaths(self._data_dir).artifacts, ref.workspace_id, ref.commit_id
+        )
+        with artifacts.open_verified_bounded(ref, 10 * 1024 * 1024) as stream:
+            return stream.read()
+
+    def put_artifact(
+        self, scope_ref: StoredDataRef, body: bytes, media_type: str
+    ) -> StoredDataRef:
+        artifacts = LocalArtifactStore(
+            RuntimePaths(self._data_dir).artifacts,
+            scope_ref.workspace_id,
+            scope_ref.commit_id,
+        )
+        return artifacts.commit(artifacts.stage_bytes(body, media_type))
+
     def _resolve(self, state: ReportProcessState) -> CurrentReport:
         if state.report_draft_ref is None:
             raise ReportUnavailable("REPORT_NOT_FOUND")

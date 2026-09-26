@@ -16,6 +16,13 @@ sastsimi analyze <URL-or-local-path> --commit <exact-SHA>
 sastsimi analyze https://github.com/adeyosemanputra/pygoat.git --commit 19d17cc8874861142b330636d068bbde54e86b85
 ```
 
+Windows PowerShell에서 Dify의 고정된 공개 소스 commit을 분석하려면, 각 줄을 별도 한 줄 명령으로 실행합니다. 먼저 기존 설정의 Provider가 Codex `gpt-6-sol`인지 확인하세요. 이 명령은 저장소 코드를 로컬에서 분석하며 Dify 서비스에 요청하거나 제보를 전송하지 않습니다.
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+sastsimi analyze https://github.com/langgenius/dify.git --commit 8387590ace4a094de812b7847fc6a4c3a27cd52b
+```
+
 사람이 보는 기본 출력은 다음처럼 간단합니다.
 
 ```text
@@ -74,7 +81,7 @@ sastsimi dashboard
 - 가설 수와 가설별 최종 판정
 - Agent가 확인한 근거·행동·판정 이유 요약
 - 허용·제외된 Primitive와 Chaining 부모·자식 관계
-- Finding과 Markdown 보고서 링크
+- Finding과 기존 Markdown 보고서 링크; 검증된 새 보고서라면 영문·국문·PoC·근거 파일 및 ZIP 다운로드 링크
 - Scope Gate의 정책 수집 상태, 출처 URL·개정, 다섯 검토 항목의 판정·인용·이유와 비공개 제보 조건 표시
 - Provider별 호출 수·확인된 토큰/비용·비용 미제공 호출 수와 추가 사용량 가능성
 
@@ -85,20 +92,31 @@ sastsimi dashboard
 ```text
 sastsimi result A-001
 sastsimi poc F-001
-sastsimi report F-001
-sastsimi report F-001 --export markdown
+sastsimi report show F-001
+sastsimi report export F-001 --format markdown
 ```
 
-`result`는 분석 상태와 Finding 목록을, `poc`는 실제 실행에 성공한 validated PoC만 보여 줍니다. `report`는 current Finding의 한국어 Markdown을 보여 주거나 파일 위치를 반환합니다.
+`result`는 분석 상태와 Finding 목록을, `poc`는 실제 실행에 성공한 validated PoC만 보여 줍니다. `report show`는 current Finding의 기존 한국어 Markdown을 보여 주고 `report export`는 파일 위치를 반환합니다. 검증된 새 번들이 있으면 export 출력에 `bundle_path`가 추가됩니다. 첨부파일은 대시보드에서 개별 다운로드하거나 `bundle.zip`으로 받을 수도 있습니다. 기존 `F-NNN.md` 경로와 저장된 과거 보고서는 그대로 유지합니다.
 
-보고서는 다음 내용을 포함합니다.
+새 Finding의 보고서 번들은 다음과 같이 저장됩니다.
 
-- `Summary`: 상태, CWE와 영향 요약
-- `Details`: 코드 근거, Pro·Con과 최종 판단, 두 Gate 결과
-- `PoC`: 검증된 코드, 실행 명령, 종료 코드와 출력
-- `Impact`: 영향, 제한사항과 사람이 확인할 항목
+```text
+reports/<analysis_id>/F-001.md
+reports/<analysis_id>/F-001/report_en.md
+reports/<analysis_id>/F-001/report_kr.md
+reports/<analysis_id>/F-001/poc.sh
+reports/<analysis_id>/F-001/evidence/provenance.json
+reports/<analysis_id>/F-001/evidence/stdout.txt  (안전할 때만)
+reports/<analysis_id>/F-001/evidence/stderr.txt  (안전할 때만)
+reports/<analysis_id>/F-001/manifest.json
+reports/<analysis_id>/F-001/bundle.zip
+```
 
-외부 정책이 없거나 범위 밖인 결과는 내부 기술 보고서로 생성할 수 있지만 외부 제출·공개가 제한됐다고 표시합니다. SASTSIMI가 자동으로 외부에 제출하지 않습니다.
+`report_en.md`는 GitHub 비공개 security advisory에 옮기기 쉽고 `report_kr.md`는 사람이 읽기 쉬운 표현을 사용합니다. 두 파일 모두 같은 순서로 요약, 영향 대상·테스트 버전, 심각도·CWE, 기술 설명, 재현·PoC, 근거, 영향, Scope Gate·한계, 수정 제안을 담습니다. 현재 분석 경로의 실제 검증된 셸 후보는 `poc.sh`입니다. 번들 형식은 `poc.py`도 허용하지만 현재 분석 경로에서 Python PoC를 자동 선택하지는 않습니다. `evidence/provenance.json`과 `manifest.json`에는 출처 참조·해시를 기록합니다.
+
+분석한 commit만으로 영향받는 전체 버전 범위, 수정 버전, 심각도나 CVSS를 확정하지 않습니다. 근거가 없는 필드는 `Needs review`/`검토 필요`로 남기며 GitHub 제보 양식에 제출하기 전에 사람이 채워야 합니다. 첨부 PoC에서 민감정보가 가려져 실제 실행된 바이트와 달라졌다면 두 보고서가 이를 알리고 원본·첨부 해시를 구분합니다. 임의의 저장소 파일이나 raw 출력은 첨부하지 않습니다.
+
+외부 정책이 없거나 범위 밖인 결과는 내부 기술 보고서로 생성할 수 있지만 외부 제출·공개가 제한됐다고 표시합니다. 대시보드는 current Finding, Gate와 정책, manifest·첨부 참조·해시를 확인한 후에만 다운로드를 제공하며, 기존 공개 보고서가 제한되는 경우 첨부파일로 이를 우회할 수 없습니다. 과거 단일 보고서에는 새 번들이 자동 생성되지 않습니다. SASTSIMI가 자동으로 외부에 제출하지 않습니다.
 
 공개 GitHub 저장소는 분석 시작 시 기본 브랜치의 `.github/SECURITY.md`, 루트 `SECURITY.md`, `docs/SECURITY.md` 순서로 확인하고, 셋 다 없으면 같은 소유자의 공개 `.github` 저장소를 확인합니다. 정책은 분석한 코드 commit과 다른 개정일 수 있어 출처 URL과 Git blob SHA를 따로 기록합니다. 저장소 내 임의의 링크나 GitHub의 비공개 취약점 제보 버튼을 시험·공개 허가로 간주하지 않습니다. GitHub 외 URL과 로컬 Git 경로에서는 이 자동 수집을 지원하지 않아 정책 상태가 `UNVERIFIED`로 남습니다.
 

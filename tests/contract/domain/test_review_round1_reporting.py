@@ -4,6 +4,7 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import CommitId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.reporting import (
+    BilingualReportContent,
     evidence_closure,
     parse_validated_report_content,
 )
@@ -110,6 +111,7 @@ def test_report_v2_preserves_both_languages_and_shared_citations() -> None:
         raw, allowed_locations=(_report_location(),)
     )
 
+    assert isinstance(content, BilingualReportContent)
     assert content.schema_version == 2
     assert content.en.summary == "Supported at src/app.py:12"
     assert content.ko.title == "예시 제목"
@@ -139,3 +141,47 @@ def test_report_v2_requires_both_languages() -> None:
         parse_validated_report_content(
             canonical_bytes(value), allowed_locations=(_report_location(),)
         )
+
+
+@pytest.mark.parametrize("language", ["en", "ko"])
+def test_report_v2_rejects_unverified_advisory_claims(language: str) -> None:
+    value = _bilingual_report()
+    prose = value[language]
+    assert isinstance(prose, dict)
+    prose["summary"] = (
+        "Severity is Critical." if language == "en" else "공개 제보가 가능합니다."
+    )
+
+    with pytest.raises(ValueError, match="REPORT_UNSUPPORTED_METADATA_CLAIM"):
+        parse_validated_report_content(
+            canonical_bytes(value), allowed_locations=(_report_location(),)
+        )
+
+
+def test_report_v2_rejects_paraphrased_advisory_claims() -> None:
+    value = _bilingual_report()
+    prose = value["en"]
+    assert isinstance(prose, dict)
+    prose["summary"] = (
+        "A critical-severity vulnerability affects releases 1.0 through 2.0; "
+        "public disclosure has been approved."
+    )
+
+    with pytest.raises(ValueError, match="REPORT_UNSUPPORTED_METADATA_CLAIM"):
+        parse_validated_report_content(
+            canonical_bytes(value), allowed_locations=(_report_location(),)
+        )
+
+
+def test_report_v2_keeps_uncertain_disclosure_wording() -> None:
+    value = _bilingual_report()
+    prose = value["ko"]
+    assert isinstance(prose, dict)
+    prose["review_items"] = ["공개 가능 여부는 확인되지 않았습니다."]
+
+    content = parse_validated_report_content(
+        canonical_bytes(value), allowed_locations=(_report_location(),)
+    )
+
+    assert isinstance(content, BilingualReportContent)
+    assert content.ko.review_items == ("공개 가능 여부는 확인되지 않았습니다.",)

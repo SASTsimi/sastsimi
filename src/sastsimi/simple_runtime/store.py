@@ -117,6 +117,18 @@ class SimpleCheckpointStore:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_report_drafts (
+                    identity_json TEXT NOT NULL,
+                    input_hash TEXT NOT NULL,
+                    stage_version TEXT NOT NULL,
+                    finding_ref_json TEXT NOT NULL,
+                    draft_ref_json TEXT NOT NULL,
+                    PRIMARY KEY (identity_json, input_hash, stage_version)
+                )
+                """
+            )
 
     @property
     def database_path(self) -> Path:
@@ -157,6 +169,65 @@ class SimpleCheckpointStore:
             str(row["item_key"]): StoredDataRef.model_validate_json(row["ref_json"])
             for row in rows
         }
+
+    def report_draft(
+        self,
+        identity: CheckpointIdentity,
+        source_hash: str,
+        finding_ref: StoredDataRef,
+    ) -> StoredDataRef | None:
+        """Find a validated draft for the exact current Finding and source set."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT finding_ref_json, draft_ref_json FROM simple_report_drafts "
+                "WHERE identity_json = ? AND input_hash = ? AND stage_version = ?",
+                (
+                    identity.model_dump_json(),
+                    source_hash,
+                    STAGE_VERSION[SimpleStage.REPORT_DONE],
+                ),
+            ).fetchone()
+        if row is None:
+            return None
+        if StoredDataRef.model_validate_json(row["finding_ref_json"]) != finding_ref:
+            raise ValueError("REPORT_DRAFT_FINDING_CONFLICT")
+        return StoredDataRef.model_validate_json(row["draft_ref_json"])
+
+    def save_report_draft(
+        self,
+        identity: CheckpointIdentity,
+        source_hash: str,
+        finding_ref: StoredDataRef,
+        draft_ref: StoredDataRef,
+    ) -> None:
+        """Persist the validated LLM draft before fallible report publication."""
+
+        values = (
+            identity.model_dump_json(),
+            source_hash,
+            STAGE_VERSION[SimpleStage.REPORT_DONE],
+            finding_ref.model_dump_json(),
+            draft_ref.model_dump_json(),
+        )
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO simple_report_drafts "
+                "(identity_json, input_hash, stage_version, "
+                "finding_ref_json, draft_ref_json) VALUES (?, ?, ?, ?, ?)",
+                values,
+            )
+            if cursor.rowcount == 0:
+                row = connection.execute(
+                    "SELECT finding_ref_json, draft_ref_json FROM simple_report_drafts "
+                    "WHERE identity_json = ? AND input_hash = ? AND stage_version = ?",
+                    values[:3],
+                ).fetchone()
+                if (
+                    row is None
+                    or (row["finding_ref_json"], row["draft_ref_json"]) != values[3:]
+                ):
+                    raise ValueError("REPORT_DRAFT_CONFLICT")
 
     def save_analysis_run(self, run: object) -> None:
         validated = SimpleAnalysisRun.model_validate(run)
