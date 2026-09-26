@@ -229,12 +229,68 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
         for record in source_records
         if record.get("kind") == "simple_requested_sources"
     )
+    source_ref = next(
+        StoredDataRef.model_validate(raw_ref)
+        for raw_ref in candidate["source_refs"]
+        if json.loads(artifacts.read(StoredDataRef.model_validate(raw_ref))).get("kind")
+        == "simple_requested_sources"
+    )
+    assert source_ref in result.output_refs[2:]
     assert [item["path"] for item in retrieved["served"]] == ["pkg/watch.py"]
     assert {item["reason"] for item in retrieved["refused"]} == {
         "TOTAL_BUDGET_EXHAUSTED",
         "NOT_TRACKED",
         "PATH_OUTSIDE_REPOSITORY",
     }
+
+
+@pytest.mark.asyncio
+async def test_gate_feedback_precedes_bulk_context_and_is_forwarded(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    bulk_ref = artifacts.put_json({"kind": "bulk", "content": "x" * 300_000})
+    feedback_ref = artifacts.put_json(
+        {
+            "kind": "simple_technical_gate",
+            "result": {
+                "status": "REVISE",
+                "revision_requests": ["production-route-marker"],
+            },
+        }
+    )
+    prior = {
+        SimpleStage.HYPOTHESIS_DONE: StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.HYPOTHESIS_DONE,
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(bulk_ref,),
+        )
+    }
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(feedback_ref,),
+        input_hash=input_reference_hash((feedback_ref,)),
+        attempt_id="revised-poc",
+    ).model_copy(update={"gate_revision_count": 1})
+    client = _SourceRecordingClient()
+
+    result = await PoCCandidateStage(client=client, artifacts=artifacts)(
+        checkpoint, prior
+    )
+
+    assert b"production-route-marker" in client.prompt
+    assert feedback_ref in result.output_refs[2:]
 
 
 @pytest.mark.asyncio

@@ -42,6 +42,9 @@ STAGE_VERSION: dict[SimpleStage, str] = {
         in {
             SimpleStage.VERIFICATION_INITIAL_DONE,
             SimpleStage.POC_EXECUTION_DONE,
+            SimpleStage.POC_CANDIDATE_DONE,
+            SimpleStage.VERIFICATION_FINAL_DONE,
+            SimpleStage.TECH_GATE_DONE,
         }
         else "1"
     )
@@ -98,6 +101,7 @@ class StageCheckpoint(ContractModel):
     output_refs: tuple[StoredDataRef, ...] = ()
     attempt_id: str | None = None
     attempt_number: int = 0
+    gate_revision_count: int = Field(default=0, ge=0)
     recovery_lineage_id: str | None = None
     recovery_origin_stage: SimpleStage | None = None
     recovery_decision_refs: tuple[StoredDataRef, ...] = ()
@@ -139,3 +143,22 @@ class StageFailure(ContractModel):
     safe_message: str
     invalid_field: str | None = None
     evidence_refs: tuple[StoredDataRef, ...] = ()
+
+
+def terminal_gate_outcome(
+    checkpoint: StageCheckpoint | None,
+) -> Literal["REJECT", "INCONCLUSIVE"] | None:
+    """Return a non-reportable terminal decision, never an execution failure."""
+
+    if (
+        checkpoint is None
+        or checkpoint.stage is not SimpleStage.TECH_GATE_DONE
+        or checkpoint.status is not StageStatus.SUCCEEDED
+        or checkpoint.stage_version != STAGE_VERSION[SimpleStage.TECH_GATE_DONE]
+    ):
+        return None
+    if checkpoint.gate_decision == "REJECT":
+        return "REJECT"
+    if checkpoint.gate_decision == "REVISE" and checkpoint.gate_revision_count >= 2:
+        return "INCONCLUSIVE"
+    return None

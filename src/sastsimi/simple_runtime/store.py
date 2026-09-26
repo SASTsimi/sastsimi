@@ -445,6 +445,9 @@ class SimpleCheckpointStore:
             input_hash=input_reference_hash(exact_inputs),
             attempt_id=attempt_id,
             attempt_number=attempt_number,
+            gate_revision_count=(
+                reusable_state.gate_revision_count if reusable_state else 0
+            ),
             recovery_lineage_id=(
                 reusable_state.recovery_lineage_id if reusable_state else None
             ),
@@ -607,6 +610,7 @@ class SimpleCheckpointStore:
             input_refs=inputs,
             input_hash=input_reference_hash(inputs),
             attempt_number=failed.attempt_number,
+            gate_revision_count=failed.gate_revision_count,
             recovery_lineage_id=lineage_id,
             recovery_origin_stage=(failed.recovery_origin_stage or failed.stage),
             recovery_decision_refs=decision_refs,
@@ -645,6 +649,108 @@ class SimpleCheckpointStore:
         finally:
             connection.close()
         return pending
+
+    def prepare_gate_revision(
+        self,
+        gate: StageCheckpoint,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Atomically restart PoC from one accepted revision request."""
+
+        if (
+            gate.stage is not SimpleStage.TECH_GATE_DONE
+            or gate.stage_version != STAGE_VERSION[SimpleStage.TECH_GATE_DONE]
+            or gate.status is not StageStatus.SUCCEEDED
+            or gate.gate_decision != "REVISE"
+            or len(gate.output_refs) != 1
+            or gate.gate_revision_count >= 2
+        ):
+            raise ValueError("GATE_REVISION_NOT_PREPARABLE")
+        identity = gate.identity
+        key = self._hypothesis_key(identity)
+        stages = tuple(
+            stage.value
+            for stage in STAGE_ORDER[
+                STAGE_ORDER.index(SimpleStage.POC_CANDIDATE_DONE) :
+            ]
+        )
+        placeholders = ",".join("?" for _ in stages)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            def checkpoint_at(stage: SimpleStage) -> StageCheckpoint | None:
+                row = connection.execute(
+                    """
+                    SELECT checkpoint_json FROM simple_runtime_checkpoints
+                    WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?
+                    """,
+                    (identity.analysis_id, key, stage.value),
+                ).fetchone()
+                return (
+                    StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                    if row is not None
+                    else None
+                )
+
+            current = checkpoint_at(SimpleStage.TECH_GATE_DONE)
+            candidate = checkpoint_at(SimpleStage.POC_CANDIDATE_DONE)
+            if current is None:
+                if (
+                    candidate is not None
+                    and candidate.status is StageStatus.PENDING
+                    and candidate.gate_revision_count == gate.gate_revision_count + 1
+                    and candidate.input_refs
+                    and candidate.input_refs[0] == gate.output_refs[0]
+                ):
+                    connection.commit()
+                    return candidate
+                raise ValueError("GATE_REVISION_STALE")
+            if current != gate:
+                raise ValueError("GATE_REVISION_STALE")
+            if candidate is None or candidate.status is not StageStatus.SUCCEEDED:
+                raise ValueError("GATE_REVISION_CANDIDATE_MISSING")
+            execution = checkpoint_at(SimpleStage.POC_EXECUTION_DONE)
+            if execution is None or execution.status is not StageStatus.SUCCEEDED:
+                raise ValueError("GATE_REVISION_EXECUTION_MISSING")
+            inputs = tuple(
+                dict.fromkeys(
+                    gate.output_refs
+                    + candidate.input_refs
+                    + candidate.output_refs
+                    + execution.output_refs
+                )
+            )
+            pending = StageCheckpoint(
+                identity=identity,
+                stage=SimpleStage.POC_CANDIDATE_DONE,
+                stage_version=STAGE_VERSION[SimpleStage.POC_CANDIDATE_DONE],
+                status=StageStatus.PENDING,
+                input_refs=inputs,
+                input_hash=input_reference_hash(inputs),
+                gate_revision_count=gate.gate_revision_count + 1,
+                recipe_ref=candidate.recipe_ref or gate.recipe_ref,
+                image_digest=candidate.image_digest or gate.image_digest,
+            )
+            connection.execute(
+                f"""
+                DELETE FROM simple_runtime_checkpoints
+                WHERE analysis_id = ? AND hypothesis_key = ?
+                  AND stage IN ({placeholders})
+                """,  # noqa: S608 - generated stage placeholders only.
+                (identity.analysis_id, key, *stages),
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+            return pending
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def record_recovery_stop(
         self,

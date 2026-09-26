@@ -18,6 +18,7 @@ from .models import (
     StageResult,
     StageStatus,
     input_reference_hash,
+    terminal_gate_outcome,
 )
 from .recovery import (
     MAX_RECOVERY_ATTEMPTS,
@@ -71,7 +72,6 @@ class SimpleRuntimeRunner:
     async def resume_hypothesis(self, identity: CheckpointIdentity) -> RunOutcome:
         if self.recovery is None:
             self._reset_incomplete_poc_attempt(identity)
-        self._reset_technical_revision(identity)
         while True:
             restart_requested = False
             for stage in HYPOTHESIS_STAGES:
@@ -114,6 +114,12 @@ class SimpleRuntimeRunner:
                             current_stage=stage,
                             status=StageStatus.SUCCEEDED,
                         )
+                    gate_action = self._gate_action(reusable)
+                    if gate_action == "restart":
+                        restart_requested = True
+                        break
+                    if isinstance(gate_action, RunOutcome):
+                        return gate_action
                     continue
                 existing = self.store.get(identity, stage)
                 prior = self.store.prior(identity, stage)
@@ -223,6 +229,12 @@ class SimpleRuntimeRunner:
                             current_stage=stage,
                             status=StageStatus.SUCCEEDED,
                         )
+                    gate_action = self._gate_action(completed)
+                    if gate_action == "restart":
+                        restart_requested = True
+                        break
+                    if isinstance(gate_action, RunOutcome):
+                        return gate_action
                     continue
                 if outcome is None:
                     restart_requested = True
@@ -234,6 +246,25 @@ class SimpleRuntimeRunner:
                 current_stage=SimpleStage.REPORT_DONE,
                 status=StageStatus.SUCCEEDED,
             )
+
+    def _gate_action(
+        self, checkpoint: StageCheckpoint
+    ) -> RunOutcome | Literal["restart"] | None:
+        terminal = terminal_gate_outcome(checkpoint)
+        if terminal is not None:
+            return RunOutcome(
+                current_stage=SimpleStage.TECH_GATE_DONE,
+                status=StageStatus.SUCCEEDED,
+            )
+        if (
+            checkpoint.stage is SimpleStage.TECH_GATE_DONE
+            and checkpoint.status is StageStatus.SUCCEEDED
+            and checkpoint.stage_version == STAGE_VERSION[SimpleStage.TECH_GATE_DONE]
+            and checkpoint.gate_decision == "REVISE"
+        ):
+            self.store.prepare_gate_revision(checkpoint)
+            return "restart"
+        return None
 
     async def _recover_existing(
         self,
@@ -284,18 +315,6 @@ class SimpleRuntimeRunner:
             if already_failed
             else self.store.mark_failure(checkpoint, failure, original_status)
         )
-        if (
-            checkpoint.stage is SimpleStage.TECH_GATE_DONE
-            and failure.code == "TECH_GATE_REVISE"
-        ):
-            if self._reset_technical_revision(checkpoint.identity):
-                return None
-            exhausted = self.store.mark_recovery_exhausted(failed)
-            return RunOutcome(
-                current_stage=checkpoint.stage,
-                status=StageStatus.BLOCKED,
-                error_code=exhausted.error_code,
-            )
         if self.recovery is None or not failure.retryable:
             return RunOutcome(
                 current_stage=checkpoint.stage,
@@ -406,47 +425,9 @@ class SimpleRuntimeRunner:
                 status=StageStatus.PENDING,
                 input_refs=repair_inputs,
                 input_hash=input_reference_hash(repair_inputs),
+                gate_revision_count=candidate.gate_revision_count,
                 recipe_ref=candidate.recipe_ref,
                 image_digest=candidate.image_digest,
                 container_id=candidate.container_id,
             )
         )
-
-    def _reset_technical_revision(self, identity: CheckpointIdentity) -> bool:
-        gate = self.store.get(identity, SimpleStage.TECH_GATE_DONE)
-        verification = self.store.get(
-            identity,
-            SimpleStage.VERIFICATION_FINAL_DONE,
-        )
-        if (
-            gate is None
-            or gate.status is not StageStatus.BLOCKED
-            or gate.error_code != "TECH_GATE_REVISE"
-            or not gate.retryable
-            or verification is None
-            or verification.status is not StageStatus.SUCCEEDED
-            or verification.attempt_number >= 2
-        ):
-            return False
-
-        repair_inputs = tuple(
-            dict.fromkeys(
-                verification.input_refs + verification.output_refs + gate.output_refs
-            )
-        )
-        self.store.replace_from(
-            verification.model_copy(
-                update={
-                    "status": StageStatus.PENDING,
-                    "input_refs": repair_inputs,
-                    "input_hash": input_reference_hash(repair_inputs),
-                    "output_refs": (),
-                    "attempt_id": None,
-                    "error_code": None,
-                    "retryable": False,
-                    "validated_poc_ref": None,
-                    "verdict": None,
-                }
-            )
-        )
-        return True
