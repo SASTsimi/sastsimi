@@ -109,6 +109,7 @@ class StageCheckpoint(ContractModel):
     validated_poc_ref: StoredDataRef | None = None
     report_ref: StoredDataRef | None = None
     verdict: Literal["TRUE", "FALSE", "HOLD"] | None = None
+    gate_decision: Literal["ACCEPT", "REVISE", "REJECT"] | None = None
     markdown_path: str | None = None
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -124,6 +125,7 @@ class StageResult(ContractModel):
     validated_poc_ref: StoredDataRef | None = None
     report_ref: StoredDataRef | None = None
     verdict: Literal["TRUE", "FALSE", "HOLD"] | None = None
+    gate_decision: Literal["ACCEPT", "REVISE", "REJECT"] | None = None
     recipe_ref: StoredDataRef | None = None
     image_digest: str | None = None
     container_id: str | None = None

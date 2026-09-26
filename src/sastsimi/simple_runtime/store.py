@@ -486,6 +486,7 @@ class SimpleCheckpointStore:
             "validated_poc_ref": result.validated_poc_ref,
             "report_ref": result.report_ref,
             "verdict": result.verdict,
+            "gate_decision": result.gate_decision,
             "markdown_path": result.markdown_path,
             "updated_at": datetime.now(UTC),
         }

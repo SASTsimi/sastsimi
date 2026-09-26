@@ -13,6 +13,7 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 
 from .artifacts import SimpleArtifactRepository
+from .gate_guard import technical_gate_accepted
 from .models import SimpleStage, StageCheckpoint, StageFailure, StageResult, StageStatus
 from .provider import SimpleLLMClient
 from .runner import StageBlocked, StageFailed
@@ -71,6 +72,14 @@ class PrimitiveAdmissionStage:
                         code="PRIMITIVE_GATE_CLOSURE_MISSING",
                         retryable=False,
                         safe_message="TRUE Primitive requires completed Gates",
+                    )
+                )
+            if not technical_gate_accepted(technical, self._artifacts):
+                raise StageFailed(
+                    StageFailure(
+                        code="PRIMITIVE_GATE_NOT_ACCEPTED",
+                        retryable=False,
+                        safe_message="TRUE Primitive requires an exact Gate ACCEPT",
                     )
                 )
             scope_ref = scope.output_refs[0]

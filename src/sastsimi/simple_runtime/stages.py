@@ -26,6 +26,7 @@ from sastsimi.sandbox.docker_adapter import DockerAdapter, DockerOperationError
 
 from .artifacts import SimpleArtifactRepository
 from .chaining import PrimitiveAdmissionStage, SimpleChainingStage
+from .gate_guard import technical_gate_accepted
 from .models import (
     STAGE_ORDER,
     SimpleStage,
@@ -1116,35 +1117,28 @@ support reporting. Do not alter the underlying verdict.
         prior: Mapping[SimpleStage, StageCheckpoint],
     ) -> StageResult:
         result, output_ref = await self._stage.call(checkpoint, _prior_refs(prior))
-        status = result.value["status"]
-        if status != "ACCEPT":
-            raise (
-                StageBlocked(
-                    StageFailure(
-                        code="TECH_GATE_REVISE",
-                        retryable=True,
-                        safe_message="Technical Gate requested revision",
-                        evidence_refs=(output_ref,),
-                    )
-                )
-                if status == "REVISE"
-                else StageFailed(
-                    StageFailure(
-                        code="TECH_GATE_REJECTED",
-                        retryable=False,
-                        safe_message="Technical Gate rejected reporting",
-                        evidence_refs=(output_ref,),
-                    )
+        status = cast(Literal["ACCEPT", "REVISE", "REJECT"], result.value["status"])
+        if status == "REVISE" and not any(
+            request.strip()
+            for request in cast(list[str], result.value["revision_requests"])
+        ):
+            raise StageBlocked(
+                StageFailure(
+                    code="TECH_GATE_REVISION_REQUEST_EMPTY",
+                    retryable=True,
+                    safe_message="Technical Gate revision needs a concrete request",
+                    evidence_refs=(output_ref,),
                 )
             )
         return StageResult(
             output_refs=(output_ref,),
+            gate_decision=status,
             activity_events=(
                 _activity_event(
                     checkpoint,
                     ActivityKind.DECISION_RECORDED,
                     offset=10,
-                    summary_ko="Technical Gate가 근거 연결을 승인했습니다.",
+                    summary_ko=f"Technical Gate가 {status} 판정을 저장했습니다.",
                     output_refs=(output_ref,),
                     llm=result,
                 ),
@@ -1318,6 +1312,14 @@ class FindingStage:
                     safe_message="Finding requires TRUE, validated PoC, and both Gates",
                 )
             )
+        if not technical_gate_accepted(technical, self._artifacts):
+            raise StageFailed(
+                StageFailure(
+                    code="FINDING_GATE_NOT_ACCEPTED",
+                    retryable=False,
+                    safe_message="Finding requires an exact Technical Gate ACCEPT",
+                )
+            )
         scope_result = self._result(scope.output_refs[0])
         scope_status = str(scope_result.get("status", ""))
         finding_status, disclosure_allowed = internal_report_status(scope_status)
@@ -1413,6 +1415,16 @@ verification verdict follows from the supplied Pro, Con, and PoC evidence.
         dynamic = prior.get(SimpleStage.POC_EXECUTION_DONE)
         if dynamic is None or dynamic.validated_poc_ref is None:
             raise ValueError("REPORT_VALIDATED_POC_MISSING")
+        if not technical_gate_accepted(
+            prior.get(SimpleStage.TECH_GATE_DONE), self._artifacts
+        ):
+            raise StageFailed(
+                StageFailure(
+                    code="REPORT_GATE_NOT_ACCEPTED",
+                    retryable=False,
+                    safe_message="Reporter requires an exact Technical Gate ACCEPT",
+                )
+            )
         result, draft_ref = await self._stage.call(checkpoint, _prior_refs(prior))
         rendered = self._render(result.value, checkpoint, prior, finding.output_refs[0])
         inspected = redact_projected_json(
