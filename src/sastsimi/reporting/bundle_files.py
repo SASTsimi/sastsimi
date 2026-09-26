@@ -350,8 +350,8 @@ def _bundle_directories(
         return
     if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
         raise ValueError("BUNDLE_PATH_UNSAFE")
-    try:
-        with ExitStack() as stack:
+    with ExitStack() as stack:
+        try:
             root_fd = os.open(
                 root,
                 os.O_RDONLY | _posix_flag("O_DIRECTORY") | _posix_flag("O_NOFOLLOW"),
@@ -364,12 +364,12 @@ def _bundle_directories(
             bundle_fd = parent
             evidence_fd = _open_child(bundle_fd, "evidence")
             stack.callback(os.close, evidence_fd)
-            yield (
-                _SafeDirectory(bundle, bundle_fd),
-                _SafeDirectory(evidence, evidence_fd),
-            )
-    except OSError as error:
-        raise ValueError("BUNDLE_PATH_UNSAFE") from error
+        except OSError as error:
+            raise ValueError("BUNDLE_PATH_UNSAFE") from error
+        yield (
+            _SafeDirectory(bundle, bundle_fd),
+            _SafeDirectory(evidence, evidence_fd),
+        )
 
 
 def _member_directory(
