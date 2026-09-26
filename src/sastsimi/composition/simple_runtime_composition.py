@@ -19,6 +19,10 @@ from sastsimi.config.user_config import (
 from sastsimi.contracts.ids import AnalysisId, CommitId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.orchestration.run_scope_plan import PlannedRunScope
+from sastsimi.policy.adapters.official_http import (
+    PinnedHttpsTransport,
+    resolve_public_addresses,
+)
 from sastsimi.ports.public_commands import PublicCommandApplication
 from sastsimi.progress.models import ProgressSnapshot
 from sastsimi.progress.projector import ProgressProjector
@@ -52,6 +56,7 @@ from sastsimi.simple_runtime.cursor_provider import (
     OfficialCursorTransport,
 )
 from sastsimi.simple_runtime.gate_guard import technical_gate_accepted
+from sastsimi.simple_runtime.github_policy import GitHubPolicyDiscovery
 from sastsimi.simple_runtime.models import CheckpointIdentity, SimpleStage
 from sastsimi.simple_runtime.portable_docker import (
     DirectEnvironmentPreparer,
@@ -310,6 +315,7 @@ def build_analysis_application(
                 ),
             ),
             recovery=recovery_factory(identity),
+            policy_snapshot_ref=static.policy_snapshot_ref,
         )
 
     return SimpleAnalysisApplication(
@@ -321,7 +327,14 @@ def build_analysis_application(
             and profile.cursor_allow_on_demand
         ),
         store=store,
-        static_bootstrap=DirectStaticBootstrap(profile=profile),
+        static_bootstrap=DirectStaticBootstrap(
+            profile=profile,
+            policy_discovery=GitHubPolicyDiscovery(
+                transport=PinnedHttpsTransport(),
+                resolver=resolve_public_addresses,
+                clock=SystemClock(),
+            ),
+        ),
         hypothesis_bootstrap=DirectHypothesisBootstrap(
             data_dir=data_dir,
             client_factory=client_factory,

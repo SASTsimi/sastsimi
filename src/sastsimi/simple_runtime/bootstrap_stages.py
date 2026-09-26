@@ -22,6 +22,7 @@ from .application import (
     StaticBootstrapResult,
 )
 from .artifacts import SimpleArtifactRepository
+from .github_policy import DiscoveredPolicy
 from .models import CheckpointIdentity, StageFailure
 from .provider import SimpleLLMCallResult, SimpleLLMClient
 from .store import SimpleCheckpointStore
@@ -31,6 +32,10 @@ _MAX_TRACKED_FILES = 200_000
 _MAX_SOURCE_BYTES = 2 * 1024 * 1024
 _MAX_FACTS = 10_000
 _MAX_POLICY_BYTES = 256 * 1024
+
+
+class PolicyDiscovery(Protocol):
+    async def discover(self, repository_url: str) -> DiscoveredPolicy: ...
 
 
 def _security_policy(
@@ -142,10 +147,12 @@ class DirectStaticBootstrap:
         profile: SimpleExecutionProfile,
         process: ProcessExecutor | None = None,
         static_material_root: Path | None = None,
+        policy_discovery: PolicyDiscovery | None = None,
     ) -> None:
         self._profile = profile
         self._process = process or LocalProcessExecutor()
         self._materials = static_material_root or self._static_material_root()
+        self._policy_discovery = policy_discovery
 
     @staticmethod
     def _static_material_root() -> Path:
@@ -196,6 +203,9 @@ class DirectStaticBootstrap:
         snippets = self._opengrep_snippets(workspace, opengrep_raw)
         policy = _security_policy(workspace, tracked)
         policy_ref = artifacts.put_json(policy) if policy is not None else None
+        policy_snapshot_ref = await self._capture_policy_snapshot(
+            request, identity, artifacts
+        )
         source_manifest_ref = artifacts.put_json(
             {"kind": "simple_tracked_sources", "paths": list(tracked)}
         )
@@ -227,6 +237,62 @@ class DirectStaticBootstrap:
             static_bundle_ref=bundle_ref,
             workspace_path=workspace,
             security_policy_ref=policy_ref,
+            policy_snapshot_ref=policy_snapshot_ref,
+        )
+
+    async def _capture_policy_snapshot(
+        self,
+        request: SimpleAnalysisRequest,
+        identity: CheckpointIdentity,
+        artifacts: SimpleArtifactRepository,
+    ) -> StoredDataRef | None:
+        if self._policy_discovery is None:
+            return None
+        discovered = await self._policy_discovery.discover(request.repository)
+        body = discovered.body if discovered.status == "FOUND" else None
+        verified_body = (
+            body is not None
+            and discovered.sha256 == hashlib.sha256(body).hexdigest()
+            and discovered.source_url is not None
+            and discovered.blob_sha is not None
+            and discovered.publisher is not None
+        )
+        status = discovered.status
+        reason = discovered.reason_code
+        if status == "FOUND" and not verified_body:
+            status = "UNVERIFIED"
+            reason = "POLICY_DISCOVERY_INCONSISTENT"
+            body = None
+        body_ref = (
+            artifacts.put_bytes(body, "text/markdown")
+            if body is not None and status == "FOUND"
+            else None
+        )
+        return artifacts.put_json(
+            {
+                "kind": "simple_policy_snapshot",
+                "version": 1,
+                "analysis_id": identity.analysis_id,
+                "workspace_id": identity.workspace_id,
+                "commit_id": identity.commit_id,
+                "target_repository": request.repository,
+                "status": status,
+                "reason_code": reason,
+                "source_kind": "github_contents_api" if status == "FOUND" else None,
+                "owner": discovered.owner,
+                "repo": discovered.repo,
+                "publisher": discovered.publisher,
+                "source_url": discovered.source_url,
+                "source_path": discovered.source_path,
+                "blob_sha": discovered.blob_sha,
+                "etag": discovered.etag,
+                "content_type": discovered.content_type,
+                "checked_at": discovered.checked_at,
+                "body_sha256": discovered.sha256 if status == "FOUND" else None,
+                "body_ref": body_ref.model_dump(mode="json")
+                if body_ref is not None
+                else None,
+            }
         )
 
     async def _prepare_repository(

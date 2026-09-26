@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -300,6 +301,116 @@ async def test_repository_policy_ref_survives_analysis_resume(tmp_path: Path) ->
 
     assert static.calls == 1
     assert seen_refs == [_ref("security-policy"), _ref("security-policy")]
+
+
+@pytest.mark.asyncio
+async def test_policy_snapshot_is_shared_by_gate_checkpoints_and_reused_on_resume(
+    tmp_path: Path,
+) -> None:
+    class StaticWithSnapshot:
+        calls = 0
+
+        async def run(
+            self, request: SimpleAnalysisRequest, identity: CheckpointIdentity
+        ) -> StaticBootstrapResult:
+            self.calls += 1
+            return StaticBootstrapResult(
+                repository_profile_ref=_ref("repository-profile"),
+                static_bundle_ref=_ref("static-bundle"),
+                workspace_path=request.data_dir / "workspaces" / identity.workspace_id,
+                policy_snapshot_ref=_ref("policy-snapshot"),
+            )
+
+    class TwoHypotheses:
+        async def propose(
+            self, _identity: CheckpointIdentity, _static: StaticBootstrapResult
+        ) -> tuple[HypothesisSeed, ...]:
+            return (
+                HypothesisSeed(hypothesis_id="hypothesis-1", proposal_ref=_ref("h1")),
+                HypothesisSeed(hypothesis_id="hypothesis-2", proposal_ref=_ref("h2")),
+            )
+
+    def with_scope_gate(
+        current_store: SimpleCheckpointStore,
+        _identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+    ) -> SimpleRuntimeRunner:
+        handlers: dict[SimpleStage, Any] = {}
+        for stage in tuple(SimpleStage)[2:]:
+
+            async def handle(
+                _checkpoint: StageCheckpoint,
+                _prior: Mapping[SimpleStage, StageCheckpoint],
+                *,
+                current: SimpleStage = stage,
+            ) -> StageResult:
+                return StageResult(
+                    output_refs=(_ref(current.value.lower()),),
+                    verdict="TRUE"
+                    if current is SimpleStage.VERIFICATION_FINAL_DONE
+                    else None,
+                    gate_decision="ACCEPT"
+                    if current is SimpleStage.TECH_GATE_DONE
+                    else None,
+                )
+
+            handlers[stage] = handle
+        return SimpleRuntimeRunner(
+            current_store, handlers, policy_snapshot_ref=static.policy_snapshot_ref
+        )
+
+    static = StaticWithSnapshot()
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=static,
+        hypothesis_bootstrap=TwoHypotheses(),
+        runner_factory=with_scope_gate,
+        id_factory=iter(("analysis-1", "workspace-1")).__next__,
+    )
+
+    first = await application.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path,
+            repository="https://github.com/acme/app",
+            commit="a" * 40,
+        )
+    )
+    run = store.require_analysis_run("analysis-1")
+    assert run.policy_snapshot_ref == _ref("policy-snapshot")
+    assert (
+        _ref("policy-snapshot")
+        in store.require(first.identity, SimpleStage.STATIC_DONE).output_refs
+    )
+    before: list[tuple[StoredDataRef, ...]] = []
+    for hypothesis_id in run.hypothesis_ids:
+        child = first.identity.model_copy(update={"hypothesis_id": hypothesis_id})
+        gate = store.require(child, SimpleStage.SCOPE_GATE_DONE)
+        assert gate.input_refs.count(_ref("policy-snapshot")) == 1
+        before.append(gate.input_refs)
+
+    await application.resume(first.display_analysis_id)
+
+    assert static.calls == 1
+    for hypothesis_id, inputs in zip(run.hypothesis_ids, before, strict=True):
+        child = first.identity.model_copy(update={"hypothesis_id": hypothesis_id})
+        assert store.require(child, SimpleStage.SCOPE_GATE_DONE).input_refs == inputs
+
+
+def test_legacy_run_without_policy_snapshot_field_remains_loadable() -> None:
+    original = SimpleAnalysisRun(
+        analysis_id="legacy",
+        display_analysis_id="A-001",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        repository="https://github.com/acme/app",
+    )
+    data = original.model_dump(mode="json", exclude={"policy_snapshot_ref"})
+
+    loaded = SimpleAnalysisRun.model_validate_json(json.dumps(data))
+
+    assert loaded.policy_snapshot_ref is None
 
 
 class _BlockedStatic:

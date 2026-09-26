@@ -6,6 +6,7 @@ from typing import Literal, Protocol
 from uuid import uuid4
 
 from sastsimi.contracts.base import ContractModel
+from sastsimi.contracts.refs import StoredDataRef
 
 from .models import (
     HYPOTHESIS_STAGES,
@@ -62,10 +63,12 @@ class SimpleRuntimeRunner:
         handlers: Mapping[SimpleStage, SimpleStageHandler],
         *,
         recovery: RecoveryCoordinator | None = None,
+        policy_snapshot_ref: StoredDataRef | None = None,
     ) -> None:
         self.store = store
         self.handlers = handlers
         self.recovery = recovery
+        self.policy_snapshot_ref = policy_snapshot_ref
 
     async def resume_analysis(self, identity: CheckpointIdentity) -> RunOutcome:
         return await self.resume_hypothesis(identity)
@@ -105,6 +108,14 @@ class SimpleRuntimeRunner:
                     else:
                         return recovery_outcome
                 input_refs = self.store.input_refs_for(identity, stage)
+                if (
+                    stage is SimpleStage.SCOPE_GATE_DONE
+                    and existing is None
+                    and self.policy_snapshot_ref is not None
+                ):
+                    input_refs = tuple(
+                        dict.fromkeys((*input_refs, self.policy_snapshot_ref))
+                    )
                 if self.store.reusable(identity, stage, input_refs):
                     reusable = self.store.require(identity, stage)
                     if terminal_poc_outcome(reusable) is not None:
