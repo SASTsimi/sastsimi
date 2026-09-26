@@ -284,6 +284,18 @@ class SimpleRuntimeRunner:
             if already_failed
             else self.store.mark_failure(checkpoint, failure, original_status)
         )
+        if (
+            checkpoint.stage is SimpleStage.TECH_GATE_DONE
+            and failure.code == "TECH_GATE_REVISE"
+        ):
+            if self._reset_technical_revision(checkpoint.identity):
+                return None
+            exhausted = self.store.mark_recovery_exhausted(failed)
+            return RunOutcome(
+                current_stage=checkpoint.stage,
+                status=StageStatus.BLOCKED,
+                error_code=exhausted.error_code,
+            )
         if self.recovery is None or not failure.retryable:
             return RunOutcome(
                 current_stage=checkpoint.stage,
@@ -386,13 +398,7 @@ class SimpleRuntimeRunner:
 
         # A retry is a new attempt. The candidate and its execution must share
         # that attempt, so restart the pair instead of reusing an old attempt ID.
-        self.store.invalidate_from(
-            identity,
-            SimpleStage.POC_CANDIDATE_DONE,
-            new_inputs=candidate.input_refs,
-            force=True,
-        )
-        self.store.save_checkpoint(
+        self.store.replace_from(
             StageCheckpoint(
                 identity=identity,
                 stage=SimpleStage.POC_CANDIDATE_DONE,
@@ -406,7 +412,7 @@ class SimpleRuntimeRunner:
             )
         )
 
-    def _reset_technical_revision(self, identity: CheckpointIdentity) -> None:
+    def _reset_technical_revision(self, identity: CheckpointIdentity) -> bool:
         gate = self.store.get(identity, SimpleStage.TECH_GATE_DONE)
         verification = self.store.get(
             identity,
@@ -421,20 +427,14 @@ class SimpleRuntimeRunner:
             or verification.status is not StageStatus.SUCCEEDED
             or verification.attempt_number >= 2
         ):
-            return
+            return False
 
         repair_inputs = tuple(
             dict.fromkeys(
                 verification.input_refs + verification.output_refs + gate.output_refs
             )
         )
-        self.store.invalidate_from(
-            identity,
-            SimpleStage.VERIFICATION_FINAL_DONE,
-            new_inputs=repair_inputs,
-            force=True,
-        )
-        self.store.save_checkpoint(
+        self.store.replace_from(
             verification.model_copy(
                 update={
                     "status": StageStatus.PENDING,
@@ -449,3 +449,4 @@ class SimpleRuntimeRunner:
                 }
             )
         )
+        return True

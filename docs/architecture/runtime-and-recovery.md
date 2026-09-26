@@ -22,9 +22,11 @@ Docker 환경 재구성을 최대 3회 수행합니다. 각 결정과 변경은 
 남고 `status`와 대시보드에는 현재 복구 시도 횟수가 표시됩니다. 한 계보가 소진되면
 `RECOVERY_EXHAUSTED`로 중단하지만 다른 독립 가설은 계속 처리합니다.
 
-Technical Gate의 `REVISE`는 같은 가설의 최종 Verification을 다시 수행하도록
-checkpoint를 준비합니다. 이전 Pro·Con과 PoC 결과는 exact reference로 전달하되,
+Technical Gate의 `REVISE`는 같은 Gate만 반복 호출하지 않고 현재 실행 안에서
+해당 가설의 최종 Verification을 한 번 다시 수행하도록 checkpoint를 준비합니다.
+이전 Pro·Con과 PoC 결과, Gate의 수정 요청을 exact reference로 전달하되,
 새 Verification 출력이 확정되기 전까지 current 결과로 취급하지 않습니다.
+다시 수정 요청을 받으면 무한 반복하지 않고 `RECOVERY_EXHAUSTED`로 중단합니다.
 
 ## 코드 위치
 

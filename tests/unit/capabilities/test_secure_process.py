@@ -220,16 +220,21 @@ def test_timeout_terminates_descendant_after_parent_exits(tmp_path: Path) -> Non
         "[(p.write_text(str(i)),time.sleep(.05)) for i in range(200)]"
     )
     parent = (
-        "import subprocess,sys; "
-        "subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2]])"
+        "import pathlib,subprocess,sys,time\n"
+        "subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2]])\n"
+        "marker=pathlib.Path(sys.argv[2])\n"
+        "deadline=time.monotonic()+4\n"
+        "while not marker.exists() and time.monotonic()<deadline:\n"
+        "    time.sleep(.01)\n"
     )
 
     outcome = SubprocessCommandProbeRunner().run(
         Path(sys.executable),
         ("-c", parent, child, str(marker.resolve())),
-        timeout_ms=300,
+        timeout_ms=5_000,
     )
     assert outcome.succeeded is False
+    assert marker.is_file()
     time.sleep(0.4)
     first = marker.read_text(encoding="utf-8")
     time.sleep(0.4)

@@ -300,6 +300,13 @@ def build_analysis_application(
                 environments=environments,
                 store=runtime_store,
                 security_policy_ref=static.security_policy_ref,
+                workspace_path=static.workspace_path,
+                static_bundle_ref=static.static_bundle_ref,
+                git_executable=(
+                    str(profile.tools["git"].executable_path)
+                    if "git" in profile.tools
+                    else "git"
+                ),
             ),
             recovery=recovery_factory(identity),
         )

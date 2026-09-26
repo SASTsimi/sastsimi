@@ -891,6 +891,45 @@ class SimpleCheckpointStore:
             )
             connection.commit()
 
+    def replace_from(
+        self,
+        pending: StageCheckpoint,
+        *,
+        fail_before_commit: bool = False,
+    ) -> None:
+        """Atomically invalidate downstream stages and seed a replay checkpoint."""
+
+        if pending.status is not StageStatus.PENDING:
+            raise ValueError("REPLAY_CHECKPOINT_NOT_PENDING")
+        first_index = STAGE_ORDER.index(pending.stage)
+        stages = tuple(item.value for item in STAGE_ORDER[first_index:])
+        placeholders = ",".join("?" for _ in stages)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                f"""
+                DELETE FROM simple_runtime_checkpoints
+                WHERE analysis_id = ?
+                  AND hypothesis_key = ?
+                  AND stage IN ({placeholders})
+                """,  # noqa: S608 - placeholders are generated, never user supplied.
+                (
+                    pending.identity.analysis_id,
+                    self._hypothesis_key(pending.identity),
+                    *stages,
+                ),
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def _first_value(
         self,
         identity: CheckpointIdentity,

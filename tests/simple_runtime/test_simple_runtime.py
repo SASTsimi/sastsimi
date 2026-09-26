@@ -481,6 +481,116 @@ async def test_technical_gate_revise_returns_to_same_final_verification(
     assert outcome.current_stage is SimpleStage.REPORT_DONE
 
 
+@pytest.mark.asyncio
+async def test_live_technical_gate_revise_replays_verification_not_the_gate(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "live-revise" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.POC_EXECUTION_DONE)
+    calls: list[SimpleStage] = []
+    verification_inputs: list[tuple[StoredDataRef, ...]] = []
+    revise_ref = _ref("live-technical-revision-request")
+    validated_poc = _ref("live-validated-poc")
+
+    async def final_verification(
+        checkpoint: StageCheckpoint,
+        _prior: object,
+    ) -> StageResult:
+        calls.append(SimpleStage.VERIFICATION_FINAL_DONE)
+        verification_inputs.append(checkpoint.input_refs)
+        return StageResult(
+            output_refs=(_ref(f"final-{len(verification_inputs)}"),),
+            validated_poc_ref=validated_poc,
+            verdict="TRUE",
+        )
+
+    gate_calls = 0
+
+    async def technical_gate(
+        _checkpoint: StageCheckpoint,
+        _prior: object,
+    ) -> StageResult:
+        nonlocal gate_calls
+        gate_calls += 1
+        calls.append(SimpleStage.TECH_GATE_DONE)
+        if gate_calls == 1:
+            raise StageBlocked(
+                StageFailure(
+                    code="TECH_GATE_REVISE",
+                    retryable=True,
+                    safe_message="revise final verification",
+                    evidence_refs=(revise_ref,),
+                )
+            )
+        return StageResult(output_refs=(_ref("gate-accepted"),))
+
+    handlers = _recording_handlers(calls)
+    handlers[SimpleStage.VERIFICATION_FINAL_DONE] = final_verification
+    handlers[SimpleStage.TECH_GATE_DONE] = technical_gate
+    recovery = _Recovery(tmp_path, RecoveryAction.REGENERATE_INPUT)
+
+    outcome = await SimpleRuntimeRunner(
+        store, handlers, recovery=recovery
+    ).resume_analysis(_identity())
+
+    assert outcome.status is StageStatus.SUCCEEDED
+    assert outcome.current_stage is SimpleStage.REPORT_DONE
+    assert len(verification_inputs) == 2
+    assert revise_ref in verification_inputs[1]
+    assert gate_calls == 2
+    assert recovery.calls == []
+
+
+@pytest.mark.asyncio
+async def test_repeated_technical_gate_revise_stops_after_one_verification_replay(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "repeated-revise" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.POC_EXECUTION_DONE)
+    calls: list[SimpleStage] = []
+
+    async def final_verification(
+        _checkpoint: StageCheckpoint,
+        _prior: object,
+    ) -> StageResult:
+        calls.append(SimpleStage.VERIFICATION_FINAL_DONE)
+        return StageResult(
+            output_refs=(_ref(f"final-{len(calls)}"),),
+            validated_poc_ref=_ref("repeated-validated-poc"),
+            verdict="TRUE",
+        )
+
+    async def technical_gate(
+        _checkpoint: StageCheckpoint,
+        _prior: object,
+    ) -> StageResult:
+        calls.append(SimpleStage.TECH_GATE_DONE)
+        raise StageBlocked(
+            StageFailure(
+                code="TECH_GATE_REVISE",
+                retryable=True,
+                safe_message="revise final verification",
+                evidence_refs=(_ref("revision-request"),),
+            )
+        )
+
+    handlers = _recording_handlers(calls)
+    handlers[SimpleStage.VERIFICATION_FINAL_DONE] = final_verification
+    handlers[SimpleStage.TECH_GATE_DONE] = technical_gate
+    recovery = _Recovery(tmp_path, RecoveryAction.REGENERATE_INPUT)
+
+    outcome = await SimpleRuntimeRunner(
+        store, handlers, recovery=recovery
+    ).resume_analysis(_identity())
+
+    assert outcome.status is StageStatus.BLOCKED
+    assert outcome.current_stage is SimpleStage.TECH_GATE_DONE
+    assert outcome.error_code == "RECOVERY_EXHAUSTED"
+    assert calls.count(SimpleStage.VERIFICATION_FINAL_DONE) == 2
+    assert calls.count(SimpleStage.TECH_GATE_DONE) == 2
+    assert recovery.calls == []
+
+
 def test_scope_denial_creates_only_a_restricted_internal_report() -> None:
     assert internal_report_status("ALLOW") == ("CONFIRMED", True)
     assert internal_report_status("DENY") == ("CONFIRMED_RESTRICTED", False)
@@ -861,6 +971,34 @@ async def test_prepare_recovery_rolls_back_decision_and_pending_checkpoint(
         hypothesis_id=_identity().hypothesis_id,
     )
     assert all(resolution.decision_ref not in event.output_refs for event in events)
+
+
+def test_replace_from_rolls_back_invalidation_and_pending_checkpoint(tmp_path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "replace-rollback" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.VERIFICATION_FINAL_DONE)
+    final = store.require(_identity(), SimpleStage.VERIFICATION_FINAL_DONE)
+    running_gate = store.mark_running(
+        _identity(),
+        SimpleStage.TECH_GATE_DONE,
+        final.output_refs,
+        attempt_id="gate-attempt-1",
+    )
+    failed_gate = store.mark_failure(
+        running_gate,
+        StageFailure(
+            code="TECH_GATE_REVISE",
+            retryable=True,
+            safe_message="revise final verification",
+        ),
+        StageStatus.BLOCKED,
+    )
+    pending = final.model_copy(update={"status": StageStatus.PENDING})
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        store.replace_from(pending, fail_before_commit=True)
+
+    assert store.require(_identity(), SimpleStage.VERIFICATION_FINAL_DONE) == final
+    assert store.require(_identity(), SimpleStage.TECH_GATE_DONE) == failed_gate
 
 
 @pytest.mark.asyncio

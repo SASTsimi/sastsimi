@@ -7,6 +7,7 @@ import errno
 import json
 import os
 import sys
+import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from contextvars import ContextVar
@@ -942,7 +943,14 @@ class OwnedResourceRegistry:
             os.fsync(descriptor)
             os.close(descriptor)
             descriptor = -1
-            os.replace(temporary, path)
+            for attempt in range(5):
+                try:
+                    os.replace(temporary, path)
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.02 * (2**attempt))
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
