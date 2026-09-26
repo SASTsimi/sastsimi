@@ -69,10 +69,7 @@ def _report_path_for_result(
             policy_snapshot_ref=policy_snapshot_ref,
             repository_url=repository_url,
         )
-        if (
-            safe_public_report(raw, review) != raw
-            or report_path.read_bytes() != raw
-        ):
+        if safe_public_report(raw, review) != raw or report_path.read_bytes() != raw:
             return None
     except (OSError, ValueError, TypeError, sqlite3.Error):
         return None

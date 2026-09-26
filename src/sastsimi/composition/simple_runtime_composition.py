@@ -300,6 +300,12 @@ def build_analysis_application(
             artifacts=artifacts,
             workspace=static.workspace_path,
         )
+        try:
+            repository_url = runtime_store.require_analysis_run(
+                identity.analysis_id
+            ).repository
+        except LookupError:
+            repository_url = None
         return SimpleRuntimeRunner(
             runtime_store,
             build_stage_handlers(
@@ -311,9 +317,7 @@ def build_analysis_application(
                 store=runtime_store,
                 security_policy_ref=static.security_policy_ref,
                 policy_snapshot_ref=static.policy_snapshot_ref,
-                repository_url=runtime_store.require_analysis_run(
-                    identity.analysis_id
-                ).repository,
+                repository_url=repository_url,
                 workspace_path=static.workspace_path,
                 static_bundle_ref=static.static_bundle_ref,
                 git_executable=(
@@ -569,9 +573,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             checkpoint.output_refs[1]
         )
         if content != original:
-            report_path = report_path.with_name(
-                f"{report_path.stem}.restricted.md"
-            )
+            report_path = report_path.with_name(f"{report_path.stem}.restricted.md")
         relative = report_path.relative_to(self._config.data_dir.resolve())
         report_path.parent.mkdir(parents=True, exist_ok=True)
         if not report_path.exists() or report_path.read_bytes() != content:

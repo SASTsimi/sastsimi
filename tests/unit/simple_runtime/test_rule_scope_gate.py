@@ -41,6 +41,7 @@ def _model() -> dict[str, Any]:
         "rationale": "Explicit project policy permits this local test.",
         "restrictions": [],
         "testing_restriction_compliance": "PASS",
+        "testing_poc_quote": "printf 'LOCAL_POC_METHOD_MARKER\\n'",
         "axes": {
             name: {
                 "status": "PASS",
@@ -57,6 +58,7 @@ class _ScopeClient:
     def __init__(self, value: dict[str, Any] | None = None) -> None:
         self.value = value or _model()
         self.prompts: list[bytes] = []
+        self.schemas: list[Mapping[str, Any]] = []
 
     async def call(
         self,
@@ -66,8 +68,9 @@ class _ScopeClient:
         timeout_ms: int,
         agent_name: str = "agent",
     ) -> SimpleLLMCallResult:
-        del output_schema, timeout_ms, agent_name
+        del timeout_ms, agent_name
         self.prompts.append(prompt)
+        self.schemas.append(output_schema)
         return SimpleLLMCallResult(
             value=self.value,
             prompt_digest="a" * 64,
@@ -159,11 +162,54 @@ def _technical_prior(
     artifacts: SimpleArtifactRepository, checkpoint: StageCheckpoint
 ) -> dict[SimpleStage, StageCheckpoint]:
     prior: dict[SimpleStage, StageCheckpoint] = {}
-    for stage in (
-        SimpleStage.POC_EXECUTION_DONE,
-        SimpleStage.VERIFICATION_FINAL_DONE,
-        SimpleStage.TECH_GATE_DONE,
-    ):
+    content_ref = artifacts.put_bytes(
+        b"#!/bin/sh\nprintf 'LOCAL_POC_METHOD_MARKER\\n'\n", "text/x-shellscript"
+    )
+    candidate_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_candidate",
+            "content_ref": content_ref.model_dump(mode="json"),
+            "attempt_id": "attempt-1",
+        }
+    )
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "candidate_ref": candidate_ref.model_dump(mode="json"),
+            "content_ref": content_ref.model_dump(mode="json"),
+            "testing_method": "local Docker container",
+            "attempt_id": "attempt-1",
+        }
+    )
+    validated_ref = artifacts.put_json(
+        {
+            "kind": "simple_validated_poc",
+            "candidate_ref": candidate_ref.model_dump(mode="json"),
+            "content_ref": content_ref.model_dump(mode="json"),
+            "execution_ref": execution_ref.model_dump(mode="json"),
+            "attempt_id": "attempt-1",
+        }
+    )
+    prior[SimpleStage.POC_CANDIDATE_DONE] = StageCheckpoint(
+        identity=checkpoint.identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        output_refs=(candidate_ref, content_ref),
+        attempt_id="attempt-1",
+    )
+    prior[SimpleStage.POC_EXECUTION_DONE] = StageCheckpoint(
+        identity=checkpoint.identity,
+        stage=SimpleStage.POC_EXECUTION_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        output_refs=(execution_ref, validated_ref),
+        validated_poc_ref=validated_ref,
+        attempt_id="attempt-1",
+    )
+    for stage in (SimpleStage.VERIFICATION_FINAL_DONE, SimpleStage.TECH_GATE_DONE):
         ref = artifacts.put_json(
             {"kind": stage.value.lower(), "testing_method": "local Docker container"}
         )
@@ -176,6 +222,9 @@ def _technical_prior(
             output_refs=(ref,),
             verdict="TRUE" if stage is SimpleStage.VERIFICATION_FINAL_DONE else None,
             gate_decision="ACCEPT" if stage is SimpleStage.TECH_GATE_DONE else None,
+            validated_poc_ref=validated_ref
+            if stage is SimpleStage.VERIFICATION_FINAL_DONE
+            else None,
         )
     return prior
 
@@ -277,12 +326,44 @@ async def test_verified_exact_snapshot_with_five_citations_can_allow(
     assert len(client.prompts) == 1
     assert b"Security reports from any researcher" in client.prompts[0]
     assert b"Private reports are permitted" in client.prompts[0]
+    assert b"LOCAL_POC_METHOD_MARKER" in client.prompts[0]
+    assert b"testing_poc_quote" in client.prompts[0]
+    assert "testing_poc_quote" in client.schemas[0]["required"]
+    assert client.schemas[0]["properties"]["testing_poc_quote"] == {"type": "string"}
     assert client.prompts[0].index(b"Security reports") < client.prompts[0].index(
         b"local Docker container"
     )
     artifact = json.loads(artifacts.read(output.output_refs[0]))
     assert artifact["policy_snapshot_ref"] == snapshot_ref.model_dump(mode="json")
     assert artifact["result"]["status"] == "ALLOW"
+
+
+@pytest.mark.asyncio
+async def test_scope_gate_rejects_poc_script_not_linked_to_validation(
+    tmp_path: Path,
+) -> None:
+    artifacts, checkpoint = _scope_case(tmp_path)
+    snapshot_ref = _snapshot(artifacts)
+    prior = _technical_prior(artifacts, checkpoint)
+    candidate = prior[SimpleStage.POC_CANDIDATE_DONE]
+    forged_content = artifacts.put_bytes(
+        b"#!/bin/sh\necho different\n", "text/x-shellscript"
+    )
+    prior[SimpleStage.POC_CANDIDATE_DONE] = candidate.model_copy(
+        update={"output_refs": (candidate.output_refs[0], forged_content)}
+    )
+    client = _ScopeClient()
+    stage = RuleScopeGateStage(
+        client,
+        artifacts,
+        policy_snapshot_ref=snapshot_ref,
+        repository_url="https://github.com/acme/app",
+    )
+
+    output = await stage(_with_snapshot(checkpoint, snapshot_ref), prior)
+
+    assert client.prompts == []
+    assert _result(artifacts, output.output_refs[0])["status"] == "UNCERTAIN"
 
 
 @pytest.mark.asyncio

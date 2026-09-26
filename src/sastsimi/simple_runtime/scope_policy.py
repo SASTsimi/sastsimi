@@ -20,6 +20,16 @@ from .models import STAGE_VERSION, SimpleStage, StageCheckpoint, StageStatus
 AXES = ("rules", "asset_scope", "impact", "testing", "reporting")
 _POLICY_PATHS = frozenset({".github/SECURITY.md", "SECURITY.md", "docs/SECURITY.md"})
 _BLOB_SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
+_LIMIT_HINT = re.compile(
+    r"\b(?:do\s+not|don't|must\s+not|may\s+not|should\s+not|"
+    r"not\s+(?:permitted|allowed)|prohibit(?:ed|s)?|forbid(?:den)?|"
+    r"avoid|never|no|must|require(?:s|d)?|unless|except|"
+    r"disallow(?:ed)?|only|out[\s-]+of[\s-]+scope|"
+    r"prior\s+(?:approval|permission)|"
+    r"rate[\s-]?limit(?:ed)?)\b|금지|제외|제한|허용되지|해서는\s*안|"
+    r"사전\s*(?:승인|허가)",
+    re.IGNORECASE,
+)
 
 
 def verified_policy_snapshot(
@@ -122,6 +132,8 @@ def validate_scope_decision(
     snapshot: dict[str, object],
     policy_text: str,
     model_result: Mapping[str, object],
+    *,
+    poc_evidence_text: str | None = None,
 ) -> dict[str, Any]:
     """Reduce cited per-axis judgments; never trust model-proposed ALLOW."""
 
@@ -166,21 +178,50 @@ def validate_scope_decision(
         compliance = "UNCERTAIN"
     restrictions = model_result.get("restrictions")
     if not isinstance(restrictions, list) or any(
-        not isinstance(item, str) for item in restrictions
+        not isinstance(item, str) or not item.strip() or item not in policy_text
+        for item in restrictions
     ):
         restrictions = []
         compliance = "UNCERTAIN"
+    cited_limits = {
+        line.strip() for line in lines if line.strip() and _LIMIT_HINT.search(line)
+    }
+    if not cited_limits.issubset(set(restrictions)):
+        compliance = "UNCERTAIN"
+    restriction_review_required = compliance == "PASS" and bool(
+        cited_limits or restrictions
+    )
+    if restriction_review_required:
+        compliance = "UNCERTAIN"
+    poc_quote = model_result.get("testing_poc_quote")
+    if compliance in {"PASS", "FAIL"} and (
+        not isinstance(poc_quote, str)
+        or len(poc_quote.strip()) < 8
+        or poc_evidence_text is None
+        or poc_quote not in poc_evidence_text
+        or not any(
+            poc_quote in line and not line.lstrip().startswith("#")
+            for line in poc_evidence_text.splitlines()
+        )
+    ):
+        compliance = "UNCERTAIN"
+    if not isinstance(poc_quote, str):
+        poc_quote = ""
     testing_status = axes["testing"]["status"]
     if (
         testing_status == "PASS"
-        and (compliance != "PASS" or restrictions)
+        and compliance != "PASS"
         or testing_status == "FAIL"
         and compliance != "FAIL"
     ):
         axes["testing"] = {
             **axes["testing"],
             "status": "UNCERTAIN",
-            "reason": "POLICY_TESTING_RESTRICTION_CONFLICT",
+            "reason": (
+                "POLICY_RESTRICTIONS_REQUIRE_HUMAN_REVIEW"
+                if restriction_review_required
+                else "POLICY_TESTING_RESTRICTION_CONFLICT"
+            ),
         }
         if "testing" not in missing:
             missing.append("testing")
@@ -200,6 +241,7 @@ def validate_scope_decision(
         "checks": [f"{name}:{axes[name]['status']}" for name in AXES],
         "restrictions": restrictions,
         "testing_restriction_compliance": compliance,
+        "testing_poc_quote": poc_quote,
         "axes": axes,
         "missing_information": missing,
         "policy_source": _source(snapshot),
@@ -235,6 +277,7 @@ def project_scope_review(
     ) -> dict[str, Any]:
         return {
             **uncertain_scope_result(snapshot, reason),
+            "private_reporting_policy_passed": False,
             "external_disclosure_allowed": False,
             "provenance_verified": False,
             "legacy_status": raw_status,
@@ -287,21 +330,30 @@ def project_scope_review(
         source_refs = raw_gate.get("source_refs")
         model_result = raw_gate.get("model_result")
         stored_result = raw_gate.get("result")
-        if (
-            not isinstance(source_refs, list)
-            or body_ref.model_dump(mode="json") not in source_refs
-            or not isinstance(model_result, dict)
-            or not isinstance(stored_result, dict)
-        ):
+        if not isinstance(source_refs, list) or not isinstance(stored_result, dict):
             return restricted("POLICY_GATE_EVIDENCE_INCOMPLETE")
+        if not isinstance(model_result, dict):
+            reason = _preserved_stage_uncertain_reason(
+                raw_gate, snapshot, source_refs, stored_result
+            )
+            return restricted(reason or "POLICY_GATE_EVIDENCE_INCOMPLETE", snapshot)
+        poc_evidence_text = _verified_gate_poc_evidence(
+            artifacts, source_refs, body_ref
+        )
+        if poc_evidence_text is None:
+            return restricted("POLICY_GATE_EVIDENCE_INCOMPLETE", snapshot)
         recomputed = validate_scope_decision(
-            snapshot, body.decode("utf-8"), model_result
+            snapshot,
+            body.decode("utf-8"),
+            model_result,
+            poc_evidence_text=poc_evidence_text,
         )
         if stored_result != recomputed:
             return restricted("POLICY_GATE_DECISION_MISMATCH")
         return {
             **recomputed,
-            "external_disclosure_allowed": recomputed["status"] == "ALLOW",
+            "private_reporting_policy_passed": recomputed["status"] == "ALLOW",
+            "external_disclosure_allowed": False,
             "provenance_verified": True,
             "legacy_status": raw_status,
         }
@@ -309,16 +361,111 @@ def project_scope_review(
         return restricted("POLICY_SOURCE_INCOMPLETE")
 
 
+def _preserved_stage_uncertain_reason(
+    raw_gate: dict[str, Any],
+    snapshot: dict[str, Any],
+    source_refs: list[object],
+    stored_result: dict[str, Any],
+) -> str | None:
+    if source_refs or "model_result" in raw_gate:
+        return None
+    checks = stored_result.get("checks")
+    if not isinstance(checks, list) or len(checks) != 1:
+        return None
+    reason = checks[0]
+    if not isinstance(reason, str) or reason not in {
+        "POLICY_TECHNICAL_CONTEXT_MISSING",
+        "POLICY_POC_CONTEXT_UNVERIFIED",
+        "POLICY_SOURCE_INCOMPLETE",
+    }:
+        return None
+    return (
+        reason
+        if stored_result
+        in (
+            uncertain_scope_result(snapshot, reason),
+            uncertain_scope_result(None, reason),
+        )
+        else None
+    )
+
+
+def _verified_gate_poc_evidence(
+    artifacts: SimpleArtifactRepository,
+    source_refs: list[object],
+    body_ref: StoredDataRef,
+) -> str | None:
+    if len(source_refs) != 6:
+        return None
+    refs = tuple(StoredDataRef.model_validate(value) for value in source_refs)
+    if refs[0] != body_ref:
+        return None
+    _, content_ref, validated_ref, technical_ref, execution_ref, verification_ref = refs
+    content = artifacts.read(content_ref)
+    if not content:
+        return None
+    validated = json.loads(artifacts.read(validated_ref))
+    technical = json.loads(artifacts.read(technical_ref))
+    execution = json.loads(artifacts.read(execution_ref))
+    verification = json.loads(artifacts.read(verification_ref))
+    if not all(
+        isinstance(value, dict)
+        for value in (validated, technical, execution, verification)
+    ):
+        return None
+    candidate_ref = StoredDataRef.model_validate(validated.get("candidate_ref"))
+    candidate = json.loads(artifacts.read(candidate_ref))
+    if not isinstance(candidate, dict):
+        return None
+    candidate_json = candidate_ref.model_dump(mode="json")
+    content_json = content_ref.model_dump(mode="json")
+    validated_json = validated_ref.model_dump(mode="json")
+    execution_json = execution_ref.model_dump(mode="json")
+    verification_json = verification_ref.model_dump(mode="json")
+    technical_result = technical.get("result")
+    verification_result = verification.get("result")
+    if (
+        candidate.get("kind") != "simple_poc_candidate"
+        or execution.get("kind") != "simple_poc_execution"
+        or validated.get("kind") != "simple_validated_poc"
+        or technical.get("kind") != "simple_technical_gate"
+        or verification.get("kind") != "simple_verification_result"
+        or candidate.get("content_ref") != content_json
+        or execution.get("candidate_ref") != candidate_json
+        or execution.get("content_ref") != content_json
+        or validated.get("candidate_ref") != candidate_json
+        or validated.get("content_ref") != content_json
+        or validated.get("execution_ref") != execution_json
+        or not isinstance(execution.get("attempt_id"), str)
+        or not execution["attempt_id"]
+        or validated.get("attempt_id") != execution["attempt_id"]
+        or not isinstance(verification_result, dict)
+        or verification_result.get("verdict") != "TRUE"
+        or not isinstance(technical_result, dict)
+        or technical_result.get("status") != "ACCEPT"
+        or not isinstance(verification.get("source_refs"), list)
+        or validated_json not in verification["source_refs"]
+        or execution_json not in verification["source_refs"]
+        or not isinstance(technical.get("source_refs"), list)
+        or validated_json not in technical["source_refs"]
+        or execution_json not in technical["source_refs"]
+        or verification_json not in technical["source_refs"]
+    ):
+        return None
+    return content.decode("utf-8")
+
+
 def safe_public_report(markdown: bytes, review: Mapping[str, object]) -> bytes:
     """Never serve an old report that still claims unverified permission."""
 
-    if review.get("external_disclosure_allowed") is True:
-        return markdown
     text = markdown.decode("utf-8", errors="replace")
-    unverified_decision = (
-        review.get("provenance_verified") is not True
-        and review.get("legacy_status") in {"ALLOW", "DENY"}
-    )
+    if "- 외부 제출·공개 허용: 예" in text or "- 외부 공개 허용: 예" in text:
+        return _restricted_public_report(review)
+    if review.get("provenance_verified") is True and review.get("status") == "ALLOW":
+        return markdown
+    unverified_decision = review.get("provenance_verified") is not True and review.get(
+        "legacy_status"
+    ) in {"ALLOW", "DENY"}
     affirmative = (
         "- 외부 제출·공개 허용: 예" in text
         or re.search(r"(?m)^- 상태: CONFIRMED\s*$", text) is not None
@@ -326,6 +473,10 @@ def safe_public_report(markdown: bytes, review: Mapping[str, object]) -> bytes:
     )
     if not unverified_decision and not affirmative:
         return markdown
+    return _restricted_public_report(review)
+
+
+def _restricted_public_report(review: Mapping[str, object]) -> bytes:
     source = review.get("policy_source")
     collection = (
         source.get("collection_status", "UNVERIFIED")

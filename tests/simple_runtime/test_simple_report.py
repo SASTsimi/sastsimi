@@ -208,7 +208,7 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
     for heading in ("### Summary", "### Details", "### PoC", "### Impact"):
         assert markdown.count(heading) == 1
     assert "CONFIRMED_RESTRICTED" in markdown
-    assert "외부 제출·공개 금지" in markdown
+    assert "비공개 제보 허가가 확인되지 않았습니다" in markdown
     assert "validated PoC" in markdown
     assert "실행 명령" in markdown
     assert "실행 결과" in markdown
@@ -267,12 +267,14 @@ async def test_verified_policy_allow_report_shows_source_and_five_citations(
         "body_ref": body_ref.model_dump(mode="json"),
     }
     snapshot_ref = artifacts.put_json(snapshot)
+    script = b"#!/bin/sh\nprintf 'SUPPORTED: command executed\\n'\n"
     axes = ("rules", "asset_scope", "impact", "testing", "reporting")
     model_result = {
         "status": "ALLOW",
         "rationale": "The policy permits local testing and private reports.",
         "restrictions": [],
         "testing_restriction_compliance": "PASS",
+        "testing_poc_quote": "printf 'SUPPORTED: command executed\\n'",
         "axes": {
             axis: {
                 "status": "PASS",
@@ -283,19 +285,6 @@ async def test_verified_policy_allow_report_shows_source_and_five_citations(
             for line_number, axis in enumerate(axes, start=2)
         },
     }
-    gate_ref = artifacts.put_json(
-        {
-            "kind": "simple_rule_scope_gate",
-            "policy_snapshot_ref": snapshot_ref.model_dump(mode="json"),
-            "source_refs": [body_ref.model_dump(mode="json")],
-            "model_result": model_result,
-            "result": validate_scope_decision(
-                snapshot, policy_body.decode(), model_result
-            ),
-            "attempt_id": "scope-attempt",
-        }
-    )
-    script = b"#!/bin/sh\nprintf 'SUPPORTED: command executed\\n'\n"
     content_ref = artifacts.put_bytes(script, "text/x-shellscript")
     candidate_ref = artifacts.put_json(
         {
@@ -328,7 +317,54 @@ async def test_verified_policy_allow_report_shows_source_and_five_citations(
         }
     )
     cwe_ref = artifacts.put_json({"result": {"primary_cwe": "CWE-78"}})
-    technical_ref = artifacts.put_json({"result": {"status": "ACCEPT"}})
+    verification_ref = artifacts.put_json(
+        {
+            "kind": "simple_verification_result",
+            "source_refs": [
+                validated_ref.model_dump(mode="json"),
+                execution_ref.model_dump(mode="json"),
+            ],
+            "result": {"verdict": "TRUE"},
+            "attempt_id": "verification-attempt",
+        }
+    )
+    technical_ref = artifacts.put_json(
+        {
+            "kind": "simple_technical_gate",
+            "source_refs": [
+                validated_ref.model_dump(mode="json"),
+                execution_ref.model_dump(mode="json"),
+                verification_ref.model_dump(mode="json"),
+            ],
+            "result": {"status": "ACCEPT"},
+            "attempt_id": "technical-attempt",
+        }
+    )
+    gate_ref = artifacts.put_json(
+        {
+            "kind": "simple_rule_scope_gate",
+            "policy_snapshot_ref": snapshot_ref.model_dump(mode="json"),
+            "source_refs": [
+                ref.model_dump(mode="json")
+                for ref in (
+                    body_ref,
+                    content_ref,
+                    validated_ref,
+                    technical_ref,
+                    execution_ref,
+                    verification_ref,
+                )
+            ],
+            "model_result": model_result,
+            "result": validate_scope_decision(
+                snapshot,
+                policy_body.decode(),
+                model_result,
+                poc_evidence_text=script.decode(),
+            ),
+            "attempt_id": "scope-attempt",
+        }
+    )
     finding_ref = artifacts.put_json({"kind": "simple_finding"})
     prior = {
         SimpleStage.POC_CANDIDATE_DONE: _checkpoint(
@@ -390,7 +426,9 @@ async def test_verified_policy_allow_report_shows_source_and_five_citations(
     assert result.markdown_path is not None
     markdown = Path(result.markdown_path).read_text(encoding="utf-8")
     assert "- Rule Scope Gate: ALLOW" in markdown
-    assert "- 외부 제출·공개 허용: 예" in markdown
+    assert "- 비공개 제보 정책 조건: 예비 충족·사람 검토 필요" in markdown
+    assert "- 외부 공개 허용: 확인되지 않음" in markdown
+    assert "- 외부 제출·공개 허용: 예" not in markdown
     assert f"- 정책 출처: {source_url}" in markdown
     assert f"- 정책 개정: {blob_sha}" in markdown
     for line_number, axis in enumerate(axes, start=2):

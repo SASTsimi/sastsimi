@@ -1257,9 +1257,16 @@ class RuleScopeGateStage:
                 "rationale": _string(),
                 "restrictions": _string_array(),
                 "testing_restriction_compliance": _enum("PASS", "FAIL", "UNCERTAIN"),
+                "testing_poc_quote": _string(),
                 "axes": _object_schema({name: axis for name in names}, list(names)),
             },
-            ["rationale", "restrictions", "testing_restriction_compliance", "axes"],
+            [
+                "rationale",
+                "restrictions",
+                "testing_restriction_compliance",
+                "testing_poc_quote",
+                "axes",
+            ],
         )
         self._instructions = """
 You are the Rule Scope Gate Agent. Assess the exact official policy as quoted
@@ -1270,8 +1277,14 @@ testing-method restrictions, and private reporting permission. For every PASS
 or FAIL provide a one-based line number, an exact quote on that line, and why
 it applies to this PoC. For UNCERTAIN use line 0 and an empty quote. Never infer
 live-host testing permission from a local PoC or a private-report button. List
-every restriction. PASS testing compliance only if the actual PoC obeys all of
-them; otherwise mark FAIL or UNCERTAIN. Do not propose the final gate status.
+every restriction as the exact full line from the policy, including exclusions
+and approval or testing conditions. PASS testing compliance
+only if the actual PoC obeys all of them; otherwise mark FAIL or UNCERTAIN.
+For PASS or FAIL, testing_poc_quote must be a short, exact substring from the
+supplied validated PoC script showing the testing method. Do not quote policy
+text or invent PoC evidence. For UNCERTAIN, use an empty testing_poc_quote.
+If the validated PoC does not show the method clearly, choose UNCERTAIN.
+Do not propose the final gate status.
 """
 
     async def __call__(
@@ -1306,12 +1319,11 @@ them; otherwise mark FAIL or UNCERTAIN. Do not propose the final gate status.
                 commit_id=checkpoint.identity.commit_id,
                 repository_url=self._repository_url,
             ):
-                return self._uncertain(
-                    checkpoint, None, "POLICY_SNAPSHOT_UNVERIFIED"
-                )
+                return self._uncertain(checkpoint, None, "POLICY_SNAPSHOT_UNVERIFIED")
             verification = prior.get(SimpleStage.VERIFICATION_FINAL_DONE)
             technical = prior.get(SimpleStage.TECH_GATE_DONE)
             poc = prior.get(SimpleStage.POC_EXECUTION_DONE)
+            candidate = prior.get(SimpleStage.POC_CANDIDATE_DONE)
             if (
                 verification is None
                 or verification.verdict != "TRUE"
@@ -1321,18 +1333,55 @@ them; otherwise mark FAIL or UNCERTAIN. Do not propose the final gate status.
                 or not technical.output_refs
                 or poc is None
                 or not poc.output_refs
+                or poc.validated_poc_ref is None
+                or verification.validated_poc_ref != poc.validated_poc_ref
+                or candidate is None
+                or len(candidate.output_refs) < 2
             ):
                 return self._uncertain(
                     checkpoint, snapshot, "POLICY_TECHNICAL_CONTEXT_MISSING"
                 )
+            candidate_ref, content_ref = candidate.output_refs[:2]
+            validated_ref = poc.validated_poc_ref
+            candidate_value = json.loads(self._artifacts.read(candidate_ref))
+            execution_value = json.loads(self._artifacts.read(poc.output_refs[0]))
+            validated_value = json.loads(self._artifacts.read(validated_ref))
+            if (
+                not isinstance(candidate_value, dict)
+                or not isinstance(execution_value, dict)
+                or not isinstance(validated_value, dict)
+                or candidate_value.get("kind") != "simple_poc_candidate"
+                or execution_value.get("kind") != "simple_poc_execution"
+                or validated_value.get("kind") != "simple_validated_poc"
+                or any(
+                    StoredDataRef.model_validate(value.get(field)) != expected
+                    for value, field, expected in (
+                        (candidate_value, "content_ref", content_ref),
+                        (execution_value, "candidate_ref", candidate_ref),
+                        (execution_value, "content_ref", content_ref),
+                        (validated_value, "candidate_ref", candidate_ref),
+                        (validated_value, "content_ref", content_ref),
+                        (validated_value, "execution_ref", poc.output_refs[0]),
+                    )
+                )
+                or candidate_value.get("attempt_id") != candidate.attempt_id
+                or execution_value.get("attempt_id") != poc.attempt_id
+                or validated_value.get("attempt_id") != poc.attempt_id
+            ):
+                return self._uncertain(
+                    checkpoint, snapshot, "POLICY_POC_CONTEXT_UNVERIFIED"
+                )
             refs = (
                 body_ref,
+                content_ref,
+                validated_ref,
                 technical.output_refs[0],
                 poc.output_refs[0],
                 verification.output_refs[0],
             )
             context = self._artifacts.prompt_context_strict(refs)
             policy_text = body.decode("utf-8")
+            poc_evidence_text = self._artifacts.read(content_ref).decode("utf-8")
         except (OSError, ValueError, TypeError):
             return self._uncertain(checkpoint, None, "POLICY_SOURCE_INCOMPLETE")
         result = await self._client.call(
@@ -1343,7 +1392,12 @@ them; otherwise mark FAIL or UNCERTAIN. Do not propose the final gate status.
         )
         if isinstance(result, StageFailure):
             _raise_provider_failure(result)
-        decision = validate_scope_decision(snapshot, policy_text, result.value)
+        decision = validate_scope_decision(
+            snapshot,
+            policy_text,
+            result.value,
+            poc_evidence_text=poc_evidence_text,
+        )
         status = str(decision["status"])
         internal_report_status(status)
         output_ref = self._artifacts.put_json(
@@ -1459,13 +1513,14 @@ class FindingStage:
             repository_url=self._repository_url,
         )
         scope_status = str(scope_result["status"])
-        finding_status, disclosure_allowed = internal_report_status(scope_status)
+        finding_status, private_reporting_allowed = internal_report_status(scope_status)
         source_refs = _prior_refs(prior)
         finding_ref = self._artifacts.put_json(
             {
                 "kind": "simple_finding",
                 "status": finding_status,
-                "external_disclosure_allowed": disclosure_allowed,
+                "private_reporting_policy_passed": private_reporting_allowed,
+                "external_disclosure_allowed": False,
                 "scope_gate_status": scope_status,
                 "analysis_id": checkpoint.identity.analysis_id,
                 "hypothesis_id": checkpoint.identity.hypothesis_id,
@@ -1626,16 +1681,35 @@ verification verdict follows from the supplied Pro, Con, and PoC evidence.
             repository_url=self._repository_url,
         )
         scope_status = str(scope["status"])
-        report_status, disclosure_allowed = internal_report_status(scope_status)
+        report_status, private_reporting_allowed = internal_report_status(scope_status)
         source = cast(dict[str, JsonValue], scope["policy_source"])
         axes = cast(dict[str, dict[str, JsonValue]], scope["axes"])
+        if private_reporting_allowed:
+            private_reporting_label = "예비 충족·사람 검토 필요"
+            disclosure_limit = (
+                "- 공개 제한: 비공개 제보에도 사람의 최종 검토가 필요합니다. "
+                "외부 공개 허가는 확인되지 않았습니다."
+            )
+        elif scope_status == "DENY":
+            private_reporting_label = "정책상 제외"
+            disclosure_limit = (
+                "- 제보 제한: 정책 근거상 해당 대상 또는 시험은 제외됩니다. "
+                "내부 검토용입니다."
+            )
+        else:
+            private_reporting_label = "미확인"
+            disclosure_limit = (
+                "- 제보 제한: 비공개 제보 허가가 확인되지 않았습니다. "
+                "내부 검토용입니다."
+            )
         lines = [
             f"# {value['title']}",
             "",
             "### Summary",
             "",
             f"- 상태: {report_status}",
-            f"- 외부 제출·공개 허용: {'예' if disclosure_allowed else '아니요'}",
+            f"- 비공개 제보 정책 조건: {private_reporting_label}",
+            "- 외부 공개 허용: 확인되지 않음",
             f"- Analysis: `{checkpoint.identity.analysis_id}`",
             f"- Hypothesis: `{checkpoint.identity.hypothesis_id}`",
             f"- Finding: `{finding_ref.content_hash}`",
@@ -1666,13 +1740,7 @@ verification verdict follows from the supplied Pro, Con, and PoC evidence.
                 f"- Scope 판정 이유: {reason}"
                 for reason in cast(list[str], scope["checks"])
             ],
-            *(
-                [
-                    "- 공개 제한: 외부 제출·공개 금지. 내부 기술 검토용입니다.",
-                ]
-                if not disclosure_allowed
-                else ["- 공개 제한: 외부 공개에는 사람의 최종 승인이 필요합니다."]
-            ),
+            disclosure_limit,
             *[
                 f"- 정책 제한: {item}"
                 for item in cast(list[str], scope["restrictions"])

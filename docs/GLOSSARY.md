@@ -76,7 +76,7 @@ Agent 이름과 역할은 특정 Provider나 model에 고정되지 않습니다.
 | `validated PoC` | 같은 attempt의 Docker 실행에서 가설을 실제로 지지한 PoC |
 | `CWE` | 취약점 종류를 나타내는 국제 분류 번호 |
 | `Primitive` | 연계 취약점에서 필요한 조건과 얻는 결과를 표현하는 재료 |
-| `Finding` | 두 Gate까지 통과해 저장된 확정 취약점 기록 |
+| `Finding` | Technical Gate가 승인한 기술적 취약점과 Scope Gate의 제보 가능 여부를 함께 기록한 결과. Scope가 `UNCERTAIN` 또는 `DENY`여도 내부 검토용으로 생성될 수 있음 |
 | `ReportDraft` | Finding과 검증 자료만 사용해 만든 보고서 초안 |
 
 ## 검토와 출력
@@ -84,7 +84,8 @@ Agent 이름과 역할은 특정 Provider나 model에 고정되지 않습니다.
 | 용어 | 쉬운 뜻 |
 |---|---|
 | `Technical Gate` | 기술 근거, validated PoC와 CWE가 서로 맞는지 확인하는 단계 |
-| `Rule Scope Gate` | 공식 정책상 범위, 금지 시험과 외부 전달 가능성을 확인하는 단계 |
+| `Rule Scope Gate` | 공식 정책상 범위, 금지 시험과 비공개 제보 조건을 근거별로 예비 판정하는 단계 |
+| 정책 snapshot | 분석 시작 시 공식 정책의 출처·개정·본문 hash·수집 상태를 저장한 불변 기록. `resume`에서는 같은 기록을 사용 |
 | `Chaining` | 기존 Primitive를 연결해 더 큰 영향을 낼 수 있는 새 가설을 만드는 과정 |
 | `F-NNN` | 사람이 보기 쉬운 Finding 번호와 Markdown 파일명 |
 | `Dashboard` | 분석 상태, Agent 활동과 결과를 보여 주는 로컬 읽기 전용 화면 |

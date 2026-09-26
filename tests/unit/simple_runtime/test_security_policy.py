@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from sastsimi.config.user_config import SimpleExecutionProfile
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime import bootstrap_stages
 from sastsimi.simple_runtime.application import SimpleAnalysisRequest
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
@@ -157,10 +158,7 @@ async def test_static_bootstrap_persists_exact_policy_snapshot(
     assert snapshot["status"] == status
     if body is not None:
         assert (
-            artifacts.read(
-                bootstrap_stages.StoredDataRef.model_validate(snapshot["body_ref"])
-            )
-            == body
+            artifacts.read(StoredDataRef.model_validate(snapshot["body_ref"])) == body
         )
     else:
         assert snapshot["body_ref"] is None

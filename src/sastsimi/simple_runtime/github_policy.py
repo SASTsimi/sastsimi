@@ -59,7 +59,7 @@ class _DiscoveryError(Exception):
 
 
 class GitHubPolicyDiscovery:
-    """Resolve only documented GitHub Contents API paths for a verified target."""
+    """Resolve a policy at one verified GitHub default-branch revision."""
 
     def __init__(
         self, *, transport: PolicyHttpTransport, resolver: HostResolver, clock: Clock
@@ -134,10 +134,13 @@ class GitHubPolicyDiscovery:
     async def _find_policy(
         self, owner: str, repo: str, branch: str, checked_at: datetime
     ) -> DiscoveredPolicy | None:
+        commit_sha, root_tree_sha = await self._default_branch_revision(
+            owner, repo, branch
+        )
         for path in _POLICY_PATHS:
             url = (
                 f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
-                f"?ref={quote(branch, safe='')}"
+                f"?ref={commit_sha}"
             )
             payload, response = await self._get_json_with_response(
                 url, allow_missing=True
@@ -145,6 +148,9 @@ class GitHubPolicyDiscovery:
             if payload is None:
                 continue
             body, blob_sha = _decode_policy_file(payload, path)
+            await self._verify_policy_tree_blob(
+                owner, repo, root_tree_sha, path, blob_sha
+            )
             return DiscoveredPolicy(
                 status="FOUND",
                 reason_code="POLICY_FOUND",
@@ -161,6 +167,70 @@ class GitHubPolicyDiscovery:
                 body=body,
             )
         return None
+
+    async def _default_branch_revision(
+        self, owner: str, repo: str, branch: str
+    ) -> tuple[str, str]:
+        data = await self._get_json(
+            f"https://api.github.com/repos/{owner}/{repo}/branches/"
+            f"{quote(branch, safe='')}",
+            allow_missing=True,
+        )
+        if data is None:
+            raise _DiscoveryError("UNVERIFIED", "POLICY_GITHUB_REVISION_INVALID")
+        commit = data.get("commit")
+        git_commit = commit.get("commit") if isinstance(commit, dict) else None
+        tree = git_commit.get("tree") if isinstance(git_commit, dict) else None
+        commit_sha = commit.get("sha") if isinstance(commit, dict) else None
+        tree_sha = tree.get("sha") if isinstance(tree, dict) else None
+        if (
+            data.get("name") != branch
+            or not isinstance(commit_sha, str)
+            or not _BLOB_SHA.fullmatch(commit_sha)
+            or not isinstance(tree_sha, str)
+            or not _BLOB_SHA.fullmatch(tree_sha)
+        ):
+            raise _DiscoveryError("UNVERIFIED", "POLICY_GITHUB_REVISION_INVALID")
+        return commit_sha, tree_sha
+
+    async def _verify_policy_tree_blob(
+        self, owner: str, repo: str, root_tree_sha: str, path: str, blob_sha: str
+    ) -> None:
+        tree_sha = root_tree_sha
+        segments = path.split("/")
+        for index, segment in enumerate(segments):
+            data = await self._get_json(
+                f"https://api.github.com/repos/{owner}/{repo}/git/trees/{tree_sha}",
+                allow_missing=True,
+            )
+            if data is None or data.get("sha") != tree_sha:
+                raise _DiscoveryError("UNVERIFIED", "POLICY_GITHUB_TREE_INVALID")
+            entries = data.get("tree")
+            if data.get("truncated") is not False or not isinstance(entries, list):
+                raise _DiscoveryError("UNVERIFIED", "POLICY_GITHUB_TREE_INVALID")
+            matches = [
+                entry
+                for entry in entries
+                if isinstance(entry, dict) and entry.get("path") == segment
+            ]
+            if len(matches) != 1:
+                raise _DiscoveryError("UNVERIFIED", "POLICY_GITHUB_TREE_MISMATCH")
+            entry = matches[0]
+            if entry.get("mode") == "120000":
+                raise _DiscoveryError("UNVERIFIED", "POLICY_GITHUB_SYMLINK_DENIED")
+            entry_sha = entry.get("sha")
+            if not isinstance(entry_sha, str) or not _BLOB_SHA.fullmatch(entry_sha):
+                raise _DiscoveryError("UNVERIFIED", "POLICY_GITHUB_TREE_INVALID")
+            if index < len(segments) - 1:
+                if entry.get("type") != "tree" or entry.get("mode") != "040000":
+                    raise _DiscoveryError("UNVERIFIED", "POLICY_GITHUB_TREE_MISMATCH")
+                tree_sha = entry_sha
+            elif (
+                entry.get("type") != "blob"
+                or entry.get("mode") not in {"100644", "100755"}
+                or entry_sha.casefold() != blob_sha.casefold()
+            ):
+                raise _DiscoveryError("UNVERIFIED", "POLICY_GITHUB_TREE_MISMATCH")
 
     async def _get_json(
         self, url: str, *, allow_missing: bool

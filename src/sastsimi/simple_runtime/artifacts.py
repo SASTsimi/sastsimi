@@ -100,13 +100,14 @@ class SimpleArtifactRepository:
             redacted = self._redacted(raw)
             if not items and redacted != raw:
                 raise ValueError("SIMPLE_RUNTIME_CONTEXT_REDACTED")
-            used += len(raw)
+            payload = raw if not items else redacted
+            used += len(payload)
             if used > _MAX_CONTEXT_BYTES:
                 raise ValueError("SIMPLE_RUNTIME_CONTEXT_TOO_LARGE")
             try:
-                data: Any = json.loads(raw)
+                data: Any = json.loads(payload)
             except (UnicodeDecodeError, json.JSONDecodeError):
-                data = raw.decode("utf-8", errors="strict")
+                data = payload.decode("utf-8", errors="strict")
             items.append({"reference": ref.model_dump(mode="json"), "data": data})
         context = canonical_bytes({"exact_inputs": items})
         if len(context) > _MAX_CONTEXT_BYTES:

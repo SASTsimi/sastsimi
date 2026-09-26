@@ -161,14 +161,20 @@ class SimpleCheckpointStore:
     def save_analysis_run(self, run: object) -> None:
         validated = SimpleAnalysisRun.model_validate(run)
         with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO simple_analysis_runs (analysis_id, run_json)
-                VALUES (?, ?)
-                ON CONFLICT (analysis_id) DO UPDATE SET run_json = excluded.run_json
-                """,
-                (validated.analysis_id, validated.model_dump_json()),
-            )
+            self._upsert_analysis_run_connection(connection, validated)
+
+    @staticmethod
+    def _upsert_analysis_run_connection(
+        connection: sqlite3.Connection, run: SimpleAnalysisRun
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO simple_analysis_runs (analysis_id, run_json)
+            VALUES (?, ?)
+            ON CONFLICT (analysis_id) DO UPDATE SET run_json = excluded.run_json
+            """,
+            (run.analysis_id, run.model_dump_json()),
+        )
 
     def record_llm_attempt(
         self,
@@ -541,7 +547,16 @@ class SimpleCheckpointStore:
         self,
         checkpoint: StageCheckpoint,
         result: StageResult,
+        *,
+        analysis_run: SimpleAnalysisRun | None = None,
     ) -> StageCheckpoint:
+        if analysis_run is not None and (
+            checkpoint.stage is not SimpleStage.STATIC_DONE
+            or analysis_run.analysis_id != checkpoint.identity.analysis_id
+            or analysis_run.workspace_id != checkpoint.identity.workspace_id
+            or analysis_run.commit_id != checkpoint.identity.commit_id
+        ):
+            raise ValueError("STATIC_RUN_IDENTITY_MISMATCH")
         updates: dict[str, object] = {
             "status": StageStatus.SUCCEEDED,
             "output_refs": result.output_refs,
@@ -573,6 +588,7 @@ class SimpleCheckpointStore:
         )
         self._write(
             completed,
+            analysis_run=analysis_run,
             activity_events=(
                 *result.activity_events,
                 self._lifecycle_event(
@@ -1038,12 +1054,15 @@ class SimpleCheckpointStore:
         checkpoint: StageCheckpoint,
         *,
         fail_before_commit: bool = False,
+        analysis_run: SimpleAnalysisRun | None = None,
         activity_events: tuple[AgentActivityEvent, ...] = (),
     ) -> None:
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
             self._upsert_checkpoint_connection(connection, checkpoint)
+            if analysis_run is not None:
+                self._upsert_analysis_run_connection(connection, analysis_run)
             for event in activity_events:
                 AgentActivityStore.append_connection(connection, event)
             if fail_before_commit:

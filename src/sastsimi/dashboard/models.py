@@ -61,6 +61,7 @@ class HypothesisProgressView(ContractModel):
     scope_reasons: tuple[str, ...] = ()
     scope_missing_information: tuple[str, ...] = ()
     scope_axes: dict[str, dict[str, object]] = Field(default_factory=dict)
+    private_reporting_policy_passed: bool = False
     external_disclosure_allowed: bool = False
     resume_available: bool = False
     validated_poc: bool = False

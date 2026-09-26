@@ -282,6 +282,7 @@ def test_dashboard_shows_verified_allow_source_and_all_citations(tmp_path) -> No
         "rationale": "All five conditions are explicitly stated.",
         "restrictions": [],
         "testing_restriction_compliance": "PASS",
+        "testing_poc_quote": "printf 'LOCAL_POC_METHOD_MARKER\\n'",
         "axes": {
             name: {
                 "status": "PASS",
@@ -292,12 +293,73 @@ def test_dashboard_shows_verified_allow_source_and_all_citations(tmp_path) -> No
             for index, name in enumerate(names, start=2)
         },
     }
-    decision = validate_scope_decision(snapshot, body.decode(), model_result)
+    script = b"#!/bin/sh\nprintf 'LOCAL_POC_METHOD_MARKER\\n'\n"
+    content_ref = artifacts.put_bytes(script, "text/x-shellscript")
+    candidate_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_candidate",
+            "content_ref": content_ref.model_dump(mode="json"),
+            "attempt_id": "candidate-attempt",
+        }
+    )
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "candidate_ref": candidate_ref.model_dump(mode="json"),
+            "content_ref": content_ref.model_dump(mode="json"),
+            "attempt_id": "poc-attempt",
+        }
+    )
+    validated_ref = artifacts.put_json(
+        {
+            "kind": "simple_validated_poc",
+            "candidate_ref": candidate_ref.model_dump(mode="json"),
+            "content_ref": content_ref.model_dump(mode="json"),
+            "execution_ref": execution_ref.model_dump(mode="json"),
+            "attempt_id": "poc-attempt",
+        }
+    )
+    verification_ref = artifacts.put_json(
+        {
+            "kind": "simple_verification_result",
+            "source_refs": [
+                validated_ref.model_dump(mode="json"),
+                execution_ref.model_dump(mode="json"),
+            ],
+            "result": {"verdict": "TRUE"},
+            "attempt_id": "verification-attempt",
+        }
+    )
+    technical_ref = artifacts.put_json(
+        {
+            "kind": "simple_technical_gate",
+            "source_refs": [
+                validated_ref.model_dump(mode="json"),
+                execution_ref.model_dump(mode="json"),
+                verification_ref.model_dump(mode="json"),
+            ],
+            "result": {"status": "ACCEPT"},
+            "attempt_id": "technical-attempt",
+        }
+    )
+    decision = validate_scope_decision(
+        snapshot, body.decode(), model_result, poc_evidence_text=script.decode()
+    )
     gate_ref = artifacts.put_json(
         {
             "kind": "simple_rule_scope_gate",
             "policy_snapshot_ref": snapshot_ref.model_dump(mode="json"),
-            "source_refs": [body_ref.model_dump(mode="json")],
+            "source_refs": [
+                ref.model_dump(mode="json")
+                for ref in (
+                    body_ref,
+                    content_ref,
+                    validated_ref,
+                    technical_ref,
+                    execution_ref,
+                    verification_ref,
+                )
+            ],
             "model_result": model_result,
             "result": decision,
             "attempt_id": "scope-attempt",
@@ -330,7 +392,8 @@ def test_dashboard_shows_verified_allow_source_and_all_citations(tmp_path) -> No
     assert hypothesis.scope_collection_status == "FOUND"
     assert hypothesis.scope_source_url == snapshot["source_url"]
     assert hypothesis.scope_source_revision == snapshot["blob_sha"]
-    assert hypothesis.external_disclosure_allowed is True
+    assert hypothesis.private_reporting_policy_passed is True
+    assert hypothesis.external_disclosure_allowed is False
     assert set(hypothesis.scope_axes) == set(names)
     assert all(axis["quote"] for axis in hypothesis.scope_axes.values())
 

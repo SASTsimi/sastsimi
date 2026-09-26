@@ -470,6 +470,8 @@ class DashboardQuery:
                 str(item) for item in cast(list[object], review["missing_information"])
             ),
             scope_axes=cast(dict[str, dict[str, object]], review["axes"]),
+            private_reporting_policy_passed=review["private_reporting_policy_passed"]
+            is True,
             external_disclosure_allowed=review["external_disclosure_allowed"] is True,
             resume_available=(
                 progress.status in {"BLOCKED", "FAILED"}

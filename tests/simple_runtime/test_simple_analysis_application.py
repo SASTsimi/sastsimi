@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -396,6 +397,152 @@ async def test_policy_snapshot_is_shared_by_gate_checkpoints_and_reused_on_resum
     for hypothesis_id, inputs in zip(run.hypothesis_ids, before, strict=True):
         child = first.identity.model_copy(update={"hypothesis_id": hypothesis_id})
         assert store.require(child, SimpleStage.SCOPE_GATE_DONE).input_refs == inputs
+
+
+@pytest.mark.asyncio
+async def test_static_snapshot_is_pinned_if_process_stops_after_static_commit(
+    tmp_path: Path,
+) -> None:
+    class ChangingStatic:
+        calls = 0
+
+        async def run(
+            self, request: SimpleAnalysisRequest, identity: CheckpointIdentity
+        ) -> StaticBootstrapResult:
+            self.calls += 1
+            return StaticBootstrapResult(
+                repository_profile_ref=_ref("repository-profile"),
+                static_bundle_ref=_ref("static-bundle"),
+                workspace_path=request.data_dir / "workspaces" / identity.workspace_id,
+                policy_snapshot_ref=_ref(f"policy-snapshot-{self.calls}"),
+            )
+
+    class StopAfterStaticCommit(SimpleCheckpointStore):
+        def complete(
+            self,
+            checkpoint: StageCheckpoint,
+            result: StageResult,
+            *,
+            analysis_run: SimpleAnalysisRun | None = None,
+        ) -> StageCheckpoint:
+            if analysis_run is None:
+                completed = super().complete(checkpoint, result)
+            else:
+                completed = super().complete(
+                    checkpoint, result, analysis_run=analysis_run
+                )
+            if checkpoint.stage is SimpleStage.STATIC_DONE:
+                raise RuntimeError("simulated post-commit crash")
+            return completed
+
+    database_path = tmp_path / "db" / "sastsimi.sqlite3"
+    static = ChangingStatic()
+    interrupted = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=StopAfterStaticCommit(database_path),
+        static_bootstrap=static,
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=_runner,
+        id_factory=iter(("analysis-1", "workspace-1")).__next__,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated post-commit crash"):
+        await interrupted.analyze(
+            SimpleAnalysisRequest(
+                data_dir=tmp_path,
+                repository="https://example.invalid/repo.git",
+                commit="a" * 40,
+            )
+        )
+
+    store = SimpleCheckpointStore(database_path)
+    persisted = store.require_analysis_run("analysis-1")
+    assert persisted.policy_snapshot_ref == _ref("policy-snapshot-1")
+    assert persisted.workspace_path == tmp_path / "workspaces" / "workspace-1"
+    static_checkpoint = store.list_checkpoints("analysis-1")[0]
+    assert static_checkpoint.stage is SimpleStage.STATIC_DONE
+    assert static_checkpoint.status is StageStatus.SUCCEEDED
+    assert _ref("policy-snapshot-1") in static_checkpoint.output_refs
+    seen_snapshots: list[StoredDataRef | None] = []
+
+    def runner_factory(
+        current_store: SimpleCheckpointStore,
+        identity: CheckpointIdentity,
+        bootstrap: StaticBootstrapResult,
+    ) -> SimpleRuntimeRunner:
+        seen_snapshots.append(bootstrap.policy_snapshot_ref)
+        return _runner(current_store, identity, bootstrap)
+
+    resumed = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=static,
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=runner_factory,
+    )
+    outcome = await resumed.resume("analysis-1")
+
+    assert outcome.status == "COMPLETE"
+    assert static.calls == 1
+    assert seen_snapshots == [_ref("policy-snapshot-1")]
+
+
+def test_static_completion_rolls_back_if_run_update_fails(tmp_path: Path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = SimpleAnalysisRun(
+        analysis_id="analysis-1",
+        display_analysis_id="A-001",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        repository="https://example.invalid/repo.git",
+    )
+    store.save_analysis_run(run)
+    identity = CheckpointIdentity(
+        analysis_id=run.analysis_id,
+        workspace_id=run.workspace_id,
+        commit_id=run.commit_id,
+        hypothesis_id=None,
+    )
+    checkpoint = store.mark_running(
+        identity, SimpleStage.STATIC_DONE, (), attempt_id="attempt-1"
+    )
+    updated = run.model_copy(
+        update={
+            "workspace_path": tmp_path / "workspaces" / "workspace-1",
+            "repository_profile_ref": _ref("repository-profile"),
+            "static_bundle_ref": _ref("static-bundle"),
+            "policy_snapshot_ref": _ref("policy-snapshot-1"),
+        }
+    )
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER fail_static_run_update
+            BEFORE UPDATE ON simple_analysis_runs
+            WHEN json_extract(NEW.run_json, '$.policy_snapshot_ref') IS NOT NULL
+            BEGIN
+                SELECT RAISE(ABORT, 'simulated run write failure');
+            END
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="simulated run write failure"):
+        store.complete(
+            checkpoint,
+            StageResult(
+                output_refs=(
+                    _ref("repository-profile"),
+                    _ref("static-bundle"),
+                    _ref("policy-snapshot-1"),
+                )
+            ),
+            analysis_run=updated,
+        )
+
+    assert (
+        store.require(identity, SimpleStage.STATIC_DONE).status is StageStatus.RUNNING
+    )
+    assert store.require_analysis_run("analysis-1").policy_snapshot_ref is None
 
 
 def test_legacy_run_without_policy_snapshot_field_remains_loadable() -> None:

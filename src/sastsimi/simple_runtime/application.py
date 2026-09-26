@@ -197,6 +197,15 @@ class SimpleAnalysisApplication:
                     run,
                     self._store.require(identity, SimpleStage.STATIC_DONE),
                 )
+            updated_run = run.model_copy(
+                update={
+                    "workspace_path": static.workspace_path,
+                    "repository_profile_ref": static.repository_profile_ref,
+                    "static_bundle_ref": static.static_bundle_ref,
+                    "security_policy_ref": static.security_policy_ref,
+                    "policy_snapshot_ref": static.policy_snapshot_ref,
+                }
+            )
             self._store.complete(
                 checkpoint,
                 self._stage_result(
@@ -208,18 +217,9 @@ class SimpleAnalysisApplication:
                         else ()
                     ),
                 ),
+                analysis_run=updated_run,
             )
             break
-        updated_run = run.model_copy(
-            update={
-                "workspace_path": static.workspace_path,
-                "repository_profile_ref": static.repository_profile_ref,
-                "static_bundle_ref": static.static_bundle_ref,
-                "security_policy_ref": static.security_policy_ref,
-                "policy_snapshot_ref": static.policy_snapshot_ref,
-            }
-        )
-        self._store.save_analysis_run(updated_run)
         return await self._propose_and_run(updated_run, identity, static)
 
     async def resume(self, analysis_id_or_display: str) -> SimpleAnalysisOutcome:

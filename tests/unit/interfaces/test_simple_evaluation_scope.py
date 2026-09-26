@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.interfaces.cli import simple_evaluation
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
@@ -26,8 +27,8 @@ def _checkpoint(
     identity: CheckpointIdentity,
     stage: SimpleStage,
     *,
-    outputs=(),
-    recipe_ref=None,
+    outputs: tuple[StoredDataRef, ...] = (),
+    recipe_ref: StoredDataRef | None = None,
     image_digest: str | None = None,
     markdown_path: str | None = None,
 ) -> StageCheckpoint:
@@ -195,7 +196,7 @@ async def test_simple_resume_passes_saved_policy_context_to_runner(
             _store: SimpleCheckpointStore,
             handlers: dict[SimpleStage, Any],
             *,
-            policy_snapshot_ref=None,
+            policy_snapshot_ref: StoredDataRef | None = None,
         ) -> None:
             scope = handlers[SimpleStage.SCOPE_GATE_DONE]
             received.append(
