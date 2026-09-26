@@ -41,7 +41,7 @@ def _security_policy(
 
     root = workspace.resolve()
     available = set(tracked)
-    for name in ("SECURITY.md", ".github/SECURITY.md", "docs/SECURITY.md"):
+    for name in (".github/SECURITY.md", "SECURITY.md", "docs/SECURITY.md"):
         if name not in available:
             continue
         candidate = root / name

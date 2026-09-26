@@ -10,7 +10,7 @@ import pytest
 from sastsimi.simple_runtime import bootstrap_stages
 
 
-def test_tracked_root_security_policy_wins_over_other_locations(
+def test_tracked_github_security_policy_wins_over_other_locations(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "repo"
@@ -28,8 +28,8 @@ def test_tracked_root_security_policy_wins_over_other_locations(
     )
 
     assert result is not None
-    assert result["path"] == "SECURITY.md"
-    assert result["content"] == "Root reporting rule"
+    assert result["path"] == ".github/SECURITY.md"
+    assert result["content"] == "GitHub reporting rule"
 
 
 def test_untracked_or_empty_security_policy_is_not_collected(tmp_path: Path) -> None:
