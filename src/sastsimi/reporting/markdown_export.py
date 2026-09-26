@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shlex
@@ -26,8 +27,10 @@ from sastsimi.contracts.dynamic import (
     POC_RUNTIME_PATH,
     SandboxCommandRecord,
 )
+from sastsimi.contracts.ids import CommitId, WorkspaceId
 from sastsimi.contracts.prompt_redaction import assert_safe_provider_text
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.reporting import BilingualReportContent
 from sastsimi.contracts.static import CodeLocation
 from sastsimi.contracts.verification import EvidenceClaim, VerificationResult
 from sastsimi.ports.report_export import (
@@ -35,7 +38,9 @@ from sastsimi.ports.report_export import (
     CurrentReportSource,
     ReportUnavailable,
 )
+from sastsimi.reporting.bilingual_bundle import BundleFacts, render_bundle_files
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
+from sastsimi.storage.artifact_store import LocalArtifactStore
 
 _SAFE_PATH_SEGMENT = re.compile(r"[a-z0-9][a-z0-9_-]{0,127}\Z")
 _WINDOWS_RESERVED_STEMS = frozenset(
@@ -66,7 +71,11 @@ class ReportMarkdownService:
                 "finding_id": report.finding_id,
                 "display_id": self._display_id(report),
                 "hypothesis_id": report.hypothesis_id,
-                "title": report.content.title,
+                "title": (
+                    report.content.ko.title
+                    if isinstance(report.content, BilingualReportContent)
+                    else report.content.title
+                ),
                 "status": "DRAFTED_CURRENT",
                 "cwe": report.cwe.primary or "UNCLASSIFIED",
             }
@@ -103,7 +112,96 @@ class ReportMarkdownService:
             self._data_dir_identity,
             assert_still_current,
         )
+        if isinstance(report.content, BilingualReportContent):
+            self._publish_bundle(report, display_id=self._display_id(report))
         return destination
+
+    def _publish_bundle(self, report: CurrentReport, *, display_id: str) -> None:
+        from sastsimi.reporting.bundle_files import publish_bundle
+
+        if not isinstance(report.content, BilingualReportContent):
+            return
+        candidate_ref = report.poc_candidate.content_ref
+        poc = report.poc_text.encode("utf-8")
+        if (
+            hashlib.sha256(poc).hexdigest() != candidate_ref.content_hash
+            or report.poc.candidate_digest != candidate_ref.content_hash
+        ):
+            raise ReportUnavailable("REPORT_POC_SOURCE_MISMATCH")
+        artifacts = LocalArtifactStore(
+            RuntimePaths(self._data_dir).artifacts,
+            WorkspaceId(str(report.draft.finding_ref.workspace_id)),
+            CommitId(str(report.draft.finding_ref.commit_id)),
+        )
+        with artifacts.open_verified(candidate_ref) as stream:
+            if stream.read() != poc:
+                raise ReportUnavailable("REPORT_POC_SOURCE_MISMATCH")
+        if (report.stdout_bytes is None) != (report.stdout_ref is None) or (
+            report.stderr_bytes is None
+        ) != (report.stderr_ref is None):
+            raise ReportUnavailable("REPORT_OUTPUT_SOURCE_MISSING")
+        source_refs = [
+            ("finding", report.draft.finding_ref),
+            ("poc", candidate_ref),
+            ("verification", report.draft.verification_result_ref),
+            ("technical", report.draft.technical_review_ref),
+            ("scope", report.draft.rule_scope_impact_review_ref),
+        ]
+        for name, ref in (("stdout", report.stdout_ref), ("stderr", report.stderr_ref)):
+            if ref is not None:
+                source_refs.append((name, ref))
+        allowed_locations = tuple(
+            location
+            for claim in (
+                *report.verification.supporting_evidence,
+                *report.verification.counter_evidence,
+            )
+            for location in claim.code_locations
+        )
+        facts = BundleFacts(
+            analysis_id=report.analysis_id,
+            display_id=display_id,
+            finding_id=report.finding_id,
+            repository=report.repository_url or "Needs review",
+            tested_commit=str(report.draft.finding_ref.commit_id),
+            cwe=str(report.cwe.primary) if report.cwe.primary is not None else None,
+            ecosystem=None,
+            package_name=None,
+            affected_versions=None,
+            patched_versions=None,
+            severity=None,
+            technical_status=report.technical.status,
+            scope_status=report.rule_scope.review_status,
+            report_permission=report.rule_scope.report_permission,
+            execution_command=shlex.join(
+                (
+                    report.execution_command.executable,
+                    *report.execution_command.arguments,
+                )
+            ),
+            exit_code=report.execution_exit_code,
+            poc_language="shell",
+            poc_original_sha256=candidate_ref.content_hash,
+            source_refs=tuple(source_refs),
+            allowed_locations=allowed_locations,
+        )
+        files = render_bundle_files(
+            facts,
+            report.content,
+            poc=poc,
+            stdout=report.stdout_bytes,
+            stderr=report.stderr_bytes,
+        )
+        publish_bundle(
+            root=self._data_dir,
+            analysis_id=report.analysis_id,
+            display_id=display_id,
+            finding_ref=report.draft.finding_ref,
+            files=files,
+            put_artifact=lambda body, media_type: artifacts.commit(
+                artifacts.stage_bytes(body, media_type)
+            ),
+        )
 
     def _destination(self, report: CurrentReport) -> Path:
         for value in (report.analysis_id, report.finding_id):
@@ -157,6 +255,11 @@ def render_markdown(report: CurrentReport, *, display_id: str | None = None) -> 
     """Render existing record values without creating new security claims."""
 
     validate_redaction_authority(report)
+    prose = (
+        report.content.ko
+        if isinstance(report.content, BilingualReportContent)
+        else report.content
+    )
     locations = _locations(report.verification, report.content.citations)
     pro = tuple(
         claim
@@ -180,7 +283,7 @@ def render_markdown(report: CurrentReport, *, display_id: str | None = None) -> 
         raise ReportUnavailable("REPORT_TRUE_CLOSURE_MISSING")
     visible_id = display_id or report.finding_id
     lines = [
-        f"# {report.content.title}",
+        f"# {prose.title}",
         "",
         "### Summary",
         "",
@@ -195,7 +298,7 @@ def render_markdown(report: CurrentReport, *, display_id: str | None = None) -> 
         "",
         "**취약점 요약**",
         "",
-        report.content.summary,
+        prose.summary,
         "",
         "### Details",
         "",
@@ -212,7 +315,7 @@ def render_markdown(report: CurrentReport, *, display_id: str | None = None) -> 
         "",
         "**source → propagation → sink 흐름**",
         "",
-        report.content.details,
+        prose.details,
         "",
         "**정적 분석 근거**",
         "",
@@ -277,7 +380,7 @@ def render_markdown(report: CurrentReport, *, display_id: str | None = None) -> 
         "**사람이 추가로 확인해야 할 내용**",
         "",
         f"- 미해결 조건: {_inline(report.draft.unresolved_conditions)}",
-        f"- 권고 사항: {report.content.recommendation}",
+        f"- 권고 사항: {prose.recommendation}",
         "",
         "**생성 및 식별 정보**",
         "",
@@ -330,7 +433,16 @@ def _report_identity(report: CurrentReport) -> tuple[object, ...]:
     )
     return tuple(
         record.model_dump(mode="python", warnings=False) for record in records
-    ) + (report.poc_text, report.purpose)
+    ) + (
+        report.poc_text,
+        report.purpose,
+        report.repository_url,
+        report.stdout_bytes,
+        report.stderr_bytes,
+        report.stdout_ref,
+        report.stderr_ref,
+        report.execution_exit_code,
+    )
 
 
 def _locations(

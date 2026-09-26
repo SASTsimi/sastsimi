@@ -567,6 +567,8 @@ class SimpleCheckpointStore:
             "container_id": result.container_id or checkpoint.container_id,
             "validated_poc_ref": result.validated_poc_ref,
             "report_ref": result.report_ref,
+            "bundle_manifest_ref": result.bundle_manifest_ref,
+            "bundle_archive_ref": result.bundle_archive_ref,
             "verdict": result.verdict,
             "gate_decision": result.gate_decision,
             "markdown_path": result.markdown_path,

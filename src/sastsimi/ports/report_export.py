@@ -17,7 +17,13 @@ from sastsimi.contracts.gates import (
     RuleScopeImpactReview,
     TechnicalEvidenceReview,
 )
-from sastsimi.contracts.reporting import Finding, ReportContent, ReportDraft
+from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.reporting import (
+    BilingualReportContent,
+    Finding,
+    ReportContent,
+    ReportDraft,
+)
 from sastsimi.contracts.verification import VerificationResult
 
 
@@ -40,11 +46,17 @@ class CurrentReport:
     poc_candidate: PoCCandidate
     agent_log: AgentLog
     execution_command: SandboxCommandRecord
-    content: ReportContent
+    content: ReportContent | BilingualReportContent
     poc_text: str
     report_action: ActionRequest
     report_decision: ActionDecision
     purpose: Purpose = Purpose.PRODUCTION
+    repository_url: str | None = None
+    stdout_bytes: bytes | None = None
+    stderr_bytes: bytes | None = None
+    stdout_ref: StoredDataRef | None = None
+    stderr_ref: StoredDataRef | None = None
+    execution_exit_code: int | None = None
 
     @property
     def analysis_id(self) -> str:

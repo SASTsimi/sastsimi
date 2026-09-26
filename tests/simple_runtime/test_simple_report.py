@@ -31,13 +31,28 @@ from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 class _ReporterClient:
     async def call(self, **_kwargs: Any) -> SimpleLLMCallResult:
-        value = {
+        ko = {
             "title": "검증된 명령어 삽입 취약점",
             "summary": "검증되지 않은 입력으로 운영체제 명령을 실행할 수 있습니다.",
             "details": "입력값이 정제되지 않고 명령 실행 함수까지 전달됩니다.",
             "impact": "공격자가 서버 권한으로 임의 명령을 실행할 수 있습니다.",
+            "recommendation": "입력을 검증하세요.",
             "limitations": ["로컬 격리 환경에서만 재현했습니다."],
             "review_items": ["실제 배포 설정에서 동일 경로를 확인해야 합니다."],
+        }
+        value = {
+            "schema_version": 2,
+            "en": {
+                "title": "Confirmed command injection",
+                "summary": "Untrusted input reaches a command execution path.",
+                "details": "The tested flow reaches the command sink.",
+                "impact": "An attacker could execute commands.",
+                "recommendation": "Validate and constrain the input.",
+                "limitations": ["Only an isolated environment was tested."],
+                "review_items": ["Confirm affected deployed versions."],
+            },
+            "ko": ko,
+            "citations": [],
         }
         return SimpleLLMCallResult(
             value=value,
@@ -90,6 +105,7 @@ def _checkpoint(
 @pytest.mark.asyncio
 async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     identity = CheckpointIdentity(
         analysis_id="analysis-1",
@@ -216,6 +232,29 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
     assert "SUPPORTED: command executed" in markdown
     assert "입력값이 정제되지 않고 명령 실행 함수까지 전달됩니다." in markdown
     assert "Same-attempt evidence supports the finding." not in markdown
+    assert result.bundle_manifest_ref is not None
+    assert result.bundle_archive_ref is not None
+    bundle = path.with_suffix("")
+    assert (bundle / "report_en.md").is_file()
+    assert (bundle / "report_kr.md").is_file()
+    assert (bundle / "poc.sh").read_bytes() == script
+    assert (bundle / "evidence" / "provenance.json").is_file()
+    assert (bundle / "bundle.zip").is_file()
+    assert (
+        b"## Affected products and tested version"
+        in (bundle / "report_en.md").read_bytes()
+    )
+    original_legacy = path.read_bytes()
+
+    def fail_publication(**_kwargs: Any) -> None:
+        raise ValueError("BUNDLE_PUBLICATION_FAILED")
+
+    monkeypatch.setattr(
+        "sastsimi.simple_runtime.stages.publish_bundle", fail_publication
+    )
+    with pytest.raises(ValueError, match="BUNDLE_PUBLICATION_FAILED"):
+        await ReporterStage(_ReporterClient(), artifacts)(current, prior)  # type: ignore[arg-type]
+    assert path.read_bytes() == original_legacy
 
 
 @pytest.mark.asyncio

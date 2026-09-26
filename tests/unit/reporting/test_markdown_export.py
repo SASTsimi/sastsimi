@@ -23,6 +23,7 @@ from sastsimi.contracts.actions import (
     RequesterRole,
     UseStatus,
 )
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.dynamic import (
     POC_RUNTIME_PATH,
     AgentLog,
@@ -39,7 +40,12 @@ from sastsimi.contracts.gates import (
 )
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef
-from sastsimi.contracts.reporting import Finding, ReportContent, ReportDraft
+from sastsimi.contracts.reporting import (
+    BilingualReportContent,
+    Finding,
+    ReportContent,
+    ReportDraft,
+)
 from sastsimi.contracts.verification import EvidenceClaim, VerificationResult
 from sastsimi.reporting.markdown_export import (
     CurrentReport,
@@ -247,6 +253,79 @@ def test_markdown_export_contains_human_review_sections_and_exact_path(
     for heading in ("### Summary", "### Details", "### PoC", "### Impact"):
         assert markdown.count(heading) == 1
     assert "## 취약점 요약" not in markdown
+    assert not path.with_suffix("").exists()
+
+
+def test_v2_export_keeps_legacy_markdown_and_publishes_bundle(tmp_path: Path) -> None:
+    from sastsimi.config.runtime_paths import RuntimePaths
+    from sastsimi.contracts.ids import CommitId, WorkspaceId
+    from sastsimi.storage.artifact_store import LocalArtifactStore
+
+    original = current_report()
+    script = b"#!/bin/sh\necho safe\n"
+    artifacts = LocalArtifactStore(
+        RuntimePaths(tmp_path).artifacts,
+        WorkspaceId("workspace-1"),
+        CommitId("commit-1"),
+    )
+    script_ref = artifacts.commit(artifacts.stage_bytes(script, "text/x-shellscript"))
+    content = BilingualReportContent.model_validate_json(
+        canonical_bytes(
+            {
+                "schema_version": 2,
+                "en": {
+                    "title": "Confirmed SQL injection",
+                    "summary": "One tested path is vulnerable.",
+                    "details": "The query sink receives unsanitized input.",
+                    "impact": "Data may be disclosed.",
+                    "recommendation": "Parameterize the query.",
+                    "limitations": [],
+                    "review_items": ["Confirm affected releases."],
+                },
+                "ko": {
+                    "title": "검증된 SQL 인젝션",
+                    "summary": "테스트한 경로에서 취약성이 확인되었습니다.",
+                    "details": "검증되지 않은 입력이 쿼리에 전달됩니다.",
+                    "impact": "데이터가 노출될 수 있습니다.",
+                    "recommendation": "매개변수화된 쿼리를 사용하세요.",
+                    "limitations": [],
+                    "review_items": ["영향받는 릴리스를 확인하세요."],
+                },
+                "citations": [],
+            }
+        )
+    )
+    report = replace(
+        original,
+        draft=original.draft.model_copy(
+            update={
+                "verification_result_ref": ref("verification_result", "verification-1"),
+                "technical_review_ref": ref("technical_evidence_review", "technical-1"),
+                "rule_scope_impact_review_ref": ref(
+                    "rule_scope_impact_review", "scope-1"
+                ),
+            }
+        ),
+        content=content,
+        poc_candidate=PoCCandidate.model_construct(
+            content_ref=script_ref, content_digest=script_ref.content_hash
+        ),
+        poc=original.poc.model_copy(
+            update={"candidate_digest": script_ref.content_hash}
+        ),
+        poc_text=script.decode(),
+        execution_exit_code=0,
+    )
+    path = ReportMarkdownService(tmp_path, Source(report)).export(report.finding_id)
+
+    assert path.name == "F-001.md"
+    assert "검증된 SQL 인젝션" in path.read_text(encoding="utf-8")
+    bundle = path.with_suffix("")
+    assert (bundle / "report_en.md").is_file()
+    assert (bundle / "report_kr.md").is_file()
+    assert (bundle / "poc.sh").read_bytes() == script
+    assert (bundle / "manifest.json").is_file()
+    assert (bundle / "bundle.zip").is_file()
 
 
 def test_local_evaluation_report_is_never_presented_as_production_ready(

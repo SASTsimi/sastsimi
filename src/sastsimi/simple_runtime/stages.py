@@ -17,10 +17,13 @@ from sastsimi.contracts.prompt_redaction import (
     redact_untrusted_text,
 )
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.reporting import BilingualReportContent
 from sastsimi.observability.agent_activity import (
     ActivityKind,
     AgentActivityEvent,
 )
+from sastsimi.reporting.bilingual_bundle import BundleFacts, render_bundle_files
+from sastsimi.reporting.bundle_files import PublishedBundle, publish_bundle
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.sandbox.docker_adapter import DockerAdapter, DockerOperationError
 
@@ -228,6 +231,9 @@ class RenderedPoC:
     exit_code: int
     execution_ref: StoredDataRef
     validated_ref: StoredDataRef
+    content_ref: StoredDataRef
+    stdout_ref: StoredDataRef
+    stderr_ref: StoredDataRef
 
 
 class PoCCandidateStage:
@@ -1567,30 +1573,60 @@ class ReporterStage:
             client=client,
             artifacts=artifacts,
             instructions="""
-You are the Reporter Agent. Write every field in Korean using only supplied
-exact Finding, verification, CWE, validated PoC, and Gate results. Do not
-create new facts. Preserve limitations and uncertainty. Return a concise
-title, summary, technical details, security impact, limitations, and items a
-human must review. The Korean technical details must explain why the final
-verification verdict follows from the supplied Pro, Con, and PoC evidence.
+You are the Reporter Agent. Produce ONE JSON response with en and ko prose
+from the same exact Finding, verification, CWE, validated PoC, and Gate facts.
+Use English in en and Korean in ko. Preserve uncertainty, limitations and
+counterevidence. Explain why the final verdict follows from Pro, Con and PoC.
+Do not infer severity, CVSS, affected/patched version ranges or permission
+to disclose. Do not assert path:line citations without verified locations;
+this local route requires citations=[].
 """,
             schema=_object_schema(
                 {
-                    "title": _string(),
-                    "summary": _string(),
-                    "details": _string(),
-                    "impact": _string(),
-                    "limitations": _string_array(),
-                    "review_items": _string_array(),
+                    "schema_version": {"type": "integer", "const": 2},
+                    "en": _object_schema(
+                        {
+                            "title": _string(),
+                            "summary": _string(),
+                            "details": _string(),
+                            "impact": _string(),
+                            "recommendation": _string(),
+                            "limitations": _string_array(),
+                            "review_items": _string_array(),
+                        },
+                        [
+                            "title",
+                            "summary",
+                            "details",
+                            "impact",
+                            "recommendation",
+                            "limitations",
+                            "review_items",
+                        ],
+                    ),
+                    "ko": _object_schema(
+                        {
+                            "title": _string(),
+                            "summary": _string(),
+                            "details": _string(),
+                            "impact": _string(),
+                            "recommendation": _string(),
+                            "limitations": _string_array(),
+                            "review_items": _string_array(),
+                        },
+                        [
+                            "title",
+                            "summary",
+                            "details",
+                            "impact",
+                            "recommendation",
+                            "limitations",
+                            "review_items",
+                        ],
+                    ),
+                    "citations": {"type": "array", "items": {}, "maxItems": 0},
                 },
-                [
-                    "title",
-                    "summary",
-                    "details",
-                    "impact",
-                    "limitations",
-                    "review_items",
-                ],
+                ["schema_version", "en", "ko", "citations"],
             ),
             kind="simple_report_draft",
         )
@@ -1623,7 +1659,15 @@ verification verdict follows from the supplied Pro, Con, and PoC evidence.
                 )
             )
         result, draft_ref = await self._stage.call(checkpoint, _prior_refs(prior))
-        rendered = self._render(result.value, checkpoint, prior, finding.output_refs[0])
+        content = BilingualReportContent.model_validate_json(
+            canonical_bytes(result.value)
+        )
+        rendered = self._render(
+            content.ko.model_dump(mode="json"),
+            checkpoint,
+            prior,
+            finding.output_refs[0],
+        )
         inspected = redact_projected_json(
             canonical_bytes({"markdown": rendered.decode("utf-8")})
         )
@@ -1641,6 +1685,9 @@ verification verdict follows from the supplied Pro, Con, and PoC evidence.
         display_id = FindingDisplayIdStore(
             self._artifacts.paths.database
         ).get_or_allocate(checkpoint.identity.analysis_id, finding.output_refs[0])
+        bundle = self._publish_bundle(
+            content, checkpoint, prior, finding.output_refs[0], display_id
+        )
         report_path = report_dir / f"{display_id}.md"
         temporary = report_path.with_suffix(".md.next")
         temporary.write_bytes(rendered)
@@ -1649,6 +1696,8 @@ verification verdict follows from the supplied Pro, Con, and PoC evidence.
         return StageResult(
             output_refs=(draft_ref, markdown_ref),
             report_ref=draft_ref,
+            bundle_manifest_ref=bundle.manifest_ref,
+            bundle_archive_ref=bundle.archive_ref,
             validated_poc_ref=finding.validated_poc_ref,
             verdict="TRUE",
             markdown_path=str(report_path),
@@ -1662,6 +1711,82 @@ verification verdict follows from the supplied Pro, Con, and PoC evidence.
                     llm=result,
                 ),
             ),
+        )
+
+    def _publish_bundle(
+        self,
+        content: BilingualReportContent,
+        checkpoint: StageCheckpoint,
+        prior: Mapping[SimpleStage, StageCheckpoint],
+        finding_ref: StoredDataRef,
+        display_id: str,
+    ) -> PublishedBundle:
+        poc = self._validated_poc(prior)
+        cwe = self._result(prior[SimpleStage.CWE_DONE].output_refs[0])
+        technical = self._result(prior[SimpleStage.TECH_GATE_DONE].output_refs[0])
+        scope = project_scope_review(
+            prior.get(SimpleStage.SCOPE_GATE_DONE),
+            self._artifacts,
+            policy_snapshot_ref=self._policy_snapshot_ref,
+            repository_url=self._repository_url,
+        )
+        scope_status = str(scope["status"])
+        _, private_allowed = internal_report_status(scope_status)
+        permission = (
+            "PRELIMINARY_REVIEW_REQUIRED"
+            if private_allowed
+            else "DENY"
+            if scope_status == "DENY"
+            else "UNCERTAIN"
+        )
+        source_refs = (
+            ("finding", finding_ref),
+            ("poc", poc.content_ref),
+            ("validated_poc", poc.validated_ref),
+            ("execution", poc.execution_ref),
+            ("technical", prior[SimpleStage.TECH_GATE_DONE].output_refs[0]),
+            ("stdout", poc.stdout_ref),
+            ("stderr", poc.stderr_ref),
+        )
+        facts = BundleFacts(
+            analysis_id=checkpoint.identity.analysis_id,
+            display_id=display_id,
+            finding_id=finding_ref.content_hash,
+            repository=self._repository_url or "Needs review",
+            tested_commit=checkpoint.identity.commit_id,
+            cwe=(
+                str(cwe["primary_cwe"])
+                if isinstance(cwe.get("primary_cwe"), str)
+                else None
+            ),
+            ecosystem=None,
+            package_name=None,
+            affected_versions=None,
+            patched_versions=None,
+            severity=None,
+            technical_status=str(technical["status"]),
+            scope_status=scope_status,
+            report_permission=permission,
+            execution_command=poc.command,
+            exit_code=poc.exit_code,
+            poc_language="shell",
+            poc_original_sha256=poc.content_ref.content_hash,
+            source_refs=source_refs,
+        )
+        files = render_bundle_files(
+            facts,
+            content,
+            poc=self._artifacts.read(poc.content_ref),
+            stdout=self._artifacts.read(poc.stdout_ref),
+            stderr=self._artifacts.read(poc.stderr_ref),
+        )
+        return publish_bundle(
+            root=self._artifacts.data_dir,
+            analysis_id=checkpoint.identity.analysis_id,
+            display_id=display_id,
+            finding_ref=finding_ref,
+            files=files,
+            put_artifact=self._artifacts.put_bytes,
         )
 
     def _render(
@@ -1843,6 +1968,9 @@ verification verdict follows from the supplied Pro, Con, and PoC evidence.
             exit_code=int(cast(int, execution_value.get("exit_code", -1))),
             execution_ref=execution_ref,
             validated_ref=validated_ref,
+            content_ref=content_ref,
+            stdout_ref=stdout_ref,
+            stderr_ref=stderr_ref,
         )
 
     def _safe_text(self, ref: StoredDataRef) -> str:

@@ -77,7 +77,10 @@ class BundleFacts:
             for value in (self.analysis_id, self.display_id, self.finding_id)
         ):
             raise ValueError("BUNDLE_ID_INVALID")
-        if _COMMIT.fullmatch(self.tested_commit) is None:
+        if (
+            _COMMIT.fullmatch(self.tested_commit) is None
+            and _ID.fullmatch(self.tested_commit) is None
+        ):
             raise ValueError("BUNDLE_COMMIT_INVALID")
         if _SHA256.fullmatch(self.poc_original_sha256) is None:
             raise ValueError("BUNDLE_POC_DIGEST_INVALID")

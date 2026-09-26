@@ -47,6 +47,14 @@ _ORDER = (
 )
 
 
+def _valid_finding_ref(ref: StoredDataRef) -> bool:
+    return (ref.data_kind == "finding" and ref.record_id is not None) or (
+        ref.data_kind == "artifact"
+        and ref.record_id is None
+        and str(ref.stored_data_id) == ref.content_hash
+    )
+
+
 class BundleManifestEntry(ContractModel):
     path: str
     media_type: str
@@ -69,8 +77,7 @@ class ReportBundleManifest(ContractModel):
         if (
             _ID.fullmatch(self.analysis_id) is None
             or _ID.fullmatch(self.display_id) is None
-            or self.finding_ref.data_kind != "finding"
-            or self.finding_ref.record_id is None
+            or not _valid_finding_ref(self.finding_ref)
             or _SHA256.fullmatch(self.poc_original_sha256) is None
         ):
             raise ValueError("BUNDLE_MANIFEST_INVALID")
@@ -135,8 +142,8 @@ def _assert_artifact_ref(
         or ref.record_id is not None
         or str(ref.stored_data_id) != digest
         or ref.content_hash != digest
-        or (ref.workspace_id, ref.commit_id)
-        != (finding_ref.workspace_id, finding_ref.commit_id)
+        or (str(ref.workspace_id), str(ref.commit_id))
+        != (str(finding_ref.workspace_id), str(finding_ref.commit_id))
     ):
         raise ValueError("BUNDLE_ARTIFACT_REF_INVALID")
 
@@ -214,10 +221,9 @@ def parse_bundle_manifest(
         raise ValueError("BUNDLE_MANIFEST_TOO_LARGE")
     try:
         manifest = ReportBundleManifest.model_validate_json(raw)
-        if (
-            canonical_bytes(manifest.model_dump(mode="json")) != raw
-            or manifest.finding_ref != finding_ref
-        ):
+        if canonical_bytes(manifest.model_dump(mode="json")) != raw or canonical_bytes(
+            manifest.finding_ref
+        ) != canonical_bytes(finding_ref):
             raise ValueError("BUNDLE_MANIFEST_INVALID")
     except ValueError:
         raise
@@ -466,8 +472,7 @@ def publish_bundle(
     if (
         _ID.fullmatch(analysis_id) is None
         or _ID.fullmatch(display_id) is None
-        or finding_ref.data_kind != "finding"
-        or finding_ref.record_id is None
+        or not _valid_finding_ref(finding_ref)
     ):
         raise ValueError("BUNDLE_ID_INVALID")
     ordered = _ordered_files(files)
