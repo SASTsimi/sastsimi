@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from pydantic import Field
+
 from sastsimi.contracts.base import ContractModel
 from sastsimi.observability.agent_activity import ActivityKind
 from sastsimi.simple_runtime.recovery import MAX_RECOVERY_ATTEMPTS
@@ -52,6 +54,14 @@ class HypothesisProgressView(ContractModel):
     error_code: str | None = None
     verdict: str | None = None
     disposition: str | None = None
+    scope_status: str | None = None
+    scope_collection_status: str | None = None
+    scope_source_url: str | None = None
+    scope_source_revision: str | None = None
+    scope_reasons: tuple[str, ...] = ()
+    scope_missing_information: tuple[str, ...] = ()
+    scope_axes: dict[str, dict[str, object]] = Field(default_factory=dict)
+    external_disclosure_allowed: bool = False
     resume_available: bool = False
     validated_poc: bool = False
     parent_hypothesis_ids: tuple[str, ...] = ()

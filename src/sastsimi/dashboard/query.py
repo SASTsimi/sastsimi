@@ -7,7 +7,7 @@ import re
 import sqlite3
 from collections import defaultdict
 from pathlib import Path
-from typing import Literal, overload
+from typing import Literal, cast, overload
 
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.observability.agent_activity import AgentActivityEvent
@@ -18,12 +18,17 @@ from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.gate_guard import technical_gate_accepted
 from sastsimi.simple_runtime.models import (
     STAGE_VERSION,
+    CheckpointIdentity,
     SimpleAnalysisRun,
     SimpleStage,
     StageCheckpoint,
     StageStatus,
     terminal_gate_outcome,
     terminal_poc_outcome,
+)
+from sastsimi.simple_runtime.scope_policy import (
+    project_scope_review,
+    safe_public_report,
 )
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
@@ -255,6 +260,51 @@ class DashboardQuery:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
         return resolved
 
+    def report_content(self, analysis_id: str, display_id: str) -> bytes:
+        """Serve a guarded projection, never an old unverified ALLOW file."""
+
+        self.report_path(analysis_id, display_id)
+        try:
+            finding_ref = FindingDisplayIdStore.resolve_existing(
+                self._database, analysis_id, display_id
+            )
+            checkpoints = self._checkpoints()
+            finding = next(
+                checkpoint
+                for checkpoint in checkpoints
+                if checkpoint.identity.analysis_id == analysis_id
+                and checkpoint.stage is SimpleStage.FINDING_DONE
+                and finding_ref in checkpoint.output_refs
+            )
+            report = next(
+                checkpoint
+                for checkpoint in checkpoints
+                if checkpoint.identity == finding.identity
+                and checkpoint.stage is SimpleStage.REPORT_DONE
+                and checkpoint.status is StageStatus.SUCCEEDED
+                and checkpoint.stage_version == STAGE_VERSION[SimpleStage.REPORT_DONE]
+                and finding_ref in checkpoint.input_refs
+                and len(checkpoint.output_refs) >= 2
+            )
+            scope = next(
+                (
+                    checkpoint
+                    for checkpoint in checkpoints
+                    if checkpoint.identity == finding.identity
+                    and checkpoint.stage is SimpleStage.SCOPE_GATE_DONE
+                ),
+                None,
+            )
+            review = self._scope_review(
+                finding.identity, scope, self._simple_run(analysis_id)
+            )
+            raw = SimpleArtifactRepository(self._data_dir, finding.identity).read(
+                report.output_refs[1]
+            )
+            return safe_public_report(raw, review)
+        except (LookupError, OSError, ValueError, sqlite3.Error) as error:
+            raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
+
     @overload
     def _project_analysis(
         self,
@@ -383,6 +433,13 @@ class DashboardQuery:
             (item for item in values if item.stage is SimpleStage.TECH_GATE_DONE),
             None,
         )
+        scope = next(
+            (item for item in values if item.stage is SimpleStage.SCOPE_GATE_DONE),
+            None,
+        )
+        review = self._scope_review(latest.identity, scope, run)
+        source = review["policy_source"]
+        assert isinstance(source, dict)
         progress = ProgressProjector(_CheckpointProjection(tuple(values))).snapshot(
             analysis_id
         )
@@ -396,6 +453,24 @@ class DashboardQuery:
             error_code=progress.error_code,
             verdict=final.verdict if final else None,
             disposition=terminal_poc_outcome(execution) or terminal_gate_outcome(gate),
+            scope_status=str(review["status"]),
+            scope_collection_status=str(source.get("collection_status", "UNVERIFIED")),
+            scope_source_url=source.get("source_url")
+            if isinstance(source.get("source_url"), str)
+            and review["provenance_verified"] is True
+            else None,
+            scope_source_revision=source.get("blob_sha")
+            if isinstance(source.get("blob_sha"), str)
+            and review["provenance_verified"] is True
+            else None,
+            scope_reasons=tuple(
+                str(item) for item in cast(list[object], review["checks"])
+            ),
+            scope_missing_information=tuple(
+                str(item) for item in cast(list[object], review["missing_information"])
+            ),
+            scope_axes=cast(dict[str, dict[str, object]], review["axes"]),
+            external_disclosure_allowed=review["external_disclosure_allowed"] is True,
             resume_available=(
                 progress.status in {"BLOCKED", "FAILED"}
                 and any(item.retryable for item in values)
@@ -407,6 +482,20 @@ class DashboardQuery:
             chain_depth=(run.chain_depths.get(hypothesis_id, 0) if run else 0),
             attempt_number=progress.attempt_number,
             updated_at=latest.updated_at,
+        )
+
+    def _scope_review(
+        self,
+        identity: CheckpointIdentity,
+        checkpoint: StageCheckpoint | None,
+        run: SimpleAnalysisRun | None,
+    ) -> dict[str, object]:
+        artifacts = SimpleArtifactRepository(self._data_dir, identity)
+        return project_scope_review(
+            checkpoint,
+            artifacts,
+            policy_snapshot_ref=run.policy_snapshot_ref if run else None,
+            repository_url=run.repository if run else None,
         )
 
     def _simple_run(self, analysis_id: str) -> SimpleAnalysisRun | None:

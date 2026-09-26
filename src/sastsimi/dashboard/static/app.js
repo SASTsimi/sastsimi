@@ -70,6 +70,21 @@ function renderDetail(detail, events) {
     card.append(el("div", `${item.current_stage} · ${item.status}`, "status"));
     const gateOutcome = item.disposition === "INCONCLUSIVE" ? "Gate 미확정·제보 불가" : item.disposition === "REJECT" ? "Gate 거절·제보 불가" : null;
     card.append(el("div", `완료 ${item.completed_count}/${item.stage_count} · ${gateOutcome || `판정 ${item.verdict || "미확정"}`} · PoC ${item.validated_poc ? "검증됨" : "미검증"}`, "meta"));
+    const scope = item.scope_status || "UNCERTAIN";
+    const disclosure = item.external_disclosure_allowed ? "정책상 허용·제보 전 사람 검토 필요" : "외부 제보 불가";
+    card.append(el("div", `Scope Gate ${scope} · 정책 ${item.scope_collection_status || "UNVERIFIED"} · ${disclosure}`, "meta"));
+    if (item.scope_source_url) {
+      const source = el("a", `정책 출처 · ${item.scope_source_revision || "개정 미확인"}`);
+      source.href = item.scope_source_url;
+      source.target = "_blank";
+      source.rel = "noreferrer";
+      card.append(source);
+    }
+    for (const [axis, evidence] of Object.entries(item.scope_axes || {})) {
+      const quote = evidence.quote ? ` · ${evidence.line}행 “${evidence.quote}”` : "";
+      card.append(el("div", `${axis}: ${evidence.status}${quote} · ${evidence.reason}`, "meta"));
+    }
+    if (item.scope_reasons?.length) card.append(el("div", `정책 판정 이유: ${item.scope_reasons.join(", ")}`, "meta"));
     const attempt = recoveryAttempt(item);
     if (attempt) card.append(attempt);
     if (item.error_code) card.append(el("div", `오류: ${item.error_code}`, "error"));

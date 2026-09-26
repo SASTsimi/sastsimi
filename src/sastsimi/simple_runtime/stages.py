@@ -40,6 +40,7 @@ from .recovery import MAX_RECOVERY_ATTEMPTS
 from .retrieval import collect_requested_sources
 from .runner import SimpleStageHandler, StageBlocked, StageFailed
 from .scope_policy import (
+    project_scope_review,
     uncertain_scope_result,
     validate_scope_decision,
     verified_policy_snapshot,
@@ -1408,8 +1409,16 @@ them; otherwise mark FAIL or UNCERTAIN. Do not propose the final gate status.
 
 
 class FindingStage:
-    def __init__(self, artifacts: SimpleArtifactRepository) -> None:
+    def __init__(
+        self,
+        artifacts: SimpleArtifactRepository,
+        *,
+        policy_snapshot_ref: StoredDataRef | None = None,
+        repository_url: str | None = None,
+    ) -> None:
         self._artifacts = artifacts
+        self._policy_snapshot_ref = policy_snapshot_ref
+        self._repository_url = repository_url
 
     async def __call__(
         self,
@@ -1443,8 +1452,13 @@ class FindingStage:
                     safe_message="Finding requires an exact Technical Gate ACCEPT",
                 )
             )
-        scope_result = self._result(scope.output_refs[0])
-        scope_status = str(scope_result.get("status", ""))
+        scope_result = project_scope_review(
+            scope,
+            self._artifacts,
+            policy_snapshot_ref=self._policy_snapshot_ref,
+            repository_url=self._repository_url,
+        )
+        scope_status = str(scope_result["status"])
         finding_status, disclosure_allowed = internal_report_status(scope_status)
         source_refs = _prior_refs(prior)
         finding_ref = self._artifacts.put_json(
@@ -1487,8 +1501,13 @@ class ReporterStage:
         self,
         client: SimpleLLMClient,
         artifacts: SimpleArtifactRepository,
+        *,
+        policy_snapshot_ref: StoredDataRef | None = None,
+        repository_url: str | None = None,
     ) -> None:
         self._artifacts = artifacts
+        self._policy_snapshot_ref = policy_snapshot_ref
+        self._repository_url = repository_url
         self._stage = _StructuredStage(
             client=client,
             artifacts=artifacts,
@@ -1600,9 +1619,16 @@ verification verdict follows from the supplied Pro, Con, and PoC evidence.
         poc = self._validated_poc(prior)
         cwe = self._result(prior[SimpleStage.CWE_DONE].output_refs[0])
         technical = self._result(prior[SimpleStage.TECH_GATE_DONE].output_refs[0])
-        scope = self._result(prior[SimpleStage.SCOPE_GATE_DONE].output_refs[0])
-        scope_status = str(scope.get("status", ""))
+        scope = project_scope_review(
+            prior.get(SimpleStage.SCOPE_GATE_DONE),
+            self._artifacts,
+            policy_snapshot_ref=self._policy_snapshot_ref,
+            repository_url=self._repository_url,
+        )
+        scope_status = str(scope["status"])
         report_status, disclosure_allowed = internal_report_status(scope_status)
+        source = cast(dict[str, JsonValue], scope["policy_source"])
+        axes = cast(dict[str, dict[str, JsonValue]], scope["axes"])
         lines = [
             f"# {value['title']}",
             "",
@@ -1622,7 +1648,24 @@ verification verdict follows from the supplied Pro, Con, and PoC evidence.
             str(value["details"]),
             "",
             f"- Technical Gate: {technical.get('status')}",
-            f"- Rule Scope Gate: {scope.get('status')}",
+            f"- Rule Scope Gate: {scope_status}",
+            f"- 정책 수집 상태: {source.get('collection_status')}",
+            f"- 정책 출처: {source.get('source_url') or '확인되지 않음'}",
+            f"- 정책 개정: {source.get('blob_sha') or '확인되지 않음'}",
+            *[
+                f"- Scope {name}: {axis.get('status')} · "
+                f"{axis.get('line') or '?'}행 · "
+                f"{axis.get('quote') or '근거 없음'} · {axis.get('reason')}"
+                for name, axis in axes.items()
+            ],
+            *[
+                f"- 정책 근거 누락: {name}"
+                for name in cast(list[str], scope["missing_information"])
+            ],
+            *[
+                f"- Scope 판정 이유: {reason}"
+                for reason in cast(list[str], scope["checks"])
+            ],
             *(
                 [
                     "- 공개 제한: 외부 제출·공개 금지. 내부 기술 검토용입니다.",
@@ -1632,7 +1675,7 @@ verification verdict follows from the supplied Pro, Con, and PoC evidence.
             ),
             *[
                 f"- 정책 제한: {item}"
-                for item in cast(list[str], scope.get("restrictions", []))
+                for item in cast(list[str], scope["restrictions"])
             ],
             "",
             "### PoC",
@@ -1795,8 +1838,17 @@ def build_stage_handlers(
             repository_url=repository_url,
         ),
         SimpleStage.PRIMITIVE_ADMISSION_DONE: PrimitiveAdmissionStage(artifacts),
-        SimpleStage.FINDING_DONE: FindingStage(artifacts),
-        SimpleStage.REPORT_DONE: ReporterStage(client, artifacts),
+        SimpleStage.FINDING_DONE: FindingStage(
+            artifacts,
+            policy_snapshot_ref=policy_snapshot_ref,
+            repository_url=repository_url,
+        ),
+        SimpleStage.REPORT_DONE: ReporterStage(
+            client,
+            artifacts,
+            policy_snapshot_ref=policy_snapshot_ref,
+            repository_url=repository_url,
+        ),
     }
     if store is not None:
         handlers[SimpleStage.CHAINING_DONE] = SimpleChainingStage(

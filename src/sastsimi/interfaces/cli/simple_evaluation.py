@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 from sastsimi.composition.local_codex_binding import build_local_codex_binding
@@ -19,15 +20,63 @@ from sastsimi.simple_runtime.container import (
 )
 from sastsimi.simple_runtime.migration import import_existing_analysis
 from sastsimi.simple_runtime.models import (
+    CheckpointIdentity,
     SimpleStage,
+    StageCheckpoint,
     StageResult,
     StageStatus,
     input_reference_hash,
 )
 from sastsimi.simple_runtime.provider import SimpleCodexClient
 from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
+from sastsimi.simple_runtime.scope_policy import (
+    project_scope_review,
+    safe_public_report,
+)
 from sastsimi.simple_runtime.stages import build_stage_handlers
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
+
+
+def _report_path_for_result(
+    store: SimpleCheckpointStore,
+    artifacts: SimpleArtifactRepository,
+    identity: CheckpointIdentity,
+    report: StageCheckpoint | None,
+    *,
+    policy_snapshot_ref: StoredDataRef | None,
+    repository_url: str | None,
+) -> str | None:
+    """Only advertise a report path when its public projection is unchanged."""
+
+    if (
+        report is None
+        or report.status is not StageStatus.SUCCEEDED
+        or report.markdown_path is None
+        or len(report.output_refs) < 2
+    ):
+        return None
+    try:
+        report_path = Path(report.markdown_path).resolve(strict=True)
+        expected_parent = (
+            artifacts.data_dir / "reports" / identity.analysis_id
+        ).resolve()
+        if report_path.parent != expected_parent or report_path.suffix != ".md":
+            return None
+        raw = artifacts.read(report.output_refs[1])
+        review = project_scope_review(
+            store.get(identity, SimpleStage.SCOPE_GATE_DONE),
+            artifacts,
+            policy_snapshot_ref=policy_snapshot_ref,
+            repository_url=repository_url,
+        )
+        if (
+            safe_public_report(raw, review) != raw
+            or report_path.read_bytes() != raw
+        ):
+            return None
+    except (OSError, ValueError, TypeError, sqlite3.Error):
+        return None
+    return report.markdown_path
 
 
 async def resume(
@@ -108,6 +157,13 @@ async def resume(
     if not runnable:
         raise ValueError("SIMPLE_RUNTIME_NO_DYNAMIC_HYPOTHESES")
 
+    try:
+        run = store.require_analysis_run(analysis_id)
+    except LookupError:
+        run = None
+    policy_snapshot_ref = run.policy_snapshot_ref if run else None
+    repository_url = run.repository if run else None
+
     first = runnable[0]
     scope = PlannedRunScope(
         analysis_id=AnalysisId(first.analysis_id),
@@ -145,7 +201,11 @@ async def resume(
                 docker=docker,
                 containers=containers,
                 store=store,
+                security_policy_ref=run.security_policy_ref if run else None,
+                policy_snapshot_ref=policy_snapshot_ref,
+                repository_url=repository_url,
             ),
+            policy_snapshot_ref=policy_snapshot_ref,
         )
         outcome = await runner.resume_hypothesis(identity)
         final = store.get(identity, outcome.current_stage)
@@ -158,7 +218,14 @@ async def resume(
                 "error_code": outcome.error_code,
                 "verdict": store.verdict(identity),
                 "validated_poc": store.validated_poc(identity) is not None,
-                "report_path": report.markdown_path if report else None,
+                "report_path": _report_path_for_result(
+                    store,
+                    artifacts,
+                    identity,
+                    report,
+                    policy_snapshot_ref=policy_snapshot_ref,
+                    repository_url=repository_url,
+                ),
                 "attempt_number": final.attempt_number if final else 0,
             }
         )

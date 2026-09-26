@@ -107,8 +107,9 @@ def create_server(
                 elif len(parts) == 3 and parts[0] == "reports":
                     if not parts[2].endswith(".md"):
                         raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
-                    self._file(
-                        query.report_path(parts[1], parts[2][:-3]),
+                    self._response(
+                        HTTPStatus.OK,
+                        query.report_content(parts[1], parts[2][:-3]),
                         "text/markdown; charset=utf-8",
                         send_body,
                     )

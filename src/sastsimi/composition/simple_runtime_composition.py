@@ -70,6 +70,10 @@ from sastsimi.simple_runtime.provider import (
 )
 from sastsimi.simple_runtime.recovery import SimpleRecoveryCoordinator
 from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
+from sastsimi.simple_runtime.scope_policy import (
+    project_scope_review,
+    safe_public_report,
+)
 from sastsimi.simple_runtime.stages import build_stage_handlers
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
@@ -534,11 +538,19 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             or len(checkpoint.output_refs) < 2
         ):
             raise LookupError("CURRENT_REPORT_NOT_FOUND")
-        return (
-            SimpleArtifactRepository(self._config.data_dir, identity)
-            .read(checkpoint.output_refs[1])
-            .decode("utf-8", errors="strict")
+        artifacts = SimpleArtifactRepository(self._config.data_dir, identity)
+        raw = artifacts.read(checkpoint.output_refs[1])
+        try:
+            run = self._store.require_analysis_run(identity.analysis_id)
+        except LookupError:
+            run = None
+        review = project_scope_review(
+            self._store.get(identity, SimpleStage.SCOPE_GATE_DONE),
+            artifacts,
+            policy_snapshot_ref=run.policy_snapshot_ref if run else None,
+            repository_url=run.repository if run else None,
         )
+        return safe_public_report(raw, review).decode("utf-8", errors="strict")
 
     def export_report(self, finding_id: str) -> str:
         identity, _finding_ref = self._finding_identity(finding_id)
@@ -549,10 +561,18 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         report_path = Path(checkpoint.markdown_path).resolve()
         report_root = (self._config.data_dir / "reports").resolve()
         try:
-            relative = report_path.relative_to(self._config.data_dir.resolve())
+            report_path.relative_to(self._config.data_dir.resolve())
             report_path.relative_to(report_root)
         except ValueError as error:
             raise ValueError("REPORT_PATH_OUTSIDE_DATA_DIR") from error
+        original = SimpleArtifactRepository(self._config.data_dir, identity).read(
+            checkpoint.output_refs[1]
+        )
+        if content != original:
+            report_path = report_path.with_name(
+                f"{report_path.stem}.restricted.md"
+            )
+        relative = report_path.relative_to(self._config.data_dir.resolve())
         report_path.parent.mkdir(parents=True, exist_ok=True)
         if not report_path.exists() or report_path.read_bytes() != content:
             temporary = report_path.with_suffix(".md.next")
