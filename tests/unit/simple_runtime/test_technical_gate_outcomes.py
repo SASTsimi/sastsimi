@@ -12,7 +12,9 @@ from pydantic import JsonValue
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.chaining import PrimitiveAdmissionStage
+from sastsimi.simple_runtime.gate_guard import technical_gate_accepted
 from sastsimi.simple_runtime.models import (
+    STAGE_VERSION,
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
@@ -68,6 +70,7 @@ def _checkpoint(
     checkpoint = StageCheckpoint(
         identity=_identity(),
         stage=stage,
+        stage_version=STAGE_VERSION[stage],
         status=StageStatus.SUCCEEDED,
         input_refs=(),
         input_hash=input_reference_hash(()),
@@ -77,6 +80,20 @@ def _checkpoint(
         gate_decision=gate_decision,
     )
     return checkpoint
+
+
+def test_stale_gate_version_cannot_authorize_reportable_outputs(
+    tmp_path: Path,
+) -> None:
+    artifacts = SimpleArtifactRepository(tmp_path, _identity())
+    gate_ref = artifacts.put_json({"result": {"status": "ACCEPT"}})
+    gate = _checkpoint(
+        SimpleStage.TECH_GATE_DONE,
+        outputs=(gate_ref,),
+        gate_decision="ACCEPT",
+    ).model_copy(update={"stage_version": "1"})
+
+    assert not technical_gate_accepted(gate, artifacts)
 
 
 @pytest.mark.asyncio

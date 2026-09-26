@@ -8,6 +8,7 @@ import pytest
 
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
+    STAGE_VERSION,
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
@@ -65,6 +66,7 @@ def _checkpoint(
     return StageCheckpoint(
         identity=identity,
         stage=stage,
+        stage_version=STAGE_VERSION[stage],
         status=StageStatus.SUCCEEDED,
         input_refs=(),
         input_hash=input_reference_hash(()),

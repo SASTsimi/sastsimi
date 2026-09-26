@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from .artifacts import SimpleArtifactRepository
-from .models import SimpleStage, StageCheckpoint, StageStatus
+from .models import STAGE_VERSION, SimpleStage, StageCheckpoint, StageStatus
 
 
 def technical_gate_accepted(
@@ -14,6 +14,7 @@ def technical_gate_accepted(
     if (
         checkpoint is None
         or checkpoint.stage is not SimpleStage.TECH_GATE_DONE
+        or checkpoint.stage_version != STAGE_VERSION[SimpleStage.TECH_GATE_DONE]
         or checkpoint.status is not StageStatus.SUCCEEDED
         or checkpoint.gate_decision != "ACCEPT"
         or len(checkpoint.output_refs) != 1

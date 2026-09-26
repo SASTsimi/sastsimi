@@ -68,7 +68,7 @@ function renderDetail(detail, events) {
     const card = el("article", undefined, "card");
     card.append(el("strong", item.hypothesis_id));
     card.append(el("div", `${item.current_stage} · ${item.status}`, "status"));
-    const gateOutcome = item.disposition === "INCONCLUSIVE" ? "Gate 미확정·제보 불가" : item.disposition === "REJECT" ? "Gate 근거 부족·제보 불가" : null;
+    const gateOutcome = item.disposition === "INCONCLUSIVE" ? "Gate 미확정·제보 불가" : item.disposition === "REJECT" ? "Gate 거절·제보 불가" : null;
     card.append(el("div", `완료 ${item.completed_count}/${item.stage_count} · ${gateOutcome || `판정 ${item.verdict || "미확정"}`} · PoC ${item.validated_poc ? "검증됨" : "미검증"}`, "meta"));
     const attempt = recoveryAttempt(item);
     if (attempt) card.append(attempt);
