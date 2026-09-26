@@ -1,5 +1,6 @@
 """Immutable Finding normalization and the final automated ReportDraft."""
 
+import json
 import re
 from collections.abc import Mapping
 from typing import Literal, Self
@@ -42,6 +43,27 @@ class ReportContent(ContractModel):
     citations: tuple[CodeLocation, ...]
 
 
+class ReportProse(ContractModel):
+    """One language of a v2 Reporter proposal; factual refs remain shared."""
+
+    title: NonEmptyStr
+    summary: NonEmptyStr
+    details: NonEmptyStr
+    impact: NonEmptyStr
+    recommendation: NonEmptyStr
+    limitations: tuple[NonEmptyStr, ...]
+    review_items: tuple[NonEmptyStr, ...]
+
+
+class BilingualReportContent(ContractModel):
+    """One Reporter invocation supplies both languages without separate facts."""
+
+    schema_version: Literal[2]
+    en: ReportProse
+    ko: ReportProse
+    citations: tuple[CodeLocation, ...]
+
+
 def validate_report_content(
     content: object, *, allowed_locations: tuple[CodeLocation, ...]
 ) -> bytes:
@@ -53,7 +75,13 @@ def validate_report_content(
     if _HIDDEN_REASONING.search(text):
         raise ValueError("REPORT_HIDDEN_REASONING_DENIED")
     if isinstance(content, Mapping) and "citations" in content:
-        for citation in ReportContent.model_validate_json(encoded).citations:
+        if content.get("schema_version") == 2:
+            if "en" not in content or "ko" not in content:
+                raise ValueError("REPORT_LANGUAGE_REQUIRED")
+            citations = BilingualReportContent.model_validate_json(encoded).citations
+        else:
+            citations = ReportContent.model_validate_json(encoded).citations
+        for citation in citations:
             if not any(
                 location.file_path == citation.file_path
                 and location.start_line <= citation.start_line
@@ -74,11 +102,19 @@ def validate_report_content(
 
 def parse_validated_report_content(
     raw: bytes, *, allowed_locations: tuple[CodeLocation, ...]
-) -> ReportContent:
+) -> ReportContent | BilingualReportContent:
     """Parse canonical report bytes and reapply redaction/evidence validation."""
 
     try:
-        content = ReportContent.model_validate_json(raw)
+        value = json.loads(raw)
+        if isinstance(value, dict) and value.get("schema_version") == 2:
+            if "en" not in value or "ko" not in value:
+                raise ValueError("REPORT_LANGUAGE_REQUIRED")
+            content: ReportContent | BilingualReportContent = (
+                BilingualReportContent.model_validate_json(raw)
+            )
+        else:
+            content = ReportContent.model_validate_json(raw)
     except ValueError:
         raise
     except Exception as error:

@@ -95,7 +95,9 @@ def _trusted_finalizer_citation_fields(
     ):
         return frozenset({"evidence_refs", "entity_refs"})
     if result_kind == "report_draft" and not path:
-        return frozenset({"citations"})
+        # The v2 content schema owns this fixed marker; it is not a runtime
+        # record revision or an authorization claim.
+        return frozenset({"citations", "schema_version"})
     return frozenset()
 
 

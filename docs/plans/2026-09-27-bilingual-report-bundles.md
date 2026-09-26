@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Pydantic, pytest, stdlib zipfile/hashlib/pathlib, existing artifact stores and loopback dashboard.
 
-**Spec:** docs/superpowers/specs/2026-09-27-bilingual-report-bundles-design.md
+**Spec:** docs/plans/2026-09-27-bilingual-report-bundles-design.md
 
 ## Global Constraints
 
