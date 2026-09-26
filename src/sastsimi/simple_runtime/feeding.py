@@ -32,6 +32,10 @@ SOURCE_SUFFIXES = (".py", ".pyi", ".js", ".jsx", ".ts", ".tsx")
 # small enough to be read rather than skimmed and to keep clear of the burst
 # limit a half-million-token prompt was measured tripping.
 BATCH_BYTES = 280_000
+# The repository map rides on every call.  Measured on saleor (4,333 source
+# files, 3,187 of them tests or migrations) it came to 2.9 MB, over three times
+# the model window on its own, and no batch size could have helped.
+MAP_BYTES = 400_000
 # A file this large, or with lines this long, is a bundle or a build output.
 _GENERATED_BYTES = 512_000
 _GENERATED_LINE_CHARS = 2_000
@@ -161,16 +165,51 @@ def _signatures(path: str, text: str) -> list[str]:
     return lines
 
 
+_TEST_PATH = re.compile(
+    r"(^|/)(tests?|testing|fixtures|migrations)/|(^|/)(test_[^/]*|conftest|[^/]*_test)\.py$"
+)
+_ARGUMENTS = re.compile(r"\(.*\)$")
+
+
+def fit_map(blocks: Sequence[Sequence[str]], budget: int = MAP_BYTES) -> str:
+    """Join per-file signature blocks, coarser step by step until they fit.
+
+    Tests and migrations lose their definitions first, then every definition
+    loses its arguments, and only then does the map shrink to file names.
+    Nothing is dropped silently: a file always keeps its path, and the agent
+    can still read any file on request.
+    """
+
+    def joined(lines: Sequence[Sequence[str]]) -> str:
+        return "\n".join(line for block in lines for line in block)
+
+    def bare(block: Sequence[str]) -> list[str]:
+        return [_ARGUMENTS.sub("", line) for line in block]
+
+    steps = (
+        lambda block: list(block),
+        lambda block: list(block[:1] if _TEST_PATH.search(block[0]) else block),
+        lambda block: list(block[:1]) if _TEST_PATH.search(block[0]) else bare(block),
+        lambda block: list(block[:1]),
+    )
+    for step in steps:
+        text = joined([step(block) for block in blocks])
+        if len(text.encode("utf-8")) <= budget:
+            return text
+    return text
+
+
 def plan_feeding(
     workspace: Path,
     tracked: Sequence[str],
     *,
     batch_bytes: int = BATCH_BYTES,
+    map_bytes: int = MAP_BYTES,
 ) -> Feeding:
     """Put every source file in exactly one batch, a directory at a time."""
 
     feeding = Feeding()
-    signatures: list[str] = []
+    signatures: list[list[str]] = []
     host_paths = default_host_paths(workspace)
     ordered = sorted(
         (value for value in tracked if value.lower().endswith(SOURCE_SUFFIXES)),
@@ -202,7 +241,7 @@ def plan_feeding(
             feeding.excluded.append({"path": path, "reason": "NOT_UTF8_TEXT"})
             continue
         rendered, removed = redact_code(_render(path, text), host_paths=host_paths)
-        signatures.extend(_signatures(path, text))
+        signatures.append(_signatures(path, text))
         item = FedFile(path=path, text=rendered, redacted=removed)
         size = len(item.text.encode("utf-8"))
         directory = str(PurePosixPath(path).parent)
@@ -217,7 +256,9 @@ def plan_feeding(
         current_size += size
         current_dir = directory
     close()
-    feeding.signature_map = redact_code("\n".join(signatures), host_paths=host_paths)[0]
+    feeding.signature_map = redact_code(
+        fit_map(signatures, map_bytes), host_paths=host_paths
+    )[0]
     return feeding
 
 
@@ -307,7 +348,9 @@ def plan_fact_feeding(
 __all__ = [
     "plan_fact_feeding",
     "BATCH_BYTES",
+    "MAP_BYTES",
     "fenced",
+    "fit_map",
     "SOURCE_SUFFIXES",
     "Batch",
     "FedFile",

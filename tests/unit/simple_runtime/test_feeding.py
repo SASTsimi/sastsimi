@@ -110,3 +110,30 @@ def test_the_map_names_every_definition(tmp_path: Path) -> None:
 
     assert "class Router" in feeding.signature_map
     assert "def proxy(self, path)" in feeding.signature_map
+
+
+def test_a_huge_checkout_keeps_the_map_under_its_budget(tmp_path: Path) -> None:
+    # Measured on saleor: the map alone was 2.9 MB and every call was refused
+    # as too long, whatever the batch size.
+    body = "".join(f"def handler_{n}(request, value):\n    pass\n" for n in range(40))
+    files = {f"app/m{n}.py": body for n in range(40)}
+    files.update({f"app/tests/test_m{n}.py": body for n in range(40)})
+    root, tracked = _repo(tmp_path, files)
+
+    whole = plan_feeding(root, tracked, map_bytes=10**9).signature_map
+    fitted = plan_feeding(root, tracked, map_bytes=len(whole) * 3 // 4).signature_map
+
+    assert len(fitted.encode()) <= len(whole) * 3 // 4
+    assert "def handler_3(request, value)" in fitted
+    assert "app/tests/test_m7.py" in fitted
+    assert fitted.count("def handler_3(") == 40  # only the non-test files keep them
+
+
+def test_the_map_never_drops_a_file_even_when_nothing_else_fits() -> None:
+    from sastsimi.simple_runtime.feeding import fit_map
+
+    blocks = [[f"pkg/m{n}.py", f"  1: def f{n}(x)"] for n in range(50)]
+
+    fitted = fit_map(blocks, budget=1)
+
+    assert fitted.splitlines() == [block[0] for block in blocks]
