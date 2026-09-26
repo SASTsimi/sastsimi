@@ -16,8 +16,12 @@ from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.application import StaticBootstrapResult
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
-from sastsimi.simple_runtime.models import CheckpointIdentity, SimpleStage
-from sastsimi.simple_runtime.stages import PoCCandidateStage
+from sastsimi.simple_runtime.models import (
+    CheckpointIdentity,
+    SimpleAnalysisRun,
+    SimpleStage,
+)
+from sastsimi.simple_runtime.stages import PoCCandidateStage, RuleScopeGateStage
 
 
 def _config(tmp_path: Path) -> UserConfig:
@@ -75,9 +79,14 @@ def _ref(identity: CheckpointIdentity, name: str) -> StoredDataRef:
     )
 
 
+@pytest.mark.parametrize(
+    "saved_repository",
+    [None, "https://github.com/acme/app"],
+)
 def test_composition_injects_identity_scoped_recovery_into_app_and_runner(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    saved_repository: str | None,
 ) -> None:
     created: list[CheckpointIdentity] = []
 
@@ -108,6 +117,16 @@ def test_composition_injects_identity_scoped_recovery_into_app_and_runner(
         static_bundle_ref=_ref(identity, "bundle"),
         workspace_path=tmp_path / "workspace",
     )
+    if saved_repository is not None:
+        application._store.save_analysis_run(
+            SimpleAnalysisRun(
+                analysis_id=identity.analysis_id,
+                display_analysis_id="A-1",
+                workspace_id=identity.workspace_id,
+                commit_id=identity.commit_id,
+                repository=saved_repository,
+            )
+        )
 
     assert application._recovery_factory is not None
     app_recovery = cast(Coordinator, application._recovery_factory(identity))
@@ -120,4 +139,7 @@ def test_composition_injects_identity_scoped_recovery_into_app_and_runner(
     assert isinstance(candidate, PoCCandidateStage)
     assert candidate._workspace_path == static.workspace_path
     assert candidate._static_bundle_ref == static.static_bundle_ref
+    scope_gate = runner.handlers[SimpleStage.SCOPE_GATE_DONE]
+    assert isinstance(scope_gate, RuleScopeGateStage)
+    assert scope_gate._repository_url == saved_repository
     assert created == [identity, identity]

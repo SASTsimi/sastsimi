@@ -70,7 +70,7 @@ def seed(data_dir) -> None:
             (finding_ref,),
             (
                 artifacts.put_json({"kind": "draft"}),
-                artifacts.put_bytes(b"# report", "text/markdown"),
+                artifacts.put_bytes("# 한국어 보고서".encode(), "text/markdown"),
             ),
         ),
     ):
@@ -129,6 +129,52 @@ def test_server_is_local_read_only_and_serves_current_state(tmp_path) -> None:
         assert request(f"{base}/reports/analysis-1/F-001.md").read().decode() == (
             "# 한국어 보고서"
         )
+
+
+def test_server_restricts_persisted_legacy_allow_markdown(tmp_path) -> None:
+    seed(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    gate_ref = artifacts.put_json({"result": {"status": "ALLOW"}})
+    SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3").save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.SCOPE_GATE_DONE,
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(gate_ref,),
+        )
+    )
+    old_path = tmp_path / "reports" / "analysis-1" / "F-001.md"
+    old_text = "# Legacy\n- 상태: CONFIRMED\n- 외부 제출·공개 허용: 예\n"
+    old_path.write_text(old_text, encoding="utf-8")
+
+    with running_server(tmp_path) as base:
+        detail = json.loads(request(f"{base}/api/analyses/A-001").read())
+        public = request(f"{base}/reports/analysis-1/F-001.md").read().decode()
+
+    assert detail["hypotheses"][0]["scope_status"] == "UNCERTAIN"
+    assert detail["hypotheses"][0]["external_disclosure_allowed"] is False
+    assert "허용: 예" not in public
+    assert "제보 불가" in public
+    assert old_path.read_text(encoding="utf-8") == old_text
+
+
+def test_server_serves_exact_report_artifact_not_mutated_file(tmp_path) -> None:
+    seed(tmp_path)
+    report_path = tmp_path / "reports" / "analysis-1" / "F-001.md"
+    report_path.write_text("# altered after generation", encoding="utf-8")
+
+    with running_server(tmp_path) as base:
+        public = request(f"{base}/reports/analysis-1/F-001.md").read().decode()
+
+    assert public == "# 한국어 보고서"
 
 
 def test_server_rejects_non_loopback_bind(tmp_path) -> None:

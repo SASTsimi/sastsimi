@@ -10,6 +10,10 @@
 분석 ID와 Finding ID를 SQLite에 저장합니다. 보고서 파일은
 `<data-dir>/reports/<analysis_id>/F-NNN.md`에 저장하며 데이터베이스의 exact Finding과
 연결합니다.
+공식 정책 본문과 출처·개정·수집 상태는 별도 exact artifact로 저장하고 분석 실행이
+그 snapshot을 가리킵니다. 공개 `report`·export·대시보드는 읽을 때 Gate와 정책
+출처를 다시 검증합니다. 이전 기록의 검증되지 않은 `ALLOW`에 대한 제한된 export는
+원본을 덮어쓰지 않는 `F-NNN.restricted.md` 파일입니다.
 
 ## 코드 위치
 

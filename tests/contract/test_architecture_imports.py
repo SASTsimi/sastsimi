@@ -120,9 +120,15 @@ EXACT_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
             "sastsimi.simple_runtime.models",
             "sastsimi.simple_runtime.provider",
             "sastsimi.simple_runtime.runner",
+            "sastsimi.simple_runtime.scope_policy",
             "sastsimi.simple_runtime.stages",
             "sastsimi.simple_runtime.store",
         }
+    ),
+    # Public SimpleRuntime reuses the production policy adapter's DNS-pinned
+    # HTTPS boundary without broadening dependencies for the entire package.
+    "sastsimi.simple_runtime.github_policy": frozenset(
+        {"sastsimi.policy.adapters.official_http"}
     ),
     "sastsimi.interfaces.cli.dashboard": frozenset({"sastsimi.dashboard.server"}),
     "sastsimi.interfaces.cli.main": frozenset(

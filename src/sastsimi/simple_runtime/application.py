@@ -50,6 +50,7 @@ class StaticBootstrapResult(ContractModel):
     static_bundle_ref: StoredDataRef
     workspace_path: Path
     security_policy_ref: StoredDataRef | None = None
+    policy_snapshot_ref: StoredDataRef | None = None
 
 
 class HypothesisSeed(ContractModel):
@@ -196,23 +197,29 @@ class SimpleAnalysisApplication:
                     run,
                     self._store.require(identity, SimpleStage.STATIC_DONE),
                 )
+            updated_run = run.model_copy(
+                update={
+                    "workspace_path": static.workspace_path,
+                    "repository_profile_ref": static.repository_profile_ref,
+                    "static_bundle_ref": static.static_bundle_ref,
+                    "security_policy_ref": static.security_policy_ref,
+                    "policy_snapshot_ref": static.policy_snapshot_ref,
+                }
+            )
             self._store.complete(
                 checkpoint,
                 self._stage_result(
                     static.repository_profile_ref,
                     static.static_bundle_ref,
+                    *(
+                        (static.policy_snapshot_ref,)
+                        if static.policy_snapshot_ref is not None
+                        else ()
+                    ),
                 ),
+                analysis_run=updated_run,
             )
             break
-        updated_run = run.model_copy(
-            update={
-                "workspace_path": static.workspace_path,
-                "repository_profile_ref": static.repository_profile_ref,
-                "static_bundle_ref": static.static_bundle_ref,
-                "security_policy_ref": static.security_policy_ref,
-            }
-        )
-        self._store.save_analysis_run(updated_run)
         return await self._propose_and_run(updated_run, identity, static)
 
     async def resume(self, analysis_id_or_display: str) -> SimpleAnalysisOutcome:
@@ -263,6 +270,7 @@ class SimpleAnalysisApplication:
             static_bundle_ref=run.static_bundle_ref,
             workspace_path=run.workspace_path,
             security_policy_ref=run.security_policy_ref,
+            policy_snapshot_ref=run.policy_snapshot_ref,
         )
         if not run.hypothesis_ids:
             return await self._propose_and_run(run, identity, static)

@@ -19,6 +19,10 @@ from sastsimi.config.user_config import (
 from sastsimi.contracts.ids import AnalysisId, CommitId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.orchestration.run_scope_plan import PlannedRunScope
+from sastsimi.policy.adapters.official_http import (
+    PinnedHttpsTransport,
+    resolve_public_addresses,
+)
 from sastsimi.ports.public_commands import PublicCommandApplication
 from sastsimi.progress.models import ProgressSnapshot
 from sastsimi.progress.projector import ProgressProjector
@@ -52,6 +56,7 @@ from sastsimi.simple_runtime.cursor_provider import (
     OfficialCursorTransport,
 )
 from sastsimi.simple_runtime.gate_guard import technical_gate_accepted
+from sastsimi.simple_runtime.github_policy import GitHubPolicyDiscovery
 from sastsimi.simple_runtime.models import CheckpointIdentity, SimpleStage
 from sastsimi.simple_runtime.portable_docker import (
     DirectEnvironmentPreparer,
@@ -65,6 +70,10 @@ from sastsimi.simple_runtime.provider import (
 )
 from sastsimi.simple_runtime.recovery import SimpleRecoveryCoordinator
 from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
+from sastsimi.simple_runtime.scope_policy import (
+    project_scope_review,
+    safe_public_report,
+)
 from sastsimi.simple_runtime.stages import build_stage_handlers
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
@@ -291,6 +300,12 @@ def build_analysis_application(
             artifacts=artifacts,
             workspace=static.workspace_path,
         )
+        try:
+            repository_url = runtime_store.require_analysis_run(
+                identity.analysis_id
+            ).repository
+        except LookupError:
+            repository_url = None
         return SimpleRuntimeRunner(
             runtime_store,
             build_stage_handlers(
@@ -301,6 +316,8 @@ def build_analysis_application(
                 environments=environments,
                 store=runtime_store,
                 security_policy_ref=static.security_policy_ref,
+                policy_snapshot_ref=static.policy_snapshot_ref,
+                repository_url=repository_url,
                 workspace_path=static.workspace_path,
                 static_bundle_ref=static.static_bundle_ref,
                 git_executable=(
@@ -310,6 +327,7 @@ def build_analysis_application(
                 ),
             ),
             recovery=recovery_factory(identity),
+            policy_snapshot_ref=static.policy_snapshot_ref,
         )
 
     return SimpleAnalysisApplication(
@@ -321,7 +339,14 @@ def build_analysis_application(
             and profile.cursor_allow_on_demand
         ),
         store=store,
-        static_bootstrap=DirectStaticBootstrap(profile=profile),
+        static_bootstrap=DirectStaticBootstrap(
+            profile=profile,
+            policy_discovery=GitHubPolicyDiscovery(
+                transport=PinnedHttpsTransport(),
+                resolver=resolve_public_addresses,
+                clock=SystemClock(),
+            ),
+        ),
         hypothesis_bootstrap=DirectHypothesisBootstrap(
             data_dir=data_dir,
             client_factory=client_factory,
@@ -517,11 +542,19 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             or len(checkpoint.output_refs) < 2
         ):
             raise LookupError("CURRENT_REPORT_NOT_FOUND")
-        return (
-            SimpleArtifactRepository(self._config.data_dir, identity)
-            .read(checkpoint.output_refs[1])
-            .decode("utf-8", errors="strict")
+        artifacts = SimpleArtifactRepository(self._config.data_dir, identity)
+        raw = artifacts.read(checkpoint.output_refs[1])
+        try:
+            run = self._store.require_analysis_run(identity.analysis_id)
+        except LookupError:
+            run = None
+        review = project_scope_review(
+            self._store.get(identity, SimpleStage.SCOPE_GATE_DONE),
+            artifacts,
+            policy_snapshot_ref=run.policy_snapshot_ref if run else None,
+            repository_url=run.repository if run else None,
         )
+        return safe_public_report(raw, review).decode("utf-8", errors="strict")
 
     def export_report(self, finding_id: str) -> str:
         identity, _finding_ref = self._finding_identity(finding_id)
@@ -532,10 +565,16 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         report_path = Path(checkpoint.markdown_path).resolve()
         report_root = (self._config.data_dir / "reports").resolve()
         try:
-            relative = report_path.relative_to(self._config.data_dir.resolve())
+            report_path.relative_to(self._config.data_dir.resolve())
             report_path.relative_to(report_root)
         except ValueError as error:
             raise ValueError("REPORT_PATH_OUTSIDE_DATA_DIR") from error
+        original = SimpleArtifactRepository(self._config.data_dir, identity).read(
+            checkpoint.output_refs[1]
+        )
+        if content != original:
+            report_path = report_path.with_name(f"{report_path.stem}.restricted.md")
+        relative = report_path.relative_to(self._config.data_dir.resolve())
         report_path.parent.mkdir(parents=True, exist_ok=True)
         if not report_path.exists() or report_path.read_bytes() != content:
             temporary = report_path.with_suffix(".md.next")

@@ -24,6 +24,7 @@ from sastsimi.simple_runtime.models import (
     StageStatus,
     input_reference_hash,
 )
+from sastsimi.simple_runtime.scope_policy import validate_scope_decision
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from sastsimi.storage.agent_activity import AgentActivityStore
 
@@ -201,6 +202,200 @@ def test_current_accepted_report_remains_accessible(tmp_path) -> None:
 
     assert detail.reports[0].display_id == "F-001"
     assert query.report_path("analysis-a", "F-001") == report_path
+
+
+def test_dashboard_does_not_treat_legacy_allow_as_report_permission(tmp_path) -> None:
+    seed(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    scope_ref = artifacts.put_json({"result": {"status": "ALLOW"}})
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.SCOPE_GATE_DONE,
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(scope_ref,),
+        )
+    )
+
+    hypothesis = DashboardQuery(tmp_path).get_analysis("analysis-a").hypotheses[0]
+
+    assert hypothesis.scope_status == "UNCERTAIN"
+    assert hypothesis.scope_collection_status == "UNVERIFIED"
+    assert hypothesis.external_disclosure_allowed is False
+    assert "POLICY" in " ".join(hypothesis.scope_reasons)
+
+
+def test_dashboard_shows_verified_allow_source_and_all_citations(tmp_path) -> None:
+    seed(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    lines = (
+        "# Security policy",
+        "Researchers may report vulnerabilities.",
+        "The app release is in scope.",
+        "High impact vulnerabilities are eligible.",
+        "Local proof-of-concept testing is permitted.",
+        "Private reports are accepted.",
+    )
+    body = "\n".join(lines).encode()
+    body_ref = artifacts.put_bytes(body, "text/markdown")
+    blob_sha = hashlib.sha1(b"blob " + str(len(body)).encode() + b"\0" + body)
+    snapshot = {
+        "kind": "simple_policy_snapshot",
+        "version": 1,
+        "analysis_id": identity.analysis_id,
+        "workspace_id": identity.workspace_id,
+        "commit_id": identity.commit_id,
+        "target_repository": "https://github.com/acme/app",
+        "status": "FOUND",
+        "reason_code": "POLICY_FOUND",
+        "source_kind": "github_contents_api",
+        "owner": "acme",
+        "repo": "app",
+        "publisher": "acme/app",
+        "source_url": "https://api.github.com/repos/acme/app/contents/SECURITY.md?ref=main",
+        "source_path": "SECURITY.md",
+        "blob_sha": blob_sha.hexdigest(),
+        "content_type": "text/markdown",
+        "checked_at": datetime.now(UTC),
+        "body_sha256": hashlib.sha256(body).hexdigest(),
+        "body_ref": body_ref.model_dump(mode="json"),
+    }
+    snapshot_ref = artifacts.put_json(snapshot)
+    names = ("rules", "asset_scope", "impact", "testing", "reporting")
+    model_result = {
+        "rationale": "All five conditions are explicitly stated.",
+        "restrictions": [],
+        "testing_restriction_compliance": "PASS",
+        "testing_poc_quote": "printf 'LOCAL_POC_METHOD_MARKER\\n'",
+        "axes": {
+            name: {
+                "status": "PASS",
+                "line": index,
+                "quote": lines[index - 1],
+                "reason": "Applies to the local test",
+            }
+            for index, name in enumerate(names, start=2)
+        },
+    }
+    script = b"#!/bin/sh\nprintf 'LOCAL_POC_METHOD_MARKER\\n'\n"
+    content_ref = artifacts.put_bytes(script, "text/x-shellscript")
+    candidate_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_candidate",
+            "content_ref": content_ref.model_dump(mode="json"),
+            "attempt_id": "candidate-attempt",
+        }
+    )
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "candidate_ref": candidate_ref.model_dump(mode="json"),
+            "content_ref": content_ref.model_dump(mode="json"),
+            "attempt_id": "poc-attempt",
+        }
+    )
+    validated_ref = artifacts.put_json(
+        {
+            "kind": "simple_validated_poc",
+            "candidate_ref": candidate_ref.model_dump(mode="json"),
+            "content_ref": content_ref.model_dump(mode="json"),
+            "execution_ref": execution_ref.model_dump(mode="json"),
+            "attempt_id": "poc-attempt",
+        }
+    )
+    verification_ref = artifacts.put_json(
+        {
+            "kind": "simple_verification_result",
+            "source_refs": [
+                validated_ref.model_dump(mode="json"),
+                execution_ref.model_dump(mode="json"),
+            ],
+            "result": {"verdict": "TRUE"},
+            "attempt_id": "verification-attempt",
+        }
+    )
+    technical_ref = artifacts.put_json(
+        {
+            "kind": "simple_technical_gate",
+            "source_refs": [
+                validated_ref.model_dump(mode="json"),
+                execution_ref.model_dump(mode="json"),
+                verification_ref.model_dump(mode="json"),
+            ],
+            "result": {"status": "ACCEPT"},
+            "attempt_id": "technical-attempt",
+        }
+    )
+    decision = validate_scope_decision(
+        snapshot, body.decode(), model_result, poc_evidence_text=script.decode()
+    )
+    gate_ref = artifacts.put_json(
+        {
+            "kind": "simple_rule_scope_gate",
+            "policy_snapshot_ref": snapshot_ref.model_dump(mode="json"),
+            "source_refs": [
+                ref.model_dump(mode="json")
+                for ref in (
+                    body_ref,
+                    content_ref,
+                    validated_ref,
+                    technical_ref,
+                    execution_ref,
+                    verification_ref,
+                )
+            ],
+            "model_result": model_result,
+            "result": decision,
+            "attempt_id": "scope-attempt",
+        }
+    )
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.SCOPE_GATE_DONE,
+            status=StageStatus.SUCCEEDED,
+            input_refs=(snapshot_ref,),
+            input_hash=input_reference_hash((snapshot_ref,)),
+            output_refs=(gate_ref,),
+            attempt_id="scope-attempt",
+        )
+    )
+    run = store.require_analysis_run("analysis-a")
+    store.save_analysis_run(
+        run.model_copy(
+            update={
+                "repository": "https://github.com/acme/app",
+                "policy_snapshot_ref": snapshot_ref,
+            }
+        )
+    )
+
+    hypothesis = DashboardQuery(tmp_path).get_analysis("analysis-a").hypotheses[0]
+
+    assert hypothesis.scope_status == "ALLOW"
+    assert hypothesis.scope_collection_status == "FOUND"
+    assert hypothesis.scope_source_url == snapshot["source_url"]
+    assert hypothesis.scope_source_revision == snapshot["blob_sha"]
+    assert hypothesis.private_reporting_policy_passed is True
+    assert hypothesis.external_disclosure_allowed is False
+    assert set(hypothesis.scope_axes) == set(names)
+    assert all(axis["quote"] for axis in hypothesis.scope_axes.values())
 
 
 def test_claude_usage_shows_unknown_cost_and_generic_on_demand_warning(
