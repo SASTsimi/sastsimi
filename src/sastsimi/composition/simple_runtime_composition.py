@@ -306,6 +306,10 @@ def build_analysis_application(
                 environments=environments,
                 store=runtime_store,
                 security_policy_ref=static.security_policy_ref,
+                policy_snapshot_ref=static.policy_snapshot_ref,
+                repository_url=runtime_store.require_analysis_run(
+                    identity.analysis_id
+                ).repository,
                 workspace_path=static.workspace_path,
                 static_bundle_ref=static.static_bundle_ref,
                 git_executable=(

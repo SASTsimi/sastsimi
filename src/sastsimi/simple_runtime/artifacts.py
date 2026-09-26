@@ -90,6 +90,29 @@ class SimpleArtifactRepository:
             items.append(item)
         return canonical_bytes({"exact_inputs": items})
 
+    def prompt_context_strict(self, refs: tuple[StoredDataRef, ...]) -> bytes:
+        """Return complete exact inputs or fail before any silent truncation."""
+
+        items: list[dict[str, Any]] = []
+        used = 0
+        for ref in refs:
+            raw = self.read(ref)
+            redacted = self._redacted(raw)
+            if not items and redacted != raw:
+                raise ValueError("SIMPLE_RUNTIME_CONTEXT_REDACTED")
+            used += len(raw)
+            if used > _MAX_CONTEXT_BYTES:
+                raise ValueError("SIMPLE_RUNTIME_CONTEXT_TOO_LARGE")
+            try:
+                data: Any = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                data = raw.decode("utf-8", errors="strict")
+            items.append({"reference": ref.model_dump(mode="json"), "data": data})
+        context = canonical_bytes({"exact_inputs": items})
+        if len(context) > _MAX_CONTEXT_BYTES:
+            raise ValueError("SIMPLE_RUNTIME_CONTEXT_TOO_LARGE")
+        return context
+
     def published_refs(
         self,
         kinds: frozenset[str],
