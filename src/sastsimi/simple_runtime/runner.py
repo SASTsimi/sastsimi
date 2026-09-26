@@ -113,6 +113,15 @@ class SimpleRuntimeRunner:
                 if existing is not None and existing.status is StageStatus.PENDING
                 else None
             )
+            # A retryable block records why it stopped; the next attempt starts
+            # from that instead of relearning it.
+            retry_evidence_refs = (
+                existing.output_refs
+                if existing is not None
+                and existing.status is StageStatus.BLOCKED
+                and existing.retryable
+                else ()
+            )
             self.store.invalidate_from(identity, stage, new_inputs=input_refs)
             if retry_seed is not None:
                 self.store.save_checkpoint(retry_seed)
@@ -122,6 +131,7 @@ class SimpleRuntimeRunner:
                 input_refs,
                 attempt_id=attempt_id,
                 inherit_from=inherit_from,
+                retry_evidence_refs=retry_evidence_refs,
             )
             handler = self.handlers.get(stage)
             if handler is None:

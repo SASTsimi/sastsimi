@@ -104,6 +104,7 @@ class StageCheckpoint(ContractModel):
     report_ref: StoredDataRef | None = None
     verdict: Literal["TRUE", "FALSE", "HOLD"] | None = None
     markdown_path: str | None = None
+    retry_evidence_refs: tuple[StoredDataRef, ...] = ()
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @model_validator(mode="after")

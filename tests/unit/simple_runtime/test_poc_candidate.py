@@ -247,3 +247,37 @@ def test_no_rule_is_first_learned_by_breaking_it() -> None:
     assert set(stated_by) == set(_CANDIDATE_REPAIR_GUIDANCE)
     for code, word in stated_by.items():
         assert word in opening, code
+
+
+@pytest.mark.asyncio
+async def test_rules_rejected_on_an_earlier_resume_open_the_next_attempt(
+    tmp_path: Path,
+) -> None:
+    # Observed on healthchecks: the same hypotheses hit POC_HOST_PATH_FORBIDDEN
+    # on four resumes in a row because each resume started without the rules
+    # the previous one had already been refused for.
+    artifacts = SimpleArtifactRepository(tmp_path, _IDENTITY)
+    blocked = PoCCandidateStage(
+        client=_TradingClient(["#!/bin/sh\ncat /home/me/f\n"]),
+        artifacts=artifacts,
+        max_candidate_repairs=0,
+    )
+    with pytest.raises(StageBlocked) as raised:
+        await blocked(_checkpoint(_IDENTITY), {})
+    evidence = raised.value.failure.evidence_refs
+
+    client = _TradingClient(['#!/bin/sh\necho "$OUTSIDE"\n'])
+    stage = PoCCandidateStage(
+        client=client, artifacts=artifacts, max_candidate_repairs=1
+    )
+    with pytest.raises(StageBlocked) as again:
+        await stage(
+            _checkpoint(_IDENTITY).model_copy(update={"retry_evidence_refs": evidence}),
+            {},
+        )
+
+    assert b"POC_HOST_PATH_FORBIDDEN" in client.prompts[0]
+    assert b"Stay inside /workspace and /tmp" in client.prompts[0]
+    carried = artifacts.read(again.value.failure.evidence_refs[0])
+    assert b"POC_HOST_PATH_FORBIDDEN" in carried
+    assert b"POC_UNDECLARED_INPUT" in carried

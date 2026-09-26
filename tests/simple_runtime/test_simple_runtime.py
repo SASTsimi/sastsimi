@@ -211,6 +211,42 @@ async def test_poc_execution_retry_starts_a_new_candidate_attempt(tmp_path) -> N
     assert outcome.current_stage is SimpleStage.REPORT_DONE
 
 
+@pytest.mark.asyncio
+async def test_a_retryable_block_hands_its_evidence_to_the_next_attempt(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.VERIFICATION_INITIAL_DONE)
+    running = store.mark_running(
+        _identity(),
+        SimpleStage.POC_CANDIDATE_DONE,
+        store.input_refs_for(_identity(), SimpleStage.POC_CANDIDATE_DONE),
+        attempt_id="attempt-old",
+    )
+    store.mark_failure(
+        running,
+        StageFailure(
+            code="POC_HOST_PATH_FORBIDDEN",
+            retryable=True,
+            safe_message="not self-contained",
+            evidence_refs=(_ref("rejected-rules"),),
+        ),
+        StageStatus.BLOCKED,
+    )
+    seen: list[tuple[StoredDataRef, ...]] = []
+    handlers = _recording_handlers([])
+    recorded = handlers[SimpleStage.POC_CANDIDATE_DONE]
+
+    async def candidate(checkpoint: StageCheckpoint, prior: object) -> StageResult:
+        seen.append(checkpoint.retry_evidence_refs)
+        return await recorded(checkpoint, prior)  # type: ignore[operator]
+
+    handlers[SimpleStage.POC_CANDIDATE_DONE] = candidate
+    await SimpleRuntimeRunner(store, handlers).resume_analysis(_identity())
+
+    assert seen == [(_ref("rejected-rules"),)]
+
+
 def test_report_format_upgrade_reuses_earlier_stages_but_not_old_report(
     tmp_path,
 ) -> None:
