@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import ast
-import asyncio
 import hashlib
 import json
-import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -90,54 +88,6 @@ class ProcessExecutor(Protocol):
     ) -> ProcessResult: ...
 
 
-class LocalProcessExecutor:
-    async def run(
-        self,
-        argv: Sequence[str],
-        *,
-        cwd: Path | None = None,
-        timeout_seconds: int,
-    ) -> ProcessResult:
-        process = await asyncio.create_subprocess_exec(
-            *argv,
-            cwd=cwd,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=self._environment(),
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout_seconds
-            )
-        except TimeoutError:
-            process.kill()
-            await process.wait()
-            raise RuntimeError("EXTERNAL_TOOL_TIMEOUT") from None
-        return ProcessResult(
-            returncode=process.returncode or 0,
-            stdout=stdout[: 32 * 1024 * 1024],
-            stderr=stderr[: 1024 * 1024],
-        )
-
-    @staticmethod
-    def _environment() -> dict[str, str]:
-        allowed = {
-            "PATH",
-            "PATHEXT",
-            "SYSTEMROOT",
-            "WINDIR",
-            "TEMP",
-            "TMP",
-            "TMPDIR",
-            "HOME",
-            "USERPROFILE",
-            "LANG",
-            "LC_ALL",
-        }
-        return {key: value for key, value in os.environ.items() if key in allowed}
-
-
 class DirectStaticBootstrap:
     """Run clone, AST, OpenGrep and optional CodeQL without the lease runtime."""
 
@@ -145,12 +95,12 @@ class DirectStaticBootstrap:
         self,
         *,
         profile: SimpleExecutionProfile,
-        process: ProcessExecutor | None = None,
+        process: ProcessExecutor,
         static_material_root: Path | None = None,
         policy_discovery: PolicyDiscovery | None = None,
     ) -> None:
         self._profile = profile
-        self._process = process or LocalProcessExecutor()
+        self._process = process
         self._materials = static_material_root or self._static_material_root()
         self._policy_discovery = policy_discovery
 
@@ -197,6 +147,7 @@ class DirectStaticBootstrap:
                 request.data_dir,
                 request.repository,
                 request.commit,
+                identity.analysis_id,
             )
             codeql_ref = artifacts.put_bytes(codeql_raw, "application/sarif+json")
             codeql_findings = self._codeql_findings(workspace, codeql_raw)
@@ -483,6 +434,7 @@ class DirectStaticBootstrap:
             / "opengrep.json"
         )
         output.parent.mkdir(parents=True, exist_ok=True)
+        output.unlink(missing_ok=True)
         rules = self._materials / "opengrep" / "rules.yml"
         result = await self._process.run(
             (
@@ -495,7 +447,7 @@ class DirectStaticBootstrap:
                 str(output),
                 str(workspace),
             ),
-            timeout_seconds=min(self._profile.max_elapsed_seconds, 900),
+            timeout_seconds=min(self._profile.max_elapsed_seconds, 3600),
         )
         if result.returncode not in {0, 1} or not output.is_file():
             raise RuntimeError("OPENGREP_EXECUTION_FAILED")
@@ -509,11 +461,13 @@ class DirectStaticBootstrap:
         data_dir: Path,
         repository: str,
         commit: str,
+        analysis_id: str,
     ) -> bytes:
         key = hashlib.sha256(f"{repository}\0{commit}".encode()).hexdigest()[:24]
+        analysis_key = hashlib.sha256(analysis_id.encode()).hexdigest()[:24]
         root = data_dir / "codeql" / key
         database = root / "database"
-        output = root / "results.sarif"
+        output = root / f"results-{analysis_key}.sarif"
         root.mkdir(parents=True, exist_ok=True)
         codeql = self._tool("codeql")
         if not (database / "codeql-database.yml").is_file():
@@ -533,6 +487,7 @@ class DirectStaticBootstrap:
             )
             if created.returncode != 0:
                 raise RuntimeError("CODEQL_DATABASE_CREATE_FAILED")
+        output.unlink(missing_ok=True)
         analyzed = await self._process.run(
             (
                 codeql,
@@ -791,7 +746,6 @@ class SimpleClientFactory(Protocol):
 __all__ = [
     "DirectHypothesisBootstrap",
     "DirectStaticBootstrap",
-    "LocalProcessExecutor",
     "ProcessExecutor",
     "ProcessResult",
 ]

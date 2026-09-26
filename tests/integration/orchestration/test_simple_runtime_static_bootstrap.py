@@ -247,3 +247,169 @@ async def test_real_static_tools_feed_exact_hypothesis_input(tmp_path: Path) -> 
     assert not isinstance(seeds, StageFailure)
     assert len(seeds) == 1
     assert seeds[0].hypothesis_id.startswith("hypothesis-")
+
+
+@pytest.mark.asyncio
+async def test_opengrep_retry_rejects_stale_output(tmp_path: Path) -> None:
+    class NoOutputProcess:
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            del argv, cwd, timeout_seconds
+            return ProcessResult(0, b"", b"")
+
+    profile = _profile(tmp_path)
+    output = (
+        profile.data_dir
+        / "process-output"
+        / "simple-static"
+        / "analysis-retry"
+        / "opengrep.json"
+    )
+    output.parent.mkdir(parents=True)
+    output.write_text('{"results":[{"stale":true}]}', encoding="utf-8")
+
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=NoOutputProcess(),
+        static_material_root=tmp_path,
+    )
+    with pytest.raises(RuntimeError, match="^OPENGREP_EXECUTION_FAILED$"):
+        await bootstrap._run_opengrep(
+            tmp_path / "checkout", profile.data_dir, "analysis-retry"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("profile_limit", "expected_timeout"),
+    [(3600, 3600), (600, 600)],
+)
+async def test_opengrep_timeout_respects_hour_cap_and_profile(
+    tmp_path: Path, profile_limit: int, expected_timeout: int
+) -> None:
+    class RecordingProcess(_Process):
+        def __init__(self) -> None:
+            self.timeouts: list[int] = []
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            self.timeouts.append(timeout_seconds)
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    profile = _profile(tmp_path).model_copy(
+        update={"max_elapsed_seconds": profile_limit}
+    )
+    process = RecordingProcess()
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=process,
+        static_material_root=tmp_path,
+    )
+
+    await bootstrap._run_opengrep(
+        tmp_path / "checkout", profile.data_dir, "analysis-timeout"
+    )
+
+    assert process.timeouts == [expected_timeout]
+
+
+@pytest.mark.asyncio
+async def test_codeql_retry_rejects_stale_sarif(tmp_path: Path) -> None:
+    class NoOutputProcess:
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            del argv, cwd, timeout_seconds
+            return ProcessResult(0, b"", b"")
+
+    profile = _profile(tmp_path)
+    repository = "https://example.invalid/project.git"
+    commit = "a" * 40
+    analysis_id = "analysis-retry"
+    key = hashlib.sha256(f"{repository}\0{commit}".encode()).hexdigest()[:24]
+    analysis_key = hashlib.sha256(analysis_id.encode()).hexdigest()[:24]
+    root = profile.data_dir / "codeql" / key
+    database = root / "database"
+    database.mkdir(parents=True)
+    (database / "codeql-database.yml").write_text("ok", encoding="utf-8")
+    output = root / f"results-{analysis_key}.sarif"
+    output.write_text('{"runs":[{"stale":true}]}', encoding="utf-8")
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=NoOutputProcess(),
+        static_material_root=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="^CODEQL_ANALYZE_FAILED$"):
+        await bootstrap._run_codeql(
+            tmp_path / "checkout",
+            profile.data_dir,
+            repository,
+            commit,
+            analysis_id,
+        )
+
+    assert not output.exists()
+
+
+@pytest.mark.asyncio
+async def test_codeql_sarif_is_analysis_scoped(tmp_path: Path) -> None:
+    class OutputProcess:
+        def __init__(self) -> None:
+            self.outputs: list[Path] = []
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            del cwd, timeout_seconds
+            if argv[1:3] == ("database", "analyze"):
+                argument = next(
+                    value for value in argv if value.startswith("--output=")
+                )
+                output = Path(argument.partition("=")[2])
+                output.write_text('{"runs":[]}', encoding="utf-8")
+                self.outputs.append(output)
+            return ProcessResult(0, b"", b"")
+
+    profile = _profile(tmp_path)
+    repository = "https://example.invalid/project.git"
+    commit = "a" * 40
+    key = hashlib.sha256(f"{repository}\0{commit}".encode()).hexdigest()[:24]
+    database = profile.data_dir / "codeql" / key / "database"
+    database.mkdir(parents=True)
+    (database / "codeql-database.yml").write_text("ok", encoding="utf-8")
+    process = OutputProcess()
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=process,
+        static_material_root=tmp_path,
+    )
+
+    await bootstrap._run_codeql(
+        tmp_path / "checkout", profile.data_dir, repository, commit, "analysis-one"
+    )
+    await bootstrap._run_codeql(
+        tmp_path / "checkout", profile.data_dir, repository, commit, "analysis-two"
+    )
+
+    assert len(process.outputs) == 2
+    assert process.outputs[0] != process.outputs[1]
+    assert all(path.is_file() for path in process.outputs)

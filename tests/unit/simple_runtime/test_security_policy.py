@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from sastsimi.composition.simple_process import LocalProcessExecutor
 from sastsimi.config.user_config import SimpleExecutionProfile
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime import bootstrap_stages
@@ -116,7 +117,10 @@ async def test_static_bootstrap_persists_exact_policy_snapshot(
     )
     discovery = Discovery()
     bootstrap = bootstrap_stages.DirectStaticBootstrap(
-        profile=profile, policy_discovery=discovery, static_material_root=tmp_path
+        profile=profile,
+        process=LocalProcessExecutor(),
+        policy_discovery=discovery,
+        static_material_root=tmp_path,
     )
 
     async def no_repository(_request: object, _workspace: object) -> None:

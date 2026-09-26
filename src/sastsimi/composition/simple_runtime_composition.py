@@ -77,6 +77,8 @@ from sastsimi.simple_runtime.scope_policy import (
 from sastsimi.simple_runtime.stages import build_stage_handlers
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
+from .simple_process import LocalProcessExecutor
+
 
 def _codex_home() -> Path:
     configured = os.environ.get("CODEX_HOME")
@@ -341,6 +343,7 @@ def build_analysis_application(
         store=store,
         static_bootstrap=DirectStaticBootstrap(
             profile=profile,
+            process=LocalProcessExecutor(),
             policy_discovery=GitHubPolicyDiscovery(
                 transport=PinnedHttpsTransport(),
                 resolver=resolve_public_addresses,

@@ -80,6 +80,22 @@ codex login
 
 `sastsimi setup`을 다시 실행해 현재 실행 파일을 확인합니다. Full profile의 CodeQL은 Python database를 만들고 제한된 query suite를 실행하므로 첫 분석에 시간이 걸릴 수 있습니다. 같은 저장소와 commit의 성공 결과는 재개 시 재사용합니다.
 
+큰 저장소에서는 `sastsimi status A-001 --format json`의 `current_stage`가
+`STATIC_DONE`, 진행률이 `0%`여도 정적 단계의 체크포인트가 아직 실행 중일 수
+있습니다. `RUNNING`이고 오류 코드가 없다면 그 숫자만으로 중단을 판단하지
+마세요. 같은 분석의 `resume`을 동시에 실행하지 말고, 원래 실행 프로세스가
+종료됐거나 상태가 `BLOCKED`/`FAILED`로 바뀐 뒤 오류 코드를 확인해 재개하세요.
+
+OpenGrep의 한 번의 스캔 제한 시간은 1시간과 프로필의
+`max_elapsed_seconds` 중 짧은 값입니다. 같은 설정값을 쓰지만 정적 도구 실행
+시간은 누적 LLM 사용시간에 더해지지 않습니다. 제한 시간을 넘기거나 실행이 취소되면 하위 프로세스
+트리 정리를 시도하고, `EXTERNAL_TOOL_TIMEOUT` 같은 실행 오류를 취약점 반증으로
+취급하지 않습니다. 다음 정적 분석 시도는 이전 `opengrep.json`을 제거한 뒤
+실행하므로 오래된 출력으로 성공 처리하지 않습니다. CodeQL SARIF도 분석별
+파일로 분리하고 재시도 전 해당 파일을 지웁니다. 오류가 계속되면 종료된
+프로세스와 도구 설치 상태를 확인한 후 `sastsimi resume A-001`을 실행하세요.
+데이터 폴더 전체나 다른 분석의 파일은 임의로 삭제하지 마세요.
+
 CodeQL package가 없으면 다음으로 설치 상태를 확인합니다.
 
 ```text

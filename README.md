@@ -85,6 +85,8 @@ sastsimi analyze https://github.com/owner/repository.git --commit <정확한-40�
 
 분석 중단 후에는 완료된 앞 단계를 다시 실행하지 않고 이어서 진행할 수 있습니다. 최초 분석에서 수집한 정책도 같은 분석에 고정되므로 `resume`은 인터넷의 최신 정책을 다시 조회하지 않습니다.
 
+큰 저장소는 정적 도구가 실행되는 동안 `STATIC_DONE` 단계에 진행률 `0%`가 표시될 수 있습니다. `RUNNING`이면 상태를 확인하며 기다리고, 기존 실행이 종료된 뒤에만 `resume`하세요. 정적 분석 시간 초과와 복구 방법은 [오류 해결](docs/troubleshooting.md#opengrep-또는-codeql-실패)을 참고하세요.
+
 ```powershell
 sastsimi status A-001
 sastsimi resume A-001
