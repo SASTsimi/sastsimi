@@ -78,3 +78,42 @@ def test_an_actual_bearer_credential_is_still_removed() -> None:
 
         assert result.categories, carrier
         assert secret not in result.data, carrier
+
+
+def test_quoted_code_that_names_a_credential_is_publishable() -> None:
+    """Measured on healthchecks: two confirmed reports were refused because
+    they quoted a header template and a keyword argument, neither a value."""
+
+    from sastsimi.contracts.canonical_json import canonical_bytes
+    from sastsimi.contracts.prompt_redaction import redact_projected_json
+
+    for text in (
+        "`Authorization: Bearer <MATRIX_ACCESS_TOKEN>` 헤더가 함께 실린다.",
+        "자격증명(`Authorization: Bearer <MATRIX_ACCESS_TOKEN>`)이 자동으로 실린다.",
+        "올바른 `Authorization: Bearer <token>` 헤더",
+        "`self.post(url, data=data, auth=auth)`로 실제 HTTP 요청을 보냅니다.",
+        "`requests.get(url, token=token, password=password)`",
+        'headers = {"Authorization": "Bearer ${MATRIX_TOKEN}"}',
+    ):
+        result = redact_projected_json(canonical_bytes({"markdown": text}))
+
+        assert result.categories == (), text
+
+
+def test_literal_credentials_in_quoted_code_are_still_removed() -> None:
+    from sastsimi.contracts.canonical_json import canonical_bytes
+    from sastsimi.contracts.prompt_redaction import redact_projected_json
+
+    for text, secret in (
+        ("`Authorization: Bearer aB3dEfGh1jKlMn0p`", "aB3dEfGh1jKlMn0p"),
+        ("`Authorization: Bearer <X>aB3dEfGh1jKlMn0p`", "aB3dEfGh1jKlMn0p"),
+        ("`self.post(url, auth=hunter2)`", "hunter2"),
+        ("`password=password`", "password=password"),
+        ('`password="password"`', '"password"'),
+        ("`api_key=sk-live0123456789abcdef`", "sk-live0123456789"),
+        ("`client_secret: $ecretValue1`", "$ecretValue1"),
+    ):
+        result = redact_projected_json(canonical_bytes({"markdown": text}))
+
+        assert result.categories, text
+        assert secret not in result.data.decode("utf-8"), text

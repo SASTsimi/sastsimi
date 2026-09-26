@@ -27,18 +27,34 @@ _OPAQUE_TOKEN = re.compile(
     r"\b(?:AKIA|ASIA)[A-Z0-9]{12,})"
 )
 _COOKIE_ASSIGNMENT = re.compile(
-    r"(?i)\b(?:cookies?|session[_-]?ids?|sessionid)\b\s*[:=]\s*"
-    r'(?:"[^"\r\n]*"|\'[^\'\r\n]*\'|[^\s,;]+)'
+    r"(?i)\b(?P<key>cookies?|session[_-]?ids?|sessionid)\b\s*[:=]\s*"
+    r'(?P<value>"[^"\r\n]*"|\'[^\'\r\n]*\'|[^\s,;]+)'
 )
 _TOKEN_ASSIGNMENT = re.compile(
-    r"(?i)\b(?:access[_-]?tokens?|refresh[_-]?tokens?|tokens?)\b\s*[:=]\s*"
-    r'(?:"[^"\r\n]*"|\'[^\'\r\n]*\'|[^\s,;]+)'
+    r"(?i)\b(?P<key>access[_-]?tokens?|refresh[_-]?tokens?|tokens?)\b\s*[:=]\s*"
+    r'(?P<value>"[^"\r\n]*"|\'[^\'\r\n]*\'|[^\s,;]+)'
 )
 _CREDENTIAL_ASSIGNMENT = re.compile(
-    r"(?i)\b(?:api[_-]?keys?|client[_-]?secrets?|passwords?|passwd|pwd|"
+    r"(?i)\b(?P<key>api[_-]?keys?|client[_-]?secrets?|passwords?|passwd|pwd|"
     r"secrets?|authorization|auth|credentials?|private[_-]?keys?|"
     r"database[_-]?(?:url|uri)|connection[_-]?(?:url|uri|string)|dsn)\b\s*[:=]\s*"
-    r'(?:"[^"\r\n]*"|\'[^\'\r\n]*\'|(?:bearer|basic)\s+[^\s,;]+|[^\s,;]+)'
+    r'(?P<value>"[^"\r\n]*"|\'[^\'\r\n]*\'|(?:bearer|basic)\s+[^\s,;]+|[^\s,;]+)'
+)
+# A report quoting code names a credential without carrying one: the header
+# template "Authorization: Bearer <MATRIX_ACCESS_TOKEN>" and the keyword
+# argument "auth=auth" were refused on healthchecks.  Only a named placeholder
+# or a keyword argument passing a same-named variable is exempt; anything
+# with a literal value still matches.
+_PLACEHOLDER_VALUE = re.compile(
+    r"[\"'`]?(?:(?i:bearer|basic)\s+)?"
+    r"(?:<[A-Za-z][\w.-]*>|\{[A-Za-z_]\w*\}|\$\{?[A-Z_][A-Z0-9_]*\}?)"
+    r"(?![A-Za-z0-9._~+/=-])"
+)
+_KEYWORD_ARGUMENT = re.compile(r"[A-Za-z_]\w*(?=[,)])")
+_ASSIGNMENT_PATTERNS = (
+    (_COOKIE_ASSIGNMENT, "COOKIE"),
+    (_TOKEN_ASSIGNMENT, "TOKEN"),
+    (_CREDENTIAL_ASSIGNMENT, "CREDENTIAL"),
 )
 _CREDENTIAL_URI = re.compile(
     r"(?i)\b[a-z][a-z0-9+.-]*://[^\s:/?#]+:[^@\s/]+@[^\s,;\"']+"
@@ -78,6 +94,36 @@ def _restore_safe_sandbox_paths(value: str) -> str:
     return value
 
 
+def _names_no_value(match: re.Match[str]) -> bool:
+    value = match.group("value")
+    if _PLACEHOLDER_VALUE.match(value):
+        return True
+    following = match.string[match.end() : match.end() + 1]
+    named = _KEYWORD_ARGUMENT.match(value + following)
+    return named is not None and named.group(0).lower() == match.group("key").lower()
+
+
+def _redact_assignments(
+    pattern: re.Pattern[str], marker: str, value: str
+) -> tuple[str, int]:
+    parts: list[str] = []
+    count = 0
+    position = 0
+    for match in pattern.finditer(value):
+        if _names_no_value(match):
+            continue
+        parts.append(value[position : match.start()])
+        parts.append(marker)
+        position = match.end()
+        count += 1
+    parts.append(value[position:])
+    return "".join(parts), count
+
+
+def _has_assignment(pattern: re.Pattern[str], value: str) -> bool:
+    return any(not _names_no_value(match) for match in pattern.finditer(value))
+
+
 @dataclass(frozen=True)
 class RedactionResult:
     data: bytes
@@ -90,15 +136,13 @@ def _replace_string(value: str) -> tuple[str, set[str]]:
 
     result = _protect_safe_sandbox_paths(value)
     categories: set[str] = set()
-    for pattern, category in (
-        (_COOKIE_ASSIGNMENT, "COOKIE"),
-        (_TOKEN_ASSIGNMENT, "TOKEN"),
-        (_CREDENTIAL_ASSIGNMENT, "CREDENTIAL"),
-        (_CREDENTIAL_URI, "CREDENTIAL"),
-    ):
-        result, count = pattern.subn(f"[REDACTED:{category}]", result)
+    for pattern, category in _ASSIGNMENT_PATTERNS:
+        result, count = _redact_assignments(pattern, f"[REDACTED:{category}]", result)
         if count:
             categories.add(category)
+    result, count = _CREDENTIAL_URI.subn("[REDACTED:CREDENTIAL]", result)
+    if count:
+        categories.add("CREDENTIAL")
     result, token_count = _OPAQUE_TOKEN.subn("[REDACTED:TOKEN]", result)
     if token_count:
         categories.add("TOKEN")
@@ -155,9 +199,9 @@ def _has_sensitive_string(value: object) -> bool:
         value = _protect_safe_sandbox_paths(value)
         return bool(
             _OPAQUE_TOKEN.search(value)
-            or _COOKIE_ASSIGNMENT.search(value)
-            or _TOKEN_ASSIGNMENT.search(value)
-            or _CREDENTIAL_ASSIGNMENT.search(value)
+            or any(
+                _has_assignment(pattern, value) for pattern, _ in _ASSIGNMENT_PATTERNS
+            )
             or _CREDENTIAL_URI.search(value)
             or _PRIVATE_KEY.search(value)
             or _WINDOWS_PATH.search(value)
