@@ -250,6 +250,70 @@ class SimpleCheckpointStore:
         with self._connect() as connection:
             return self.usage_summary_from_connection(connection, analysis_id)
 
+    def llm_elapsed_ms(self, analysis_id: str) -> int:
+        """Return elapsed time of recorded LLM attempts across every resume."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COALESCE(SUM(elapsed_ms), 0) "
+                "FROM simple_llm_attempts WHERE analysis_id = ?",
+                (analysis_id,),
+            ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    def reopen_elapsed_budget_failures(
+        self, analysis_id: str, max_elapsed_seconds: int
+    ) -> int:
+        """Reopen elapsed-limit failures only on explicit resume with headroom."""
+
+        if max_elapsed_seconds < 1:
+            raise ValueError("LLM_ELAPSED_BUDGET_INVALID")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            elapsed = connection.execute(
+                "SELECT COALESCE(SUM(elapsed_ms), 0) "
+                "FROM simple_llm_attempts WHERE analysis_id = ?",
+                (analysis_id,),
+            ).fetchone()
+            assert elapsed is not None
+            if int(elapsed[0]) >= max_elapsed_seconds * 1000:
+                connection.commit()
+                return 0
+            rows = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ?",
+                (analysis_id,),
+            ).fetchall()
+            reopened = 0
+            for row in rows:
+                checkpoint = StageCheckpoint.model_validate_json(row[0])
+                if (
+                    checkpoint.status is not StageStatus.FAILED
+                    or checkpoint.error_code != "LLM_ELAPSED_BUDGET_EXHAUSTED"
+                ):
+                    continue
+                pending = checkpoint.model_copy(
+                    update={
+                        "status": StageStatus.PENDING,
+                        "attempt_id": None,
+                        "output_refs": (),
+                        "error_code": None,
+                        "retryable": False,
+                        "updated_at": datetime.now(UTC),
+                    }
+                )
+                self._upsert_checkpoint_connection(connection, pending)
+                reopened += 1
+            connection.commit()
+            return reopened
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def require_analysis_run(self, analysis_id: str) -> SimpleAnalysisRun:
         with self._connect() as connection:
             row = connection.execute(
@@ -618,13 +682,13 @@ class SimpleCheckpointStore:
             image_digest=None if rebuild else failed.image_digest,
             container_id=None,
         )
-        event = self._recovery_event(failed, resolution)
         first_index = STAGE_ORDER.index(restart_stage)
         stages = tuple(item.value for item in STAGE_ORDER[first_index:])
         placeholders = ",".join("?" for _ in stages)
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            event = self._recovery_event(connection, failed, resolution)
             AgentActivityStore.append_connection(connection, event)
             connection.execute(
                 f"""
@@ -774,11 +838,20 @@ class SimpleCheckpointStore:
         *,
         fail_before_commit: bool = False,
     ) -> None:
-        self._write(
-            failed,
-            fail_before_commit=fail_before_commit,
-            activity_events=(self._recovery_event(failed, resolution),),
-        )
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._upsert_checkpoint_connection(connection, failed)
+            event = self._recovery_event(connection, failed, resolution)
+            AgentActivityStore.append_connection(connection, event)
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def mark_recovery_exhausted(
         self,
@@ -813,13 +886,42 @@ class SimpleCheckpointStore:
 
     def _recovery_event(
         self,
+        connection: sqlite3.Connection,
         failed: StageCheckpoint,
         resolution: RecoveryResolution,
     ) -> AgentActivityEvent:
+        base = self._stage_sequence(failed.stage, 40)
+        rows = connection.execute(
+            "SELECT sequence, event_json FROM agent_activity_events "
+            "WHERE analysis_id = ? AND hypothesis_key = ? AND attempt_id = ? "
+            "AND sequence >= ? AND sequence < ? ORDER BY sequence",
+            (
+                failed.identity.analysis_id,
+                self._hypothesis_key(failed.identity),
+                failed.attempt_id or "checkpoint",
+                base,
+                base + 59,
+            ),
+        ).fetchall()
+        used = {int(row["sequence"]) for row in rows}
+        for row in rows:
+            existing = AgentActivityEvent.model_validate_json(row["event_json"])
+            if (
+                existing.stage == failed.stage.value
+                and existing.kind is ActivityKind.DECISION_RECORDED
+                and existing.output_refs == (resolution.decision_ref,)
+            ):
+                return existing
+        sequence = next(
+            (value for value in range(base, base + 59) if value not in used),
+            None,
+        )
+        if sequence is None:
+            raise ValueError("RECOVERY_EVENT_SEQUENCE_EXHAUSTED")
         return self._lifecycle_event(
             failed,
             ActivityKind.DECISION_RECORDED,
-            sequence=self._stage_sequence(failed.stage, 40),
+            sequence=sequence,
             status=StageStatus.BLOCKED,
             summary_ko=(
                 f"자동 복구 결정 {resolution.decision.action.value} · "

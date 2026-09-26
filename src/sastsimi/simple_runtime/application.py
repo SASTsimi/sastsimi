@@ -99,6 +99,7 @@ class SimpleAnalysisApplication:
         llm_provider: str | None = None,
         on_demand_possible: bool = False,
         max_parallel_hypotheses: int = 1,
+        max_elapsed_seconds: int | None = None,
     ) -> None:
         if not 1 <= max_parallel_hypotheses <= 32:
             raise ValueError("PARALLEL_HYPOTHESIS_LIMIT_INVALID")
@@ -113,6 +114,7 @@ class SimpleAnalysisApplication:
         self._llm_provider = llm_provider
         self._on_demand_possible = on_demand_possible
         self._max_parallel_hypotheses = max_parallel_hypotheses
+        self._max_elapsed_seconds = max_elapsed_seconds
 
     async def analyze(
         self,
@@ -212,6 +214,8 @@ class SimpleAnalysisApplication:
     async def resume(self, analysis_id_or_display: str) -> SimpleAnalysisOutcome:
         exact = self._display.resolve(analysis_id_or_display)
         run = self._store.require_analysis_run(exact)
+        if self._max_elapsed_seconds is not None:
+            self._store.reopen_elapsed_budget_failures(exact, self._max_elapsed_seconds)
         identity = CheckpointIdentity(
             analysis_id=run.analysis_id,
             workspace_id=run.workspace_id,

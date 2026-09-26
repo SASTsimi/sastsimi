@@ -848,4 +848,63 @@ async def test_record_recovery_stop_rolls_back_decision_event(tmp_path) -> None:
     assert all(resolution.decision_ref not in event.output_refs for event in events)
 
 
+@pytest.mark.asyncio
+async def test_resume_can_record_new_recovery_after_prior_stop_on_same_attempt(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "resume-stop" / "sastsimi.sqlite3")
+    running = store.mark_running(
+        _identity(),
+        SimpleStage.POC_EXECUTION_DONE,
+        (_ref("execution-input"),),
+        attempt_id="execution-attempt-2",
+    )
+    failed = store.mark_failure(
+        running,
+        StageFailure(
+            code="POC_EXECUTION_FAILED",
+            retryable=True,
+            safe_message="browser missing",
+        ),
+        StageStatus.BLOCKED,
+    )
+    stop = await _Recovery(tmp_path, RecoveryAction.STOP).decide(
+        failed,
+        StageFailure(
+            code="POC_EXECUTION_FAILED",
+            retryable=True,
+            safe_message="browser missing",
+        ),
+    )
+    store.record_recovery_stop(failed, stop)
+    store.record_recovery_stop(failed, stop)
+    rebuild = await _Recovery(tmp_path, RecoveryAction.REBUILD_ENVIRONMENT).decide(
+        failed,
+        StageFailure(
+            code="POC_EXECUTION_FAILED",
+            retryable=True,
+            safe_message="browser missing",
+        ),
+    )
+
+    pending = store.prepare_recovery(
+        failed, rebuild, SimpleStage.VERIFICATION_INITIAL_DONE
+    )
+
+    assert pending.status is StageStatus.PENDING
+    decisions = [
+        event
+        for event in AgentActivityStore(store.database_path).list_analysis(
+            _identity().analysis_id, hypothesis_id=_identity().hypothesis_id
+        )
+        if event.kind is ActivityKind.DECISION_RECORDED
+        and event.stage == SimpleStage.POC_EXECUTION_DONE.value
+    ]
+    assert len(decisions) == 2
+    assert {event.output_refs[0] for event in decisions} == {
+        stop.decision_ref,
+        rebuild.decision_ref,
+    }
+
+
 # mypy: disable-error-code="arg-type,no-untyped-def"

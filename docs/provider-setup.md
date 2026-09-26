@@ -51,7 +51,7 @@ Agent 호출은 같은 인증 파일을 동시에 갱신하는 충돌을 줄이�
 
 새 Codex `setup`에서 모델을 생략하면 기본 제안은 `gpt-6-sol`입니다. 기존 설치의 모델은 자동으로 변경하지 않습니다. 현재 로그인에서 해당 모델을 실제 사용할 수 있는지 분석 전에 확인하세요. 특정 모델을 쓰려면 언제든 `--model <확인한-ID>`로 덮어쓸 수 있습니다.
 
-현재 Codex CLI adapter는 호출별 토큰·비용을 SimpleRuntime에 전달하지 않습니다. 대시보드의 미제공 값은 0이나 무료라는 뜻이 아니며, `max_tokens`와 `max_cost_minor_units`는 이 provider의 실제 사용량을 강제하지 못합니다. `max_elapsed_seconds`는 LLM 요청 전에 확인되지만, 이미 실행 중인 요청·Docker 작업을 즉시 종료하는 전체 프로세스 타이머는 아닙니다. 회원 사용량은 Codex 계정에서도 확인하세요.
+현재 Codex CLI adapter는 호출별 토큰·비용을 SimpleRuntime에 전달하지 않습니다. 대시보드의 미제공 값은 0이나 무료라는 뜻이 아니며, `max_tokens`와 `max_cost_minor_units`는 이 provider의 실제 사용량을 강제하지 못합니다. `max_elapsed_seconds`는 재개 간 DB에 기록된 LLM 시도의 누적 실행시간 상한입니다. 다음 LLM 요청 전에 확인하며, 분석을 중단한 시간·Docker 작업 시간은 소모하지 않습니다. 이미 실행 중인 요청이나 Docker 작업을 즉시 종료하는 타이머는 아닙니다. 한도에 도달한 분석은 기본값 그대로 `resume`해도 계속할 수 없고, 사용량을 확인한 뒤 설정 한도를 높여야 합니다. 회원 사용량은 Codex 계정에서도 확인하세요.
 
 ## Cursor 회원 로그인 또는 API key (선택형)
 

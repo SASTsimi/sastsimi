@@ -336,9 +336,18 @@ def test_target_requirements_are_resolved_from_exact_hypothesis(
     assert resolved == "nested/lab/requirements.txt"
 
 
+@pytest.mark.parametrize(
+    "patch",
+    [
+        "RUN python -m pip install -e '.[test]'",
+        "ENV PLAYWRIGHT_BROWSERS_PATH=/opt/sastsimi-playwright-browsers\n"
+        "RUN python -m playwright install --with-deps chromium",
+    ],
+)
 @pytest.mark.asyncio
 async def test_rebuild_decision_patches_only_in_memory_dockerfile(
     tmp_path: Path,
+    patch: str,
 ) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -355,7 +364,7 @@ async def test_rebuild_decision_patches_only_in_memory_dockerfile(
     checkpoint = _environment_checkpoint(
         artifacts,
         action="REBUILD_ENVIRONMENT",
-        patch="RUN python -m pip install -e '.[test]'",
+        patch=patch,
     )
     docker = _BuildDocker()
     before = hashlib.sha256(dockerfile_path.read_bytes()).hexdigest()
@@ -369,7 +378,7 @@ async def test_rebuild_decision_patches_only_in_memory_dockerfile(
     assert len(docker.dockerfiles) == 1
     built = docker.dockerfiles[0]
     assert built.count(b"# SASTSIMI validated recovery patch") == 1
-    assert built.count(b"RUN python -m pip install -e '.[test]'") == 1
+    assert built.count(patch.encode("utf-8")) == 1
     assert hashlib.sha256(dockerfile_path.read_bytes()).hexdigest() == before
     assert dockerfile_path.read_bytes() == original
 
