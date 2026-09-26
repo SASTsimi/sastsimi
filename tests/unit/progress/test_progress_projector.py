@@ -247,7 +247,7 @@ def test_failed_hypothesis_takes_priority_over_blocked_one(tmp_path: Path) -> No
 
 @pytest.mark.parametrize(("decision", "revisions"), [("REJECT", 0), ("REVISE", 2)])
 def test_terminal_gate_decision_completes_without_a_report(
-    tmp_path: Path, decision: str, revisions: int
+    tmp_path: Path, decision: Literal["REJECT", "REVISE"], revisions: int
 ) -> None:
     store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
     identity = CheckpointIdentity(

@@ -4,7 +4,11 @@
 
 final TRUE와 validated PoC가 준비되면 CWE Labeling이 현재 Verification에 연결된 CWE를
 만듭니다. Technical Gate는 근거·PoC·CWE의 연결성을 검토하고, 보완이 필요하면
-`TECH_GATE_REVISE`로 같은 가설의 Verification에 돌려보냅니다.
+`REVISE`와 정확한 보완 요청을 저장한 뒤 같은 가설의 PoC 후보부터 다시 실행합니다.
+새 Docker 실행 결과로 최종 Verification과 CWE를 갱신한 뒤 Gate를 재검토합니다.
+Gate 결정은 가설당 최대 세 번이며, 마지막까지 `REVISE`이면 `INCONCLUSIVE`,
+명시적인 `REJECT`이면 제보 불가로 종료합니다. 두 경우 모두 Finding·보고서를
+만들지 않습니다.
 
 Rule Scope Gate는 공식 정책에 따라 범위와 금지 시험 방식을 검토합니다. 정책상 외부
 제보가 허용되지 않아도 기술 검증 결과를 `FALSE`로 바꾸지 않습니다. Gate 결과는
@@ -28,8 +32,12 @@ Reporter Agent는 upstream artifact에 존재하는 사실만 사용해 한국�
 ## 지켜야 하는 계약
 
 - Gate는 CWE를 생성하거나 수정하지 않고 정합성만 검토합니다.
-- Technical `REVISE`는 Orchestration이 새 목적지를 고르는 흐름이 아니라 같은 가설의
-  Verification 보완 흐름입니다.
+- Technical `REVISE`는 같은 가설의 PoC 후보·실행·최종 Verification을 보완하는
+  흐름입니다. Gate 요청과 고정 commit의 제한된 source artifact를 exact reference로
+  전달하고, 재시작 시 이전 PoC 이후 checkpoint를 원자적으로 무효화합니다.
+- TRUE Finding·TRUE Primitive·보고서는 현재 Technical Gate checkpoint와 artifact가
+  모두 `ACCEPT`일 때만 만들거나 조회합니다. 실행 오류는 Gate의 `REJECT`나
+  `INCONCLUSIVE`로 바꾸지 않습니다.
 - 금지된 시험 방법으로 얻은 근거는 Primitive 재료로 사용하지 않습니다.
 - Report는 새 보안 사실을 만들지 않고 exact upstream reference만 표현합니다.
 - 민감정보 제거 실패나 stale upstream 결과가 있으면 Markdown을 최신 보고서로 내보내지 않습니다.

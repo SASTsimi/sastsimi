@@ -6,6 +6,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from sastsimi.composition.simple_runtime_composition import (
     PublicSimpleRuntimeApplication,
 )
@@ -44,7 +46,7 @@ def _ref(name: str) -> StoredDataRef:
 
 
 def test_public_result_and_dashboard_agree_on_inconclusive_gate(
-    tmp_path: Path, capsys
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     data_dir = tmp_path / "data"
     config = UserConfig(

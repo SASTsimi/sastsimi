@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -254,7 +255,10 @@ def test_claude_usage_shows_unknown_cost_and_generic_on_demand_warning(
     [("REJECT", 0, "REJECT"), ("REVISE", 2, "INCONCLUSIVE")],
 )
 def test_terminal_gate_projects_complete_without_report_or_resume_hint(
-    tmp_path: Path, decision: str, revisions: int, expected_disposition: str
+    tmp_path: Path,
+    decision: Literal["REJECT", "REVISE"],
+    revisions: int,
+    expected_disposition: str,
 ) -> None:
     database = tmp_path / "db" / "sastsimi.sqlite3"
     store = SimpleCheckpointStore(database)

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import pytest
+from pydantic import JsonValue
 
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.chaining import PrimitiveAdmissionStage
 from sastsimi.simple_runtime.models import (
@@ -33,13 +35,14 @@ class _GateClient:
         self.requests = requests if requests is not None else ["Use a production route"]
 
     async def call(self, **_kwargs: Any) -> SimpleLLMCallResult:
+        value: dict[str, JsonValue] = {
+            "status": self.status,
+            "rationale": "Exact evidence review",
+            "checks": ["source and PoC compared"],
+            "revision_requests": cast(JsonValue, self.requests),
+        }
         return SimpleLLMCallResult(
-            value={
-                "status": self.status,
-                "rationale": "Exact evidence review",
-                "checks": ["source and PoC compared"],
-                "revision_requests": self.requests,
-            },
+            value=value,
             prompt_digest="a" * 64,
             output_digest="b" * 64,
         )
@@ -57,10 +60,10 @@ def _identity() -> CheckpointIdentity:
 def _checkpoint(
     stage: SimpleStage,
     *,
-    outputs: tuple = (),
-    verdict: str | None = None,
-    validated_poc_ref: object | None = None,
-    gate_decision: str | None = None,
+    outputs: tuple[StoredDataRef, ...] = (),
+    verdict: Literal["TRUE", "FALSE", "HOLD"] | None = None,
+    validated_poc_ref: StoredDataRef | None = None,
+    gate_decision: Literal["ACCEPT", "REVISE", "REJECT"] | None = None,
 ) -> StageCheckpoint:
     checkpoint = StageCheckpoint(
         identity=_identity(),
@@ -71,8 +74,9 @@ def _checkpoint(
         output_refs=outputs,
         verdict=verdict,
         validated_poc_ref=validated_poc_ref,
+        gate_decision=gate_decision,
     )
-    return checkpoint.model_copy(update={"gate_decision": gate_decision})
+    return checkpoint
 
 
 @pytest.mark.asyncio
@@ -86,7 +90,7 @@ async def test_valid_gate_decision_and_exact_artifact_survive_checkpoint_reload(
         _identity(), SimpleStage.TECH_GATE_DONE, (), attempt_id="gate-1"
     )
 
-    result = await TechnicalGateStage(_GateClient(decision), artifacts)(running, {})  # type: ignore[arg-type]
+    result = await TechnicalGateStage(_GateClient(decision), artifacts)(running, {})
     completed = store.complete(running, result)
     reloaded = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3").require(
         _identity(), SimpleStage.TECH_GATE_DONE
@@ -107,7 +111,7 @@ async def test_empty_revise_request_is_retryable_error_not_terminal_decision(
     checkpoint = _checkpoint(SimpleStage.TECH_GATE_DONE)
 
     with pytest.raises(StageBlocked) as raised:
-        await TechnicalGateStage(_GateClient("REVISE", []), artifacts)(checkpoint, {})  # type: ignore[arg-type]
+        await TechnicalGateStage(_GateClient("REVISE", []), artifacts)(checkpoint, {})
 
     assert raised.value.failure.code == "TECH_GATE_REVISION_REQUEST_EMPTY"
     assert raised.value.failure.retryable
@@ -120,7 +124,9 @@ async def test_empty_revise_request_is_retryable_error_not_terminal_decision(
     [("ACCEPT", "REVISE"), ("REVISE", "ACCEPT"), ("REJECT", "ACCEPT")],
 )
 async def test_true_finding_and_primitive_refuse_mismatched_gate(
-    tmp_path: Path, checkpoint_decision: str, artifact_decision: str
+    tmp_path: Path,
+    checkpoint_decision: Literal["ACCEPT", "REVISE", "REJECT"],
+    artifact_decision: str,
 ) -> None:
     artifacts = SimpleArtifactRepository(tmp_path, _identity())
     poc_ref = artifacts.put_json({"kind": "simple_validated_poc"})
@@ -165,7 +171,9 @@ async def test_true_finding_and_primitive_refuse_mismatched_gate(
     [("ACCEPT", "REVISE"), ("REVISE", "ACCEPT")],
 )
 async def test_reporter_refuses_mismatched_gate_before_drafting(
-    tmp_path: Path, checkpoint_decision: str, artifact_decision: str
+    tmp_path: Path,
+    checkpoint_decision: Literal["ACCEPT", "REVISE", "REJECT"],
+    artifact_decision: str,
 ) -> None:
     artifacts = SimpleArtifactRepository(tmp_path, _identity())
     finding_ref = artifacts.put_json({"kind": "simple_finding"})
@@ -189,7 +197,7 @@ async def test_reporter_refuses_mismatched_gate_before_drafting(
     }
 
     with pytest.raises(StageFailed) as raised:
-        await ReporterStage(_GateClient("ACCEPT"), artifacts)(  # type: ignore[arg-type]
+        await ReporterStage(_GateClient("ACCEPT"), artifacts)(
             _checkpoint(SimpleStage.REPORT_DONE), prior
         )
 

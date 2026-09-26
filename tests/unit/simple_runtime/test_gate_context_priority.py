@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import JsonValue
 
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
@@ -25,6 +27,7 @@ class _ContextClient:
 
     async def call(self, **kwargs: Any) -> SimpleLLMCallResult:
         self.prompts.append(kwargs["prompt"])
+        value: dict[str, JsonValue]
         if kwargs["agent_name"] == "verification_result":
             value = {
                 "verdict": "HOLD",
@@ -74,7 +77,9 @@ async def test_source_and_gate_feedback_precede_bulk_in_final_and_gate_prompts(
     candidate_ref = artifacts.put_json({"kind": "simple_poc_candidate"})
     script_ref = artifacts.put_bytes(b"#!/bin/sh\nexit 0\n", "text/x-shellscript")
 
-    def checkpoint(stage: SimpleStage, outputs: tuple = ()) -> StageCheckpoint:
+    def checkpoint(
+        stage: SimpleStage, outputs: tuple[StoredDataRef, ...] = ()
+    ) -> StageCheckpoint:
         return StageCheckpoint(
             identity=identity,
             stage=stage,
@@ -96,13 +101,13 @@ async def test_source_and_gate_feedback_precede_bulk_in_final_and_gate_prompts(
     client = _ContextClient()
     final = await FinalVerificationStage(client, artifacts)(
         checkpoint(SimpleStage.VERIFICATION_FINAL_DONE), prior
-    )  # type: ignore[arg-type]
+    )
     prior[SimpleStage.VERIFICATION_FINAL_DONE] = checkpoint(
         SimpleStage.VERIFICATION_FINAL_DONE, final.output_refs
     )
     await TechnicalGateStage(client, artifacts)(
         checkpoint(SimpleStage.TECH_GATE_DONE), prior
-    )  # type: ignore[arg-type]
+    )
 
     assert len(client.prompts) == 2
     for prompt in client.prompts:

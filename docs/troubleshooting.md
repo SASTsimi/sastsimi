@@ -97,7 +97,7 @@ PoC Agent에는 Pro·Con Agent가 요청한 저장소 상대 경로 중 고정 c
 
 동적 실행 오류의 복구 계보가 최대 3회 시도를 소진하면 `RECOVERY_EXHAUSTED`로 남습니다. `resume`은 이미 소진된 시도를 자동으로 초기화하지 않으므로 같은 오류를 반복 호출해도 해결되지 않습니다. 도구 수정 후 새 분석을 시작하고 이전 분석·artifact는 보존하세요.
 
-`TECH_GATE_REVISE`는 Docker 오류가 아니라 검증 근거의 수정 요청입니다. Runtime은 같은 Gate를 반복 호출하는 대신 최종 Verification을 한 번 다시 수행합니다. 그 뒤에도 Gate가 수정을 요구하면 `RECOVERY_EXHAUSTED`로 멈추며, `TRUE`나 외부 제보 가능 결과로 강제 승격하지 않습니다.
+Technical Gate의 `REVISE`는 Docker 오류가 아니라 검증 근거 보완 요청입니다. Runtime은 요청을 저장하고 해당 가설의 PoC 후보부터 Docker 실행·최종 Verification·Gate를 새 시도로 진행합니다. Gate 결정은 최대 세 번이며, 마지막에도 `REVISE`이면 `INCONCLUSIVE`, 명시적으로 `REJECT`이면 제보 불가로 끝납니다. 이 두 결과는 Finding 없이 분석을 `COMPLETE`로 끝낼 수 있지만 취약점 반증이나 제보 승인을 뜻하지 않습니다. `resume`으로 같은 Gate를 무한 재시도하지 않습니다. Docker·인증·Provider·DB 실행 오류는 여전히 `BLOCKED` 또는 `FAILED`이며 미확정 판정으로 바꾸지 않습니다.
 
 ## 대시보드에 분석이 없음
 

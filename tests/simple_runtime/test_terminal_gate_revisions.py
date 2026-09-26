@@ -20,7 +20,7 @@ from sastsimi.simple_runtime.models import (
     StageStatus,
     input_reference_hash,
 )
-from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
+from sastsimi.simple_runtime.runner import SimpleRuntimeRunner, SimpleStageHandler
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
@@ -63,13 +63,13 @@ def _seed_through(store: SimpleCheckpointStore, last: SimpleStage) -> None:
     raise AssertionError("missing stage")
 
 
-def _handlers(calls: list[SimpleStage]) -> dict[SimpleStage, object]:
-    handlers: dict[SimpleStage, object] = {}
+def _handlers(calls: list[SimpleStage]) -> dict[SimpleStage, SimpleStageHandler]:
+    handlers: dict[SimpleStage, SimpleStageHandler] = {}
     for stage in HYPOTHESIS_STAGES:
 
         async def run(
-            _checkpoint: StageCheckpoint,
-            _prior: Mapping[SimpleStage, StageCheckpoint],
+            checkpoint: StageCheckpoint,
+            prior: Mapping[SimpleStage, StageCheckpoint],
             *,
             current: SimpleStage = stage,
         ) -> StageResult:
@@ -100,7 +100,7 @@ async def test_gate_revision_replays_candidate_and_execution_with_exact_feedback
     candidate_attempt = ""
 
     async def candidate(
-        checkpoint: StageCheckpoint, _prior: Mapping[SimpleStage, StageCheckpoint]
+        checkpoint: StageCheckpoint, prior: Mapping[SimpleStage, StageCheckpoint]
     ) -> StageResult:
         nonlocal candidate_inputs, candidate_attempt
         calls.append(SimpleStage.POC_CANDIDATE_DONE)
@@ -109,14 +109,14 @@ async def test_gate_revision_replays_candidate_and_execution_with_exact_feedback
         return StageResult(output_refs=(_ref("new-candidate"), _ref("new-script")))
 
     async def execution(
-        checkpoint: StageCheckpoint, _prior: Mapping[SimpleStage, StageCheckpoint]
+        checkpoint: StageCheckpoint, prior: Mapping[SimpleStage, StageCheckpoint]
     ) -> StageResult:
         calls.append(SimpleStage.POC_EXECUTION_DONE)
         assert checkpoint.attempt_id == candidate_attempt
         return StageResult(output_refs=(_ref("new-execution"),))
 
     async def accepted_gate(
-        checkpoint: StageCheckpoint, _prior: Mapping[SimpleStage, StageCheckpoint]
+        checkpoint: StageCheckpoint, prior: Mapping[SimpleStage, StageCheckpoint]
     ) -> StageResult:
         calls.append(SimpleStage.TECH_GATE_DONE)
         assert checkpoint.gate_revision_count == 1
@@ -155,7 +155,7 @@ async def test_third_gate_revise_is_terminal_and_resume_never_repeats_poc(
     handlers = _handlers(calls)
 
     async def candidate(
-        checkpoint: StageCheckpoint, _prior: Mapping[SimpleStage, StageCheckpoint]
+        checkpoint: StageCheckpoint, prior: Mapping[SimpleStage, StageCheckpoint]
     ) -> StageResult:
         calls.append(SimpleStage.POC_CANDIDATE_DONE)
         attempt_pairs.append((checkpoint.attempt_id or "", ""))
@@ -167,7 +167,7 @@ async def test_third_gate_revise_is_terminal_and_resume_never_repeats_poc(
         )
 
     async def execution(
-        checkpoint: StageCheckpoint, _prior: Mapping[SimpleStage, StageCheckpoint]
+        checkpoint: StageCheckpoint, prior: Mapping[SimpleStage, StageCheckpoint]
     ) -> StageResult:
         calls.append(SimpleStage.POC_EXECUTION_DONE)
         candidate_id, _ = attempt_pairs[-1]
@@ -175,7 +175,7 @@ async def test_third_gate_revise_is_terminal_and_resume_never_repeats_poc(
         return StageResult(output_refs=(_ref(f"execution-{len(attempt_pairs)}"),))
 
     async def final_verification(
-        checkpoint: StageCheckpoint, _prior: Mapping[SimpleStage, StageCheckpoint]
+        checkpoint: StageCheckpoint, prior: Mapping[SimpleStage, StageCheckpoint]
     ) -> StageResult:
         calls.append(SimpleStage.VERIFICATION_FINAL_DONE)
         return StageResult(
@@ -185,7 +185,7 @@ async def test_third_gate_revise_is_terminal_and_resume_never_repeats_poc(
         )
 
     async def gate(
-        checkpoint: StageCheckpoint, _prior: Mapping[SimpleStage, StageCheckpoint]
+        checkpoint: StageCheckpoint, prior: Mapping[SimpleStage, StageCheckpoint]
     ) -> StageResult:
         calls.append(SimpleStage.TECH_GATE_DONE)
         decision_number = calls.count(SimpleStage.TECH_GATE_DONE)
@@ -233,7 +233,7 @@ async def test_gate_reject_stops_before_scope_finding_and_report(
     handlers = _handlers(calls)
 
     async def gate(
-        _checkpoint: StageCheckpoint, _prior: Mapping[SimpleStage, StageCheckpoint]
+        checkpoint: StageCheckpoint, prior: Mapping[SimpleStage, StageCheckpoint]
     ) -> StageResult:
         calls.append(SimpleStage.TECH_GATE_DONE)
         return StageResult(output_refs=(_ref("gate-rejected"),), gate_decision="REJECT")

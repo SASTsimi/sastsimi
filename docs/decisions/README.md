@@ -20,6 +20,7 @@ ADR은 결정을 내린 배경과 바꾸면 안 되는 경계를 보존합니다
 - [ADR-014: Primitive admission 1회 판정](./ADR-014-primitive-admission-single-decision.md)
 - [ADR-015: 단일 애플리케이션 구현 기준선](./ADR-015-r3-implementation-baseline.md)
 - [ADR-016: 유지보수 가능한 workflow package 경계](./ADR-016-maintainable-workflow-packages.md)
+- [ADR-017: Technical Gate의 종료 판정과 PoC 보완](./ADR-017-terminal-gate-outcomes.md)
 
 새 ADR은 하나의 중요한 결정만 다루고, 상태·영향받는 코드와 대체 관계를 명시합니다.
 기존 결정을 대체하면 현재 목록에서는 새 ADR만 안내하고 과거 문서는 Git 이력으로
