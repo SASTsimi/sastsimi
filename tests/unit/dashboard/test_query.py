@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -70,16 +70,18 @@ def seed(data_dir) -> None:
         start=1,
     ):
         output = ref(stage.value.lower())
-        store.save_success(
+        store.save_checkpoint(
             StageCheckpoint(
                 identity=identity,
                 stage=stage,
-                status=StageStatus.PENDING,
+                status=StageStatus.SUCCEEDED,
                 input_refs=inputs,
                 input_hash=input_reference_hash(inputs),
+                output_refs=(output,),
                 attempt_number=attempt_number,
+                updated_at=datetime(2026, 1, 1, tzinfo=UTC)
+                + timedelta(seconds=attempt_number),
             ),
-            outputs=(output,),
         )
         inputs = (output,)
     AgentActivityStore(database).append(
