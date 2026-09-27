@@ -16,6 +16,7 @@ from uuid import uuid4
 from sastsimi.config.user_config import SimpleToolBinding
 
 _RULE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+_OUTPUT_MTIME_SKEW_NS = 1_000_000_000
 
 
 class SemgrepFallbackError(RuntimeError):
@@ -125,7 +126,10 @@ def _read_output(path: Path, *, started_ns: int, max_output_bytes: int) -> bytes
         if (
             not stat.S_ISREG(info.st_mode)
             or int(getattr(info, "st_file_attributes", 0)) & 0x400
-            or info.st_mtime_ns < started_ns
+            # A newly written file can have an mtime slightly behind the clock
+            # used by time.time_ns() on Linux; the output path is also random
+            # and required not to exist before the scan starts.
+            or info.st_mtime_ns + _OUTPUT_MTIME_SKEW_NS < started_ns
             or info.st_size > max_output_bytes
         ):
             raise SemgrepFallbackError("SEMGREP_RESULT_INVALID")

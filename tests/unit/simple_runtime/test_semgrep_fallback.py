@@ -4,12 +4,15 @@ import asyncio
 import hashlib
 import json
 import os
+import time
 from collections.abc import Sequence
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from sastsimi.config.user_config import SimpleToolBinding
+from sastsimi.simple_runtime import semgrep_fallback as semgrep_module
 from sastsimi.simple_runtime.semgrep_fallback import (
     SemgrepFallbackError,
     run_semgrep_fallback,
@@ -239,6 +242,32 @@ async def test_fallback_rejects_missing_stale_or_symlinked_output(
             23,
             output_dir=tmp_path,
         )
+
+
+@pytest.mark.asyncio
+async def test_fallback_accepts_fresh_output_with_small_clock_skew(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace, rules, binding = _fixture(tmp_path)
+    process = _Process(_Result())
+    # Some Linux filesystems report a newly written mtime just before time.time_ns().
+    observed_now = time.time_ns()
+    monkeypatch.setattr(
+        semgrep_module,
+        "time",
+        SimpleNamespace(time_ns=lambda: observed_now + 500_000_000),
+    )
+    raw = await run_semgrep_fallback(
+        process,
+        binding,
+        workspace,
+        rules,
+        ["bad.ts"],
+        [],
+        23,
+        output_dir=tmp_path,
+    )
+    assert json.loads(raw)["errors"] == []
 
 
 @pytest.mark.asyncio

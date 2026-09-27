@@ -904,7 +904,11 @@ class DirectStaticBootstrap:
                     attempt is not None
                     and attempt.status == "BLOCKED"
                     and ref == reusable_attempt_ref
-                    and not self._reusable_parse_warning(slice_, expected)
+                    and not self._reusable_parse_warning(
+                        slice_,
+                        expected,
+                        allow_unscanned=self._profile.semgrep_fallback,
+                    )
                 ):
                     prior_partial = replace(slice_, raw_ref=ref)
                     prior_partial_ref = ref
@@ -1093,26 +1097,46 @@ class DirectStaticBootstrap:
 
     @staticmethod
     def _reusable_parse_warning(
-        slice_: CoverageSlice, expected: frozenset[tuple[str, str]]
+        slice_: CoverageSlice,
+        expected: frozenset[tuple[str, str]],
+        *,
+        allow_unscanned: bool = False,
     ) -> bool:
+        def known_located_parser_error(error: object) -> bool:
+            if not isinstance(error, dict) or not isinstance(error.get("path"), str):
+                return False
+            error_type = error.get("type")
+            if isinstance(error_type, str):
+                return error_type in {"PartialParsing", "Syntax error"}
+            return bool(
+                isinstance(error_type, list)
+                and len(error_type) == 2
+                and error_type[0] == "PartialParsing"
+                and isinstance(error_type[1], list)
+                and all(isinstance(item, dict) for item in error_type[1])
+            )
+
         missing = expected - slice_.verified_pairs
         parser_gaps = {
             (path, rule_id)
             for path, rule_id, reason in slice_.gap_reasons
             if reason == "parse_or_scan_error"
         }
+        explicit_gaps = {
+            (path, rule_id) for path, rule_id, _reason in slice_.gap_reasons
+        }
         errors = slice_.parsed.get("errors")
         return bool(
             missing
-            and missing == parser_gaps
+            and parser_gaps
+            and parser_gaps <= missing
+            and explicit_gaps == parser_gaps
+            # With fallback enabled, any remaining pairs are still unverified
+            # and must be passed to Semgrep rather than rescanning the whole repo.
+            and (allow_unscanned or missing == parser_gaps)
             and isinstance(errors, list)
             and errors
-            and all(
-                isinstance(error, dict)
-                and isinstance(error.get("type"), str)
-                and error.get("type") in {"PartialParsing", "Syntax error"}
-                for error in errors
-            )
+            and all(known_located_parser_error(error) for error in errors)
         )
 
     @staticmethod

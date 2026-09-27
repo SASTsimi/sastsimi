@@ -1855,12 +1855,53 @@ def test_reusable_parse_warning_rejects_nonstring_type_without_crashing() -> Non
         rule_ids=("python.sql",),
         verified_pairs=frozenset(),
         gap_reasons=(("app.py", "python.sql", "parse_or_scan_error"),),
-        parsed={"errors": [{"type": ["PartialParsing"], "path": "app.py"}]},
+        parsed={"errors": [{"type": ["Unexpected"], "path": "app.py"}]},
         normalized_results=(),
     )
     assert not DirectStaticBootstrap._reusable_parse_warning(
         slice_, frozenset({("app.py", "python.sql")})
     )
+
+
+@pytest.mark.asyncio
+async def test_resume_reuses_located_list_form_partial_parsing(
+    tmp_path: Path,
+) -> None:
+    class ListFormPartial(_CoverageProcess):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            result = await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+            if argv[1] == "scan" and "--metrics=off" not in argv:
+                output = Path(argv[argv.index("--output") + 1])
+                parsed = json.loads(output.read_text(encoding="utf-8"))
+                parsed["errors"][0]["type"] = ["PartialParsing", [{"line": 1}]]
+                parsed["paths"]["scanned"] = ["app.py"]
+                output.write_text(json.dumps(parsed), encoding="utf-8")
+            return result
+
+    process = ListFormPartial(fallback_fails=True)
+    bootstrap, profile, _ = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    identity = _identity("list-form-partial-reuse")
+    request = _request(profile)
+    with pytest.raises(StaticCoverageBlocked) as first:
+        await bootstrap.run(request, identity)
+    report = _coverage_from_ref(profile, identity, first.value.coverage_ref)
+    assert report["expected_count"] == 2
+    assert report["verified_count"] == 0
+    assert {gap["path"] for gap in report["gaps"]} == {"app.py", "good.py"}
+    assert any(
+        "app.py" in call and "good.py" in call for call in process.fallback_calls
+    )
+    with pytest.raises(StaticCoverageBlocked):
+        await bootstrap.run(request, identity)
+    assert process.opengrep_calls == 1
 
 
 @pytest.mark.asyncio
