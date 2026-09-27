@@ -25,6 +25,7 @@ _TOOL_COMMANDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("git", ("git", "--version")),
     ("python", (sys.executable, "--version")),
     ("opengrep", ("opengrep", "--version")),
+    ("semgrep", ("semgrep", "--version")),
     ("codeql", ("codeql", "version", "--format=terse")),
     ("docker", ("docker", "version", "--format", "{{.Client.Version}}")),
     ("codex", ("codex", "--version")),
@@ -67,6 +68,7 @@ class SetupChoices(BaseModel):
     llm_max_retries: int = Field(default=2, ge=0, le=5)
     llm_max_concurrency: int = Field(default=2, gt=0, le=32)
     hypothesis_feed: Literal["current", "facts_survey"] = "current"
+    semgrep_fallback: bool = False
     max_parallel_hypotheses: int = Field(default=1, gt=0, le=32)
     max_parallel_builds: int = Field(default=1, gt=0, le=32)
     max_parallel_containers: int = Field(default=1, gt=0, le=32)
@@ -408,6 +410,8 @@ class SetupService:
         inspection = self.inspect()
         tools = {item.name: item for item in inspection.tools}
         required = {"git", "python", "opengrep", "docker"}
+        if choices.semgrep_fallback:
+            required.add("semgrep")
         if choices.execution_profile == "FULL":
             required.add("codeql")
         if choices.auth_mode == "SUBSCRIPTION_LOGIN" and choices.provider not in {
@@ -473,6 +477,7 @@ class SetupService:
             llm_max_retries=choices.llm_max_retries,
             llm_max_concurrency=choices.llm_max_concurrency,
             hypothesis_feed=choices.hypothesis_feed,
+            semgrep_fallback=choices.semgrep_fallback,
             max_parallel_hypotheses=choices.max_parallel_hypotheses,
             max_parallel_builds=choices.max_parallel_builds,
             max_parallel_containers=choices.max_parallel_containers,
@@ -511,6 +516,7 @@ class SetupService:
             llm_max_retries=choices.llm_max_retries,
             llm_max_concurrency=choices.llm_max_concurrency,
             hypothesis_feed=choices.hypothesis_feed,
+            semgrep_fallback=choices.semgrep_fallback,
             max_parallel_hypotheses=choices.max_parallel_hypotheses,
             max_parallel_builds=choices.max_parallel_builds,
             max_parallel_containers=choices.max_parallel_containers,

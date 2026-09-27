@@ -42,6 +42,7 @@ class _Discovery:
                 "codex",
                 "cursor_agent",
                 "claude",
+                "semgrep",
             )
         )
 
@@ -122,6 +123,64 @@ def test_new_codex_setup_defaults_to_gpt_6_sol(tmp_path: Path, capsys) -> None:
     assert json.loads(capsys.readouterr().out)["data"]["status"] == "READY"
     assert service.config_store.load().model == "gpt-6-sol"
     assert load_simple_execution_profile(service._profile_path).model == "gpt-6-sol"
+
+
+def test_semgrep_setup_opt_in_records_binding(tmp_path: Path, capsys) -> None:
+    from sastsimi.config.user_config import load_simple_execution_profile
+
+    service = _service(tmp_path)
+    code = main(
+        [
+            "setup",
+            "--non-interactive",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--auth",
+            "subscription",
+            "--provider",
+            "codex",
+            "--model",
+            "gpt-6-sol",
+            "--profile",
+            "full",
+            "--semgrep-fallback",
+            "--format",
+            "json",
+        ],
+        setup_service=service,
+    )
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "READY"
+    assert service.config_store.load().semgrep_fallback is True
+    profile = load_simple_execution_profile(service._profile_path)
+    assert profile.semgrep_fallback is True
+    assert "semgrep" in profile.tools
+
+
+def test_semgrep_missing_blocks_only_opted_in_setup(tmp_path: Path, capsys) -> None:
+    service = _service(tmp_path, missing=frozenset({"semgrep"}))
+    args = [
+        "setup",
+        "--non-interactive",
+        "--data-dir",
+        str(tmp_path / "data"),
+        "--auth",
+        "subscription",
+        "--provider",
+        "codex",
+        "--model",
+        "gpt-6-sol",
+        "--profile",
+        "full",
+        "--format",
+        "json",
+    ]
+    assert main(args, setup_service=service) == 0
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "READY"
+    assert main([*args, "--semgrep-fallback"], setup_service=service) == 4
+    outcome = json.loads(capsys.readouterr().err)["data"]
+    assert outcome["status"] == "BLOCKED"
+    assert outcome["missing_tools"] == ["semgrep"]
 
 
 def test_openai_setup_keeps_its_existing_default_model(tmp_path: Path, capsys) -> None:
