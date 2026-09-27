@@ -1,4 +1,6 @@
+import io
 import json
+import tarfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -19,8 +21,10 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
 )
 from sastsimi.simple_runtime.portable_docker import (
+    _CONTEXT_DOCKERFILE,
     DirectEnvironmentPreparer,
     PortableDockerRuntime,
+    _context_archive,
 )
 
 
@@ -469,3 +473,26 @@ async def test_declared_version_detection_reads_dockerfile_pyproject_and_pin_fil
 
     (workspace / ".python-version").write_text("3.11\n", encoding="utf-8")
     assert preparer._declared_python_version() == "3.11"
+
+
+def test_build_context_carries_what_the_repository_dockerignores(
+    tmp_path: Path,
+) -> None:
+    # paperless-ngx's own .dockerignore drops **/tests; the agents read those
+    # files, so the PoC's /workspace must still have them.
+    (tmp_path / ".dockerignore").write_text("**/tests\n")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    (tmp_path / "src" / "tests").mkdir(parents=True)
+    (tmp_path / "src" / "tests" / "test_api.py").write_text("x = 1\n")
+
+    archive = _context_archive(tmp_path, b"FROM scratch\n")
+
+    with tarfile.open(fileobj=io.BytesIO(archive)) as opened:
+        names = set(opened.getnames())
+    # docker build only recognizes the stream as a context from a plain first
+    # header; the GNU magic, not a PAX extended header, must open it.
+    assert archive[257:265] == b"ustar  \x00"
+    assert "src/tests/test_api.py" in names
+    assert _CONTEXT_DOCKERFILE in names
+    assert not {".dockerignore", ".git", ".git/HEAD"} & names

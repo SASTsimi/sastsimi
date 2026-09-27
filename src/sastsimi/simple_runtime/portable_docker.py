@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 import os
 import re
 import shlex
 import socket
+import tarfile
 import tomllib
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
@@ -29,9 +31,33 @@ _RESOURCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_OUTPUT = 1024 * 1024
 _OWNER = "sastsimi.owner=simple-runtime"
+# The build reads its context as a tar stream built here rather than the
+# checkout directory, so the repository's own .dockerignore never applies:
+# paperless-ngx's drops **/tests and its test settings package, and a PoC the
+# agents wrote against a test file they had read failed with that file absent.
+_CONTEXT_DOCKERFILE = ".sastsimi.Dockerfile"
+_CONTEXT_EXCLUDED = frozenset({".git", ".dockerignore"})
 # Which process on which machine owns a container, so a later run can tell a
 # container left by a dead run from one a live run is still using.
 _HOST = socket.gethostname()
+
+
+def _context_archive(workspace: Path, dockerfile: bytes) -> bytes:
+    """Tar the checkout as the agents read it, plus the Dockerfile to build."""
+
+    buffer = io.BytesIO()
+    # GNU, not Python's default PAX: an archive opening with a PAX header is not
+    # recognized as a tar context by docker build, which then reads stdin as a
+    # Dockerfile and refuses the --file flag as ambiguous.
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.GNU_FORMAT) as archive:
+        for child in sorted(workspace.iterdir()):
+            if child.name not in _CONTEXT_EXCLUDED:
+                archive.add(child, arcname=child.name)
+        info = tarfile.TarInfo(_CONTEXT_DOCKERFILE)
+        info.size = len(dockerfile)
+        info.mode = 0o644
+        archive.addfile(info, io.BytesIO(dockerfile))
+    return buffer.getvalue()
 
 
 def _alive(pid: int) -> bool:
@@ -70,7 +96,10 @@ class PortableDockerRuntime:
         cache_key: str,
         labels: Mapping[str, str],
     ) -> str:
-        tag = f"sastsimi-simple:{hashlib.sha256(cache_key.encode()).hexdigest()[:24]}"
+        # Keyed apart from images built before the full-checkout context, which
+        # may be missing the files a repository's .dockerignore excluded.
+        digest = hashlib.sha256(f"full-checkout\0{cache_key}".encode()).hexdigest()
+        tag = f"sastsimi-simple:{digest[:24]}"
         async with self._builds:
             return await self._build_or_reuse(tag, workspace, dockerfile, labels)
 
@@ -96,10 +125,11 @@ class PortableDockerRuntime:
         ]
         for key, value in sorted(labels.items()):
             args.extend(("--label", f"{key}={value}"))
-        args.extend(("--tag", tag, "--file", "-", str(workspace)))
+        args.extend(("--tag", tag, "--file", _CONTEXT_DOCKERFILE, "-"))
+        context = await asyncio.to_thread(_context_archive, workspace, dockerfile)
         built = await self._run(
             tuple(args),
-            input_bytes=dockerfile,
+            input_bytes=context,
             timeout_seconds=self._timeout,
         )
         self._require_success("DOCKER_BUILD_FAILED", built)
