@@ -1037,6 +1037,12 @@ ordinary concurrency. Either is HOLD, with the specific real-system behavior
 that remains unconfirmed named in `unresolved_conditions`, not TRUE with it
 buried in `limitations`.
 
+A PoC for a missing authorization, ownership or permission check must run the
+real code that would perform or skip that check. One that stubs out the
+permission, ownership or filtering code the claim is about, or hard-codes what
+each user may see instead of letting the real permission code decide, has
+assumed the gap rather than shown it: HOLD.
+
 When the Con evidence quotes the project's own documentation or security
 policy stating that this exact behavior is intended, a documented default, or
 expected for the privilege involved, the verdict is FALSE unless the evidence
