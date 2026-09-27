@@ -29,6 +29,10 @@ from sastsimi.sandbox.docker_adapter import DockerAdapter, DockerOperationError
 from .affected_versions import AffectedVersions, find_affected_versions
 from .artifacts import SimpleArtifactRepository
 from .chaining import PrimitiveAdmissionStage, SimpleChainingStage
+from .cvss import METRICS as CVSS_METRICS
+from .cvss import base_score as cvss_base_score
+from .cvss import severity as cvss_severity
+from .cvss import vector as cvss_vector
 from .exploration import MAX_ROUNDS, Exploration, render_round
 from .models import (
     COMMON_CONTRACT as _COMMON_CONTRACT,
@@ -1123,6 +1127,16 @@ validated PoC needed concurrent or interleaved execution at all; if it
 reproduces with the calls run one after another, the flaw is a missing
 reservation, check or workflow step, and that class (for example CWE-841) is
 the primary or at least a named alternative.
+
+Also choose the CVSS v3.1 base metrics in `cvss`; the score is computed from
+them for you. Score what the evidence confirmed, for the least-privileged
+attacker it establishes, and say in `cvss_rationale` who the attacker and the
+victim are and why each metric has its value. Scope is Changed only when the
+impact lands on a component under a different security authority than the
+vulnerable one - an external service or a separate system; another user or a
+staff member of the same application is Unchanged. Confidentiality,
+Integrity and Availability describe that impacted component, so an effect
+only on an external system under Unchanged scope is a contradiction.
 """
             + _COMMON_CONTRACT,
             schema=_object_schema(
@@ -1131,8 +1145,20 @@ the primary or at least a named alternative.
                     "alternatives": _string_array(),
                     "rationale": _string(),
                     "supporting_refs": _string_array(),
+                    "cvss": _object_schema(
+                        {name: _enum(*values) for name, values in CVSS_METRICS.items()},
+                        list(CVSS_METRICS),
+                    ),
+                    "cvss_rationale": _string(),
                 },
-                ["primary_cwe", "alternatives", "rationale", "supporting_refs"],
+                [
+                    "primary_cwe",
+                    "alternatives",
+                    "rationale",
+                    "supporting_refs",
+                    "cvss",
+                    "cvss_rationale",
+                ],
             ),
             kind="simple_cwe_label",
         )
@@ -1471,6 +1497,22 @@ _PIPELINE_JARGON = frozenset(
 )
 
 
+def _cvss_text(cwe: Mapping[str, JsonValue]) -> str | None:
+    """The CWE label's CVSS metrics as a vector and computed score.
+
+    ``None`` for a label saved before it carried metrics.
+    """
+
+    metrics = cwe.get("cvss")
+    if not isinstance(metrics, dict) or any(
+        metrics.get(name) not in values for name, values in CVSS_METRICS.items()
+    ):
+        return None
+    chosen = {name: str(metrics[name]) for name in CVSS_METRICS}
+    score = cvss_base_score(chosen)
+    return f"`{cvss_vector(chosen)}` = {score} ({cvss_severity(score)})"
+
+
 class ReporterStage:
     def __init__(
         self,
@@ -1713,6 +1755,7 @@ its own field.
             f"- Hypothesis: `{checkpoint.identity.hypothesis_id}`",
             f"- Finding: `{finding_ref.content_hash}`",
             f"- CWE: `{cwe.get('primary_cwe', 'UNCLASSIFIED')}`",
+            f"- CVSS v3.1: {_cvss_text(cwe) or '산출되지 않음'}",
             "- 영향 버전(태그별 동일 코드 확인): "
             + (
                 versions.affected_line() if versions else "확인 불가 - 사람이 확인 필요"
@@ -1765,6 +1808,8 @@ its own field.
             "### Impact",
             "",
             str(value["impact"]),
+            "",
+            f"CVSS 산정 근거: {cwe.get('cvss_rationale') or '없음'}",
             "",
             "제한사항:",
             *[f"- {item}" for item in cast(list[str], value["limitations"])],
@@ -1891,6 +1936,7 @@ its own field.
             str(value["impact_en"]),
             "",
             f"- CWE: {cwe.get('primary_cwe', 'UNCLASSIFIED')}",
+            f"- CVSS v3.1 (suggested): {_cvss_text(cwe) or '<fill in>'}",
             f"- Required privileges: {', '.join(required) or 'none identified'}",
             "",
             "### Reproduction / Proof of Concept",
