@@ -7,8 +7,9 @@ import hashlib
 import json
 import re
 import time
+from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -26,11 +27,21 @@ from .github_policy import DiscoveredPolicy
 from .models import CheckpointIdentity, StageFailure
 from .opengrep_rule_batches import (
     RuleBatch,
+    RuleBatchPlan,
     aggregate_rule_batches,
+    merge_static_candidates,
     parse_rule_batch,
     plan_rule_batches,
 )
 from .provider import SimpleLLMCallResult, SimpleLLMClient
+from .semgrep_fallback import SemgrepFallbackError, run_semgrep_fallback
+from .static_coverage import (
+    CoverageSlice,
+    StaticCoveragePlan,
+    assess_scan,
+    finish_coverage,
+    plan_static_coverage,
+)
 from .store import SimpleCheckpointStore
 from .survey import HypothesisSurvey
 
@@ -96,6 +107,23 @@ class ProcessExecutor(Protocol):
     ) -> ProcessResult: ...
 
 
+class StaticCoverageBlocked(RuntimeError):
+    """A static stage retained its partial bundle and exact coverage evidence."""
+
+    def __init__(
+        self,
+        code: str,
+        coverage_ref: StoredDataRef,
+        bundle_ref: StoredDataRef,
+        *,
+        retryable: bool,
+    ) -> None:
+        super().__init__(code)
+        self.coverage_ref = coverage_ref
+        self.bundle_ref = bundle_ref
+        self.retryable = retryable
+
+
 class DirectStaticBootstrap:
     """Run clone, AST, OpenGrep and optional CodeQL without the lease runtime."""
 
@@ -143,24 +171,124 @@ class DirectStaticBootstrap:
 
         ast_result = self._python_ast(workspace, tracked)
         ast_ref = artifacts.put_json(ast_result)
-        opengrep_raw = await self._run_opengrep(
-            workspace,
-            request,
-            identity,
-        )
-        opengrep_ref = artifacts.put_bytes(opengrep_raw, "application/json")
+        rule_plan = None
+        coverage_plan = None
+        slices: list[CoverageSlice] = []
+        engine_refs: list[StoredDataRef] = []
+        scan_errors: list[str] = []
+        rules = self._materials / "opengrep" / "rules.yml"
+        try:
+            binding = self._profile.tools.get("opengrep")
+            if binding is None:
+                raise RuntimeError("OPENGREP_TOOL_NOT_CONFIGURED")
+            rule_plan = plan_rule_batches(
+                rules.read_bytes(),
+                tool_version=binding.version,
+                executable_sha256=binding.executable_sha256,
+            )
+            coverage_plan = plan_static_coverage(
+                workspace,
+                tracked,
+                request.commit,
+                rule_plan,
+                fallback_tool_fingerprint=self._fallback_fingerprint(),
+            )
+            slices, engine_refs, scan_errors = await self._collect_opengrep(
+                workspace,
+                request,
+                identity,
+                rule_plan,
+                coverage_plan,
+                artifacts,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            scan_errors.append(
+                self._safe_static_error(error, "OPENGREP_EXECUTION_FAILED")
+            )
         codeql_ref: StoredDataRef | None = None
         codeql_findings: list[dict[str, object]] = []
+        codeql_error: str | None = None
         if "codeql" in self._profile.tools:
-            codeql_raw = await self._run_codeql(
-                workspace,
-                request.data_dir,
-                request.repository,
-                request.commit,
-                identity.analysis_id,
-            )
-            codeql_ref = artifacts.put_bytes(codeql_raw, "application/sarif+json")
-            codeql_findings = self._codeql_findings(workspace, codeql_raw)
+            try:
+                codeql_raw = await self._run_codeql(
+                    workspace,
+                    request.data_dir,
+                    request.repository,
+                    request.commit,
+                    identity.analysis_id,
+                )
+                codeql_ref = artifacts.put_bytes(codeql_raw, "application/sarif+json")
+                codeql_findings = self._codeql_findings(workspace, codeql_raw)
+            except (OSError, RuntimeError, ValueError) as error:
+                codeql_error = self._safe_static_error(error, "CODEQL_EXECUTION_FAILED")
+        if rule_plan is not None and coverage_plan is not None:
+            if self._profile.semgrep_fallback:
+                (
+                    fallback_slices,
+                    fallback_refs,
+                    fallback_errors,
+                ) = await self._collect_semgrep(
+                    workspace,
+                    request,
+                    identity,
+                    rule_plan,
+                    coverage_plan,
+                    slices,
+                    rules,
+                    artifacts,
+                )
+                slices.extend(fallback_slices)
+                engine_refs.extend(fallback_refs)
+                scan_errors.extend(fallback_errors)
+            coverage = finish_coverage(coverage_plan, slices)
+            coverage_data = coverage.to_json()
+            opengrep_raw = merge_static_candidates(rule_plan, slices)
+        else:
+            coverage_data = {
+                "kind": "simple_static_coverage_v1",
+                "fingerprint": None,
+                "expected_count": None,
+                "verified_count": None,
+                "gaps": [],
+                "unsupported": [],
+                "excluded_paths": [],
+                "unavailable": True,
+            }
+            opengrep_raw = b'{"results": [], "errors": []}'
+        coverage_data.update(
+            {
+                "analysis_id": identity.analysis_id,
+                "workspace_id": identity.workspace_id,
+                "commit_id": identity.commit_id,
+                "ast_parse_error_count": ast_result.get("parse_error_count", 0),
+                "ast_truncated": ast_result.get("truncated", False),
+                "ast_oversize_count": ast_result.get("oversize_count", 0),
+                "codeql_configured": "codeql" in self._profile.tools,
+                "codeql_executed": codeql_ref is not None,
+                "codeql_scope": "python_only"
+                if "codeql" in self._profile.tools
+                else None,
+                "codeql_error": codeql_error,
+                "engine_errors": sorted(set(scan_errors)),
+            }
+        )
+        coverage_ref = artifacts.put_json(coverage_data)
+        if coverage_plan is not None:
+            for attempt in self._store.list_static_scan_attempts(
+                identity, request.repository, coverage_plan.fingerprint
+            ):
+                self._store.save_static_scan_attempt(
+                    identity,
+                    request.repository,
+                    coverage_plan.fingerprint,
+                    attempt.tool,
+                    attempt.run_key,
+                    attempt.status,
+                    attempt.raw_ref,
+                    coverage_ref,
+                    attempt.error_code,
+                )
+        opengrep_ref = artifacts.put_bytes(opengrep_raw, "application/json")
         snippets = self._opengrep_snippets(workspace, opengrep_raw)
         policy = _security_policy(workspace, tracked)
         policy_ref = artifacts.put_json(policy) if policy is not None else None
@@ -178,6 +306,7 @@ class DirectStaticBootstrap:
                 "commit_id": identity.commit_id,
                 "repository_profile_ref": repository_ref.model_dump(mode="json"),
                 "source_manifest_ref": source_manifest_ref.model_dump(mode="json"),
+                "static_coverage_ref": coverage_ref.model_dump(mode="json"),
                 "tool_result_refs": [
                     ast_ref.model_dump(mode="json"),
                     opengrep_ref.model_dump(mode="json"),
@@ -188,11 +317,43 @@ class DirectStaticBootstrap:
                     ),
                 ],
                 "ast_summary": ast_result,
+                "engine_raw_refs": [ref.model_dump(mode="json") for ref in engine_refs],
                 "opengrep_findings": snippets,
                 "codeql_findings": codeql_findings,
                 "codeql_executed": codeql_ref is not None,
             }
         )
+        if coverage_data.get("unavailable") is True:
+            raise StaticCoverageBlocked(
+                scan_errors[0] if scan_errors else "OPENGREP_EXECUTION_FAILED",
+                coverage_ref,
+                bundle_ref,
+                retryable=True,
+            )
+        if coverage_data["gaps"]:
+            blocking_error = next(
+                (code for code in scan_errors if not code.endswith("PARTIAL_SCAN")),
+                None,
+            )
+            raise StaticCoverageBlocked(
+                blocking_error or "STATIC_COVERAGE_INCOMPLETE",
+                coverage_ref,
+                bundle_ref,
+                retryable=bool(
+                    blocking_error
+                    and (
+                        blocking_error.endswith("EXECUTION_FAILED")
+                        or blocking_error.endswith("TIMEOUT")
+                    )
+                ),
+            )
+        if codeql_error is not None:
+            raise StaticCoverageBlocked(
+                codeql_error,
+                coverage_ref,
+                bundle_ref,
+                retryable=True,
+            )
         return StaticBootstrapResult(
             repository_profile_ref=repository_ref,
             static_bundle_ref=bundle_ref,
@@ -200,6 +361,54 @@ class DirectStaticBootstrap:
             security_policy_ref=policy_ref,
             policy_snapshot_ref=policy_snapshot_ref,
         )
+
+    @staticmethod
+    def _safe_static_error(error: Exception, fallback: str) -> str:
+        value = str(error)
+        if value and all(
+            character.isupper() or character.isdigit() or character == "_"
+            for character in value
+        ):
+            return value[:160]
+        return fallback
+
+    def _fallback_fingerprint(self) -> str:
+        bindings = {}
+        for name in ("semgrep", "codeql"):
+            binding = self._profile.tools.get(name)
+            bindings[name] = (
+                {"version": binding.version, "sha256": binding.executable_sha256}
+                if binding is not None
+                else None
+            )
+        return hashlib.sha256(
+            canonical_bytes(
+                {
+                    "semgrep_enabled": self._profile.semgrep_fallback,
+                    "bindings": bindings,
+                }
+            )
+        ).hexdigest()
+
+    async def coverage_fingerprint(
+        self, request: SimpleAnalysisRequest, identity: CheckpointIdentity
+    ) -> str:
+        workspace = self._profile.workspace_root / identity.workspace_id
+        tracked = await self._tracked_files(workspace)
+        binding = self._profile.tools["opengrep"]
+        rules = self._materials / "opengrep" / "rules.yml"
+        rule_plan = plan_rule_batches(
+            rules.read_bytes(),
+            tool_version=binding.version,
+            executable_sha256=binding.executable_sha256,
+        )
+        return plan_static_coverage(
+            workspace,
+            tracked,
+            request.commit,
+            rule_plan,
+            fallback_tool_fingerprint=self._fallback_fingerprint(),
+        ).fingerprint
 
     async def _capture_policy_snapshot(
         self,
@@ -377,12 +586,14 @@ class DirectStaticBootstrap:
     ) -> dict[str, object]:
         facts: list[dict[str, object]] = []
         parse_errors: list[str] = []
+        oversize_count = 0
         for relative in tracked:
             if not relative.endswith(".py") or len(facts) >= _MAX_FACTS:
                 continue
             path = workspace / relative
             try:
                 if path.stat().st_size > _MAX_SOURCE_BYTES:
+                    oversize_count += 1
                     continue
                 tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative)
             except (OSError, UnicodeError, SyntaxError):
@@ -418,6 +629,8 @@ class DirectStaticBootstrap:
             "kind": "simple_python_ast",
             "facts": facts,
             "parse_errors": parse_errors[:100],
+            "parse_error_count": len(parse_errors),
+            "oversize_count": oversize_count,
             "truncated": len(facts) >= _MAX_FACTS,
         }
 
@@ -511,6 +724,355 @@ class DirectStaticBootstrap:
             )
             accepted.append((batch, ref, parsed))
         return aggregate_rule_batches(plan, accepted)
+
+    async def _collect_opengrep(
+        self,
+        workspace: Path,
+        request: SimpleAnalysisRequest,
+        identity: CheckpointIdentity,
+        rule_plan: RuleBatchPlan,
+        coverage_plan: StaticCoveragePlan,
+        artifacts: SimpleArtifactRepository,
+    ) -> tuple[list[CoverageSlice], list[StoredDataRef], list[str]]:
+        await self._verify_opengrep_workspace(workspace, request)
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", identity.analysis_id) is None:
+            raise RuntimeError("OPENGREP_ANALYSIS_ID_INVALID")
+        binding = self._profile.tools["opengrep"]
+        self._require_opengrep_tool(binding)
+        rules = self._materials / "opengrep" / "rules.yml"
+        output_root = (
+            request.data_dir / "process-output" / "simple-static" / identity.analysis_id
+        )
+        output_root.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + min(self._profile.max_elapsed_seconds, 3600)
+        slices: list[CoverageSlice] = []
+        refs: list[StoredDataRef] = []
+        errors: list[str] = []
+        attempts = {
+            item.run_key: item
+            for item in self._store.list_static_scan_attempts(
+                identity, request.repository, coverage_plan.fingerprint
+            )
+            if item.tool == "opengrep"
+        }
+        for batch in rule_plan.batches:
+            expected = frozenset(
+                pair
+                for pair in coverage_plan.expected_pairs
+                if pair[1] in batch.rule_ids
+            )
+            previous = self._store.opengrep_batch_ref(
+                identity, request.repository, rule_plan.fingerprint, batch.key
+            )
+            cached_refs = [
+                ref
+                for ref in (
+                    previous,
+                    attempts[batch.key].raw_ref if batch.key in attempts else None,
+                )
+                if ref is not None
+            ]
+            reused = False
+            for ref in cached_refs:
+                try:
+                    raw = artifacts.read(ref)
+                    parsed = parse_rule_batch(raw, batch, allow_errors=True)
+                    slice_ = assess_scan(coverage_plan, batch, raw, engine="opengrep")
+                except (OSError, ValueError):
+                    artifacts.quarantine_corrupt(ref)
+                    continue
+                if ref == previous and parsed.get("errors"):
+                    continue
+                self._require_opengrep_tool(binding)
+                slices.append(replace(slice_, raw_ref=ref))
+                refs.append(ref)
+                if not expected.issubset(slice_.verified_pairs):
+                    errors.append("OPENGREP_PARTIAL_SCAN")
+                reused = True
+                break
+            if reused:
+                continue
+            remaining = int(deadline - time.monotonic())
+            if remaining < 1:
+                code = "EXTERNAL_TOOL_TIMEOUT"
+                errors.append(code)
+                self._record_static_failure(
+                    identity,
+                    request,
+                    coverage_plan,
+                    "opengrep",
+                    batch.key,
+                    expected,
+                    code,
+                    slices,
+                )
+                continue
+            output = output_root / f"opengrep-{batch.index:03d}-{batch.key[:12]}.json"
+            output.unlink(missing_ok=True)
+            argv = (
+                self._tool("opengrep"),
+                "scan",
+                "--json",
+                "--disable-version-check",
+                "--no-rewrite-rule-ids",
+                "--config",
+                str(rules),
+                "--output",
+                str(output),
+                *(
+                    value
+                    for rule_id in batch.excluded_rule_ids
+                    for value in ("--exclude-rule", rule_id)
+                ),
+                str(workspace),
+            )
+            raw_ref: StoredDataRef | None = None
+            try:
+                self._require_opengrep_tool(binding)
+                result = await self._process.run(
+                    argv, cwd=workspace, timeout_seconds=remaining
+                )
+                self._require_opengrep_tool(binding)
+                if output.is_file():
+                    raw = output.read_bytes()
+                    raw_ref = artifacts.put_bytes(raw, "application/json")
+                    refs.append(raw_ref)
+                if result.returncode != 0 or raw_ref is None:
+                    raise RuntimeError("OPENGREP_EXECUTION_FAILED")
+                slice_ = assess_scan(coverage_plan, batch, raw, engine="opengrep")
+                slices.append(replace(slice_, raw_ref=raw_ref))
+                complete = expected.issubset(slice_.verified_pairs)
+                scan_code: str | None = (
+                    None if complete else "OPENGREP_PARTIAL_SCAN"
+                )
+                if scan_code is not None:
+                    errors.append(scan_code)
+                self._store.save_static_scan_attempt(
+                    identity,
+                    request.repository,
+                    coverage_plan.fingerprint,
+                    "opengrep",
+                    batch.key,
+                    "SUCCEEDED" if complete else "BLOCKED",
+                    raw_ref,
+                    None,
+                    scan_code,
+                )
+                if complete and not slice_.parsed.get("errors"):
+                    self._store.save_opengrep_batch(
+                        identity,
+                        request.repository,
+                        rule_plan.fingerprint,
+                        batch.key,
+                        raw_ref,
+                        replaces=previous,
+                    )
+            except (OSError, RuntimeError, ValueError) as error:
+                code = self._safe_static_error(error, "OPENGREP_RESULT_INVALID")
+                errors.append(code)
+                self._store.save_static_scan_attempt(
+                    identity,
+                    request.repository,
+                    coverage_plan.fingerprint,
+                    "opengrep",
+                    batch.key,
+                    "BLOCKED",
+                    raw_ref,
+                    None,
+                    code,
+                )
+                self._record_gap_slice(batch, expected, code, slices)
+        return slices, refs, errors
+
+    @staticmethod
+    def _record_gap_slice(
+        batch: RuleBatch,
+        expected: frozenset[tuple[str, str]],
+        reason: str,
+        slices: list[CoverageSlice],
+    ) -> None:
+        slices.append(
+            CoverageSlice(
+                engine="opengrep",
+                batch_key=batch.key,
+                rule_ids=batch.rule_ids,
+                verified_pairs=frozenset(),
+                gap_reasons=tuple(
+                    (path, rule_id, reason) for path, rule_id in sorted(expected)
+                ),
+                parsed={"results": [], "errors": [], "paths": {}},
+                normalized_results=(),
+            )
+        )
+
+    def _record_static_failure(
+        self,
+        identity: CheckpointIdentity,
+        request: SimpleAnalysisRequest,
+        coverage_plan: StaticCoveragePlan,
+        tool: str,
+        run_key: str,
+        expected: frozenset[tuple[str, str]],
+        code: str,
+        slices: list[CoverageSlice],
+    ) -> None:
+        self._store.save_static_scan_attempt(
+            identity,
+            request.repository,
+            coverage_plan.fingerprint,
+            tool,
+            run_key,
+            "BLOCKED",
+            None,
+            None,
+            code,
+        )
+        self._record_gap_slice(
+            RuleBatch(
+                index=0,
+                rule_ids=tuple(sorted({rule for _, rule in expected})),
+                excluded_rule_ids=(),
+                key=run_key,
+            ),
+            expected,
+            code,
+            slices,
+        )
+
+    async def _collect_semgrep(
+        self,
+        workspace: Path,
+        request: SimpleAnalysisRequest,
+        identity: CheckpointIdentity,
+        rule_plan: RuleBatchPlan,
+        coverage_plan: StaticCoveragePlan,
+        opengrep_slices: Sequence[CoverageSlice],
+        rules: Path,
+        artifacts: SimpleArtifactRepository,
+    ) -> tuple[list[CoverageSlice], list[StoredDataRef], list[str]]:
+        missing = finish_coverage(coverage_plan, opengrep_slices).gaps
+        if not missing:
+            return [], [], []
+        binding = self._profile.tools.get("semgrep")
+        if binding is None:
+            return [], [], ["SEMGREP_TOOL_UNAVAILABLE"]
+        attempts = {
+            item.run_key: item
+            for item in self._store.list_static_scan_attempts(
+                identity, request.repository, coverage_plan.fingerprint
+            )
+            if item.tool == "semgrep"
+        }
+        slices: list[CoverageSlice] = []
+        refs: list[StoredDataRef] = []
+        errors: list[str] = []
+        for original in rule_plan.batches:
+            by_path: dict[str, set[str]] = defaultdict(set)
+            for gap in missing:
+                if gap.rule_id in original.rule_ids:
+                    by_path[gap.path].add(gap.rule_id)
+            grouped: dict[tuple[str, ...], list[str]] = defaultdict(list)
+            for path, rule_ids in sorted(by_path.items()):
+                grouped[tuple(sorted(rule_ids))].append(path)
+            for selected, all_targets in sorted(grouped.items()):
+                for start in range(0, len(all_targets), 32):
+                    targets = tuple(all_targets[start : start + 32])
+                    run_key = hashlib.sha256(
+                        canonical_bytes(
+                            {
+                                "batch": original.key,
+                                "rules": selected,
+                                "targets": targets,
+                            }
+                        )
+                    ).hexdigest()
+                    batch = RuleBatch(
+                        index=original.index,
+                        rule_ids=selected,
+                        excluded_rule_ids=tuple(
+                            rule_id
+                            for rule_id in rule_plan.rule_ids
+                            if rule_id not in selected
+                        ),
+                        key=run_key,
+                    )
+                    previous = attempts.get(run_key)
+                    if (
+                        previous is not None
+                        and previous.status == "SUCCEEDED"
+                        and previous.raw_ref is not None
+                    ):
+                        try:
+                            cached = artifacts.read(previous.raw_ref)
+                            slice_ = assess_scan(
+                                coverage_plan,
+                                batch,
+                                cached,
+                                engine="semgrep",
+                                targets=targets,
+                            )
+                            expected = {
+                                (path, rule_id)
+                                for path in targets
+                                for rule_id in selected
+                            }
+                            if expected.issubset(slice_.verified_pairs):
+                                slices.append(replace(slice_, raw_ref=previous.raw_ref))
+                                refs.append(previous.raw_ref)
+                                continue
+                        except (OSError, ValueError):
+                            artifacts.quarantine_corrupt(previous.raw_ref)
+                    raw_ref: StoredDataRef | None = None
+                    try:
+                        raw = await run_semgrep_fallback(
+                            self._process,
+                            binding,
+                            workspace,
+                            rules,
+                            targets,
+                            batch.excluded_rule_ids,
+                            min(self._profile.max_elapsed_seconds, 3600),
+                        )
+                        raw_ref = artifacts.put_bytes(raw, "application/json")
+                        refs.append(raw_ref)
+                        slice_ = assess_scan(
+                            coverage_plan,
+                            batch,
+                            raw,
+                            engine="semgrep",
+                            targets=targets,
+                        )
+                        slices.append(replace(slice_, raw_ref=raw_ref))
+                        expected = {
+                            (path, rule_id) for path in targets for rule_id in selected
+                        }
+                        complete = expected.issubset(slice_.verified_pairs)
+                        code = None if complete else "SEMGREP_PARTIAL_SCAN"
+                        if code is not None:
+                            errors.append(code)
+                    except (OSError, RuntimeError, ValueError) as error:
+                        if (
+                            isinstance(error, SemgrepFallbackError)
+                            and error.raw_output is not None
+                        ):
+                            raw_ref = artifacts.put_bytes(
+                                error.raw_output, "application/octet-stream"
+                            )
+                            refs.append(raw_ref)
+                        code = self._safe_static_error(error, "SEMGREP_RESULT_INVALID")
+                        errors.append(code)
+                    self._store.save_static_scan_attempt(
+                        identity,
+                        request.repository,
+                        coverage_plan.fingerprint,
+                        "semgrep",
+                        run_key,
+                        "SUCCEEDED" if code is None else "BLOCKED",
+                        raw_ref,
+                        None,
+                        code,
+                    )
+        return slices, refs, errors
 
     @staticmethod
     def _require_opengrep_tool(binding: SimpleToolBinding) -> None:
@@ -653,6 +1215,7 @@ class DirectStaticBootstrap:
                 output.append(
                     {
                         "rule_id": item.get("check_id"),
+                        "engine": item.get("engine", "opengrep"),
                         "path": relative,
                         "line": line,
                         "snippet": snippet[:8000],

@@ -25,6 +25,7 @@ from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.bootstrap_stages import (
     DirectStaticBootstrap,
     ProcessResult,
+    StaticCoverageBlocked,
 )
 from sastsimi.simple_runtime.models import (
     STAGE_VERSION,
@@ -659,6 +660,7 @@ async def test_partial_opengrep_scan_keeps_static_checkpoint_blocked(
                                 }
                             ],
                             "errors": [],
+                            "paths": {"scanned": ["app.py"], "skipped": []},
                         }
                     ),
                     encoding="utf-8",
@@ -713,6 +715,73 @@ async def test_partial_opengrep_scan_keeps_static_checkpoint_blocked(
         )
         is not None
     )
+
+
+@pytest.mark.asyncio
+async def test_same_coverage_fingerprint_resume_keeps_evidence_without_retry(
+    tmp_path: Path,
+) -> None:
+    class DeterministicGap:
+        calls = 0
+        fingerprint = "coverage-one"
+
+        async def coverage_fingerprint(self, _request, _identity) -> str:
+            return self.fingerprint
+
+        async def run(self, _request, identity):
+            self.calls += 1
+            artifacts = SimpleArtifactRepository(tmp_path, identity)
+            coverage = artifacts.put_json(
+                {
+                    "kind": "simple_static_coverage_v1",
+                    "fingerprint": self.fingerprint,
+                    "expected_count": 1,
+                    "verified_count": 0,
+                    "gaps": [
+                        {
+                            "path": "app.py",
+                            "rule_id": "rule.one",
+                            "reason": "parse_or_scan_error",
+                        }
+                    ],
+                }
+            )
+            bundle = artifacts.put_json({"kind": "simple_static_fact_bundle"})
+            raise StaticCoverageBlocked(
+                "STATIC_COVERAGE_INCOMPLETE", coverage, bundle, retryable=False
+            )
+
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    static = DeterministicGap()
+    recovery = _RecoveryFactory(tmp_path)
+    app = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=static,
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=_runner,
+        recovery_factory=recovery,
+        id_factory=iter(("analysis-coverage-gap", "workspace-gap")).__next__,
+    )
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        )
+    )
+    checkpoint = store.require(first.identity, SimpleStage.STATIC_DONE)
+    assert first.status == "BLOCKED"
+    assert len(checkpoint.output_refs) == 2
+    assert static.calls == 1
+    assert recovery.calls == []
+    resumed = await app.resume(first.identity.analysis_id)
+    assert resumed.status == "BLOCKED"
+    assert static.calls == 1
+    static.fingerprint = "coverage-two"
+    changed = await app.resume(first.identity.analysis_id)
+    assert changed.status == "BLOCKED"
+    assert static.calls == 2
 
 
 @pytest.mark.asyncio

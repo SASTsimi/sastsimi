@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.refs import StoredDataRef
 
 from .opengrep_rule_batches import RuleBatch, RuleBatchPlan, parse_rule_batch
 
@@ -65,9 +66,12 @@ class StaticCoveragePlan:
 class CoverageSlice:
     engine: Literal["opengrep", "semgrep"]
     batch_key: str
+    rule_ids: tuple[str, ...]
     verified_pairs: frozenset[Pair]
     gap_reasons: tuple[tuple[str, str, str], ...]
     parsed: dict[str, object]
+    normalized_results: tuple[dict[str, object], ...]
+    raw_ref: StoredDataRef | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +127,12 @@ def _safe_relative(workspace: Path, raw: str) -> str | None:
 
 
 def plan_static_coverage(
-    workspace: Path, tracked: Sequence[str], commit_id: str, rules: RuleBatchPlan
+    workspace: Path,
+    tracked: Sequence[str],
+    commit_id: str,
+    rules: RuleBatchPlan,
+    *,
+    fallback_tool_fingerprint: str | None = None,
 ) -> StaticCoveragePlan:
     """Bind applicable pairs to one checkout, rule catalog, and scanner digest."""
 
@@ -158,6 +167,7 @@ def plan_static_coverage(
                 "commit_id": commit_id,
                 "tracked": sorted(set(tracked)),
                 "rules_fingerprint": rules.fingerprint,
+                "fallback_tool_fingerprint": fallback_tool_fingerprint,
                 "language_extensions": {
                     key: sorted(value)
                     for key, value in sorted(_LANGUAGE_EXTENSIONS.items())
@@ -244,19 +254,24 @@ def assess_scan(
         for pair in allowed:
             if pair[0] == path:
                 reasons[pair] = "skipped_file"
+    normalized_results: list[dict[str, object]] = []
     for result in cast(list[dict[str, object]], parsed["results"]):
         path_value = result["path"]
-        if (
-            not isinstance(path_value, str)
-            or _safe_relative(plan.workspace, path_value) is None
-        ):
+        relative = (
+            _safe_relative(plan.workspace, path_value)
+            if isinstance(path_value, str)
+            else None
+        )
+        if relative is None:
             raise ValueError("STATIC_SCAN_RESULT_PATH_INVALID")
+        normalized_results.append({**result, "path": relative})
     verified = frozenset(
         pair for pair in allowed if pair[0] in scanned and pair not in reasons
     )
     return CoverageSlice(
         engine=engine,
         batch_key=batch.key,
+        rule_ids=batch.rule_ids,
         verified_pairs=verified,
         gap_reasons=tuple(
             sorted(
@@ -264,6 +279,11 @@ def assess_scan(
             )
         ),
         parsed=parsed,
+        normalized_results=tuple(
+            item
+            for item in normalized_results
+            if (cast(str, item["path"]), cast(str, item["check_id"])) in verified
+        ),
     )
 
 

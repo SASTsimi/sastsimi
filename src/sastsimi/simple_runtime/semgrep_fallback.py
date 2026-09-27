@@ -14,10 +14,21 @@ from sastsimi.config.user_config import SimpleToolBinding
 _RULE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 
 
+class SemgrepFallbackError(RuntimeError):
+    def __init__(self, code: str, raw_output: bytes | None = None) -> None:
+        super().__init__(code)
+        self.raw_output = raw_output
+
+
 class ScanResult(Protocol):
-    returncode: int
-    stdout: bytes
-    stderr: bytes
+    @property
+    def returncode(self) -> int: ...
+
+    @property
+    def stdout(self) -> bytes: ...
+
+    @property
+    def stderr(self) -> bytes: ...
 
 
 class ScanProcess(Protocol):
@@ -94,16 +105,16 @@ async def run_semgrep_fallback(
     except (OSError, RuntimeError) as error:
         raise RuntimeError("SEMGREP_EXECUTION_FAILED") from error
     if result.returncode != 0:
-        raise RuntimeError("SEMGREP_EXECUTION_FAILED")
+        raise SemgrepFallbackError("SEMGREP_EXECUTION_FAILED", result.stdout)
     try:
         parsed = json.loads(result.stdout)
     except (UnicodeError, ValueError) as error:
-        raise RuntimeError("SEMGREP_RESULT_INVALID") from error
+        raise SemgrepFallbackError("SEMGREP_RESULT_INVALID", result.stdout) from error
     if (
         not isinstance(parsed, dict)
         or not isinstance(parsed.get("results"), list)
         or not isinstance(parsed.get("errors"), list)
         or not isinstance(parsed.get("paths"), dict)
     ):
-        raise RuntimeError("SEMGREP_RESULT_INVALID")
+        raise SemgrepFallbackError("SEMGREP_RESULT_INVALID", result.stdout)
     return result.stdout

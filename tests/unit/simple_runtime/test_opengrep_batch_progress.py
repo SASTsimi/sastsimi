@@ -156,3 +156,66 @@ def test_malformed_progress_row_is_replaced_after_rescan(
         store.opengrep_batch_ref(identity, "owner/repo", "fingerprint-1", "batch-1")
         == second
     )
+
+
+def test_static_attempts_are_fingerprinted_and_scoped(tmp_path: Path) -> None:
+    identity = _identity()
+    store = SimpleCheckpointStore(tmp_path / "checkpoints.sqlite3")
+    raw = _ref(tmp_path, identity, b'{"results": []}')
+    coverage = _ref(tmp_path, identity, b'{"gaps": []}')
+    store.save_static_scan_attempt(
+        identity,
+        "owner/repo",
+        "fingerprint-1",
+        "semgrep",
+        "batch-1",
+        "SUCCEEDED",
+        raw,
+        coverage,
+        None,
+    )
+    reopened = SimpleCheckpointStore(store.database_path)
+    attempts = reopened.list_static_scan_attempts(
+        identity, "owner/repo", "fingerprint-1"
+    )
+    assert len(attempts) == 1
+    assert attempts[0].raw_ref == raw
+    assert attempts[0].coverage_ref == coverage
+    assert attempts[0].status == "SUCCEEDED"
+    assert (
+        reopened.list_static_scan_attempts(identity, "owner/repo", "fingerprint-2")
+        == ()
+    )
+    with pytest.raises(ValueError, match="STATIC_SCAN_REF_SCOPE_MISMATCH"):
+        reopened.save_static_scan_attempt(
+            identity,
+            "owner/repo",
+            "fingerprint-1",
+            "semgrep",
+            "batch-2",
+            "SUCCEEDED",
+            _ref(tmp_path, _identity(workspace_id="other"), b"bad"),
+            None,
+            None,
+        )
+
+
+def test_static_failed_attempt_can_have_no_raw_output(tmp_path: Path) -> None:
+    identity = _identity()
+    store = SimpleCheckpointStore(tmp_path / "checkpoints.sqlite3")
+    store.save_static_scan_attempt(
+        identity,
+        "owner/repo",
+        "fingerprint-1",
+        "opengrep",
+        "batch-1",
+        "BLOCKED",
+        None,
+        None,
+        "OPENGREP_EXECUTION_FAILED",
+    )
+    attempt = store.list_static_scan_attempts(identity, "owner/repo", "fingerprint-1")[
+        0
+    ]
+    assert attempt.raw_ref is None
+    assert attempt.error_code == "OPENGREP_EXECUTION_FAILED"

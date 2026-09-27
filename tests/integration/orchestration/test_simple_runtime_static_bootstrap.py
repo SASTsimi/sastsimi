@@ -57,7 +57,9 @@ class _Process:
                                 "path": str(Path(cwd or argv[-1]) / "app.py"),
                                 "start": {"line": 2},
                             }
-                        ]
+                        ],
+                        "errors": [],
+                        "paths": {"scanned": ["app.py"], "skipped": []},
                     }
                 ),
                 encoding="utf-8",
@@ -790,3 +792,265 @@ async def test_codeql_sarif_is_analysis_scoped(tmp_path: Path) -> None:
     assert len(process.outputs) == 2
     assert process.outputs[0] != process.outputs[1]
     assert all(path.is_file() for path in process.outputs)
+
+
+class _CoverageProcess(_Process):
+    """Small checkout with one parser-warning file and one clean file."""
+
+    def __init__(
+        self,
+        *,
+        fallback_fails: bool = False,
+        codeql_fails: bool = False,
+        parse_warning: bool = True,
+        invalid_python: bool = False,
+    ) -> None:
+        self.fallback_fails = fallback_fails
+        self.codeql_fails = codeql_fails
+        self.parse_warning = parse_warning
+        self.invalid_python = invalid_python
+        self.opengrep_calls = 0
+        self.fallback_calls: list[tuple[str, ...]] = []
+        self.codeql_calls = 0
+
+    async def run(
+        self, argv: Sequence[str], *, cwd: Path | None = None, timeout_seconds: int
+    ) -> ProcessResult:
+        if argv[1] == "clone":
+            root = Path(argv[-1])
+            root.mkdir(parents=True)
+            (root / "app.py").write_text(
+                "def broken(:\n"
+                if self.invalid_python
+                else "def query(user):\n    return db.execute(user)\n",
+                encoding="utf-8",
+            )
+            (root / "good.py").write_text(
+                "def good():\n    return 1\n", encoding="utf-8"
+            )
+            return ProcessResult(0, b"", b"")
+        if argv[1:3] == ("ls-files", "-z"):
+            return ProcessResult(0, b"app.py\0good.py\0", b"")
+        if argv[1] == "scan" and "--output" not in argv:
+            self.fallback_calls.append(tuple(argv))
+            if self.fallback_fails:
+                return ProcessResult(2, b"bad", b"failed")
+            return ProcessResult(
+                0,
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "check_id": "python.sql",
+                                "path": "app.py",
+                                "start": {"line": 1},
+                            }
+                        ],
+                        "errors": [],
+                        "paths": {"scanned": ["app.py"], "skipped": []},
+                    }
+                ).encode(),
+                b"",
+            )
+        if argv[1] == "scan":
+            self.opengrep_calls += 1
+            output = Path(argv[argv.index("--output") + 1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "check_id": "python.sql",
+                                "path": "app.py",
+                                "start": {"line": 1},
+                            },
+                            {
+                                "check_id": "python.sql",
+                                "path": "good.py",
+                                "start": {"line": 1},
+                            },
+                        ],
+                        "errors": (
+                            [{"type": "PartialParsing", "path": "app.py"}]
+                            if self.parse_warning
+                            else []
+                        ),
+                        "paths": {"scanned": ["app.py", "good.py"], "skipped": []},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return ProcessResult(0, b"", b"")
+        if argv[1:3] == ("database", "analyze"):
+            self.codeql_calls += 1
+            if self.codeql_fails:
+                return ProcessResult(2, b"", b"failed")
+        return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+
+def _coverage_bootstrap(
+    tmp_path: Path,
+    process: _CoverageProcess,
+    *,
+    semgrep: bool = False,
+    codeql: bool = True,
+):
+    profile = _profile(tmp_path)
+    tools = dict(profile.tools)
+    if semgrep:
+        tools["semgrep"] = tools["opengrep"]
+    if not codeql:
+        tools.pop("codeql")
+    profile = profile.model_copy(update={"tools": tools, "semgrep_fallback": semgrep})
+    store = _store(profile)
+    bootstrap = DirectStaticBootstrap(
+        profile=profile, process=process, store=store, static_material_root=tmp_path
+    )
+    return bootstrap, profile, store
+
+
+def _coverage_from_ref(
+    profile: SimpleExecutionProfile, identity: CheckpointIdentity, ref: StoredDataRef
+) -> dict:
+    return json.loads(SimpleArtifactRepository(profile.data_dir, identity).read(ref))
+
+
+@pytest.mark.asyncio
+async def test_codeql_runs_after_opengrep_partial_parse(tmp_path: Path) -> None:
+    process = _CoverageProcess()
+    bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process)
+    identity = _identity("analysis-codeql-after-warning")
+    with pytest.raises(RuntimeError, match="STATIC_COVERAGE_INCOMPLETE") as caught:
+        await bootstrap.run(_request(profile), identity)
+    assert process.codeql_calls == 1
+    report = _coverage_from_ref(profile, identity, caught.value.coverage_ref)
+    assert report["expected_count"] == 2
+    assert report["verified_count"] == 1
+    assert report["gaps"][0]["path"] == "app.py"
+    bundle = _coverage_from_ref(profile, identity, caught.value.bundle_ref)
+    assert bundle["codeql_executed"] is True
+    assert bundle["ast_summary"]["kind"] == "simple_python_ast"
+
+
+@pytest.mark.asyncio
+async def test_semgrep_closes_only_failed_file_rule_pairs(tmp_path: Path) -> None:
+    process = _CoverageProcess()
+    bootstrap, profile, _ = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    identity = _identity("analysis-fallback-closed")
+    result = await bootstrap.run(_request(profile), identity)
+    assert len(process.fallback_calls) == 1
+    assert "app.py" in process.fallback_calls[0]
+    assert "good.py" not in process.fallback_calls[0]
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
+    report = _coverage_from_ref(
+        profile, identity, StoredDataRef.model_validate(bundle["static_coverage_ref"])
+    )
+    assert report["expected_count"] == report["verified_count"] == 2
+    assert report["gaps"] == []
+    assert {hit["engine"] for hit in bundle["opengrep_findings"]} == {
+        "opengrep",
+        "semgrep",
+    }
+
+
+@pytest.mark.asyncio
+async def test_codeql_survives_fallback_failure(tmp_path: Path) -> None:
+    process = _CoverageProcess(fallback_fails=True)
+    bootstrap, profile, store = _coverage_bootstrap(tmp_path, process, semgrep=True)
+    identity = _identity("analysis-fallback-failed")
+    with pytest.raises(RuntimeError, match="SEMGREP_EXECUTION_FAILED") as caught:
+        await bootstrap.run(_request(profile), identity)
+    assert process.codeql_calls == 1
+    bundle = _coverage_from_ref(profile, identity, caught.value.bundle_ref)
+    assert bundle["codeql_executed"] is True
+    assert len(bundle["tool_result_refs"]) >= 3
+    report = _coverage_from_ref(profile, identity, caught.value.coverage_ref)
+    assert report["gaps"][0]["path"] == "app.py"
+    attempt = next(
+        item
+        for item in store.list_static_scan_attempts(
+            identity, _request(profile).repository, report["fingerprint"]
+        )
+        if item.tool == "semgrep"
+    )
+    assert attempt.status == "BLOCKED"
+    assert attempt.raw_ref is not None
+    assert (
+        SimpleArtifactRepository(profile.data_dir, identity).read(attempt.raw_ref)
+        == b"bad"
+    )
+
+
+@pytest.mark.asyncio
+async def test_codeql_failure_retains_ast_and_opengrep_evidence(tmp_path: Path) -> None:
+    process = _CoverageProcess(parse_warning=False, codeql_fails=True)
+    bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process)
+    identity = _identity("analysis-codeql-failed")
+    with pytest.raises(RuntimeError, match="CODEQL_ANALYZE_FAILED") as caught:
+        await bootstrap.run(_request(profile), identity)
+    bundle = _coverage_from_ref(profile, identity, caught.value.bundle_ref)
+    assert bundle["ast_summary"]["facts"]
+    assert bundle["opengrep_findings"]
+    assert bundle["codeql_executed"] is False
+    assert len(bundle["tool_result_refs"]) >= 2
+
+
+@pytest.mark.asyncio
+async def test_ast_parse_errors_and_truncation_are_disclosed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    process = _CoverageProcess(parse_warning=False, invalid_python=True)
+    bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process, codeql=False)
+    monkeypatch.setattr(static_module, "_MAX_FACTS", 1)
+    identity = _identity("analysis-ast-errors")
+    result = await bootstrap.run(_request(profile), identity)
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
+    report = _coverage_from_ref(
+        profile, identity, StoredDataRef.model_validate(bundle["static_coverage_ref"])
+    )
+    assert report["ast_parse_error_count"] == 1
+    assert report["ast_truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_resume_reuses_verified_batches_without_duplicate_findings(
+    tmp_path: Path,
+) -> None:
+    process = _CoverageProcess()
+    bootstrap, profile, _ = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    identity = _identity("analysis-resume-static")
+    first = await bootstrap.run(_request(profile), identity)
+    second = await bootstrap.run(_request(profile), identity)
+    assert process.opengrep_calls == 1
+    assert len(process.fallback_calls) == 1
+    bundle = _coverage_from_ref(profile, identity, second.static_bundle_ref)
+    assert len(bundle["opengrep_findings"]) == 2
+    assert first.static_bundle_ref == second.static_bundle_ref
+
+
+@pytest.mark.asyncio
+async def test_changed_fingerprint_does_not_reuse_old_coverage(tmp_path: Path) -> None:
+    process = _CoverageProcess()
+    bootstrap, profile, _ = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    identity = _identity("analysis-changed-rule")
+    first = await bootstrap.run(_request(profile), identity)
+    rules = tmp_path / "opengrep" / "rules.yml"
+    rules.write_text(
+        rules.read_text(encoding="utf-8").replace(
+            "pattern: db.execute(...)\n", "pattern: foo(...)\n"
+        ),
+        encoding="utf-8",
+    )
+    second = await bootstrap.run(_request(profile), identity)
+    assert process.opengrep_calls == 2
+    assert len(process.fallback_calls) == 2
+    first_bundle = _coverage_from_ref(profile, identity, first.static_bundle_ref)
+    second_bundle = _coverage_from_ref(profile, identity, second.static_bundle_ref)
+    assert first_bundle["static_coverage_ref"] != second_bundle["static_coverage_ref"]

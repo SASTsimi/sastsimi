@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
@@ -49,6 +50,16 @@ ROLE_BY_STAGE: dict[SimpleStage, str] = {
     SimpleStage.FINDING_DONE: "Finding Runtime",
     SimpleStage.REPORT_DONE: "Reporter Agent",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class StaticScanAttempt:
+    tool: str
+    run_key: str
+    status: Literal["SUCCEEDED", "BLOCKED"]
+    raw_ref: StoredDataRef | None
+    coverage_ref: StoredDataRef | None
+    error_code: str | None
 
 
 class SimpleCheckpointStore:
@@ -130,6 +141,27 @@ class SimpleCheckpointStore:
                     PRIMARY KEY (
                         analysis_id, workspace_id, commit_id,
                         repository, fingerprint, batch_key
+                    )
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_static_scan_attempts (
+                    analysis_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    repository TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    tool TEXT NOT NULL,
+                    run_key TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    raw_ref_json TEXT,
+                    coverage_ref_json TEXT,
+                    error_code TEXT,
+                    PRIMARY KEY (
+                        analysis_id, workspace_id, commit_id,
+                        repository, fingerprint, tool, run_key
                     )
                 )
                 """
@@ -262,6 +294,114 @@ class SimpleCheckpointStore:
             )
             if updated.rowcount != 1:
                 raise ValueError("OPENGREP_BATCH_PROGRESS_CONFLICT")
+
+    @staticmethod
+    def _static_ref_json(
+        identity: CheckpointIdentity, ref: StoredDataRef | None
+    ) -> str | None:
+        if ref is None:
+            return None
+        try:
+            SimpleCheckpointStore._require_opengrep_ref_scope(identity, ref)
+        except ValueError as error:
+            raise ValueError("STATIC_SCAN_REF_SCOPE_MISMATCH") from error
+        return ref.model_dump_json()
+
+    def save_static_scan_attempt(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str,
+        tool: str,
+        run_key: str,
+        status: Literal["SUCCEEDED", "BLOCKED"],
+        raw_ref: StoredDataRef | None,
+        coverage_ref: StoredDataRef | None,
+        error_code: str | None,
+    ) -> None:
+        if identity.hypothesis_id is not None or not all(
+            part.strip() for part in (repository, fingerprint, tool, run_key)
+        ):
+            raise ValueError("STATIC_SCAN_KEY_INVALID")
+        raw_json = self._static_ref_json(identity, raw_ref)
+        coverage_json = self._static_ref_json(identity, coverage_ref)
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO simple_static_scan_attempts "
+                "(analysis_id, workspace_id, commit_id, repository, fingerprint, "
+                "tool, run_key, status, raw_ref_json, coverage_ref_json, error_code) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (analysis_id, workspace_id, commit_id, repository, "
+                "fingerprint, tool, run_key) DO UPDATE SET "
+                "status=excluded.status, raw_ref_json=excluded.raw_ref_json, "
+                "coverage_ref_json=excluded.coverage_ref_json, "
+                "error_code=excluded.error_code",
+                (
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    repository,
+                    fingerprint,
+                    tool,
+                    run_key,
+                    status,
+                    raw_json,
+                    coverage_json,
+                    error_code,
+                ),
+            )
+
+    def list_static_scan_attempts(
+        self, identity: CheckpointIdentity, repository: str, fingerprint: str
+    ) -> tuple[StaticScanAttempt, ...]:
+        if identity.hypothesis_id is not None:
+            raise ValueError("STATIC_SCAN_KEY_INVALID")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT tool, run_key, status, raw_ref_json, coverage_ref_json, "
+                "error_code FROM simple_static_scan_attempts "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND repository = ? AND fingerprint = ? ORDER BY tool, run_key",
+                (
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    repository,
+                    fingerprint,
+                ),
+            ).fetchall()
+        attempts: list[StaticScanAttempt] = []
+        for row in rows:
+            if row["status"] not in {"SUCCEEDED", "BLOCKED"}:
+                continue
+            raw_ref = (
+                self._valid_opengrep_batch_ref(identity, row["raw_ref_json"])
+                if row["raw_ref_json"] is not None
+                else None
+            )
+            coverage_ref = (
+                self._valid_opengrep_batch_ref(identity, row["coverage_ref_json"])
+                if row["coverage_ref_json"] is not None
+                else None
+            )
+            if (
+                row["raw_ref_json"] is not None
+                and raw_ref is None
+                or row["coverage_ref_json"] is not None
+                and coverage_ref is None
+            ):
+                continue
+            attempts.append(
+                StaticScanAttempt(
+                    tool=row["tool"],
+                    run_key=row["run_key"],
+                    status=row["status"],
+                    raw_ref=raw_ref,
+                    coverage_ref=coverage_ref,
+                    error_code=row["error_code"],
+                )
+            )
+        return tuple(attempts)
 
     def save_survey_progress(
         self, analysis_id: str, bundle_hash: str, item_key: str, ref: StoredDataRef

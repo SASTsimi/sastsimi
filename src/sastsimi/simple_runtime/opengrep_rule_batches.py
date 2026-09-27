@@ -8,13 +8,16 @@ import re
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import yaml  # type: ignore[import-untyped]
 from yaml.nodes import MappingNode  # type: ignore[import-untyped]
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
+
+if TYPE_CHECKING:
+    from .static_coverage import CoverageSlice
 
 _PLAN_VERSION = 1
 _SNIPPET_LIMIT = 500
@@ -262,4 +265,72 @@ def aggregate_rule_batches(
     }
     return json.dumps(
         aggregate, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def merge_static_candidates(
+    plan: RuleBatchPlan, slices: Sequence[CoverageSlice]
+) -> bytes:
+    """Deduplicate verified hits while preserving fair per-rule visibility."""
+
+    buckets: dict[str, deque[dict[str, object]]] = {
+        rule_id: deque() for rule_id in plan.rule_ids
+    }
+    seen: set[tuple[str, str, int]] = set()
+    batches: list[dict[str, object]] = []
+    for slice_ in slices:
+        for item in sorted(slice_.normalized_results, key=_hit_key):
+            rule_id = item.get("check_id")
+            path = item.get("path")
+            start = item.get("start")
+            line = start.get("line") if isinstance(start, dict) else None
+            if (
+                not isinstance(rule_id, str)
+                or rule_id not in buckets
+                or not isinstance(path, str)
+                or type(line) is not int
+            ):
+                raise ValueError("STATIC_CANDIDATE_INVALID")
+            key = (rule_id, path, line)
+            if key not in seen:
+                seen.add(key)
+                buckets[rule_id].append({**item, "engine": slice_.engine})
+        batches.append(
+            {
+                "key": slice_.batch_key,
+                "rule_ids": slice_.rule_ids,
+                "engine": slice_.engine,
+                "raw_ref": (
+                    slice_.raw_ref.model_dump(mode="json")
+                    if slice_.raw_ref is not None
+                    else None
+                ),
+                "paths": slice_.parsed.get("paths", {}),
+                "errors": slice_.parsed.get("errors", []),
+            }
+        )
+    merged: list[dict[str, object]] = []
+    active = list(plan.rule_ids)
+    while active:
+        following: list[str] = []
+        for rule_id in active:
+            if buckets[rule_id]:
+                merged.append(buckets[rule_id].popleft())
+            if buckets[rule_id]:
+                following.append(rule_id)
+        active = following
+    return json.dumps(
+        {
+            "kind": "simple_static_merged_candidates_v1",
+            "plan_fingerprint": plan.fingerprint,
+            "rule_ids": plan.rule_ids,
+            "results": merged,
+            "errors": [],
+            "batches": batches,
+            "candidate_snippet_limit": _SNIPPET_LIMIT,
+            "candidate_snippets_truncated": len(merged) > _SNIPPET_LIMIT,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
     ).encode("utf-8")
