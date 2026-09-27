@@ -344,6 +344,7 @@ def build_analysis_application(
         static_bootstrap=DirectStaticBootstrap(
             profile=profile,
             process=LocalProcessExecutor(),
+            store=store,
             policy_discovery=GitHubPolicyDiscovery(
                 transport=PinnedHttpsTransport(),
                 resolver=resolve_public_addresses,

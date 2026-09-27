@@ -5,6 +5,9 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import math
+import re
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +25,12 @@ from .application import (
 from .artifacts import SimpleArtifactRepository
 from .github_policy import DiscoveredPolicy
 from .models import CheckpointIdentity, StageFailure
+from .opengrep_rule_batches import (
+    RuleBatch,
+    aggregate_rule_batches,
+    parse_rule_batch,
+    plan_rule_batches,
+)
 from .provider import SimpleLLMCallResult, SimpleLLMClient
 from .store import SimpleCheckpointStore
 from .survey import HypothesisSurvey
@@ -96,11 +105,13 @@ class DirectStaticBootstrap:
         *,
         profile: SimpleExecutionProfile,
         process: ProcessExecutor,
+        store: SimpleCheckpointStore,
         static_material_root: Path | None = None,
         policy_discovery: PolicyDiscovery | None = None,
     ) -> None:
         self._profile = profile
         self._process = process
+        self._store = store
         self._materials = static_material_root or self._static_material_root()
         self._policy_discovery = policy_discovery
 
@@ -135,8 +146,8 @@ class DirectStaticBootstrap:
         ast_ref = artifacts.put_json(ast_result)
         opengrep_raw = await self._run_opengrep(
             workspace,
-            request.data_dir,
-            identity.analysis_id,
+            request,
+            identity,
         )
         opengrep_ref = artifacts.put_bytes(opengrep_raw, "application/json")
         codeql_ref: StoredDataRef | None = None
@@ -423,37 +434,117 @@ class DirectStaticBootstrap:
     async def _run_opengrep(
         self,
         workspace: Path,
-        data_dir: Path,
-        analysis_id: str,
+        request: SimpleAnalysisRequest,
+        identity: CheckpointIdentity,
     ) -> bytes:
-        output = (
-            data_dir
-            / "process-output"
-            / "simple-static"
-            / analysis_id
-            / "opengrep.json"
-        )
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.unlink(missing_ok=True)
+        await self._verify_opengrep_workspace(workspace, request)
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", identity.analysis_id) is None:
+            raise RuntimeError("OPENGREP_ANALYSIS_ID_INVALID")
+        binding = self._profile.tools.get("opengrep")
+        if binding is None:
+            raise RuntimeError("OPENGREP_TOOL_NOT_CONFIGURED")
         rules = self._materials / "opengrep" / "rules.yml"
-        result = await self._process.run(
-            (
+        plan = plan_rule_batches(
+            rules.read_bytes(),
+            tool_version=binding.version,
+            executable_sha256=binding.executable_sha256,
+        )
+        output_root = (
+            request.data_dir / "process-output" / "simple-static" / identity.analysis_id
+        )
+        output_root.mkdir(parents=True, exist_ok=True)
+        artifacts = SimpleArtifactRepository(request.data_dir, identity)
+        deadline = time.monotonic() + min(self._profile.max_elapsed_seconds, 3600)
+        accepted: list[tuple[RuleBatch, StoredDataRef, dict[str, object]]] = []
+        for batch in plan.batches:
+            previous = self._store.opengrep_batch_ref(
+                identity, request.repository, plan.fingerprint, batch.key
+            )
+            if previous is not None:
+                try:
+                    cached = artifacts.read(previous)
+                    parsed = parse_rule_batch(cached, batch)
+                except (OSError, ValueError):
+                    artifacts.quarantine_corrupt(previous)
+                else:
+                    accepted.append((batch, previous, parsed))
+                    continue
+            remaining = math.ceil(deadline - time.monotonic())
+            if remaining < 1:
+                raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+            output = output_root / f"opengrep-{batch.index:03d}-{batch.key[:12]}.json"
+            output.unlink(missing_ok=True)
+            argv = (
                 self._tool("opengrep"),
                 "scan",
                 "--json",
+                "--disable-version-check",
+                "--no-rewrite-rule-ids",
                 "--config",
                 str(rules),
                 "--output",
                 str(output),
+                *(
+                    value
+                    for rule_id in batch.excluded_rule_ids
+                    for value in ("--exclude-rule", rule_id)
+                ),
                 str(workspace),
-            ),
-            timeout_seconds=min(self._profile.max_elapsed_seconds, 3600),
+            )
+            result = await self._process.run(
+                argv, cwd=workspace, timeout_seconds=remaining
+            )
+            if result.returncode != 0 or not output.is_file():
+                raise RuntimeError("OPENGREP_EXECUTION_FAILED")
+            raw = output.read_bytes()
+            parsed = parse_rule_batch(raw, batch)
+            ref = artifacts.put_bytes(raw, "application/json")
+            self._store.save_opengrep_batch(
+                identity,
+                request.repository,
+                plan.fingerprint,
+                batch.key,
+                ref,
+                replaces=previous,
+            )
+            accepted.append((batch, ref, parsed))
+        return aggregate_rule_batches(plan, accepted)
+
+    async def _verify_opengrep_workspace(
+        self, workspace: Path, request: SimpleAnalysisRequest
+    ) -> None:
+        ready = workspace / ".sastsimi-ready.json"
+        try:
+            if ready.is_symlink() or json.loads(ready.read_text(encoding="utf-8")) != {
+                "repository": request.repository,
+                "commit": request.commit.lower(),
+            }:
+                raise RuntimeError("WORKSPACE_IDENTITY_CONFLICT")
+        except (OSError, ValueError) as error:
+            raise RuntimeError("WORKSPACE_IDENTITY_CONFLICT") from error
+        git = self._tool("git")
+        head = await self._process.run(
+            (git, "rev-parse", "HEAD"), cwd=workspace, timeout_seconds=30
         )
-        if result.returncode not in {0, 1} or not output.is_file():
-            raise RuntimeError("OPENGREP_EXECUTION_FAILED")
-        raw = output.read_bytes()
-        json.loads(raw)
-        return raw
+        if (
+            head.returncode != 0
+            or head.stdout.decode("ascii", errors="ignore").strip().lower()
+            != request.commit.lower()
+        ):
+            raise RuntimeError("GIT_COMMIT_MISMATCH")
+        status = await self._process.run(
+            (git, "status", "--porcelain=v1", "-z", "--untracked-files=all"),
+            cwd=workspace,
+            timeout_seconds=60,
+        )
+        if status.returncode != 0:
+            raise RuntimeError("GIT_STATUS_FAILED")
+        if any(
+            entry != b"?? .sastsimi-ready.json"
+            for entry in status.stdout.split(b"\0")
+            if entry
+        ):
+            raise RuntimeError("WORKSPACE_DIRTY")
 
     async def _run_codeql(
         self,

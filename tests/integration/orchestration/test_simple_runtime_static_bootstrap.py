@@ -18,7 +18,9 @@ from sastsimi.simple_runtime.bootstrap_stages import (
     ProcessResult,
 )
 from sastsimi.simple_runtime.models import CheckpointIdentity, StageFailure
+from sastsimi.simple_runtime.opengrep_rule_batches import plan_rule_batches
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
+from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
 class _Process:
@@ -115,6 +117,7 @@ class _RecordingProcess(_Process):
 
 
 def _profile(tmp_path: Path) -> SimpleExecutionProfile:
+    _write_rules(tmp_path, ("python.sql",))
     executable = tmp_path / "tool"
     executable.write_bytes(b"tool")
     binding = SimpleToolBinding(
@@ -138,6 +141,281 @@ def _profile(tmp_path: Path) -> SimpleExecutionProfile:
     )
 
 
+def _write_rules(root: Path, rule_ids: Sequence[str]) -> None:
+    rules = root / "opengrep" / "rules.yml"
+    rules.parent.mkdir(parents=True, exist_ok=True)
+    rules.write_text(
+        "rules:\n"
+        + "".join(
+            f"  - id: {rule_id}\n"
+            "    languages: [python]\n"
+            "    message: test\n"
+            "    severity: INFO\n"
+            "    pattern: db.execute(...)\n"
+            for rule_id in rule_ids
+        ),
+        encoding="utf-8",
+    )
+
+
+def _identity(analysis_id: str = "analysis-1") -> CheckpointIdentity:
+    return CheckpointIdentity(
+        analysis_id=analysis_id,
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+
+
+def _request(profile: SimpleExecutionProfile) -> SimpleAnalysisRequest:
+    return SimpleAnalysisRequest(
+        data_dir=profile.data_dir,
+        repository="https://example.invalid/repo.git",
+        commit="a" * 40,
+    )
+
+
+def _store(profile: SimpleExecutionProfile) -> SimpleCheckpointStore:
+    return SimpleCheckpointStore(profile.data_dir / "db" / "sastsimi.sqlite3")
+
+
+def _ready_workspace(tmp_path: Path, request: SimpleAnalysisRequest) -> Path:
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("db.execute(user)\n", encoding="utf-8")
+    (workspace / ".sastsimi-ready.json").write_text(
+        json.dumps({"repository": request.repository, "commit": request.commit}),
+        encoding="utf-8",
+    )
+    return workspace
+
+
+def _without_codeql(profile: SimpleExecutionProfile) -> SimpleExecutionProfile:
+    return profile.model_copy(
+        update={
+            "tools": {
+                name: tool for name, tool in profile.tools.items() if name != "codeql"
+            }
+        }
+    )
+
+
+class _BatchProcess(_Process):
+    def __init__(
+        self, rule_ids: Sequence[str], *, fail_second_once: bool = False
+    ) -> None:
+        self.rule_ids = tuple(rule_ids)
+        self.fail_second_once = fail_second_once
+        self.failed = False
+        self.scans: list[tuple[tuple[str, ...], Path | None, int]] = []
+
+    async def run(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        timeout_seconds: int,
+    ) -> ProcessResult:
+        if argv[1] != "scan":
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+        self.scans.append((tuple(argv), cwd, timeout_seconds))
+        if self.fail_second_once and len(self.scans) == 2 and not self.failed:
+            self.failed = True
+            raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+        excluded = {
+            argv[index + 1]
+            for index, value in enumerate(argv[:-1])
+            if value == "--exclude-rule"
+        }
+        output = Path(argv[argv.index("--output") + 1])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            json.dumps(
+                {
+                    "results": [
+                        {
+                            "check_id": rule_id,
+                            "path": str(Path(argv[-1]) / "app.py"),
+                            "start": {"line": 2},
+                        }
+                        for rule_id in self.rule_ids
+                        if rule_id not in excluded
+                    ],
+                    "errors": [],
+                    "paths": {"scanned": ["app.py"], "skipped": []},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return ProcessResult(0, b"", b"")
+
+
+@pytest.mark.asyncio
+async def test_all_batches_use_original_config_and_full_root(tmp_path: Path) -> None:
+    profile = _without_codeql(_profile(tmp_path))
+    rule_ids = tuple(f"python.rule{index}" for index in range(7))
+    _write_rules(tmp_path, rule_ids)
+    process = _BatchProcess(rule_ids)
+    identity = _identity()
+    result = await DirectStaticBootstrap(
+        profile=profile,
+        process=process,
+        store=_store(profile),
+        static_material_root=tmp_path,
+    ).run(_request(profile), identity)
+
+    assert len(process.scans) == 3
+    assert len({argv[argv.index("--output") + 1] for argv, _, _ in process.scans}) == 3
+    expected_batches = (rule_ids[:3], rule_ids[3:6], rule_ids[6:])
+    for (argv, cwd, _timeout), selected in zip(
+        process.scans, expected_batches, strict=True
+    ):
+        assert argv[argv.index("--config") + 1] == str(
+            tmp_path / "opengrep" / "rules.yml"
+        )
+        assert argv[-1] == str(profile.workspace_root / identity.workspace_id)
+        assert cwd == profile.workspace_root / identity.workspace_id
+        assert "--no-rewrite-rule-ids" in argv
+        excluded = {
+            argv[index + 1]
+            for index, value in enumerate(argv[:-1])
+            if value == "--exclude-rule"
+        }
+        assert excluded == set(rule_ids) - set(selected)
+
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    bundle = json.loads(artifacts.read(result.static_bundle_ref))
+    aggregate = json.loads(
+        artifacts.read(StoredDataRef.model_validate(bundle["tool_result_refs"][1]))
+    )
+    assert {item["check_id"] for item in aggregate["results"]} == set(rule_ids)
+    assert len(aggregate["batches"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_timeout_resume_reuses_first_batch(tmp_path: Path) -> None:
+    profile = _without_codeql(_profile(tmp_path))
+    rule_ids = tuple(f"python.rule{index}" for index in range(4))
+    _write_rules(tmp_path, rule_ids)
+    process = _BatchProcess(rule_ids, fail_second_once=True)
+    store = _store(profile)
+    identity = _identity("analysis-timeout")
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=process,
+        store=store,
+        static_material_root=tmp_path,
+    )
+    with pytest.raises(RuntimeError, match="EXTERNAL_TOOL_TIMEOUT"):
+        await bootstrap.run(_request(profile), identity)
+
+    plan = plan_rule_batches(
+        (tmp_path / "opengrep" / "rules.yml").read_bytes(),
+        tool_version=profile.tools["opengrep"].version,
+        executable_sha256=profile.tools["opengrep"].executable_sha256,
+    )
+    assert (
+        store.opengrep_batch_ref(
+            identity,
+            _request(profile).repository,
+            plan.fingerprint,
+            plan.batches[0].key,
+        )
+        is not None
+    )
+    assert (
+        store.opengrep_batch_ref(
+            identity,
+            _request(profile).repository,
+            plan.fingerprint,
+            plan.batches[1].key,
+        )
+        is None
+    )
+
+    result = await bootstrap.run(_request(profile), identity)
+    assert result.static_bundle_ref is not None
+    assert len(process.scans) == 3
+    first_output = process.scans[0][0][process.scans[0][0].index("--output") + 1]
+    assert (
+        sum(
+            argv[argv.index("--output") + 1] == first_output
+            for argv, _, _ in process.scans
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_opengrep_rejects_changed_workspace_before_cache_use(
+    tmp_path: Path,
+) -> None:
+    class DirtyProcess(_BatchProcess):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1:3] == ("status", "--porcelain=v1"):
+                return ProcessResult(0, b" M app.py\0", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    profile = _without_codeql(_profile(tmp_path))
+    process = DirtyProcess(("python.sql",))
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=process,
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="^WORKSPACE_DIRTY$"):
+        await bootstrap.run(_request(profile), _identity("analysis-dirty"))
+    assert process.scans == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damage", ["delete", "corrupt"])
+async def test_corrupt_cache_reexecutes_only_that_batch(
+    tmp_path: Path, damage: str
+) -> None:
+    profile = _without_codeql(_profile(tmp_path))
+    rule_ids = tuple(f"python.rule{index}" for index in range(4))
+    _write_rules(tmp_path, rule_ids)
+    process = _BatchProcess(rule_ids)
+    store = _store(profile)
+    identity = _identity("analysis-corrupt")
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=process,
+        store=store,
+        static_material_root=tmp_path,
+    )
+    await bootstrap.run(_request(profile), identity)
+    plan = plan_rule_batches(
+        (tmp_path / "opengrep" / "rules.yml").read_bytes(),
+        tool_version=profile.tools["opengrep"].version,
+        executable_sha256=profile.tools["opengrep"].executable_sha256,
+    )
+    ref = store.opengrep_batch_ref(
+        identity, _request(profile).repository, plan.fingerprint, plan.batches[0].key
+    )
+    assert ref is not None
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    path = artifacts.artifacts.path_for(ref.content_hash)
+    if damage == "delete":
+        path.unlink()
+    else:
+        path.write_bytes(b"corrupt")
+
+    await bootstrap.run(_request(profile), identity)
+
+    assert len(process.scans) == 3
+    assert json.loads(artifacts.read(ref))["errors"] == []
+
+
 @pytest.mark.asyncio
 async def test_clone_disables_host_autocrlf_for_container_workspaces(
     tmp_path: Path,
@@ -154,6 +432,7 @@ async def test_clone_disables_host_autocrlf_for_container_workspaces(
     await DirectStaticBootstrap(
         profile=profile,
         process=process,
+        store=_store(profile),
         static_material_root=tmp_path,
     ).run(
         SimpleAnalysisRequest(
@@ -215,6 +494,7 @@ async def test_real_static_tools_feed_exact_hypothesis_input(tmp_path: Path) -> 
     result = await DirectStaticBootstrap(
         profile=profile,
         process=_Process(),
+        store=_store(profile),
         static_material_root=tmp_path,
     ).run(
         SimpleAnalysisRequest(
@@ -251,7 +531,7 @@ async def test_real_static_tools_feed_exact_hypothesis_input(tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 async def test_opengrep_retry_rejects_stale_output(tmp_path: Path) -> None:
-    class NoOutputProcess:
+    class NoOutputProcess(_Process):
         async def run(
             self,
             argv: Sequence[str],
@@ -259,16 +539,25 @@ async def test_opengrep_retry_rejects_stale_output(tmp_path: Path) -> None:
             cwd: Path | None = None,
             timeout_seconds: int,
         ) -> ProcessResult:
-            del argv, cwd, timeout_seconds
-            return ProcessResult(0, b"", b"")
+            if argv[1] == "scan":
+                return ProcessResult(0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
 
     profile = _profile(tmp_path)
+    request = _request(profile)
+    identity = _identity("analysis-retry")
+    workspace = _ready_workspace(tmp_path, request)
+    plan = plan_rule_batches(
+        (tmp_path / "opengrep" / "rules.yml").read_bytes(),
+        tool_version=profile.tools["opengrep"].version,
+        executable_sha256=profile.tools["opengrep"].executable_sha256,
+    )
     output = (
         profile.data_dir
         / "process-output"
         / "simple-static"
         / "analysis-retry"
-        / "opengrep.json"
+        / f"opengrep-000-{plan.batches[0].key[:12]}.json"
     )
     output.parent.mkdir(parents=True)
     output.write_text('{"results":[{"stale":true}]}', encoding="utf-8")
@@ -276,12 +565,11 @@ async def test_opengrep_retry_rejects_stale_output(tmp_path: Path) -> None:
     bootstrap = DirectStaticBootstrap(
         profile=profile,
         process=NoOutputProcess(),
+        store=_store(profile),
         static_material_root=tmp_path,
     )
     with pytest.raises(RuntimeError, match="^OPENGREP_EXECUTION_FAILED$"):
-        await bootstrap._run_opengrep(
-            tmp_path / "checkout", profile.data_dir, "analysis-retry"
-        )
+        await bootstrap._run_opengrep(workspace, request, identity)
 
 
 @pytest.mark.asyncio
@@ -313,14 +601,14 @@ async def test_opengrep_timeout_respects_hour_cap_and_profile(
     bootstrap = DirectStaticBootstrap(
         profile=profile,
         process=process,
+        store=_store(profile),
         static_material_root=tmp_path,
     )
+    request = _request(profile)
+    workspace = _ready_workspace(tmp_path, request)
+    await bootstrap._run_opengrep(workspace, request, _identity("analysis-timeout"))
 
-    await bootstrap._run_opengrep(
-        tmp_path / "checkout", profile.data_dir, "analysis-timeout"
-    )
-
-    assert process.timeouts == [expected_timeout]
+    assert process.timeouts[-1] == expected_timeout
 
 
 @pytest.mark.asyncio
@@ -351,6 +639,7 @@ async def test_codeql_retry_rejects_stale_sarif(tmp_path: Path) -> None:
     bootstrap = DirectStaticBootstrap(
         profile=profile,
         process=NoOutputProcess(),
+        store=_store(profile),
         static_material_root=tmp_path,
     )
 
@@ -400,6 +689,7 @@ async def test_codeql_sarif_is_analysis_scoped(tmp_path: Path) -> None:
     bootstrap = DirectStaticBootstrap(
         profile=profile,
         process=process,
+        store=_store(profile),
         static_material_root=tmp_path,
     )
 

@@ -8,6 +8,7 @@ import stat
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -80,6 +81,38 @@ class SimpleArtifactRepository:
         if hashlib.sha256(payload).hexdigest() != ref.content_hash:
             raise ValueError("SIMPLE_RUNTIME_EXACT_REFERENCE_MISMATCH")
         return payload
+
+    def quarantine_corrupt(self, ref: StoredDataRef) -> bool:
+        """Move only a verified-invalid CAS file aside before an exact retry."""
+
+        self._require_scope(ref)
+        if (
+            ref.record_id is not None
+            or ref.data_kind != "artifact"
+            or str(ref.stored_data_id) != ref.content_hash
+        ):
+            raise ValueError("SIMPLE_RUNTIME_ARTIFACT_REF_INVALID")
+        path = self.artifacts.path_for(ref.content_hash)
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return False
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or int(getattr(info, "st_file_attributes", 0)) & 0x400
+            or not path.resolve(strict=True).is_relative_to(self.artifacts.root)
+        ):
+            raise ValueError("SIMPLE_RUNTIME_ARTIFACT_PATH_UNSAFE")
+        if hashlib.sha256(path.read_bytes()).hexdigest() == ref.content_hash:
+            return False
+        quarantine = self.paths.quarantine
+        if quarantine.is_symlink() or not quarantine.resolve().is_relative_to(
+            self.data_dir.resolve()
+        ):
+            raise ValueError("SIMPLE_RUNTIME_QUARANTINE_PATH_UNSAFE")
+        destination = quarantine / f"{ref.content_hash}-{uuid4().hex}"
+        os.replace(path, destination)
+        return True
 
     def read_bounded(self, ref: StoredDataRef, max_bytes: int) -> bytes:
         """Read a bounded exact CAS object for public attachment delivery."""

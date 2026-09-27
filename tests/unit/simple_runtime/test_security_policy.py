@@ -17,6 +17,7 @@ from sastsimi.simple_runtime.application import SimpleAnalysisRequest
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.github_policy import DiscoveredPolicy
 from sastsimi.simple_runtime.models import CheckpointIdentity
+from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from tests.integration.runtime_support import TestClock
 
 
@@ -119,6 +120,7 @@ async def test_static_bootstrap_persists_exact_policy_snapshot(
     bootstrap = bootstrap_stages.DirectStaticBootstrap(
         profile=profile,
         process=LocalProcessExecutor(),
+        store=SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3"),
         policy_discovery=discovery,
         static_material_root=tmp_path,
     )
