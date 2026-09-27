@@ -452,7 +452,9 @@ class DirectEnvironmentPreparer:
             dockerfile = self._portable_repository_dockerfile(
                 dockerfile_path.read_bytes()
             ) + (
-                b"\nUSER root\nWORKDIR /workspace\nCOPY . /workspace\n"
+                b"\nUSER root\n"
+                + self._service_layer()
+                + b"WORKDIR /workspace\nCOPY . /workspace\n"
                 + target_install
                 + self._test_dependency_layer()
                 + b"RUN chmod -R a+rX /workspace && mkdir -p /tmp "
@@ -700,6 +702,42 @@ class DirectEnvironmentPreparer:
             command = f"python -m pip install --no-cache-dir -r {path}"
         return f"RUN {command} || true\n".encode()
 
+    def _service_layer(self) -> bytes:
+        """Install a PostgreSQL server when the repository's database needs one.
+
+        taiga-back's models use PostgreSQL-only features and its test settings
+        name no SQLite fallback, so its own test harness cannot boot without a
+        server.  The container has no network, but a server the PoC starts on
+        127.0.0.1 as its own user is reachable; initdb refuses a uid with no
+        passwd entry, so the PoC user is given one.
+        """
+
+        if not self._uses_postgres():
+            return b""
+        return (
+            b"RUN (apt-get update && apt-get install -y --no-install-recommends "
+            b"postgresql && ln -sf /usr/lib/postgresql/*/bin/* /usr/local/bin/ "
+            b"&& rm -rf /var/lib/apt/lists/*) || true\n"
+            b"RUN (getent passwd 10001 || useradd -u 10001 -M -s /bin/sh sastsimi) "
+            b">/dev/null 2>&1 || true\n"
+        )
+
+    def _uses_postgres(self) -> bool:
+        for name in (
+            "pyproject.toml",
+            "requirements.txt",
+            *self._TEST_REQUIREMENT_FILES,
+        ):
+            try:
+                text = (self._workspace / name).read_text(
+                    encoding="utf-8", errors="ignore"
+                )
+            except OSError:
+                continue
+            if "psycopg" in text.lower():
+                return True
+        return False
+
     def _declared_test_requirements(self) -> list[str]:
         try:
             document = tomllib.loads(
@@ -812,6 +850,7 @@ class DirectEnvironmentPreparer:
         return (
             f"FROM python:{python_version}-slim\n"
             f"{build_tools}"
+            f"{self._service_layer().decode('utf-8') if install else ''}"
             "WORKDIR /workspace\n"
             "COPY . /workspace\n"
             f"{install_layer}\n"

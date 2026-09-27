@@ -541,3 +541,13 @@ def test_a_dev_requirements_file_is_the_fallback(tmp_path: Path) -> None:
     layer = _preparer(tmp_path)._test_dependency_layer().decode()
 
     assert "-r /workspace/requirements-devel.txt" in layer
+
+
+def test_a_postgres_backed_repository_gets_a_local_server(tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("Django==4.2\npsycopg2==2.9.11\n")
+
+    layer = _preparer(tmp_path)._service_layer().decode()
+
+    assert "postgresql" in layer
+    assert "useradd -u 10001" in layer
+    assert _preparer(tmp_path / "missing")._service_layer() == b""
