@@ -796,7 +796,11 @@ class ProConStage:
 You are the Pro Agent. Find only evidence that supports the exact vulnerability
 hypothesis. Trace source, propagation, sink, authorization and sanitizer facts.
 Cite supplied exact artifact content hashes. State missing code paths instead of
-inventing them.
+inventing them. When the flow can be entered through more than one route,
+mutation or handler, establish who may call each one from its own code - its
+decorator, permission class or declared permissions - and state them one by
+one; never give one requirement for a list of entry points you did not each
+check.
 `source_files` lists every source file in the checkout - that is the whole
 list, not a selection someone made for you. Put the repository-relative paths
 you want to read in `requested_paths`, and in `requested_ast_paths` the ones
@@ -818,10 +822,13 @@ when you have what you need.
             ast_facts=ast_facts,
             instructions="""
 You are the Con Agent in a new independent review. Search for concrete
-counterevidence: validation, sanitization, authorization, unreachable flows and
-false tool matches. Cite supplied exact artifact content hashes. Never weaken a
-claim merely because information is missing; record the gap in limitations and
-ask for the files that would settle it rather than guessing.
+counterevidence: validation, sanitization, authorization, unreachable flows,
+false tool matches, and the project's own stated intent. A README, a doc under
+docs/, an adjacent comment, or a test that pins the exact behavior as intended
+is counterevidence like any other; request it by path the same way you would
+request a source file. Cite supplied exact artifact content hashes. Never
+weaken a claim merely because information is missing; record the gap in
+limitations and ask for the files that would settle it rather than guessing.
 `source_files` lists every source file in the checkout - that is the whole
 list, not a selection someone made for you. Put the repository-relative paths
 you want to read in `requested_paths`, and in `requested_ast_paths` the ones
@@ -1003,6 +1010,32 @@ cannot, that is exactly the case for HOLD.
 TRUE also requires that attacker control of the source is established, not
 assumed. An unresolved condition that decides whether anyone but the operator
 can reach the flow is not a footnote to a TRUE; it is a HOLD.
+
+A PoC that stubs out the exact external component whose real behavior the
+impact turns on - a mocked HTTP endpoint standing in for the third-party
+service the hypothesis claims data reaches, a mocked library replacing the one
+whose real network policy is in question - has not observed that behavior; it
+has assumed it. So has a PoC that forces a race with an artificial barrier no
+real deployment would insert, rather than demonstrating the window exists under
+ordinary concurrency. Either is HOLD, with the specific real-system behavior
+that remains unconfirmed named in `unresolved_conditions`, not TRUE with it
+buried in `limitations`.
+
+List in `provided_capabilities` only an effect on someone or something outside
+the actor's own reach under `required_capabilities` - another user's data, an
+uninvolved third party, or the operator's own protected resources - or, for an
+effect confined to the actor's own resources, only one that same actor could
+not already produce directly through the feature's own documented front door.
+A required capability such as project write access already lets its holder set
+the same header, field, or content of their own project directly; a path that
+reaches that exact same outcome, for that same project, provides nothing new
+and does not belong in `provided_capabilities`. When nothing survives this
+check, `provided_capabilities` is empty and the verdict is FALSE, not TRUE.
+
+When several entry points reach the flow and require different privileges,
+`required_capabilities` names the least-privileged one the evidence actually
+establishes, and says which entry point that is; an entry point needing more
+is not evidence that the lesser one works.
 """
             + _COMMON_CONTRACT,
             schema=_object_schema(
@@ -1081,6 +1114,13 @@ You are the CWE Labeling Agent. Classify only the exact current final TRUE and
 validated dynamic evidence. Return the best root-cause CWE identifier, optional
 alternatives, rationale, and exact supporting artifact content hashes. Do not
 change the verdict or invent evidence.
+
+Label what the evidence demonstrated, not how the hypothesis was framed. Before
+choosing a race-condition class such as CWE-362 or CWE-367, check whether the
+validated PoC needed concurrent or interleaved execution at all; if it
+reproduces with the calls run one after another, the flaw is a missing
+reservation, check or workflow step, and that class (for example CWE-841) is
+the primary or at least a named alternative.
 """
             + _COMMON_CONTRACT,
             schema=_object_schema(
@@ -1422,6 +1462,9 @@ _PIPELINE_JARGON = frozenset(
         "initial verification",
         "final verification",
         "hypothesis-",
+        # A live saleor title ended "(Submission Withheld - Policy Excludes
+        # Unverified Automated Reports)".
+        "submission withheld",
     }
 )
 
@@ -1460,6 +1503,23 @@ limitations and uncertainty in both. The technical details must explain why
 the final verification verdict follows from the supplied Pro, Con, and PoC
 evidence. `review_items` is Korean-only - it is for the human here, not the
 maintainer.
+
+`impact` and `impact_en` state only what the supplied evidence chain directly
+confirmed, not a further consequence you infer from it - if the PoC confirmed
+a value was written to a record, stop there; do not add what a later,
+unverified process might then do with that record. A plausible next step
+belongs in `limitations`/`review_items` as an open question, not in `impact`
+as a stated consequence.
+
+`details` and `details_en` quote the vulnerable code itself - the exact lines
+from the supplied source, in a fenced code block with its file path - rather
+than only describing it; a maintainer checks a report against the code first.
+Quote only lines the supplied inputs contain.
+
+`title` and `title_en` name the flaw and where it is. They never carry a
+disclosure or review outcome ("withheld", "not for submission", a gate
+status) - that is recorded elsewhere - and never a CWE identifier, which has
+its own field.
 """
             + _COMMON_CONTRACT,
             schema=_object_schema(
