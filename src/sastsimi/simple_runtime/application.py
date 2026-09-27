@@ -431,7 +431,6 @@ class SimpleAnalysisApplication:
             stage is SimpleStage.STATIC_DONE
             and existing is not None
             and existing.status is StageStatus.BLOCKED
-            and existing.error_code == "STATIC_COVERAGE_INCOMPLETE"
             and not existing.retryable
         ):
             fingerprint_method = getattr(self._static, "coverage_fingerprint", None)

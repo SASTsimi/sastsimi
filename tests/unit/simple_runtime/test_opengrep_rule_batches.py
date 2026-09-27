@@ -142,7 +142,9 @@ def test_partial_json_can_be_inspected_without_weakening_strict_default() -> Non
         b'"type": "PartialParsing"}], "paths": {"scanned": '
         b'["a.py"], "skipped": []}}'
     )
-    assert len(parse_rule_batch(raw, batch, allow_errors=True)["errors"]) == 1
+    errors = parse_rule_batch(raw, batch, allow_errors=True)["errors"]
+    assert isinstance(errors, list)
+    assert len(errors) == 1
     with pytest.raises(ValueError, match="OPENGREP_PARTIAL_SCAN"):
         parse_rule_batch(raw, batch)
 

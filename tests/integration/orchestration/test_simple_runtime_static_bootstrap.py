@@ -5,7 +5,7 @@ import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -18,10 +18,12 @@ from sastsimi.simple_runtime.bootstrap_stages import (
     DirectHypothesisBootstrap,
     DirectStaticBootstrap,
     ProcessResult,
+    StaticCoverageBlocked,
 )
 from sastsimi.simple_runtime.models import CheckpointIdentity, StageFailure
 from sastsimi.simple_runtime.opengrep_rule_batches import plan_rule_batches
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
+from sastsimi.simple_runtime.static_coverage import plan_static_coverage
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
@@ -895,7 +897,7 @@ def _coverage_bootstrap(
     *,
     semgrep: bool = False,
     codeql: bool = True,
-):
+) -> tuple[DirectStaticBootstrap, SimpleExecutionProfile, SimpleCheckpointStore]:
     profile = _profile(tmp_path)
     tools = dict(profile.tools)
     if semgrep:
@@ -912,8 +914,186 @@ def _coverage_bootstrap(
 
 def _coverage_from_ref(
     profile: SimpleExecutionProfile, identity: CheckpointIdentity, ref: StoredDataRef
-) -> dict:
-    return json.loads(SimpleArtifactRepository(profile.data_dir, identity).read(ref))
+) -> dict[str, Any]:
+    return cast(
+        dict[str, Any],
+        json.loads(SimpleArtifactRepository(profile.data_dir, identity).read(ref)),
+    )
+
+
+@pytest.mark.asyncio
+async def test_opengrep_failure_blocks_even_without_applicable_file_rules(
+    tmp_path: Path,
+) -> None:
+    class NoApplicableSource(_CoverageProcess):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "clone":
+                root = Path(argv[-1])
+                root.mkdir(parents=True)
+                (root / "main.go").write_text("package main\n", encoding="utf-8")
+                return ProcessResult(0, b"", b"")
+            if argv[1:3] == ("ls-files", "-z"):
+                return ProcessResult(0, b"main.go\0", b"")
+            if argv[1] == "scan":
+                return ProcessResult(2, b"", b"scanner failed")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    bootstrap, profile, _store_ = _coverage_bootstrap(
+        tmp_path, NoApplicableSource(), codeql=False
+    )
+    with pytest.raises(StaticCoverageBlocked, match="OPENGREP_EXECUTION_FAILED"):
+        await bootstrap.run(_request(profile), _identity("empty-rule-failure"))
+
+
+@pytest.mark.asyncio
+async def test_dirty_checkout_cannot_be_completed_by_semgrep_fallback(
+    tmp_path: Path,
+) -> None:
+    class DirtyProcess(_CoverageProcess):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "status":
+                return ProcessResult(0, b" M app.py\0", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = DirtyProcess()
+    bootstrap, profile, _store_ = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    with pytest.raises(RuntimeError, match="WORKSPACE_DIRTY"):
+        await bootstrap.run(_request(profile), _identity("dirty-fallback"))
+    assert process.fallback_calls == []
+
+
+@pytest.mark.asyncio
+async def test_checkout_changed_after_preflight_skips_untrusted_fallback(
+    tmp_path: Path,
+) -> None:
+    class DirtyAfterPreflight(_CoverageProcess):
+        status_calls = 0
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "status":
+                self.status_calls += 1
+                return ProcessResult(
+                    0, b" M app.py\0" if self.status_calls > 1 else b"", b""
+                )
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = DirtyAfterPreflight()
+    bootstrap, profile, _store_ = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    with pytest.raises(RuntimeError, match="WORKSPACE_DIRTY"):
+        await bootstrap.run(_request(profile), _identity("late-dirty-fallback"))
+    assert process.status_calls >= 2
+    assert process.fallback_calls == []
+
+
+@pytest.mark.asyncio
+async def test_nonzero_opengrep_output_is_not_reused_as_success(
+    tmp_path: Path,
+) -> None:
+    class FailedThenSuccessful(_CoverageProcess):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--output" in argv:
+                self.opengrep_calls += 1
+                output = Path(argv[argv.index("--output") + 1])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [],
+                            "errors": [],
+                            "paths": {
+                                "scanned": ["app.py", "good.py"],
+                                "skipped": [],
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(2 if self.opengrep_calls == 1 else 0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = FailedThenSuccessful(parse_warning=False)
+    bootstrap, profile, _store_ = _coverage_bootstrap(tmp_path, process, codeql=False)
+    identity = _identity("nonzero-cache")
+    with pytest.raises(StaticCoverageBlocked, match="OPENGREP_EXECUTION_FAILED"):
+        await bootstrap.run(_request(profile), identity)
+    await bootstrap.run(_request(profile), identity)
+    assert process.opengrep_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_nonzero_opengrep_keeps_parseable_hit_as_provisional(
+    tmp_path: Path,
+) -> None:
+    class FailedWithHit(_CoverageProcess):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--output" in argv:
+                output = Path(argv[argv.index("--output") + 1])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [
+                                {
+                                    "check_id": "python.sql",
+                                    "path": "app.py",
+                                    "start": {"line": 1, "col": 1},
+                                }
+                            ],
+                            "errors": [],
+                            "paths": {
+                                "scanned": ["app.py", "good.py"],
+                                "skipped": [],
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(2, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    bootstrap, profile, _store_ = _coverage_bootstrap(
+        tmp_path, FailedWithHit(), codeql=False
+    )
+    identity = _identity("nonzero-provisional-hit")
+    with pytest.raises(StaticCoverageBlocked) as caught:
+        await bootstrap.run(_request(profile), identity)
+    bundle = _coverage_from_ref(profile, identity, caught.value.bundle_ref)
+    assert bundle["opengrep_findings"][0]["path"] == "app.py"
+    assert bundle["opengrep_findings"][0]["scan_incomplete"] is True
 
 
 @pytest.mark.asyncio
@@ -921,7 +1101,9 @@ async def test_codeql_runs_after_opengrep_partial_parse(tmp_path: Path) -> None:
     process = _CoverageProcess()
     bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process)
     identity = _identity("analysis-codeql-after-warning")
-    with pytest.raises(RuntimeError, match="STATIC_COVERAGE_INCOMPLETE") as caught:
+    with pytest.raises(
+        StaticCoverageBlocked, match="STATIC_COVERAGE_INCOMPLETE"
+    ) as caught:
         await bootstrap.run(_request(profile), identity)
     assert process.codeql_calls == 1
     report = _coverage_from_ref(profile, identity, caught.value.coverage_ref)
@@ -950,6 +1132,7 @@ async def test_semgrep_closes_only_failed_file_rule_pairs(tmp_path: Path) -> Non
     )
     assert report["expected_count"] == report["verified_count"] == 2
     assert report["gaps"] == []
+    assert report["engine_verified_counts"] == {"opengrep": 1, "semgrep": 1}
     assert {hit["engine"] for hit in bundle["opengrep_findings"]} == {
         "opengrep",
         "semgrep",
@@ -961,7 +1144,9 @@ async def test_codeql_survives_fallback_failure(tmp_path: Path) -> None:
     process = _CoverageProcess(fallback_fails=True)
     bootstrap, profile, store = _coverage_bootstrap(tmp_path, process, semgrep=True)
     identity = _identity("analysis-fallback-failed")
-    with pytest.raises(RuntimeError, match="SEMGREP_EXECUTION_FAILED") as caught:
+    with pytest.raises(
+        StaticCoverageBlocked, match="SEMGREP_EXECUTION_FAILED"
+    ) as caught:
         await bootstrap.run(_request(profile), identity)
     assert process.codeql_calls == 1
     bundle = _coverage_from_ref(profile, identity, caught.value.bundle_ref)
@@ -989,7 +1174,7 @@ async def test_codeql_failure_retains_ast_and_opengrep_evidence(tmp_path: Path) 
     process = _CoverageProcess(parse_warning=False, codeql_fails=True)
     bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process)
     identity = _identity("analysis-codeql-failed")
-    with pytest.raises(RuntimeError, match="CODEQL_ANALYZE_FAILED") as caught:
+    with pytest.raises(StaticCoverageBlocked, match="CODEQL_ANALYZE_FAILED") as caught:
         await bootstrap.run(_request(profile), identity)
     bundle = _coverage_from_ref(profile, identity, caught.value.bundle_ref)
     assert bundle["ast_summary"]["facts"]
@@ -1000,7 +1185,7 @@ async def test_codeql_failure_retains_ast_and_opengrep_evidence(tmp_path: Path) 
 
 @pytest.mark.asyncio
 async def test_ast_parse_errors_and_truncation_are_disclosed(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     process = _CoverageProcess(parse_warning=False, invalid_python=True)
     bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process, codeql=False)
@@ -1031,6 +1216,152 @@ async def test_resume_reuses_verified_batches_without_duplicate_findings(
     bundle = _coverage_from_ref(profile, identity, second.static_bundle_ref)
     assert len(bundle["opengrep_findings"]) == 2
     assert first.static_bundle_ref == second.static_bundle_ref
+
+
+@pytest.mark.asyncio
+async def test_resume_retries_partial_batch_when_file_was_not_scanned(
+    tmp_path: Path,
+) -> None:
+    class TemporarilyUnscanned(_CoverageProcess):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--output" in argv and self.opengrep_calls == 0:
+                self.opengrep_calls += 1
+                output = Path(argv[argv.index("--output") + 1])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [],
+                            "errors": [],
+                            "paths": {"scanned": ["good.py"], "skipped": []},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = TemporarilyUnscanned(parse_warning=False)
+    bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process, codeql=False)
+    identity = _identity("resume-unscanned")
+    with pytest.raises(StaticCoverageBlocked, match="STATIC_COVERAGE_INCOMPLETE"):
+        await bootstrap.run(_request(profile), identity)
+    await bootstrap.run(_request(profile), identity)
+    assert process.opengrep_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_cached_semgrep_coverage_requires_same_executable(
+    tmp_path: Path,
+) -> None:
+    process = _CoverageProcess()
+    bootstrap, profile, store = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    semgrep_path = tmp_path / "semgrep-test"
+    semgrep_path.write_bytes(b"semgrep-tool")
+    profile = profile.model_copy(
+        update={
+            "tools": {
+                **profile.tools,
+                "semgrep": SimpleToolBinding(
+                    executable_path=semgrep_path,
+                    version="test",
+                    executable_sha256=hashlib.sha256(b"semgrep-tool").hexdigest(),
+                ),
+            }
+        }
+    )
+    bootstrap = DirectStaticBootstrap(
+        profile=profile, process=process, store=store, static_material_root=tmp_path
+    )
+    identity = _identity("semgrep-tool-changed")
+    await bootstrap.run(_request(profile), identity)
+    assert len(process.fallback_calls) == 1
+    semgrep_path.write_bytes(b"changed-semgrep-tool")
+    with pytest.raises(StaticCoverageBlocked, match="SEMGREP_TOOL_UNAVAILABLE"):
+        await bootstrap.run(_request(profile), identity)
+    assert len(process.fallback_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_semgrep_fallback_chunks_share_one_elapsed_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [100.0]
+
+    class AdvancingFallback(_CoverageProcess):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--output" not in argv:
+                self.fallback_calls.append(tuple(argv))
+                targets = [arg for arg in argv if arg.startswith("file-")]
+                clock[0] += 2
+                return ProcessResult(
+                    0,
+                    json.dumps(
+                        {
+                            "results": [],
+                            "errors": [],
+                            "paths": {"scanned": targets, "skipped": []},
+                        }
+                    ).encode(),
+                    b"",
+                )
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = AdvancingFallback()
+    bootstrap, profile, _ = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    profile = profile.model_copy(update={"max_elapsed_seconds": 1})
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=process,
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+    identity = _identity("fallback-shared-deadline")
+    workspace = profile.workspace_root / identity.workspace_id
+    workspace.mkdir(parents=True)
+    files = [f"file-{index:02d}.py" for index in range(33)]
+    for file in files:
+        (workspace / file).write_text("x = 1\n", encoding="utf-8")
+    rules = tmp_path / "opengrep" / "rules.yml"
+    binding = profile.tools["opengrep"]
+    batches = plan_rule_batches(
+        rules.read_bytes(),
+        tool_version=binding.version,
+        executable_sha256=binding.executable_sha256,
+    )
+    coverage = plan_static_coverage(workspace, files, identity.commit_id, batches)
+    monkeypatch.setattr(
+        static_module, "time", SimpleNamespace(monotonic=lambda: clock[0])
+    )
+    slices, _refs, errors = await bootstrap._collect_semgrep(
+        workspace,
+        _request(profile),
+        identity,
+        batches,
+        coverage,
+        [],
+        rules,
+        SimpleArtifactRepository(profile.data_dir, identity),
+    )
+    assert len(process.fallback_calls) == 1
+    assert len(slices) == 1
+    assert errors == ["EXTERNAL_TOOL_TIMEOUT"]
 
 
 @pytest.mark.asyncio

@@ -98,6 +98,17 @@ class FindingReportView(ContractModel):
 
 
 class AnalysisDetailView(AnalysisSummaryView):
+    static_coverage_expected: int | None = None
+    static_coverage_verified: int | None = None
+    static_coverage_gap_count: int | None = None
+    static_coverage_gap_preview: tuple[dict[str, str], ...] = ()
+    static_coverage_unsupported: tuple[tuple[str, int], ...] = ()
+    static_ast_parse_error_count: int | None = None
+    static_ast_truncated: bool | None = None
+    static_coverage_engines: dict[str, int] = Field(default_factory=dict)
+    static_codeql_configured: bool | None = None
+    static_codeql_executed: bool | None = None
+    static_codeql_scope: str | None = None
     hypotheses: tuple[HypothesisProgressView, ...] = ()
     reports: tuple[FindingReportView, ...] = ()
 

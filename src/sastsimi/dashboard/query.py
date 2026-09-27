@@ -6,10 +6,11 @@ import json
 import re
 import sqlite3
 from collections import defaultdict
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal, cast, overload
 
 from sastsimi.config.runtime_paths import RuntimePaths
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.observability.agent_activity import AgentActivityEvent
 from sastsimi.progress.projector import ProgressProjector
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
@@ -47,6 +48,7 @@ from .models import (
 
 _ANALYSIS_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _DISPLAY_ID = re.compile(r"F-[0-9]{3,}\Z")
+_RULE_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}\Z")
 
 
 class DashboardNotFound(LookupError):
@@ -469,12 +471,156 @@ class DashboardQuery:
             updated_at=latest.updated_at,
         )
         if detail:
-            return AnalysisDetailView(
-                **data.model_dump(),
-                hypotheses=hypotheses,
-                reports=reports,
+            return AnalysisDetailView.model_validate(
+                {
+                    **data.model_dump(),
+                    **self._static_coverage_projection(values),
+                    "hypotheses": hypotheses,
+                    "reports": reports,
+                }
             )
         return data
+
+    def _static_coverage_projection(
+        self, checkpoints: list[StageCheckpoint]
+    ) -> dict[str, object]:
+        static = next(
+            (
+                item
+                for item in checkpoints
+                if item.stage is SimpleStage.STATIC_DONE
+                and item.identity.hypothesis_id is None
+            ),
+            None,
+        )
+        if static is None:
+            return {}
+        artifacts = SimpleArtifactRepository(self._data_dir, static.identity)
+        coverage: object = None
+        try:
+            if static.status is StageStatus.SUCCEEDED:
+                if len(static.output_refs) < 2:
+                    return {}
+                bundle = json.loads(artifacts.read(static.output_refs[1]))
+                if (
+                    not isinstance(bundle, dict)
+                    or bundle.get("kind") != "simple_static_fact_bundle"
+                ):
+                    return {}
+                coverage_ref = StoredDataRef.model_validate(
+                    bundle["static_coverage_ref"]
+                )
+                coverage = json.loads(artifacts.read(coverage_ref))
+            elif static.status is StageStatus.BLOCKED:
+                for ref in static.output_refs:
+                    candidate = json.loads(artifacts.read(ref))
+                    if (
+                        isinstance(candidate, dict)
+                        and candidate.get("kind") == "simple_static_coverage_v1"
+                    ):
+                        coverage = candidate
+                        break
+        except (OSError, ValueError, KeyError, TypeError):
+            return {}
+        if (
+            not isinstance(coverage, dict)
+            or coverage.get("kind") != "simple_static_coverage_v1"
+        ):
+            return {}
+        if (
+            coverage.get("analysis_id") != static.identity.analysis_id
+            or coverage.get("workspace_id") != static.identity.workspace_id
+            or coverage.get("commit_id") != static.identity.commit_id
+        ):
+            return {}
+        expected = coverage.get("expected_count")
+        verified = coverage.get("verified_count")
+        gaps = coverage.get("gaps")
+        if (
+            type(expected) is not int
+            or type(verified) is not int
+            or expected < 0
+            or verified < 0
+            or verified > expected
+            or not isinstance(gaps, list)
+            or len(gaps) != expected - verified
+        ):
+            return {}
+        preview: list[dict[str, str]] = []
+        for item in gaps[:100]:
+            if not isinstance(item, dict):
+                return {}
+            path = item.get("path")
+            rule_id = item.get("rule_id")
+            reason = item.get("reason")
+            if (
+                not isinstance(path, str)
+                or not path
+                or len(path) > 512
+                or path.startswith("/")
+                or ".." in PurePosixPath(path).parts
+                or "\\" in path
+                or ":" in path
+                or any(ord(character) < 32 for character in path)
+                or not isinstance(rule_id, str)
+                or not _RULE_NAME.fullmatch(rule_id)
+                or not isinstance(reason, str)
+                or not _RULE_NAME.fullmatch(reason)
+            ):
+                return {}
+            preview.append({"path": path, "rule_id": rule_id, "reason": reason})
+        raw_unsupported = coverage.get("unsupported", [])
+        if not isinstance(raw_unsupported, list):
+            return {}
+        unsupported: list[tuple[str, int]] = []
+        for item in raw_unsupported:
+            if not isinstance(item, dict):
+                return {}
+            extension = item.get("extension")
+            count = item.get("file_count")
+            if (
+                not isinstance(extension, str)
+                or not re.fullmatch(r"\.[A-Za-z0-9]{1,12}", extension)
+                or type(count) is not int
+                or count < 0
+            ):
+                return {}
+            unsupported.append((extension, count))
+        parse_count = coverage.get("ast_parse_error_count")
+        truncated = coverage.get("ast_truncated")
+        engines = coverage.get("engine_verified_counts", {})
+        codeql_configured = coverage.get("codeql_configured")
+        codeql_executed = coverage.get("codeql_executed")
+        codeql_scope = coverage.get("codeql_scope")
+        if (
+            type(parse_count) is not int
+            or parse_count < 0
+            or type(truncated) is not bool
+            or not isinstance(engines, dict)
+            or any(
+                name not in {"opengrep", "semgrep"}
+                or type(count) is not int
+                or count < 0
+                for name, count in engines.items()
+            )
+            or (codeql_configured is not None and type(codeql_configured) is not bool)
+            or (codeql_executed is not None and type(codeql_executed) is not bool)
+            or codeql_scope not in (None, "python_only")
+        ):
+            return {}
+        return {
+            "static_coverage_expected": expected,
+            "static_coverage_verified": verified,
+            "static_coverage_gap_count": len(gaps),
+            "static_coverage_gap_preview": tuple(preview),
+            "static_coverage_unsupported": tuple(unsupported),
+            "static_ast_parse_error_count": parse_count,
+            "static_ast_truncated": truncated,
+            "static_coverage_engines": engines,
+            "static_codeql_configured": codeql_configured,
+            "static_codeql_executed": codeql_executed,
+            "static_codeql_scope": codeql_scope,
+        }
 
     def _project_hypothesis(
         self,

@@ -55,6 +55,20 @@ def _verified_target(workspace: Path, raw: str) -> str:
     return relative.as_posix()
 
 
+def require_semgrep_tool(binding: SimpleToolBinding) -> None:
+    """Reject a missing or changed executable, including on cached-result reuse."""
+    executable = binding.executable_path
+    try:
+        digest = hashlib.sha256()
+        with executable.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as error:
+        raise RuntimeError("SEMGREP_TOOL_UNAVAILABLE") from error
+    if digest.hexdigest() != binding.executable_sha256:
+        raise RuntimeError("SEMGREP_TOOL_UNAVAILABLE")
+
+
 async def run_semgrep_fallback(
     process: ScanProcess,
     binding: SimpleToolBinding,
@@ -66,16 +80,8 @@ async def run_semgrep_fallback(
 ) -> bytes:
     """Run a bounded local-only scan; coverage validation is the caller's job."""
 
+    require_semgrep_tool(binding)
     executable = binding.executable_path
-    try:
-        digest = hashlib.sha256()
-        with executable.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except OSError as error:
-        raise RuntimeError("SEMGREP_TOOL_UNAVAILABLE") from error
-    if digest.hexdigest() != binding.executable_sha256:
-        raise RuntimeError("SEMGREP_TOOL_UNAVAILABLE")
     if not rules.is_file() or rules.suffix.lower() not in {".yml", ".yaml"}:
         raise RuntimeError("SEMGREP_RESULT_INVALID")
     if timeout_seconds < 1 or not targets:

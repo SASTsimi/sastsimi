@@ -717,18 +717,31 @@ async def test_partial_opengrep_scan_keeps_static_checkpoint_blocked(
     )
 
 
+@pytest.mark.parametrize(
+    "error_code",
+    (
+        "STATIC_COVERAGE_INCOMPLETE",
+        "SEMGREP_TOOL_UNAVAILABLE",
+        "SEMGREP_RESULT_INVALID",
+    ),
+)
 @pytest.mark.asyncio
 async def test_same_coverage_fingerprint_resume_keeps_evidence_without_retry(
     tmp_path: Path,
+    error_code: str,
 ) -> None:
     class DeterministicGap:
         calls = 0
         fingerprint = "coverage-one"
 
-        async def coverage_fingerprint(self, _request, _identity) -> str:
+        async def coverage_fingerprint(
+            self, _request: SimpleAnalysisRequest, _identity: CheckpointIdentity
+        ) -> str:
             return self.fingerprint
 
-        async def run(self, _request, identity):
+        async def run(
+            self, _request: SimpleAnalysisRequest, identity: CheckpointIdentity
+        ) -> StaticBootstrapResult:
             self.calls += 1
             artifacts = SimpleArtifactRepository(tmp_path, identity)
             coverage = artifacts.put_json(
@@ -747,9 +760,7 @@ async def test_same_coverage_fingerprint_resume_keeps_evidence_without_retry(
                 }
             )
             bundle = artifacts.put_json({"kind": "simple_static_fact_bundle"})
-            raise StaticCoverageBlocked(
-                "STATIC_COVERAGE_INCOMPLETE", coverage, bundle, retryable=False
-            )
+            raise StaticCoverageBlocked(error_code, coverage, bundle, retryable=False)
 
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
     static = DeterministicGap()

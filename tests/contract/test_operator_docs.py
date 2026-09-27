@@ -54,6 +54,22 @@ def test_opengrep_batch_resume_is_documented() -> None:
         assert "저장소별 별도 설정" in text
 
 
+def test_semgrep_fallback_windows_one_liners_and_gap_semantics_are_documented() -> None:
+    readme = _read("README.md")
+    usage = _read("docs/usage.md")
+    troubleshooting = _read("docs/troubleshooting.md")
+    combined = "\n".join((readme, usage, troubleshooting))
+    assert ".venv\\Scripts\\Activate.ps1" in combined
+    assert "python -m pip install semgrep" in combined
+    assert "--semgrep-fallback" in readme
+    assert "--semgrep-fallback" in usage
+    assert "--semgrep-fallback" in troubleshooting
+    assert "파일·규칙" in combined
+    assert "CodeQL" in combined
+    assert "`BLOCKED`" in combined
+    assert "`COMPLETE`" in combined
+
+
 def test_operator_docs_never_embed_a_credential_or_claim_preflight_is_active() -> None:
     installation = _read("docs/installation.md")
     provider = _read("docs/provider-setup.md")

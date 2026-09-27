@@ -78,6 +78,20 @@ codex login
 
 ## OpenGrep 또는 CodeQL 실패
 
+OpenGrep의 `PartialParsing`·구문 오류는 `paths.scanned`에 파일이 보여도 파일·규칙별 검사 완료가 아닙니다. 이때 AST와 설정된 CodeQL 결과는 계속 저장합니다. 대시보드의 정적 검사 항목에서 검증 수, 미검증 상대 경로·규칙·이유를 확인하세요. 범위 밖 언어는 별도 표시하며 Python-only CodeQL을 OpenGrep 규칙의 대체 증거로 세지 않습니다. 누락이 남으면 `COMPLETE`로 바꾸지 않고 `BLOCKED`를 유지합니다.
+
+선택형 Semgrep CE를 쓰려면 Windows PowerShell의 `.venv`에서 각 줄을 한 줄 명령으로 실행합니다. `setup`을 다시 실행할 때 기존 제한·모델 옵션도 필요하면 함께 지정하세요. 분석 중에는 Semgrep을 자동 설치하거나 원격 규칙을 받지 않습니다.
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m pip install semgrep
+semgrep --version
+sastsimi setup --non-interactive --auth subscription --provider codex --model gpt-6-sol --profile full --docker-network none --semgrep-fallback
+sastsimi resume A-001
+```
+
+Semgrep 미설정은 `SEMGREP_TOOL_UNAVAILABLE`, 실행 실패는 `SEMGREP_EXECUTION_FAILED`, 잘못되거나 잘린 JSON은 `SEMGREP_RESULT_INVALID`로 남습니다. 실행 오류는 취약점 반증이 아닙니다. 같은 입력의 결정적 파싱 누락만 있으면 `resume`으로 반복하지 않으며, 규칙·추적 파일·도구 지문이 바뀐 뒤 재개할 수 있습니다.
+
 `sastsimi setup`을 다시 실행해 현재 실행 파일을 확인합니다. Full profile의 CodeQL은 Python database를 만들고 제한된 query suite를 실행하므로 첫 분석에 시간이 걸릴 수 있습니다. 같은 저장소와 commit의 성공 결과는 재개 시 재사용합니다.
 
 큰 저장소에서는 `sastsimi status A-001 --format json`의 `current_stage`가

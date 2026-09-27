@@ -10,13 +10,14 @@ from pathlib import Path
 import pytest
 
 from sastsimi.composition.simple_process import LocalProcessExecutor
-from sastsimi.config.user_config import SimpleExecutionProfile
+from sastsimi.config.user_config import SimpleExecutionProfile, SimpleToolBinding
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime import bootstrap_stages
 from sastsimi.simple_runtime.application import SimpleAnalysisRequest
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.github_policy import DiscoveredPolicy
 from sastsimi.simple_runtime.models import CheckpointIdentity
+from sastsimi.simple_runtime.static_coverage import CoverageSlice
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from tests.integration.runtime_support import TestClock
 
@@ -78,6 +79,13 @@ async def test_static_bootstrap_persists_exact_policy_snapshot(
 ) -> None:
     body = b"# Reporting rules\n" if status == "FOUND" else None
     clock = TestClock()
+    scanner = tmp_path / "mock-opengrep"
+    scanner.write_bytes(b"mock scanner")
+    rules = tmp_path / "opengrep" / "rules.yml"
+    rules.parent.mkdir(parents=True)
+    rules.write_text(
+        "rules:\n  - id: python.test\n    languages: [python]\n", encoding="utf-8"
+    )
 
     class Discovery:
         calls = 0
@@ -114,7 +122,13 @@ async def test_static_bootstrap_persists_exact_policy_snapshot(
         max_tokens=1000,
         max_elapsed_seconds=3600,
         docker_network="NONE",
-        tools={},
+        tools={
+            "opengrep": SimpleToolBinding(
+                executable_path=scanner,
+                version="test",
+                executable_sha256=hashlib.sha256(b"mock scanner").hexdigest(),
+            )
+        },
     )
     discovery = Discovery()
     bootstrap = bootstrap_stages.DirectStaticBootstrap(
@@ -128,17 +142,25 @@ async def test_static_bootstrap_persists_exact_policy_snapshot(
     async def no_repository(_request: object, _workspace: object) -> None:
         return None
 
+    async def no_workspace_verification(_workspace: object, _request: object) -> None:
+        return None
+
     async def no_files(_workspace: object) -> tuple[str, ...]:
         return ()
 
-    async def opengrep(_workspace: object, _data_dir: object, _id: object) -> bytes:
-        return b'{"results": []}'
+    async def no_scan(
+        *_args: object,
+    ) -> tuple[list[CoverageSlice], list[StoredDataRef], list[str]]:
+        return [], [], []
 
     monkeypatch.setattr(bootstrap, "_prepare_repository", no_repository)
+    monkeypatch.setattr(
+        bootstrap, "_verify_opengrep_workspace", no_workspace_verification
+    )
     monkeypatch.setattr(bootstrap, "_tracked_files", no_files)
     monkeypatch.setattr(bootstrap, "_repository_profile", lambda _tracked: {})
     monkeypatch.setattr(bootstrap, "_python_ast", lambda _workspace, _tracked: {})
-    monkeypatch.setattr(bootstrap, "_run_opengrep", opengrep)
+    monkeypatch.setattr(bootstrap, "_collect_opengrep", no_scan)
     identity = CheckpointIdentity(
         analysis_id="analysis-1",
         workspace_id="workspace-1",

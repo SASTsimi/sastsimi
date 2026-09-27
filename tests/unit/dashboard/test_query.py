@@ -135,6 +135,108 @@ def test_query_projects_current_progress_without_cross_analysis_data(tmp_path) -
     )
 
 
+def _static_identity() -> CheckpointIdentity:
+    return CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+
+
+def _attach_static_coverage(tmp_path: Path, *, blocked: bool, corrupt: bool = False):
+    identity = _static_identity()
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    gaps = [
+        {
+            "path": f"src/file-{index}.ts",
+            "rule_id": "rule.js",
+            "reason": "parse_or_scan_error",
+        }
+        for index in range(105)
+    ]
+    coverage_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_coverage_v1",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "fingerprint": "f" * 64,
+            "expected_count": 110,
+            "verified_count": 5,
+            "gaps": gaps,
+            "unsupported": [{"extension": ".go", "file_count": 3}],
+            "ast_parse_error_count": 2,
+            "ast_truncated": True,
+            "codeql_configured": True,
+            "codeql_executed": not blocked,
+            "codeql_scope": "python_only",
+        }
+    )
+    bundle_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_fact_bundle",
+            "static_coverage_ref": coverage_ref.model_dump(mode="json"),
+        }
+    )
+    if corrupt:
+        artifacts.artifacts.path_for(coverage_ref.content_hash).write_bytes(b"corrupt")
+    refs = (
+        (coverage_ref, bundle_ref)
+        if blocked
+        else (artifacts.put_json({"kind": "simple_repository_profile"}), bundle_ref)
+    )
+    SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3").save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.STATIC_DONE,
+            status=StageStatus.BLOCKED if blocked else StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=refs,
+            error_code="STATIC_COVERAGE_INCOMPLETE" if blocked else None,
+            retryable=False,
+        )
+    )
+    return coverage_ref
+
+
+@pytest.mark.parametrize("blocked", [False, True])
+def test_static_coverage_summary_shows_bounded_relative_gaps(
+    tmp_path: Path,
+    blocked: bool,
+) -> None:
+    seed(tmp_path)
+    _attach_static_coverage(tmp_path, blocked=blocked)
+    detail = DashboardQuery(tmp_path).get_analysis("analysis-a")
+    assert detail.static_coverage_expected == 110
+    assert detail.static_coverage_verified == 5
+    assert detail.static_coverage_gap_count == 105
+    assert len(detail.static_coverage_gap_preview) == 100
+    assert detail.static_coverage_gap_preview[0] == {
+        "path": "src/file-0.ts",
+        "rule_id": "rule.js",
+        "reason": "parse_or_scan_error",
+    }
+    assert "C:\\" not in detail.model_dump_json()
+    assert detail.static_coverage_unsupported == ((".go", 3),)
+    assert detail.static_ast_parse_error_count == 2
+    assert detail.static_ast_truncated is True
+    assert detail.static_codeql_configured is True
+    assert detail.static_codeql_executed is (not blocked)
+    assert detail.static_codeql_scope == "python_only"
+
+
+def test_corrupt_static_coverage_is_unavailable_not_complete(tmp_path: Path) -> None:
+    seed(tmp_path)
+    _attach_static_coverage(tmp_path, blocked=True, corrupt=True)
+    detail = DashboardQuery(tmp_path).get_analysis("analysis-a")
+    assert detail.static_coverage_expected is None
+    assert detail.static_coverage_verified is None
+    assert detail.static_coverage_gap_count is None
+    assert detail.static_coverage_gap_preview == ()
+
+
 def test_report_path_rejects_traversal_and_unknown_report(tmp_path) -> None:
     seed(tmp_path)
     query = DashboardQuery(tmp_path)

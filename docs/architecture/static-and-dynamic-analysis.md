@@ -5,6 +5,13 @@
 Repository Loader는 URL 또는 로컬 경로의 저장소를 고정 commit으로 준비하고 추적 파일을
 기준으로 언어와 package manifest를 식별합니다. AST, OpenGrep과 활성화 조건을 충족한
 CodeQL 결과를 `StaticFactBundle`로 정규화합니다.
+SimpleRuntime의 OpenGrep은 로컬 규칙을 묶음별로 실행하며 고정 commit의 추적 파일과
+규칙 언어를 결합한 `파일 × 규칙` 커버리지 artifact를 남깁니다. 도구가 0건을 찾았더라도
+파일을 실제 검사하고 해당 규칙을 건너뛰지 않았으며 파싱 오류가 없을 때만 검증된
+조합으로 셉니다. OpenGrep 실패 뒤에도 AST와 설정된 CodeQL 결과를 독립 수집합니다.
+선택형 Semgrep CE는 미검증 조합만 동일한 로컬 규칙으로 재검사하며, 읽을 수 없는
+추적 소스나 미검증 조합이 남으면 정적 단계는 `BLOCKED`입니다. 현재 CodeQL 질의는
+Python만 대상으로 하며 OpenGrep 규칙의 커버리지 대체 증거가 아닙니다.
 
 동적 재현은 RepositoryProfile, 코드 근거와 Verification 요구를 이용해 환경 recipe와
 PoC 후보를 만들고 Docker에서 실행합니다. 작성된 script는 PoC 후보이며, 같은 attempt와
@@ -21,7 +28,11 @@ Pro·Con·초기 Verification 근거도 앞쪽에 배치합니다.
 
 - 저장소 준비와 profile: `src/sastsimi/static_analysis/repository_loader.py`,
   `src/sastsimi/static_analysis/repository_profile.py`
-- AST·OpenGrep·CodeQL: `src/sastsimi/static_analysis`
+- 기존 AST·OpenGrep·CodeQL 구성 요소: `src/sastsimi/static_analysis`
+- SimpleRuntime 정적 실행·커버리지·대체 검사:
+  `src/sastsimi/simple_runtime/bootstrap_stages.py`,
+  `src/sastsimi/simple_runtime/static_coverage.py`,
+  `src/sastsimi/simple_runtime/semgrep_fallback.py`
 - 정적 실행 구성: `src/sastsimi/composition/simple_runtime_composition.py`
 - PoC 검사: `src/sastsimi/simple_runtime/poc.py`
 - 요청 소스 경계: `src/sastsimi/simple_runtime/retrieval.py`,

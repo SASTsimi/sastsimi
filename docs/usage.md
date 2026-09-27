@@ -52,6 +52,19 @@ sastsimi resume A-001
 
 `resume`은 저장된 성공 결과와 같은 commit의 Docker image를 재사용하고 실패하거나 끝나지 않은 단계부터 이어갑니다. 성공한 clone·정적 분석·가설·Pro·Con을 다시 실행하지 않습니다.
 OpenGrep 규칙 묶음은 원본 규칙 파일과 동일한 전체 저장소 루트를 순차 검사합니다. 중단 뒤 `sastsimi resume A-001`을 실행하면 정확한 분석 ID·저장소·commit·도구 지문과 CAS가 일치하는 완료된 묶음만 재사용합니다. 한 묶음이 실패하거나 시간 초과되면 전체 성공 전에는 `STATIC_DONE`이 `BLOCKED`이고 가설·Finding·보고서를 생성하지 않습니다. 저장소별 별도 설정은 필요 없지만 묶음별 시작 비용 때문에 총 실행시간이 늘 수 있으며, 모든 저장소의 `COMPLETE`는 보장하지 않습니다.
+파싱 경고 파일이 `paths.scanned`에 있어도 해당 파일·규칙은 완료로 세지 않습니다. OpenGrep이 실패해도 Python AST와 설정된 CodeQL을 독립 실행해 성공 결과를 보존합니다. 선택형 Semgrep CE는 미검증 파일·규칙 조합만 같은 로컬 규칙으로 재검사하고, Semgrep마저 실패·건너뛰면 누락 목록을 남긴 채 `BLOCKED`입니다. 동일한 입력·도구 지문의 결정적 파싱 누락은 `resume`으로 무한 반복하지 않으며, 규칙·추적 파일·도구 지문이 바뀌면 필요한 범위를 다시 검사합니다.
+
+Windows PowerShell의 선택형 설정 명령은 각각 한 줄입니다. `.venv`를 활성화한 터미널에서 실행하고 기존 `setup`의 사용 제한·모델 옵션이 있다면 다시 지정하세요. [Semgrep CE](https://semgrep.dev/products/community-edition/)는 Windows에서 Python으로 설치할 수 있고 로컬 규칙 실행에 로그인이 필요하지 않습니다.
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m pip install semgrep
+semgrep --version
+sastsimi setup --non-interactive --auth subscription --provider codex --model gpt-6-sol --profile full --docker-network none --semgrep-fallback
+sastsimi resume A-001
+```
+
+설정 변경 전 이미 진행 중인 분석은 먼저 종료될 때까지 기다리세요. `--semgrep-fallback`을 사용하지 않으면 Semgrep은 필수가 아니며, 누락이 있으면 명확히 `BLOCKED`로 표시됩니다.
 최초 분석에서 수집해 저장한 공식 정책도 분석마다 하나의 고정된 snapshot으로 재사용합니다. `resume`은 정책을 다시 조회하지 않으며, 인터넷의 정책이 바뀌었더라도 이전 Scope Gate와 PoC 기록을 조용히 바꾸지 않습니다. 새 정책으로 판단하려면 새 분석을 시작합니다.
 같은 분석을 다른 PowerShell에서 이미 실행 중이면 두 번째 `resume`은 중복 분석을 시작하지 않고 현재 상태와 `ANALYSIS_ALREADY_RUNNING` 이유를 반환합니다. 첫 번째 프로세스가 끝난 뒤 다시 재개할 수 있습니다. 잠금은 프로세스가 비정상 종료돼도 운영체제가 해제합니다.
 자동 복구 횟수를 이미 소진한 PoC는 `resume`만으로 새 시도를 만들지 않습니다. 실행 오류는 계속 `BLOCKED`로 남고 취약점 `FALSE` 판정이 아닙니다. 다만 과거 기록의 마지막 PoC가 정상 실행됐고 근거 부족 해석이 정확한 artifact로 검증되면, 명시적 `resume`에서 그 가설만 `INCONCLUSIVE`로 종결할 수 있습니다.
@@ -85,6 +98,7 @@ sastsimi dashboard
 - Finding과 기존 Markdown 보고서 링크; 검증된 새 보고서라면 영문·국문·PoC·근거 파일 및 ZIP 다운로드 링크
 - Scope Gate의 정책 수집 상태, 출처 URL·개정, 다섯 검토 항목의 판정·인용·이유와 비공개 제보 조건 표시
 - Provider별 호출 수·확인된 토큰/비용·비용 미제공 호출 수와 추가 사용량 가능성
+- 정적 검사 파일·규칙 검증 수, 엔진별 검증 수, 최대 100개의 상대 경로·누락 이유, 알려진 소스 확장자 중 현재 규칙 범위 밖인 파일, Python AST 파싱 오류와 CodeQL의 Python-only 범위
 
 대시보드는 저장 데이터를 읽기만 합니다. 취소·재시도·판정 변경·공개 승인을 수행하지 않으며 기본적으로 외부 네트워크에 공개하지 않습니다.
 

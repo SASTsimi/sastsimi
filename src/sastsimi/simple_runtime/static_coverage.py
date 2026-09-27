@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-from collections import Counter
+import json
+from collections import Counter, deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,8 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 
 from .opengrep_rule_batches import RuleBatch, RuleBatchPlan, parse_rule_batch
+
+_SNIPPET_LIMIT = 500
 
 _POLICY_VERSION = 1
 _LANGUAGE_EXTENSIONS: dict[str, frozenset[str]] = {
@@ -58,6 +61,7 @@ class StaticCoveragePlan:
     workspace: Path
     fingerprint: str
     expected_pairs: frozenset[Pair]
+    unavailable_pairs: frozenset[Pair]
     unsupported: tuple[tuple[str, int], ...]
     excluded_paths: tuple[str, ...]
 
@@ -138,15 +142,34 @@ def plan_static_coverage(
 
     if len(rules.rule_ids) != len(rules.rule_languages):
         raise ValueError("STATIC_COVERAGE_RULE_METADATA_INVALID")
+    if any(
+        language not in _LANGUAGE_EXTENSIONS
+        for languages in rules.rule_languages
+        for language in languages
+    ):
+        raise ValueError("STATIC_COVERAGE_LANGUAGE_UNSUPPORTED")
     pairs: set[Pair] = set()
+    unavailable_pairs: set[Pair] = set()
     excluded: set[str] = set()
     unsupported: Counter[str] = Counter()
     known = frozenset().union(*_LANGUAGE_EXTENSIONS.values())
     for raw in sorted(set(tracked)):
+        if (
+            not raw
+            or "\\" in raw
+            or ":" in raw
+            or any(ord(character) < 32 for character in raw)
+            or any(part in {"", ".", ".."} for part in raw.split("/"))
+            or Path(raw).is_absolute()
+        ):
+            raise ValueError("STATIC_COVERAGE_TRACKED_PATH_INVALID")
         relative = _safe_relative(workspace, raw)
         if relative is None:
             excluded.add(raw)
-            continue
+            relative = raw
+            unavailable = True
+        else:
+            unavailable = False
         extension = Path(relative).suffix.lower()
         matched = False
         for rule_id, languages in zip(
@@ -157,6 +180,8 @@ def plan_static_coverage(
                 for language in languages
             ):
                 pairs.add((relative, rule_id))
+                if unavailable:
+                    unavailable_pairs.add((relative, rule_id))
                 matched = True
         if not matched and extension in _KNOWN_SOURCE_EXTENSIONS | known:
             unsupported[extension] += 1
@@ -179,6 +204,7 @@ def plan_static_coverage(
         workspace=workspace.resolve(),
         fingerprint=fingerprint,
         expected_pairs=frozenset(pairs),
+        unavailable_pairs=frozenset(unavailable_pairs),
         unsupported=tuple(sorted(unsupported.items())),
         excluded_paths=tuple(sorted(excluded)),
     )
@@ -219,7 +245,9 @@ def assess_scan(
     allowed = {
         pair
         for pair in plan.expected_pairs
-        if pair[1] in batch.rule_ids and (target_set is None or pair[0] in target_set)
+        if pair not in plan.unavailable_pairs
+        and pair[1] in batch.rule_ids
+        and (target_set is None or pair[0] in target_set)
     }
     reasons: dict[Pair, str] = {}
     errors = parsed.get("errors", [])
@@ -236,9 +264,8 @@ def assess_scan(
             for pair in allowed:
                 reasons[pair] = "unlocated_scan_error"
             continue
-        rule_id = error.get("check_id", error.get("rule_id"))
         for pair in allowed:
-            if pair[0] == path and (rule_id is None or pair[1] == rule_id):
+            if pair[0] == path:
                 reasons[pair] = "parse_or_scan_error"
     skipped_rules = parsed.get("skipped_rules", [])
     if not isinstance(skipped_rules, list):
@@ -254,6 +281,9 @@ def assess_scan(
         for pair in allowed:
             if pair[0] == path:
                 reasons[pair] = "skipped_file"
+    verified = frozenset(
+        pair for pair in allowed if pair[0] in scanned and pair not in reasons
+    )
     normalized_results: list[dict[str, object]] = []
     for result in cast(list[dict[str, object]], parsed["results"]):
         path_value = result["path"]
@@ -264,10 +294,15 @@ def assess_scan(
         )
         if relative is None:
             raise ValueError("STATIC_SCAN_RESULT_PATH_INVALID")
-        normalized_results.append({**result, "path": relative})
-    verified = frozenset(
-        pair for pair in allowed if pair[0] in scanned and pair not in reasons
-    )
+        pair = (relative, cast(str, result["check_id"]))
+        if pair in allowed:
+            normalized_results.append(
+                {
+                    **result,
+                    "path": relative,
+                    "scan_incomplete": pair not in verified,
+                }
+            )
     return CoverageSlice(
         engine=engine,
         batch_key=batch.key,
@@ -279,11 +314,7 @@ def assess_scan(
             )
         ),
         parsed=parsed,
-        normalized_results=tuple(
-            item
-            for item in normalized_results
-            if (cast(str, item["path"]), cast(str, item["check_id"])) in verified
-        ),
+        normalized_results=tuple(normalized_results),
     )
 
 
@@ -293,14 +324,20 @@ def finish_coverage(
     verified = (
         set().union(*(slice_.verified_pairs for slice_ in slices)) if slices else set()
     )
-    verified &= plan.expected_pairs
+    verified &= plan.expected_pairs - plan.unavailable_pairs
     reasons = {
         (path, rule_id): reason
         for slice_ in slices
         for path, rule_id, reason in slice_.gap_reasons
     }
     gaps = tuple(
-        CoverageGap(path, rule_id, reasons.get((path, rule_id), "not_scanned"))
+        CoverageGap(
+            path,
+            rule_id,
+            "source_unavailable"
+            if (path, rule_id) in plan.unavailable_pairs
+            else reasons.get((path, rule_id), "not_scanned"),
+        )
         for path, rule_id in sorted(plan.expected_pairs - verified)
     )
     return StaticCoverageReport(
@@ -311,3 +348,99 @@ def finish_coverage(
         unsupported=plan.unsupported,
         excluded_paths=plan.excluded_paths,
     )
+
+
+def _candidate_hit_key(item: dict[str, object]) -> tuple[str, int, str]:
+    path = item.get("path")
+    start = item.get("start")
+    line = start.get("line") if isinstance(start, dict) else None
+    encoded = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+    return (
+        path if isinstance(path, str) else "",
+        line if type(line) is int else 0,
+        encoded,
+    )
+
+
+def merge_static_candidates(
+    plan: RuleBatchPlan, slices: Sequence[CoverageSlice]
+) -> bytes:
+    """Deduplicate verified hits while preserving fair per-rule visibility."""
+
+    buckets: dict[str, deque[dict[str, object]]] = {
+        rule_id: deque() for rule_id in plan.rule_ids
+    }
+    seen: dict[tuple[str, str, str, str], dict[str, object]] = {}
+    batches: list[dict[str, object]] = []
+    for slice_ in slices:
+        for item in sorted(slice_.normalized_results, key=_candidate_hit_key):
+            rule_id = item.get("check_id")
+            path = item.get("path")
+            start = item.get("start")
+            line = start.get("line") if isinstance(start, dict) else None
+            if (
+                not isinstance(rule_id, str)
+                or rule_id not in buckets
+                or not isinstance(path, str)
+                or type(line) is not int
+            ):
+                raise ValueError("STATIC_CANDIDATE_INVALID")
+            key = (
+                rule_id,
+                path,
+                json.dumps(start, ensure_ascii=False, sort_keys=True),
+                json.dumps(item.get("end"), ensure_ascii=False, sort_keys=True),
+            )
+            candidate = {**item, "engine": slice_.engine, "engines": [slice_.engine]}
+            previous = seen.get(key)
+            if previous is None:
+                seen[key] = candidate
+                buckets[rule_id].append(candidate)
+            else:
+                engines = cast(list[str], previous["engines"])
+                if slice_.engine not in engines:
+                    engines.append(slice_.engine)
+                if previous.get("scan_incomplete") and not candidate.get(
+                    "scan_incomplete"
+                ):
+                    previous.update(candidate)
+                    previous["engines"] = engines
+        batches.append(
+            {
+                "key": slice_.batch_key,
+                "rule_ids": slice_.rule_ids,
+                "engine": slice_.engine,
+                "raw_ref": (
+                    slice_.raw_ref.model_dump(mode="json")
+                    if slice_.raw_ref is not None
+                    else None
+                ),
+                "paths": slice_.parsed.get("paths", {}),
+                "errors": slice_.parsed.get("errors", []),
+            }
+        )
+    merged: list[dict[str, object]] = []
+    active = list(plan.rule_ids)
+    while active:
+        following: list[str] = []
+        for rule_id in active:
+            if buckets[rule_id]:
+                merged.append(buckets[rule_id].popleft())
+            if buckets[rule_id]:
+                following.append(rule_id)
+        active = following
+    return json.dumps(
+        {
+            "kind": "simple_static_merged_candidates_v1",
+            "plan_fingerprint": plan.fingerprint,
+            "rule_ids": plan.rule_ids,
+            "results": merged,
+            "errors": [],
+            "batches": batches,
+            "candidate_snippet_limit": _SNIPPET_LIMIT,
+            "candidate_snippets_truncated": len(merged) > _SNIPPET_LIMIT,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")

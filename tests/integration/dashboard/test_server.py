@@ -132,6 +132,62 @@ def test_server_is_local_read_only_and_serves_current_state(tmp_path) -> None:
         )
 
 
+def test_server_exposes_bounded_static_coverage_for_blocked_run(tmp_path) -> None:
+    seed(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    coverage_ref = SimpleArtifactRepository(tmp_path, identity).put_json(
+        {
+            "kind": "simple_static_coverage_v1",
+            "analysis_id": "analysis-1",
+            "workspace_id": "workspace-1",
+            "commit_id": "commit-1",
+            "fingerprint": "f" * 64,
+            "expected_count": 2,
+            "verified_count": 1,
+            "gaps": [
+                {
+                    "path": "src/app.ts",
+                    "rule_id": "rule.js",
+                    "reason": "parse_or_scan_error",
+                }
+            ],
+            "unsupported": [],
+            "ast_parse_error_count": 0,
+            "ast_truncated": False,
+            "codeql_configured": True,
+            "codeql_executed": False,
+            "codeql_scope": "python_only",
+        }
+    )
+    SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3").save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.STATIC_DONE,
+            status=StageStatus.BLOCKED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(coverage_ref,),
+            error_code="STATIC_COVERAGE_INCOMPLETE",
+            retryable=False,
+        )
+    )
+    with running_server(tmp_path) as base:
+        payload = json.loads(request(f"{base}/api/analyses/A-001").read())
+    assert payload["static_coverage_expected"] == 2
+    assert payload["static_coverage_verified"] == 1
+    assert payload["static_codeql_configured"] is True
+    assert payload["static_codeql_executed"] is False
+    assert payload["static_codeql_scope"] == "python_only"
+    assert payload["static_coverage_gap_preview"] == [
+        {"path": "src/app.ts", "rule_id": "rule.js", "reason": "parse_or_scan_error"}
+    ]
+
+
 def test_server_restricts_persisted_legacy_allow_markdown(tmp_path) -> None:
     seed(tmp_path)
     identity = CheckpointIdentity(

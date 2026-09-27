@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -15,8 +16,7 @@ class _Result:
     def __init__(
         self,
         stdout: bytes = (
-            b'{"results": [], "errors": [], '
-            b'"paths": {"scanned": [], "skipped": []}}'
+            b'{"results": [], "errors": [], "paths": {"scanned": [], "skipped": []}}'
         ),
         returncode: int = 0,
     ) -> None:
@@ -30,7 +30,13 @@ class _Process:
         self.result = result
         self.calls: list[tuple[tuple[str, ...], Path | None, int]] = []
 
-    async def run(self, argv, *, cwd=None, timeout_seconds: int):
+    async def run(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        timeout_seconds: int,
+    ) -> _Result:
         self.calls.append((tuple(argv), cwd, timeout_seconds))
         if isinstance(self.result, BaseException):
             raise self.result

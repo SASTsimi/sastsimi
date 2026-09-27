@@ -9,6 +9,7 @@
 - OpenGrep CLI
 - Docker Desktop 또는 Docker Engine
 - Full profile: 호환 query pack이 포함된 공식 CodeQL platform bundle
+- 선택형 파일·규칙 재검사를 켠 경우에만: Semgrep CE (`python -m pip install semgrep`)
 - 회원 로그인 사용 시: 공식 Codex CLI
 
 각 프로그램은 현재 컴퓨터의 `PATH`에서 실행 가능해야 합니다.

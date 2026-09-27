@@ -19,6 +19,7 @@
 ## 핵심 특징
 
 - **근거 중심 검토**: AST·OpenGrep·CodeQL이 수집한 코드 위치와 흐름을 바탕으로 AI가 취약점 가설과 찬성·반대 근거를 검토합니다.
+- **정적 검사 누락 표시**: 파일·규칙별 OpenGrep 검사 상태를 확인하고, 미검증 파일·규칙 조합만 선택형 Semgrep CE로 재검사합니다. 미검증 조합은 대시보드에 남기고 `BLOCKED`로 처리합니다.
 - **실행으로 확인하는 PoC**: Agent가 요청한 고정 commit의 Git 추적 소스만 제한적으로 확인하고 Docker에서 재현합니다. 최종 `TRUE` 판정에는 실행에 성공한 validated PoC가 필요합니다.
 - **연계형 취약점 탐색**: 이미 확인한 취약 조건을 연결해 더 큰 영향으로 이어지는 새 가설을 검증합니다.
 - **중단 지점부터 재개**: 성공한 저장소 준비·정적 분석·Agent 결과·Docker 이미지는 재사용하고 실패한 단계부터 이어서 실행합니다. Technical Gate의 근거 보완 요청은 새 PoC 후보부터 다시 검증합니다.
@@ -37,6 +38,7 @@
 - OpenAI API 또는 공식 Codex CLI 회원 로그인
 - Cursor 사용 시 공식 CLI의 본인 계정 로그인 (선택적으로 개인 API 키 또는 Team 서비스 계정 API 키)
 - CodeQL 공식 platform bundle과 query pack (`full` 프로필 사용 시 필수)
+- Semgrep CE (`--semgrep-fallback`을 선택한 경우에만 필요)
 
 자세한 운영체제별 설치 방법은 [설치 문서](docs/installation.md)를 확인하세요.
 
@@ -64,6 +66,15 @@ sastsimi setup --non-interactive --auth subscription --provider codex --model gp
 
 `setup`은 기본 저장 위치, Provider·모델, 분석 도구, 사용 제한과 Docker 네트워크를 구성합니다. Codex에서 모델을 생략하면 새 설정의 기본 제안은 `gpt-6-sol`이며, 기존 설치 설정은 자동으로 바뀌지 않습니다. 다른 모델은 `--model`로 지정하세요. API key와 로그인 token은 설정 파일에 직접 저장하지 않습니다. `full`에는 CodeQL query pack이 필요합니다.
 
+OpenGrep 파싱 오류를 만났을 때 실패한 파일·규칙만 로컬 Semgrep CE로 재검사하려면, 분석 시작 전에 다음 PowerShell 한 줄 명령들을 순서대로 실행합니다. Semgrep은 기본값에서는 사용하지 않으며, `setup`을 다시 실행하면 기존 사용자 설정이 갱신되므로 다른 제한·모델 옵션도 필요에 맞게 함께 지정하세요. 로컬 규칙만 사용하며 분석 중 자동 설치나 계정 로그인은 하지 않습니다.
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m pip install semgrep
+semgrep --version
+sastsimi setup --non-interactive --auth subscription --provider codex --model gpt-6-sol --profile full --docker-network none --semgrep-fallback
+```
+
 API를 사용한다면 key는 환경변수로 전달합니다.
 
 ```powershell
@@ -87,7 +98,7 @@ sastsimi analyze https://github.com/owner/repository.git --commit <정확한-40�
 
 큰 저장소는 정적 도구가 실행되는 동안 `STATIC_DONE` 단계에 진행률 `0%`가 표시될 수 있습니다. `RUNNING`이면 상태를 확인하며 기다리고, 기존 실행이 종료된 뒤에만 `resume`하세요. 정적 분석 시간 초과와 복구 방법은 [오류 해결](docs/troubleshooting.md#opengrep-또는-codeql-실패)을 참고하세요.
 
-OpenGrep 규칙 묶음은 원본 규칙과 동일한 저장소 범위를 순차 검사합니다. 시간 초과 후 같은 분석을 `resume`하면 검증된 완료된 묶음은 재사용하고 남은 묶음부터 이어갑니다. 한 묶음이 실패하거나 시간 초과되면 전체 성공 전에는 정적 단계가 `BLOCKED`이며 가설·Finding·보고서를 만들지 않습니다. 저장소별 별도 설정은 필요 없습니다. 다만 묶음 실행으로 총 검사 시간이 늘 수 있고, 모든 저장소의 `COMPLETE`를 보장하지는 않습니다.
+OpenGrep 규칙 묶음은 원본 규칙과 동일한 저장소 범위를 순차 검사합니다. 시간 초과 후 같은 분석을 `resume`하면 검증된 완료된 묶음은 재사용하고 남은 묶음부터 이어갑니다. 파싱 경고가 있으면 해당 파일·규칙 조합을 미검증으로 남기며, 선택형 Semgrep이 실제 재검사한 조합만 보완합니다. OpenGrep이 실패해도 AST와 설정된 CodeQL 결과는 보존합니다. 파일·규칙별 누락이 남으면 전체 성공 전에는 정적 단계가 `BLOCKED`이며 가설·Finding·보고서를 만들지 않습니다. 대시보드에서 미검증 경로·이유와 알려진 소스 확장자 중 현재 규칙 범위 밖인 파일을 확인할 수 있습니다. 저장소별 별도 설정은 필요 없습니다. 다만 묶음 실행으로 총 검사 시간이 늘 수 있고, 모든 저장소의 `COMPLETE`를 보장하지는 않습니다.
 
 ```powershell
 sastsimi status A-001
@@ -150,6 +161,7 @@ Reporter는 검증 결과, CWE, validated PoC와 Gate 결과에 없는 새로운
 ## 지원 범위와 한계
 
 - 현재 첫 통합 검증 대상은 Python 저장소이며 Python 3.12가 필요합니다.
+- 현재 CodeQL은 Python query suite만 실행합니다. JavaScript/TypeScript는 OpenGrep 규칙의 적용 범위이며, AST·CodeQL 결과를 해당 규칙의 대체 검사 증거로 간주하지 않습니다.
 - Windows clean wheel 환경과 WSL/Linux Docker 흐름을 확인했지만, 설치한 컴퓨터에서 `sastsimi setup`으로 외부 도구와 인증 상태를 다시 확인해야 합니다.
 - CodeQL은 query pack이 포함된 공식 platform bundle이 필요합니다. 준비되지 않으면 `full` 프로필을 활성화하지 않습니다.
 - 인증 실패, 도구 미설치, timeout, Docker build 실패와 LLM 출력 오류는 취약점 `FALSE`로 바꾸지 않고 `BLOCKED` 또는 판정 없는 `FAILED`로 기록합니다.

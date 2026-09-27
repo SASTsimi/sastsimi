@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12.x (`>=3.12,<3.13`), Pydantic, SQLite, pytest, OpenGrep 1.30.0, optional local Semgrep CE CLI, PowerShell on Windows.
 
-**Spec:** `docs/superpowers/specs/2026-09-27-generic-static-coverage-fallback-design.md`
+**Spec:** `docs/plans/2026-09-27-generic-static-coverage-fallback-design.md`
 
 ## Global Constraints
 
