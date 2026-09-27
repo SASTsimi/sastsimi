@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -25,6 +26,7 @@ from sastsimi.observability.agent_activity import (
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.sandbox.docker_adapter import DockerAdapter, DockerOperationError
 
+from .affected_versions import AffectedVersions, find_affected_versions
 from .artifacts import SimpleArtifactRepository
 from .chaining import PrimitiveAdmissionStage, SimpleChainingStage
 from .exploration import MAX_ROUNDS, Exploration, render_round
@@ -1482,10 +1484,14 @@ class ReporterStage:
         # The executing account's own email, when known; checked directly
         # against both saved reports regardless of what the model wrote.
         operator_identity: frozenset[str] = frozenset(),
+        # The analyzed checkout, whose release tags say which versions ship
+        # the confirmed code; without it the version fields stay placeholders.
+        workspace: Path | None = None,
     ) -> None:
         self._artifacts = artifacts
         self._repository = repository
         self._operator_identity = operator_identity
+        self._workspace = workspace
         self._stage = _StructuredStage(
             client=client,
             call_timeout_ms=call_timeout_ms,
@@ -1571,9 +1577,12 @@ its own field.
         if dynamic is None or dynamic.validated_poc_ref is None:
             raise ValueError("REPORT_VALIDATED_POC_MISSING")
         result, draft_ref = await self._stage.call(checkpoint, _prior_refs(prior))
-        rendered = self._render(result.value, checkpoint, prior, finding.output_refs[0])
+        versions = await self._affected_versions(checkpoint, prior)
+        rendered = self._render(
+            result.value, checkpoint, prior, finding.output_refs[0], versions
+        )
         submission = self._render_submission(
-            result.value, checkpoint, prior, finding.output_refs[0]
+            result.value, checkpoint, prior, finding.output_refs[0], versions
         )
         for candidate, is_submission in ((rendered, False), (submission, True)):
             text = candidate.decode("utf-8")
@@ -1630,12 +1639,62 @@ its own field.
             ),
         )
 
+    async def _affected_versions(
+        self,
+        checkpoint: StageCheckpoint,
+        prior: Mapping[SimpleStage, StageCheckpoint],
+    ) -> AffectedVersions | None:
+        pro_con = prior.get(SimpleStage.PRO_CON_DONE)
+        if self._workspace is None or pro_con is None:
+            return None
+        locations: list[tuple[str, int, int]] = []
+        for ref in pro_con.input_refs:
+            try:
+                value = json.loads(self._artifacts.read(ref))
+            except (OSError, UnicodeError, ValueError):
+                continue
+            if not isinstance(value, dict) or value.get("kind") != (
+                "simple_hypothesis_proposal"
+            ):
+                continue
+            proposal = value.get("proposal")
+            targets = (
+                proposal.get("target_locations") if isinstance(proposal, dict) else None
+            )
+            for item in targets if isinstance(targets, list) else ():
+                if isinstance(item, dict):
+                    path, start, end = (
+                        item.get("file_path"),
+                        item.get("start_line"),
+                        item.get("end_line"),
+                    )
+                    if (
+                        isinstance(path, str)
+                        and isinstance(start, int)
+                        and isinstance(end, int)
+                    ):
+                        locations.append((path, start, end))
+        if not locations:
+            return None
+        try:
+            return await asyncio.to_thread(
+                find_affected_versions,
+                self._workspace,
+                checkpoint.identity.commit_id,
+                locations,
+            )
+        except (OSError, ValueError, subprocess.SubprocessError):
+            # A version range is a convenience for the human; its absence
+            # leaves the placeholder rather than failing a confirmed report.
+            return None
+
     def _render(
         self,
         value: Mapping[str, JsonValue],
         checkpoint: StageCheckpoint,
         prior: Mapping[SimpleStage, StageCheckpoint],
         finding_ref: StoredDataRef,
+        versions: AffectedVersions | None = None,
     ) -> bytes:
         poc = self._validated_poc(prior)
         cwe = self._result(prior[SimpleStage.CWE_DONE].output_refs[0])
@@ -1654,6 +1713,10 @@ its own field.
             f"- Hypothesis: `{checkpoint.identity.hypothesis_id}`",
             f"- Finding: `{finding_ref.content_hash}`",
             f"- CWE: `{cwe.get('primary_cwe', 'UNCLASSIFIED')}`",
+            "- 영향 버전(태그별 동일 코드 확인): "
+            + (
+                versions.affected_line() if versions else "확인 불가 - 사람이 확인 필요"
+            ),
             "",
             str(value["summary"]),
             "",
@@ -1755,6 +1818,7 @@ its own field.
         checkpoint: StageCheckpoint,
         prior: Mapping[SimpleStage, StageCheckpoint],
         finding_ref: StoredDataRef,
+        versions: AffectedVersions | None = None,
     ) -> bytes:
         """Render the clean English report a maintainer outside sastsimi reads.
 
@@ -1814,7 +1878,8 @@ its own field.
             f"- Component: {', '.join(entities) or '<fill in>'}",
             "- Endpoint / Feature: <fill in>",
             f"- Environment: commit `{checkpoint.identity.commit_id}`",
-            "- Affected versions: <fill in>",
+            "- Affected versions: "
+            + (versions.affected_line() if versions else "<fill in>"),
             "- Fixed versions: <fill in>",
             "",
             "### Technical Details",
@@ -2034,6 +2099,7 @@ def build_stage_handlers(
             call_timeout_ms=call_timeout_ms,
             repository=repository,
             operator_identity=operator_identity,
+            workspace=workspace,
         ),
     }
     if store is not None:
