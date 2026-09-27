@@ -248,6 +248,61 @@ class SimpleCheckpointStore:
             return None
         return self._valid_opengrep_batch_ref(identity, row["ref_json"])
 
+    def opengrep_partial_refs(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprints: frozenset[str],
+        batch_key: str,
+    ) -> tuple[StoredDataRef, ...]:
+        """Return separately proven partial raws for the same scoped batch."""
+
+        self._opengrep_batch_key(identity, repository, "partial", batch_key)
+        if not fingerprints:
+            return ()
+        prefix = f"{batch_key}:partial:"
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT fingerprint, ref_json FROM simple_opengrep_batch_progress "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND repository = ? AND substr(batch_key, 1, ?) = ? "
+                "ORDER BY rowid DESC",
+                (
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    repository,
+                    len(prefix),
+                    prefix,
+                ),
+            ).fetchall()
+        refs: list[StoredDataRef] = []
+        for row in rows:
+            if row["fingerprint"] not in fingerprints:
+                continue
+            ref = self._valid_opengrep_batch_ref(identity, row["ref_json"])
+            if ref is not None and ref not in refs:
+                refs.append(ref)
+        return tuple(refs)
+
+    def save_opengrep_partial_proof(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str,
+        batch_key: str,
+        ref: StoredDataRef,
+    ) -> None:
+        """Keep complementary exit-zero partial evidence across resumes."""
+
+        self.save_opengrep_batch(
+            identity,
+            repository,
+            fingerprint,
+            f"{batch_key}:partial:{ref.content_hash}",
+            ref,
+        )
+
     def save_opengrep_batch(
         self,
         identity: CheckpointIdentity,

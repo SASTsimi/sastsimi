@@ -39,7 +39,11 @@ from .semgrep_fallback import (
     require_semgrep_tool,
     run_semgrep_fallback,
 )
-from .semgrep_fallback_plan import plan_semgrep_target_chunks
+from .semgrep_fallback_plan import (
+    MAX_SEMGREP_COMMAND_UTF16_UNITS,
+    plan_semgrep_target_chunks,
+    semgrep_command_utf16_units,
+)
 from .static_coverage import (
     CoverageSlice,
     StaticCoveragePlan,
@@ -884,12 +888,21 @@ class DirectStaticBootstrap:
                         )
                     )
                 ),
+                *self._store.opengrep_partial_refs(
+                    identity,
+                    request.repository,
+                    frozenset(
+                        compatible_old_fingerprints | {coverage_plan.fingerprint}
+                    ),
+                    batch.key,
+                ),
             ):
                 if ref is not None and ref not in cached_refs:
                     cached_refs.append(ref)
             reused = False
             prior_partial: CoverageSlice | None = None
             prior_partial_ref: StoredDataRef | None = None
+            safe_partials: list[tuple[CoverageSlice, StoredDataRef]] = []
             for ref in cached_refs:
                 try:
                     raw = artifacts.read(ref)
@@ -900,49 +913,87 @@ class DirectStaticBootstrap:
                     continue
                 if ref == previous and parsed.get("errors"):
                     continue
-                if (
-                    attempt is not None
-                    and attempt.status == "BLOCKED"
-                    and ref == reusable_attempt_ref
-                    and not self._reusable_parse_warning(
-                        slice_,
-                        expected,
-                        allow_unscanned=self._profile.semgrep_fallback,
+                complete = expected.issubset(slice_.verified_pairs)
+                if complete:
+                    self._require_opengrep_tool(binding)
+                    slices.append(replace(slice_, raw_ref=ref))
+                    refs.append(ref)
+                    self._store.save_static_scan_attempt(
+                        identity,
+                        request.repository,
+                        coverage_plan.fingerprint,
+                        "opengrep",
+                        batch.key,
+                        "SUCCEEDED",
+                        ref,
+                        None,
+                        None,
                     )
-                ):
+                    reused = True
+                    break
+                safe_partial = (
+                    self._reusable_parse_warning(slice_, expected, allow_unscanned=True)
+                    if parsed.get("errors")
+                    else not slice_.gap_reasons
+                )
+                if safe_partial:
+                    safe_partials.append((replace(slice_, raw_ref=ref), ref))
+                elif prior_partial is None:
                     prior_partial = replace(slice_, raw_ref=ref)
                     prior_partial_ref = ref
-                    continue
-                self._require_opengrep_tool(binding)
-                slices.append(replace(slice_, raw_ref=ref))
-                refs.append(ref)
-                complete = expected.issubset(slice_.verified_pairs)
-                code = None if complete else "OPENGREP_PARTIAL_SCAN"
-                if code is not None:
-                    errors.append(code)
-                self._store.save_static_scan_attempt(
-                    identity,
-                    request.repository,
-                    coverage_plan.fingerprint,
-                    "opengrep",
-                    batch.key,
-                    "SUCCEEDED" if complete else "BLOCKED",
-                    ref,
-                    None,
-                    code,
-                )
-                reused = True
-                break
             if reused:
                 continue
+            if safe_partials:
+                self._require_opengrep_tool(binding)
+                cached_verified = frozenset().union(
+                    *(item.verified_pairs for item, _ref in safe_partials)
+                )
+                remaining_pairs = expected - cached_verified
+                parser_pairs = {
+                    (path, rule_id)
+                    for item, _ref in safe_partials
+                    for path, rule_id, reason in item.gap_reasons
+                    if reason == "parse_or_scan_error"
+                }
+                for item, ref in safe_partials:
+                    slices.append(item)
+                    refs.append(ref)
+                    self._store.save_opengrep_partial_proof(
+                        identity,
+                        request.repository,
+                        coverage_plan.fingerprint,
+                        batch.key,
+                        ref,
+                    )
+                prior_partial, prior_partial_ref = safe_partials[0]
+                if (
+                    not remaining_pairs
+                    or self._profile.semgrep_fallback
+                    or remaining_pairs <= parser_pairs
+                ):
+                    if remaining_pairs:
+                        errors.append("OPENGREP_PARTIAL_SCAN")
+                    self._store.save_static_scan_attempt(
+                        identity,
+                        request.repository,
+                        coverage_plan.fingerprint,
+                        "opengrep",
+                        batch.key,
+                        "BLOCKED",
+                        prior_partial_ref,
+                        None,
+                        "OPENGREP_PARTIAL_SCAN",
+                    )
+                    continue
             remaining = int(deadline - time.monotonic())
             if remaining < 1:
                 code = "EXTERNAL_TOOL_TIMEOUT"
                 errors.append(code)
                 if prior_partial is not None and prior_partial_ref is not None:
                     self._record_gap_slice(batch, expected, code, slices)
-                    slices.append(prior_partial)
-                    refs.append(prior_partial_ref)
+                    if prior_partial_ref not in refs:
+                        slices.append(prior_partial)
+                        refs.append(prior_partial_ref)
                     self._store.save_static_scan_attempt(
                         identity,
                         request.repository,
@@ -1034,8 +1085,16 @@ class DirectStaticBootstrap:
                 if retained_previous:
                     assert prior_partial is not None
                     assert prior_partial_ref is not None
-                    slices.append(prior_partial)
-                    refs.append(prior_partial_ref)
+                    if prior_partial_ref not in refs:
+                        slices.append(prior_partial)
+                        refs.append(prior_partial_ref)
+                    self._store.save_opengrep_partial_proof(
+                        identity,
+                        request.repository,
+                        coverage_plan.fingerprint,
+                        batch.key,
+                        raw_ref,
+                    )
                 complete = expected.issubset(
                     slice_.verified_pairs
                     | (
@@ -1076,8 +1135,9 @@ class DirectStaticBootstrap:
                 if not provisional_recorded:
                     self._record_gap_slice(batch, expected, code, slices)
                 if prior_partial is not None and prior_partial_ref is not None:
-                    slices.append(prior_partial)
-                    refs.append(prior_partial_ref)
+                    if prior_partial_ref not in refs:
+                        slices.append(prior_partial)
+                        refs.append(prior_partial_ref)
                 self._store.save_static_scan_attempt(
                     identity,
                     request.repository,
@@ -1436,6 +1496,7 @@ class DirectStaticBootstrap:
                     retry_timeout: bool = False,
                     _original: RuleBatch = original,
                     _verified: set[tuple[str, str]] = verified,
+                    _placeholder: Path = placeholder,
                 ) -> None:
                     nonlocal node_budget
                     batch = make_batch(
@@ -1473,14 +1534,58 @@ class DirectStaticBootstrap:
                         refs.append(previous.raw_ref)
                         _verified.update(cached.verified_pairs)
                         code = previous.error_code
-                    elif previous is not None and previous.error_code not in {
-                        None,
-                        "SEMGREP_PARTIAL_SCAN",
-                    }:
-                        code = previous.error_code
-                        if previous.raw_ref is not None:
-                            refs.append(previous.raw_ref)
                     else:
+                        # A failed attempt is not proof about this file/rule pair.
+                        # Explicit resume may retry it; the per-run node budget and
+                        # shared deadline still bound repeated tool failures.
+                        if previous is not None and previous.raw_ref is not None:
+                            refs.append(previous.raw_ref)
+                        try:
+                            planned_argv = build_semgrep_argv(
+                                binding,
+                                workspace,
+                                rules,
+                                targets,
+                                batch.excluded_rule_ids,
+                                _placeholder,
+                                30 if retry_timeout else None,
+                                targets_verified=True,
+                            )
+                            if (
+                                semgrep_command_utf16_units(planned_argv)
+                                > MAX_SEMGREP_COMMAND_UTF16_UNITS
+                            ):
+                                raise RuntimeError("SEMGREP_COMMAND_TOO_LONG")
+                        except (OSError, RuntimeError, ValueError) as error:
+                            code = self._safe_static_error(
+                                error, "SEMGREP_RESULT_INVALID"
+                            )
+                            if code == "SEMGREP_COMMAND_TOO_LONG" and len(targets) > 1:
+                                midpoint = len(targets) // 2
+                                await run_node(
+                                    targets[:midpoint],
+                                    rule_ids,
+                                    retry_timeout=retry_timeout,
+                                )
+                                await run_node(
+                                    targets[midpoint:],
+                                    rule_ids,
+                                    retry_timeout=retry_timeout,
+                                )
+                            else:
+                                record_unproved(batch, pending, code)
+                                self._store.save_static_scan_attempt(
+                                    identity,
+                                    request.repository,
+                                    coverage_plan.fingerprint,
+                                    "semgrep",
+                                    batch.key,
+                                    "BLOCKED",
+                                    None,
+                                    None,
+                                    code,
+                                )
+                            return
                         raw_ref: StoredDataRef | None = None
                         try:
                             raw = await run_semgrep_fallback(

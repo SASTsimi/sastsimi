@@ -258,3 +258,49 @@ def test_static_attempt_run_key_lookup_is_newest_first_and_exactly_scoped(
             )
             == ()
         )
+
+
+def test_opengrep_partial_proofs_are_scoped_and_do_not_claim_completed_batch(
+    tmp_path: Path,
+) -> None:
+    identity = _identity()
+    store = SimpleCheckpointStore(tmp_path / "checkpoints.sqlite3")
+    first = _ref(tmp_path, identity, b"first-partial")
+    second = _ref(tmp_path, identity, b"second-partial")
+    store.save_opengrep_partial_proof(
+        identity, "owner/repo", "fingerprint-a", "batch-1", first
+    )
+    store.save_opengrep_partial_proof(
+        identity, "owner/repo", "fingerprint-b", "batch-1", second
+    )
+    assert (
+        store.opengrep_batch_ref(identity, "owner/repo", "fingerprint-a", "batch-1")
+        is None
+    )
+    assert store.opengrep_partial_refs(
+        identity, "owner/repo", frozenset({"fingerprint-a"}), "batch-1"
+    ) == (first,)
+    assert store.opengrep_partial_refs(
+        identity,
+        "owner/repo",
+        frozenset({"fingerprint-a", "fingerprint-b"}),
+        "batch-1",
+    ) == (second, first)
+    assert (
+        store.opengrep_partial_refs(
+            _identity(analysis_id="another"),
+            "owner/repo",
+            frozenset({"fingerprint-a", "fingerprint-b"}),
+            "batch-1",
+        )
+        == ()
+    )
+    assert (
+        store.opengrep_partial_refs(
+            identity,
+            "owner/other",
+            frozenset({"fingerprint-a", "fingerprint-b"}),
+            "batch-1",
+        )
+        == ()
+    )

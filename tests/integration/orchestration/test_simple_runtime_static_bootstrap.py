@@ -1191,6 +1191,70 @@ async def test_single_file_timeout_gets_one_bounded_retry(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_timeout_retry_rechecks_windows_command_length(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempts = [0]
+
+    def time_out_once(
+        _targets: tuple[str, ...], _command: tuple[str, ...]
+    ) -> BaseException | None:
+        attempts[0] += 1
+        return TimeoutError() if attempts[0] == 1 else None
+
+    process = _AdaptiveSemgrepProcess(time_out_once)
+    fixture = _adaptive_semgrep_fixture(tmp_path, process, count=1)
+    monkeypatch.setattr(
+        static_module,
+        "semgrep_command_utf16_units",
+        lambda argv: 24_001 if "--timeout" in argv else 1,
+        raising=False,
+    )
+    slices, _refs, errors = await _run_adaptive_semgrep(fixture)
+    assert len(process.calls) == 1
+    assert errors == ["SEMGREP_COMMAND_TOO_LONG"]
+    assert finish_coverage(fixture[4], slices).gaps[0].reason == (
+        "SEMGREP_COMMAND_TOO_LONG"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["execution", "invalid_json"])
+async def test_resume_retries_transient_semgrep_failure(
+    tmp_path: Path, failure: str
+) -> None:
+    calls = [0]
+
+    def fail_once(
+        _targets: tuple[str, ...], _command: tuple[str, ...]
+    ) -> BaseException | dict[str, object] | None:
+        calls[0] += 1
+        if calls[0] > 1:
+            return None
+        if failure == "execution":
+            return RuntimeError("transient process failure")
+        return {"results": [], "errors": [], "paths": []}
+
+    process = _AdaptiveSemgrepProcess(fail_once)
+    fixture = _adaptive_semgrep_fixture(tmp_path, process, count=1)
+    first, _refs, first_errors = await _run_adaptive_semgrep(fixture)
+    assert len(process.calls) == 1
+    assert first_errors == [
+        (
+            "SEMGREP_EXECUTION_FAILED"
+            if failure == "execution"
+            else "SEMGREP_RESULT_INVALID"
+        )
+    ]
+    assert finish_coverage(fixture[4], first).verified_count == 0
+
+    resumed, _refs, resumed_errors = await _run_adaptive_semgrep(fixture)
+    assert resumed_errors == []
+    assert len(process.calls) == 2
+    assert finish_coverage(fixture[4], resumed).verified_count == 1
+
+
+@pytest.mark.asyncio
 async def test_single_file_json_timeout_gets_one_bounded_retry(tmp_path: Path) -> None:
     def timeout_then_success(
         targets: tuple[str, ...], command: tuple[str, ...]
@@ -1846,6 +1910,15 @@ async def test_opengrep_partial_retry_preserves_previous_verified_pairs(
         if item.tool == "opengrep"
     )
     assert latest.raw_ref == previous.raw_ref
+    resumed = await bootstrap.run(request, identity)
+    resumed_bundle = _coverage_from_ref(profile, identity, resumed.static_bundle_ref)
+    resumed_coverage = _coverage_from_ref(
+        profile,
+        identity,
+        StoredDataRef.model_validate(resumed_bundle["static_coverage_ref"]),
+    )
+    assert process.opengrep_calls == 2
+    assert resumed_coverage["verified_count"] == 2
 
 
 def test_reusable_parse_warning_rejects_nonstring_type_without_crashing() -> None:

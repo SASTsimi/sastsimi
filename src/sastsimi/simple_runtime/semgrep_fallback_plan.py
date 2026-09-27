@@ -5,13 +5,21 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Callable, Sequence
 
+MAX_SEMGREP_COMMAND_UTF16_UNITS = 24_000
+
+
+def semgrep_command_utf16_units(command: Sequence[str]) -> int:
+    """Measure the exact Windows command-line representation of an argv."""
+
+    return len(subprocess.list2cmdline(command).encode("utf-16-le")) // 2
+
 
 def plan_semgrep_target_chunks(
     targets: Sequence[str],
     command_for: Callable[[tuple[str, ...]], Sequence[str]],
     *,
     max_targets: int = 128,
-    max_command_utf16_units: int = 24_000,
+    max_command_utf16_units: int = MAX_SEMGREP_COMMAND_UTF16_UNITS,
 ) -> tuple[tuple[str, ...], ...]:
     """Sort targets and greedily emit chunks that fit the exact planned argv."""
 
@@ -24,8 +32,9 @@ def plan_semgrep_target_chunks(
     def fits(chunk: tuple[str, ...]) -> bool:
         if len(chunk) > max_targets:
             return False
-        command = subprocess.list2cmdline(command_for(chunk))
-        return len(command.encode("utf-16-le")) // 2 <= max_command_utf16_units
+        return (
+            semgrep_command_utf16_units(command_for(chunk)) <= max_command_utf16_units
+        )
 
     result: list[tuple[str, ...]] = []
     current: tuple[str, ...] = ()

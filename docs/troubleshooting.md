@@ -94,7 +94,7 @@ sastsimi setup --non-interactive --auth subscription --provider codex --model gp
 sastsimi resume A-001
 ```
 
-Semgrep 미설정은 `SEMGREP_TOOL_UNAVAILABLE`, 실행 실패는 `SEMGREP_EXECUTION_FAILED`, 잘못되거나 잘린 JSON은 `SEMGREP_RESULT_INVALID`로 남습니다. 실행 오류는 취약점 반증이 아닙니다. 같은 입력의 결정적 파싱 누락만 있으면 `resume`으로 반복하지 않으며, 규칙·추적 파일·도구 지문이 바뀐 뒤 재개할 수 있습니다.
+Semgrep 미설정은 `SEMGREP_TOOL_UNAVAILABLE`, 실행 실패는 `SEMGREP_EXECUTION_FAILED`, 잘못되거나 잘린 JSON은 `SEMGREP_RESULT_INVALID`로 남습니다. 실행 오류는 취약점 반증이 아닙니다. 같은 입력에서 위치가 확인된 결정적 파싱 경고 외 누락이 없으면 `resume`으로 OpenGrep을 반복하지 않으며, 규칙·추적 파일·도구 지문이 바뀐 뒤 다시 검사할 수 있습니다. 파싱 경고와 미검사 파일이 함께 있을 때는 Semgrep fallback을 켠 경우에만 검증된 부분 결과를 재사용해 미검증 조합을 Semgrep에 넘깁니다. fallback이 꺼져 있거나 위치 불명·건너뛴 파일·규칙 등 다른 오류가 있으면 OpenGrep 재시도 대상입니다.
 
 재검사는 한 번에 최대 128파일과 Windows 명령줄 24,000 UTF-16 단위를 지키며, JSON 결과를 크기 제한이 있는 분석별 임시 파일로 받습니다. 한 묶음의 실행은 최대 120초로 제한하며 느리거나 실패한 묶음의 미검증 파일·규칙만 더 작게 나눕니다. 한 경로만 너무 길면 그 경로를 미검증으로 기록한 뒤 나머지를 검사합니다. 파일 하나의 프로세스 시간 초과나 JSON `Timeout`은 `--timeout 30`으로 한 번만 다시 검사합니다. `SEMGREP_COMMAND_TOO_LONG`이나 `SEMGREP_RETRY_BUDGET_EXCEEDED`도 검사 완료가 아니라 명시적인 미검증 이유입니다. `sastsimi dashboard`의 정적 검사 항목에서 검증 수와 미검증 상대 경로·규칙·이유의 첫 100개를 확인하세요. 전체 누락은 coverage artifact에 보존되고, 하나라도 남으면 `STATIC_DONE`은 `BLOCKED`입니다. 완료된 묶음과 검증된 부분 결과는 같은 입력·도구 지문에서 `resume`할 때 재사용하지만, 결정적 파싱 오류를 무한 반복하지는 않습니다.
 
@@ -105,6 +105,7 @@ Semgrep 미설정은 `SEMGREP_TOOL_UNAVAILABLE`, 실행 실패는 `SEMGREP_EXECU
 있습니다. `RUNNING`이고 오류 코드가 없다면 그 숫자만으로 중단을 판단하지
 마세요. 같은 분석의 `resume`을 동시에 실행하지 말고, 원래 실행 프로세스가
 종료됐거나 상태가 `BLOCKED`/`FAILED`로 바뀐 뒤 오류 코드를 확인해 재개하세요.
+분석용 `workspaces/<workspace-id>` checkout도 실행 중에는 직접 수정하지 마세요. 도구는 실행 전 상태를 검사하지만 중간 수정은 지원하지 않으므로, 의심되면 해당 결과를 근거로 쓰지 말고 새 분석 ID로 다시 시작해야 합니다.
 
 OpenGrep 규칙 묶음 전체는 한 번의 정적 분석 시도에서 1시간과 프로필의
 `max_elapsed_seconds` 중 짧은 시간을 함께 사용합니다. 정적 도구 실행시간은
@@ -115,7 +116,7 @@ OpenGrep 규칙 묶음 전체는 한 번의 정적 분석 시도에서 1시간�
 시간 초과나 취소 시 하위 프로세스 트리 정리를 시도하고 `EXTERNAL_TOOL_TIMEOUT`을
 취약점 반증으로 취급하지 않습니다. 정확한 분석·저장소·commit·도구 지문과 CAS를
 다시 확인해 완료된 묶음은 재사용하고, 실패한 묶음은 이미 검증된 부분 결과를
-보존한 채 재시도합니다. 한 묶음이 실패하거나 시간 초과되면 전체 성공 전에는 `STATIC_DONE`이 `BLOCKED`이며 가설·Finding·보고서를
+보존한 채 재시도합니다. 단, 위의 위치가 확인된 파싱 경고는 선택형 Semgrep fallback에서 검증된 부분 결과를 재사용하고 남은 조합만 재검사합니다. 모든 엔진을 마친 뒤에도 미검증 파일·규칙 조합이 남거나 설정된 CodeQL이 실패하면 전체 성공 전이므로 `STATIC_DONE`이 `BLOCKED`이며 가설·Finding·보고서를
 만들지 않습니다. CodeQL SARIF도 분석별 파일로 분리하고 재시도 전 해당 파일을
 지웁니다. 기존 프로세스가 끝났고 도구 상태를 확인했다면 PowerShell에서 다음
 한 줄로 이어갑니다.
