@@ -917,14 +917,16 @@ class _AdaptiveSemgrepProcess:
     def __init__(self, response: object | None = None) -> None:
         self.response = response
         self.calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+        self.timeouts: list[int] = []
 
     async def run(
         self, argv: Sequence[str], *, cwd: Path | None = None, timeout_seconds: int
     ) -> ProcessResult:
-        del cwd, timeout_seconds
+        del cwd
         command = tuple(argv)
         targets = tuple(arg for arg in command if arg.startswith("file-"))
         self.calls.append((targets, command))
+        self.timeouts.append(timeout_seconds)
         if callable(self.response):
             response = self.response(targets, command)
         else:
@@ -1282,6 +1284,29 @@ async def test_repeated_json_timeout_stays_a_gap_without_retry_loop(
     assert resumed_errors == ["SEMGREP_PARTIAL_SCAN"]
     assert len(process.calls) == 2
     assert finish_coverage(fixture[4], resumed).gaps[0].reason == "scan_timeout"
+
+
+@pytest.mark.asyncio
+async def test_slow_semgrep_chunk_has_bounded_wall_time_and_splits(
+    tmp_path: Path,
+) -> None:
+    process = _AdaptiveSemgrepProcess(
+        lambda targets, _command: TimeoutError() if len(targets) > 1 else None
+    )
+    fixture = _adaptive_semgrep_fixture(tmp_path, process, count=4)
+    slices, _refs, errors = await _run_adaptive_semgrep(fixture)
+    assert errors == []
+    assert tuple(len(targets) for targets, _ in process.calls) == (
+        4,
+        2,
+        1,
+        1,
+        2,
+        1,
+        1,
+    )
+    assert all(1 <= timeout <= 120 for timeout in process.timeouts)
+    assert finish_coverage(fixture[4], slices).verified_count == 4
 
 
 @pytest.mark.asyncio

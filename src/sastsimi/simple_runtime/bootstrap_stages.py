@@ -55,6 +55,7 @@ _MAX_TRACKED_FILES = 200_000
 _MAX_SOURCE_BYTES = 2 * 1024 * 1024
 _MAX_FACTS = 10_000
 _MAX_POLICY_BYTES = 256 * 1024
+_SEMGREP_NODE_TIMEOUT_SECONDS = 120
 _WORKSPACE_INTEGRITY_ERRORS = frozenset(
     {
         "WORKSPACE_DIRTY",
@@ -1465,7 +1466,7 @@ class DirectStaticBootstrap:
                                 rules,
                                 targets,
                                 batch.excluded_rule_ids,
-                                remaining,
+                                min(remaining, _SEMGREP_NODE_TIMEOUT_SECONDS),
                                 output_dir=output_dir,
                                 per_file_timeout_seconds=(
                                     30 if retry_timeout else None
