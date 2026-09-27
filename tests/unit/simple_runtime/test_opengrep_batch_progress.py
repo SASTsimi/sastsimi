@@ -116,7 +116,9 @@ def test_invalid_ref_can_be_replaced_conditionally(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.parametrize("damage", ["invalid-json", "wrong-scope"])
+@pytest.mark.parametrize(
+    "damage", ["invalid-json", "wrong-scope", "wrong-kind", "wrong-id"]
+)
 def test_malformed_progress_row_is_replaced_after_rescan(
     tmp_path: Path, damage: str
 ) -> None:
@@ -125,11 +127,18 @@ def test_malformed_progress_row_is_replaced_after_rescan(
     first = _ref(tmp_path, identity, b"first")
     second = _ref(tmp_path, identity, b"second")
     store.save_opengrep_batch(identity, "owner/repo", "fingerprint-1", "batch-1", first)
-    malformed = (
-        "{not-json"
-        if damage == "invalid-json"
-        else _ref(tmp_path, _identity(workspace_id="other"), b"other").model_dump_json()
-    )
+    if damage == "invalid-json":
+        malformed = "{not-json"
+    elif damage == "wrong-scope":
+        malformed = _ref(
+            tmp_path, _identity(workspace_id="other"), b"other"
+        ).model_dump_json()
+    else:
+        field = "data_kind" if damage == "wrong-kind" else "stored_data_id"
+        value = "record" if damage == "wrong-kind" else "0" * 64
+        malformed = StoredDataRef.model_validate(
+            first.model_dump() | {field: value}
+        ).model_dump_json()
     with sqlite3.connect(store.database_path) as connection:
         connection.execute(
             "UPDATE simple_opengrep_batch_progress SET ref_json = ?",

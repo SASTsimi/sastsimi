@@ -178,7 +178,11 @@ class SimpleCheckpointStore:
         if (str(ref.workspace_id), str(ref.commit_id)) != (
             identity.workspace_id,
             identity.commit_id,
-        ) or ref.record_id is not None:
+        ) or (
+            ref.record_id is not None
+            or ref.data_kind != "artifact"
+            or str(ref.stored_data_id) != ref.content_hash
+        ):
             raise ValueError("OPENGREP_BATCH_REF_SCOPE_MISMATCH")
 
     @classmethod
