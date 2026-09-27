@@ -105,6 +105,25 @@ def _claude_config_dir() -> Path:
     return Path(configured).expanduser() if configured else Path.home() / ".claude"
 
 
+def _operator_identity_literals() -> frozenset[str]:
+    """Read the executing account's own email from its local config, if any.
+
+    A subscription session carries this account's identity server-side, which
+    no child-process sandboxing suppresses (verified: the model states it even
+    with HOME/PATH absent and every tool disabled). This is the one exact
+    string that identity can ever surface as, so the Reporter checks reports
+    against it directly rather than trusting every stage's instructions.
+    """
+
+    path = _claude_config_dir() / ".claude.json"
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return frozenset()
+    email = document.get("oauthAccount", {}).get("emailAddress")
+    return frozenset({email}) if isinstance(email, str) and email else frozenset()
+
+
 class SimpleClientFactory:
     def __init__(self, profile: SimpleExecutionProfile) -> None:
         self._profile = profile
@@ -276,6 +295,7 @@ def build_analysis_application(
                 repository=runtime_store.require_analysis_run(
                     identity.analysis_id
                 ).repository,
+                operator_identity=_operator_identity_literals(),
                 max_parallel_containers=profile.max_parallel_containers,
                 container_slots=container_slots,
                 # A stage that exceeds its per-call ceiling is blocked for the

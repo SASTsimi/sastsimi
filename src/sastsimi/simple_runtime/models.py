@@ -135,3 +135,18 @@ class StageFailure(ContractModel):
     safe_message: str
     invalid_field: str | None = None
     evidence_refs: tuple[StoredDataRef, ...] = ()
+
+
+# Bound to every agent's instructions in this pipeline (stages.py and
+# chaining.py): the executing account is authenticated with a real Claude
+# subscription, so the model has its own account context available - a fact
+# no local sandboxing flag can suppress, since it is not locally sourced.
+# One healthchecks report named the operator's own email in a Rule Scope Gate
+# restriction; nothing in this pipeline's job ever calls for that.
+COMMON_CONTRACT = """
+Never name the operator running this analysis, their account, or any identity
+of theirs anywhere in your output - this describes the repository under
+review, not the reviewer, and nothing here needs their name or address to be
+complete.
+"""
+COMMON_CONTRACT_BYTES = COMMON_CONTRACT.encode("utf-8")
