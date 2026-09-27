@@ -1,5 +1,6 @@
 """Immutable Finding normalization and the final automated ReportDraft."""
 
+import ipaddress
 import json
 import re
 from collections.abc import Mapping
@@ -31,6 +32,10 @@ _LOCATION = re.compile(
 _HIDDEN_REASONING = re.compile(
     r"(?i)(?:chain[ _-]?of[ _-]?thought|hidden[ _-]?reasoning|internal reasoning)"
 )
+_URL_TOKEN = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+_DOTTED_VERSION_TOKEN = re.compile(
+    r"(?<![\w./:-])v?\d+(?:\.\d+){1,3}\b(?!\.\d)", re.IGNORECASE
+)
 _UNSUPPORTED_ADVISORY_CLAIMS = (
     re.compile(r"\bcvss\b[^\n]{0,32}?\d+(?:\.\d+)?", re.IGNORECASE),
     re.compile(
@@ -43,6 +48,14 @@ _UNSUPPORTED_ADVISORY_CLAIMS = (
         r"\b(?:versions?|releases?)\s*(?:(?:is|are|:|=)\s*)?"
         r"\d+(?:\.\d+){1,3}\b"
         r"|버전\s*(?:(?:은|는|:|=)\s*)?\d+(?:\.\d+){1,3}\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:affects?|impacts?)\s+v?\d+(?:\.\d+){1,3}\b(?!\.\d)"
+        r"|\bv?\d+(?:\.\d+){1,3}\b(?!\.\d)\s+(?:is|are)\s+"
+        r"(?:affected|vulnerable)\b"
+        r"|\b\d+(?:\.\d+){1,3}\b(?!\.\d)\s*버전(?:이|은|가|는)?"
+        r"[^\n]{0,16}영향",
         re.IGNORECASE,
     ),
     re.compile(
@@ -119,8 +132,30 @@ def _reject_unverified_advisory_claims(content: BilingualReportContent) -> None:
             *prose.limitations,
             *prose.review_items,
         ):
-            if any(pattern.search(value) for pattern in _UNSUPPORTED_ADVISORY_CLAIMS):
+            claim_text = _URL_TOKEN.sub(" ", value)
+            claim_text = _LOCATION.sub(
+                lambda match: (
+                    " "
+                    if _is_bare_endpoint(match.group("path"), int(match.group("line")))
+                    else match.group(0)
+                ),
+                claim_text,
+            )
+            if any(
+                pattern.search(claim_text) for pattern in _UNSUPPORTED_ADVISORY_CLAIMS
+            ) or _DOTTED_VERSION_TOKEN.search(claim_text):
                 raise ValueError("REPORT_UNSUPPORTED_METADATA_CLAIM")
+
+
+def _is_bare_endpoint(path: str, port: int) -> bool:
+    if not 1 <= port <= 65535:
+        return False
+    if path.lower() == "localhost":
+        return True
+    try:
+        return isinstance(ipaddress.ip_address(path), ipaddress.IPv4Address)
+    except ValueError:
+        return False
 
 
 def validate_report_content(
@@ -152,6 +187,8 @@ def validate_report_content(
                 raise ValueError("REPORT_CODE_LOCATION_UNSUPPORTED")
     for match in _LOCATION.finditer(text):
         path, line = match.group("path"), int(match.group("line"))
+        if _is_bare_endpoint(path, line):
+            continue
         if not any(
             location.file_path == path
             and location.start_line <= line <= location.end_line

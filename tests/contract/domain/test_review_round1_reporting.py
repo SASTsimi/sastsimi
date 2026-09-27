@@ -187,14 +187,27 @@ def test_report_v2_keeps_uncertain_disclosure_wording() -> None:
     assert content.ko.review_items == ("공개 가능 여부는 확인되지 않았습니다.",)
 
 
-def test_report_v2_allows_local_poc_endpoint_in_both_languages() -> None:
+@pytest.mark.parametrize(
+    ("en_endpoint", "ko_endpoint"),
+    [
+        ("http://127.0.0.1:8000/", "http://127.0.0.1:8000/"),
+        (
+            "http://localhost:8000/check?version=v1.2.3",
+            "http://localhost:8000/check?version=1.2.3",
+        ),
+        ("127.0.0.1:8000", "localhost:8000"),
+    ],
+)
+def test_report_v2_allows_local_poc_endpoint_in_both_languages(
+    en_endpoint: str, ko_endpoint: str
+) -> None:
     value = _bilingual_report()
     en = value["en"]
     ko = value["ko"]
     assert isinstance(en, dict)
     assert isinstance(ko, dict)
-    en["details"] = "Run the PoC against http://127.0.0.1:8000/."
-    ko["details"] = "PoC 대상은 http://127.0.0.1:8000/입니다."
+    en["details"] = f"Run the PoC against {en_endpoint}."
+    ko["details"] = f"PoC 대상은 {ko_endpoint}입니다."
 
     content = parse_validated_report_content(
         canonical_bytes(value), allowed_locations=(_report_location(),)

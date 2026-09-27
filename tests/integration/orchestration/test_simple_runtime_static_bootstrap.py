@@ -1493,6 +1493,163 @@ async def test_semgrep_opt_in_caps_each_opengrep_batch_before_fallback(
     assert process.fallback_calls
 
 
+@pytest.mark.asyncio
+async def test_missing_semgrep_keeps_full_opengrep_batch_deadline(
+    tmp_path: Path,
+) -> None:
+    class RecordingOpenGrep(_CoverageProcess):
+        def __init__(self) -> None:
+            super().__init__(parse_warning=False)
+            self.opengrep_timeouts: list[int] = []
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--metrics=off" not in argv:
+                self.opengrep_timeouts.append(timeout_seconds)
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = RecordingOpenGrep()
+    bootstrap, profile, _store = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    opengrep = profile.tools["opengrep"]
+    missing_semgrep = opengrep.model_copy(
+        update={"executable_path": tmp_path / "missing-semgrep"}
+    )
+    profile = profile.model_copy(
+        update={"tools": {**profile.tools, "semgrep": missing_semgrep}}
+    )
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=process,
+        store=_store,
+        static_material_root=tmp_path,
+    )
+    await bootstrap.run(_request(profile), _identity("missing-semgrep-deadline"))
+    assert process.opengrep_timeouts
+    assert process.opengrep_timeouts[0] > 120
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error_type", "expected_retryable"),
+    [
+        ("Syntax error", False),
+        ("OutOfMemory", True),
+        ("Syntax error then OutOfMemory", True),
+    ],
+)
+async def test_known_semgrep_parser_gaps_are_not_retryable_after_opengrep_timeout(
+    tmp_path: Path,
+    error_type: str,
+    expected_retryable: bool,
+) -> None:
+    class ParserOnlyFallback(_CoverageProcess):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--metrics=off" not in argv:
+                raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+            if argv[1] == "scan" and "--metrics=off" in argv:
+                targets = [arg for arg in argv if arg in {"app.py", "good.py"}]
+                actual_error = (
+                    "Syntax error"
+                    if error_type == "Syntax error then OutOfMemory"
+                    and len(targets) > 1
+                    else "OutOfMemory"
+                    if error_type == "Syntax error then OutOfMemory"
+                    else error_type
+                )
+                output = Path(argv[argv.index("--output") + 1])
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [],
+                            "errors": [
+                                {"type": actual_error, "path": target}
+                                for target in targets
+                            ],
+                            "paths": {"scanned": targets, "skipped": []},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = ParserOnlyFallback()
+    bootstrap, profile, _store = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    with pytest.raises(StaticCoverageBlocked) as blocked:
+        await bootstrap.run(_request(profile), _identity("parser-after-timeout"))
+    assert blocked.value.retryable is expected_retryable
+    coverage = _coverage_from_ref(
+        profile, _identity("parser-after-timeout"), blocked.value.coverage_ref
+    )
+    assert {gap["reason"] for gap in coverage["gaps"]} == {"parse_or_scan_error"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["semgrep_child", "codeql"])
+async def test_parser_gap_with_later_engine_failure_remains_retryable(
+    tmp_path: Path, failure: str
+) -> None:
+    class FailingAfterParser(_CoverageProcess):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if (
+                argv[1] == "scan"
+                and "--metrics=off" not in argv
+                and failure != "codeql"
+            ):
+                raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+            if argv[1:3] == ("database", "analyze") and failure == "codeql":
+                raise RuntimeError("CODEQL_EXECUTION_FAILED")
+            if argv[1] == "scan" and "--metrics=off" in argv:
+                targets = [arg for arg in argv if arg in {"app.py", "good.py"}]
+                if len(targets) == 1 and failure == "semgrep_child":
+                    raise RuntimeError("SEMGREP_EXECUTION_FAILED")
+                output = Path(argv[argv.index("--output") + 1])
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [],
+                            "errors": [
+                                {"type": "Syntax error", "path": target}
+                                for target in targets
+                            ],
+                            "paths": {"scanned": targets, "skipped": []},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = FailingAfterParser()
+    bootstrap, profile, _store = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=failure == "codeql"
+    )
+    with pytest.raises(StaticCoverageBlocked) as blocked:
+        await bootstrap.run(_request(profile), _identity("parser-with-engine-failure"))
+    assert blocked.value.retryable
+
+
 async def _seed_old_partial(
     tmp_path: Path, process: _CoverageProcess, analysis_id: str
 ) -> tuple[

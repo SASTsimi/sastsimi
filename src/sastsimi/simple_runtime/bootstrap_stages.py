@@ -47,6 +47,7 @@ from .semgrep_fallback_plan import (
 from .static_coverage import (
     CoverageSlice,
     StaticCoveragePlan,
+    StaticCoverageReport,
     assess_scan,
     finish_coverage,
     merge_static_candidates,
@@ -70,6 +71,21 @@ _WORKSPACE_INTEGRITY_ERRORS = frozenset(
         "GIT_IGNORED_FILES_FAILED",
     }
 )
+
+
+def _known_located_parser_error(error: object) -> bool:
+    if not isinstance(error, dict) or not isinstance(error.get("path"), str):
+        return False
+    error_type = error.get("type")
+    if isinstance(error_type, str):
+        return error_type in {"PartialParsing", "Syntax error"}
+    return bool(
+        isinstance(error_type, list)
+        and len(error_type) == 2
+        and error_type[0] == "PartialParsing"
+        and isinstance(error_type[1], list)
+        and all(isinstance(item, dict) for item in error_type[1])
+    )
 
 
 class PolicyDiscovery(Protocol):
@@ -245,6 +261,8 @@ class DirectStaticBootstrap:
                 codeql_findings = self._codeql_findings(workspace, codeql_raw)
             except (OSError, RuntimeError, ValueError) as error:
                 codeql_error = self._safe_static_error(error, "CODEQL_EXECUTION_FAILED")
+        coverage_report: StaticCoverageReport | None = None
+        fallback_errors: list[str] = []
         if rule_plan is not None and coverage_plan is not None:
             if self._profile.semgrep_fallback:
                 (
@@ -264,8 +282,8 @@ class DirectStaticBootstrap:
                 slices.extend(fallback_slices)
                 engine_refs.extend(fallback_refs)
                 scan_errors.extend(fallback_errors)
-            coverage = finish_coverage(coverage_plan, slices)
-            coverage_data = coverage.to_json()
+            coverage_report = finish_coverage(coverage_plan, slices)
+            coverage_data = coverage_report.to_json()
             opengrep_raw = merge_static_candidates(rule_plan, slices)
         else:
             coverage_data = {
@@ -375,15 +393,37 @@ class DirectStaticBootstrap:
                 (code for code in scan_errors if not code.endswith("PARTIAL_SCAN")),
                 None,
             )
+            known_parser_pairs = self._known_semgrep_parser_pairs(slices)
+            deterministic_parser_only = bool(
+                coverage_report is not None
+                and coverage_report.gaps
+                and codeql_error is None
+                and all(code.endswith("PARTIAL_SCAN") for code in fallback_errors)
+                and all(
+                    gap.reason == "parse_or_scan_error"
+                    and (gap.path, gap.rule_id) in known_parser_pairs
+                    for gap in coverage_report.gaps
+                )
+            )
             raise StaticCoverageBlocked(
-                blocking_error or "STATIC_COVERAGE_INCOMPLETE",
+                (
+                    "STATIC_COVERAGE_INCOMPLETE"
+                    if deterministic_parser_only
+                    else blocking_error or codeql_error or "STATIC_COVERAGE_INCOMPLETE"
+                ),
                 coverage_ref,
                 bundle_ref,
                 retryable=bool(
-                    blocking_error
+                    not deterministic_parser_only
                     and (
-                        blocking_error.endswith("EXECUTION_FAILED")
-                        or blocking_error.endswith("TIMEOUT")
+                        codeql_error is not None
+                        or (
+                            blocking_error is not None
+                            and (
+                                blocking_error.endswith("EXECUTION_FAILED")
+                                or blocking_error.endswith("TIMEOUT")
+                            )
+                        )
                     )
                 ),
             )
@@ -827,6 +867,15 @@ class DirectStaticBootstrap:
             raise RuntimeError("OPENGREP_ANALYSIS_ID_INVALID")
         binding = self._profile.tools["opengrep"]
         self._require_opengrep_tool(binding)
+        fallback_binding = self._profile.tools.get("semgrep")
+        fallback_ready = False
+        if self._profile.semgrep_fallback and fallback_binding is not None:
+            try:
+                require_semgrep_tool(fallback_binding)
+            except RuntimeError:
+                pass
+            else:
+                fallback_ready = True
         rules = self._materials / "opengrep" / "rules.yml"
         output_root = (
             request.data_dir / "process-output" / "simple-static" / identity.analysis_id
@@ -970,7 +1019,7 @@ class DirectStaticBootstrap:
                 prior_partial, prior_partial_ref = validated_partials[0]
                 if (
                     not remaining_pairs
-                    or self._profile.semgrep_fallback
+                    or fallback_ready
                     or (
                         remaining_pairs <= parser_pairs
                         and not remaining_pairs & retryable_error_pairs
@@ -1050,7 +1099,7 @@ class DirectStaticBootstrap:
                     cwd=workspace,
                     timeout_seconds=(
                         min(remaining, _OPENGREP_FALLBACK_BATCH_TIMEOUT_SECONDS)
-                        if self._profile.semgrep_fallback
+                        if fallback_ready
                         else remaining
                     ),
                 )
@@ -1165,20 +1214,6 @@ class DirectStaticBootstrap:
         *,
         allow_unscanned: bool = False,
     ) -> bool:
-        def known_located_parser_error(error: object) -> bool:
-            if not isinstance(error, dict) or not isinstance(error.get("path"), str):
-                return False
-            error_type = error.get("type")
-            if isinstance(error_type, str):
-                return error_type in {"PartialParsing", "Syntax error"}
-            return bool(
-                isinstance(error_type, list)
-                and len(error_type) == 2
-                and error_type[0] == "PartialParsing"
-                and isinstance(error_type[1], list)
-                and all(isinstance(item, dict) for item in error_type[1])
-            )
-
         missing = expected - slice_.verified_pairs
         parser_gaps = {
             (path, rule_id)
@@ -1199,8 +1234,31 @@ class DirectStaticBootstrap:
             and (allow_unscanned or missing == parser_gaps)
             and isinstance(errors, list)
             and errors
-            and all(known_located_parser_error(error) for error in errors)
+            and all(_known_located_parser_error(error) for error in errors)
         )
+
+    @staticmethod
+    def _known_semgrep_parser_pairs(
+        slices: Sequence[CoverageSlice],
+    ) -> set[tuple[str, str]]:
+        pairs: set[tuple[str, str]] = set()
+        nonparser_pairs: set[tuple[str, str]] = set()
+        for slice_ in slices:
+            if slice_.engine != "semgrep":
+                continue
+            raw_errors = slice_.parsed.get("errors")
+            parser_only = (
+                isinstance(raw_errors, list)
+                and bool(raw_errors)
+                and all(_known_located_parser_error(error) for error in raw_errors)
+            )
+            target = pairs if parser_only else nonparser_pairs
+            target.update(
+                (path, rule_id)
+                for path, rule_id, reason in slice_.gap_reasons
+                if reason == "parse_or_scan_error"
+            )
+        return pairs - nonparser_pairs
 
     @staticmethod
     def _record_gap_slice(
