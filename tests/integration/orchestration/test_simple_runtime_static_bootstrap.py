@@ -4,12 +4,14 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from sastsimi.config.user_config import SimpleExecutionProfile, SimpleToolBinding
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.simple_runtime import bootstrap_stages as static_module
 from sastsimi.simple_runtime.application import SimpleAnalysisRequest
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.bootstrap_stages import (
@@ -347,6 +349,33 @@ async def test_timeout_resume_reuses_first_batch(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_shared_deadline_does_not_round_up_last_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _without_codeql(_profile(tmp_path)).model_copy(
+        update={"max_elapsed_seconds": 2}
+    )
+    rule_ids = tuple(f"python.rule{index}" for index in range(4))
+    _write_rules(tmp_path, rule_ids)
+    process = _BatchProcess(rule_ids)
+    times = iter((100.0, 100.1, 101.9))
+    monkeypatch.setattr(
+        static_module, "time", SimpleNamespace(monotonic=lambda: next(times))
+    )
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=process,
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="^EXTERNAL_TOOL_TIMEOUT$"):
+        await bootstrap.run(_request(profile), _identity("analysis-deadline"))
+    assert len(process.scans) == 1
+    assert process.scans[0][2] == 1
+
+
+@pytest.mark.asyncio
 async def test_opengrep_rejects_changed_workspace_before_cache_use(
     tmp_path: Path,
 ) -> None:
@@ -374,6 +403,64 @@ async def test_opengrep_rejects_changed_workspace_before_cache_use(
     with pytest.raises(RuntimeError, match="^WORKSPACE_DIRTY$"):
         await bootstrap.run(_request(profile), _identity("analysis-dirty"))
     assert process.scans == []
+
+
+@pytest.mark.asyncio
+async def test_opengrep_rejects_changed_executable_before_cache_use(
+    tmp_path: Path,
+) -> None:
+    profile = _without_codeql(_profile(tmp_path))
+    process = _BatchProcess(("python.sql",))
+    identity = _identity("analysis-tool-change")
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=process,
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+    await bootstrap.run(_request(profile), identity)
+    profile.tools["opengrep"].executable_path.write_bytes(b"changed tool")
+
+    with pytest.raises(RuntimeError, match="^OPENGREP_TOOL_CHANGED$"):
+        await bootstrap.run(_request(profile), identity)
+    assert len(process.scans) == 1
+
+
+@pytest.mark.asyncio
+async def test_opengrep_rejects_ignored_scanner_control_before_cache_use(
+    tmp_path: Path,
+) -> None:
+    class IgnoredControlProcess(_BatchProcess):
+        ignored = False
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1:4] == ("ls-files", "--others", "--ignored"):
+                return ProcessResult(
+                    0, b".semgrepignore\0" if self.ignored else b"", b""
+                )
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    profile = _without_codeql(_profile(tmp_path))
+    process = IgnoredControlProcess(("python.sql",))
+    identity = _identity("analysis-ignore-change")
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=process,
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+    await bootstrap.run(_request(profile), identity)
+    process.ignored = True
+
+    with pytest.raises(RuntimeError, match="^WORKSPACE_DIRTY$"):
+        await bootstrap.run(_request(profile), identity)
+    assert len(process.scans) == 1
 
 
 @pytest.mark.asyncio
@@ -608,7 +695,7 @@ async def test_opengrep_timeout_respects_hour_cap_and_profile(
     workspace = _ready_workspace(tmp_path, request)
     await bootstrap._run_opengrep(workspace, request, _identity("analysis-timeout"))
 
-    assert process.timeouts[-1] == expected_timeout
+    assert expected_timeout - 1 <= process.timeouts[-1] <= expected_timeout
 
 
 @pytest.mark.asyncio

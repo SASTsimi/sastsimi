@@ -172,12 +172,7 @@ def parse_rule_batch(raw: bytes, batch: RuleBatch) -> dict[str, object]:
         path = item.get("path")
         start = item.get("start")
         line = start.get("line") if isinstance(start, dict) else None
-        if (
-            not isinstance(path, str)
-            or not path
-            or type(line) is not int
-            or line < 1
-        ):
+        if not isinstance(path, str) or not path or type(line) is not int or line < 1:
             raise ValueError("OPENGREP_RESULT_INVALID")
     return cast(dict[str, object], value)
 

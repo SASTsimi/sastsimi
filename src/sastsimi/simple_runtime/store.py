@@ -181,6 +181,17 @@ class SimpleCheckpointStore:
         ) or ref.record_id is not None:
             raise ValueError("OPENGREP_BATCH_REF_SCOPE_MISMATCH")
 
+    @classmethod
+    def _valid_opengrep_batch_ref(
+        cls, identity: CheckpointIdentity, raw: str
+    ) -> StoredDataRef | None:
+        try:
+            ref = StoredDataRef.model_validate_json(raw)
+            cls._require_opengrep_ref_scope(identity, ref)
+        except ValueError:
+            return None
+        return ref
+
     def opengrep_batch_ref(
         self,
         identity: CheckpointIdentity,
@@ -198,9 +209,7 @@ class SimpleCheckpointStore:
             ).fetchone()
         if row is None:
             return None
-        ref = StoredDataRef.model_validate_json(row["ref_json"])
-        self._require_opengrep_ref_scope(identity, ref)
-        return ref
+        return self._valid_opengrep_batch_ref(identity, row["ref_json"])
 
     def save_opengrep_batch(
         self,
@@ -235,10 +244,10 @@ class SimpleCheckpointStore:
             ).fetchone()
             if row is None:
                 raise ValueError("OPENGREP_BATCH_PROGRESS_CONFLICT")
-            current = StoredDataRef.model_validate_json(row["ref_json"])
+            current = self._valid_opengrep_batch_ref(identity, row["ref_json"])
             if current == ref:
                 return
-            if replaces is None or current != replaces:
+            if current is not None and (replaces is None or current != replaces):
                 raise ValueError("OPENGREP_BATCH_PROGRESS_CONFLICT")
             updated = connection.execute(
                 "UPDATE simple_opengrep_batch_progress SET ref_json = ? "

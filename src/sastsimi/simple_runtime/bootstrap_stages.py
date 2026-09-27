@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
-import math
 import re
 import time
 from collections.abc import Sequence
@@ -13,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from sastsimi.config.user_config import SimpleExecutionProfile
+from sastsimi.config.user_config import SimpleExecutionProfile, SimpleToolBinding
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 
@@ -443,6 +442,7 @@ class DirectStaticBootstrap:
         binding = self._profile.tools.get("opengrep")
         if binding is None:
             raise RuntimeError("OPENGREP_TOOL_NOT_CONFIGURED")
+        self._require_opengrep_tool(binding)
         rules = self._materials / "opengrep" / "rules.yml"
         plan = plan_rule_batches(
             rules.read_bytes(),
@@ -469,9 +469,10 @@ class DirectStaticBootstrap:
                 else:
                     accepted.append((batch, previous, parsed))
                     continue
-            remaining = math.ceil(deadline - time.monotonic())
+            remaining = int(deadline - time.monotonic())
             if remaining < 1:
                 raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+            self._require_opengrep_tool(binding)
             output = output_root / f"opengrep-{batch.index:03d}-{batch.key[:12]}.json"
             output.unlink(missing_ok=True)
             argv = (
@@ -494,6 +495,7 @@ class DirectStaticBootstrap:
             result = await self._process.run(
                 argv, cwd=workspace, timeout_seconds=remaining
             )
+            self._require_opengrep_tool(binding)
             if result.returncode != 0 or not output.is_file():
                 raise RuntimeError("OPENGREP_EXECUTION_FAILED")
             raw = output.read_bytes()
@@ -509,6 +511,16 @@ class DirectStaticBootstrap:
             )
             accepted.append((batch, ref, parsed))
         return aggregate_rule_batches(plan, accepted)
+
+    @staticmethod
+    def _require_opengrep_tool(binding: SimpleToolBinding) -> None:
+        try:
+            with binding.executable_path.open("rb") as stream:
+                actual = hashlib.file_digest(stream, "sha256").hexdigest()
+        except OSError as error:
+            raise RuntimeError("OPENGREP_TOOL_UNAVAILABLE") from error
+        if actual != binding.executable_sha256:
+            raise RuntimeError("OPENGREP_TOOL_CHANGED")
 
     async def _verify_opengrep_workspace(
         self, workspace: Path, request: SimpleAnalysisRequest
@@ -545,6 +557,24 @@ class DirectStaticBootstrap:
             if entry
         ):
             raise RuntimeError("WORKSPACE_DIRTY")
+        ignored = await self._process.run(
+            (
+                git,
+                "ls-files",
+                "--others",
+                "--ignored",
+                "--exclude-standard",
+                "-z",
+            ),
+            cwd=workspace,
+            timeout_seconds=60,
+        )
+        if ignored.returncode != 0:
+            raise RuntimeError("GIT_IGNORED_FILES_FAILED")
+        for entry in ignored.stdout.split(b"\0"):
+            leaf = entry.replace(b"\\", b"/").rsplit(b"/", 1)[-1].lower()
+            if leaf in {b".semgrepignore", b".gitignore"}:
+                raise RuntimeError("WORKSPACE_DIRTY")
 
     async def _run_codeql(
         self,

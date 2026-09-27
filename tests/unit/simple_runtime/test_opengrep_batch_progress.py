@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -21,9 +22,7 @@ def _identity(**changes: str) -> CheckpointIdentity:
     return CheckpointIdentity.model_validate(values)
 
 
-def _ref(
-    tmp_path: Path, identity: CheckpointIdentity, value: bytes
-) -> StoredDataRef:
+def _ref(tmp_path: Path, identity: CheckpointIdentity, value: bytes) -> StoredDataRef:
     return SimpleArtifactRepository(tmp_path / "data", identity).put_bytes(
         value, "application/json"
     )
@@ -39,9 +38,7 @@ def test_progress_survives_reopen(tmp_path: Path) -> None:
     reopened = SimpleCheckpointStore(store.database_path)
 
     assert (
-        reopened.opengrep_batch_ref(
-            identity, "owner/repo", "fingerprint-1", "batch-1"
-        )
+        reopened.opengrep_batch_ref(identity, "owner/repo", "fingerprint-1", "batch-1")
         == ref
     )
     other = _ref(tmp_path, identity, b'{"results":[1]}')
@@ -112,6 +109,39 @@ def test_invalid_ref_can_be_replaced_conditionally(tmp_path: Path) -> None:
         "batch-1",
         second,
         replaces=first,
+    )
+    assert (
+        store.opengrep_batch_ref(identity, "owner/repo", "fingerprint-1", "batch-1")
+        == second
+    )
+
+
+@pytest.mark.parametrize("damage", ["invalid-json", "wrong-scope"])
+def test_malformed_progress_row_is_replaced_after_rescan(
+    tmp_path: Path, damage: str
+) -> None:
+    identity = _identity()
+    store = SimpleCheckpointStore(tmp_path / "checkpoints.sqlite3")
+    first = _ref(tmp_path, identity, b"first")
+    second = _ref(tmp_path, identity, b"second")
+    store.save_opengrep_batch(identity, "owner/repo", "fingerprint-1", "batch-1", first)
+    malformed = (
+        "{not-json"
+        if damage == "invalid-json"
+        else _ref(tmp_path, _identity(workspace_id="other"), b"other").model_dump_json()
+    )
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "UPDATE simple_opengrep_batch_progress SET ref_json = ?",
+            (malformed,),
+        )
+
+    assert (
+        store.opengrep_batch_ref(identity, "owner/repo", "fingerprint-1", "batch-1")
+        is None
+    )
+    store.save_opengrep_batch(
+        identity, "owner/repo", "fingerprint-1", "batch-1", second
     )
     assert (
         store.opengrep_batch_ref(identity, "owner/repo", "fingerprint-1", "batch-1")
