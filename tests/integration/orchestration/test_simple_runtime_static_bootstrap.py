@@ -833,12 +833,13 @@ class _CoverageProcess(_Process):
             return ProcessResult(0, b"", b"")
         if argv[1:3] == ("ls-files", "-z"):
             return ProcessResult(0, b"app.py\0good.py\0", b"")
-        if argv[1] == "scan" and "--output" not in argv:
+        if argv[1] == "scan" and "--metrics=off" in argv:
             self.fallback_calls.append(tuple(argv))
+            output = Path(argv[argv.index("--output") + 1])
             if self.fallback_fails:
+                output.write_bytes(b"bad")
                 return ProcessResult(2, b"bad", b"failed")
-            return ProcessResult(
-                0,
+            output.write_bytes(
                 json.dumps(
                     {
                         "results": [
@@ -851,9 +852,9 @@ class _CoverageProcess(_Process):
                         "errors": [],
                         "paths": {"scanned": ["app.py"], "skipped": []},
                     }
-                ).encode(),
-                b"",
+                ).encode()
             )
+            return ProcessResult(0, b"", b"")
         if argv[1] == "scan":
             self.opengrep_calls += 1
             output = Path(argv[argv.index("--output") + 1])
@@ -1534,21 +1535,20 @@ async def test_semgrep_fallback_chunks_share_one_elapsed_deadline(
             cwd: Path | None = None,
             timeout_seconds: int,
         ) -> ProcessResult:
-            if argv[1] == "scan" and "--output" not in argv:
+            if argv[1] == "scan" and "--metrics=off" in argv:
                 self.fallback_calls.append(tuple(argv))
                 targets = [arg for arg in argv if arg.startswith("file-")]
                 clock[0] += 2
-                return ProcessResult(
-                    0,
+                Path(argv[argv.index("--output") + 1]).write_bytes(
                     json.dumps(
                         {
                             "results": [],
                             "errors": [],
                             "paths": {"scanned": targets, "skipped": []},
                         }
-                    ).encode(),
-                    b"",
+                    ).encode()
                 )
+                return ProcessResult(0, b"", b"")
             return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
 
     process = AdvancingFallback()

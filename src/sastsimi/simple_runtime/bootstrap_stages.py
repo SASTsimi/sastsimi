@@ -1111,6 +1111,12 @@ class DirectStaticBootstrap:
             require_semgrep_tool(binding)
         except RuntimeError as error:
             return [], [], [self._safe_static_error(error, "SEMGREP_TOOL_UNAVAILABLE")]
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", identity.analysis_id) is None:
+            raise RuntimeError("OPENGREP_ANALYSIS_ID_INVALID")
+        output_dir = (
+            request.data_dir / "process-output" / "simple-static" / identity.analysis_id
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
         deadline = time.monotonic() + min(self._profile.max_elapsed_seconds, 3600)
         attempts = {
             item.run_key: item
@@ -1192,6 +1198,7 @@ class DirectStaticBootstrap:
                             targets,
                             batch.excluded_rule_ids,
                             remaining,
+                            output_dir=output_dir,
                         )
                         raw_ref = artifacts.put_bytes(raw, "application/json")
                         refs.append(raw_ref)
