@@ -81,8 +81,10 @@ def build_semgrep_argv(
     excluded_rule_ids: Sequence[str],
     output_path: Path,
     per_file_timeout_seconds: int | None,
+    *,
+    targets_verified: bool = False,
 ) -> tuple[str, ...]:
-    """Build the exact local-only command used by both planning and execution."""
+    """Build the exact command; only trusted coverage-plan paths may skip I/O checks."""
     executable = binding.executable_path
     if not rules.is_file() or rules.suffix.lower() not in {".yml", ".yaml"}:
         raise RuntimeError("SEMGREP_RESULT_INVALID")
@@ -92,7 +94,11 @@ def build_semgrep_argv(
         raise RuntimeError("SEMGREP_RESULT_INVALID")
     if any(_RULE_ID.fullmatch(rule_id) is None for rule_id in excluded_rule_ids):
         raise RuntimeError("SEMGREP_RESULT_INVALID")
-    safe_targets = tuple(sorted({_verified_target(workspace, raw) for raw in targets}))
+    safe_targets = (
+        tuple(sorted(set(targets)))
+        if targets_verified
+        else tuple(sorted({_verified_target(workspace, raw) for raw in targets}))
+    )
     argv = [
         str(executable),
         "scan",

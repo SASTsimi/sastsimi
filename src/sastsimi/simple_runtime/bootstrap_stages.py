@@ -35,9 +35,11 @@ from .opengrep_rule_batches import (
 from .provider import SimpleLLMCallResult, SimpleLLMClient
 from .semgrep_fallback import (
     SemgrepFallbackError,
+    build_semgrep_argv,
     require_semgrep_tool,
     run_semgrep_fallback,
 )
+from .semgrep_fallback_plan import plan_semgrep_target_chunks
 from .static_coverage import (
     CoverageSlice,
     StaticCoveragePlan,
@@ -1128,6 +1130,88 @@ class DirectStaticBootstrap:
         slices: list[CoverageSlice] = []
         refs: list[StoredDataRef] = []
         errors: list[str] = []
+
+        def make_batch(
+            original: RuleBatch,
+            selected: tuple[str, ...],
+            targets: tuple[str, ...],
+            *,
+            legacy: bool = False,
+            per_file_timeout_seconds: int | None = None,
+        ) -> RuleBatch:
+            key_data: dict[str, object] = {
+                "batch": original.key,
+                "rules": selected,
+                "targets": targets,
+            }
+            if not legacy:
+                key_data["adaptive"] = 1
+            if per_file_timeout_seconds is not None:
+                key_data["per_file_timeout_seconds"] = per_file_timeout_seconds
+            return RuleBatch(
+                index=original.index,
+                rule_ids=selected,
+                excluded_rule_ids=tuple(
+                    rule_id for rule_id in rule_plan.rule_ids if rule_id not in selected
+                ),
+                key=hashlib.sha256(canonical_bytes(key_data)).hexdigest(),
+            )
+
+        def expected_for(
+            targets: tuple[str, ...], selected: tuple[str, ...]
+        ) -> frozenset[tuple[str, str]]:
+            return frozenset(
+                (path, rule_id)
+                for path in targets
+                for rule_id in selected
+                if (path, rule_id) in coverage_plan.expected_pairs
+                and (path, rule_id) not in coverage_plan.unavailable_pairs
+            )
+
+        def record_unproved(
+            batch: RuleBatch, pending: frozenset[tuple[str, str]], code: str
+        ) -> None:
+            explained = {
+                (path, rule_id)
+                for slice_ in slices
+                for path, rule_id, _reason in slice_.gap_reasons
+            }
+            unexplained = pending - explained
+            if unexplained:
+                slices.append(
+                    CoverageSlice(
+                        engine="semgrep",
+                        batch_key=batch.key,
+                        rule_ids=batch.rule_ids,
+                        verified_pairs=frozenset(),
+                        gap_reasons=tuple(
+                            (path, rule_id, code)
+                            for path, rule_id in sorted(unexplained)
+                        ),
+                        parsed={"results": [], "errors": [], "paths": {}},
+                        normalized_results=(),
+                    )
+                )
+            errors.append(code)
+
+        def replay(
+            batch: RuleBatch, targets: tuple[str, ...], ref: StoredDataRef
+        ) -> CoverageSlice | None:
+            try:
+                raw = artifacts.read(ref)
+            except (OSError, ValueError):
+                artifacts.quarantine_corrupt(ref)
+                return None
+            try:
+                return replace(
+                    assess_scan(
+                        coverage_plan, batch, raw, engine="semgrep", targets=targets
+                    ),
+                    raw_ref=ref,
+                )
+            except ValueError:
+                return None
+
         for original in rule_plan.batches:
             by_path: dict[str, set[str]] = defaultdict(set)
             for gap in missing:
@@ -1137,108 +1221,198 @@ class DirectStaticBootstrap:
             for path, rule_ids in sorted(by_path.items()):
                 grouped[tuple(sorted(rule_ids))].append(path)
             for selected, all_targets in sorted(grouped.items()):
+                legacy_verified: set[tuple[str, str]] = set()
                 for start in range(0, len(all_targets), 32):
                     targets = tuple(all_targets[start : start + 32])
-                    run_key = hashlib.sha256(
-                        canonical_bytes(
-                            {
-                                "batch": original.key,
-                                "rules": selected,
-                                "targets": targets,
-                            }
-                        )
-                    ).hexdigest()
-                    batch = RuleBatch(
-                        index=original.index,
-                        rule_ids=selected,
-                        excluded_rule_ids=tuple(
-                            rule_id
-                            for rule_id in rule_plan.rule_ids
-                            if rule_id not in selected
-                        ),
-                        key=run_key,
-                    )
-                    previous = attempts.get(run_key)
+                    batch = make_batch(original, selected, targets, legacy=True)
+                    previous = attempts.get(batch.key)
                     if (
-                        previous is not None
-                        and previous.status == "SUCCEEDED"
-                        and previous.raw_ref is not None
+                        previous is None
+                        or previous.status != "SUCCEEDED"
+                        or previous.raw_ref is None
                     ):
-                        try:
-                            cached = artifacts.read(previous.raw_ref)
-                            slice_ = assess_scan(
-                                coverage_plan,
-                                batch,
-                                cached,
-                                engine="semgrep",
-                                targets=targets,
-                            )
-                            expected = {
-                                (path, rule_id)
-                                for path in targets
-                                for rule_id in selected
-                            }
-                            if expected.issubset(slice_.verified_pairs):
-                                slices.append(replace(slice_, raw_ref=previous.raw_ref))
-                                refs.append(previous.raw_ref)
-                                continue
-                        except (OSError, ValueError):
-                            artifacts.quarantine_corrupt(previous.raw_ref)
-                    raw_ref: StoredDataRef | None = None
-                    remaining = int(deadline - time.monotonic())
-                    if remaining < 1:
-                        errors.append("EXTERNAL_TOOL_TIMEOUT")
-                        return slices, refs, errors
-                    try:
-                        raw = await run_semgrep_fallback(
-                            self._process,
+                        continue
+                    cached = replay(batch, targets, previous.raw_ref)
+                    expected = expected_for(targets, selected)
+                    if cached is not None and expected.issubset(cached.verified_pairs):
+                        slices.append(cached)
+                        refs.append(previous.raw_ref)
+                        legacy_verified.update(expected)
+
+                stable_targets = tuple(
+                    path
+                    for path in all_targets
+                    if any(
+                        (path, rule_id) not in legacy_verified for rule_id in selected
+                    )
+                )
+                if not stable_targets:
+                    continue
+                placeholder = output_dir / f"semgrep-{'0' * 32}.json"
+                roots = plan_semgrep_target_chunks(
+                    stable_targets,
+                    lambda chunk, chosen=selected, target_output=placeholder: (
+                        build_semgrep_argv(
                             binding,
                             workspace,
                             rules,
-                            targets,
-                            batch.excluded_rule_ids,
-                            remaining,
-                            output_dir=output_dir,
+                            chunk,
+                            tuple(
+                                rule_id
+                                for rule_id in rule_plan.rule_ids
+                                if rule_id not in chosen
+                            ),
+                            target_output,
+                            None,
+                            targets_verified=True,
                         )
-                        raw_ref = artifacts.put_bytes(raw, "application/json")
-                        refs.append(raw_ref)
-                        slice_ = assess_scan(
-                            coverage_plan,
-                            batch,
-                            raw,
-                            engine="semgrep",
-                            targets=targets,
-                        )
-                        slices.append(replace(slice_, raw_ref=raw_ref))
-                        expected = {
-                            (path, rule_id) for path in targets for rule_id in selected
-                        }
-                        complete = expected.issubset(slice_.verified_pairs)
-                        code = None if complete else "SEMGREP_PARTIAL_SCAN"
-                        if code is not None:
-                            errors.append(code)
-                    except (OSError, RuntimeError, ValueError) as error:
-                        if (
-                            isinstance(error, SemgrepFallbackError)
-                            and error.raw_output is not None
-                        ):
-                            raw_ref = artifacts.put_bytes(
-                                error.raw_output, "application/octet-stream"
-                            )
-                            refs.append(raw_ref)
-                        code = self._safe_static_error(error, "SEMGREP_RESULT_INVALID")
-                        errors.append(code)
-                    self._store.save_static_scan_attempt(
-                        identity,
-                        request.repository,
-                        coverage_plan.fingerprint,
-                        "semgrep",
-                        run_key,
-                        "SUCCEEDED" if code is None else "BLOCKED",
-                        raw_ref,
-                        None,
-                        code,
+                    ),
+                )
+                verified = set(legacy_verified)
+                node_budget = 3 * len(stable_targets) + len(roots)
+
+                async def run_node(
+                    targets: tuple[str, ...],
+                    rule_ids: tuple[str, ...],
+                    *,
+                    retry_timeout: bool = False,
+                    _original: RuleBatch = original,
+                    _verified: set[tuple[str, str]] = verified,
+                ) -> None:
+                    nonlocal node_budget
+                    batch = make_batch(
+                        _original,
+                        rule_ids,
+                        targets,
+                        per_file_timeout_seconds=30 if retry_timeout else None,
                     )
+                    pending = expected_for(targets, rule_ids) - _verified
+                    if not pending:
+                        return
+                    if node_budget < 1:
+                        record_unproved(batch, pending, "SEMGREP_RETRY_BUDGET_EXCEEDED")
+                        return
+                    node_budget -= 1
+                    remaining = int(deadline - time.monotonic())
+                    if remaining < 1:
+                        record_unproved(batch, pending, "EXTERNAL_TOOL_TIMEOUT")
+                        return
+
+                    previous = attempts.get(batch.key)
+                    code: str | None = None
+                    cached: CoverageSlice | None = None
+                    if (
+                        previous is not None
+                        and previous.raw_ref is not None
+                        and previous.error_code in {None, "SEMGREP_PARTIAL_SCAN"}
+                    ):
+                        cached = replay(batch, targets, previous.raw_ref)
+                    if cached is not None:
+                        slices.append(cached)
+                        refs.append(previous.raw_ref)
+                        _verified.update(cached.verified_pairs)
+                        code = previous.error_code
+                    elif previous is not None and previous.error_code not in {
+                        None,
+                        "SEMGREP_PARTIAL_SCAN",
+                    }:
+                        code = previous.error_code
+                        if previous.raw_ref is not None:
+                            refs.append(previous.raw_ref)
+                    else:
+                        raw_ref: StoredDataRef | None = None
+                        try:
+                            raw = await run_semgrep_fallback(
+                                self._process,
+                                binding,
+                                workspace,
+                                rules,
+                                targets,
+                                batch.excluded_rule_ids,
+                                remaining,
+                                output_dir=output_dir,
+                                per_file_timeout_seconds=(
+                                    30 if retry_timeout else None
+                                ),
+                            )
+                            raw_ref = artifacts.put_bytes(raw, "application/json")
+                            slice_ = assess_scan(
+                                coverage_plan,
+                                batch,
+                                raw,
+                                engine="semgrep",
+                                targets=targets,
+                            )
+                            slices.append(replace(slice_, raw_ref=raw_ref))
+                            refs.append(raw_ref)
+                            _verified.update(slice_.verified_pairs)
+                            code = (
+                                None
+                                if expected_for(targets, rule_ids).issubset(
+                                    slice_.verified_pairs
+                                )
+                                else "SEMGREP_PARTIAL_SCAN"
+                            )
+                        except (OSError, RuntimeError, ValueError) as error:
+                            if (
+                                isinstance(error, SemgrepFallbackError)
+                                and error.raw_output is not None
+                            ):
+                                raw_ref = artifacts.put_bytes(
+                                    error.raw_output, "application/octet-stream"
+                                )
+                                refs.append(raw_ref)
+                            code = self._safe_static_error(
+                                error, "SEMGREP_RESULT_INVALID"
+                            )
+                        self._store.save_static_scan_attempt(
+                            identity,
+                            request.repository,
+                            coverage_plan.fingerprint,
+                            "semgrep",
+                            batch.key,
+                            "SUCCEEDED" if code is None else "BLOCKED",
+                            raw_ref,
+                            None,
+                            code,
+                        )
+
+                    pending = expected_for(targets, rule_ids) - _verified
+                    if not pending:
+                        return
+                    if len(targets) == 1:
+                        if code == "EXTERNAL_TOOL_TIMEOUT" and not retry_timeout:
+                            await run_node(targets, rule_ids, retry_timeout=True)
+                        else:
+                            record_unproved(
+                                batch, pending, code or "SEMGREP_PARTIAL_SCAN"
+                            )
+                        return
+
+                    grouped_pending: dict[tuple[str, ...], list[str]] = defaultdict(
+                        list
+                    )
+                    for path in targets:
+                        remaining_rules = tuple(
+                            rule_id
+                            for rule_id in rule_ids
+                            if (path, rule_id) in pending
+                        )
+                        if remaining_rules:
+                            grouped_pending[remaining_rules].append(path)
+                    for child_rules, child_targets_list in sorted(
+                        grouped_pending.items()
+                    ):
+                        child_targets = tuple(child_targets_list)
+                        if child_targets == targets and child_rules == rule_ids:
+                            midpoint = len(targets) // 2
+                            await run_node(targets[:midpoint], rule_ids)
+                            await run_node(targets[midpoint:], rule_ids)
+                        else:
+                            await run_node(child_targets, child_rules)
+
+                for root in roots:
+                    await run_node(root, selected)
         return slices, refs, errors
 
     @staticmethod

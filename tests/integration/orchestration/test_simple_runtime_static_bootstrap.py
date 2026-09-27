@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,8 +12,10 @@ from typing import Any, cast
 import pytest
 
 from sastsimi.config.user_config import SimpleExecutionProfile, SimpleToolBinding
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime import bootstrap_stages as static_module
+from sastsimi.simple_runtime import semgrep_fallback as semgrep_module
 from sastsimi.simple_runtime.application import SimpleAnalysisRequest
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.bootstrap_stages import (
@@ -21,9 +25,18 @@ from sastsimi.simple_runtime.bootstrap_stages import (
     StaticCoverageBlocked,
 )
 from sastsimi.simple_runtime.models import CheckpointIdentity, StageFailure
-from sastsimi.simple_runtime.opengrep_rule_batches import plan_rule_batches
+from sastsimi.simple_runtime.opengrep_rule_batches import (
+    RuleBatchPlan,
+    plan_rule_batches,
+)
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
-from sastsimi.simple_runtime.static_coverage import CoverageSlice, plan_static_coverage
+from sastsimi.simple_runtime.static_coverage import (
+    CoverageSlice,
+    StaticCoveragePlan,
+    finish_coverage,
+    merge_static_candidates,
+    plan_static_coverage,
+)
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
@@ -892,6 +905,294 @@ class _CoverageProcess(_Process):
         return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
 
 
+class _AdaptiveSemgrepProcess:
+    def __init__(self, response: object | None = None) -> None:
+        self.response = response
+        self.calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+
+    async def run(
+        self, argv: Sequence[str], *, cwd: Path | None = None, timeout_seconds: int
+    ) -> ProcessResult:
+        del cwd, timeout_seconds
+        command = tuple(argv)
+        targets = tuple(arg for arg in command if arg.startswith("file-"))
+        self.calls.append((targets, command))
+        if callable(self.response):
+            response = self.response(targets, command)
+        else:
+            response = None
+        if isinstance(response, BaseException):
+            raise response
+        if response is None:
+            response = {
+                "results": [],
+                "errors": [],
+                "paths": {"scanned": list(targets), "skipped": []},
+            }
+        Path(command[command.index("--output") + 1]).write_bytes(
+            json.dumps(response).encode()
+        )
+        return ProcessResult(0, b"", b"")
+
+
+def _adaptive_semgrep_fixture(
+    tmp_path: Path, process: _AdaptiveSemgrepProcess, count: int = 129
+) -> tuple[
+    DirectStaticBootstrap,
+    SimpleExecutionProfile,
+    CheckpointIdentity,
+    RuleBatchPlan,
+    StaticCoveragePlan,
+    Path,
+    Path,
+]:
+    profile = _profile(tmp_path)
+    profile = profile.model_copy(
+        update={
+            "semgrep_fallback": True,
+            "tools": {**profile.tools, "semgrep": profile.tools["opengrep"]},
+        }
+    )
+    identity = _identity("adaptive-semgrep")
+    workspace = profile.workspace_root / identity.workspace_id
+    workspace.mkdir(parents=True)
+    files = [f"file-{index:03d}.py" for index in range(count)]
+    for name in files:
+        (workspace / name).write_text("x = 1\n", encoding="utf-8")
+    rules = tmp_path / "opengrep" / "rules.yml"
+    binding = profile.tools["opengrep"]
+    batches = plan_rule_batches(
+        rules.read_bytes(),
+        tool_version=binding.version,
+        executable_sha256=binding.executable_sha256,
+    )
+    coverage = plan_static_coverage(workspace, files, identity.commit_id, batches)
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=process,
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+    return bootstrap, profile, identity, batches, coverage, workspace, rules
+
+
+async def _run_adaptive_semgrep(
+    fixture: tuple[
+        DirectStaticBootstrap,
+        SimpleExecutionProfile,
+        CheckpointIdentity,
+        RuleBatchPlan,
+        StaticCoveragePlan,
+        Path,
+        Path,
+    ],
+) -> tuple[list[CoverageSlice], list[StoredDataRef], list[str]]:
+    bootstrap, profile, identity, batches, coverage, workspace, rules = fixture
+    return await bootstrap._collect_semgrep(
+        workspace,
+        _request(profile),
+        identity,
+        batches,
+        coverage,
+        [],
+        rules,
+        SimpleArtifactRepository(profile.data_dir, identity),
+    )
+
+
+@pytest.mark.asyncio
+async def test_adaptive_semgrep_uses_128_target_roots_and_replays_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    verified_targets = [0]
+    original_verify = semgrep_module._verified_target
+
+    def counting_verify(workspace: Path, raw: str) -> str:
+        verified_targets[0] += 1
+        return original_verify(workspace, raw)
+
+    monkeypatch.setattr(semgrep_module, "_verified_target", counting_verify)
+    process = _AdaptiveSemgrepProcess()
+    fixture = _adaptive_semgrep_fixture(tmp_path, process)
+    slices, _refs, errors = await _run_adaptive_semgrep(fixture)
+    assert errors == []
+    assert tuple(len(targets) for targets, _ in process.calls) == (128, 1)
+    assert all(
+        len(subprocess.list2cmdline(command).encode("utf-16-le")) // 2 <= 24_000
+        for _, command in process.calls
+    )
+    assert finish_coverage(fixture[4], slices).verified_count == 129
+    resumed, _refs, resumed_errors = await _run_adaptive_semgrep(fixture)
+    assert resumed_errors == []
+    assert len(process.calls) == 2
+    assert finish_coverage(fixture[4], resumed).verified_count == 129
+    assert verified_targets[0] <= 129
+
+
+@pytest.mark.asyncio
+async def test_adaptive_semgrep_replays_legacy_32_target_success(
+    tmp_path: Path,
+) -> None:
+    process = _AdaptiveSemgrepProcess()
+    fixture = _adaptive_semgrep_fixture(tmp_path, process, count=97)
+    _, profile, identity, batches, coverage, _, _ = fixture
+    targets = tuple(f"file-{index:03d}.py" for index in range(32))
+    original = batches.batches[0]
+    run_key = hashlib.sha256(
+        canonical_bytes(
+            {"batch": original.key, "rules": original.rule_ids, "targets": targets}
+        )
+    ).hexdigest()
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    raw = json.dumps(
+        {"results": [], "errors": [], "paths": {"scanned": targets, "skipped": []}}
+    ).encode()
+    ref = artifacts.put_bytes(raw, "application/json")
+    _store(profile).save_static_scan_attempt(
+        identity,
+        _request(profile).repository,
+        coverage.fingerprint,
+        "semgrep",
+        run_key,
+        "SUCCEEDED",
+        ref,
+        None,
+        None,
+    )
+    slices, _refs, errors = await _run_adaptive_semgrep(fixture)
+    assert errors == []
+    assert tuple(len(targets) for targets, _ in process.calls) == (65,)
+    assert finish_coverage(coverage, slices).verified_count == 97
+
+
+@pytest.mark.asyncio
+async def test_adaptive_semgrep_splits_only_unverified_pair_and_deduplicates_hit(
+    tmp_path: Path,
+) -> None:
+    hit = {
+        "check_id": "python.sql",
+        "path": "file-000.py",
+        "start": {"line": 1},
+    }
+
+    def partial(
+        targets: tuple[str, ...], _command: tuple[str, ...]
+    ) -> dict[str, object]:
+        if len(targets) == 128:
+            return {
+                "results": [hit],
+                "errors": [{"type": "Syntax error", "path": "file-000.py"}],
+                "paths": {"scanned": list(targets), "skipped": []},
+            }
+        return {
+            "results": [hit] if "file-000.py" in targets else [],
+            "errors": [],
+            "paths": {"scanned": list(targets), "skipped": []},
+        }
+
+    process = _AdaptiveSemgrepProcess(partial)
+    fixture = _adaptive_semgrep_fixture(tmp_path, process)
+    slices, _refs, errors = await _run_adaptive_semgrep(fixture)
+    assert errors == []
+    assert tuple(targets for targets, _ in process.calls) == (
+        tuple(f"file-{index:03d}.py" for index in range(128)),
+        ("file-000.py",),
+        ("file-128.py",),
+    )
+    assert finish_coverage(fixture[4], slices).verified_count == 129
+    merged = json.loads(merge_static_candidates(fixture[3], slices))
+    assert len(merged["results"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_cached_partial_is_revalidated_without_parent_rerun_or_ref_loss(
+    tmp_path: Path,
+) -> None:
+    def parse_error(
+        targets: tuple[str, ...], _command: tuple[str, ...]
+    ) -> dict[str, object]:
+        return {
+            "results": [],
+            "errors": (
+                [{"type": "Syntax error", "path": "file-000.py"}]
+                if "file-000.py" in targets
+                else []
+            ),
+            "paths": {"scanned": list(targets), "skipped": []},
+        }
+
+    process = _AdaptiveSemgrepProcess(parse_error)
+    fixture = _adaptive_semgrep_fixture(tmp_path, process)
+    first, _refs, _errors = await _run_adaptive_semgrep(fixture)
+    assert finish_coverage(fixture[4], first).verified_count == 128
+    _, profile, identity, batches, coverage, _, _ = fixture
+    key = hashlib.sha256(
+        canonical_bytes(
+            {
+                "adaptive": 1,
+                "batch": batches.batches[0].key,
+                "rules": batches.batches[0].rule_ids,
+                "targets": tuple(f"file-{index:03d}.py" for index in range(128)),
+            }
+        )
+    ).hexdigest()
+    before = next(
+        attempt
+        for attempt in _store(profile).list_static_scan_attempts(
+            identity, _request(profile).repository, coverage.fingerprint
+        )
+        if attempt.tool == "semgrep" and attempt.run_key == key
+    )
+    assert before.raw_ref is not None
+    count = len(process.calls)
+    second, _refs, _errors = await _run_adaptive_semgrep(fixture)
+    after = next(
+        attempt
+        for attempt in _store(profile).list_static_scan_attempts(
+            identity, _request(profile).repository, coverage.fingerprint
+        )
+        if attempt.tool == "semgrep" and attempt.run_key == key
+    )
+    assert len(process.calls) == count
+    assert after.raw_ref == before.raw_ref
+    assert finish_coverage(coverage, second).verified_count == 128
+    assert finish_coverage(coverage, second).gaps[0].path == "file-000.py"
+
+
+@pytest.mark.asyncio
+async def test_single_file_timeout_gets_one_bounded_retry(tmp_path: Path) -> None:
+    attempts = [0]
+
+    def timeout_then_success(
+        _targets: tuple[str, ...], _command: tuple[str, ...]
+    ) -> BaseException | None:
+        attempts[0] += 1
+        return TimeoutError() if attempts[0] == 1 else None
+
+    process = _AdaptiveSemgrepProcess(timeout_then_success)
+    fixture = _adaptive_semgrep_fixture(tmp_path, process, count=1)
+    slices, _refs, errors = await _run_adaptive_semgrep(fixture)
+    assert errors == []
+    assert len(process.calls) == 2
+    assert "--timeout" not in process.calls[0][1]
+    assert process.calls[1][1][process.calls[1][1].index("--timeout") + 1] == "30"
+    assert finish_coverage(fixture[4], slices).verified_count == 1
+
+
+@pytest.mark.asyncio
+async def test_adaptive_semgrep_cancellation_escapes_split_queue(
+    tmp_path: Path,
+) -> None:
+    process = _AdaptiveSemgrepProcess(
+        lambda _targets, _command: asyncio.CancelledError()
+    )
+    fixture = _adaptive_semgrep_fixture(tmp_path, process)
+    with pytest.raises(asyncio.CancelledError):
+        await _run_adaptive_semgrep(fixture)
+    assert len(process.calls) == 1
+
+
 def _coverage_bootstrap(
     tmp_path: Path,
     process: _CoverageProcess,
@@ -1565,7 +1866,7 @@ async def test_semgrep_fallback_chunks_share_one_elapsed_deadline(
     identity = _identity("fallback-shared-deadline")
     workspace = profile.workspace_root / identity.workspace_id
     workspace.mkdir(parents=True)
-    files = [f"file-{index:02d}.py" for index in range(33)]
+    files = [f"file-{index:03d}.py" for index in range(129)]
     for file in files:
         (workspace / file).write_text("x = 1\n", encoding="utf-8")
     rules = tmp_path / "opengrep" / "rules.yml"
@@ -1590,7 +1891,10 @@ async def test_semgrep_fallback_chunks_share_one_elapsed_deadline(
         SimpleArtifactRepository(profile.data_dir, identity),
     )
     assert len(process.fallback_calls) == 1
-    assert len(slices) == 1
+    assert len(slices) == 2
+    assert slices[1].gap_reasons == (
+        ("file-128.py", "python.sql", "EXTERNAL_TOOL_TIMEOUT"),
+    )
     assert errors == ["EXTERNAL_TOOL_TIMEOUT"]
 
 
