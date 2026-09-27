@@ -88,6 +88,8 @@ def test_plan_partitions_every_rule_once() -> None:
         b"rules:\n  - id: 123\n",
         b"rules: !!python/object/apply:os.system ['echo bad']\n",
         b"[]\n",
+        b"rules:\n  - id: rule.first\nrules:\n  - id: rule.second\n",
+        b"rules:\n  - id: rule.first\n    id: rule.second\n",
     ],
 )
 def test_invalid_rule_catalog_fails_closed(raw: bytes) -> None:
@@ -105,6 +107,17 @@ def test_invalid_rule_catalog_fails_closed(raw: bytes) -> None:
         (b"{", "OPENGREP_RESULT_INVALID"),
         (b'{"results": {}}', "OPENGREP_RESULT_INVALID"),
         (b'{"results": [4]}', "OPENGREP_RESULT_INVALID"),
+        (b'{"results": [{"check_id": "rule.one"}]}', "OPENGREP_RESULT_INVALID"),
+        (
+            b'{"results": [{"check_id": "rule.one", "path": "a.py", '
+            b'"start": {"line": 0}}]}',
+            "OPENGREP_RESULT_INVALID",
+        ),
+        (
+            b'{"results": [], "errors": [{"message": "timeout"}], "errors": []}',
+            "OPENGREP_RESULT_INVALID",
+        ),
+        (b'{"results": [], "errors": [], "time": NaN}', "OPENGREP_RESULT_INVALID"),
         (
             b'{"results": [{"check_id": "rule.other"}]}',
             "OPENGREP_BATCH_RULE_MISMATCH",

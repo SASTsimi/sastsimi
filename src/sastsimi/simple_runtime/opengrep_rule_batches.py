@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import cast
 
 import yaml  # type: ignore[import-untyped]
+from yaml.nodes import MappingNode  # type: ignore[import-untyped]
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
@@ -18,6 +19,40 @@ from sastsimi.contracts.refs import StoredDataRef
 _PLAN_VERSION = 1
 _SNIPPET_LIMIT = 500
 _RULE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+
+
+class _UniqueSafeLoader(yaml.SafeLoader):  # type: ignore[misc]
+    pass
+
+
+def _unique_mapping(
+    loader: _UniqueSafeLoader, node: MappingNode, deep: bool = False
+) -> dict[str, object]:
+    values: dict[str, object] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if not isinstance(key, str) or key in values:
+            raise ValueError("OPENGREP_RULE_CATALOG_INVALID")
+        values[key] = loader.construct_object(value_node, deep=deep)
+    return values
+
+
+_UniqueSafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _unique_mapping
+)
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    values: dict[str, object] = {}
+    for key, value in pairs:
+        if key in values:
+            raise ValueError("OPENGREP_RESULT_INVALID")
+        values[key] = value
+    return values
+
+
+def _reject_json_constant(_value: str) -> None:
+    raise ValueError("OPENGREP_RESULT_INVALID")
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,8 +80,8 @@ def plan_rule_batches(
     """Partition each configured rule exactly once without rewriting the YAML."""
 
     try:
-        document = yaml.safe_load(raw)
-    except yaml.YAMLError as error:
+        document = yaml.load(raw, Loader=_UniqueSafeLoader)
+    except (yaml.YAMLError, ValueError) as error:
         raise ValueError("OPENGREP_RULE_CATALOG_INVALID") from error
     if (
         not isinstance(document, dict)
@@ -110,8 +145,12 @@ def parse_rule_batch(raw: bytes, batch: RuleBatch) -> dict[str, object]:
     """Accept only a complete JSON result whose findings belong to this batch."""
 
     try:
-        value = json.loads(raw)
-    except (UnicodeError, json.JSONDecodeError) as error:
+        value = json.loads(
+            raw,
+            object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeError, ValueError) as error:
         raise ValueError("OPENGREP_RESULT_INVALID") from error
     if not isinstance(value, dict):
         raise ValueError("OPENGREP_RESULT_INVALID")
@@ -130,6 +169,16 @@ def parse_rule_batch(raw: bytes, batch: RuleBatch) -> dict[str, object]:
         rule_id = item.get("check_id")
         if not isinstance(rule_id, str) or rule_id not in allowed:
             raise ValueError("OPENGREP_BATCH_RULE_MISMATCH")
+        path = item.get("path")
+        start = item.get("start")
+        line = start.get("line") if isinstance(start, dict) else None
+        if (
+            not isinstance(path, str)
+            or not path
+            or type(line) is not int
+            or line < 1
+        ):
+            raise ValueError("OPENGREP_RESULT_INVALID")
     return cast(dict[str, object], value)
 
 
