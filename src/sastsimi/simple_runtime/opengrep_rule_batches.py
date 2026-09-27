@@ -1,0 +1,206 @@
+"""Deterministic OpenGrep rule partitioning and verified result aggregation."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from collections import deque
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import cast
+
+import yaml  # type: ignore[import-untyped]
+
+from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.refs import StoredDataRef
+
+_PLAN_VERSION = 1
+_SNIPPET_LIMIT = 500
+_RULE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+
+
+@dataclass(frozen=True, slots=True)
+class RuleBatch:
+    index: int
+    rule_ids: tuple[str, ...]
+    excluded_rule_ids: tuple[str, ...]
+    key: str
+
+
+@dataclass(frozen=True, slots=True)
+class RuleBatchPlan:
+    fingerprint: str
+    rule_ids: tuple[str, ...]
+    batches: tuple[RuleBatch, ...]
+
+
+def plan_rule_batches(
+    raw: bytes,
+    *,
+    tool_version: str,
+    executable_sha256: str,
+    batch_size: int = 3,
+) -> RuleBatchPlan:
+    """Partition each configured rule exactly once without rewriting the YAML."""
+
+    try:
+        document = yaml.safe_load(raw)
+    except yaml.YAMLError as error:
+        raise ValueError("OPENGREP_RULE_CATALOG_INVALID") from error
+    if (
+        not isinstance(document, dict)
+        or not isinstance(document.get("rules"), list)
+        or not document["rules"]
+        or batch_size < 1
+    ):
+        raise ValueError("OPENGREP_RULE_CATALOG_INVALID")
+    ids: list[str] = []
+    for rule in document["rules"]:
+        if not isinstance(rule, dict):
+            raise ValueError("OPENGREP_RULE_CATALOG_INVALID")
+        rule_id = rule.get("id")
+        if (
+            not isinstance(rule_id, str)
+            or _RULE_ID.fullmatch(rule_id) is None
+            or rule_id in ids
+        ):
+            raise ValueError("OPENGREP_RULE_CATALOG_INVALID")
+        ids.append(rule_id)
+    rule_ids = tuple(ids)
+    fingerprint = hashlib.sha256(
+        canonical_bytes(
+            {
+                "version": _PLAN_VERSION,
+                "batch_size": batch_size,
+                "rules_sha256": hashlib.sha256(raw).hexdigest(),
+                "rule_ids": rule_ids,
+                "tool_version": tool_version,
+                "executable_sha256": executable_sha256,
+            }
+        )
+    ).hexdigest()
+    batches: list[RuleBatch] = []
+    for index, start in enumerate(range(0, len(rule_ids), batch_size)):
+        selected = rule_ids[start : start + batch_size]
+        chosen = set(selected)
+        key = hashlib.sha256(
+            canonical_bytes(
+                {"version": _PLAN_VERSION, "index": index, "rule_ids": selected}
+            )
+        ).hexdigest()
+        batches.append(
+            RuleBatch(
+                index=index,
+                rule_ids=selected,
+                excluded_rule_ids=tuple(
+                    rule_id for rule_id in rule_ids if rule_id not in chosen
+                ),
+                key=key,
+            )
+        )
+    return RuleBatchPlan(
+        fingerprint=fingerprint,
+        rule_ids=rule_ids,
+        batches=tuple(batches),
+    )
+
+
+def parse_rule_batch(raw: bytes, batch: RuleBatch) -> dict[str, object]:
+    """Accept only a complete JSON result whose findings belong to this batch."""
+
+    try:
+        value = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("OPENGREP_RESULT_INVALID") from error
+    if not isinstance(value, dict):
+        raise ValueError("OPENGREP_RESULT_INVALID")
+    results = value.get("results")
+    errors = value.get("errors", [])
+    if (
+        not isinstance(results, list)
+        or not all(isinstance(item, dict) for item in results)
+        or not isinstance(errors, list)
+    ):
+        raise ValueError("OPENGREP_RESULT_INVALID")
+    if errors:
+        raise ValueError("OPENGREP_PARTIAL_SCAN")
+    allowed = set(batch.rule_ids)
+    for item in results:
+        rule_id = item.get("check_id")
+        if not isinstance(rule_id, str) or rule_id not in allowed:
+            raise ValueError("OPENGREP_BATCH_RULE_MISMATCH")
+    return cast(dict[str, object], value)
+
+
+def _hit_key(item: dict[str, object]) -> tuple[str, int, str]:
+    raw_path = item.get("path")
+    path = raw_path if isinstance(raw_path, str) else ""
+    raw_start = item.get("start")
+    raw_line = raw_start.get("line") if isinstance(raw_start, dict) else None
+    line = raw_line if type(raw_line) is int else 0
+    encoded = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+    return path, line, encoded
+
+
+def aggregate_rule_batches(
+    plan: RuleBatchPlan,
+    accepted: Sequence[tuple[RuleBatch, StoredDataRef, dict[str, object]]],
+) -> bytes:
+    """Preserve all accepted hits while sharing the first 500 across rules."""
+
+    if len(accepted) != len(plan.batches) or any(
+        item[0] != plan.batches[index] for index, item in enumerate(accepted)
+    ):
+        raise ValueError("OPENGREP_BATCH_SET_INCOMPLETE")
+    buckets: dict[str, deque[dict[str, object]]] = {
+        rule_id: deque() for rule_id in plan.rule_ids
+    }
+    batch_records: list[dict[str, object]] = []
+    for batch, ref, parsed in accepted:
+        batch_results = parsed.get("results")
+        if not isinstance(batch_results, list):
+            raise ValueError("OPENGREP_RESULT_INVALID")
+        for raw_item in batch_results:
+            if not isinstance(raw_item, dict):
+                raise ValueError("OPENGREP_RESULT_INVALID")
+            item = cast(dict[str, object], raw_item)
+            rule_id = item.get("check_id")
+            if not isinstance(rule_id, str) or rule_id not in batch.rule_ids:
+                raise ValueError("OPENGREP_BATCH_RULE_MISMATCH")
+            buckets[rule_id].append(item)
+        batch_records.append(
+            {
+                "key": batch.key,
+                "rule_ids": batch.rule_ids,
+                "raw_ref": ref.model_dump(mode="json"),
+                "paths": parsed.get("paths", {}),
+                "errors": [],
+            }
+        )
+    for rule_id in plan.rule_ids:
+        buckets[rule_id] = deque(sorted(buckets[rule_id], key=_hit_key))
+    merged_results: list[dict[str, object]] = []
+    active = list(plan.rule_ids)
+    while active:
+        next_active: list[str] = []
+        for rule_id in active:
+            bucket = buckets[rule_id]
+            if bucket:
+                merged_results.append(bucket.popleft())
+            if bucket:
+                next_active.append(rule_id)
+        active = next_active
+    aggregate = {
+        "kind": "simple_opengrep_rule_batches_v1",
+        "plan_fingerprint": plan.fingerprint,
+        "rule_ids": plan.rule_ids,
+        "results": merged_results,
+        "errors": [],
+        "batches": batch_records,
+        "candidate_snippet_limit": _SNIPPET_LIMIT,
+        "candidate_snippets_truncated": len(merged_results) > _SNIPPET_LIMIT,
+    }
+    return json.dumps(
+        aggregate, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
