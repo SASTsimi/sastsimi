@@ -215,6 +215,7 @@ class DirectStaticBootstrap:
                 identity,
                 rule_plan,
                 coverage_plan,
+                tracked,
                 artifacts,
             )
         except (OSError, RuntimeError, ValueError) as error:
@@ -422,6 +423,53 @@ class DirectStaticBootstrap:
                 }
             )
         ).hexdigest()
+
+    def _prior_fallback_coverage_fingerprints(
+        self,
+        workspace: Path,
+        tracked: Sequence[str],
+        commit_id: str,
+        rule_plan: RuleBatchPlan,
+    ) -> frozenset[str]:
+        """Allow only prior opt-out profiles with unchanged source/rules/tools."""
+
+        if not self._profile.semgrep_fallback:
+            return frozenset()
+        codeql = self._profile.tools.get("codeql")
+        semgrep = self._profile.tools.get("semgrep")
+        fingerprints: set[str] = set()
+        for prior_semgrep in (None, semgrep):
+            bindings = {
+                "semgrep": (
+                    {
+                        "version": prior_semgrep.version,
+                        "sha256": prior_semgrep.executable_sha256,
+                    }
+                    if prior_semgrep is not None
+                    else None
+                ),
+                "codeql": (
+                    {
+                        "version": codeql.version,
+                        "sha256": codeql.executable_sha256,
+                    }
+                    if codeql is not None
+                    else None
+                ),
+            }
+            fallback_fingerprint = hashlib.sha256(
+                canonical_bytes({"semgrep_enabled": False, "bindings": bindings})
+            ).hexdigest()
+            fingerprints.add(
+                plan_static_coverage(
+                    workspace,
+                    tracked,
+                    commit_id,
+                    rule_plan,
+                    fallback_tool_fingerprint=fallback_fingerprint,
+                ).fingerprint
+            )
+        return frozenset(fingerprints)
 
     async def coverage_fingerprint(
         self, request: SimpleAnalysisRequest, identity: CheckpointIdentity
@@ -765,6 +813,7 @@ class DirectStaticBootstrap:
         identity: CheckpointIdentity,
         rule_plan: RuleBatchPlan,
         coverage_plan: StaticCoveragePlan,
+        tracked: Sequence[str],
         artifacts: SimpleArtifactRepository,
     ) -> tuple[list[CoverageSlice], list[StoredDataRef], list[str]]:
         await self._verify_opengrep_workspace(workspace, request)
@@ -788,6 +837,9 @@ class DirectStaticBootstrap:
             )
             if item.tool == "opengrep"
         }
+        compatible_old_fingerprints = self._prior_fallback_coverage_fingerprints(
+            workspace, tracked, request.commit, rule_plan
+        )
         for batch in rule_plan.batches:
             expected = frozenset(
                 pair
@@ -810,14 +862,30 @@ class DirectStaticBootstrap:
                 )
                 else None
             )
-            cached_refs = [
-                ref
-                for ref in (
-                    previous,
-                    reusable_attempt_ref,
-                )
-                if ref is not None
-            ]
+            prior_attempts = self._store.list_static_scan_attempts_for_run_key(
+                identity, request.repository, "opengrep", batch.key
+            )
+            cached_refs: list[StoredDataRef] = []
+            for ref in (
+                previous,
+                reusable_attempt_ref,
+                *(
+                    item.raw_ref
+                    for item in prior_attempts
+                    if item.fingerprint
+                    in compatible_old_fingerprints | {coverage_plan.fingerprint}
+                    and item.raw_ref is not None
+                    and (
+                        item.status == "SUCCEEDED"
+                        or (
+                            item.status == "BLOCKED"
+                            and item.error_code == "OPENGREP_PARTIAL_SCAN"
+                        )
+                    )
+                ),
+            ):
+                if ref is not None and ref not in cached_refs:
+                    cached_refs.append(ref)
             reused = False
             prior_partial: CoverageSlice | None = None
             prior_partial_ref: StoredDataRef | None = None
@@ -843,8 +911,21 @@ class DirectStaticBootstrap:
                 self._require_opengrep_tool(binding)
                 slices.append(replace(slice_, raw_ref=ref))
                 refs.append(ref)
-                if not expected.issubset(slice_.verified_pairs):
-                    errors.append("OPENGREP_PARTIAL_SCAN")
+                complete = expected.issubset(slice_.verified_pairs)
+                code = None if complete else "OPENGREP_PARTIAL_SCAN"
+                if code is not None:
+                    errors.append(code)
+                self._store.save_static_scan_attempt(
+                    identity,
+                    request.repository,
+                    coverage_plan.fingerprint,
+                    "opengrep",
+                    batch.key,
+                    "SUCCEEDED" if complete else "BLOCKED",
+                    ref,
+                    None,
+                    code,
+                )
                 reused = True
                 break
             if reused:

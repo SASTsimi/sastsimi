@@ -1214,6 +1214,182 @@ def _coverage_bootstrap(
     return bootstrap, profile, store
 
 
+def _enable_semgrep_fallback(profile: SimpleExecutionProfile) -> SimpleExecutionProfile:
+    return profile.model_copy(
+        update={
+            "semgrep_fallback": True,
+            "tools": {**profile.tools, "semgrep": profile.tools["opengrep"]},
+        }
+    )
+
+
+async def _seed_old_partial(
+    tmp_path: Path, process: _CoverageProcess, analysis_id: str
+) -> tuple[
+    SimpleExecutionProfile,
+    SimpleCheckpointStore,
+    CheckpointIdentity,
+    StaticCoverageBlocked,
+]:
+    bootstrap, profile, store = _coverage_bootstrap(tmp_path, process, codeql=False)
+    identity = _identity(analysis_id)
+    with pytest.raises(StaticCoverageBlocked) as caught:
+        await bootstrap.run(_request(profile), identity)
+    assert process.opengrep_calls == 1
+    return profile, store, identity, caught.value
+
+
+@pytest.mark.asyncio
+async def test_fallback_opt_in_revalidates_old_partial_without_opengrep_rerun(
+    tmp_path: Path,
+) -> None:
+    process = _CoverageProcess()
+    old_profile, store, identity, old_blocked = await _seed_old_partial(
+        tmp_path, process, "reuse-old-partial"
+    )
+    old_report = _coverage_from_ref(old_profile, identity, old_blocked.coverage_ref)
+    assert old_report["verified_count"] == 1
+    profile = _enable_semgrep_fallback(old_profile)
+    bootstrap = DirectStaticBootstrap(
+        profile=profile, process=process, store=store, static_material_root=tmp_path
+    )
+    completed = await bootstrap.run(_request(profile), identity)
+    assert process.opengrep_calls == 1
+    assert len(process.fallback_calls) == 1
+    report = _coverage_from_ref(
+        profile,
+        identity,
+        StoredDataRef.model_validate(
+            _coverage_from_ref(profile, identity, completed.static_bundle_ref)[
+                "static_coverage_ref"
+            ]
+        ),
+    )
+    assert report["expected_count"] == report["verified_count"] == 2
+    assert report["gaps"] == []
+
+
+@pytest.mark.asyncio
+async def test_cross_fingerprint_corrupt_partial_is_quarantined_and_rescanned(
+    tmp_path: Path,
+) -> None:
+    process = _CoverageProcess()
+    old_profile, store, identity, old_blocked = await _seed_old_partial(
+        tmp_path, process, "corrupt-old-partial"
+    )
+    old_report = _coverage_from_ref(old_profile, identity, old_blocked.coverage_ref)
+    old_attempt = next(
+        item
+        for item in store.list_static_scan_attempts(
+            identity, _request(old_profile).repository, old_report["fingerprint"]
+        )
+        if item.tool == "opengrep"
+    )
+    assert old_attempt.raw_ref is not None
+    artifacts = SimpleArtifactRepository(old_profile.data_dir, identity)
+    artifacts.artifacts.path_for(old_attempt.raw_ref.content_hash).write_bytes(b"bad")
+    profile = _enable_semgrep_fallback(old_profile)
+    bootstrap = DirectStaticBootstrap(
+        profile=profile, process=process, store=store, static_material_root=tmp_path
+    )
+    await bootstrap.run(_request(profile), identity)
+    assert process.opengrep_calls == 2
+    assert any(artifacts.paths.quarantine.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_cross_fingerprint_numeric_coverage_without_raw_never_counts(
+    tmp_path: Path,
+) -> None:
+    process = _CoverageProcess()
+    old_profile, store, identity, old_blocked = await _seed_old_partial(
+        tmp_path, process, "count-without-proof"
+    )
+    old_report = _coverage_from_ref(old_profile, identity, old_blocked.coverage_ref)
+    old_attempt = next(
+        item
+        for item in store.list_static_scan_attempts(
+            identity, _request(old_profile).repository, old_report["fingerprint"]
+        )
+        if item.tool == "opengrep"
+    )
+    store.save_static_scan_attempt(
+        identity,
+        _request(old_profile).repository,
+        old_report["fingerprint"],
+        "opengrep",
+        old_attempt.run_key,
+        "BLOCKED",
+        None,
+        old_blocked.coverage_ref,
+        "OPENGREP_PARTIAL_SCAN",
+    )
+    profile = _enable_semgrep_fallback(old_profile)
+    bootstrap = DirectStaticBootstrap(
+        profile=profile, process=process, store=store, static_material_root=tmp_path
+    )
+    await bootstrap.run(_request(profile), identity)
+    assert process.opengrep_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_cross_fingerprint_partial_requires_clean_checkout(
+    tmp_path: Path,
+) -> None:
+    class DirtyOnResume(_CoverageProcess):
+        dirty = False
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if self.dirty and argv[1] == "status":
+                return ProcessResult(0, b" M app.py\0", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = DirtyOnResume()
+    old_profile, store, identity, _ = await _seed_old_partial(
+        tmp_path, process, "dirty-old-partial"
+    )
+    process.dirty = True
+    profile = _enable_semgrep_fallback(old_profile)
+    bootstrap = DirectStaticBootstrap(
+        profile=profile, process=process, store=store, static_material_root=tmp_path
+    )
+    with pytest.raises(RuntimeError, match="WORKSPACE_DIRTY"):
+        await bootstrap.run(_request(profile), identity)
+    assert process.opengrep_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_cross_fingerprint_rejects_changed_opengrep_executable(
+    tmp_path: Path,
+) -> None:
+    process = _CoverageProcess()
+    old_profile, store, identity, _ = await _seed_old_partial(
+        tmp_path, process, "changed-old-tool"
+    )
+    profile = _enable_semgrep_fallback(old_profile)
+    replacement = tmp_path / "changed-opengrep"
+    replacement.write_bytes(b"changed-tool")
+    changed_binding = SimpleToolBinding(
+        executable_path=replacement,
+        version="changed",
+        executable_sha256=hashlib.sha256(b"changed-tool").hexdigest(),
+    )
+    profile = profile.model_copy(
+        update={"tools": {**profile.tools, "opengrep": changed_binding}}
+    )
+    bootstrap = DirectStaticBootstrap(
+        profile=profile, process=process, store=store, static_material_root=tmp_path
+    )
+    await bootstrap.run(_request(profile), identity)
+    assert process.opengrep_calls == 2
+
+
 def _coverage_from_ref(
     profile: SimpleExecutionProfile, identity: CheckpointIdentity, ref: StoredDataRef
 ) -> dict[str, Any]:

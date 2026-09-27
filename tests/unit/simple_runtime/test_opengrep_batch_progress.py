@@ -219,3 +219,42 @@ def test_static_failed_attempt_can_have_no_raw_output(tmp_path: Path) -> None:
     ]
     assert attempt.raw_ref is None
     assert attempt.error_code == "OPENGREP_EXECUTION_FAILED"
+
+
+def test_static_attempt_run_key_lookup_is_newest_first_and_exactly_scoped(
+    tmp_path: Path,
+) -> None:
+    identity = _identity()
+    store = SimpleCheckpointStore(tmp_path / "checkpoints.sqlite3")
+    first = _ref(tmp_path, identity, b"first")
+    second = _ref(tmp_path, identity, b"second")
+    for fingerprint, ref in (("older", first), ("newer", second)):
+        store.save_static_scan_attempt(
+            identity,
+            "owner/repo",
+            fingerprint,
+            "opengrep",
+            "batch-1",
+            "BLOCKED",
+            ref,
+            None,
+            "OPENGREP_PARTIAL_SCAN",
+        )
+    found = store.list_static_scan_attempts_for_run_key(
+        identity, "owner/repo", "opengrep", "batch-1"
+    )
+    assert tuple(item.raw_ref for item in found) == (second, first)
+    for other_identity, repository, tool, run_key in (
+        (_identity(analysis_id="analysis-2"), "owner/repo", "opengrep", "batch-1"),
+        (_identity(workspace_id="workspace-2"), "owner/repo", "opengrep", "batch-1"),
+        (_identity(commit_id="b" * 40), "owner/repo", "opengrep", "batch-1"),
+        (identity, "owner/other", "opengrep", "batch-1"),
+        (identity, "owner/repo", "semgrep", "batch-1"),
+        (identity, "owner/repo", "opengrep", "batch-2"),
+    ):
+        assert (
+            store.list_static_scan_attempts_for_run_key(
+                other_identity, repository, tool, run_key
+            )
+            == ()
+        )

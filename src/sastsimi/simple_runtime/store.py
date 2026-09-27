@@ -54,6 +54,7 @@ ROLE_BY_STAGE: dict[SimpleStage, str] = {
 
 @dataclass(frozen=True, slots=True)
 class StaticScanAttempt:
+    fingerprint: str
     tool: str
     run_key: str
     status: Literal["SUCCEEDED", "BLOCKED"]
@@ -393,6 +394,71 @@ class SimpleCheckpointStore:
                 continue
             attempts.append(
                 StaticScanAttempt(
+                    fingerprint=fingerprint,
+                    tool=row["tool"],
+                    run_key=row["run_key"],
+                    status=row["status"],
+                    raw_ref=raw_ref,
+                    coverage_ref=coverage_ref,
+                    error_code=row["error_code"],
+                )
+            )
+        return tuple(attempts)
+
+    def list_static_scan_attempts_for_run_key(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        tool: str,
+        run_key: str,
+    ) -> tuple[StaticScanAttempt, ...]:
+        """Find exact-run prior attempts across coverage fingerprints, newest first."""
+
+        if identity.hypothesis_id is not None or not all(
+            part.strip() for part in (repository, tool, run_key)
+        ):
+            raise ValueError("STATIC_SCAN_KEY_INVALID")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT fingerprint, tool, run_key, status, raw_ref_json, "
+                "coverage_ref_json, "
+                "error_code FROM simple_static_scan_attempts "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND repository = ? AND tool = ? AND run_key = ? "
+                "ORDER BY rowid DESC",
+                (
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    repository,
+                    tool,
+                    run_key,
+                ),
+            ).fetchall()
+        attempts: list[StaticScanAttempt] = []
+        for row in rows:
+            if row["status"] not in {"SUCCEEDED", "BLOCKED"}:
+                continue
+            raw_ref = (
+                self._valid_opengrep_batch_ref(identity, row["raw_ref_json"])
+                if row["raw_ref_json"] is not None
+                else None
+            )
+            coverage_ref = (
+                self._valid_opengrep_batch_ref(identity, row["coverage_ref_json"])
+                if row["coverage_ref_json"] is not None
+                else None
+            )
+            if (
+                row["raw_ref_json"] is not None
+                and raw_ref is None
+                or row["coverage_ref_json"] is not None
+                and coverage_ref is None
+            ):
+                continue
+            attempts.append(
+                StaticScanAttempt(
+                    fingerprint=row["fingerprint"],
                     tool=row["tool"],
                     run_key=row["run_key"],
                     status=row["status"],
