@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
-from time import monotonic
+from time import monotonic, time
 from typing import Literal, cast
 
 from pydantic import JsonValue
@@ -144,6 +144,65 @@ async def _stagger_launch() -> None:
         if wait > 0:
             await asyncio.sleep(wait)
         _LAST_LAUNCH[0] = monotonic()
+
+
+# A subscription login's access token lasts about eight hours, and a call made
+# through the isolated child after it lapses fails before reaching the model -
+# no input tokens, no API status - without refreshing it.  taiga-back's
+# hypothesis stage lost its only call that way an hour after expiry, while a
+# plain `claude -p` against the same login refreshed it at once.  So a launch
+# first renews a token that has lapsed or is about to, through the plain
+# client, with a fixed prompt that carries nothing from the analysis.
+_REFRESH_MARGIN_MS = 5 * 60 * 1000
+_REFRESH_MODEL = "claude-haiku-4-5-20251001"
+_REFRESH_LOCK = asyncio.Lock()
+
+
+def _token_expires_at(config_dir: Path) -> int | None:
+    try:
+        document = json.loads(
+            (config_dir / ".credentials.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return None
+    oauth = document.get("claudeAiOauth") if isinstance(document, dict) else None
+    value = oauth.get("expiresAt") if isinstance(oauth, dict) else None
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+async def _refresh_lapsing_login(executable: Path, config_dir: Path) -> None:
+    async with _REFRESH_LOCK:
+        expires_at = _token_expires_at(config_dir)
+        if expires_at is None or expires_at - _REFRESH_MARGIN_MS > time() * 1000:
+            return
+        environment = {
+            "CLAUDE_CONFIG_DIR": str(config_dir),
+            "HOME": os.environ.get("HOME", str(config_dir)),
+            "PATH": os.environ.get("PATH", ""),
+        }
+        with tempfile.TemporaryDirectory(prefix="sastsimi-claude-refresh-") as cwd:
+            process = await asyncio.create_subprocess_exec(
+                str(executable),
+                "-p",
+                "--model",
+                _REFRESH_MODEL,
+                "--no-session-persistence",
+                "--output-format",
+                "json",
+                "ok",
+                cwd=cwd,
+                env=environment,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                await asyncio.wait_for(process.wait(), timeout=120)
+            except TimeoutError:
+                process.kill()
+                await process.wait()
 
 
 # The official client resolves its credential directory, and nothing else, from the
@@ -542,6 +601,7 @@ class ClaudeCliProcessRunner:
                 "--input-format",
                 "stream-json",
             )
+            await _refresh_lapsing_login(self.executable.path, self.claude_config_dir)
             await _stagger_launch()
             process = await asyncio.create_subprocess_exec(
                 *argv,
@@ -591,6 +651,7 @@ class ClaudeCliProcessRunner:
         environment: Mapping[str, str],
     ) -> _ChildResult:
         self.verify_executable()
+        await _refresh_lapsing_login(self.executable.path, self.claude_config_dir)
         await _stagger_launch()
         spawn_task = asyncio.create_task(
             asyncio.create_subprocess_exec(
