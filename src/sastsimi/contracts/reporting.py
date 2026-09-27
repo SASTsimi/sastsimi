@@ -33,9 +33,7 @@ _HIDDEN_REASONING = re.compile(
     r"(?i)(?:chain[ _-]?of[ _-]?thought|hidden[ _-]?reasoning|internal reasoning)"
 )
 _URL_TOKEN = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
-_DOTTED_VERSION_TOKEN = re.compile(
-    r"(?<![\w./:-])v?\d+(?:\.\d+){1,3}\b(?!\.\d)", re.IGNORECASE
-)
+_DOTTED_VERSION_TOKEN = re.compile(r"\d+(?:\.\d+){1,3}\b(?!\.\d)", re.IGNORECASE)
 _UNSUPPORTED_ADVISORY_CLAIMS = (
     re.compile(r"\bcvss\b[^\n]{0,32}?\d+(?:\.\d+)?", re.IGNORECASE),
     re.compile(

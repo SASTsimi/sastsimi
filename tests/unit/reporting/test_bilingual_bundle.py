@@ -165,6 +165,8 @@ def test_unverified_metadata_cannot_be_filled_by_reporter_prose() -> None:
         ("en", "details", "This affects 1.2.3."),
         ("en", "details", "This affects 1.2.3.4."),
         ("en", "details", "Affected in 1.2.3."),
+        ("en", "details", "Affected:1.2.3."),
+        ("en", "details", "Affected: product-1.2.3."),
         ("en", "details", "1.2.3 is affected."),
         ("en", "details", "1.2.3.4 is affected."),
         ("en", "details", "1.2.3 versions are affected."),
