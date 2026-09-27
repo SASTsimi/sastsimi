@@ -837,7 +837,12 @@ counterevidence: validation, sanitization, authorization, unreachable flows,
 false tool matches, and the project's own stated intent. A README, a doc under
 docs/, an adjacent comment, or a test that pins the exact behavior as intended
 is counterevidence like any other; request it by path the same way you would
-request a source file. Cite supplied exact artifact content hashes. Never
+request a source file. `documentation_files` lists the project's own
+documentation; read the pages covering the feature under review and its
+security policy. A documented default setting, a design the docs call
+intentional, or a policy that names this class of report as expected behavior
+for the privilege involved is decisive counterevidence - quote the sentence
+and its path. Cite supplied exact artifact content hashes. Never
 weaken a claim merely because information is missing; record the gap in
 limitations and ask for the files that would settle it rather than guessing.
 `source_files` lists every source file in the checkout - that is the whole
@@ -1031,6 +1036,11 @@ real deployment would insert, rather than demonstrating the window exists under
 ordinary concurrency. Either is HOLD, with the specific real-system behavior
 that remains unconfirmed named in `unresolved_conditions`, not TRUE with it
 buried in `limitations`.
+
+When the Con evidence quotes the project's own documentation or security
+policy stating that this exact behavior is intended, a documented default, or
+expected for the privilege involved, the verdict is FALSE unless the evidence
+shows the behavior going beyond what that text describes.
 
 List in `provided_capabilities` only an effect on someone or something outside
 the actor's own reach under `required_capabilities` - another user's data, an

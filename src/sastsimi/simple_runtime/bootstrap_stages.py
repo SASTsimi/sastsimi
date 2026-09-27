@@ -63,6 +63,13 @@ _MAX_LITERAL_CHARS = 60
 # does, and the point of asking an agent is that it decides.  Everything else
 # about a file - its facts, its text - is served when it is requested.
 _SOURCE_SUFFIXES = (".py", ".pyi", ".js", ".jsx", ".ts", ".tsx")
+# The project's own documentation, listed apart from source_files - which
+# drives hypothesis batching - so the agents know it exists.  paperless-ngx
+# documents its webhook default and its owner-less workflows as intended in
+# docs/, and two findings were confirmed against exactly that behavior by
+# agents that had only the source list to go on.
+_DOCUMENTATION_SUFFIXES = (".md", ".rst", ".adoc")
+_MAX_DOCUMENTATION_FILES = 300
 
 
 type _Provenance = tuple[int, SimpleLLMCallResult, list[dict[str, object]]]
@@ -490,6 +497,17 @@ def _source_listing(tracked: Sequence[str]) -> list[str]:
     )
 
 
+def _documentation_listing(tracked: Sequence[str]) -> list[str]:
+    # Shallowest first, so a cap keeps README, SECURITY.md and docs/ pages
+    # over deeply nested package notes.
+    found = [
+        value for value in tracked if value.lower().endswith(_DOCUMENTATION_SUFFIXES)
+    ]
+    return sorted(found, key=lambda path: (path.count("/"), path))[
+        :_MAX_DOCUMENTATION_FILES
+    ]
+
+
 @dataclass(frozen=True, slots=True)
 class ProcessResult:
     returncode: int
@@ -650,6 +668,7 @@ class DirectStaticBootstrap:
                 # stay in their own artifact, which ``tool_result_refs`` names,
                 # and are served for the files an agent asks about.
                 "source_files": _source_listing(tracked),
+                "documentation_files": _documentation_listing(tracked),
                 "route_flows_ref": flows_ref.model_dump(mode="json"),
                 "route_flow_summary": {
                     "entry_points": len(flows["entry_points"]),
