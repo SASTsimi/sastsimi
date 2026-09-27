@@ -93,6 +93,20 @@ def test_zero_hit_scanned_file_is_verified(tmp_path: Path) -> None:
     assert _gaps(report) == {("helper.py", "rule.py")}
 
 
+def test_absolute_scanner_paths_are_normalized_on_all_platforms(tmp_path: Path) -> None:
+    plan, rules = _plan(tmp_path)
+    absolute_path = str((tmp_path / "app.ts").resolve())
+    raw = _raw(
+        scanned=[absolute_path],
+        results=[{"check_id": "rule.js", "path": absolute_path, "start": {"line": 1}}],
+    )
+
+    slice_ = assess_scan(plan, rules.batches[0], raw, engine="opengrep")
+
+    assert slice_.verified_pairs == frozenset({("app.ts", "rule.js")})
+    assert slice_.normalized_results[0]["path"] == "app.ts"
+
+
 def test_scanned_file_with_parse_warning_remains_gap(tmp_path: Path) -> None:
     plan, rules = _plan(tmp_path)
     raw = _raw(

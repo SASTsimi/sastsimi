@@ -116,7 +116,7 @@ def _safe_relative(workspace: Path, raw: str) -> str | None:
     if not raw or "\x00" in raw:
         return None
     root = workspace.resolve()
-    supplied = Path(raw.replace("/", "\\"))
+    supplied = Path(raw)
     candidate = supplied if supplied.is_absolute() else root / supplied
     try:
         if candidate.is_symlink():
