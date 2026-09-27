@@ -87,6 +87,8 @@ sastsimi analyze https://github.com/owner/repository.git --commit <정확한-40�
 
 큰 저장소는 정적 도구가 실행되는 동안 `STATIC_DONE` 단계에 진행률 `0%`가 표시될 수 있습니다. `RUNNING`이면 상태를 확인하며 기다리고, 기존 실행이 종료된 뒤에만 `resume`하세요. 정적 분석 시간 초과와 복구 방법은 [오류 해결](docs/troubleshooting.md#opengrep-또는-codeql-실패)을 참고하세요.
 
+OpenGrep 규칙 묶음은 원본 규칙과 동일한 저장소 범위를 순차 검사합니다. 시간 초과 후 같은 분석을 `resume`하면 검증된 완료된 묶음은 재사용하고 남은 묶음부터 이어갑니다. 한 묶음이 실패하거나 시간 초과되면 전체 성공 전에는 정적 단계가 `BLOCKED`이며 가설·Finding·보고서를 만들지 않습니다. 저장소별 별도 설정은 필요 없습니다. 다만 묶음 실행으로 총 검사 시간이 늘 수 있고, 모든 저장소의 `COMPLETE`를 보장하지는 않습니다.
+
 ```powershell
 sastsimi status A-001
 sastsimi resume A-001

@@ -43,6 +43,17 @@ def test_operator_path_is_linked_and_exposes_only_the_product_runtime() -> None:
     assert "실제 저장소 분석" in usage
 
 
+def test_opengrep_batch_resume_is_documented() -> None:
+    for path in ("README.md", "docs/usage.md", "docs/troubleshooting.md"):
+        text = _read(path)
+        assert "sastsimi resume A-001" in text
+        assert "OpenGrep 규칙 묶음" in text
+        assert "완료된 묶음" in text
+        assert "전체 성공 전" in text
+        assert "`BLOCKED`" in text
+        assert "저장소별 별도 설정" in text
+
+
 def test_operator_docs_never_embed_a_credential_or_claim_preflight_is_active() -> None:
     installation = _read("docs/installation.md")
     provider = _read("docs/provider-setup.md")
