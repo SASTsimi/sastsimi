@@ -100,6 +100,8 @@ sastsimi analyze https://github.com/owner/repository.git --commit <정확한-40�
 
 OpenGrep 규칙 묶음은 원본 규칙과 동일한 저장소 범위를 순차 검사합니다. 시간 초과 후 같은 분석을 `resume`하면 검증된 완료된 묶음은 재사용하고 남은 묶음부터 이어갑니다. 파싱 경고가 있으면 해당 파일·규칙 조합을 미검증으로 남기며, 선택형 Semgrep이 실제 재검사한 조합만 보완합니다. OpenGrep이 실패해도 AST와 설정된 CodeQL 결과는 보존합니다. 파일·규칙별 누락이 남으면 전체 성공 전에는 정적 단계가 `BLOCKED`이며 가설·Finding·보고서를 만들지 않습니다. 대시보드에서 미검증 경로·이유와 알려진 소스 확장자 중 현재 규칙 범위 밖인 파일을 확인할 수 있습니다. 저장소별 별도 설정은 필요 없습니다. 다만 묶음 실행으로 총 검사 시간이 늘 수 있고, 모든 저장소의 `COMPLETE`를 보장하지는 않습니다.
 
+매우 큰 저장소에서는 선택형 Semgrep 재검사가 실행별 최대 1시간 제한 안에 모든 누락 조합을 끝내지 못할 수 있습니다. 이때 완료된 묶음은 재개 시 재사용하지만 남은 조합은 계속 `BLOCKED`입니다. 실제 고정 commit 시험과 제한사항은 [Dify 정적 검사 검증](docs/validation/2026-09-27-dify-static-coverage.md)에 기록했습니다.
+
 ```powershell
 sastsimi status A-001
 sastsimi resume A-001

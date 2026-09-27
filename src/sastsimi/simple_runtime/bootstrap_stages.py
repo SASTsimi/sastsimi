@@ -817,6 +817,8 @@ class DirectStaticBootstrap:
                 if ref is not None
             ]
             reused = False
+            prior_partial: CoverageSlice | None = None
+            prior_partial_ref: StoredDataRef | None = None
             for ref in cached_refs:
                 try:
                     raw = artifacts.read(ref)
@@ -833,6 +835,8 @@ class DirectStaticBootstrap:
                     and ref == reusable_attempt_ref
                     and not self._reusable_parse_warning(slice_, expected)
                 ):
+                    prior_partial = replace(slice_, raw_ref=ref)
+                    prior_partial_ref = ref
                     continue
                 self._require_opengrep_tool(binding)
                 slices.append(replace(slice_, raw_ref=ref))
@@ -847,19 +851,34 @@ class DirectStaticBootstrap:
             if remaining < 1:
                 code = "EXTERNAL_TOOL_TIMEOUT"
                 errors.append(code)
-                self._record_static_failure(
-                    identity,
-                    request,
-                    coverage_plan,
-                    "opengrep",
-                    batch.key,
-                    expected,
-                    code,
-                    slices,
-                )
+                if prior_partial is not None and prior_partial_ref is not None:
+                    self._record_gap_slice(batch, expected, code, slices)
+                    slices.append(prior_partial)
+                    refs.append(prior_partial_ref)
+                    self._store.save_static_scan_attempt(
+                        identity,
+                        request.repository,
+                        coverage_plan.fingerprint,
+                        "opengrep",
+                        batch.key,
+                        "BLOCKED",
+                        prior_partial_ref,
+                        None,
+                        "OPENGREP_PARTIAL_SCAN",
+                    )
+                else:
+                    self._record_static_failure(
+                        identity,
+                        request,
+                        coverage_plan,
+                        "opengrep",
+                        batch.key,
+                        expected,
+                        code,
+                        slices,
+                    )
                 continue
             output = output_root / f"opengrep-{batch.index:03d}-{batch.key[:12]}.json"
-            output.unlink(missing_ok=True)
             argv = (
                 self._tool("opengrep"),
                 "scan",
@@ -880,6 +899,7 @@ class DirectStaticBootstrap:
             raw_ref: StoredDataRef | None = None
             provisional_recorded = False
             try:
+                output.unlink(missing_ok=True)
                 self._require_opengrep_tool(binding)
                 result = await self._process.run(
                     argv, cwd=workspace, timeout_seconds=remaining
@@ -919,8 +939,27 @@ class DirectStaticBootstrap:
                     raise RuntimeError("OPENGREP_EXECUTION_FAILED")
                 slice_ = assess_scan(coverage_plan, batch, raw, engine="opengrep")
                 slices.append(replace(slice_, raw_ref=raw_ref))
-                complete = expected.issubset(slice_.verified_pairs)
-                scan_code: str | None = None if complete else "OPENGREP_PARTIAL_SCAN"
+                retained_previous = bool(
+                    prior_partial is not None
+                    and not prior_partial.verified_pairs.issubset(slice_.verified_pairs)
+                )
+                if retained_previous:
+                    assert prior_partial is not None
+                    assert prior_partial_ref is not None
+                    slices.append(prior_partial)
+                    refs.append(prior_partial_ref)
+                complete = expected.issubset(
+                    slice_.verified_pairs
+                    | (
+                        prior_partial.verified_pairs
+                        if retained_previous and prior_partial is not None
+                        else frozenset()
+                    )
+                )
+                persisted_complete = complete and not retained_previous
+                scan_code: str | None = (
+                    None if persisted_complete else "OPENGREP_PARTIAL_SCAN"
+                )
                 if scan_code is not None:
                     errors.append(scan_code)
                 self._store.save_static_scan_attempt(
@@ -929,12 +968,12 @@ class DirectStaticBootstrap:
                     coverage_plan.fingerprint,
                     "opengrep",
                     batch.key,
-                    "SUCCEEDED" if complete else "BLOCKED",
-                    raw_ref,
+                    "SUCCEEDED" if persisted_complete else "BLOCKED",
+                    prior_partial_ref if retained_previous else raw_ref,
                     None,
                     scan_code,
                 )
-                if complete and not slice_.parsed.get("errors"):
+                if persisted_complete and not slice_.parsed.get("errors"):
                     self._store.save_opengrep_batch(
                         identity,
                         request.repository,
@@ -946,6 +985,11 @@ class DirectStaticBootstrap:
             except (OSError, RuntimeError, ValueError) as error:
                 code = self._safe_static_error(error, "OPENGREP_RESULT_INVALID")
                 errors.append(code)
+                if not provisional_recorded:
+                    self._record_gap_slice(batch, expected, code, slices)
+                if prior_partial is not None and prior_partial_ref is not None:
+                    slices.append(prior_partial)
+                    refs.append(prior_partial_ref)
                 self._store.save_static_scan_attempt(
                     identity,
                     request.repository,
@@ -953,12 +997,14 @@ class DirectStaticBootstrap:
                     "opengrep",
                     batch.key,
                     "BLOCKED",
-                    raw_ref,
+                    prior_partial_ref if prior_partial_ref is not None else raw_ref,
                     None,
-                    code,
+                    (
+                        "OPENGREP_PARTIAL_SCAN"
+                        if prior_partial_ref is not None
+                        else code
+                    ),
                 )
-                if not provisional_recorded:
-                    self._record_gap_slice(batch, expected, code, slices)
         return slices, refs, errors
 
     @staticmethod
@@ -979,6 +1025,7 @@ class DirectStaticBootstrap:
             and errors
             and all(
                 isinstance(error, dict)
+                and isinstance(error.get("type"), str)
                 and error.get("type") in {"PartialParsing", "Syntax error"}
                 for error in errors
             )

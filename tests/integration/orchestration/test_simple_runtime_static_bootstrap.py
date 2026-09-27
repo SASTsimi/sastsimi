@@ -23,7 +23,7 @@ from sastsimi.simple_runtime.bootstrap_stages import (
 from sastsimi.simple_runtime.models import CheckpointIdentity, StageFailure
 from sastsimi.simple_runtime.opengrep_rule_batches import plan_rule_batches
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
-from sastsimi.simple_runtime.static_coverage import plan_static_coverage
+from sastsimi.simple_runtime.static_coverage import CoverageSlice, plan_static_coverage
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
@@ -1046,6 +1046,236 @@ async def test_nonzero_opengrep_output_is_not_reused_as_success(
         await bootstrap.run(_request(profile), identity)
     await bootstrap.run(_request(profile), identity)
     assert process.opengrep_calls == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_kind", ["timeout", "nonzero"])
+async def test_opengrep_retry_failure_preserves_previous_verified_pairs(
+    tmp_path: Path, failure_kind: str
+) -> None:
+    class PartialThenFailure(_CoverageProcess):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--output" in argv:
+                self.opengrep_calls += 1
+                if self.opengrep_calls == 1:
+                    output = Path(argv[argv.index("--output") + 1])
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    output.write_text(
+                        json.dumps(
+                            {
+                                "results": [],
+                                "errors": [],
+                                "paths": {"scanned": ["good.py"], "skipped": []},
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    return ProcessResult(0, b"", b"")
+                if failure_kind == "timeout":
+                    raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+                output = Path(argv[argv.index("--output") + 1])
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [],
+                            "errors": [],
+                            "paths": {
+                                "scanned": ["app.py", "good.py"],
+                                "skipped": [],
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(2, b"", b"failed")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = PartialThenFailure()
+    bootstrap, profile, store = _coverage_bootstrap(tmp_path, process, codeql=False)
+    identity = _identity("partial-then-timeout")
+    request = _request(profile)
+    with pytest.raises(StaticCoverageBlocked) as first:
+        await bootstrap.run(request, identity)
+    first_report = _coverage_from_ref(profile, identity, first.value.coverage_ref)
+    assert first_report["verified_count"] == 1
+    previous = next(
+        item
+        for item in store.list_static_scan_attempts(
+            identity, request.repository, first_report["fingerprint"]
+        )
+        if item.tool == "opengrep"
+    )
+    assert previous.raw_ref is not None
+
+    with pytest.raises(StaticCoverageBlocked) as second:
+        await bootstrap.run(request, identity)
+    second_report = _coverage_from_ref(profile, identity, second.value.coverage_ref)
+    assert process.opengrep_calls == 2
+    assert second_report["verified_count"] == 1
+    assert second_report["gaps"][0]["path"] == "app.py"
+    latest = next(
+        item
+        for item in store.list_static_scan_attempts(
+            identity, request.repository, second_report["fingerprint"]
+        )
+        if item.tool == "opengrep"
+    )
+    assert latest.raw_ref == previous.raw_ref
+
+
+@pytest.mark.asyncio
+async def test_opengrep_partial_retry_preserves_previous_verified_pairs(
+    tmp_path: Path,
+) -> None:
+    class AlternatingPartial(_CoverageProcess):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--output" in argv:
+                self.opengrep_calls += 1
+                output = Path(argv[argv.index("--output") + 1])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [],
+                            "errors": [],
+                            "paths": {
+                                "scanned": [
+                                    "good.py" if self.opengrep_calls == 1 else "app.py"
+                                ],
+                                "skipped": [],
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = AlternatingPartial()
+    bootstrap, profile, store = _coverage_bootstrap(tmp_path, process, codeql=False)
+    identity = _identity("alternating-partial")
+    request = _request(profile)
+    with pytest.raises(StaticCoverageBlocked) as first:
+        await bootstrap.run(request, identity)
+    first_report = _coverage_from_ref(profile, identity, first.value.coverage_ref)
+    previous = next(
+        item
+        for item in store.list_static_scan_attempts(
+            identity, request.repository, first_report["fingerprint"]
+        )
+        if item.tool == "opengrep"
+    )
+    result = await bootstrap.run(request, identity)
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
+    coverage = _coverage_from_ref(
+        profile, identity, StoredDataRef.model_validate(bundle["static_coverage_ref"])
+    )
+    assert process.opengrep_calls == 2
+    assert coverage["verified_count"] == coverage["expected_count"] == 2
+    assert len(bundle["engine_raw_refs"]) == 2
+    assert previous.raw_ref is not None
+    assert previous.raw_ref.model_dump(mode="json") in bundle["engine_raw_refs"]
+    latest = next(
+        item
+        for item in store.list_static_scan_attempts(
+            identity, request.repository, coverage["fingerprint"]
+        )
+        if item.tool == "opengrep"
+    )
+    assert latest.raw_ref == previous.raw_ref
+
+
+def test_reusable_parse_warning_rejects_nonstring_type_without_crashing() -> None:
+    slice_ = CoverageSlice(
+        engine="opengrep",
+        batch_key="batch",
+        rule_ids=("python.sql",),
+        verified_pairs=frozenset(),
+        gap_reasons=(("app.py", "python.sql", "parse_or_scan_error"),),
+        parsed={"errors": [{"type": ["PartialParsing"], "path": "app.py"}]},
+        normalized_results=(),
+    )
+    assert not DirectStaticBootstrap._reusable_parse_warning(
+        slice_, frozenset({("app.py", "python.sql")})
+    )
+
+
+@pytest.mark.asyncio
+async def test_locked_retry_output_preserves_previous_partial_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class PartialFirst(_CoverageProcess):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--output" in argv:
+                self.opengrep_calls += 1
+                output = Path(argv[argv.index("--output") + 1])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [],
+                            "errors": [],
+                            "paths": {"scanned": ["good.py"], "skipped": []},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = PartialFirst()
+    bootstrap, profile, store = _coverage_bootstrap(tmp_path, process, codeql=False)
+    identity = _identity("locked-retry-output")
+    request = _request(profile)
+    with pytest.raises(StaticCoverageBlocked) as first:
+        await bootstrap.run(request, identity)
+    first_report = _coverage_from_ref(profile, identity, first.value.coverage_ref)
+    previous = next(
+        item
+        for item in store.list_static_scan_attempts(
+            identity, request.repository, first_report["fingerprint"]
+        )
+        if item.tool == "opengrep"
+    )
+    original_unlink = Path.unlink
+
+    def locked_unlink(path: Path, missing_ok: bool = False) -> None:
+        if path.name.startswith("opengrep-"):
+            raise PermissionError("locked scanner output")
+        original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", locked_unlink)
+    with pytest.raises(StaticCoverageBlocked) as second:
+        await bootstrap.run(request, identity)
+    second_report = _coverage_from_ref(profile, identity, second.value.coverage_ref)
+    assert second_report["verified_count"] == 1
+    assert process.opengrep_calls == 1
+    latest = next(
+        item
+        for item in store.list_static_scan_attempts(
+            identity, request.repository, second_report["fingerprint"]
+        )
+        if item.tool == "opengrep"
+    )
+    assert latest.raw_ref == previous.raw_ref
 
 
 @pytest.mark.asyncio
