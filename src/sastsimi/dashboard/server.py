@@ -113,6 +113,33 @@ def create_server(
                         "text/markdown; charset=utf-8",
                         send_body,
                     )
+                elif len(parts) >= 5 and parts[0] == "reports" and parts[3] == "files":
+                    name = "/".join(parts[4:])
+                    body, media_type = query.report_attachment(parts[1], parts[2], name)
+                    self._response(
+                        HTTPStatus.OK,
+                        body,
+                        media_type,
+                        send_body,
+                        content_disposition=(
+                            f'attachment; filename="{name.rsplit("/", 1)[-1]}"'
+                        ),
+                    )
+                elif (
+                    len(parts) == 4
+                    and parts[0] == "reports"
+                    and parts[3] == "bundle.zip"
+                ):
+                    body, media_type = query.report_attachment(
+                        parts[1], parts[2], "bundle.zip"
+                    )
+                    self._response(
+                        HTTPStatus.OK,
+                        body,
+                        media_type,
+                        send_body,
+                        content_disposition='attachment; filename="bundle.zip"',
+                    )
                 else:
                     raise DashboardNotFound("DASHBOARD_ROUTE_NOT_FOUND")
             except DashboardNotFound:
@@ -176,6 +203,8 @@ def create_server(
             body: bytes,
             content_type: str,
             send_body: bool,
+            *,
+            content_disposition: str | None = None,
         ) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
@@ -184,6 +213,8 @@ def create_server(
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Security-Policy", _CSP)
             self.send_header("Referrer-Policy", "no-referrer")
+            if content_disposition is not None:
+                self.send_header("Content-Disposition", content_disposition)
             self.end_headers()
             if send_body:
                 self.wfile.write(body)

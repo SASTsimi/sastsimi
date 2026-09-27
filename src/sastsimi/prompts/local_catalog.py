@@ -24,7 +24,7 @@ from sastsimi.agents import technical_gate as technical_agent
 from sastsimi.agents import verification as verification_agent
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.llm import LLMRole, PromptInputSlot
-from sastsimi.contracts.reporting import ReportContent
+from sastsimi.contracts.reporting import BilingualReportContent
 
 from .local_evaluation import REQUIRED_LOCAL_EVALUATION_PROMPT_ROUTES
 
@@ -279,7 +279,7 @@ _OUTPUTS: dict[tuple[str, str], TypeAdapter[Any]] = {
         technical_agent._TechnicalContent  # noqa: SLF001
     ),
     ("RULE_SCOPE_GATE", "REVIEW"): TypeAdapter(scope_agent.RuleScopeProposal),
-    ("REPORTER", "CREATE_DRAFT"): TypeAdapter(ReportContent),
+    ("REPORTER", "CREATE_DRAFT"): TypeAdapter(BilingualReportContent),
     ("POLICY_PARSER", "PARSE_OFFICIAL_POLICY"): TypeAdapter(
         policy_agent.ParsedPolicyContent
     ),

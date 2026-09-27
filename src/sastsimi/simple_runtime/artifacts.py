@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
+import stat
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -14,9 +18,24 @@ from sastsimi.contracts.prompt_redaction import (
     redact_untrusted_text,
 )
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.reporting.bundle_files import (
+    MAX_BUNDLE_ARCHIVE_BYTES,
+    MAX_BUNDLE_FILE_BYTES,
+    MAX_BUNDLE_MANIFEST_BYTES,
+    ReportBundleManifest,
+    parse_bundle_manifest,
+    read_bundle_archive,
+    read_bundle_file,
+)
 from sastsimi.storage.artifact_store import LocalArtifactStore
 
-from .models import CheckpointIdentity
+from .models import (
+    STAGE_VERSION,
+    CheckpointIdentity,
+    SimpleStage,
+    StageCheckpoint,
+    StageStatus,
+)
 
 _MAX_CONTEXT_BYTES = 256 * 1024
 
@@ -62,6 +81,198 @@ class SimpleArtifactRepository:
         if hashlib.sha256(payload).hexdigest() != ref.content_hash:
             raise ValueError("SIMPLE_RUNTIME_EXACT_REFERENCE_MISMATCH")
         return payload
+
+    def quarantine_corrupt(self, ref: StoredDataRef) -> bool:
+        """Move only a verified-invalid CAS file aside before an exact retry."""
+
+        self._require_scope(ref)
+        if (
+            ref.record_id is not None
+            or ref.data_kind != "artifact"
+            or str(ref.stored_data_id) != ref.content_hash
+        ):
+            raise ValueError("SIMPLE_RUNTIME_ARTIFACT_REF_INVALID")
+        path = self.artifacts.path_for(ref.content_hash)
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return False
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or int(getattr(info, "st_file_attributes", 0)) & 0x400
+            or not path.resolve(strict=True).is_relative_to(self.artifacts.root)
+        ):
+            raise ValueError("SIMPLE_RUNTIME_ARTIFACT_PATH_UNSAFE")
+        if hashlib.sha256(path.read_bytes()).hexdigest() == ref.content_hash:
+            return False
+        quarantine = self.paths.quarantine
+        if quarantine.is_symlink() or not quarantine.resolve().is_relative_to(
+            self.data_dir.resolve()
+        ):
+            raise ValueError("SIMPLE_RUNTIME_QUARANTINE_PATH_UNSAFE")
+        destination = quarantine / f"{ref.content_hash}-{uuid4().hex}"
+        os.replace(path, destination)
+        return True
+
+    def read_bounded(self, ref: StoredDataRef, max_bytes: int) -> bytes:
+        """Read a bounded exact CAS object for public attachment delivery."""
+
+        self._require_scope(ref)
+        with self.artifacts.open_verified_bounded(ref, max_bytes) as stream:
+            return stream.read()
+
+    def verified_report_bundle(
+        self,
+        *,
+        checkpoints: Mapping[SimpleStage, StageCheckpoint],
+        finding_ref: StoredDataRef,
+        display_id: str,
+        scope_status: str,
+        public_projection: Callable[[bytes], bytes],
+    ) -> tuple[ReportBundleManifest, bytes]:
+        """Bind every attachment to the current PoC, gates and report."""
+
+        def required(stage: SimpleStage) -> StageCheckpoint:
+            item = checkpoints.get(stage)
+            if (
+                item is None
+                or item.identity != self.identity
+                or item.status is not StageStatus.SUCCEEDED
+                or item.stage_version != STAGE_VERSION[stage]
+            ):
+                raise ValueError("BUNDLE_CURRENT_STAGE_MISSING")
+            return item
+
+        finding = required(SimpleStage.FINDING_DONE)
+        report = required(SimpleStage.REPORT_DONE)
+        candidate = required(SimpleStage.POC_CANDIDATE_DONE)
+        dynamic = required(SimpleStage.POC_EXECUTION_DONE)
+        technical = required(SimpleStage.TECH_GATE_DONE)
+        scope = required(SimpleStage.SCOPE_GATE_DONE)
+        if (
+            finding_ref not in finding.output_refs
+            or finding_ref not in report.input_refs
+            or report.bundle_manifest_ref is None
+            or report.bundle_archive_ref is None
+            or len(report.output_refs) < 2
+            or len(candidate.output_refs) < 2
+            or len(dynamic.output_refs) < 1
+            or len(technical.output_refs) != 1
+            or len(scope.output_refs) != 1
+            or dynamic.validated_poc_ref is None
+            or finding.validated_poc_ref != dynamic.validated_poc_ref
+            or report.validated_poc_ref != dynamic.validated_poc_ref
+        ):
+            raise ValueError("BUNDLE_CURRENT_CLOSURE_INVALID")
+        candidate_ref, content_ref = candidate.output_refs[:2]
+        execution_ref = dynamic.output_refs[0]
+        validated_ref = dynamic.validated_poc_ref
+        candidate_data = json.loads(self.read(candidate_ref))
+        execution_data = json.loads(self.read(execution_ref))
+        validated_data = json.loads(self.read(validated_ref))
+        if not all(
+            isinstance(item, dict)
+            for item in (candidate_data, execution_data, validated_data)
+        ):
+            raise ValueError("BUNDLE_POC_CLOSURE_INVALID")
+        if (
+            StoredDataRef.model_validate(candidate_data.get("content_ref"))
+            != content_ref
+            or StoredDataRef.model_validate(execution_data.get("candidate_ref"))
+            != candidate_ref
+            or StoredDataRef.model_validate(execution_data.get("content_ref"))
+            != content_ref
+            or StoredDataRef.model_validate(validated_data.get("candidate_ref"))
+            != candidate_ref
+            or StoredDataRef.model_validate(validated_data.get("content_ref"))
+            != content_ref
+            or StoredDataRef.model_validate(validated_data.get("execution_ref"))
+            != execution_ref
+            or execution_data.get("attempt_id") != dynamic.attempt_id
+            or validated_data.get("attempt_id") != dynamic.attempt_id
+        ):
+            raise ValueError("BUNDLE_POC_CLOSURE_INVALID")
+        stdout_ref = StoredDataRef.model_validate(execution_data.get("stdout_ref"))
+        stderr_ref = StoredDataRef.model_validate(execution_data.get("stderr_ref"))
+        expected_sources = {
+            "finding": finding_ref,
+            "poc": content_ref,
+            "validated_poc": validated_ref,
+            "execution": execution_ref,
+            "technical": technical.output_refs[0],
+            "scope": scope.output_refs[0],
+            "stdout": stdout_ref,
+            "stderr": stderr_ref,
+        }
+        raw_report = self.read(report.output_refs[1])
+        if public_projection(raw_report) != raw_report:
+            raise ValueError("BUNDLE_PUBLIC_REPORT_RESTRICTED")
+        manifest = parse_bundle_manifest(
+            self.read_bounded(report.bundle_manifest_ref, MAX_BUNDLE_MANIFEST_BYTES),
+            finding_ref=finding_ref,
+        )
+        if (
+            manifest.analysis_id != self.identity.analysis_id
+            or manifest.display_id != display_id
+            or manifest.poc_original_sha256 != content_ref.content_hash
+        ):
+            raise ValueError("BUNDLE_ID_OR_POC_MISMATCH")
+
+        def bounded(ref: StoredDataRef) -> bytes:
+            return self.read_bounded(ref, MAX_BUNDLE_FILE_BYTES)
+
+        provenance_raw, _ = read_bundle_file(
+            manifest, "evidence/provenance.json", bounded
+        )
+        provenance = json.loads(provenance_raw)
+        if not isinstance(provenance, dict):
+            raise ValueError("BUNDLE_PROVENANCE_INVALID")
+        sources = provenance.get("sources")
+        if (
+            provenance.get("scope_status") != scope_status
+            or not isinstance(sources, dict)
+            or set(sources) != set(expected_sources)
+        ):
+            raise ValueError("BUNDLE_PROVENANCE_STALE")
+        for name, expected in expected_sources.items():
+            if StoredDataRef.model_validate(sources[name]) != expected:
+                raise ValueError("BUNDLE_SOURCE_REF_MISMATCH")
+        for name in ("report_en.md", "report_kr.md"):
+            body, _ = read_bundle_file(manifest, name, bounded)
+            if public_projection(body) != body:
+                raise ValueError("BUNDLE_PUBLIC_REPORT_RESTRICTED")
+        archive = read_bundle_archive(
+            manifest,
+            report.bundle_archive_ref,
+            lambda ref: self.read_bounded(ref, MAX_BUNDLE_ARCHIVE_BYTES),
+        )
+        path = (
+            self.data_dir.resolve()
+            / "reports"
+            / self.identity.analysis_id
+            / display_id
+            / "bundle.zip"
+        )
+        if path.resolve(strict=True) != path:
+            raise ValueError("BUNDLE_PATH_UNSAFE")
+        before = path.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or int(getattr(before, "st_file_attributes", 0)) & 0x400
+            or before.st_size > MAX_BUNDLE_ARCHIVE_BYTES
+        ):
+            raise ValueError("BUNDLE_PATH_UNSAFE")
+        with path.open("rb") as stream:
+            current = os.fstat(stream.fileno())
+            if (before.st_dev, before.st_ino) != (
+                current.st_dev,
+                current.st_ino,
+            ) or current.st_size > MAX_BUNDLE_ARCHIVE_BYTES:
+                raise ValueError("BUNDLE_PATH_CHANGED")
+            disk = stream.read(MAX_BUNDLE_ARCHIVE_BYTES + 1)
+        if disk != archive:
+            raise ValueError("BUNDLE_ARCHIVE_CHANGED")
+        return manifest, archive
 
     def prompt_context(self, refs: tuple[StoredDataRef, ...]) -> bytes:
         items: list[dict[str, Any]] = []

@@ -40,9 +40,14 @@ Primitive Admission Runtime은 저장된 Gate 결과를 정해진 허용 규칙�
 Chaining Agent는 허용된 TRUE Primitive와 HOLD Primitive의 조건을 조합해 새 가설을
 제안하고, 자식 가설은 정적 근거 조립부터 전체 검증을 다시 수행합니다.
 
-Reporter Agent는 upstream artifact에 존재하는 사실만 사용해 한국어 Markdown 보고서를
-만듭니다. 보고서는 Summary, Details, PoC, Impact를 포함하고 파일명은 `F-NNN.md`입니다.
-정책 수집 상태·출처·개정, 항목별 인용과 누락된 근거도 보고서와 대시보드에 표시합니다.
+Reporter Agent는 upstream artifact에 존재하는 사실만 사용해 한 번의 구조화된
+응답으로 영어·한국어 설명을 만듭니다. Runtime이 공통 검증 사실을 같은 순서의
+아홉 섹션에 주입해 영문 제보 초안 `report_en.md`와 국문 검토용
+`report_kr.md`를 만들고, 검증된 PoC·근거 파일과 함께 게시합니다. 기존 한국어
+`F-NNN.md` 경로도 유지하며, 저장된 예전 단일 보고서를 새 Agent 호출로
+몰래 재작성하지 않습니다. 정책 수집 상태·출처·개정, 항목별 인용과 누락된
+근거도 보고서와 대시보드에 표시합니다. 미확정 영향 버전·심각도·패치 버전은
+사람 검토 항목으로 남깁니다.
 `ALLOW`는 비공개 제보의 정책 조건을 뜻하며 외부 공개 허가는 별도로 확인해야 합니다.
 공개 조회 경로는 Gate와 정책의 exact reference를 다시 확인합니다. 이전 기록의 검증
 되지 않은 `ALLOW`는 제보 가능한 결과로 내보내지 않으며 제한된 Markdown을 별도
@@ -55,6 +60,8 @@ Reporter Agent는 upstream artifact에 존재하는 사실만 사용해 한국�
 - 정책 근거 검증·공개 조회: `src/sastsimi/simple_runtime/scope_policy.py`
 - Primitive와 Chaining: `src/sastsimi/simple_runtime/chaining.py`
 - 보고서 저장: `src/sastsimi/reporting/markdown_export.py`
+- 영·국문 렌더링과 첨부 검증: `src/sastsimi/reporting/bilingual_bundle.py`,
+  `src/sastsimi/reporting/bundle_files.py`
 - Finding ID: `src/sastsimi/reporting/finding_display_id.py`
 - 읽기 전용 조회: `src/sastsimi/dashboard/query.py`
 
@@ -71,6 +78,8 @@ Reporter Agent는 upstream artifact에 존재하는 사실만 사용해 한국�
 - Report는 새 보안 사실을 만들지 않고 exact upstream reference만 표현합니다.
 - 공식 정책의 정확한 출처와 인용이 없으면 외부 제보 허가를 확정하지 않습니다.
 - 민감정보 제거 실패나 stale upstream 결과가 있으면 Markdown을 최신 보고서로 내보내지 않습니다.
+- 번들은 manifest·정확한 Finding/PoC/실행 근거·파일 해시가 모두 맞을 때만 현재
+  결과로 게시·다운로드합니다. 기존 공개 보고서가 제한되면 첨부로 우회하지 않습니다.
 
 ## 현재 제한
 

@@ -3,6 +3,7 @@
 import hashlib
 import os
 import re
+import stat
 from io import BytesIO
 from pathlib import Path
 from typing import BinaryIO
@@ -109,5 +110,49 @@ class LocalArtifactStore:
             raise ValueError("Artifact reference mismatch")
         data = self.path_for(ref.content_hash).read_bytes()
         if hashlib.sha256(data).hexdigest() != ref.content_hash:
+            raise ValueError("HASH_MISMATCH")
+        return BytesIO(data)
+
+    def open_verified_bounded(
+        self, ref: StoredDataRef | RunStoredDataRef, max_bytes: int
+    ) -> BinaryIO:
+        """Verify a small CAS object without reading an oversized file first."""
+
+        if max_bytes < 0:
+            raise ValueError("ARTIFACT_SIZE_LIMIT_INVALID")
+        if isinstance(ref, StoredDataRef) and (ref.workspace_id, ref.commit_id) != (
+            self.workspace_id,
+            self.commit_id,
+        ):
+            raise ValueError("WORKSPACE_MISMATCH")
+        if (
+            ref.record_id is not None
+            or ref.data_kind != "artifact"
+            or str(ref.stored_data_id) != ref.content_hash
+        ):
+            raise ValueError("Artifact reference mismatch")
+        path = self.path_for(ref.content_hash)
+        if not path.resolve(strict=True).is_relative_to(self.root):
+            raise ValueError("ARTIFACT_PATH_UNSAFE")
+        before = path.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or int(getattr(before, "st_file_attributes", 0)) & 0x400
+            or before.st_size > max_bytes
+        ):
+            raise ValueError("ARTIFACT_SIZE_OR_TYPE_INVALID")
+        with path.open("rb") as stream:
+            current = os.fstat(stream.fileno())
+            if (
+                (before.st_dev, before.st_ino) != (current.st_dev, current.st_ino)
+                or not stat.S_ISREG(current.st_mode)
+                or current.st_size > max_bytes
+            ):
+                raise ValueError("ARTIFACT_CHANGED")
+            data = stream.read(max_bytes + 1)
+        if (
+            len(data) > max_bytes
+            or hashlib.sha256(data).hexdigest() != ref.content_hash
+        ):
             raise ValueError("HASH_MISMATCH")
         return BytesIO(data)

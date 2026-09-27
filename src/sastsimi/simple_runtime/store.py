@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
@@ -49,6 +50,17 @@ ROLE_BY_STAGE: dict[SimpleStage, str] = {
     SimpleStage.FINDING_DONE: "Finding Runtime",
     SimpleStage.REPORT_DONE: "Reporter Agent",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class StaticScanAttempt:
+    fingerprint: str
+    tool: str
+    run_key: str
+    status: Literal["SUCCEEDED", "BLOCKED"]
+    raw_ref: StoredDataRef | None
+    coverage_ref: StoredDataRef | None
+    error_code: str | None
 
 
 class SimpleCheckpointStore:
@@ -117,10 +129,400 @@ class SimpleCheckpointStore:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_opengrep_batch_progress (
+                    analysis_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    repository TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    batch_key TEXT NOT NULL,
+                    ref_json TEXT NOT NULL,
+                    PRIMARY KEY (
+                        analysis_id, workspace_id, commit_id,
+                        repository, fingerprint, batch_key
+                    )
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_static_scan_attempts (
+                    analysis_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    repository TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    tool TEXT NOT NULL,
+                    run_key TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    raw_ref_json TEXT,
+                    coverage_ref_json TEXT,
+                    error_code TEXT,
+                    PRIMARY KEY (
+                        analysis_id, workspace_id, commit_id,
+                        repository, fingerprint, tool, run_key
+                    )
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_report_drafts (
+                    identity_json TEXT NOT NULL,
+                    input_hash TEXT NOT NULL,
+                    stage_version TEXT NOT NULL,
+                    finding_ref_json TEXT NOT NULL,
+                    draft_ref_json TEXT NOT NULL,
+                    PRIMARY KEY (identity_json, input_hash, stage_version)
+                )
+                """
+            )
 
     @property
     def database_path(self) -> Path:
         return self._database_path
+
+    @staticmethod
+    def _opengrep_batch_key(
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str,
+        batch_key: str,
+    ) -> tuple[str, str, str, str, str, str]:
+        if identity.hypothesis_id is not None or not all(
+            value.strip() for value in (repository, fingerprint, batch_key)
+        ):
+            raise ValueError("OPENGREP_BATCH_KEY_INVALID")
+        return (
+            identity.analysis_id,
+            identity.workspace_id,
+            identity.commit_id,
+            repository,
+            fingerprint,
+            batch_key,
+        )
+
+    @staticmethod
+    def _require_opengrep_ref_scope(
+        identity: CheckpointIdentity, ref: StoredDataRef
+    ) -> None:
+        if (str(ref.workspace_id), str(ref.commit_id)) != (
+            identity.workspace_id,
+            identity.commit_id,
+        ) or (
+            ref.record_id is not None
+            or ref.data_kind != "artifact"
+            or str(ref.stored_data_id) != ref.content_hash
+        ):
+            raise ValueError("OPENGREP_BATCH_REF_SCOPE_MISMATCH")
+
+    @classmethod
+    def _valid_opengrep_batch_ref(
+        cls, identity: CheckpointIdentity, raw: str
+    ) -> StoredDataRef | None:
+        try:
+            ref = StoredDataRef.model_validate_json(raw)
+            cls._require_opengrep_ref_scope(identity, ref)
+        except ValueError:
+            return None
+        return ref
+
+    def opengrep_batch_ref(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str,
+        batch_key: str,
+    ) -> StoredDataRef | None:
+        key = self._opengrep_batch_key(identity, repository, fingerprint, batch_key)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT ref_json FROM simple_opengrep_batch_progress "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND repository = ? AND fingerprint = ? AND batch_key = ?",
+                key,
+            ).fetchone()
+        if row is None:
+            return None
+        return self._valid_opengrep_batch_ref(identity, row["ref_json"])
+
+    def opengrep_partial_refs(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprints: frozenset[str],
+        batch_key: str,
+    ) -> tuple[StoredDataRef, ...]:
+        """Return separately proven partial raws for the same scoped batch."""
+
+        self._opengrep_batch_key(identity, repository, "partial", batch_key)
+        if not fingerprints:
+            return ()
+        prefix = f"{batch_key}:partial:"
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT fingerprint, ref_json FROM simple_opengrep_batch_progress "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND repository = ? AND substr(batch_key, 1, ?) = ? "
+                "ORDER BY rowid DESC",
+                (
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    repository,
+                    len(prefix),
+                    prefix,
+                ),
+            ).fetchall()
+        refs: list[StoredDataRef] = []
+        for row in rows:
+            if row["fingerprint"] not in fingerprints:
+                continue
+            ref = self._valid_opengrep_batch_ref(identity, row["ref_json"])
+            if ref is not None and ref not in refs:
+                refs.append(ref)
+        return tuple(refs)
+
+    def save_opengrep_partial_proof(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str,
+        batch_key: str,
+        ref: StoredDataRef,
+    ) -> None:
+        """Keep complementary exit-zero partial evidence across resumes."""
+
+        self.save_opengrep_batch(
+            identity,
+            repository,
+            fingerprint,
+            f"{batch_key}:partial:{ref.content_hash}",
+            ref,
+        )
+
+    def save_opengrep_batch(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str,
+        batch_key: str,
+        ref: StoredDataRef,
+        *,
+        replaces: StoredDataRef | None = None,
+    ) -> None:
+        """Record one accepted batch; replace only an explicitly matched old ref."""
+
+        key = self._opengrep_batch_key(identity, repository, fingerprint, batch_key)
+        self._require_opengrep_ref_scope(identity, ref)
+        encoded = ref.model_dump_json()
+        with self._connect() as connection:
+            if replaces is None:
+                inserted = connection.execute(
+                    "INSERT OR IGNORE INTO simple_opengrep_batch_progress "
+                    "(analysis_id, workspace_id, commit_id, repository, "
+                    "fingerprint, batch_key, ref_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (*key, encoded),
+                )
+                if inserted.rowcount == 1:
+                    return
+            row = connection.execute(
+                "SELECT ref_json FROM simple_opengrep_batch_progress "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND repository = ? AND fingerprint = ? AND batch_key = ?",
+                key,
+            ).fetchone()
+            if row is None:
+                raise ValueError("OPENGREP_BATCH_PROGRESS_CONFLICT")
+            current = self._valid_opengrep_batch_ref(identity, row["ref_json"])
+            if current == ref:
+                return
+            if current is not None and (replaces is None or current != replaces):
+                raise ValueError("OPENGREP_BATCH_PROGRESS_CONFLICT")
+            updated = connection.execute(
+                "UPDATE simple_opengrep_batch_progress SET ref_json = ? "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND repository = ? AND fingerprint = ? AND batch_key = ? "
+                "AND ref_json = ?",
+                (encoded, *key, row["ref_json"]),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("OPENGREP_BATCH_PROGRESS_CONFLICT")
+
+    @staticmethod
+    def _static_ref_json(
+        identity: CheckpointIdentity, ref: StoredDataRef | None
+    ) -> str | None:
+        if ref is None:
+            return None
+        try:
+            SimpleCheckpointStore._require_opengrep_ref_scope(identity, ref)
+        except ValueError as error:
+            raise ValueError("STATIC_SCAN_REF_SCOPE_MISMATCH") from error
+        return ref.model_dump_json()
+
+    def save_static_scan_attempt(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str,
+        tool: str,
+        run_key: str,
+        status: Literal["SUCCEEDED", "BLOCKED"],
+        raw_ref: StoredDataRef | None,
+        coverage_ref: StoredDataRef | None,
+        error_code: str | None,
+    ) -> None:
+        if identity.hypothesis_id is not None or not all(
+            part.strip() for part in (repository, fingerprint, tool, run_key)
+        ):
+            raise ValueError("STATIC_SCAN_KEY_INVALID")
+        raw_json = self._static_ref_json(identity, raw_ref)
+        coverage_json = self._static_ref_json(identity, coverage_ref)
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO simple_static_scan_attempts "
+                "(analysis_id, workspace_id, commit_id, repository, fingerprint, "
+                "tool, run_key, status, raw_ref_json, coverage_ref_json, error_code) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (analysis_id, workspace_id, commit_id, repository, "
+                "fingerprint, tool, run_key) DO UPDATE SET "
+                "status=excluded.status, raw_ref_json=excluded.raw_ref_json, "
+                "coverage_ref_json=excluded.coverage_ref_json, "
+                "error_code=excluded.error_code",
+                (
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    repository,
+                    fingerprint,
+                    tool,
+                    run_key,
+                    status,
+                    raw_json,
+                    coverage_json,
+                    error_code,
+                ),
+            )
+
+    def list_static_scan_attempts(
+        self, identity: CheckpointIdentity, repository: str, fingerprint: str
+    ) -> tuple[StaticScanAttempt, ...]:
+        if identity.hypothesis_id is not None:
+            raise ValueError("STATIC_SCAN_KEY_INVALID")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT tool, run_key, status, raw_ref_json, coverage_ref_json, "
+                "error_code FROM simple_static_scan_attempts "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND repository = ? AND fingerprint = ? ORDER BY tool, run_key",
+                (
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    repository,
+                    fingerprint,
+                ),
+            ).fetchall()
+        attempts: list[StaticScanAttempt] = []
+        for row in rows:
+            if row["status"] not in {"SUCCEEDED", "BLOCKED"}:
+                continue
+            raw_ref = (
+                self._valid_opengrep_batch_ref(identity, row["raw_ref_json"])
+                if row["raw_ref_json"] is not None
+                else None
+            )
+            coverage_ref = (
+                self._valid_opengrep_batch_ref(identity, row["coverage_ref_json"])
+                if row["coverage_ref_json"] is not None
+                else None
+            )
+            if (
+                row["raw_ref_json"] is not None
+                and raw_ref is None
+                or row["coverage_ref_json"] is not None
+                and coverage_ref is None
+            ):
+                continue
+            attempts.append(
+                StaticScanAttempt(
+                    fingerprint=fingerprint,
+                    tool=row["tool"],
+                    run_key=row["run_key"],
+                    status=row["status"],
+                    raw_ref=raw_ref,
+                    coverage_ref=coverage_ref,
+                    error_code=row["error_code"],
+                )
+            )
+        return tuple(attempts)
+
+    def list_static_scan_attempts_for_run_key(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        tool: str,
+        run_key: str,
+    ) -> tuple[StaticScanAttempt, ...]:
+        """Find exact-run prior attempts across coverage fingerprints, newest first."""
+
+        if identity.hypothesis_id is not None or not all(
+            part.strip() for part in (repository, tool, run_key)
+        ):
+            raise ValueError("STATIC_SCAN_KEY_INVALID")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT fingerprint, tool, run_key, status, raw_ref_json, "
+                "coverage_ref_json, "
+                "error_code FROM simple_static_scan_attempts "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND repository = ? AND tool = ? AND run_key = ? "
+                "ORDER BY rowid DESC",
+                (
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    repository,
+                    tool,
+                    run_key,
+                ),
+            ).fetchall()
+        attempts: list[StaticScanAttempt] = []
+        for row in rows:
+            if row["status"] not in {"SUCCEEDED", "BLOCKED"}:
+                continue
+            raw_ref = (
+                self._valid_opengrep_batch_ref(identity, row["raw_ref_json"])
+                if row["raw_ref_json"] is not None
+                else None
+            )
+            coverage_ref = (
+                self._valid_opengrep_batch_ref(identity, row["coverage_ref_json"])
+                if row["coverage_ref_json"] is not None
+                else None
+            )
+            if (
+                row["raw_ref_json"] is not None
+                and raw_ref is None
+                or row["coverage_ref_json"] is not None
+                and coverage_ref is None
+            ):
+                continue
+            attempts.append(
+                StaticScanAttempt(
+                    fingerprint=row["fingerprint"],
+                    tool=row["tool"],
+                    run_key=row["run_key"],
+                    status=row["status"],
+                    raw_ref=raw_ref,
+                    coverage_ref=coverage_ref,
+                    error_code=row["error_code"],
+                )
+            )
+        return tuple(attempts)
 
     def save_survey_progress(
         self, analysis_id: str, bundle_hash: str, item_key: str, ref: StoredDataRef
@@ -157,6 +559,65 @@ class SimpleCheckpointStore:
             str(row["item_key"]): StoredDataRef.model_validate_json(row["ref_json"])
             for row in rows
         }
+
+    def report_draft(
+        self,
+        identity: CheckpointIdentity,
+        source_hash: str,
+        finding_ref: StoredDataRef,
+    ) -> StoredDataRef | None:
+        """Find a validated draft for the exact current Finding and source set."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT finding_ref_json, draft_ref_json FROM simple_report_drafts "
+                "WHERE identity_json = ? AND input_hash = ? AND stage_version = ?",
+                (
+                    identity.model_dump_json(),
+                    source_hash,
+                    STAGE_VERSION[SimpleStage.REPORT_DONE],
+                ),
+            ).fetchone()
+        if row is None:
+            return None
+        if StoredDataRef.model_validate_json(row["finding_ref_json"]) != finding_ref:
+            raise ValueError("REPORT_DRAFT_FINDING_CONFLICT")
+        return StoredDataRef.model_validate_json(row["draft_ref_json"])
+
+    def save_report_draft(
+        self,
+        identity: CheckpointIdentity,
+        source_hash: str,
+        finding_ref: StoredDataRef,
+        draft_ref: StoredDataRef,
+    ) -> None:
+        """Persist the validated LLM draft before fallible report publication."""
+
+        values = (
+            identity.model_dump_json(),
+            source_hash,
+            STAGE_VERSION[SimpleStage.REPORT_DONE],
+            finding_ref.model_dump_json(),
+            draft_ref.model_dump_json(),
+        )
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO simple_report_drafts "
+                "(identity_json, input_hash, stage_version, "
+                "finding_ref_json, draft_ref_json) VALUES (?, ?, ?, ?, ?)",
+                values,
+            )
+            if cursor.rowcount == 0:
+                row = connection.execute(
+                    "SELECT finding_ref_json, draft_ref_json FROM simple_report_drafts "
+                    "WHERE identity_json = ? AND input_hash = ? AND stage_version = ?",
+                    values[:3],
+                ).fetchone()
+                if (
+                    row is None
+                    or (row["finding_ref_json"], row["draft_ref_json"]) != values[3:]
+                ):
+                    raise ValueError("REPORT_DRAFT_CONFLICT")
 
     def save_analysis_run(self, run: object) -> None:
         validated = SimpleAnalysisRun.model_validate(run)
@@ -567,6 +1028,8 @@ class SimpleCheckpointStore:
             "container_id": result.container_id or checkpoint.container_id,
             "validated_poc_ref": result.validated_poc_ref,
             "report_ref": result.report_ref,
+            "bundle_manifest_ref": result.bundle_manifest_ref,
+            "bundle_archive_ref": result.bundle_archive_ref,
             "verdict": result.verdict,
             "gate_decision": result.gate_decision,
             "markdown_path": result.markdown_path,

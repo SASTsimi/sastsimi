@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -20,7 +21,6 @@ def test_repository_exposes_only_current_documentation_sets() -> None:
     historical = sorted(
         path
         for path in (
-            ".superpowers",
             "docs/architecture-v5",
             "docs/governance",
             "docs/handoff",
@@ -29,6 +29,16 @@ def test_repository_exposes_only_current_documentation_sets() -> None:
         )
         if (ROOT / path).exists()
     )
+    # Developer-local SDD ledgers are ignored; only committed history is a
+    # repository documentation contract violation.
+    tracked_sdd = subprocess.run(
+        ("git", "ls-files", "-z", "--", ".superpowers"),
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+    ).stdout
+    if tracked_sdd:
+        historical.append(".superpowers")
 
     assert missing == []
     assert historical == []

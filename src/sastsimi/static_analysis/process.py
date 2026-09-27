@@ -173,6 +173,7 @@ class PosixProcessBackend:
                     *spec.argv,
                     cwd=spec.cwd,
                     env=dict(spec.env),
+                    stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     start_new_session=True,

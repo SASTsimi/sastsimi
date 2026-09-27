@@ -1,5 +1,7 @@
 """Immutable Finding normalization and the final automated ReportDraft."""
 
+import ipaddress
+import json
 import re
 from collections.abc import Mapping
 from typing import Literal, Self
@@ -30,6 +32,58 @@ _LOCATION = re.compile(
 _HIDDEN_REASONING = re.compile(
     r"(?i)(?:chain[ _-]?of[ _-]?thought|hidden[ _-]?reasoning|internal reasoning)"
 )
+_URL_TOKEN = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+_DOTTED_VERSION_TOKEN = re.compile(r"\d+(?:\.\d+){1,3}\b(?!\.\d)", re.IGNORECASE)
+_UNSUPPORTED_ADVISORY_CLAIMS = (
+    re.compile(r"\bcvss\b[^\n]{0,32}?\d+(?:\.\d+)?", re.IGNORECASE),
+    re.compile(
+        r"\b(?:critical|high|moderate|medium|low)[ -]?"
+        r"(?:severity|risk|vulnerability)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(?<![\w./:-])v\d+(?:\.\d+){1,3}\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:versions?|releases?)\s*(?:(?:is|are|:|=)\s*)?"
+        r"\d+(?:\.\d+){1,3}\b"
+        r"|버전\s*(?:(?:은|는|:|=)\s*)?\d+(?:\.\d+){1,3}\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:affects?|impacts?)\s+v?\d+(?:\.\d+){1,3}\b(?!\.\d)"
+        r"|\bv?\d+(?:\.\d+){1,3}\b(?!\.\d)\s+(?:is|are)\s+"
+        r"(?:affected|vulnerable)\b"
+        r"|\b\d+(?:\.\d+){1,3}\b(?!\.\d)\s*버전(?:이|은|가|는)?"
+        r"[^\n]{0,16}영향",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:all|every|latest|current)\s+(?:versions?|releases?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bseverity\s*(?:is|:|=)\s*(?:low|moderate|medium|high|critical)\b"
+        r"|심각도\s*(?:는|가|:|=)?\s*(?:낮음|보통|중간|높음|긴급|치명적)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:affected\s+)?versions?\s+(?:before|after|through|up\s+to|<=|>=)\s*v?\d"
+        r"|\b(?:affected|vulnerable)\s+versions?\s*(?::|is|are)\s*v?\d"
+        r"|\d+(?:\.\d+){1,3}\s*(?:이전|이하|이상|부터)\s*버전[^\n]{0,24}영향",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:fixed|patched)\s+in\s+v?\d"
+        r"|\d+(?:\.\d+){1,3}\s*버전[^\n]{0,16}(?:수정|패치)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:safe|ready)\s+to\s+(?:publish|disclose|submit)\b"
+        r"|\bpublic\s+disclosure\b"
+        r"|(?:공개\s*)?(?:제보|공개)(?:가|이)?\s*가능"
+        r"(?:합니다|하다|함|하다고|해졌)",
+        re.IGNORECASE,
+    ),
+)
 
 
 class ReportContent(ContractModel):
@@ -40,6 +94,66 @@ class ReportContent(ContractModel):
     details: NonEmptyStr
     recommendation: NonEmptyStr
     citations: tuple[CodeLocation, ...]
+
+
+class ReportProse(ContractModel):
+    """One language of a v2 Reporter proposal; factual refs remain shared."""
+
+    title: NonEmptyStr
+    summary: NonEmptyStr
+    details: NonEmptyStr
+    impact: NonEmptyStr
+    recommendation: NonEmptyStr
+    limitations: tuple[NonEmptyStr, ...]
+    review_items: tuple[NonEmptyStr, ...]
+
+
+class BilingualReportContent(ContractModel):
+    """One Reporter invocation supplies both languages without separate facts."""
+
+    schema_version: Literal[2]
+    en: ReportProse
+    ko: ReportProse
+    citations: tuple[CodeLocation, ...]
+
+
+def _reject_unverified_advisory_claims(content: BilingualReportContent) -> None:
+    """Version, CVSS, and disclosure fields come from facts, not LLM prose."""
+
+    for prose in (content.en, content.ko):
+        for value in (
+            prose.title,
+            prose.summary,
+            prose.details,
+            prose.impact,
+            prose.recommendation,
+            *prose.limitations,
+            *prose.review_items,
+        ):
+            claim_text = _URL_TOKEN.sub(" ", value)
+            claim_text = _LOCATION.sub(
+                lambda match: (
+                    " "
+                    if _is_bare_endpoint(match.group("path"), int(match.group("line")))
+                    else match.group(0)
+                ),
+                claim_text,
+            )
+            if any(
+                pattern.search(claim_text) for pattern in _UNSUPPORTED_ADVISORY_CLAIMS
+            ) or _DOTTED_VERSION_TOKEN.search(claim_text):
+                raise ValueError("REPORT_UNSUPPORTED_METADATA_CLAIM")
+
+
+def _is_bare_endpoint(path: str, port: int) -> bool:
+    if not 1 <= port <= 65535:
+        return False
+    if path.lower() == "localhost":
+        return True
+    try:
+        return isinstance(ipaddress.ip_address(path), ipaddress.IPv4Address)
+    except ValueError:
+        return False
 
 
 def validate_report_content(
@@ -53,7 +167,15 @@ def validate_report_content(
     if _HIDDEN_REASONING.search(text):
         raise ValueError("REPORT_HIDDEN_REASONING_DENIED")
     if isinstance(content, Mapping) and "citations" in content:
-        for citation in ReportContent.model_validate_json(encoded).citations:
+        if content.get("schema_version") == 2:
+            if "en" not in content or "ko" not in content:
+                raise ValueError("REPORT_LANGUAGE_REQUIRED")
+            bilingual = BilingualReportContent.model_validate_json(encoded)
+            _reject_unverified_advisory_claims(bilingual)
+            citations = bilingual.citations
+        else:
+            citations = ReportContent.model_validate_json(encoded).citations
+        for citation in citations:
             if not any(
                 location.file_path == citation.file_path
                 and location.start_line <= citation.start_line
@@ -63,6 +185,8 @@ def validate_report_content(
                 raise ValueError("REPORT_CODE_LOCATION_UNSUPPORTED")
     for match in _LOCATION.finditer(text):
         path, line = match.group("path"), int(match.group("line"))
+        if _is_bare_endpoint(path, line):
+            continue
         if not any(
             location.file_path == path
             and location.start_line <= line <= location.end_line
@@ -74,11 +198,19 @@ def validate_report_content(
 
 def parse_validated_report_content(
     raw: bytes, *, allowed_locations: tuple[CodeLocation, ...]
-) -> ReportContent:
+) -> ReportContent | BilingualReportContent:
     """Parse canonical report bytes and reapply redaction/evidence validation."""
 
     try:
-        content = ReportContent.model_validate_json(raw)
+        value = json.loads(raw)
+        if isinstance(value, dict) and value.get("schema_version") == 2:
+            if "en" not in value or "ko" not in value:
+                raise ValueError("REPORT_LANGUAGE_REQUIRED")
+            content: ReportContent | BilingualReportContent = (
+                BilingualReportContent.model_validate_json(raw)
+            )
+        else:
+            content = ReportContent.model_validate_json(raw)
     except ValueError:
         raise
     except Exception as error:

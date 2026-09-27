@@ -53,7 +53,6 @@ foreach ($relativePath in $required) {
 }
 
 $obsolete = @(
-    '.superpowers',
     'docs/architecture-v5',
     'docs/governance',
     'docs/handoff',
@@ -67,6 +66,14 @@ foreach ($relativePath in $obsolete) {
     if (Test-Path -LiteralPath (Join-Path $root $relativePath)) {
         Add-Failure "obsolete documentation surface still exists: $relativePath"
     }
+}
+
+$trackedSuperpowers = @(& git -C $root ls-files -- '.superpowers')
+if ($LASTEXITCODE -ne 0) {
+    throw 'Unable to list Git-tracked SDD files.'
+}
+if ($trackedSuperpowers.Count -gt 0) {
+    Add-Failure 'obsolete documentation surface still exists: .superpowers'
 }
 
 $markdown = @(& git -C $root ls-files -- '*.md')

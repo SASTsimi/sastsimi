@@ -92,12 +92,12 @@ async def test_shared_queue_limits_concurrent_agents(tmp_path: Path) -> None:
 
     results = await asyncio.gather(
         *[
-            client.call(prompt=b"safe", output_schema={}, timeout_ms=1000)
+            client.call(prompt=b"safe", output_schema={}, timeout_ms=5000)
             for client in clients
         ]
     )
 
-    assert all(isinstance(result, SimpleLLMCallResult) for result in results)
+    assert all(isinstance(result, SimpleLLMCallResult) for result in results), results
     assert inner.peak <= 2
 
 

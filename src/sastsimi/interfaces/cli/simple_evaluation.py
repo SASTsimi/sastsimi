@@ -76,6 +76,45 @@ def _report_path_for_result(
     return report.markdown_path
 
 
+def _bundle_path_for_result(
+    store: SimpleCheckpointStore,
+    artifacts: SimpleArtifactRepository,
+    identity: CheckpointIdentity,
+    report_path: str | None,
+    *,
+    policy_snapshot_ref: StoredDataRef | None,
+    repository_url: str | None,
+) -> str | None:
+    if report_path is None:
+        return None
+    display_id = Path(report_path).stem
+    try:
+        prior = {
+            item.stage: item
+            for item in store.list_checkpoints(identity.analysis_id)
+            if item.identity == identity
+        }
+        finding = prior[SimpleStage.FINDING_DONE]
+        review = project_scope_review(
+            prior.get(SimpleStage.SCOPE_GATE_DONE),
+            artifacts,
+            policy_snapshot_ref=policy_snapshot_ref,
+            repository_url=repository_url,
+        )
+        artifacts.verified_report_bundle(
+            checkpoints=prior,
+            finding_ref=finding.output_refs[0],
+            display_id=display_id,
+            scope_status=str(review["status"]),
+            public_projection=lambda body: safe_public_report(body, review),
+        )
+        return (
+            Path("reports") / identity.analysis_id / display_id / "bundle.zip"
+        ).as_posix()
+    except (KeyError, IndexError, OSError, ValueError):
+        return None
+
+
 async def resume(
     *,
     data_dir: Path,
@@ -207,6 +246,14 @@ async def resume(
         outcome = await runner.resume_hypothesis(identity)
         final = store.get(identity, outcome.current_stage)
         report = store.get(identity, SimpleStage.REPORT_DONE)
+        report_path = _report_path_for_result(
+            store,
+            artifacts,
+            identity,
+            report,
+            policy_snapshot_ref=policy_snapshot_ref,
+            repository_url=repository_url,
+        )
         results.append(
             {
                 "hypothesis_id": identity.hypothesis_id,
@@ -215,11 +262,12 @@ async def resume(
                 "error_code": outcome.error_code,
                 "verdict": store.verdict(identity),
                 "validated_poc": store.validated_poc(identity) is not None,
-                "report_path": _report_path_for_result(
+                "report_path": report_path,
+                "bundle_path": _bundle_path_for_result(
                     store,
                     artifacts,
                     identity,
-                    report,
+                    report_path,
                     policy_snapshot_ref=policy_snapshot_ref,
                     repository_url=repository_url,
                 ),

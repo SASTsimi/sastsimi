@@ -114,6 +114,8 @@ class StageCheckpoint(ContractModel):
     container_id: str | None = None
     validated_poc_ref: StoredDataRef | None = None
     report_ref: StoredDataRef | None = None
+    bundle_manifest_ref: StoredDataRef | None = None
+    bundle_archive_ref: StoredDataRef | None = None
     verdict: Literal["TRUE", "FALSE", "HOLD"] | None = None
     gate_decision: Literal["ACCEPT", "REVISE", "REJECT"] | None = None
     markdown_path: str | None = None
@@ -130,6 +132,8 @@ class StageResult(ContractModel):
     output_refs: tuple[StoredDataRef, ...]
     validated_poc_ref: StoredDataRef | None = None
     report_ref: StoredDataRef | None = None
+    bundle_manifest_ref: StoredDataRef | None = None
+    bundle_archive_ref: StoredDataRef | None = None
     verdict: Literal["TRUE", "FALSE", "HOLD"] | None = None
     gate_decision: Literal["ACCEPT", "REVISE", "REJECT"] | None = None
     recipe_ref: StoredDataRef | None = None

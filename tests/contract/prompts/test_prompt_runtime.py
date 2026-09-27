@@ -28,6 +28,7 @@ from sastsimi.contracts.llm import (
 )
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import ReferencedRecord, StoredDataRef, reference
+from sastsimi.contracts.reporting import validate_report_content
 from sastsimi.contracts.static import StaticFactBundle
 from sastsimi.prompts.builder import ArtifactPromptSource, PromptBuilder, PromptSource
 from sastsimi.prompts.loader import PromptLoader, strict_load_yaml
@@ -634,6 +635,41 @@ def test_top_level_array_is_validated_without_domain_record_hydration() -> None:
 
     assert result == payload
     assert observed == [payload]
+
+
+def _validate_report_without_locations(item: object) -> None:
+    validate_report_content(item, allowed_locations=())
+
+
+def test_report_v2_version_marker_is_allowed_only_for_report_schema() -> None:
+    prose = {
+        "title": "Title",
+        "summary": "Summary",
+        "details": "Details",
+        "impact": "Impact",
+        "recommendation": "Fix",
+        "limitations": [],
+        "review_items": [],
+    }
+    value = {"schema_version": 2, "en": prose, "ko": prose, "citations": []}
+
+    result = validate_output(
+        canonical_bytes(value),
+        json_schema={"type": "object"},
+        result_kind="report_draft",
+        agent_role="REPORTER",
+        semantic_validator=_validate_report_without_locations,
+    )
+
+    assert result == value
+    with pytest.raises(ValueError, match="PROMPT_OUTPUT_AUTHORITY_DENIED"):
+        validate_output(
+            canonical_bytes(value | {"analysis_id": "a1"}),
+            json_schema={"type": "object"},
+            result_kind="report_draft",
+            agent_role="REPORTER",
+            semantic_validator=_validate_report_without_locations,
+        )
 
 
 @pytest.mark.parametrize("keyword", ("const", "enum"))

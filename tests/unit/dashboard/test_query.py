@@ -7,11 +7,12 @@ from typing import Literal
 
 import pytest
 
-from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
+from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.dashboard.query import DashboardNotFound, DashboardQuery
 from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
+from sastsimi.reporting.bundle_files import PublishedBundle, parse_bundle_manifest
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
@@ -27,6 +28,7 @@ from sastsimi.simple_runtime.models import (
 from sastsimi.simple_runtime.scope_policy import validate_scope_decision
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from sastsimi.storage.agent_activity import AgentActivityStore
+from tests.support.current_bundle import attach_current_bundle
 
 
 def ref(name: str) -> StoredDataRef:
@@ -36,7 +38,7 @@ def ref(name: str) -> StoredDataRef:
         content_hash=hashlib.sha256(name.encode()).hexdigest(),
         workspace_id=WorkspaceId("workspace-1"),
         commit_id=CommitId("commit-1"),
-        record_id=None,
+        record_id=RecordId("record-finding") if name == "finding" else None,
     )
 
 
@@ -133,6 +135,108 @@ def test_query_projects_current_progress_without_cross_analysis_data(tmp_path) -
     )
 
 
+def _static_identity() -> CheckpointIdentity:
+    return CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+
+
+def _attach_static_coverage(tmp_path: Path, *, blocked: bool, corrupt: bool = False):
+    identity = _static_identity()
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    gaps = [
+        {
+            "path": f"src/file-{index}.ts",
+            "rule_id": "rule.js",
+            "reason": "parse_or_scan_error",
+        }
+        for index in range(105)
+    ]
+    coverage_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_coverage_v1",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "fingerprint": "f" * 64,
+            "expected_count": 110,
+            "verified_count": 5,
+            "gaps": gaps,
+            "unsupported": [{"extension": ".go", "file_count": 3}],
+            "ast_parse_error_count": 2,
+            "ast_truncated": True,
+            "codeql_configured": True,
+            "codeql_executed": not blocked,
+            "codeql_scope": "python_only",
+        }
+    )
+    bundle_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_fact_bundle",
+            "static_coverage_ref": coverage_ref.model_dump(mode="json"),
+        }
+    )
+    if corrupt:
+        artifacts.artifacts.path_for(coverage_ref.content_hash).write_bytes(b"corrupt")
+    refs = (
+        (coverage_ref, bundle_ref)
+        if blocked
+        else (artifacts.put_json({"kind": "simple_repository_profile"}), bundle_ref)
+    )
+    SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3").save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.STATIC_DONE,
+            status=StageStatus.BLOCKED if blocked else StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=refs,
+            error_code="STATIC_COVERAGE_INCOMPLETE" if blocked else None,
+            retryable=False,
+        )
+    )
+    return coverage_ref
+
+
+@pytest.mark.parametrize("blocked", [False, True])
+def test_static_coverage_summary_shows_bounded_relative_gaps(
+    tmp_path: Path,
+    blocked: bool,
+) -> None:
+    seed(tmp_path)
+    _attach_static_coverage(tmp_path, blocked=blocked)
+    detail = DashboardQuery(tmp_path).get_analysis("analysis-a")
+    assert detail.static_coverage_expected == 110
+    assert detail.static_coverage_verified == 5
+    assert detail.static_coverage_gap_count == 105
+    assert len(detail.static_coverage_gap_preview) == 100
+    assert detail.static_coverage_gap_preview[0] == {
+        "path": "src/file-0.ts",
+        "rule_id": "rule.js",
+        "reason": "parse_or_scan_error",
+    }
+    assert "C:\\" not in detail.model_dump_json()
+    assert detail.static_coverage_unsupported == ((".go", 3),)
+    assert detail.static_ast_parse_error_count == 2
+    assert detail.static_ast_truncated is True
+    assert detail.static_codeql_configured is True
+    assert detail.static_codeql_executed is (not blocked)
+    assert detail.static_codeql_scope == "python_only"
+
+
+def test_corrupt_static_coverage_is_unavailable_not_complete(tmp_path: Path) -> None:
+    seed(tmp_path)
+    _attach_static_coverage(tmp_path, blocked=True, corrupt=True)
+    detail = DashboardQuery(tmp_path).get_analysis("analysis-a")
+    assert detail.static_coverage_expected is None
+    assert detail.static_coverage_verified is None
+    assert detail.static_coverage_gap_count is None
+    assert detail.static_coverage_gap_preview == ()
+
+
 def test_report_path_rejects_traversal_and_unknown_report(tmp_path) -> None:
     seed(tmp_path)
     query = DashboardQuery(tmp_path)
@@ -202,6 +306,112 @@ def test_current_accepted_report_remains_accessible(tmp_path) -> None:
 
     assert detail.reports[0].display_id == "F-001"
     assert query.report_path("analysis-a", "F-001") == report_path
+
+
+def _attach_bundle(tmp_path: Path) -> tuple[CheckpointIdentity, PublishedBundle]:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    return identity, attach_current_bundle(tmp_path, identity, ref("finding"), "F-001")
+
+
+def test_current_bundle_lists_only_verified_attachment_urls(tmp_path) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    _attach_bundle(tmp_path)
+    query = DashboardQuery(tmp_path)
+    report = query.get_analysis("analysis-a").reports[0]
+
+    assert report.attachment_urls["report_en.md"].endswith("/files/report_en.md")
+    assert report.attachment_urls["bundle.zip"].endswith("/bundle.zip")
+    assert query.report_attachment("analysis-a", "F-001", "poc.sh")[0] == (
+        b"#!/bin/sh\nprintf ok\n"
+    )
+    assert query.report_attachment("analysis-a", "F-001", "bundle.zip")[1] == (
+        "application/zip"
+    )
+    for invalid in ("../poc.sh", "manifest.json", "other.txt", "evidence/../../poc.sh"):
+        with pytest.raises(DashboardNotFound):
+            query.report_attachment("analysis-a", "F-001", invalid)
+
+
+def test_bundle_rejects_poc_without_current_execution_closure(tmp_path) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity, _ = _attach_bundle(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    candidate = store.require(identity, SimpleStage.POC_CANDIDATE_DONE)
+    unrelated = SimpleArtifactRepository(tmp_path, identity).put_bytes(
+        b"#!/bin/sh\nprintf different\n", "text/x-shellscript"
+    )
+    store.save_checkpoint(
+        candidate.model_copy(
+            update={
+                "output_refs": (candidate.output_refs[0], unrelated),
+            }
+        )
+    )
+    with pytest.raises(DashboardNotFound):
+        DashboardQuery(tmp_path).report_attachment("analysis-a", "F-001", "poc.sh")
+
+
+def test_bundle_download_fails_for_missing_manifest_and_legacy_allow(tmp_path) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    query = DashboardQuery(tmp_path)
+    with pytest.raises(DashboardNotFound):
+        query.report_attachment("analysis-a", "F-001", "poc.sh")
+
+    identity, _ = _attach_bundle(tmp_path)
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    scope_ref = artifacts.put_json({"result": {"status": "ALLOW"}})
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.SCOPE_GATE_DONE,
+            stage_version=STAGE_VERSION[SimpleStage.SCOPE_GATE_DONE],
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(scope_ref,),
+        )
+    )
+    with pytest.raises(DashboardNotFound):
+        query.report_attachment("analysis-a", "F-001", "poc.sh")
+
+
+def test_bundle_download_rejects_tampered_cas_and_stale_finding(tmp_path) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity, bundle = _attach_bundle(tmp_path)
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    manifest = parse_bundle_manifest(
+        artifacts.read(bundle.manifest_ref), finding_ref=ref("finding")
+    )
+    poc_ref = next(
+        item.artifact_ref for item in manifest.files if item.path == "poc.sh"
+    )
+    query = DashboardQuery(tmp_path)
+    assert query.report_attachment("analysis-a", "F-001", "poc.sh")[0]
+    artifacts.artifacts.path_for(poc_ref.content_hash).write_bytes(b"tampered")
+    with pytest.raises(DashboardNotFound):
+        query.report_attachment("analysis-a", "F-001", "poc.sh")
+    with pytest.raises(DashboardNotFound):
+        query.report_attachment("analysis-a", "F-001", "bundle.zip")
+
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    report = store.require(identity, SimpleStage.REPORT_DONE)
+    stale_input = ref("unrelated")
+    store.save_checkpoint(
+        report.model_copy(
+            update={
+                "input_refs": (stale_input,),
+                "input_hash": input_reference_hash((stale_input,)),
+            }
+        )
+    )
+    with pytest.raises(DashboardNotFound):
+        query.report_attachment("analysis-a", "F-001", "report_en.md")
 
 
 def test_dashboard_does_not_treat_legacy_allow_as_report_permission(tmp_path) -> None:

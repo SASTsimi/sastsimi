@@ -171,6 +171,7 @@ def main(
     setup_parser.add_argument("--max-parallel-builds", type=int, default=1)
     setup_parser.add_argument("--max-parallel-containers", type=int, default=1)
     setup_parser.add_argument("--cursor-allow-on-demand", action="store_true")
+    setup_parser.add_argument("--semgrep-fallback", action="store_true")
     setup_parser.add_argument(
         "--fallback-provider", choices=["none", "openai", "codex"], default="none"
     )
@@ -774,29 +775,37 @@ def main(
             if args.report_command == "show" and callable(show_public):
                 sys.stdout.write(show_public(args.finding_id))
             elif args.report_command == "export" and callable(export_public):
+                path = export_public(args.finding_id)
+                data = {"finding_id": args.finding_id, "path": path}
+                bundle_public = getattr(
+                    report_application, "export_report_bundle", None
+                )
+                if callable(bundle_public):
+                    bundle_path = bundle_public(args.finding_id)
+                    if bundle_path is not None:
+                        data["bundle_path"] = bundle_path
                 emit_data(
                     output_format,
                     sys.stdout,
                     command=command_name,
-                    data={
-                        "finding_id": args.finding_id,
-                        "path": export_public(args.finding_id),
-                    },
+                    data=data,
                 )
             elif args.report_command == "show":
                 sys.stdout.write(report_command.show(config.data_dir, args.finding_id))
             else:
                 path = report_command.export(config.data_dir, args.finding_id)
+                data = {
+                    "finding_id": args.finding_id,
+                    "path": report_command.safe_export_reference(config.data_dir, path),
+                }
+                bundle_path = report_command.bundle_reference(config.data_dir, path)
+                if bundle_path is not None:
+                    data["bundle_path"] = bundle_path
                 emit_data(
                     output_format,
                     sys.stdout,
                     command=command_name,
-                    data={
-                        "finding_id": args.finding_id,
-                        "path": report_command.safe_export_reference(
-                            config.data_dir, path
-                        ),
-                    },
+                    data=data,
                 )
             return int(ExitCode.OK)
         if args.command == "onboarding":

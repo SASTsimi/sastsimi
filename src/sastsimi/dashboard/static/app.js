@@ -45,6 +45,34 @@ function recoveryAttempt(item) {
   return null;
 }
 
+function staticCoverageNodes(detail) {
+  if (detail.static_coverage_expected == null || detail.static_coverage_verified == null) {
+    return [el("div", "정적 검사 커버리지: 확인 불가 (검증된 기록 없음)", "meta")];
+  }
+  const nodes = [el("div", `정적 검사 파일·규칙: 검증 ${detail.static_coverage_verified}/${detail.static_coverage_expected} · 미검증 ${detail.static_coverage_gap_count}`, "meta")];
+  const engines = Object.entries(detail.static_coverage_engines || {}).map(([name, count]) => `${name} ${count}`).join(" · ");
+  if (engines) nodes.push(el("div", `검증 엔진: ${engines}`, "meta"));
+  if (detail.static_codeql_configured === true) {
+    nodes.push(el("div", `CodeQL: ${detail.static_codeql_scope === "python_only" ? "Python만" : "범위 확인 불가"} · ${detail.static_codeql_executed ? "실행 완료" : "실행 미완료"}`, "meta"));
+  } else if (detail.static_codeql_configured === false) {
+    nodes.push(el("div", "CodeQL: 미설정", "meta"));
+  }
+  if (detail.static_ast_parse_error_count || detail.static_ast_truncated) nodes.push(el("div", `Python AST 파싱 오류 ${detail.static_ast_parse_error_count || 0} · 사실 수 제한 ${detail.static_ast_truncated ? "도달" : "미도달"}`, "meta"));
+  if (detail.static_coverage_unsupported?.length) {
+    const unsupported = detail.static_coverage_unsupported.map(([extension, count]) => `${extension} ${count}개`).join(" · ");
+    nodes.push(el("div", `알려진 소스 확장자 중 현재 규칙 범위 밖: ${unsupported}`, "meta"));
+  }
+  if (detail.static_coverage_gap_preview?.length) {
+    const details = el("details");
+    details.append(el("summary", `미검증 파일·규칙 보기 (${detail.static_coverage_gap_count}개 중 최대 100개)`));
+    for (const gap of detail.static_coverage_gap_preview) {
+      details.append(el("div", `${gap.path} · ${gap.rule_id} · ${gap.reason}`, "meta"));
+    }
+    nodes.push(details);
+  }
+  return nodes;
+}
+
 function renderDetail(detail, events) {
   const overview = document.getElementById("overview");
   overview.className = "panel";
@@ -62,7 +90,8 @@ function renderDetail(detail, events) {
     })(),
     el("div", `진행 ${detail.progress_percent}% · 완료 ${detail.completed_units}/${detail.known_units} · 가설 ${detail.hypothesis_count} · Finding ${detail.finding_count} · 미확정 ${detail.inconclusive_hypothesis_count} · 근거 부족 ${detail.rejected_hypothesis_count}`, "meta"),
     el("div", `Primitive 허용 ${detail.admitted_primitive_count} · 제외 ${detail.excluded_primitive_count} · 체이닝 자식 ${detail.child_hypothesis_count}`, "meta"),
-    el("div", `commit: ${detail.commit_id || "미확인"}`, "meta")
+    el("div", `commit: ${detail.commit_id || "미확인"}`, "meta"),
+    ...staticCoverageNodes(detail)
   );
   replace("hypotheses", detail.hypotheses.map(item => {
     const card = el("article", undefined, "card");
@@ -104,11 +133,26 @@ function renderDetail(detail, events) {
     return event;
   }));
   replace("reports", detail.reports.map(item => {
+    const card = el("div", undefined, "card");
     const link = el("a", `${item.display_id} 보고서 열기`);
     link.href = item.url;
     link.target = "_blank";
     link.rel = "noreferrer";
-    return link;
+    card.append(link);
+    const labels = {
+      "report_en.md": "영문 보고서",
+      "report_kr.md": "국문 보고서",
+      "poc.sh": "검증 PoC",
+      "poc.py": "검증 PoC",
+      "bundle.zip": "첨부파일 ZIP"
+    };
+    for (const [name, url] of Object.entries(item.attachment_urls || {})) {
+      const attachment = el("a", labels[name] || name, "report-attachment");
+      attachment.href = url;
+      attachment.download = name.split("/").pop();
+      card.append(attachment);
+    }
+    return card;
   }));
 }
 

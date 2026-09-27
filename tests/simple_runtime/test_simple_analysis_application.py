@@ -4,12 +4,13 @@ import asyncio
 import hashlib
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from sastsimi.config.user_config import SimpleExecutionProfile, SimpleToolBinding
 from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
@@ -21,6 +22,11 @@ from sastsimi.simple_runtime.application import (
     StaticBootstrapResult,
 )
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.bootstrap_stages import (
+    DirectStaticBootstrap,
+    ProcessResult,
+    StaticCoverageBlocked,
+)
 from sastsimi.simple_runtime.models import (
     STAGE_VERSION,
     CheckpointIdentity,
@@ -31,6 +37,7 @@ from sastsimi.simple_runtime.models import (
     StageStatus,
     input_reference_hash,
 )
+from sastsimi.simple_runtime.opengrep_rule_batches import plan_rule_batches
 from sastsimi.simple_runtime.recovery import (
     RecoveryAction,
     RecoveryCategory,
@@ -576,6 +583,216 @@ class _BlockedStatic:
             static_bundle_ref=_ref("static-bundle"),
             workspace_path=_request.data_dir / "workspaces" / _identity.workspace_id,
         )
+
+
+@pytest.mark.asyncio
+async def test_partial_opengrep_scan_keeps_static_checkpoint_blocked(
+    tmp_path: Path,
+) -> None:
+    tool = tmp_path / "tool"
+    tool.write_bytes(b"tool")
+    binding = SimpleToolBinding(
+        executable_path=tool,
+        version="1.0",
+        executable_sha256=hashlib.sha256(b"tool").hexdigest(),
+    )
+    profile = SimpleExecutionProfile(
+        provider_profile_ref="local",
+        provider="openai",
+        model="test-model",
+        auth_mode="SUBSCRIPTION_LOGIN",
+        credential_ref="OFFICIAL_CLIENT_SESSION",
+        data_dir=tmp_path,
+        workspace_root=tmp_path / "workspaces",
+        max_cost_minor_units=100,
+        max_tokens=1000,
+        max_elapsed_seconds=3600,
+        docker_network="NONE",
+        tools={"git": binding, "opengrep": binding},
+    )
+    rules = tmp_path / "materials" / "opengrep" / "rules.yml"
+    rules.parent.mkdir(parents=True)
+    rules.write_text(
+        "rules:\n"
+        + "".join(
+            f"  - id: rule.{index}\n"
+            "    languages: [python]\n"
+            "    message: test\n"
+            "    severity: INFO\n"
+            "    pattern: foo(...)\n"
+            for index in range(4)
+        ),
+        encoding="utf-8",
+    )
+
+    class SecondBatchTimeout:
+        scans = 0
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            del timeout_seconds
+            if argv[1] == "clone":
+                root = Path(argv[-1])
+                root.mkdir(parents=True)
+                (root / "app.py").write_text("foo(user)\n", encoding="utf-8")
+            elif argv[1:3] == ("rev-parse", "HEAD"):
+                return ProcessResult(0, ("a" * 40).encode(), b"")
+            elif argv[1:3] == ("ls-files", "-z"):
+                return ProcessResult(0, b"app.py\0", b"")
+            elif argv[1] == "scan":
+                self.scans += 1
+                if self.scans == 2:
+                    raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+                output = Path(argv[argv.index("--output") + 1])
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [
+                                {
+                                    "check_id": "rule.0",
+                                    "path": str(Path(argv[-1]) / "app.py"),
+                                    "start": {"line": 1},
+                                }
+                            ],
+                            "errors": [],
+                            "paths": {"scanned": ["app.py"], "skipped": []},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            return ProcessResult(0, b"", b"")
+
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    process = SecondBatchTimeout()
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=DirectStaticBootstrap(
+            profile=profile,
+            process=process,
+            store=store,
+            static_material_root=tmp_path / "materials",
+        ),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=_runner,
+        id_factory=iter(("analysis-partial", "workspace-partial")).__next__,
+    )
+
+    outcome = await application.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        )
+    )
+
+    assert outcome.status == "BLOCKED"
+    assert outcome.error_code == "EXTERNAL_TOOL_TIMEOUT"
+    assert store.require(outcome.identity, SimpleStage.STATIC_DONE).status is (
+        StageStatus.BLOCKED
+    )
+    assert (
+        store.require_analysis_run(outcome.identity.analysis_id).static_bundle_ref
+        is None
+    )
+    assert process.scans == 2
+    plan = plan_rule_batches(
+        rules.read_bytes(),
+        tool_version=binding.version,
+        executable_sha256=binding.executable_sha256,
+    )
+    assert (
+        store.opengrep_batch_ref(
+            outcome.identity,
+            "https://example.invalid/repo.git",
+            plan.fingerprint,
+            plan.batches[0].key,
+        )
+        is not None
+    )
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    (
+        "STATIC_COVERAGE_INCOMPLETE",
+        "SEMGREP_TOOL_UNAVAILABLE",
+        "SEMGREP_RESULT_INVALID",
+    ),
+)
+@pytest.mark.asyncio
+async def test_same_coverage_fingerprint_resume_keeps_evidence_without_retry(
+    tmp_path: Path,
+    error_code: str,
+) -> None:
+    class DeterministicGap:
+        calls = 0
+        fingerprint = "coverage-one"
+
+        async def coverage_fingerprint(
+            self, _request: SimpleAnalysisRequest, _identity: CheckpointIdentity
+        ) -> str:
+            return self.fingerprint
+
+        async def run(
+            self, _request: SimpleAnalysisRequest, identity: CheckpointIdentity
+        ) -> StaticBootstrapResult:
+            self.calls += 1
+            artifacts = SimpleArtifactRepository(tmp_path, identity)
+            coverage = artifacts.put_json(
+                {
+                    "kind": "simple_static_coverage_v1",
+                    "fingerprint": self.fingerprint,
+                    "expected_count": 1,
+                    "verified_count": 0,
+                    "gaps": [
+                        {
+                            "path": "app.py",
+                            "rule_id": "rule.one",
+                            "reason": "parse_or_scan_error",
+                        }
+                    ],
+                }
+            )
+            bundle = artifacts.put_json({"kind": "simple_static_fact_bundle"})
+            raise StaticCoverageBlocked(error_code, coverage, bundle, retryable=False)
+
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    static = DeterministicGap()
+    recovery = _RecoveryFactory(tmp_path)
+    app = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=static,
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=_runner,
+        recovery_factory=recovery,
+        id_factory=iter(("analysis-coverage-gap", "workspace-gap")).__next__,
+    )
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        )
+    )
+    checkpoint = store.require(first.identity, SimpleStage.STATIC_DONE)
+    assert first.status == "BLOCKED"
+    assert len(checkpoint.output_refs) == 2
+    assert static.calls == 1
+    assert recovery.calls == []
+    resumed = await app.resume(first.identity.analysis_id)
+    assert resumed.status == "BLOCKED"
+    assert static.calls == 1
+    static.fingerprint = "coverage-two"
+    changed = await app.resume(first.identity.analysis_id)
+    assert changed.status == "BLOCKED"
+    assert static.calls == 2
 
 
 @pytest.mark.asyncio

@@ -181,17 +181,32 @@ class SimpleAnalysisApplication:
                     identity,
                 )
             except Exception as error:
+                coverage_ref = getattr(error, "coverage_ref", None)
+                bundle_ref = getattr(error, "bundle_ref", None)
+                static_evidence = tuple(
+                    ref
+                    for ref in (coverage_ref, bundle_ref)
+                    if isinstance(ref, StoredDataRef)
+                )
+                has_static_evidence = bool(static_evidence)
                 failure = StageFailure(
                     code=self._safe_error_code(error, "STATIC_BOOTSTRAP_BLOCKED"),
-                    retryable=True,
+                    retryable=(
+                        bool(getattr(error, "retryable", True))
+                        if has_static_evidence
+                        else True
+                    ),
                     safe_message="Repository or static analysis did not complete",
+                    evidence_refs=static_evidence,
                 )
                 failed = self._store.mark_failure(
                     checkpoint,
                     failure,
                     StageStatus.BLOCKED,
                 )
-                if await self._prepare_bootstrap_retry(failed, failure):
+                if not has_static_evidence and await self._prepare_bootstrap_retry(
+                    failed, failure
+                ):
                     continue
                 return self._bootstrap_outcome(
                     run,
@@ -411,9 +426,50 @@ class SimpleAnalysisApplication:
         identity: CheckpointIdentity,
         stage: SimpleStage,
     ) -> tuple[bool, StageCheckpoint | None]:
+        existing = self._store.get(identity, stage)
+        if (
+            stage is SimpleStage.STATIC_DONE
+            and existing is not None
+            and existing.status is StageStatus.BLOCKED
+            and not existing.retryable
+        ):
+            fingerprint_method = getattr(self._static, "coverage_fingerprint", None)
+            if fingerprint_method is None:
+                return False, existing
+            saved_fingerprint: str | None = None
+            artifacts = SimpleArtifactRepository(self._data_dir, identity)
+            for ref in existing.output_refs:
+                try:
+                    value = json.loads(artifacts.read(ref))
+                except (OSError, ValueError):
+                    continue
+                if (
+                    isinstance(value, dict)
+                    and value.get("kind") == "simple_static_coverage_v1"
+                ):
+                    raw_fingerprint = value.get("fingerprint")
+                    if isinstance(raw_fingerprint, str):
+                        saved_fingerprint = raw_fingerprint
+                    break
+            if saved_fingerprint is None:
+                return False, existing
+            run = self._store.require_analysis_run(identity.analysis_id)
+            try:
+                current = await fingerprint_method(
+                    SimpleAnalysisRequest(
+                        data_dir=self._data_dir,
+                        repository=run.repository,
+                        commit=run.commit_id,
+                    ),
+                    identity,
+                )
+            except (OSError, RuntimeError, ValueError):
+                return False, existing
+            if current == saved_fingerprint:
+                return False, existing
+            return False, None
         if self._recovery_factory is None:
             return False, None
-        existing = self._store.get(identity, stage)
         if existing is None or existing.status in {
             StageStatus.PENDING,
             StageStatus.SUCCEEDED,

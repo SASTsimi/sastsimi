@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shlex
 import stat
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable
 from pathlib import Path
-from typing import Protocol, cast
 from uuid import uuid4
 
 from sastsimi.config.runtime_paths import RuntimePaths
@@ -26,8 +25,10 @@ from sastsimi.contracts.dynamic import (
     POC_RUNTIME_PATH,
     SandboxCommandRecord,
 )
+from sastsimi.contracts.ids import StoredDataId
 from sastsimi.contracts.prompt_redaction import assert_safe_provider_text
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.reporting import BilingualReportContent
 from sastsimi.contracts.static import CodeLocation
 from sastsimi.contracts.verification import EvidenceClaim, VerificationResult
 from sastsimi.ports.report_export import (
@@ -35,7 +36,34 @@ from sastsimi.ports.report_export import (
     CurrentReportSource,
     ReportUnavailable,
 )
+from sastsimi.reporting.bilingual_bundle import (
+    BundleFacts,
+    BundleFile,
+    render_bundle_files,
+)
+from sastsimi.reporting.bundle_files import (
+    MAX_BUNDLE_ARCHIVE_BYTES,
+    MAX_BUNDLE_MANIFEST_BYTES,
+    parse_bundle_manifest,
+    read_bundle_archive,
+)
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
+from sastsimi.reporting.safe_windows_directory import (
+    _capture_directory_identity as _capture_directory_identity,
+)
+from sastsimi.reporting.safe_windows_directory import (
+    _directory_identity as _directory_identity,
+)
+from sastsimi.reporting.safe_windows_directory import (
+    _guarded_windows_replace_directory as _guarded_windows_replace_directory,
+)
+from sastsimi.reporting.safe_windows_directory import _Kernel32 as _Kernel32
+from sastsimi.reporting.safe_windows_directory import (
+    _locked_windows_directory as _locked_windows_directory,
+)
+from sastsimi.reporting.safe_windows_directory import (
+    _platform_attribute as _platform_attribute,
+)
 
 _SAFE_PATH_SEGMENT = re.compile(r"[a-z0-9][a-z0-9_-]{0,127}\Z")
 _WINDOWS_RESERVED_STEMS = frozenset(
@@ -66,7 +94,11 @@ class ReportMarkdownService:
                 "finding_id": report.finding_id,
                 "display_id": self._display_id(report),
                 "hypothesis_id": report.hypothesis_id,
-                "title": report.content.title,
+                "title": (
+                    report.content.ko.title
+                    if isinstance(report.content, BilingualReportContent)
+                    else report.content.title
+                ),
                 "status": "DRAFTED_CURRENT",
                 "cwe": report.cwe.primary or "UNCLASSIFIED",
             }
@@ -103,7 +135,187 @@ class ReportMarkdownService:
             self._data_dir_identity,
             assert_still_current,
         )
+        if isinstance(report.content, BilingualReportContent):
+            self._publish_bundle(report, display_id=self._display_id(report))
+            assert_still_current()
         return destination
+
+    def bundle_reference(self, exported: Path) -> str | None:
+        """Find only the bundle of the current v2 ReportDraft just exported."""
+
+        try:
+            relative = exported.resolve(strict=True).relative_to(self._data_dir)
+        except (OSError, ValueError) as error:
+            raise ReportUnavailable("REPORT_PATH_OUTSIDE_DATA_DIR") from error
+        if (
+            len(relative.parts) != 3
+            or relative.parts[0] != "reports"
+            or re.fullmatch(r"F-[0-9]{3,}\.md", relative.name) is None
+        ):
+            return None
+        current = [
+            report
+            for report in self._source.list_current(relative.parts[1])
+            if self._display_id(report) == relative.stem
+        ]
+        if len(current) != 1 or not isinstance(
+            current[0].content, BilingualReportContent
+        ):
+            return None
+        report = current[0]
+        expected_identity = _report_identity(report)
+        if exported.resolve(strict=True) != self._destination(report).resolve(
+            strict=True
+        ):
+            raise ReportUnavailable("STALE_REPORT")
+        bundle = self._data_dir / relative.parent / relative.stem
+        manifest_path = bundle / "manifest.json"
+        archive_path = bundle / "bundle.zip"
+        try:
+            if (
+                manifest_path.resolve(strict=True) != manifest_path
+                or archive_path.resolve(strict=True) != archive_path
+            ):
+                raise ReportUnavailable("BUNDLE_PATH_UNSAFE")
+            raw_manifest = _read_small_regular(manifest_path, MAX_BUNDLE_MANIFEST_BYTES)
+            manifest = parse_bundle_manifest(
+                raw_manifest, finding_ref=report.draft.finding_ref
+            )
+            if (manifest.analysis_id, manifest.display_id) != (
+                report.analysis_id,
+                relative.stem,
+            ):
+                raise ReportUnavailable("BUNDLE_SCOPE_MISMATCH")
+            expected_files = self._bundle_files(report, display_id=relative.stem)
+            expected_by_path = {
+                item.path: (
+                    item.media_type,
+                    len(item.body),
+                    hashlib.sha256(item.body).hexdigest(),
+                )
+                for item in expected_files
+            }
+            manifest_by_path = {
+                item.path: (item.media_type, item.size, item.sha256)
+                for item in manifest.files
+            }
+            if (
+                len(expected_by_path) != len(expected_files)
+                or expected_by_path != manifest_by_path
+            ):
+                raise ReportUnavailable("STALE_REPORT")
+            disk_archive = _read_small_regular(archive_path, MAX_BUNDLE_ARCHIVE_BYTES)
+            digest = hashlib.sha256(disk_archive).hexdigest()
+            archive_ref = StoredDataRef(
+                stored_data_id=StoredDataId(digest),
+                data_kind="artifact",
+                content_hash=digest,
+                workspace_id=report.draft.finding_ref.workspace_id,
+                commit_id=report.draft.finding_ref.commit_id,
+                record_id=None,
+            )
+            if (
+                read_bundle_archive(manifest, archive_ref, self._source.read_artifact)
+                != disk_archive
+            ):
+                raise ReportUnavailable("BUNDLE_ARCHIVE_INVALID")
+            if _report_identity(self._source.get_current(report.finding_id)) != (
+                expected_identity
+            ):
+                raise ReportUnavailable("STALE_REPORT")
+        except ReportUnavailable:
+            raise
+        except (OSError, ValueError) as error:
+            raise ReportUnavailable("BUNDLE_UNAVAILABLE") from error
+        return (relative.parent / relative.stem / "bundle.zip").as_posix()
+
+    def _publish_bundle(self, report: CurrentReport, *, display_id: str) -> None:
+        from sastsimi.reporting.bundle_files import publish_bundle
+
+        if not isinstance(report.content, BilingualReportContent):
+            return
+        files = self._bundle_files(report, display_id=display_id)
+        publish_bundle(
+            root=self._data_dir,
+            analysis_id=report.analysis_id,
+            display_id=display_id,
+            finding_ref=report.draft.finding_ref,
+            files=files,
+            put_artifact=lambda body, media_type: self._source.put_artifact(
+                report.draft.finding_ref, body, media_type
+            ),
+        )
+
+    def _bundle_files(
+        self, report: CurrentReport, *, display_id: str
+    ) -> tuple[BundleFile, ...]:
+        if not isinstance(report.content, BilingualReportContent):
+            raise ReportUnavailable("REPORT_BUNDLE_NOT_AVAILABLE")
+        candidate_ref = report.poc_candidate.content_ref
+        poc = report.poc_text.encode("utf-8")
+        if (
+            hashlib.sha256(poc).hexdigest() != candidate_ref.content_hash
+            or report.poc.candidate_digest != candidate_ref.content_hash
+        ):
+            raise ReportUnavailable("REPORT_POC_SOURCE_MISMATCH")
+        if self._source.read_artifact(candidate_ref) != poc:
+            raise ReportUnavailable("REPORT_POC_SOURCE_MISMATCH")
+        if (report.stdout_bytes is None) != (report.stdout_ref is None) or (
+            report.stderr_bytes is None
+        ) != (report.stderr_ref is None):
+            raise ReportUnavailable("REPORT_OUTPUT_SOURCE_MISSING")
+        source_refs = [
+            ("finding", report.draft.finding_ref),
+            ("poc", candidate_ref),
+            ("verification", report.draft.verification_result_ref),
+            ("technical", report.draft.technical_review_ref),
+            ("scope", report.draft.rule_scope_impact_review_ref),
+        ]
+        for name, ref in (("stdout", report.stdout_ref), ("stderr", report.stderr_ref)):
+            if ref is not None:
+                source_refs.append((name, ref))
+        allowed_locations = tuple(
+            location
+            for claim in (
+                *report.verification.supporting_evidence,
+                *report.verification.counter_evidence,
+            )
+            for location in claim.code_locations
+        )
+        facts = BundleFacts(
+            analysis_id=report.analysis_id,
+            display_id=display_id,
+            finding_id=report.finding_id,
+            repository=report.repository_url or "Needs review",
+            tested_commit=str(report.draft.finding_ref.commit_id),
+            cwe=str(report.cwe.primary) if report.cwe.primary is not None else None,
+            ecosystem=None,
+            package_name=None,
+            affected_versions=None,
+            patched_versions=None,
+            severity=None,
+            technical_status=report.technical.status,
+            scope_status=report.rule_scope.review_status,
+            report_permission=report.rule_scope.report_permission,
+            execution_command=shlex.join(
+                (
+                    report.execution_command.executable,
+                    *report.execution_command.arguments,
+                )
+            ),
+            exit_code=report.execution_exit_code,
+            poc_language="shell",
+            poc_original_sha256=candidate_ref.content_hash,
+            source_refs=tuple(source_refs),
+            allowed_locations=allowed_locations,
+        )
+        return render_bundle_files(
+            facts,
+            report.content,
+            poc=poc,
+            stdout=report.stdout_bytes,
+            stderr=report.stderr_bytes,
+        )
 
     def _destination(self, report: CurrentReport) -> Path:
         for value in (report.analysis_id, report.finding_id):
@@ -157,6 +369,11 @@ def render_markdown(report: CurrentReport, *, display_id: str | None = None) -> 
     """Render existing record values without creating new security claims."""
 
     validate_redaction_authority(report)
+    prose = (
+        report.content.ko
+        if isinstance(report.content, BilingualReportContent)
+        else report.content
+    )
     locations = _locations(report.verification, report.content.citations)
     pro = tuple(
         claim
@@ -180,7 +397,7 @@ def render_markdown(report: CurrentReport, *, display_id: str | None = None) -> 
         raise ReportUnavailable("REPORT_TRUE_CLOSURE_MISSING")
     visible_id = display_id or report.finding_id
     lines = [
-        f"# {report.content.title}",
+        f"# {prose.title}",
         "",
         "### Summary",
         "",
@@ -195,7 +412,7 @@ def render_markdown(report: CurrentReport, *, display_id: str | None = None) -> 
         "",
         "**취약점 요약**",
         "",
-        report.content.summary,
+        prose.summary,
         "",
         "### Details",
         "",
@@ -212,7 +429,7 @@ def render_markdown(report: CurrentReport, *, display_id: str | None = None) -> 
         "",
         "**source → propagation → sink 흐름**",
         "",
-        report.content.details,
+        prose.details,
         "",
         "**정적 분석 근거**",
         "",
@@ -277,7 +494,7 @@ def render_markdown(report: CurrentReport, *, display_id: str | None = None) -> 
         "**사람이 추가로 확인해야 할 내용**",
         "",
         f"- 미해결 조건: {_inline(report.draft.unresolved_conditions)}",
-        f"- 권고 사항: {report.content.recommendation}",
+        f"- 권고 사항: {prose.recommendation}",
         "",
         "**생성 및 식별 정보**",
         "",
@@ -330,7 +547,16 @@ def _report_identity(report: CurrentReport) -> tuple[object, ...]:
     )
     return tuple(
         record.model_dump(mode="python", warnings=False) for record in records
-    ) + (report.poc_text, report.purpose)
+    ) + (
+        report.poc_text,
+        report.purpose,
+        report.repository_url,
+        report.stdout_bytes,
+        report.stderr_bytes,
+        report.stdout_ref,
+        report.stderr_ref,
+        report.execution_exit_code,
+    )
 
 
 def _locations(
@@ -418,10 +644,25 @@ def _atomic_write(
         temporary.unlink(missing_ok=True)
 
 
-def _directory_identity(info: os.stat_result) -> tuple[int, int, int]:
-    if not stat.S_ISDIR(info.st_mode):
-        raise ReportUnavailable("UNSAFE_REPORT_PATH")
-    return info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)
+def _read_small_regular(path: Path, limit: int) -> bytes:
+    before = path.lstat()
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or int(getattr(before, "st_file_attributes", 0)) & 0x400
+        or before.st_size > limit
+    ):
+        raise ReportUnavailable("BUNDLE_PATH_UNSAFE")
+    with path.open("rb") as stream:
+        current = os.fstat(stream.fileno())
+        if (before.st_dev, before.st_ino) != (
+            current.st_dev,
+            current.st_ino,
+        ) or current.st_size > limit:
+            raise ReportUnavailable("BUNDLE_PATH_UNSAFE")
+        result = stream.read(limit + 1)
+    if len(result) > limit:
+        raise ReportUnavailable("BUNDLE_FILE_TOO_LARGE")
+    return result
 
 
 def _sync_directory(path: Path) -> None:
@@ -433,15 +674,6 @@ def _sync_directory(path: Path) -> None:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
-
-
-def _capture_directory_identity(path: Path) -> tuple[int, int, int] | None:
-    try:
-        return _directory_identity(os.stat(path, follow_symlinks=False))
-    except FileNotFoundError:
-        return None
-    except OSError as error:
-        raise ReportUnavailable("UNSAFE_REPORT_PATH") from error
 
 
 def _atomic_write_report(
@@ -569,127 +801,6 @@ def _atomic_write_report_posix(
         raise ReportUnavailable("UNSAFE_REPORT_PATH") from error
     finally:
         os.close(data_dir_fd)
-
-
-class _WindowsFunction(Protocol):
-    argtypes: list[object]
-    restype: object
-
-    def __call__(self, *args: object) -> int | None: ...
-
-
-class _Kernel32(Protocol):
-    CreateFileW: _WindowsFunction
-    CloseHandle: _WindowsFunction
-
-
-def _platform_attribute(owner: object, name: str) -> object:
-    return getattr(owner, name)
-
-
-@contextmanager
-def _locked_windows_directory(
-    path: Path,
-    *,
-    expected_identity: tuple[int, int, int] | None = None,
-    allow_write_sharing: bool = False,
-) -> Iterator[None]:
-    import ctypes
-    import msvcrt
-
-    try:
-        path.mkdir(exist_ok=True)
-    except OSError as error:
-        raise ReportUnavailable("UNSAFE_REPORT_PATH") from error
-    load_library = cast(Callable[..., object], _platform_attribute(ctypes, "WinDLL"))
-    kernel32 = cast(_Kernel32, load_library("kernel32", use_last_error=True))
-    create_file = kernel32.CreateFileW
-    create_file.argtypes = [
-        ctypes.c_wchar_p,
-        ctypes.c_uint32,
-        ctypes.c_uint32,
-        ctypes.c_void_p,
-        ctypes.c_uint32,
-        ctypes.c_uint32,
-        ctypes.c_void_p,
-    ]
-    create_file.restype = ctypes.c_void_p
-    close_handle = kernel32.CloseHandle
-    close_handle.argtypes = [ctypes.c_void_p]
-    close_handle.restype = ctypes.c_int
-    generic_read = 0x80000000
-    share_read = 0x00000001
-    share_mode = share_read | (0x00000002 if allow_write_sharing else 0)
-    open_existing = 3
-    file_flag_backup_semantics = 0x02000000
-    file_flag_open_reparse_point = 0x00200000
-    handle = create_file(
-        str(path),
-        generic_read,
-        share_mode,
-        None,
-        open_existing,
-        file_flag_backup_semantics | file_flag_open_reparse_point,
-        None,
-    )
-    invalid_handle = ctypes.c_void_p(-1).value
-    if handle is None or handle == invalid_handle:
-        get_last_error = cast(
-            Callable[[], int], _platform_attribute(ctypes, "get_last_error")
-        )
-        raise ReportUnavailable("UNSAFE_REPORT_PATH") from OSError(
-            get_last_error(), "REPORT_DIRECTORY_OPEN_FAILED", str(path)
-        )
-    descriptor: int | None = None
-    try:
-        open_osfhandle = cast(
-            Callable[[int, int], int],
-            _platform_attribute(msvcrt, "open_osfhandle"),
-        )
-        descriptor = open_osfhandle(handle, os.O_RDONLY)
-        information = os.fstat(descriptor)
-        if (
-            not stat.S_ISDIR(information.st_mode)
-            or int(getattr(information, "st_file_attributes", 0))
-            & _FILE_ATTRIBUTE_REPARSE_POINT
-            or int(getattr(information, "st_reparse_tag", 0)) != 0
-            or (
-                expected_identity is not None
-                and _directory_identity(information) != expected_identity
-            )
-        ):
-            raise ReportUnavailable("UNSAFE_REPORT_PATH")
-        yield
-    finally:
-        if descriptor is None:
-            close_handle(handle)
-        else:
-            os.close(descriptor)
-
-
-@contextmanager
-def _guarded_windows_replace_directory(path: Path) -> Iterator[None]:
-    """Keep the directory non-empty while replacement needs write sharing."""
-
-    guard_path = path / f".report-export-{uuid4().hex}.guard"
-    guard = None
-    with _locked_windows_directory(path):
-        try:
-            guard = guard_path.open("xb")
-        except OSError as error:
-            raise ReportUnavailable("UNSAFE_REPORT_PATH") from error
-    try:
-        with _locked_windows_directory(path, allow_write_sharing=True):
-            yield
-    finally:
-        if guard is not None:
-            guard.close()
-        try:
-            guard_path.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError as error:
-            raise ReportUnavailable("UNSAFE_REPORT_PATH") from error
 
 
 __all__ = [

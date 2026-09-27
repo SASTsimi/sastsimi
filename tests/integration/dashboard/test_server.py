@@ -9,7 +9,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
+from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.dashboard.server import create_server
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
@@ -24,6 +24,7 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
 )
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
+from tests.support.current_bundle import attach_current_bundle
 
 
 def seed(data_dir) -> None:
@@ -51,7 +52,7 @@ def seed(data_dir) -> None:
         content_hash=hashlib.sha256(b"finding").hexdigest(),
         workspace_id=WorkspaceId("workspace-1"),
         commit_id=CommitId("commit-1"),
-        record_id=None,
+        record_id=RecordId("finding-record"),
     )
     FindingDisplayIdStore(database).get_or_allocate("analysis-1", finding_ref)
     report = data_dir / "reports" / "analysis-1" / "F-001.md"
@@ -131,6 +132,62 @@ def test_server_is_local_read_only_and_serves_current_state(tmp_path) -> None:
         )
 
 
+def test_server_exposes_bounded_static_coverage_for_blocked_run(tmp_path) -> None:
+    seed(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    coverage_ref = SimpleArtifactRepository(tmp_path, identity).put_json(
+        {
+            "kind": "simple_static_coverage_v1",
+            "analysis_id": "analysis-1",
+            "workspace_id": "workspace-1",
+            "commit_id": "commit-1",
+            "fingerprint": "f" * 64,
+            "expected_count": 2,
+            "verified_count": 1,
+            "gaps": [
+                {
+                    "path": "src/app.ts",
+                    "rule_id": "rule.js",
+                    "reason": "parse_or_scan_error",
+                }
+            ],
+            "unsupported": [],
+            "ast_parse_error_count": 0,
+            "ast_truncated": False,
+            "codeql_configured": True,
+            "codeql_executed": False,
+            "codeql_scope": "python_only",
+        }
+    )
+    SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3").save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.STATIC_DONE,
+            status=StageStatus.BLOCKED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(coverage_ref,),
+            error_code="STATIC_COVERAGE_INCOMPLETE",
+            retryable=False,
+        )
+    )
+    with running_server(tmp_path) as base:
+        payload = json.loads(request(f"{base}/api/analyses/A-001").read())
+    assert payload["static_coverage_expected"] == 2
+    assert payload["static_coverage_verified"] == 1
+    assert payload["static_codeql_configured"] is True
+    assert payload["static_codeql_executed"] is False
+    assert payload["static_codeql_scope"] == "python_only"
+    assert payload["static_coverage_gap_preview"] == [
+        {"path": "src/app.ts", "rule_id": "rule.js", "reason": "parse_or_scan_error"}
+    ]
+
+
 def test_server_restricts_persisted_legacy_allow_markdown(tmp_path) -> None:
     seed(tmp_path)
     identity = CheckpointIdentity(
@@ -175,6 +232,43 @@ def test_server_serves_exact_report_artifact_not_mutated_file(tmp_path) -> None:
         public = request(f"{base}/reports/analysis-1/F-001.md").read().decode()
 
     assert public == "# 한국어 보고서"
+
+
+def test_server_downloads_only_current_manifest_files(tmp_path) -> None:
+    seed(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    finding = FindingDisplayIdStore.resolve_existing(
+        store.database_path, "analysis-1", "F-001"
+    )
+    attach_current_bundle(tmp_path, identity, finding, "F-001")
+    poc = b"#!/bin/sh\nprintf ok\n"
+
+    with running_server(tmp_path) as base:
+        detail = json.loads(request(f"{base}/api/analyses/A-001").read())
+        urls = detail["reports"][0]["attachment_urls"]
+        response = request(f"{base}{urls['poc.sh']}")
+        assert response.status == 200
+        assert response.read() == poc
+        assert (
+            response.headers["Content-Disposition"] == 'attachment; filename="poc.sh"'
+        )
+        assert response.headers["Cache-Control"] == "no-store"
+        assert request(f"{base}{urls['poc.sh']}", method="HEAD").status == 200
+        assert request(f"{base}{urls['bundle.zip']}").read()[:2] == b"PK"
+        assert (
+            request(f"{base}/reports/analysis-1/F-001/files/%2e%2e/poc.sh").status
+            == 404
+        )
+        assert (
+            request(f"{base}/reports/analysis-1/F-001/files/manifest.json").status
+            == 404
+        )
 
 
 def test_server_rejects_non_loopback_bind(tmp_path) -> None:

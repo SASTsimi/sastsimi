@@ -128,6 +128,7 @@ class UserConfig(BaseModel):
     llm_max_retries: int = Field(default=2, ge=0, le=5)
     llm_max_concurrency: int = Field(default=2, gt=0, le=32)
     hypothesis_feed: Literal["current", "facts_survey"] = "current"
+    semgrep_fallback: bool = False
     max_parallel_hypotheses: int = Field(default=1, gt=0, le=32)
     max_parallel_builds: int = Field(default=1, gt=0, le=32)
     max_parallel_containers: int = Field(default=1, gt=0, le=32)
@@ -229,6 +230,7 @@ class UserConfig(BaseModel):
             f"llm_max_retries = {self.llm_max_retries}",
             f"llm_max_concurrency = {self.llm_max_concurrency}",
             f"hypothesis_feed = {_quoted(self.hypothesis_feed)}",
+            f"semgrep_fallback = {str(self.semgrep_fallback).lower()}",
             f"max_parallel_hypotheses = {self.max_parallel_hypotheses}",
             f"max_parallel_builds = {self.max_parallel_builds}",
             f"max_parallel_containers = {self.max_parallel_containers}",
@@ -297,6 +299,7 @@ class SimpleExecutionProfile(BaseModel):
     llm_max_retries: int = Field(default=2, ge=0, le=5)
     llm_max_concurrency: int = Field(default=2, gt=0, le=32)
     hypothesis_feed: Literal["current", "facts_survey"] = "current"
+    semgrep_fallback: bool = False
     max_parallel_hypotheses: int = Field(default=1, gt=0, le=32)
     max_parallel_builds: int = Field(default=1, gt=0, le=32)
     max_parallel_containers: int = Field(default=1, gt=0, le=32)
@@ -362,6 +365,7 @@ class SimpleExecutionProfile(BaseModel):
             f"llm_max_retries = {self.llm_max_retries}",
             f"llm_max_concurrency = {self.llm_max_concurrency}",
             f"hypothesis_feed = {_quoted(self.hypothesis_feed)}",
+            f"semgrep_fallback = {str(self.semgrep_fallback).lower()}",
             f"max_parallel_hypotheses = {self.max_parallel_hypotheses}",
             f"max_parallel_builds = {self.max_parallel_builds}",
             f"max_parallel_containers = {self.max_parallel_containers}",

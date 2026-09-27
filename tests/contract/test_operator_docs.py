@@ -35,11 +35,39 @@ def test_operator_path_is_linked_and_exposes_only_the_product_runtime() -> None:
     assert "sastsimi status A-001" in usage
     assert "sastsimi resume A-001" in usage
     assert "sastsimi dashboard" in usage
-    assert "sastsimi report F-001 --export markdown" in usage
+    assert "sastsimi report show F-001" in usage
+    assert "sastsimi report export F-001 --format markdown" in usage
     assert "demo analyze" not in usage
     assert "Fake로 자동 대체" not in usage
     assert "SimpleRuntime" in usage
     assert "실제 저장소 분석" in usage
+
+
+def test_opengrep_batch_resume_is_documented() -> None:
+    for path in ("README.md", "docs/usage.md", "docs/troubleshooting.md"):
+        text = _read(path)
+        assert "sastsimi resume A-001" in text
+        assert "OpenGrep 규칙 묶음" in text
+        assert "완료된 묶음" in text
+        assert "전체 성공 전" in text
+        assert "`BLOCKED`" in text
+        assert "저장소별 별도 설정" in text
+
+
+def test_semgrep_fallback_windows_one_liners_and_gap_semantics_are_documented() -> None:
+    readme = _read("README.md")
+    usage = _read("docs/usage.md")
+    troubleshooting = _read("docs/troubleshooting.md")
+    combined = "\n".join((readme, usage, troubleshooting))
+    assert ".venv\\Scripts\\Activate.ps1" in combined
+    assert "python -m pip install semgrep" in combined
+    assert "--semgrep-fallback" in readme
+    assert "--semgrep-fallback" in usage
+    assert "--semgrep-fallback" in troubleshooting
+    assert "파일·규칙" in combined
+    assert "CodeQL" in combined
+    assert "`BLOCKED`" in combined
+    assert "`COMPLETE`" in combined
 
 
 def test_operator_docs_never_embed_a_credential_or_claim_preflight_is_active() -> None:

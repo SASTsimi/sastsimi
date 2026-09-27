@@ -92,6 +92,7 @@ def choices_from_args(
         llm_max_retries=getattr(args, "llm_max_retries", 2),
         llm_max_concurrency=getattr(args, "llm_max_concurrency", 2),
         hypothesis_feed=getattr(args, "hypothesis_feed", "current"),
+        semgrep_fallback=bool(getattr(args, "semgrep_fallback", False)),
         max_parallel_hypotheses=getattr(args, "max_parallel_hypotheses", 1),
         max_parallel_builds=getattr(args, "max_parallel_builds", 1),
         max_parallel_containers=getattr(args, "max_parallel_containers", 1),

@@ -9,10 +9,12 @@ from sqlalchemy import select
 
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.actions import ActionDecision, ActionRequest
+from sastsimi.contracts.analysis import AnalysisRunState
 from sastsimi.contracts.budget import Purpose
 from sastsimi.contracts.domain import DomainRecord, same_scope
 from sastsimi.contracts.dynamic import (
     AgentLog,
+    AgentLogEvent,
     DynamicReproductionResult,
     PoCBundle,
     PoCCandidate,
@@ -40,6 +42,7 @@ from sastsimi.contracts.reporting import (
     ReportProcessState,
     validate_report_closure,
 )
+from sastsimi.contracts.static import CodeWorkspace
 from sastsimi.contracts.verification import VerificationResult
 from sastsimi.ports.report_export import (
     CurrentReport,
@@ -98,6 +101,23 @@ class SQLiteCurrentReportSource:
         if len(matched) != 1:
             raise ReportUnavailable("REPORT_NOT_FOUND")
         return self._resolve(matched[0])
+
+    def read_artifact(self, ref: StoredDataRef) -> bytes:
+        artifacts = LocalArtifactStore(
+            RuntimePaths(self._data_dir).artifacts, ref.workspace_id, ref.commit_id
+        )
+        with artifacts.open_verified_bounded(ref, 10 * 1024 * 1024) as stream:
+            return stream.read()
+
+    def put_artifact(
+        self, scope_ref: StoredDataRef, body: bytes, media_type: str
+    ) -> StoredDataRef:
+        artifacts = LocalArtifactStore(
+            RuntimePaths(self._data_dir).artifacts,
+            scope_ref.workspace_id,
+            scope_ref.commit_id,
+        )
+        return artifacts.commit(artifacts.stage_bytes(body, media_type))
 
     def _resolve(self, state: ReportProcessState) -> CurrentReport:
         if state.report_draft_ref is None:
@@ -161,12 +181,19 @@ class SQLiteCurrentReportSource:
             poc_text = poc_bytes.decode("utf-8")
             action, decision = self._report_authority(draft)
             condition_records = self._condition_records(finding)
-            agent_log, execution_command = self._poc_execution(
+            agent_log, execution_command, execution_event = self._poc_execution(
                 dynamic,
                 poc,
                 candidate,
                 condition_records,
             )
+            if len(execution_event.output_refs) != 2:
+                raise ReportUnavailable("REPORT_POC_EXECUTION_INVALID")
+            stdout_ref, stderr_ref = execution_event.output_refs
+            with artifacts.open_verified(stdout_ref) as stream:
+                stdout_bytes = stream.read()
+            with artifacts.open_verified(stderr_ref) as stream:
+                stderr_bytes = stream.read()
             validate_report_closure(
                 draft,
                 finding,
@@ -207,6 +234,16 @@ class SQLiteCurrentReportSource:
                 report_action=action,
                 report_decision=decision,
                 purpose=self._analysis_purpose(str(draft.meta.analysis_id)),
+                repository_url=self._repository_url(
+                    str(draft.meta.analysis_id),
+                    draft.meta.workspace_id,
+                    draft.meta.commit_id,
+                ),
+                stdout_bytes=stdout_bytes,
+                stderr_bytes=stderr_bytes,
+                stdout_ref=stdout_ref,
+                stderr_ref=stderr_ref,
+                execution_exit_code=execution_event.exit_code,
             )
             return report
         except ReportUnavailable:
@@ -223,6 +260,25 @@ class SQLiteCurrentReportSource:
         if purpose not in {"PRODUCTION", "EVALUATION", "LOCAL_EVALUATION"}:
             raise ReportUnavailable("REPORT_SCOPE_INVALID")
         return state.purpose
+
+    def _repository_url(
+        self, analysis_id: str, workspace_id: object, commit_id: object
+    ) -> str | None:
+        if self._database is None or self._records is None:
+            raise ReportUnavailable("REPORT_NOT_FOUND")
+        with self._database.engine.connect() as connection:
+            state: AnalysisRunState = get_run(connection, analysis_id)
+        if state.workspace_ref is None:
+            return None
+        workspace = self._records.get_exact(state.workspace_ref)
+        if (
+            not isinstance(workspace, CodeWorkspace)
+            or reference(workspace) != state.workspace_ref
+            or workspace.workspace_id != workspace_id
+            or workspace.commit_id != commit_id
+        ):
+            raise ReportUnavailable("REPORT_EXACT_CLOSURE_INVALID")
+        return str(workspace.repository_url)
 
     def _report_authority(
         self, draft: ReportDraft
@@ -255,7 +311,7 @@ class SQLiteCurrentReportSource:
         poc: PoCBundle,
         candidate: PoCCandidate,
         evidence_records: tuple[tuple[StoredDataRef, DomainRecord], ...],
-    ) -> tuple[AgentLog, SandboxCommandRecord]:
+    ) -> tuple[AgentLog, SandboxCommandRecord, AgentLogEvent]:
         if (
             result.agent_log_ref != poc.agent_log_ref
             or result.request_ref != poc.request_ref
@@ -305,7 +361,7 @@ class SQLiteCurrentReportSource:
             (command,),
             dict(evidence_records),
         )
-        return log, command
+        return log, command, execution
 
     def _condition_records(
         self, finding: Finding

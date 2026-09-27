@@ -124,9 +124,12 @@ def test_entrypoints_help_and_doctor_read_only(
     assert "doctor" in capsys.readouterr().out
     assert main(["doctor"]) in (0, 4)
     assert not (tmp_path / "new-state").exists()
+    console_script = Path(sys.executable).with_name(
+        "sastsimi.exe" if os.name == "nt" else "sastsimi"
+    )
     for command in (
         [sys.executable, "-m", "sastsimi", "--help"],
-        ["sastsimi", "--help"],
+        [str(console_script), "--help"],
     ):
         result = subprocess.run(command, capture_output=True, text=True, check=False)
         assert result.returncode == 0

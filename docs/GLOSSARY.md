@@ -54,7 +54,7 @@
 | `Technical Gate Agent` | LLM | 근거·PoC·CWE 연결성 검토 |
 | `Rule Scope Gate Agent` | LLM | 공식 정책의 범위와 시험 제한 검토 |
 | `Chaining Agent` | LLM | Primitive를 연결해 자식 가설 제안 |
-| `Reporter Agent` | LLM | 검증된 사실을 한국어 보고서로 정리 |
+| `Reporter Agent` | LLM | 검증된 사실을 바탕으로 영문·국문 보고서 설명 작성 |
 | `Runtime` | 비-LLM | ID, 순서, 상태, 저장, 재시도와 권한 검사 |
 | `Primitive Admission Runtime` | 비-LLM | Gate 결과를 정해진 규칙에 적용해 체이닝 재료 허용 여부 기록 |
 | `Reproduction Runtime` | 비-LLM | 검증된 PoC 후보를 Docker에서 실행하고 실제 결과 기록 |
@@ -87,7 +87,8 @@ Agent 이름과 역할은 특정 Provider나 model에 고정되지 않습니다.
 | `Rule Scope Gate` | 공식 정책상 범위, 금지 시험과 비공개 제보 조건을 근거별로 예비 판정하는 단계 |
 | 정책 snapshot | 분석 시작 시 공식 정책의 출처·개정·본문 hash·수집 상태를 저장한 불변 기록. `resume`에서는 같은 기록을 사용 |
 | `Chaining` | 기존 Primitive를 연결해 더 큰 영향을 낼 수 있는 새 가설을 만드는 과정 |
-| `F-NNN` | 사람이 보기 쉬운 Finding 번호와 Markdown 파일명 |
+| `F-NNN` | 사람이 보기 쉬운 Finding 번호. 기존 `F-NNN.md`와 새 `F-NNN/` 번들에 공통 사용 |
+| 보고서 번들 | 한 Finding의 영문·국문 Markdown, 검증된 PoC, 선별된 근거, manifest와 ZIP |
 | `Dashboard` | 분석 상태, Agent 활동과 결과를 보여 주는 로컬 읽기 전용 화면 |
 | `Agent activity` | 숨겨진 생각 원문이 아니라 확인한 근거·행동·판정 이유를 정리한 감사 기록 |
 
