@@ -496,3 +496,48 @@ def test_build_context_carries_what_the_repository_dockerignores(
     assert "src/tests/test_api.py" in names
     assert _CONTEXT_DOCKERFILE in names
     assert not {".dockerignore", ".git", ".git/HEAD"} & names
+
+
+def _preparer(workspace: Path) -> DirectEnvironmentPreparer:
+    preparer = DirectEnvironmentPreparer.__new__(DirectEnvironmentPreparer)
+    preparer._workspace = workspace
+    return preparer
+
+
+def test_declared_test_dependencies_are_installed_best_effort(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[dependency-groups]\n"
+        'testing = ["pytest-django>=4.12", {include-group = "base"}]\n'
+        'base = ["pytest~=9.1"]\n'
+        'dev = ["ruff"]\n'
+    )
+
+    layer = _preparer(tmp_path)._test_dependency_layer().decode()
+
+    assert "'pytest-django>=4.12'" in layer
+    assert "pytest~=9.1" in layer
+    assert "ruff" not in layer
+    assert layer.rstrip().endswith("|| true")
+
+
+def test_a_requirement_that_would_break_the_run_line_is_dropped(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        '[dependency-groups]\ntest = ["pytest\\nRUN echo pwned", "pytest-env"]\n'
+    )
+    (tmp_path / "requirements-dev.txt").write_text("ignored\n")
+
+    layer = _preparer(tmp_path)._test_dependency_layer().decode()
+
+    assert "pwned" not in layer
+    assert "pytest-env" in layer
+    assert layer.count("\n") == 1
+
+
+def test_a_dev_requirements_file_is_the_fallback(tmp_path: Path) -> None:
+    (tmp_path / "requirements-devel.txt").write_text("pytest\n")
+
+    layer = _preparer(tmp_path)._test_dependency_layer().decode()
+
+    assert "-r /workspace/requirements-devel.txt" in layer

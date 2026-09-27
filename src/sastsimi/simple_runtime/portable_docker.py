@@ -454,6 +454,7 @@ class DirectEnvironmentPreparer:
             ) + (
                 b"\nUSER root\nWORKDIR /workspace\nCOPY . /workspace\n"
                 + target_install
+                + self._test_dependency_layer()
                 + b"RUN chmod -R a+rX /workspace && mkdir -p /tmp "
                 b"&& chmod 1777 /tmp\n"
             )
@@ -651,6 +652,100 @@ class DirectEnvironmentPreparer:
             f"RUN python -m pip install --no-cache-dir -r {shlex.quote(absolute)}\n"
         ).encode()
 
+    # Where a repository states what its own test suite needs.  paperless-ngx
+    # puts pytest-django, pytest-env and the rest in a `testing` dependency
+    # group, and its pytest_env settings swap Redis for a local-memory cache;
+    # without them every PoC that tried to boot the app stalled on settings,
+    # a secret key or a Redis connection.
+    _TEST_GROUPS: ClassVar[tuple[str, ...]] = ("test", "tests", "testing")
+    _TEST_REQUIREMENT_FILES: ClassVar[tuple[str, ...]] = (
+        "requirements-test.txt",
+        "requirements_test.txt",
+        "test-requirements.txt",
+        "requirements/test.txt",
+        "requirements-dev.txt",
+        "requirements_dev.txt",
+        "requirements-devel.txt",
+        "dev-requirements.txt",
+        "requirements/dev.txt",
+    )
+    # A requirement is repository-controlled text placed on a RUN line, so a
+    # control character - a newline above all, which would end the RUN and
+    # start a new instruction - rules it out.
+    _REQUIREMENT_TEXT = re.compile(r"[^\x00-\x1f\x7f\\]{1,200}")
+
+    def _test_dependency_layer(self) -> bytes:
+        """Install what the repository's own tests need, when it says so.
+
+        Best effort: a failed install leaves the image as it was rather than
+        failing a build every hypothesis depends on.
+        """
+
+        requirements = self._declared_test_requirements()
+        if requirements:
+            arguments = " ".join(shlex.quote(value) for value in requirements)
+            command = f"python -m pip install --no-cache-dir {arguments}"
+        else:
+            found = next(
+                (
+                    name
+                    for name in self._TEST_REQUIREMENT_FILES
+                    if (self._workspace / name).is_file()
+                ),
+                None,
+            )
+            if found is None:
+                return b""
+            path = shlex.quote(f"/workspace/{found}")
+            command = f"python -m pip install --no-cache-dir -r {path}"
+        return f"RUN {command} || true\n".encode()
+
+    def _declared_test_requirements(self) -> list[str]:
+        try:
+            document = tomllib.loads(
+                (self._workspace / "pyproject.toml").read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            return []
+        groups = document.get("dependency-groups")
+        extras = document.get("project", {}).get("optional-dependencies")
+        for table in (groups, extras):
+            if not isinstance(table, dict):
+                continue
+            names = [name for name in self._TEST_GROUPS if name in table]
+            if not names and "dev" in table:
+                names = ["dev"]
+            found: list[str] = []
+            for name in names:
+                found.extend(self._expanded_group(table, name, set()))
+            valid = [
+                value
+                for value in dict.fromkeys(found)
+                if self._REQUIREMENT_TEXT.fullmatch(value)
+            ]
+            if valid:
+                return valid
+        return []
+
+    @classmethod
+    def _expanded_group(
+        cls, table: Mapping[str, object], name: str, seen: set[str]
+    ) -> list[str]:
+        # PEP 735 lets a group include another by name; a cycle is cut.
+        if name in seen:
+            return []
+        seen.add(name)
+        entries = table.get(name)
+        found: list[str] = []
+        for entry in entries if isinstance(entries, list) else ():
+            if isinstance(entry, str):
+                found.append(entry.strip())
+            elif isinstance(entry, dict) and isinstance(
+                entry.get("include-group"), str
+            ):
+                found.extend(cls._expanded_group(table, entry["include-group"], seen))
+        return found
+
     @staticmethod
     def _declares_a_package(pyproject: Path) -> bool:
         """Say whether this file configures a build, not just a workspace.
@@ -721,6 +816,7 @@ class DirectEnvironmentPreparer:
             "COPY . /workspace\n"
             f"{install_layer}\n"
             f"{self._target_install_layer(target_requirements).decode('utf-8')}"
+            f"{self._test_dependency_layer().decode('utf-8') if install else ''}"
             "RUN chmod -R a+rX /workspace && mkdir -p /tmp && chmod 1777 /tmp\n"
             'CMD ["sleep", "infinity"]\n'
         ).encode()
