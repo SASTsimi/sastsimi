@@ -119,6 +119,23 @@ class SimpleCheckpointStore:
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS simple_opengrep_batch_progress (
+                    analysis_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    repository TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    batch_key TEXT NOT NULL,
+                    ref_json TEXT NOT NULL,
+                    PRIMARY KEY (
+                        analysis_id, workspace_id, commit_id,
+                        repository, fingerprint, batch_key
+                    )
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS simple_report_drafts (
                     identity_json TEXT NOT NULL,
                     input_hash TEXT NOT NULL,
@@ -133,6 +150,105 @@ class SimpleCheckpointStore:
     @property
     def database_path(self) -> Path:
         return self._database_path
+
+    @staticmethod
+    def _opengrep_batch_key(
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str,
+        batch_key: str,
+    ) -> tuple[str, str, str, str, str, str]:
+        if identity.hypothesis_id is not None or not all(
+            value.strip() for value in (repository, fingerprint, batch_key)
+        ):
+            raise ValueError("OPENGREP_BATCH_KEY_INVALID")
+        return (
+            identity.analysis_id,
+            identity.workspace_id,
+            identity.commit_id,
+            repository,
+            fingerprint,
+            batch_key,
+        )
+
+    @staticmethod
+    def _require_opengrep_ref_scope(
+        identity: CheckpointIdentity, ref: StoredDataRef
+    ) -> None:
+        if (str(ref.workspace_id), str(ref.commit_id)) != (
+            identity.workspace_id,
+            identity.commit_id,
+        ) or ref.record_id is not None:
+            raise ValueError("OPENGREP_BATCH_REF_SCOPE_MISMATCH")
+
+    def opengrep_batch_ref(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str,
+        batch_key: str,
+    ) -> StoredDataRef | None:
+        key = self._opengrep_batch_key(identity, repository, fingerprint, batch_key)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT ref_json FROM simple_opengrep_batch_progress "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND repository = ? AND fingerprint = ? AND batch_key = ?",
+                key,
+            ).fetchone()
+        if row is None:
+            return None
+        ref = StoredDataRef.model_validate_json(row["ref_json"])
+        self._require_opengrep_ref_scope(identity, ref)
+        return ref
+
+    def save_opengrep_batch(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str,
+        batch_key: str,
+        ref: StoredDataRef,
+        *,
+        replaces: StoredDataRef | None = None,
+    ) -> None:
+        """Record one accepted batch; replace only an explicitly matched old ref."""
+
+        key = self._opengrep_batch_key(identity, repository, fingerprint, batch_key)
+        self._require_opengrep_ref_scope(identity, ref)
+        encoded = ref.model_dump_json()
+        with self._connect() as connection:
+            if replaces is None:
+                inserted = connection.execute(
+                    "INSERT OR IGNORE INTO simple_opengrep_batch_progress "
+                    "(analysis_id, workspace_id, commit_id, repository, "
+                    "fingerprint, batch_key, ref_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (*key, encoded),
+                )
+                if inserted.rowcount == 1:
+                    return
+            row = connection.execute(
+                "SELECT ref_json FROM simple_opengrep_batch_progress "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND repository = ? AND fingerprint = ? AND batch_key = ?",
+                key,
+            ).fetchone()
+            if row is None:
+                raise ValueError("OPENGREP_BATCH_PROGRESS_CONFLICT")
+            current = StoredDataRef.model_validate_json(row["ref_json"])
+            if current == ref:
+                return
+            if replaces is None or current != replaces:
+                raise ValueError("OPENGREP_BATCH_PROGRESS_CONFLICT")
+            updated = connection.execute(
+                "UPDATE simple_opengrep_batch_progress SET ref_json = ? "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND repository = ? AND fingerprint = ? AND batch_key = ? "
+                "AND ref_json = ?",
+                (encoded, *key, row["ref_json"]),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("OPENGREP_BATCH_PROGRESS_CONFLICT")
 
     def save_survey_progress(
         self, analysis_id: str, bundle_hash: str, item_key: str, ref: StoredDataRef
