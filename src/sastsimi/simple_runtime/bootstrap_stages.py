@@ -1330,25 +1330,77 @@ class DirectStaticBootstrap:
                 if not stable_targets:
                     continue
                 placeholder = output_dir / f"semgrep-{'0' * 32}.json"
-                roots = plan_semgrep_target_chunks(
-                    stable_targets,
-                    lambda chunk, chosen=selected, target_output=placeholder: (
-                        build_semgrep_argv(
-                            binding,
-                            workspace,
-                            rules,
-                            chunk,
-                            tuple(
-                                rule_id
-                                for rule_id in rule_plan.rule_ids
-                                if rule_id not in chosen
-                            ),
-                            target_output,
-                            None,
-                            targets_verified=True,
-                        )
-                    ),
-                )
+
+                def command_for(
+                    chunk: tuple[str, ...],
+                    chosen: tuple[str, ...] = selected,
+                    target_output: Path = placeholder,
+                ) -> tuple[str, ...]:
+                    return build_semgrep_argv(
+                        binding,
+                        workspace,
+                        rules,
+                        chunk,
+                        tuple(
+                            rule_id
+                            for rule_id in rule_plan.rule_ids
+                            if rule_id not in chosen
+                        ),
+                        target_output,
+                        None,
+                        targets_verified=True,
+                    )
+
+                def planning_gap(
+                    failed_targets: tuple[str, ...],
+                    error: Exception,
+                    _original: RuleBatch = original,
+                    _selected: tuple[str, ...] = selected,
+                    _legacy_verified: set[tuple[str, str]] = legacy_verified,
+                ) -> None:
+                    code = self._safe_static_error(error, "SEMGREP_RESULT_INVALID")
+                    failed = make_batch(_original, _selected, failed_targets)
+                    record_unproved(
+                        failed,
+                        expected_for(failed_targets, _selected) - _legacy_verified,
+                        code,
+                    )
+                    self._store.save_static_scan_attempt(
+                        identity,
+                        request.repository,
+                        coverage_plan.fingerprint,
+                        "semgrep",
+                        failed.key,
+                        "BLOCKED",
+                        None,
+                        None,
+                        code,
+                    )
+
+                try:
+                    roots = plan_semgrep_target_chunks(stable_targets, command_for)
+                except (OSError, RuntimeError, ValueError) as error:
+                    if (
+                        str(error) != "SEMGREP_COMMAND_TOO_LONG"
+                        or len(stable_targets) == 1
+                    ):
+                        planning_gap(stable_targets, error)
+                        continue
+                    feasible: list[str] = []
+                    for target in stable_targets:
+                        try:
+                            plan_semgrep_target_chunks((target,), command_for)
+                        except (OSError, RuntimeError, ValueError) as target_error:
+                            planning_gap((target,), target_error)
+                        else:
+                            feasible.append(target)
+                    if not feasible:
+                        continue
+                    try:
+                        roots = plan_semgrep_target_chunks(tuple(feasible), command_for)
+                    except (OSError, RuntimeError, ValueError) as group_error:
+                        planning_gap(tuple(feasible), group_error)
+                        continue
                 verified = set(legacy_verified)
                 node_budget = 3 * len(stable_targets) + len(roots)
 
@@ -1382,6 +1434,7 @@ class DirectStaticBootstrap:
                     previous = attempts.get(batch.key)
                     code: str | None = None
                     cached: CoverageSlice | None = None
+                    current_slice: CoverageSlice | None = None
                     if (
                         previous is not None
                         and previous.raw_ref is not None
@@ -1389,6 +1442,8 @@ class DirectStaticBootstrap:
                     ):
                         cached = replay(batch, targets, previous.raw_ref)
                     if cached is not None:
+                        assert previous is not None and previous.raw_ref is not None
+                        current_slice = cached
                         slices.append(cached)
                         refs.append(previous.raw_ref)
                         _verified.update(cached.verified_pairs)
@@ -1424,6 +1479,7 @@ class DirectStaticBootstrap:
                                 engine="semgrep",
                                 targets=targets,
                             )
+                            current_slice = slice_
                             slices.append(replace(slice_, raw_ref=raw_ref))
                             refs.append(raw_ref)
                             _verified.update(slice_.verified_pairs)
@@ -1462,7 +1518,13 @@ class DirectStaticBootstrap:
                     if not pending:
                         return
                     if len(targets) == 1:
-                        if code == "EXTERNAL_TOOL_TIMEOUT" and not retry_timeout:
+                        reported_timeout = current_slice is not None and any(
+                            path == targets[0] and reason == "scan_timeout"
+                            for path, _rule_id, reason in current_slice.gap_reasons
+                        )
+                        if (
+                            code == "EXTERNAL_TOOL_TIMEOUT" or reported_timeout
+                        ) and not retry_timeout:
                             await run_node(targets, rule_ids, retry_timeout=True)
                         else:
                             record_unproved(

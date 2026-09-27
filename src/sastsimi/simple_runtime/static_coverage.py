@@ -266,7 +266,10 @@ def assess_scan(
             continue
         for pair in allowed:
             if pair[0] == path:
-                reasons[pair] = "parse_or_scan_error"
+                if error.get("type") == "Timeout":
+                    reasons[pair] = "scan_timeout"
+                elif reasons.get(pair) != "scan_timeout":
+                    reasons[pair] = "parse_or_scan_error"
     skipped_rules = parsed.get("skipped_rules", [])
     if not isinstance(skipped_rules, list):
         raise ValueError("STATIC_SCAN_RULES_INVALID")

@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -30,6 +30,7 @@ from sastsimi.simple_runtime.opengrep_rule_batches import (
     plan_rule_batches,
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
+from sastsimi.simple_runtime.semgrep_fallback_plan import plan_semgrep_target_chunks
 from sastsimi.simple_runtime.static_coverage import (
     CoverageSlice,
     StaticCoveragePlan,
@@ -1181,6 +1182,102 @@ async def test_single_file_timeout_gets_one_bounded_retry(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_single_file_json_timeout_gets_one_bounded_retry(tmp_path: Path) -> None:
+    def timeout_then_success(
+        targets: tuple[str, ...], command: tuple[str, ...]
+    ) -> dict[str, object]:
+        return {
+            "results": [],
+            "errors": (
+                []
+                if "--timeout" in command
+                else [{"type": "Timeout", "path": targets[0]}]
+            ),
+            "paths": {"scanned": list(targets), "skipped": []},
+        }
+
+    process = _AdaptiveSemgrepProcess(timeout_then_success)
+    fixture = _adaptive_semgrep_fixture(tmp_path, process, count=1)
+    slices, _refs, errors = await _run_adaptive_semgrep(fixture)
+    assert errors == []
+    assert len(process.calls) == 2
+    assert "--timeout" not in process.calls[0][1]
+    assert process.calls[1][1][process.calls[1][1].index("--timeout") + 1] == "30"
+    assert finish_coverage(fixture[4], slices).verified_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cached_single_file_json_timeout_retries_without_parent_rerun(
+    tmp_path: Path,
+) -> None:
+    process = _AdaptiveSemgrepProcess()
+    fixture = _adaptive_semgrep_fixture(tmp_path, process, count=1)
+    _, profile, identity, batches, coverage, _, _ = fixture
+    original = batches.batches[0]
+    target = ("file-000.py",)
+    key = hashlib.sha256(
+        canonical_bytes(
+            {
+                "adaptive": 1,
+                "batch": original.key,
+                "rules": original.rule_ids,
+                "targets": target,
+            }
+        )
+    ).hexdigest()
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    raw = json.dumps(
+        {
+            "results": [],
+            "errors": [{"type": "Timeout", "path": target[0]}],
+            "paths": {"scanned": list(target), "skipped": []},
+        }
+    ).encode()
+    ref = artifacts.put_bytes(raw, "application/json")
+    _store(profile).save_static_scan_attempt(
+        identity,
+        _request(profile).repository,
+        coverage.fingerprint,
+        "semgrep",
+        key,
+        "BLOCKED",
+        ref,
+        None,
+        "SEMGREP_PARTIAL_SCAN",
+    )
+    slices, _refs, errors = await _run_adaptive_semgrep(fixture)
+    assert errors == []
+    assert len(process.calls) == 1
+    assert process.calls[0][1][process.calls[0][1].index("--timeout") + 1] == "30"
+    assert finish_coverage(coverage, slices).verified_count == 1
+
+
+@pytest.mark.asyncio
+async def test_repeated_json_timeout_stays_a_gap_without_retry_loop(
+    tmp_path: Path,
+) -> None:
+    def always_timeout(
+        targets: tuple[str, ...], _command: tuple[str, ...]
+    ) -> dict[str, object]:
+        return {
+            "results": [],
+            "errors": [{"type": "Timeout", "path": targets[0]}],
+            "paths": {"scanned": list(targets), "skipped": []},
+        }
+
+    process = _AdaptiveSemgrepProcess(always_timeout)
+    fixture = _adaptive_semgrep_fixture(tmp_path, process, count=1)
+    slices, _refs, errors = await _run_adaptive_semgrep(fixture)
+    assert errors == ["SEMGREP_PARTIAL_SCAN"]
+    assert len(process.calls) == 2
+    assert finish_coverage(fixture[4], slices).gaps[0].reason == "scan_timeout"
+    resumed, _refs, resumed_errors = await _run_adaptive_semgrep(fixture)
+    assert resumed_errors == ["SEMGREP_PARTIAL_SCAN"]
+    assert len(process.calls) == 2
+    assert finish_coverage(fixture[4], resumed).gaps[0].reason == "scan_timeout"
+
+
+@pytest.mark.asyncio
 async def test_adaptive_semgrep_cancellation_escapes_split_queue(
     tmp_path: Path,
 ) -> None:
@@ -1191,6 +1288,50 @@ async def test_adaptive_semgrep_cancellation_escapes_split_queue(
     with pytest.raises(asyncio.CancelledError):
         await _run_adaptive_semgrep(fixture)
     assert len(process.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_unplannable_target_returns_explicit_coverage_gap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = _AdaptiveSemgrepProcess()
+    fixture = _adaptive_semgrep_fixture(tmp_path, process, count=1)
+
+    def reject_target(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("SEMGREP_COMMAND_TOO_LONG")
+
+    monkeypatch.setattr(static_module, "plan_semgrep_target_chunks", reject_target)
+    slices, _refs, errors = await _run_adaptive_semgrep(fixture)
+    assert errors == ["SEMGREP_COMMAND_TOO_LONG"]
+    assert finish_coverage(fixture[4], slices).gaps[0].reason == (
+        "SEMGREP_COMMAND_TOO_LONG"
+    )
+    assert process.calls == []
+
+
+@pytest.mark.asyncio
+async def test_unplannable_target_does_not_skip_other_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = _AdaptiveSemgrepProcess()
+    fixture = _adaptive_semgrep_fixture(tmp_path, process, count=2)
+    original_planner = plan_semgrep_target_chunks
+
+    def reject_one(
+        targets: Sequence[str],
+        command_for: Callable[[tuple[str, ...]], Sequence[str]],
+    ) -> tuple[tuple[str, ...], ...]:
+        if "file-001.py" in targets:
+            raise RuntimeError("SEMGREP_COMMAND_TOO_LONG")
+        return original_planner(targets, command_for)
+
+    monkeypatch.setattr(static_module, "plan_semgrep_target_chunks", reject_one)
+    slices, _refs, errors = await _run_adaptive_semgrep(fixture)
+    assert errors == ["SEMGREP_COMMAND_TOO_LONG"]
+    assert tuple(targets for targets, _ in process.calls) == (("file-000.py",),)
+    result = finish_coverage(fixture[4], slices)
+    assert result.verified_count == 1
+    assert {gap.path for gap in result.gaps} == {"file-001.py"}
 
 
 def _coverage_bootstrap(

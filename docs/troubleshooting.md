@@ -96,6 +96,8 @@ sastsimi resume A-001
 
 Semgrep 미설정은 `SEMGREP_TOOL_UNAVAILABLE`, 실행 실패는 `SEMGREP_EXECUTION_FAILED`, 잘못되거나 잘린 JSON은 `SEMGREP_RESULT_INVALID`로 남습니다. 실행 오류는 취약점 반증이 아닙니다. 같은 입력의 결정적 파싱 누락만 있으면 `resume`으로 반복하지 않으며, 규칙·추적 파일·도구 지문이 바뀐 뒤 재개할 수 있습니다.
 
+재검사는 한 번에 최대 128파일과 Windows 명령줄 24,000 UTF-16 단위를 지키며, JSON 결과를 크기 제한이 있는 분석별 임시 파일로 받습니다. 큰 묶음이 실패하면 미검증 파일·규칙만 더 작게 나누고, 한 경로만 너무 길면 그 경로를 미검증으로 기록한 뒤 나머지를 검사합니다. 파일 하나의 프로세스 시간 초과나 JSON `Timeout`은 `--timeout 30`으로 한 번만 다시 검사합니다. `SEMGREP_COMMAND_TOO_LONG`이나 `SEMGREP_RETRY_BUDGET_EXCEEDED`도 검사 완료가 아니라 명시적인 미검증 이유입니다. `sastsimi dashboard`의 정적 검사 항목에서 검증 수와 미검증 상대 경로·규칙·이유의 첫 100개를 확인하세요. 전체 누락은 coverage artifact에 보존되고, 하나라도 남으면 `STATIC_DONE`은 `BLOCKED`입니다. 완료된 묶음과 검증된 부분 결과는 같은 입력·도구 지문에서 `resume`할 때 재사용하지만, 결정적 파싱 오류를 무한 반복하지는 않습니다.
+
 `sastsimi setup`을 다시 실행해 현재 실행 파일을 확인합니다. Full profile의 CodeQL은 Python database를 만들고 제한된 query suite를 실행하므로 첫 분석에 시간이 걸릴 수 있습니다. 같은 저장소와 commit의 성공 결과는 재개 시 재사용합니다.
 
 큰 저장소에서는 `sastsimi status A-001 --format json`의 `current_stage`가
