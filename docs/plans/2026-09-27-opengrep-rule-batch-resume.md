@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, PyYAML 6, SQLite, 기존 CAS artifact 저장소, pytest/pytest-asyncio, OpenGrep 1.30.0.
 
-**Spec:** `docs/superpowers/specs/2026-09-27-opengrep-rule-batch-resume-design.md`
+**Spec:** `docs/plans/2026-09-27-opengrep-rule-batch-resume-design.md`
 
 ## Global Constraints
 
