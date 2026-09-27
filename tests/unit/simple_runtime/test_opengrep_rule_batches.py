@@ -53,6 +53,7 @@ def _artifacts(tmp_path: Path) -> SimpleArtifactRepository:
 
 def test_plan_partitions_every_rule_once() -> None:
     plan = _plan(*(f"rule.{index}" for index in range(7)))
+    assert plan.rule_languages == (("python",),) * 7
 
     assert [len(batch.rule_ids) for batch in plan.batches] == [3, 3, 1]
     assert (
@@ -132,6 +133,28 @@ def test_parse_rejects_wrong_rule_or_error(raw: bytes, error_code: str) -> None:
     batch = _plan("rule.one", "rule.two").batches[0]
     with pytest.raises(ValueError, match=error_code):
         parse_rule_batch(raw, batch)
+
+
+def test_partial_json_can_be_inspected_without_weakening_strict_default() -> None:
+    batch = _plan("rule.one").batches[0]
+    raw = (
+        b'{"results": [], "errors": [{"path": "a.py", '
+        b'"type": "PartialParsing"}], "paths": {"scanned": '
+        b'["a.py"], "skipped": []}}'
+    )
+    assert len(parse_rule_batch(raw, batch, allow_errors=True)["errors"]) == 1
+    with pytest.raises(ValueError, match="OPENGREP_PARTIAL_SCAN"):
+        parse_rule_batch(raw, batch)
+
+
+def test_partial_json_still_rejects_unknown_rule() -> None:
+    batch = _plan("rule.one").batches[0]
+    raw = (
+        b'{"results": [{"check_id": "rule.unknown", '
+        b'"path": "a.py", "start": {"line": 1}}], "errors": []}'
+    )
+    with pytest.raises(ValueError, match="OPENGREP_BATCH_RULE_MISMATCH"):
+        parse_rule_batch(raw, batch, allow_errors=True)
 
 
 def test_round_robin_keeps_later_rule_visible(tmp_path: Path) -> None:

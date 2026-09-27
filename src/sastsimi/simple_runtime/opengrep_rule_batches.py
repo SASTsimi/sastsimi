@@ -67,6 +67,7 @@ class RuleBatch:
 class RuleBatchPlan:
     fingerprint: str
     rule_ids: tuple[str, ...]
+    rule_languages: tuple[tuple[str, ...], ...]
     batches: tuple[RuleBatch, ...]
 
 
@@ -91,6 +92,7 @@ def plan_rule_batches(
     ):
         raise ValueError("OPENGREP_RULE_CATALOG_INVALID")
     ids: list[str] = []
+    languages: list[tuple[str, ...]] = []
     for rule in document["rules"]:
         if not isinstance(rule, dict):
             raise ValueError("OPENGREP_RULE_CATALOG_INVALID")
@@ -102,6 +104,15 @@ def plan_rule_batches(
         ):
             raise ValueError("OPENGREP_RULE_CATALOG_INVALID")
         ids.append(rule_id)
+        raw_languages = rule.get("languages")
+        if (
+            not isinstance(raw_languages, list)
+            or not raw_languages
+            or any(not isinstance(item, str) or not item for item in raw_languages)
+            or len(set(raw_languages)) != len(raw_languages)
+        ):
+            raise ValueError("OPENGREP_RULE_CATALOG_INVALID")
+        languages.append(tuple(raw_languages))
     rule_ids = tuple(ids)
     fingerprint = hashlib.sha256(
         canonical_bytes(
@@ -137,11 +148,14 @@ def plan_rule_batches(
     return RuleBatchPlan(
         fingerprint=fingerprint,
         rule_ids=rule_ids,
+        rule_languages=tuple(languages),
         batches=tuple(batches),
     )
 
 
-def parse_rule_batch(raw: bytes, batch: RuleBatch) -> dict[str, object]:
+def parse_rule_batch(
+    raw: bytes, batch: RuleBatch, *, allow_errors: bool = False
+) -> dict[str, object]:
     """Accept only a complete JSON result whose findings belong to this batch."""
 
     try:
@@ -160,9 +174,10 @@ def parse_rule_batch(raw: bytes, batch: RuleBatch) -> dict[str, object]:
         not isinstance(results, list)
         or not all(isinstance(item, dict) for item in results)
         or not isinstance(errors, list)
+        or not all(isinstance(item, dict) for item in errors)
     ):
         raise ValueError("OPENGREP_RESULT_INVALID")
-    if errors:
+    if errors and not allow_errors:
         raise ValueError("OPENGREP_PARTIAL_SCAN")
     allowed = set(batch.rule_ids)
     for item in results:
