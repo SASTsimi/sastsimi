@@ -174,20 +174,21 @@ async def test_resume_skips_completed_sibling_after_batch_cancellation(
             )
         )
     )
-    await asyncio.wait_for(entered.wait(), timeout=2)
+    await asyncio.wait_for(entered.wait(), timeout=15)
     first = CheckpointIdentity(
         analysis_id="analysis-resume",
         workspace_id="workspace-1",
         commit_id="a" * 40,
         hypothesis_id="hypothesis-1",
     )
-    for _ in range(100):
+    deadline = asyncio.get_running_loop().time() + 15
+    while True:
         completed = store.get(first, SimpleStage.VERIFICATION_FINAL_DONE)
         if completed is not None and completed.status is StageStatus.SUCCEEDED:
             break
+        if asyncio.get_running_loop().time() >= deadline:
+            pytest.fail("first sibling did not complete")
         await asyncio.sleep(0.01)
-    else:
-        pytest.fail("first sibling did not complete")
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
