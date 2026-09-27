@@ -53,6 +53,19 @@ REPAIRABLE_CODES = frozenset(
 )
 MAX_REPAIR_ATTEMPTS = 3
 
+# Every other BLOCKED code is retryable with no bound, so a hypothesis that
+# keeps hitting a wall the model never gets past - the model repairing a
+# script into the very rule it just broke, an environment gap no repair
+# touches - retried forever without the run ever settling.  Comparing only
+# the immediately preceding code lets a hypothesis alternate between two
+# walls (A, B, A, B, ...) forever without either ever counting as a repeat,
+# so what is tracked instead is every code this stage has already hit for
+# this hypothesis: landing back on one of those, in any order, means nothing
+# was actually resolved between attempts.  Only a code this stage has never
+# produced before resets the count - real progress, not a different flavor
+# of the same wall.
+MAX_STALL_REPEATS = 4
+
 
 class RunOutcome(ContractModel):
     current_stage: SimpleStage
@@ -73,7 +86,12 @@ class SimpleRuntimeRunner:
         return await self.resume_hypothesis(identity)
 
     async def resume_hypothesis(self, identity: CheckpointIdentity) -> RunOutcome:
-        self._reset_incomplete_poc_attempt(identity)
+        # Carried in a local rather than a re-saved placeholder row: resetting
+        # POC_CANDIDATE_DONE invalidates every stage from it onward, which
+        # deletes POC_EXECUTION_DONE's own record - and a placeholder written
+        # there survives only until this same call reaches the candidate
+        # stage's own reset, whose invalidation range covers it too.
+        carried_execution_stall = self._reset_incomplete_poc_attempt(identity)
         self._reset_technical_revision(identity)
         for stage in HYPOTHESIS_STAGES:
             final = self.store.get(identity, SimpleStage.VERIFICATION_FINAL_DONE)
@@ -194,6 +212,44 @@ class SimpleRuntimeRunner:
                     exhausted = checkpoint.repair_attempts >= MAX_REPAIR_ATTEMPTS
                     status = StageStatus.FAILED if exhausted else StageStatus.BLOCKED
                     failure = failure.model_copy(update={"retryable": not exhausted})
+                elif status is StageStatus.BLOCKED:
+                    # existing is None here for POC_EXECUTION_DONE on every
+                    # retry of an incomplete pair: the reset that restarts it
+                    # together with POC_CANDIDATE_DONE deletes its record, so
+                    # what it was blocked on last only survives in the value
+                    # carried from `_reset_incomplete_poc_attempt`.
+                    fallback = (
+                        carried_execution_stall
+                        if existing is None and stage is SimpleStage.POC_EXECUTION_DONE
+                        else None
+                    )
+                    seen_codes = (
+                        existing.stall_codes
+                        if existing is not None
+                        else fallback[1]
+                        if fallback is not None
+                        else ()
+                    )
+                    prior_streak = (
+                        existing.stall_streak
+                        if existing is not None
+                        else fallback[0]
+                        if fallback is not None
+                        else 0
+                    )
+                    novel = failure.code not in seen_codes
+                    streak = 1 if novel else prior_streak + 1
+                    checkpoint = checkpoint.model_copy(
+                        update={
+                            "stall_streak": streak,
+                            "stall_codes": (
+                                seen_codes if not novel else (*seen_codes, failure.code)
+                            ),
+                        }
+                    )
+                    if streak >= MAX_STALL_REPEATS:
+                        status = StageStatus.FAILED
+                        failure = failure.model_copy(update={"retryable": False})
                 self.store.mark_failure(checkpoint, failure, status)
                 return RunOutcome(
                     current_stage=stage,
@@ -241,13 +297,24 @@ class SimpleRuntimeRunner:
             status=StageStatus.SUCCEEDED,
         )
 
-    def _reset_incomplete_poc_attempt(self, identity: CheckpointIdentity) -> None:
+    def _reset_incomplete_poc_attempt(
+        self, identity: CheckpointIdentity
+    ) -> tuple[int, tuple[str, ...]]:
+        """Restart an incomplete PoC pair, returning the execution stall it had.
+
+        Its own record cannot carry that value forward: restarting the pair
+        invalidates POC_EXECUTION_DONE along with the candidate it shares an
+        attempt with, and that invalidation is not undone before the resumed
+        run's own stage loop reaches either of them again.
+        """
+
+        no_carry = (0, ())
         candidate = self.store.get(identity, SimpleStage.POC_CANDIDATE_DONE)
         execution = self.store.get(identity, SimpleStage.POC_EXECUTION_DONE)
         if candidate is None:
-            return
+            return no_carry
         if candidate.status is not StageStatus.SUCCEEDED:
-            return
+            return no_carry
         execution_inputs = self.store.input_refs_for(
             identity,
             SimpleStage.POC_EXECUTION_DONE,
@@ -264,10 +331,21 @@ class SimpleRuntimeRunner:
                 candidate.attempt_id,
             )
         )
-        if reusable_execution or (
-            execution is None and not orphaned_execution_activity
+        # A stall-exhausted execution is FAILED with retryable=False - a
+        # verdict this pairing must leave standing, not restart the pair
+        # over.  Without this, the reset ran again on the very next resume,
+        # since nothing else here checks for a final, non-retryable outcome.
+        exhausted = (
+            execution is not None
+            and execution.status is StageStatus.FAILED
+            and not execution.retryable
+        )
+        if (
+            reusable_execution
+            or exhausted
+            or (execution is None and not orphaned_execution_activity)
         ):
-            return
+            return no_carry
 
         activity_refs = tuple(
             ref
@@ -311,6 +389,11 @@ class SimpleRuntimeRunner:
                 image_digest=candidate.image_digest,
                 container_id=candidate.container_id,
             )
+        )
+        return (
+            (execution.stall_streak, execution.stall_codes)
+            if execution is not None
+            else no_carry
         )
 
     def _reset_technical_revision(self, identity: CheckpointIdentity) -> None:

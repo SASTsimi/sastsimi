@@ -20,6 +20,7 @@ from sastsimi.simple_runtime.models import (
 from sastsimi.simple_runtime.poc import PoCCandidateRejected, validate_candidate
 from sastsimi.simple_runtime.runner import (
     MAX_REPAIR_ATTEMPTS,
+    MAX_STALL_REPEATS,
     SimpleRuntimeRunner,
     StageBlocked,
     StageFailed,
@@ -247,6 +248,157 @@ async def test_a_retryable_block_hands_its_evidence_to_the_next_attempt(
     await SimpleRuntimeRunner(store, handlers).resume_analysis(_identity())
 
     assert seen == [(_ref("rejected-rules"),)]
+
+
+def _blocked_poc_candidate(
+    calls: list[SimpleStage], codes: list[str]
+) -> dict[SimpleStage, object]:
+    handlers = _recording_handlers(calls)
+    index = [0]
+
+    async def poc_candidate(checkpoint: StageCheckpoint, _prior: object) -> StageResult:
+        calls.append(SimpleStage.POC_CANDIDATE_DONE)
+        code = codes[min(index[0], len(codes) - 1)]
+        index[0] += 1
+        raise StageBlocked(
+            StageFailure(code=code, retryable=True, safe_message="blocked")
+        )
+
+    handlers[SimpleStage.POC_CANDIDATE_DONE] = poc_candidate
+    return handlers
+
+
+@pytest.mark.asyncio
+async def test_a_repeating_block_gets_bounded_resumes_then_is_final(
+    tmp_path,
+) -> None:
+    # Observed on healthchecks: one hypothesis hit POC_HOST_PATH_FORBIDDEN on
+    # every resume for four passes straight, at real cost each time.
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.VERIFICATION_INITIAL_DONE)
+    calls: list[SimpleStage] = []
+    runner = SimpleRuntimeRunner(
+        store, _blocked_poc_candidate(calls, ["POC_HOST_PATH_FORBIDDEN"])
+    )
+
+    outcomes = [
+        (await runner.resume_analysis(_identity())).status
+        for _ in range(MAX_STALL_REPEATS + 1)
+    ]
+
+    assert outcomes == [StageStatus.BLOCKED] * (MAX_STALL_REPEATS - 1) + [
+        StageStatus.FAILED,
+        StageStatus.FAILED,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_block_that_keeps_finding_a_new_reason_is_never_exhausted(
+    tmp_path,
+) -> None:
+    # A hypothesis blocked for a reason this stage has never hit before is
+    # still finding new ground every time, so it never counts against the
+    # bound - unlike landing back on a wall it already hit (see below).
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.VERIFICATION_INITIAL_DONE)
+    calls: list[SimpleStage] = []
+    codes = [f"POC_NOVEL_REASON_{i}" for i in range(MAX_STALL_REPEATS + 1)]
+    runner = SimpleRuntimeRunner(store, _blocked_poc_candidate(calls, codes))
+
+    outcomes = [
+        (await runner.resume_analysis(_identity())).status
+        for _ in range(MAX_STALL_REPEATS + 1)
+    ]
+
+    assert outcomes == [StageStatus.BLOCKED] * (MAX_STALL_REPEATS + 1)
+
+
+@pytest.mark.asyncio
+async def test_a_block_that_cycles_between_two_old_walls_is_still_bounded(
+    tmp_path,
+) -> None:
+    # Comparing only the immediately preceding code would let A, B, A, B, ...
+    # retry forever, since each one differs from the one right before it.
+    # Landing back on either wall - in any order - still counts.
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.VERIFICATION_INITIAL_DONE)
+    calls: list[SimpleStage] = []
+    codes = ["POC_HOST_PATH_FORBIDDEN", "POC_UNDECLARED_INPUT"] * (
+        MAX_STALL_REPEATS + 1
+    )
+    runner = SimpleRuntimeRunner(store, _blocked_poc_candidate(calls, codes))
+
+    outcomes = [
+        (await runner.resume_analysis(_identity())).status
+        for _ in range(MAX_STALL_REPEATS + 1)
+    ]
+
+    assert outcomes.count(StageStatus.FAILED) > 0
+    assert outcomes[-1] is StageStatus.FAILED
+
+
+def _stuck_poc_execution(
+    calls: list[SimpleStage], code: str
+) -> dict[SimpleStage, object]:
+    handlers = _recording_handlers(calls)
+
+    async def execution(checkpoint: StageCheckpoint, _prior: object) -> StageResult:
+        calls.append(SimpleStage.POC_EXECUTION_DONE)
+        raise StageBlocked(
+            StageFailure(code=code, retryable=True, safe_message="stuck")
+        )
+
+    handlers[SimpleStage.POC_EXECUTION_DONE] = execution
+    return handlers
+
+
+@pytest.mark.asyncio
+async def test_a_poc_execution_stall_survives_the_candidate_pair_reset(
+    tmp_path,
+) -> None:
+    # Observed on saleor: POC_CANDIDATE_DONE succeeding while POC_EXECUTION_DONE
+    # stays BLOCKED makes every resume reset the pair together
+    # (_reset_incomplete_poc_attempt), which erased the execution stage's own
+    # checkpoint - and with it, the stall history - before the bound ever saw it.
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.VERIFICATION_INITIAL_DONE)
+    calls: list[SimpleStage] = []
+    runner = SimpleRuntimeRunner(
+        store, _stuck_poc_execution(calls, "POC_EXECUTION_FAILED")
+    )
+
+    outcomes = [
+        (await runner.resume_analysis(_identity())).status
+        for _ in range(MAX_STALL_REPEATS + 1)
+    ]
+
+    assert outcomes == [StageStatus.BLOCKED] * (MAX_STALL_REPEATS - 1) + [
+        StageStatus.FAILED,
+        StageStatus.FAILED,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_exhausted_poc_execution_is_not_reset_back_to_pending(
+    tmp_path,
+) -> None:
+    # A second bug the same fixture exposed: the pair-reset only checked
+    # whether the execution was reusable, not whether it had already been
+    # declared final, so it kept restarting an exhausted pair forever.
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.VERIFICATION_INITIAL_DONE)
+    calls: list[SimpleStage] = []
+    runner = SimpleRuntimeRunner(
+        store, _stuck_poc_execution(calls, "POC_EXECUTION_FAILED")
+    )
+    for _ in range(MAX_STALL_REPEATS):
+        await runner.resume_analysis(_identity())
+    calls_before_extra_resume = list(calls)
+
+    outcome = await runner.resume_analysis(_identity())
+
+    assert outcome.status is StageStatus.FAILED
+    assert calls == calls_before_extra_resume
 
 
 def _failing_report(calls: list[SimpleStage], code: str) -> dict[SimpleStage, object]:

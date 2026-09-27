@@ -106,6 +106,8 @@ class StageCheckpoint(ContractModel):
     markdown_path: str | None = None
     retry_evidence_refs: tuple[StoredDataRef, ...] = ()
     repair_attempts: int = 0
+    stall_streak: int = 0
+    stall_codes: tuple[str, ...] = ()
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @model_validator(mode="after")
