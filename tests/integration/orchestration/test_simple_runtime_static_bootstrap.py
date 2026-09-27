@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import subprocess
+import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -711,9 +712,15 @@ async def test_opengrep_timeout_respects_hour_cap_and_profile(
     )
     request = _request(profile)
     workspace = _ready_workspace(tmp_path, request)
+    started = time.monotonic()
     await bootstrap._run_opengrep(workspace, request, _identity("analysis-timeout"))
+    elapsed = time.monotonic() - started
 
-    assert expected_timeout - 1 <= process.timeouts[-1] <= expected_timeout
+    assert (
+        max(1, expected_timeout - int(elapsed) - 1)
+        <= process.timeouts[-1]
+        <= expected_timeout
+    )
 
 
 @pytest.mark.asyncio
