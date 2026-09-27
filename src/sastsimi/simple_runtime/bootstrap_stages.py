@@ -902,7 +902,7 @@ class DirectStaticBootstrap:
             reused = False
             prior_partial: CoverageSlice | None = None
             prior_partial_ref: StoredDataRef | None = None
-            safe_partials: list[tuple[CoverageSlice, StoredDataRef]] = []
+            validated_partials: list[tuple[CoverageSlice, StoredDataRef]] = []
             for ref in cached_refs:
                 try:
                     raw = artifacts.read(ref)
@@ -931,31 +931,32 @@ class DirectStaticBootstrap:
                     )
                     reused = True
                     break
-                safe_partial = (
-                    self._reusable_parse_warning(slice_, expected, allow_unscanned=True)
-                    if parsed.get("errors")
-                    else not slice_.gap_reasons
-                )
-                if safe_partial:
-                    safe_partials.append((replace(slice_, raw_ref=ref), ref))
-                elif prior_partial is None:
-                    prior_partial = replace(slice_, raw_ref=ref)
-                    prior_partial_ref = ref
+                validated_partials.append((replace(slice_, raw_ref=ref), ref))
             if reused:
                 continue
-            if safe_partials:
+            cached_verified: frozenset[tuple[str, str]] = frozenset()
+            if validated_partials:
                 self._require_opengrep_tool(binding)
                 cached_verified = frozenset().union(
-                    *(item.verified_pairs for item, _ref in safe_partials)
+                    *(item.verified_pairs for item, _ref in validated_partials)
                 )
                 remaining_pairs = expected - cached_verified
                 parser_pairs = {
                     (path, rule_id)
-                    for item, _ref in safe_partials
+                    for item, _ref in validated_partials
+                    if self._reusable_parse_warning(
+                        item, expected, allow_unscanned=True
+                    )
                     for path, rule_id, reason in item.gap_reasons
                     if reason == "parse_or_scan_error"
                 }
-                for item, ref in safe_partials:
+                retryable_error_pairs = {
+                    (path, rule_id)
+                    for item, _ref in validated_partials
+                    for path, rule_id, reason in item.gap_reasons
+                    if reason not in {"parse_or_scan_error", "not_scanned"}
+                }
+                for item, ref in validated_partials:
                     slices.append(item)
                     refs.append(ref)
                     self._store.save_opengrep_partial_proof(
@@ -965,11 +966,14 @@ class DirectStaticBootstrap:
                         batch.key,
                         ref,
                     )
-                prior_partial, prior_partial_ref = safe_partials[0]
+                prior_partial, prior_partial_ref = validated_partials[0]
                 if (
                     not remaining_pairs
                     or self._profile.semgrep_fallback
-                    or remaining_pairs <= parser_pairs
+                    or (
+                        remaining_pairs <= parser_pairs
+                        and not remaining_pairs & retryable_error_pairs
+                    )
                 ):
                     if remaining_pairs:
                         errors.append("OPENGREP_PARTIAL_SCAN")
@@ -1079,8 +1083,7 @@ class DirectStaticBootstrap:
                 slice_ = assess_scan(coverage_plan, batch, raw, engine="opengrep")
                 slices.append(replace(slice_, raw_ref=raw_ref))
                 retained_previous = bool(
-                    prior_partial is not None
-                    and not prior_partial.verified_pairs.issubset(slice_.verified_pairs)
+                    not cached_verified.issubset(slice_.verified_pairs)
                 )
                 if retained_previous:
                     assert prior_partial is not None
@@ -1095,14 +1098,7 @@ class DirectStaticBootstrap:
                         batch.key,
                         raw_ref,
                     )
-                complete = expected.issubset(
-                    slice_.verified_pairs
-                    | (
-                        prior_partial.verified_pairs
-                        if retained_previous and prior_partial is not None
-                        else frozenset()
-                    )
-                )
+                complete = expected.issubset(slice_.verified_pairs | cached_verified)
                 persisted_complete = complete and not retained_previous
                 scan_code: str | None = (
                     None if persisted_complete else "OPENGREP_PARTIAL_SCAN"

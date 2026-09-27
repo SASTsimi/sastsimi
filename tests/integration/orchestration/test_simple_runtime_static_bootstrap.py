@@ -1921,6 +1921,116 @@ async def test_opengrep_partial_retry_preserves_previous_verified_pairs(
     assert resumed_coverage["verified_count"] == 2
 
 
+@pytest.mark.asyncio
+async def test_opengrep_resume_unions_timeout_and_clean_partial_proofs(
+    tmp_path: Path,
+) -> None:
+    class TimeoutThenComplementary(_CoverageProcess):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--output" in argv:
+                self.opengrep_calls += 1
+                output = Path(argv[argv.index("--output") + 1])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                first = self.opengrep_calls == 1
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [],
+                            "errors": (
+                                [{"type": "Timeout", "path": "app.py"}] if first else []
+                            ),
+                            "paths": {
+                                "scanned": (
+                                    ["app.py", "good.py"] if first else ["app.py"]
+                                ),
+                                "skipped": [],
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = TimeoutThenComplementary()
+    bootstrap, profile, _store = _coverage_bootstrap(tmp_path, process, codeql=False)
+    identity = _identity("timeout-then-complementary")
+    request = _request(profile)
+    with pytest.raises(StaticCoverageBlocked):
+        await bootstrap.run(request, identity)
+    second = await bootstrap.run(request, identity)
+    second_bundle = _coverage_from_ref(profile, identity, second.static_bundle_ref)
+    second_coverage = _coverage_from_ref(
+        profile,
+        identity,
+        StoredDataRef.model_validate(second_bundle["static_coverage_ref"]),
+    )
+    assert second_coverage["verified_count"] == 2
+    assert len(second_bundle["engine_raw_refs"]) == 2
+    resumed = await bootstrap.run(request, identity)
+    resumed_bundle = _coverage_from_ref(profile, identity, resumed.static_bundle_ref)
+    resumed_coverage = _coverage_from_ref(
+        profile,
+        identity,
+        StoredDataRef.model_validate(resumed_bundle["static_coverage_ref"]),
+    )
+    assert process.opengrep_calls == 2
+    assert resumed_coverage["verified_count"] == 2
+    assert len(resumed_bundle["engine_raw_refs"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_unknown_located_opengrep_error_is_retried_on_resume(
+    tmp_path: Path,
+) -> None:
+    class UnknownErrorThenSuccess(_CoverageProcess):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--output" in argv:
+                self.opengrep_calls += 1
+                output = Path(argv[argv.index("--output") + 1])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [],
+                            "errors": (
+                                [{"type": "OutOfMemory", "path": "app.py"}]
+                                if self.opengrep_calls == 1
+                                else []
+                            ),
+                            "paths": {
+                                "scanned": ["app.py", "good.py"],
+                                "skipped": [],
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = UnknownErrorThenSuccess()
+    bootstrap, profile, _store = _coverage_bootstrap(tmp_path, process, codeql=False)
+    identity = _identity("unknown-located-error")
+    request = _request(profile)
+    with pytest.raises(StaticCoverageBlocked):
+        await bootstrap.run(request, identity)
+    await bootstrap.run(request, identity)
+    assert process.opengrep_calls == 2
+
+
 def test_reusable_parse_warning_rejects_nonstring_type_without_crashing() -> None:
     slice_ = CoverageSlice(
         engine="opengrep",
