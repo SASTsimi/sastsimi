@@ -161,10 +161,12 @@ def test_unverified_metadata_cannot_be_filled_by_reporter_prose() -> None:
         ("en", "impact", "CVSS 3.1 score: 9.8."),
         ("en", "summary", "Severity is Critical."),
         ("en", "details", "Versions before 1.2.3 are affected."),
+        ("en", "details", "Affected version 1.2.3."),
         ("en", "recommendation", "This was fixed in v1.2.4."),
         ("en", "summary", "This is safe to publish."),
         ("ko", "impact", "CVSS 점수는 9.8입니다."),
         ("ko", "details", "1.2.3 이전 버전이 영향을 받습니다."),
+        ("ko", "details", "영향받는 버전 1.2.3."),
         ("ko", "summary", "공개 제보가 가능합니다."),
     ],
 )

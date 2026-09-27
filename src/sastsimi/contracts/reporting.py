@@ -38,7 +38,13 @@ _UNSUPPORTED_ADVISORY_CLAIMS = (
         r"(?:severity|risk|vulnerability)\b",
         re.IGNORECASE,
     ),
-    re.compile(r"\bv?\d+(?:\.\d+){1,3}\b", re.IGNORECASE),
+    re.compile(r"(?<![\w./:-])v\d+(?:\.\d+){1,3}\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:versions?|releases?)\s*(?:(?:is|are|:|=)\s*)?"
+        r"\d+(?:\.\d+){1,3}\b"
+        r"|버전\s*(?:(?:은|는|:|=)\s*)?\d+(?:\.\d+){1,3}\b",
+        re.IGNORECASE,
+    ),
     re.compile(
         r"\b(?:all|every|latest|current)\s+(?:versions?|releases?)\b",
         re.IGNORECASE,

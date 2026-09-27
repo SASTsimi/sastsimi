@@ -185,3 +185,19 @@ def test_report_v2_keeps_uncertain_disclosure_wording() -> None:
 
     assert isinstance(content, BilingualReportContent)
     assert content.ko.review_items == ("공개 가능 여부는 확인되지 않았습니다.",)
+
+
+def test_report_v2_allows_local_poc_endpoint_in_both_languages() -> None:
+    value = _bilingual_report()
+    en = value["en"]
+    ko = value["ko"]
+    assert isinstance(en, dict)
+    assert isinstance(ko, dict)
+    en["details"] = "Run the PoC against http://127.0.0.1:8000/."
+    ko["details"] = "PoC 대상은 http://127.0.0.1:8000/입니다."
+
+    content = parse_validated_report_content(
+        canonical_bytes(value), allowed_locations=(_report_location(),)
+    )
+
+    assert isinstance(content, BilingualReportContent)
