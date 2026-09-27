@@ -92,6 +92,28 @@ async def test_fallback_only_receives_failed_paths_and_rules(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_fallback_accepts_nested_and_absolute_targets(tmp_path: Path) -> None:
+    workspace, rules, binding = _fixture(tmp_path)
+    nested = workspace / "module" / "source.ts"
+    nested.parent.mkdir()
+    nested.write_text("foo()", encoding="utf-8")
+    process = _Process(_Result())
+
+    await run_semgrep_fallback(
+        process,
+        binding,
+        workspace,
+        rules,
+        ["module/source.ts", str(nested.resolve())],
+        [],
+        23,
+    )
+
+    argv, _, _ = process.calls[0]
+    assert argv.count("module/source.ts") == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "kind,code",
     [

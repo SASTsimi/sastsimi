@@ -41,7 +41,7 @@ def _verified_target(workspace: Path, raw: str) -> str:
     if not raw or "\x00" in raw:
         raise RuntimeError("SEMGREP_RESULT_INVALID")
     root = workspace.resolve()
-    supplied = Path(raw.replace("/", "\\"))
+    supplied = Path(raw)
     candidate = supplied if supplied.is_absolute() else root / supplied
     try:
         if candidate.is_symlink():
