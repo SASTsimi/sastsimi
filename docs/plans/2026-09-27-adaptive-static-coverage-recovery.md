@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, pytest/pytest-asyncio, SQLite checkpoint store, Windows PowerShell, locally bound OpenGrep/Semgrep CE.
 
-**Spec:** `docs/superpowers/specs/2026-09-27-adaptive-static-coverage-recovery-design.md`
+**Spec:** `docs/plans/2026-09-27-adaptive-static-coverage-recovery-design.md`
 
 ## Global Constraints
 
