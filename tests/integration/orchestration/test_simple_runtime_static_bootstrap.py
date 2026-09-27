@@ -1460,6 +1460,39 @@ def _enable_semgrep_fallback(profile: SimpleExecutionProfile) -> SimpleExecution
     )
 
 
+@pytest.mark.asyncio
+async def test_semgrep_opt_in_caps_each_opengrep_batch_before_fallback(
+    tmp_path: Path,
+) -> None:
+    class SlowOpenGrep(_CoverageProcess):
+        def __init__(self) -> None:
+            super().__init__()
+            self.opengrep_timeouts: list[int] = []
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--metrics=off" not in argv:
+                self.opengrep_calls += 1
+                self.opengrep_timeouts.append(timeout_seconds)
+                raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = SlowOpenGrep()
+    bootstrap, profile, _store = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    with pytest.raises(StaticCoverageBlocked):
+        await bootstrap.run(_request(profile), _identity("bounded-opengrep"))
+    assert process.opengrep_timeouts
+    assert all(0 < seconds <= 120 for seconds in process.opengrep_timeouts)
+    assert process.fallback_calls
+
+
 async def _seed_old_partial(
     tmp_path: Path, process: _CoverageProcess, analysis_id: str
 ) -> tuple[

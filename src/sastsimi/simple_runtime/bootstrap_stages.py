@@ -59,6 +59,7 @@ _MAX_TRACKED_FILES = 200_000
 _MAX_SOURCE_BYTES = 2 * 1024 * 1024
 _MAX_FACTS = 10_000
 _MAX_POLICY_BYTES = 256 * 1024
+_OPENGREP_FALLBACK_BATCH_TIMEOUT_SECONDS = 120
 _SEMGREP_NODE_TIMEOUT_SECONDS = 120
 _WORKSPACE_INTEGRITY_ERRORS = frozenset(
     {
@@ -1045,7 +1046,13 @@ class DirectStaticBootstrap:
                 output.unlink(missing_ok=True)
                 self._require_opengrep_tool(binding)
                 result = await self._process.run(
-                    argv, cwd=workspace, timeout_seconds=remaining
+                    argv,
+                    cwd=workspace,
+                    timeout_seconds=(
+                        min(remaining, _OPENGREP_FALLBACK_BATCH_TIMEOUT_SECONDS)
+                        if self._profile.semgrep_fallback
+                        else remaining
+                    ),
                 )
                 self._require_opengrep_tool(binding)
                 if output.is_file():

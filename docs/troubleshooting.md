@@ -82,6 +82,8 @@ codex login
 
 ## OpenGrep 또는 CodeQL 실패
 
+같은 저장소와 commit을 서로 다른 분석 ID에서 동시에 시작하면 현재 공유 CodeQL 데이터베이스 생성이 충돌할 수 있습니다. 해당 조합의 분석은 하나씩 실행하고, `CODEQL_DATABASE_CREATE_FAILED`나 `CODEQL_ANALYZE_FAILED`가 발생하면 다른 실행이 종료된 뒤 실패한 분석을 재개하세요. 이 제한은 정적 검사 누락을 성공으로 바꾸지 않습니다.
+
 OpenGrep의 `PartialParsing`·구문 오류는 `paths.scanned`에 파일이 보여도 파일·규칙별 검사 완료가 아닙니다. 이때 AST와 설정된 CodeQL 결과는 계속 저장합니다. 대시보드의 정적 검사 항목에서 검증 수, 미검증 상대 경로·규칙·이유를 확인하세요. 범위 밖 언어는 별도 표시하며 Python-only CodeQL을 OpenGrep 규칙의 대체 증거로 세지 않습니다. 누락이 남으면 `COMPLETE`로 바꾸지 않고 `BLOCKED`를 유지합니다.
 
 선택형 Semgrep CE를 쓰려면 Windows PowerShell의 `.venv`에서 각 줄을 한 줄 명령으로 실행합니다. `setup`을 다시 실행할 때 기존 제한·모델 옵션도 필요하면 함께 지정하세요. 분석 중에는 Semgrep을 자동 설치하거나 원격 규칙을 받지 않습니다.
@@ -94,9 +96,11 @@ sastsimi setup --non-interactive --auth subscription --provider codex --model gp
 sastsimi resume A-001
 ```
 
-Semgrep 미설정은 `SEMGREP_TOOL_UNAVAILABLE`, 실행 실패는 `SEMGREP_EXECUTION_FAILED`, 잘못되거나 잘린 JSON은 `SEMGREP_RESULT_INVALID`로 남습니다. 실행 오류는 취약점 반증이 아닙니다. 같은 입력에서 위치가 확인된 결정적 파싱 경고 외 누락이 없으면 `resume`으로 OpenGrep을 반복하지 않으며, 규칙·추적 파일·도구 지문이 바뀐 뒤 다시 검사할 수 있습니다. 파싱 경고와 미검사 파일이 함께 있을 때는 Semgrep fallback을 켠 경우에만 검증된 부분 결과를 재사용해 미검증 조합을 Semgrep에 넘깁니다. fallback이 꺼져 있거나 위치 불명·건너뛴 파일·규칙 등 다른 오류가 있으면 OpenGrep 재시도 대상입니다.
+Semgrep 미설정은 `SEMGREP_TOOL_UNAVAILABLE`, 실행 실패는 `SEMGREP_EXECUTION_FAILED`, 잘못되거나 잘린 JSON은 `SEMGREP_RESULT_INVALID`로 남습니다. 실행 오류는 취약점 반증이 아닙니다. 같은 입력에서 위치가 확인된 결정적 파싱 경고 외 누락이 없으면 `resume`으로 OpenGrep을 반복하지 않으며, 규칙·추적 파일·도구 지문이 바뀐 뒤 다시 검사할 수 있습니다. Semgrep fallback을 켠 경우에는 OpenGrep의 검증된 부분 결과만 재사용하고 파싱 경고·미검사·시간 초과 등 모든 미검증 파일·규칙 조합을 Semgrep에 넘깁니다. Semgrep도 해당 조합을 검증하지 못하면 `BLOCKED`입니다. fallback이 꺼져 있고 결정적 파싱 경고 외 누락이 있으면 OpenGrep 재시도 대상입니다.
 
-재검사는 한 번에 최대 128파일과 Windows 명령줄 24,000 UTF-16 단위를 지키며, JSON 결과를 크기 제한이 있는 분석별 임시 파일로 받습니다. 한 묶음의 실행은 최대 120초로 제한하며 느리거나 실패한 묶음의 미검증 파일·규칙만 더 작게 나눕니다. 한 경로만 너무 길면 그 경로를 미검증으로 기록한 뒤 나머지를 검사합니다. 파일 하나의 프로세스 시간 초과나 JSON `Timeout`은 `--timeout 30`으로 한 번만 다시 검사합니다. `SEMGREP_COMMAND_TOO_LONG`이나 `SEMGREP_RETRY_BUDGET_EXCEEDED`도 검사 완료가 아니라 명시적인 미검증 이유입니다. `sastsimi dashboard`의 정적 검사 항목에서 검증 수와 미검증 상대 경로·규칙·이유의 첫 100개를 확인하세요. 전체 누락은 coverage artifact에 보존되고, 하나라도 남으면 `STATIC_DONE`은 `BLOCKED`입니다. 완료된 묶음과 검증된 부분 결과는 같은 입력·도구 지문에서 `resume`할 때 재사용하지만, 결정적 파싱 오류를 무한 반복하지는 않습니다.
+결정적 파싱 오류로 `retryable=false`가 된 분석은 검사 구현 코드만 교체해도 동일한 입력·규칙·도구 지문에서 자동 재실행되지 않습니다. 그런 수정의 효과를 확인하려면 새 분석 ID로 다시 시작하세요. 이 제한은 아직 해결되지 않은 범위를 `COMPLETE`로 표시하지 않기 위한 것입니다.
+
+Semgrep fallback을 켠 경우 OpenGrep 규칙 묶음의 각 실행은 최대 120초이며, 시간 초과된 파일·규칙은 완료로 세지 않고 Semgrep에 넘깁니다. Semgrep 재검사는 한 번에 최대 128파일과 Windows 명령줄 24,000 UTF-16 단위를 지키며, JSON 결과를 크기 제한이 있는 분석별 임시 파일로 받습니다. Semgrep 한 묶음의 실행도 최대 120초로 제한하며 느리거나 실패한 묶음의 미검증 파일·규칙만 더 작게 나눕니다. 한 경로만 너무 길면 그 경로를 미검증으로 기록한 뒤 나머지를 검사합니다. 파일 하나의 프로세스 시간 초과나 JSON `Timeout`은 `--timeout 30`으로 한 번만 다시 검사합니다. `SEMGREP_COMMAND_TOO_LONG`이나 `SEMGREP_RETRY_BUDGET_EXCEEDED`도 검사 완료가 아니라 명시적인 미검증 이유입니다. `sastsimi dashboard`의 정적 검사 항목에서 검증 수와 미검증 상대 경로·규칙·이유의 첫 100개를 확인하세요. 전체 누락은 coverage artifact에 보존되고, 하나라도 남으면 `STATIC_DONE`은 `BLOCKED`입니다. 완료된 묶음과 검증된 부분 결과는 같은 입력·도구 지문에서 `resume`할 때 재사용하지만, 결정적 파싱 오류를 무한 반복하지는 않습니다.
 
 `sastsimi setup`을 다시 실행해 현재 실행 파일을 확인합니다. Full profile의 CodeQL은 Python database를 만들고 제한된 query suite를 실행하므로 첫 분석에 시간이 걸릴 수 있습니다. 같은 저장소와 commit의 성공 결과는 재개 시 재사용합니다.
 
