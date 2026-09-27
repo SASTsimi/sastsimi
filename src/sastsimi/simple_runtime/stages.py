@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, NoReturn, Protocol, cast
+from typing import Any, ClassVar, Literal, NoReturn, Protocol, cast
 
 from pydantic import JsonValue
 
@@ -34,6 +34,7 @@ from .models import (
     StageCheckpoint,
     StageFailure,
     StageResult,
+    StageStatus,
 )
 from .poc import PoCCandidateRejected, validate_candidate
 from .provider import SimpleLLMCallResult, SimpleLLMClient, conversation_with
@@ -1391,19 +1392,30 @@ class ReporterStage:
         client: SimpleLLMClient,
         artifacts: SimpleArtifactRepository,
         call_timeout_ms: int = _LOCAL_TIMEOUT_MS,
+        # The repository URL the run was given, recorded once by the store at
+        # analysis creation; without it the submission report's "Product"
+        # field has nothing to name.
+        repository: str | None = None,
     ) -> None:
         self._artifacts = artifacts
+        self._repository = repository
         self._stage = _StructuredStage(
             client=client,
             call_timeout_ms=call_timeout_ms,
             artifacts=artifacts,
             instructions="""
-You are the Reporter Agent. Write every field in Korean using only supplied
-exact Finding, verification, CWE, validated PoC, and Gate results. Do not
-create new facts. Preserve limitations and uncertainty. Return a concise
-title, summary, technical details, security impact, limitations, and items a
-human must review. The Korean technical details must explain why the final
-verification verdict follows from the supplied Pro, Con, and PoC evidence.
+You are the Reporter Agent. You write two versions of the same finding from
+only the supplied exact Finding, verification, CWE, validated PoC, and Gate
+results - never a new fact. The Korean fields are the internal review record a
+human here reads to decide what happens next; the English `_en` fields are the
+clean, standalone text a maintainer who has never seen this pipeline would
+read in a vulnerability report. Never carry pipeline jargon - stage names,
+verdict labels, agent names - into either version; write what a reader outside
+this project needs, not what this system called it internally. Preserve
+limitations and uncertainty in both. The technical details must explain why
+the final verification verdict follows from the supplied Pro, Con, and PoC
+evidence. `review_items` is Korean-only - it is for the human here, not the
+maintainer.
 """,
             schema=_object_schema(
                 {
@@ -1413,6 +1425,11 @@ verification verdict follows from the supplied Pro, Con, and PoC evidence.
                     "impact": _string(),
                     "limitations": _string_array(),
                     "review_items": _string_array(),
+                    "title_en": _string(),
+                    "summary_en": _string(),
+                    "details_en": _string(),
+                    "impact_en": _string(),
+                    "limitations_en": _string_array(),
                 },
                 [
                     "title",
@@ -1421,6 +1438,11 @@ verification verdict follows from the supplied Pro, Con, and PoC evidence.
                     "impact",
                     "limitations",
                     "review_items",
+                    "title_en",
+                    "summary_en",
+                    "details_en",
+                    "impact_en",
+                    "limitations_en",
                 ],
             ),
             kind="simple_report_draft",
@@ -1445,18 +1467,22 @@ verification verdict follows from the supplied Pro, Con, and PoC evidence.
             raise ValueError("REPORT_VALIDATED_POC_MISSING")
         result, draft_ref = await self._stage.call(checkpoint, _prior_refs(prior))
         rendered = self._render(result.value, checkpoint, prior, finding.output_refs[0])
-        inspected = redact_projected_json(
-            canonical_bytes({"markdown": rendered.decode("utf-8")})
+        submission = self._render_submission(
+            result.value, checkpoint, prior, finding.output_refs[0]
         )
-        if inspected.categories:
-            raise StageFailed(
-                StageFailure(
-                    code="REPORT_SENSITIVE_CONTENT",
-                    retryable=False,
-                    safe_message="Report contains sensitive content",
-                    evidence_refs=(draft_ref,),
-                )
+        for candidate in (rendered, submission):
+            inspected = redact_projected_json(
+                canonical_bytes({"markdown": candidate.decode("utf-8")})
             )
+            if inspected.categories:
+                raise StageFailed(
+                    StageFailure(
+                        code="REPORT_SENSITIVE_CONTENT",
+                        retryable=False,
+                        safe_message="Report contains sensitive content",
+                        evidence_refs=(draft_ref,),
+                    )
+                )
         report_dir = self._artifacts.paths.reports / checkpoint.identity.analysis_id
         report_dir.mkdir(parents=True, exist_ok=True)
         display_id = FindingDisplayIdStore(
@@ -1466,9 +1492,14 @@ verification verdict follows from the supplied Pro, Con, and PoC evidence.
         temporary = report_path.with_suffix(".md.next")
         temporary.write_bytes(rendered)
         os.replace(temporary, report_path)
+        submission_path = report_dir / f"{display_id}.submission.md"
+        submission_temporary = submission_path.with_suffix(".submission.md.next")
+        submission_temporary.write_bytes(submission)
+        os.replace(submission_temporary, submission_path)
         markdown_ref = self._artifacts.put_bytes(rendered, "text/markdown")
+        submission_ref = self._artifacts.put_bytes(submission, "text/markdown")
         return StageResult(
-            output_refs=(draft_ref, markdown_ref),
+            output_refs=(draft_ref, markdown_ref, submission_ref),
             report_ref=draft_ref,
             validated_poc_ref=finding.validated_poc_ref,
             verdict="TRUE",
@@ -1478,8 +1509,11 @@ verification verdict follows from the supplied Pro, Con, and PoC evidence.
                     checkpoint,
                     ActivityKind.DECISION_RECORDED,
                     offset=10,
-                    summary_ko="검증된 근거로 한국어 Markdown 보고서를 생성했습니다.",
-                    output_refs=(draft_ref, markdown_ref),
+                    summary_ko=(
+                        "검증된 근거로 한국어 검토용 보고서와 영문 제보용 보고서를 "
+                        "생성했습니다."
+                    ),
+                    output_refs=(draft_ref, markdown_ref, submission_ref),
                     llm=result,
                 ),
             ),
@@ -1563,6 +1597,168 @@ verification verdict follows from the supplied Pro, Con, and PoC evidence.
             "",
             "사람이 추가로 확인할 내용:",
             *[f"- {item}" for item in cast(list[str], value["review_items"])],
+            "",
+            "### Audit Trail",
+            "",
+            f"- Commit: `{checkpoint.identity.commit_id}`",
+            f"- Attempt: `{checkpoint.attempt_id}`",
+            *self._audit_trail(prior),
+            "",
+        ]
+        return "\n".join(lines).encode("utf-8")
+
+    _AUDIT_STAGES: ClassVar[tuple[tuple[str, SimpleStage], ...]] = (
+        ("Pro/Con", SimpleStage.PRO_CON_DONE),
+        ("Verification(초기)", SimpleStage.VERIFICATION_INITIAL_DONE),
+        ("PoC 후보", SimpleStage.POC_CANDIDATE_DONE),
+        ("PoC 실행", SimpleStage.POC_EXECUTION_DONE),
+        ("Verification(최종)", SimpleStage.VERIFICATION_FINAL_DONE),
+        ("CWE", SimpleStage.CWE_DONE),
+        ("Technical Gate", SimpleStage.TECH_GATE_DONE),
+        ("Rule Scope Gate", SimpleStage.SCOPE_GATE_DONE),
+        ("Primitive Admission", SimpleStage.PRIMITIVE_ADMISSION_DONE),
+        ("Chaining", SimpleStage.CHAINING_DONE),
+    )
+
+    def _audit_trail(self, prior: Mapping[SimpleStage, StageCheckpoint]) -> list[str]:
+        """List every stage this report rests on by its exact record.
+
+        A reviewer who wants to independently check one link in the chain -
+        was this really what the Rule Scope Gate returned, was this really the
+        PoC candidate that ran - needs the stage's attempt and exact content
+        hash, not just the rendered prose the Reporter drew from it.
+        """
+
+        lines: list[str] = []
+        for label, stage in self._AUDIT_STAGES:
+            record = prior.get(stage)
+            if record is None or record.status is not StageStatus.SUCCEEDED:
+                continue
+            hashes = ", ".join(f"`{ref.content_hash}`" for ref in record.output_refs)
+            lines.append(f"- {label} (attempt `{record.attempt_id}`): {hashes}")
+        return lines
+
+    def _render_submission(
+        self,
+        value: Mapping[str, JsonValue],
+        checkpoint: StageCheckpoint,
+        prior: Mapping[SimpleStage, StageCheckpoint],
+        finding_ref: StoredDataRef,
+    ) -> bytes:
+        """Render the clean English report a maintainer outside sastsimi reads.
+
+        The Korean report above is this pipeline's own audit record; nothing
+        here should read as a system talking about its own stages. Fields this
+        pipeline has no way to know - a release version, a fix commit, who
+        sends the report and when - stay as a placeholder for the human here
+        to fill in rather than a guess.
+        """
+
+        poc = self._validated_poc(prior)
+        cwe = self._result(prior[SimpleStage.CWE_DONE].output_refs[0])
+        scope = self._result(prior[SimpleStage.SCOPE_GATE_DONE].output_refs[0])
+        verification = self._result(
+            prior[SimpleStage.VERIFICATION_FINAL_DONE].output_refs[0]
+        )
+        scope_status = str(scope.get("status", ""))
+        _, disclosure_allowed = internal_report_status(scope_status)
+        required = cast(list[str], verification.get("required_capabilities", []))
+        entities = cast(list[str], verification.get("entities", []))
+        limitations_en = cast(list[str], value["limitations_en"])
+        lines = [
+            f"# {value['title_en']}",
+            "",
+            *(
+                []
+                if disclosure_allowed
+                else [
+                    "> **Internal only.** This has not been cleared for "
+                    f"external submission (internal policy review status: "
+                    f"{scope_status}). A human must review the policy basis "
+                    "before this is sent anywhere.",
+                    "",
+                ]
+            ),
+            "### Summary",
+            "",
+            str(value["summary_en"]),
+            "",
+            "### AI Use & Human Verification",
+            "",
+            "- AI-assisted analysis: Yes. This finding was identified and "
+            "analyzed by an AI-based SAST pipeline (sastsimi): static "
+            "analysis, hypothesis generation, and a dynamic proof-of-concept "
+            "executed against the actual repository source.",
+            "- Manually verified by: <fill in - reviewer name/handle>",
+            "- Verification date: <fill in - YYYY-MM-DD>",
+            "- Verification performed: <fill in - describe what you "
+            'independently checked, e.g. "read the cited source at the '
+            "stated commit and confirmed it matches the Technical Details "
+            'below; ran the reproduction steps myself">',
+            "",
+            "### Affected / Environment",
+            "",
+            f"- Product: {self._repository or '<fill in>'}",
+            "- Version: <fill in>",
+            f"- Component: {', '.join(entities) or '<fill in>'}",
+            "- Endpoint / Feature: <fill in>",
+            f"- Environment: commit `{checkpoint.identity.commit_id}`",
+            "- Affected versions: <fill in>",
+            "- Fixed versions: <fill in>",
+            "",
+            "### Technical Details",
+            "",
+            str(value["details_en"]),
+            "",
+            "### Impact",
+            "",
+            str(value["impact_en"]),
+            "",
+            f"- CWE: {cwe.get('primary_cwe', 'UNCLASSIFIED')}",
+            f"- Required privileges: {', '.join(required) or 'none identified'}",
+            "",
+            "### Reproduction / Proof of Concept",
+            "",
+            "```sh",
+            poc.content.rstrip(),
+            "```",
+            "",
+            f"Command: `{poc.command}`",
+            "",
+            "Expected result:",
+            "",
+            "The steps above reproduce the described behavior.",
+            "",
+            "Actual result:",
+            "",
+            f"Exit code `{poc.exit_code}`.",
+            "",
+            "```text",
+            poc.stdout.rstrip(),
+            "```",
+            *(["", "```text", poc.stderr.rstrip(), "```"] if poc.stderr else []),
+            "",
+            "### Verification",
+            "",
+            "- Reproduced: Yes",
+            f"- Tested version: commit `{checkpoint.identity.commit_id}`",
+            "- Tested environment: isolated local sandbox container",
+            "- PoC executed successfully and matched the predicted behavior: Yes",
+            "- Real-world impact confirmed end-to-end against a live deployment: "
+            "Not verified in this session - see Limitations.",
+            *(
+                [f"- Limitations: {item}" for item in limitations_en]
+                if limitations_en
+                else ["- Limitations: none noted"]
+            ),
+            "- Additional verification: <fill in>",
+            "",
+            "### Disclosure",
+            "",
+            "- Disclosure status: <fill in>",
+            "- Disclosure timeline: <fill in>",
+            "- Reporter attribution: <fill in>",
+            f"- Finding: `{finding_ref.content_hash}`",
             "",
         ]
         return "\n".join(lines).encode("utf-8")
@@ -1659,6 +1855,9 @@ def build_stage_handlers(
     # stage; without it the rule scope gate falls back to a published
     # program policy, or UNCERTAIN when there is neither.
     security_policy_ref: StoredDataRef | None = None,
+    # The repository URL the run was given; without it the submission
+    # report's "Product" field has nothing to name.
+    repository: str | None = None,
     max_parallel_containers: int = 1,
     # One gate for the whole run.  Without it each hypothesis holds its own.
     container_slots: asyncio.Semaphore | None = None,
@@ -1715,7 +1914,10 @@ def build_stage_handlers(
         SimpleStage.PRIMITIVE_ADMISSION_DONE: PrimitiveAdmissionStage(artifacts),
         SimpleStage.FINDING_DONE: FindingStage(artifacts),
         SimpleStage.REPORT_DONE: ReporterStage(
-            client, artifacts, call_timeout_ms=call_timeout_ms
+            client,
+            artifacts,
+            call_timeout_ms=call_timeout_ms,
+            repository=repository,
         ),
     }
     if store is not None:

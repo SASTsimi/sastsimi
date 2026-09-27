@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
@@ -28,6 +29,15 @@ class _ReporterClient:
             "impact": "공격자가 서버 권한으로 임의 명령을 실행할 수 있습니다.",
             "limitations": ["로컬 격리 환경에서만 재현했습니다."],
             "review_items": ["실제 배포 설정에서 동일 경로를 확인해야 합니다."],
+            "title_en": "Verified command injection vulnerability",
+            "summary_en": (
+                "Unvalidated input reaches an OS command execution function."
+            ),
+            "details_en": "The input is passed unsanitized into a command "
+            "execution call.",
+            "impact_en": "An attacker can execute arbitrary commands with "
+            "the server's privileges.",
+            "limitations_en": ["Reproduced only in a local isolated environment."],
         }
         return SimpleLLMCallResult(
             value=value,
@@ -74,17 +84,11 @@ def _checkpoint(
     )
 
 
-@pytest.mark.asyncio
-async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
-    tmp_path: Path,
-) -> None:
-    identity = CheckpointIdentity(
-        analysis_id="analysis-1",
-        workspace_id="workspace-1",
-        commit_id="commit-1",
-        hypothesis_id="hypothesis-1",
-    )
-    artifacts = SimpleArtifactRepository(tmp_path, identity)
+def _reportable_prior(
+    identity: CheckpointIdentity, artifacts: SimpleArtifactRepository
+) -> tuple[dict[SimpleStage, StageCheckpoint], StoredDataRef]:
+    """Build the prior stages a REPORT_DONE call needs, and the finding ref."""
+
     script = b"#!/bin/sh\nset -eu\nprintf 'SUPPORTED: command executed\\n'\n"
     content_ref = artifacts.put_bytes(script, "text/x-shellscript")
     candidate_ref = artifacts.put_json(
@@ -174,6 +178,22 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
             verdict="TRUE",
         ),
     }
+    return prior, finding_ref
+
+
+@pytest.mark.asyncio
+async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    prior, finding_ref = _reportable_prior(identity, artifacts)
+    script = artifacts.read(prior[SimpleStage.POC_CANDIDATE_DONE].output_refs[1])
     current = StageCheckpoint(
         identity=identity,
         stage=SimpleStage.REPORT_DONE,
@@ -200,6 +220,27 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
     assert "SUPPORTED: command executed" in markdown
     assert "입력값이 정제되지 않고 명령 실행 함수까지 전달됩니다." in markdown
     assert "Same-attempt evidence supports the finding." not in markdown
+    assert "### Audit Trail" in markdown
+    assert "Commit: `commit-1`" in markdown
+    assert "Attempt: `report-attempt`" in markdown
+    candidate_hash = prior[SimpleStage.POC_CANDIDATE_DONE].output_refs[0].content_hash
+    assert f"PoC 후보 (attempt `attempt-1`): `{candidate_hash}`" in markdown
+
+    submission_path = path.with_suffix(".submission.md")
+    assert submission_path.is_file()
+    submission = submission_path.read_text(encoding="utf-8")
+    assert "# Verified command injection vulnerability" in submission
+    assert "Internal only" in submission
+    assert "### Affected / Environment" in submission
+    assert "### AI Use & Human Verification" in submission
+    assert "AI-assisted analysis: Yes" in submission
+    assert "Manually verified by: <fill in" in submission
+    assert "### Reproduction / Proof of Concept" in submission
+    assert "### Disclosure" in submission
+    assert "Reproduced only in a local isolated environment." in submission
+    assert "상태:" not in submission
+    assert "### Audit Trail" not in submission
+    assert len(result.output_refs) == 3
 
 
 @pytest.mark.asyncio
