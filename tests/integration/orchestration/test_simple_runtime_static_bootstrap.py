@@ -1960,6 +1960,287 @@ async def test_semgrep_opt_in_caps_each_opengrep_batch_before_fallback(
 
 
 @pytest.mark.asyncio
+async def test_opengrep_timeout_recovers_in_bounded_chunks_and_reuses_proof(
+    tmp_path: Path,
+) -> None:
+    class ChunkedOpenGrep(_CoverageProcess):
+        def __init__(self) -> None:
+            super().__init__(parse_warning=False)
+            self.full_calls = 0
+            self.chunks: list[tuple[str, ...]] = []
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "clone":
+                result = await super().run(
+                    argv, cwd=cwd, timeout_seconds=timeout_seconds
+                )
+                root = Path(argv[-1])
+                for index in range(129):
+                    (root / f"file-{index:03d}.py").write_text(
+                        "value = 1\n", encoding="utf-8"
+                    )
+                return result
+            if argv[1:3] == ("ls-files", "-z"):
+                names = ("app.py", "good.py", *(f"file-{i:03d}.py" for i in range(129)))
+                return ProcessResult(0, "\0".join(names).encode() + b"\0", b"")
+            if argv[1] == "scan" and "--metrics=off" not in argv:
+                if cwd is not None and argv[-1] == str(cwd):
+                    self.full_calls += 1
+                    raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+                targets = tuple(
+                    item
+                    for item in argv
+                    if item in {"app.py", "good.py"} or item.startswith("file-")
+                )
+                self.chunks.append(targets)
+                output = Path(argv[argv.index("--output") + 1])
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [],
+                            "errors": [],
+                            "paths": {"scanned": list(targets), "skipped": []},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = ChunkedOpenGrep()
+    bootstrap, profile, store = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    identity = _identity("opengrep-chunk-resume")
+    request = _request(profile)
+    result = await bootstrap.run(request, identity)
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
+    coverage = _coverage_from_ref(
+        profile, identity, StoredDataRef.model_validate(bundle["static_coverage_ref"])
+    )
+    assert coverage["verified_count"] == coverage["expected_count"] == 131
+    assert process.full_calls == 1
+    assert tuple(map(len, process.chunks)) == (128, 3)
+    assert process.fallback_calls == []
+    chunk_attempts = [
+        item
+        for item in store.list_static_scan_attempts(
+            identity, request.repository, coverage["fingerprint"]
+        )
+        if item.tool == "opengrep" and item.request_ref is not None
+    ]
+    assert len(chunk_attempts) == 2
+    assert all(item.status == "SUCCEEDED" and item.raw_ref for item in chunk_attempts)
+
+    await bootstrap.run(request, identity)
+    assert process.full_calls == 1
+    assert tuple(map(len, process.chunks)) == (128, 3)
+
+
+@pytest.mark.asyncio
+async def test_opengrep_chunk_partial_sends_only_unproved_file_to_semgrep(
+    tmp_path: Path,
+) -> None:
+    class PartialChunk(_CoverageProcess):
+        def __init__(self) -> None:
+            super().__init__(parse_warning=False)
+            self.chunk_calls = 0
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--metrics=off" not in argv:
+                if cwd is not None and argv[-1] == str(cwd):
+                    raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+                self.chunk_calls += 1
+                output = Path(argv[argv.index("--output") + 1])
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [],
+                            "errors": [{"type": "Syntax error", "path": "app.py"}],
+                            "paths": {
+                                "scanned": ["app.py", "good.py"],
+                                "skipped": [],
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = PartialChunk()
+    bootstrap, profile, _store = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    identity = _identity("opengrep-chunk-partial")
+    request = _request(profile)
+    result = await bootstrap.run(request, identity)
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
+    coverage = _coverage_from_ref(
+        profile, identity, StoredDataRef.model_validate(bundle["static_coverage_ref"])
+    )
+    assert coverage["verified_count"] == coverage["expected_count"] == 2
+    assert process.chunk_calls == 1
+    assert len(process.fallback_calls) == 1
+    assert "app.py" in process.fallback_calls[0]
+    assert "good.py" not in process.fallback_calls[0]
+    await bootstrap.run(request, identity)
+    assert process.chunk_calls == 1
+    assert len(process.fallback_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_opengrep_chunk_timeout_retries_once_on_explicit_resume(
+    tmp_path: Path,
+) -> None:
+    class TimedOutChunk(_CoverageProcess):
+        def __init__(self) -> None:
+            super().__init__(parse_warning=False, fallback_fails=True)
+            self.opengrep_attempts = 0
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--metrics=off" not in argv:
+                self.opengrep_attempts += 1
+                if self.opengrep_attempts <= 2:
+                    raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+                output = Path(argv[argv.index("--output") + 1])
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [],
+                            "errors": [],
+                            "paths": {
+                                "scanned": ["app.py", "good.py"],
+                                "skipped": [],
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = TimedOutChunk()
+    bootstrap, profile, _store = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    identity = _identity("opengrep-chunk-timeout")
+    request = _request(profile)
+    with pytest.raises(StaticCoverageBlocked) as first:
+        await bootstrap.run(request, identity)
+    initial = _coverage_from_ref(profile, identity, first.value.coverage_ref)
+    assert initial["verified_count"] == 0
+    assert process.opengrep_attempts == 2
+    assert process.fallback_calls
+
+    fallback_calls = len(process.fallback_calls)
+    result = await bootstrap.run(request, identity)
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
+    coverage = _coverage_from_ref(
+        profile, identity, StoredDataRef.model_validate(bundle["static_coverage_ref"])
+    )
+    assert coverage["verified_count"] == coverage["expected_count"] == 2
+    assert process.opengrep_attempts == 3
+    assert len(process.fallback_calls) == fallback_calls
+
+
+@pytest.mark.asyncio
+async def test_opengrep_chunk_rejects_changed_request_descriptor(
+    tmp_path: Path,
+) -> None:
+    class CompleteChunk(_CoverageProcess):
+        def __init__(self) -> None:
+            super().__init__(parse_warning=False)
+            self.chunk_calls = 0
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--metrics=off" not in argv:
+                if cwd is not None and argv[-1] == str(cwd):
+                    raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+                self.chunk_calls += 1
+                output = Path(argv[argv.index("--output") + 1])
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [],
+                            "errors": [],
+                            "paths": {
+                                "scanned": ["app.py", "good.py"],
+                                "skipped": [],
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = CompleteChunk()
+    bootstrap, profile, store = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    identity = _identity("opengrep-chunk-tamper")
+    request = _request(profile)
+    result = await bootstrap.run(request, identity)
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
+    coverage = _coverage_from_ref(
+        profile, identity, StoredDataRef.model_validate(bundle["static_coverage_ref"])
+    )
+    chunk = next(
+        item
+        for item in store.list_static_scan_attempts(
+            identity, request.repository, coverage["fingerprint"]
+        )
+        if item.tool == "opengrep" and item.request_ref is not None
+    )
+    assert chunk.raw_ref is not None
+    assert chunk.request_ref is not None
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    descriptor = json.loads(artifacts.read(chunk.request_ref))
+    descriptor["targets"] = ["good.py"]
+    forged = artifacts.put_json(descriptor)
+    store.save_static_scan_attempt(
+        identity,
+        request.repository,
+        coverage["fingerprint"],
+        "opengrep",
+        chunk.run_key,
+        "SUCCEEDED",
+        chunk.raw_ref,
+        None,
+        None,
+        forged,
+    )
+
+    await bootstrap.run(request, identity)
+    assert process.chunk_calls == 2
+
+
+@pytest.mark.asyncio
 async def test_missing_semgrep_keeps_full_opengrep_batch_deadline(
     tmp_path: Path,
 ) -> None:

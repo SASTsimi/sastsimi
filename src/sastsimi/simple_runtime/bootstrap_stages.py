@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from itertools import combinations
 from pathlib import Path
 from typing import Protocol
+from uuid import uuid4
 
 from sastsimi.config.user_config import (
     SimpleExecutionProfile,
@@ -61,7 +62,7 @@ from .static_coverage import (
     plan_static_coverage,
     static_coverage_fingerprint,
 )
-from .store import SimpleCheckpointStore
+from .store import SimpleCheckpointStore, StaticScanAttempt
 from .survey import HypothesisSurvey
 
 _MAX_TRACKED_FILES = 200_000
@@ -912,6 +913,31 @@ class DirectStaticBootstrap:
             )
             if item.tool == "opengrep"
         }
+
+        async def recover_timeout(
+            batch: RuleBatch, expected: frozenset[tuple[str, str]]
+        ) -> None:
+            (
+                chunk_slices,
+                chunk_refs,
+                chunk_errors,
+            ) = await self._recover_opengrep_timeout_chunks(
+                workspace,
+                request,
+                identity,
+                coverage_plan,
+                batch,
+                expected,
+                rules,
+                output_root,
+                artifacts,
+                attempts,
+                deadline,
+            )
+            slices.extend(chunk_slices)
+            refs.extend(chunk_refs)
+            errors.extend(chunk_errors)
+
         compatible_old_fingerprints = self._prior_fallback_coverage_fingerprints(
             workspace, tracked, request.commit, rule_plan
         )
@@ -1059,6 +1085,14 @@ class DirectStaticBootstrap:
                         "OPENGREP_PARTIAL_SCAN",
                     )
                     continue
+            if (
+                fallback_ready
+                and attempt is not None
+                and attempt.error_code == "EXTERNAL_TOOL_TIMEOUT"
+                and attempt.raw_ref is None
+            ):
+                await recover_timeout(batch, expected)
+                continue
             remaining = (
                 min(int(deadline - time.monotonic()), 3600)
                 if deadline is not None
@@ -1229,6 +1263,245 @@ class DirectStaticBootstrap:
                         else code
                     ),
                 )
+                if (
+                    fallback_ready
+                    and code == "EXTERNAL_TOOL_TIMEOUT"
+                    and raw_ref is None
+                ):
+                    await recover_timeout(batch, expected)
+        return slices, refs, errors
+
+    async def _recover_opengrep_timeout_chunks(
+        self,
+        workspace: Path,
+        request: SimpleAnalysisRequest,
+        identity: CheckpointIdentity,
+        coverage_plan: StaticCoveragePlan,
+        batch: RuleBatch,
+        expected: frozenset[tuple[str, str]],
+        rules: Path,
+        output_root: Path,
+        artifacts: SimpleArtifactRepository,
+        attempts: dict[str, StaticScanAttempt],
+        deadline: float | None,
+    ) -> tuple[list[CoverageSlice], list[StoredDataRef], list[str]]:
+        """Recover only timed-out full scans, proving each explicit target chunk."""
+
+        binding = self._profile.tools["opengrep"]
+        slices: list[CoverageSlice] = []
+        refs: list[StoredDataRef] = []
+        errors: list[str] = []
+        available = expected - coverage_plan.unavailable_pairs
+        rules_by_path: dict[str, set[str]] = defaultdict(set)
+        for path, rule_id in available:
+            rules_by_path[path].add(rule_id)
+        paths = frozenset(rules_by_path)
+
+        def chunk_key(targets: tuple[str, ...]) -> str:
+            return hashlib.sha256(
+                canonical_bytes(
+                    {
+                        "kind": "opengrep_scan_request_v1",
+                        "batch_key": batch.key,
+                        "rule_ids": batch.rule_ids,
+                        "targets": targets,
+                    }
+                )
+            ).hexdigest()
+
+        def chunk_pairs(targets: tuple[str, ...]) -> frozenset[tuple[str, str]]:
+            return frozenset(
+                (path, rule_id) for path in targets for rule_id in rules_by_path[path]
+            )
+
+        def record_gap(targets: tuple[str, ...], code: str) -> None:
+            self._record_gap_slice(
+                RuleBatch(
+                    batch.index,
+                    batch.rule_ids,
+                    batch.excluded_rule_ids,
+                    chunk_key(targets),
+                ),
+                chunk_pairs(targets),
+                code,
+                slices,
+            )
+            errors.append(code)
+
+        def request_data(targets: tuple[str, ...]) -> dict[str, object]:
+            return {
+                "kind": "opengrep_scan_request_v1",
+                "batch_key": batch.key,
+                "rule_ids": list(batch.rule_ids),
+                "targets": list(targets),
+            }
+
+        def valid_request(
+            attempt: StaticScanAttempt,
+        ) -> tuple[tuple[str, ...], dict[str, object]] | None:
+            if attempt.request_ref is None:
+                return None
+            try:
+                data = json.loads(artifacts.read(attempt.request_ref))
+            except (OSError, ValueError):
+                return None
+            if not isinstance(data, dict):
+                return None
+            targets = data.get("targets")
+            if (
+                data.get("kind") != "opengrep_scan_request_v1"
+                or data.get("batch_key") != batch.key
+                or data.get("rule_ids") != list(batch.rule_ids)
+                or not isinstance(targets, list)
+                or not targets
+                or not all(isinstance(path, str) for path in targets)
+                or targets != sorted(set(targets))
+                or not set(targets) <= paths
+                or chunk_key(tuple(targets)) != attempt.run_key
+            ):
+                return None
+            return tuple(targets), data
+
+        attempted: set[str] = set()
+        for attempt in attempts.values():
+            if attempt.raw_ref is None or attempt.error_code not in {
+                None,
+                "OPENGREP_PARTIAL_SCAN",
+            }:
+                continue
+            valid = valid_request(attempt)
+            if valid is None:
+                continue
+            targets, descriptor = valid
+            if descriptor.get("raw_content_hash") != attempt.raw_ref.content_hash:
+                continue
+            try:
+                raw = artifacts.read(attempt.raw_ref)
+                slice_ = assess_scan(
+                    coverage_plan, batch, raw, engine="opengrep", targets=targets
+                )
+            except (OSError, ValueError):
+                continue
+            if attempt.status == "SUCCEEDED" and not chunk_pairs(targets).issubset(
+                slice_.verified_pairs
+            ):
+                continue
+            slices.append(replace(slice_, raw_ref=attempt.raw_ref))
+            refs.append(attempt.raw_ref)
+            attempted.update(targets)
+
+        pending_paths = tuple(sorted(paths - attempted))
+        if not pending_paths:
+            return slices, refs, errors
+        placeholder = output_root / f"opengrep-chunk-{'0' * 32}.json"
+        prefix = (
+            self._tool("opengrep"),
+            "scan",
+            "--json",
+            "--disable-version-check",
+            "--no-rewrite-rule-ids",
+            "--config",
+            str(rules),
+            "--output",
+            str(placeholder),
+            *(
+                value
+                for rule_id in batch.excluded_rule_ids
+                for value in ("--exclude-rule", rule_id)
+            ),
+        )
+
+        def command_for(targets: tuple[str, ...]) -> tuple[str, ...]:
+            return (*prefix, *targets)
+
+        try:
+            roots = plan_semgrep_target_chunks(pending_paths, command_for)
+        except RuntimeError:
+            self._record_gap_slice(
+                batch, available, "OPENGREP_COMMAND_TOO_LONG", slices
+            )
+            errors.append("OPENGREP_COMMAND_TOO_LONG")
+            return slices, refs, errors
+
+        for targets in roots:
+            key = chunk_key(targets)
+            data = request_data(targets)
+            # Unlike the full-workspace parent, an incomplete bounded chunk
+            # gets one fresh attempt on each explicit resume.
+            remaining = (
+                min(
+                    int(deadline - time.monotonic()),
+                    _OPENGREP_FALLBACK_BATCH_TIMEOUT_SECONDS,
+                )
+                if deadline is not None
+                else _OPENGREP_FALLBACK_BATCH_TIMEOUT_SECONDS
+            )
+            if remaining < 1:
+                record_gap(targets, "EXTERNAL_TOOL_TIMEOUT")
+                continue
+            request_ref = artifacts.put_json(data)
+            raw_ref: StoredDataRef | None = None
+            code: str | None = None
+            try:
+                safe_targets = tuple(
+                    _verified_target(workspace, path) for path in targets
+                )
+                if safe_targets != targets:
+                    raise RuntimeError("OPENGREP_TARGET_INVALID")
+                output = output_root / f"opengrep-chunk-{uuid4().hex}.json"
+                argv = (
+                    *prefix[: prefix.index("--output") + 1],
+                    str(output),
+                    *prefix[prefix.index("--output") + 2 :],
+                    *targets,
+                )
+                if semgrep_command_utf16_units(argv) > MAX_SEMGREP_COMMAND_UTF16_UNITS:
+                    raise RuntimeError("OPENGREP_COMMAND_TOO_LONG")
+                self._require_opengrep_tool(binding)
+                result = await self._process.run(
+                    argv, cwd=workspace, timeout_seconds=remaining
+                )
+                self._require_opengrep_tool(binding)
+                if result.returncode != 0 or not output.is_file():
+                    raise RuntimeError("OPENGREP_EXECUTION_FAILED")
+                raw = output.read_bytes()
+                raw_ref = artifacts.put_bytes(raw, "application/json")
+                refs.append(raw_ref)
+                slice_ = assess_scan(
+                    coverage_plan, batch, raw, engine="opengrep", targets=targets
+                )
+                slices.append(replace(slice_, raw_ref=raw_ref))
+                code = (
+                    None
+                    if chunk_pairs(targets).issubset(slice_.verified_pairs)
+                    else "OPENGREP_PARTIAL_SCAN"
+                )
+            except (OSError, RuntimeError, ValueError) as error:
+                code = (
+                    "EXTERNAL_TOOL_TIMEOUT"
+                    if isinstance(error, TimeoutError)
+                    else self._safe_static_error(error, "OPENGREP_RESULT_INVALID")
+                )
+            if raw_ref is not None:
+                request_ref = artifacts.put_json(
+                    {**data, "raw_content_hash": raw_ref.content_hash}
+                )
+            self._store.save_static_scan_attempt(
+                identity,
+                request.repository,
+                coverage_plan.fingerprint,
+                "opengrep",
+                key,
+                "SUCCEEDED" if code is None else "BLOCKED",
+                raw_ref,
+                None,
+                code,
+                request_ref,
+            )
+            if code is not None and code != "OPENGREP_PARTIAL_SCAN":
+                record_gap(targets, code)
+            elif code is not None:
+                errors.append(code)
         return slices, refs, errors
 
     @staticmethod
