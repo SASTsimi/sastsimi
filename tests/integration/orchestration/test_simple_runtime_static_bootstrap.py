@@ -1032,6 +1032,84 @@ async def test_codeql_database_create_sees_only_selected_product_source(
 
 
 @pytest.mark.asyncio
+async def test_codeql_rebuilds_incomplete_cached_database_without_overwriting_it(
+    tmp_path: Path,
+) -> None:
+    class IncompleteDatabaseProcess(_Process):
+        def __init__(self, incomplete: Path) -> None:
+            self.incomplete = incomplete
+            self.created: list[Path] = []
+            self.analyzed: list[Path] = []
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1:3] == ("ls-files", "-z"):
+                return ProcessResult(0, b"app.py\0", b"")
+            if argv[1:3] == ("resolve", "database"):
+                database = Path(argv[-1])
+                return ProcessResult(
+                    0,
+                    json.dumps({"datasetFolder": str(database / "db-python")}).encode(),
+                    b"",
+                )
+            if argv[1:3] == ("database", "create"):
+                database = Path(argv[3])
+                self.created.append(database)
+                result = await super().run(
+                    argv, cwd=cwd, timeout_seconds=timeout_seconds
+                )
+                (database / "db-python").mkdir()
+                return result
+            if argv[1:3] == ("database", "analyze"):
+                database = Path(argv[3])
+                self.analyzed.append(database)
+                if database == self.incomplete:
+                    return ProcessResult(2, b"", b"database needs to be finalized")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    profile = _profile(tmp_path)
+    repository = "https://example.invalid/project.git"
+    commit = "a" * 40
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("print('app')\n", encoding="utf-8")
+    (workspace / ".sastsimi-ready.json").write_text(
+        json.dumps({"repository": repository, "commit": commit}), encoding="utf-8"
+    )
+    scope = build_static_file_scope(workspace, ("app.py",))
+    key = hashlib.sha256(
+        f"{repository}\0{commit}\0{scope.fingerprint}".encode()
+    ).hexdigest()[:24]
+    incomplete = profile.data_dir / "codeql" / key / "database"
+    incomplete.mkdir(parents=True)
+    (incomplete / "codeql-database.yml").write_text("ok", encoding="utf-8")
+    (incomplete / "working").mkdir()
+    process = IncompleteDatabaseProcess(incomplete)
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=process,
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+
+    raw = await bootstrap._run_codeql(
+        workspace, profile.data_dir, repository, commit, "retry-incomplete"
+    )
+
+    assert json.loads(raw)["runs"]
+    assert (incomplete / "working").is_dir()
+    assert (incomplete / "codeql-database.yml").is_file()
+    assert len(process.created) == 1
+    assert process.created[0] != incomplete
+    assert process.analyzed == process.created
+
+
+@pytest.mark.asyncio
 async def test_codeql_rejects_sarif_finding_outside_selected_product_scope(
     tmp_path: Path,
 ) -> None:

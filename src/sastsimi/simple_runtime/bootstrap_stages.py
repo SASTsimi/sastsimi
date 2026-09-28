@@ -2698,7 +2698,10 @@ class DirectStaticBootstrap:
         output = root / f"results-{analysis_key}.sarif"
         root.mkdir(parents=True, exist_ok=True)
         codeql = self._tool("codeql")
-        if not (database / "codeql-database.yml").is_file():
+        database_ready = await self._codeql_database_ready(codeql, database, workspace)
+        if not database_ready:
+            if database.exists():
+                database = root / f"db-{uuid4().hex[:12]}"
             workspace_root = workspace.resolve(strict=True)
             database_root = root.resolve(strict=True)
             if (
@@ -2749,7 +2752,6 @@ class DirectStaticBootstrap:
                         str(database),
                         "--language=python",
                         f"--source-root={source_root}",
-                        "--overwrite",
                         "--threads=2",
                     ),
                     cwd=source_root,
@@ -2783,6 +2785,31 @@ class DirectStaticBootstrap:
         raw = _read_static_scan_output(output)
         self._require_codeql_sarif_scope(json.loads(raw), scope.selected_paths)
         return raw
+
+    async def _codeql_database_ready(
+        self, codeql: str, database: Path, workspace: Path
+    ) -> bool:
+        if not (database / "codeql-database.yml").is_file():
+            return False
+        try:
+            resolved = await self._process.run(
+                (codeql, "resolve", "database", "--format=json", str(database)),
+                cwd=workspace,
+                timeout_seconds=60,
+            )
+            if resolved.returncode != 0 or len(resolved.stdout) > 1024 * 1024:
+                return False
+            metadata = json.loads(resolved.stdout)
+            if not isinstance(metadata, dict):
+                return False
+            folder = metadata.get("datasetFolder")
+            if not isinstance(folder, str):
+                return False
+            dataset = Path(folder).resolve(strict=True)
+            dataset.relative_to(database.resolve(strict=True))
+            return dataset.is_dir() and dataset != database.resolve(strict=True)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return False
 
     @staticmethod
     def _require_codeql_sarif_scope(
