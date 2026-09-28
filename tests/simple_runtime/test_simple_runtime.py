@@ -337,6 +337,24 @@ async def test_a_block_that_cycles_between_two_old_walls_is_still_bounded(
     assert outcomes[-1] is StageStatus.FAILED
 
 
+@pytest.mark.asyncio
+async def test_a_subscription_limit_never_spends_the_stall_budget(tmp_path) -> None:
+    # Observed on taiga: a weekly limit blocks every remaining hypothesis, and
+    # resuming while it holds must not cap them before the limit clears.
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.VERIFICATION_INITIAL_DONE)
+    calls: list[SimpleStage] = []
+    codes = ["RATE_LIMITED"] * (MAX_STALL_REPEATS + 1)
+    runner = SimpleRuntimeRunner(store, _blocked_poc_candidate(calls, codes))
+
+    outcomes = [
+        (await runner.resume_analysis(_identity())).status
+        for _ in range(MAX_STALL_REPEATS + 1)
+    ]
+
+    assert outcomes == [StageStatus.BLOCKED] * (MAX_STALL_REPEATS + 1)
+
+
 def _stuck_poc_execution(
     calls: list[SimpleStage], code: str
 ) -> dict[SimpleStage, object]:

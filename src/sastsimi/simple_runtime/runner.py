@@ -66,6 +66,11 @@ MAX_REPAIR_ATTEMPTS = 3
 # of the same wall.
 MAX_STALL_REPEATS = 3
 
+# A subscription limit or a lapsed login stops every call alike, whatever the
+# hypothesis: a weekly limit reached mid-run blocked each remaining hypothesis
+# in turn, and counting that as a stall would cap them all within three passes.
+OUTSIDE_THE_RUN_CODES = frozenset({"RATE_LIMITED", "AUTH_REQUIRED"})
+
 
 class RunOutcome(ContractModel):
     current_stage: SimpleStage
@@ -237,6 +242,21 @@ class SimpleRuntimeRunner:
                         if fallback is not None
                         else 0
                     )
+                    if failure.code in OUTSIDE_THE_RUN_CODES:
+                        # Not a wall the hypothesis hit: the stall budget is
+                        # carried over untouched for the retry after it clears.
+                        checkpoint = checkpoint.model_copy(
+                            update={
+                                "stall_streak": prior_streak,
+                                "stall_codes": seen_codes,
+                            }
+                        )
+                        self.store.mark_failure(checkpoint, failure, status)
+                        return RunOutcome(
+                            current_stage=stage,
+                            status=status,
+                            error_code=failure.code,
+                        )
                     novel = failure.code not in seen_codes
                     streak = 1 if novel else prior_streak + 1
                     checkpoint = checkpoint.model_copy(
