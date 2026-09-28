@@ -354,6 +354,121 @@ async def test_verified_partial_static_evidence_runs_agents_but_never_completes(
 
 
 @pytest.mark.asyncio
+async def test_partial_resume_advances_pending_agent_before_retrying_static(
+    tmp_path: Path,
+) -> None:
+    class PartialStatic:
+        calls = 0
+
+        async def run(
+            self, request: SimpleAnalysisRequest, identity: CheckpointIdentity
+        ) -> StaticBootstrapResult:
+            self.calls += 1
+            artifacts = SimpleArtifactRepository(request.data_dir, identity)
+            coverage_ref = artifacts.put_json(
+                {
+                    "kind": "simple_static_coverage_v1",
+                    "analysis_id": identity.analysis_id,
+                    "workspace_id": identity.workspace_id,
+                    "commit_id": identity.commit_id,
+                    "fingerprint": "f" * 64,
+                    "expected_count": 2,
+                    "verified_count": 1,
+                    "gaps": [
+                        {
+                            "path": "app.py",
+                            "rule_id": "python.rule",
+                            "reason": "not_attempted_budget",
+                        }
+                    ],
+                    "unsupported": [],
+                    "unsupported_files": [],
+                    "unavailable": False,
+                }
+            )
+            bundle_ref = artifacts.put_json(
+                {
+                    "kind": "simple_static_fact_bundle",
+                    "analysis_id": identity.analysis_id,
+                    "workspace_id": identity.workspace_id,
+                    "commit_id": identity.commit_id,
+                    "static_coverage_ref": coverage_ref.model_dump(mode="json"),
+                }
+            )
+            return StaticBootstrapResult(
+                repository_profile_ref=_ref("repository-profile"),
+                static_bundle_ref=bundle_ref,
+                static_coverage_ref=coverage_ref,
+                static_disposition="PARTIAL",
+                workspace_path=request.data_dir / "workspaces" / identity.workspace_id,
+            )
+
+    class PartialHypotheses:
+        async def propose(
+            self, identity: CheckpointIdentity, static: StaticBootstrapResult
+        ) -> tuple[HypothesisSeed, ...]:
+            assert static.static_disposition == "PARTIAL"
+            proposal_ref = SimpleArtifactRepository(tmp_path, identity).put_json(
+                {
+                    "kind": "simple_hypothesis_proposal",
+                    "hypothesis_id": "hypothesis-1",
+                    "static_bundle_ref": static.static_bundle_ref.model_dump(
+                        mode="json"
+                    ),
+                    "proposal": {"title": "partial resume"},
+                }
+            )
+            return (
+                HypothesisSeed(
+                    hypothesis_id="hypothesis-1", proposal_ref=proposal_ref
+                ),
+            )
+
+    static = PartialStatic()
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=static,
+        hypothesis_bootstrap=PartialHypotheses(),
+        runner_factory=_runner,
+        id_factory=iter(("analysis-partial-pending-agent", "workspace-1")).__next__,
+    )
+    first = await application.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        )
+    )
+    static_checkpoint = store.require(first.identity, SimpleStage.STATIC_DONE)
+    assert first.status == "PARTIAL"
+    assert static_checkpoint.status is StageStatus.SUCCEEDED
+    assert static.calls == 1
+    child = first.identity.model_copy(update={"hypothesis_id": "hypothesis-1"})
+    prior_agent = store.require(child, SimpleStage.PRO_CON_DONE)
+    store.replace_from(
+        StageCheckpoint(
+            identity=child,
+            stage=SimpleStage.PRO_CON_DONE,
+            status=StageStatus.PENDING,
+            input_refs=prior_agent.input_refs,
+            input_hash=input_reference_hash(prior_agent.input_refs),
+        )
+    )
+
+    resumed = await application.resume(first.display_analysis_id)
+
+    assert static.calls == 1
+    assert resumed.status == "PARTIAL", resumed.error_code
+    assert (
+        store.require(child, SimpleStage.PRO_CON_DONE).status
+        is StageStatus.SUCCEEDED
+    )
+    assert store.require(first.identity, SimpleStage.STATIC_DONE) == static_checkpoint
+
+
+@pytest.mark.asyncio
 async def test_partial_resume_retries_static_and_reuses_completed_agents(
     tmp_path: Path,
 ) -> None:

@@ -16,6 +16,7 @@ from sastsimi.config.user_config import ElapsedLimit, TokenLimit
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.progress.projector import ProgressProjector
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 
 from .artifacts import SimpleArtifactRepository
@@ -345,11 +346,26 @@ class SimpleAnalysisApplication:
             self._store.reopen_elapsed_budget_failures(exact, self._max_elapsed_seconds)
         if self._max_tokens == "unlimited":
             self._store.reopen_token_budget_failures(exact)
+        static_checkpoint = self._store.get(identity, SimpleStage.STATIC_DONE)
+        retry_partial_static = run.static_disposition == "PARTIAL"
+        if (
+            retry_partial_static
+            and static_checkpoint is not None
+            and static_checkpoint.status is StageStatus.SUCCEEDED
+        ):
+            # Finish incomplete Agent/PoC work with its validated static input.
+            # Once downstream is terminal, resume may refine static gaps.
+            retry_partial_static = (
+                ProgressProjector(self._store)
+                .snapshot(exact, static_disposition="PARTIAL")
+                .status
+                == "PARTIAL"
+            )
         if (
             run.workspace_path is None
             or run.repository_profile_ref is None
             or run.static_bundle_ref is None
-            or run.static_disposition == "PARTIAL"
+            or retry_partial_static
         ):
             return await self._run_static(run, identity)
         static = StaticBootstrapResult(
