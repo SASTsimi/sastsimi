@@ -337,8 +337,15 @@ must execute locally inside the prepared container using only `/workspace`,
 It must not require caller-provided URLs, cookies, credentials, secrets, or
 undeclared environment variables. It must exit 0 only when the exact hypothesis
 is reproduced, exit 1 when it is actually disproved, and use exit 2 only for a
-real script/runtime error. `/workspace` contains source files but may not contain
-`.git`; inspect current files directly and do not run Git commands. Harmless
+real script/runtime error. /workspace is read-only source; /tmp is the only
+writable runtime area. Keep source imports and route application runtime storage,
+cache, databases, and other scratch paths to isolated paths under /tmp before
+initializing the application. If a prior attempt failed creating a relative path
+under /workspace, find the repository's configuration for that runtime storage
+path and set it to /tmp before importing or calling application startup; do not
+repeat the same setup error, chmod /workspace, or modify repository files.
+`/workspace` may not contain `.git`; inspect current files directly and do not
+run Git commands. Harmless
 fixture values must use neutral names such as `fixture_value`, not secret-shaped
 or credential-named assignments. Do not return a placeholder or merely print
 INCONCLUSIVE. When previous candidate and execution artifacts are supplied,

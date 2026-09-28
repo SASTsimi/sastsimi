@@ -219,6 +219,8 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
     assert b"core-verification-marker" in client.prompt
     assert b"simple_pro_evidence" in client.prompt
     assert b"private-marker" not in client.prompt
+    assert b"/workspace is read-only" in client.prompt
+    assert b"runtime storage" in client.prompt
     candidate = json.loads(artifacts.read(result.output_refs[0]))
     source_records = [
         json.loads(artifacts.read(StoredDataRef.model_validate(raw_ref)))
