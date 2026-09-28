@@ -419,9 +419,7 @@ async def test_partial_resume_advances_pending_agent_before_retrying_static(
                 }
             )
             return (
-                HypothesisSeed(
-                    hypothesis_id="hypothesis-1", proposal_ref=proposal_ref
-                ),
+                HypothesisSeed(hypothesis_id="hypothesis-1", proposal_ref=proposal_ref),
             )
 
     static = PartialStatic()
@@ -462,8 +460,7 @@ async def test_partial_resume_advances_pending_agent_before_retrying_static(
     assert static.calls == 1
     assert resumed.status == "PARTIAL", resumed.error_code
     assert (
-        store.require(child, SimpleStage.PRO_CON_DONE).status
-        is StageStatus.SUCCEEDED
+        store.require(child, SimpleStage.PRO_CON_DONE).status is StageStatus.SUCCEEDED
     )
     assert store.require(first.identity, SimpleStage.STATIC_DONE) == static_checkpoint
 
