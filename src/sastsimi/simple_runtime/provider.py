@@ -7,7 +7,7 @@ import os
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from time import monotonic
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from uuid import uuid4
 
 from pydantic import JsonValue
@@ -22,6 +22,7 @@ from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.providers.base import CodexProcessRequest, CodexProcessRunner
 
 from .models import StageFailure
+from .reasoning import CODEX_EFFORTS, OPENAI_EFFORTS, validate_reasoning_effort
 
 
 class SimpleLLMCallResult(ContractModel):
@@ -192,12 +193,16 @@ class SimpleCodexClient:
         provider_profile_ref: StoredDataRef,
         model: str,
         artifacts: InvocationArtifactWriter | None = None,
+        reasoning_effort: str | None = None,
+        agent_reasoning_efforts: Mapping[str, str] | None = None,
     ) -> None:
         self._runner = runner
         self._provider_profile_ref = provider_profile_ref
         self._model = model
         self._lock = asyncio.Lock()
         self._artifacts = artifacts
+        self._reasoning_effort = reasoning_effort
+        self._agent_reasoning_efforts = dict(agent_reasoning_efforts or {})
 
     async def call(
         self,
@@ -207,6 +212,14 @@ class SimpleCodexClient:
         timeout_ms: int,
         agent_name: str = "agent",
     ) -> SimpleLLMCallResult | StageFailure:
+        effort = validate_reasoning_effort(
+            "codex",
+            self._model,
+            self._agent_reasoning_efforts.get(agent_name, self._reasoning_effort),
+            supported_levels=CODEX_EFFORTS,
+        )
+        if isinstance(effort, StageFailure):
+            return effort
         prompt_digest = hashlib.sha256(prompt).hexdigest()
         invocation_id = f"simple-{uuid4().hex}"
         request_ref = _request_artifact(
@@ -224,6 +237,7 @@ class SimpleCodexClient:
             prompt=prompt,
             output_schema=canonical_bytes(output_schema),
             timeout_ms=timeout_ms,
+            reasoning_effort=effort,
         )
         started_at = datetime.now(UTC)
         started = monotonic()
@@ -232,10 +246,23 @@ class SimpleCodexClient:
         finished_at = datetime.now(UTC)
         elapsed_ms = max(0, int((monotonic() - started) * 1000))
         if result.status != "SUCCEEDED" or result.final_message is None:
+            reasoning_rejected = result.status == "FAILED" and effort is not None
             return StageFailure(
-                code=result.status,
-                retryable=result.status in {"RATE_LIMITED", "TIMED_OUT", "FAILED"},
-                safe_message=f"Codex call did not succeed: {result.status}",
+                code=(
+                    "CODEX_REASONING_REQUEST_FAILED"
+                    if reasoning_rejected
+                    else result.status
+                ),
+                retryable=(
+                    result.status in {"RATE_LIMITED", "TIMED_OUT", "FAILED"}
+                    and not reasoning_rejected
+                ),
+                safe_message=(
+                    "Codex did not accept the configured reasoning request; "
+                    "check model compatibility"
+                    if reasoning_rejected
+                    else f"Codex call did not succeed: {result.status}"
+                ),
                 evidence_refs=((request_ref,) if request_ref is not None else ()),
             )
         try:
@@ -289,6 +316,8 @@ class SimpleOpenAIClient:
         credential_ref: str,
         model: str,
         artifacts: InvocationArtifactWriter | None = None,
+        reasoning_effort: str | None = None,
+        agent_reasoning_efforts: Mapping[str, str] | None = None,
     ) -> None:
         variable = credential_ref.removeprefix("env:")
         if variable == credential_ref:
@@ -297,6 +326,8 @@ class SimpleOpenAIClient:
         self._model = model
         self._lock = asyncio.Lock()
         self._artifacts = artifacts
+        self._reasoning_effort = reasoning_effort
+        self._agent_reasoning_efforts = dict(agent_reasoning_efforts or {})
 
     async def call(
         self,
@@ -306,6 +337,14 @@ class SimpleOpenAIClient:
         timeout_ms: int,
         agent_name: str = "agent",
     ) -> SimpleLLMCallResult | StageFailure:
+        effort = validate_reasoning_effort(
+            "openai",
+            self._model,
+            self._agent_reasoning_efforts.get(agent_name, self._reasoning_effort),
+            supported_levels=OPENAI_EFFORTS,
+        )
+        if isinstance(effort, StageFailure):
+            return effort
         credential = os.environ.get(self._variable)
         if credential is None or not credential or credential != credential.strip():
             return StageFailure(
@@ -314,7 +353,9 @@ class SimpleOpenAIClient:
                 safe_message="Configured API credential is unavailable",
             )
         try:
-            from openai import AsyncOpenAI
+            from openai import AsyncOpenAI, Omit, omit
+            from openai.types.shared import ReasoningEffort
+            from openai.types.shared_params import Reasoning
         except (ImportError, AttributeError):
             return StageFailure(
                 code="OPENAI_SDK_UNAVAILABLE",
@@ -333,6 +374,9 @@ class SimpleOpenAIClient:
         )
         started_at = datetime.now(UTC)
         started = monotonic()
+        reasoning: Reasoning | Omit = (
+            {"effort": cast(ReasoningEffort, effort)} if effort is not None else omit
+        )
         try:
             async with AsyncOpenAI(api_key=credential, max_retries=0) as client:
                 async with self._lock:
@@ -340,6 +384,7 @@ class SimpleOpenAIClient:
                         client.responses.create(
                             model=self._model,
                             input=prompt.decode("utf-8"),
+                            reasoning=reasoning,
                             text={
                                 "format": {
                                     "type": "json_schema",

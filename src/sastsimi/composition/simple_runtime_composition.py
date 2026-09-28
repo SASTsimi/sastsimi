@@ -99,7 +99,9 @@ async def list_cursor_models() -> set[str]:
             if not key:
                 raise
     if key and key == key.strip():
-        return await OfficialCursorTransport(tempfile.gettempdir()).list_models(key)
+        return set(
+            await OfficialCursorTransport(tempfile.gettempdir()).list_models(key)
+        )
     raise ValueError("CURSOR_CLI_NOT_INSTALLED")
 
 
@@ -166,6 +168,8 @@ class SimpleClientFactory:
                 semaphore=self._semaphore,
                 transport=OfficialClaudeCLITransport(tool, config_dir),
                 budget_check=self._budget(identity).check,
+                reasoning_effort=self._profile.reasoning_effort,
+                agent_reasoning_efforts=self._profile.agent_reasoning_efforts,
             )
         if self._profile.provider == "cursor":
             fallback: SimpleLLMClient | None = None
@@ -175,6 +179,8 @@ class SimpleClientFactory:
                         credential_ref="env:OPENAI_API_KEY",
                         model=self._profile.fallback_model or "",
                         artifacts=artifacts,
+                        reasoning_effort=self._profile.reasoning_effort,
+                        agent_reasoning_efforts=self._profile.agent_reasoning_efforts,
                     ),
                     identity,
                     artifacts,
@@ -214,6 +220,8 @@ class SimpleClientFactory:
                 transport=transport,
                 use_cli_login=cli_login,
                 model_catalog=self._cursor_models,
+                reasoning_effort=self._profile.reasoning_effort,
+                agent_reasoning_efforts=self._profile.agent_reasoning_efforts,
             )
         if self._profile.provider == "openai":
             return self._limited(
@@ -221,6 +229,8 @@ class SimpleClientFactory:
                     credential_ref=self._profile.credential_ref,
                     model=self._profile.model,
                     artifacts=artifacts,
+                    reasoning_effort=self._profile.reasoning_effort,
+                    agent_reasoning_efforts=self._profile.agent_reasoning_efforts,
                 ),
                 identity,
                 artifacts,
@@ -272,6 +282,8 @@ class SimpleClientFactory:
             provider_profile_ref=provider_ref,
             model=model,
             artifacts=artifacts,
+            reasoning_effort=self._profile.reasoning_effort,
+            agent_reasoning_efforts=self._profile.agent_reasoning_efforts,
         )
 
 

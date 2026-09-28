@@ -412,7 +412,9 @@ class FakeTransport:
         output_schema: Mapping[str, Any],
         model: str,
         timeout: float,
+        reasoning_effort: str | None = None,
     ) -> ClaudeCLIResponse:
+        del reasoning_effort
         self.calls.append((model, prompt))
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):

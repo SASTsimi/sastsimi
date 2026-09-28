@@ -28,6 +28,7 @@ from sastsimi.contracts.refs import StoredDataRef
 from .artifacts import SimpleArtifactRepository
 from .models import StageFailure
 from .provider import SimpleLLMCallResult, _validate_schema
+from .reasoning import CLAUDE_EFFORTS, validate_reasoning_effort
 from .store import SimpleCheckpointStore
 
 _VERIFIED_VERSION = "2.1.280"
@@ -93,6 +94,7 @@ class ClaudeTransport(Protocol):
         output_schema: Mapping[str, Any],
         model: str,
         timeout: float,
+        reasoning_effort: str | None = None,
     ) -> ClaudeCLIResponse: ...
 
 
@@ -443,9 +445,12 @@ class OfficialClaudeCLITransport:
         output_schema: Mapping[str, Any],
         model: str,
         timeout: float,
+        reasoning_effort: str | None = None,
     ) -> ClaudeCLIResponse:
         if not prompt or not _MODEL.fullmatch(model) or timeout <= 0:
             raise ClaudeBoundaryError("CLAUDE_REQUEST_INVALID")
+        if reasoning_effort is not None and reasoning_effort not in CLAUDE_EFFORTS:
+            raise ClaudeBoundaryError("REASONING_EFFORT_UNSUPPORTED")
         self._verify_binding()
         env = _child_environment(self._config_dir, os.environ)
         executable = str(self._binding.executable_path)
@@ -498,7 +503,9 @@ class OfficialClaudeCLITransport:
                 argv,
                 stdin=prompt,
                 cwd=cwd,
-                env=env,
+                env={**env, "CLAUDE_CODE_EFFORT_LEVEL": reasoning_effort}
+                if reasoning_effort is not None
+                else env,
                 timeout=timeout,
             )
             response = _parse_stream(raw, model)
@@ -521,6 +528,8 @@ class ClaudeProvider:
         semaphore: asyncio.Semaphore,
         transport: ClaudeTransport,
         budget_check: Callable[[], StageFailure | None] | None = None,
+        reasoning_effort: str | None = None,
+        agent_reasoning_efforts: Mapping[str, str] | None = None,
     ) -> None:
         self._artifacts = artifacts
         self._default_model = default_model
@@ -531,6 +540,8 @@ class ClaudeProvider:
         self._transport = transport
         self._attempt_store = SimpleCheckpointStore(artifacts.paths.database)
         self._budget_check = budget_check
+        self._reasoning_effort = reasoning_effort
+        self._agent_reasoning_efforts = dict(agent_reasoning_efforts or {})
 
     async def call(
         self,
@@ -541,6 +552,14 @@ class ClaudeProvider:
         agent_name: str = "agent",
     ) -> SimpleLLMCallResult | StageFailure:
         model = self._agent_models.get(agent_name, self._default_model)
+        effort = validate_reasoning_effort(
+            "claude",
+            model,
+            self._agent_reasoning_efforts.get(agent_name, self._reasoning_effort),
+            supported_levels=CLAUDE_EFFORTS,
+        )
+        if isinstance(effort, StageFailure):
+            return effort
         timeout = min(self._timeout_seconds, max(1, timeout_ms) / 1000)
         digest = hashlib.sha256(prompt).hexdigest()
         schema_text = canonical_bytes(output_schema).decode("utf-8")
@@ -570,6 +589,11 @@ class ClaudeProvider:
                             output_schema=output_schema,
                             model=model,
                             timeout=timeout,
+                            **(
+                                {"reasoning_effort": effort}
+                                if effort is not None
+                                else {}
+                            ),
                         ),
                         timeout=timeout,
                     )

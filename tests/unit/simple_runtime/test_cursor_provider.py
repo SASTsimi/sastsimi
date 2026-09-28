@@ -42,9 +42,15 @@ class FakeTransport:
         return self.models
 
     async def complete(
-        self, *, api_key: str, model: str, prompt: str, timeout: float
+        self,
+        *,
+        api_key: str,
+        model: str | Mapping[str, Any],
+        prompt: str,
+        timeout: float,
     ) -> tuple[str, dict[str, int | float | None]]:
         assert api_key in {"", "test-key"}
+        assert isinstance(model, str)
         self.calls.append((model, prompt))
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, BaseException):
