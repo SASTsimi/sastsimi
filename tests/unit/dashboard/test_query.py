@@ -4,6 +4,7 @@ import hashlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
+from unittest.mock import patch
 
 import pytest
 
@@ -44,6 +45,25 @@ def ref(name: str) -> StoredDataRef:
         commit_id=CommitId("commit-1"),
         record_id=RecordId("record-finding") if name == "finding" else None,
     )
+
+
+def test_public_artifact_reader_never_loads_unbounded_cas(tmp_path: Path) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    repository = SimpleArtifactRepository(tmp_path, identity)
+    artifact_ref = repository.put_json({"kind": "example"})
+    with patch.object(repository, "read", side_effect=AssertionError("unbounded")):
+        media, raw, parsed, usage = DashboardQuery(tmp_path)._safe_ref_bytes(
+            repository, artifact_ref
+        )
+    assert media == "application/json"
+    assert parsed == {"kind": "example"}
+    assert raw == b'{"kind":"example"}'
+    assert usage is None
 
 
 def seed(data_dir) -> None:

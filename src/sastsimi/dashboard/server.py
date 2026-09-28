@@ -15,7 +15,12 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from .demo import DemoDashboardQuery
 from .markdown_view import preview_markdown
-from .query import DashboardBadRequest, DashboardNotFound, DashboardQuery
+from .query import (
+    DashboardBadRequest,
+    DashboardIncomplete,
+    DashboardNotFound,
+    DashboardQuery,
+)
 
 _STATIC = Path(__file__).with_name("static")
 _CSP = (
@@ -351,6 +356,13 @@ def create_server(
                 self._response(
                     HTTPStatus.BAD_REQUEST,
                     b'{"error":"bad_request"}',
+                    "application/json; charset=utf-8",
+                    send_body,
+                )
+            except DashboardIncomplete:
+                self._response(
+                    HTTPStatus.CONFLICT,
+                    b'{"error":"incomplete_export"}',
                     "application/json; charset=utf-8",
                     send_body,
                 )

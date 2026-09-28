@@ -14,6 +14,9 @@ const state = {
   selectedReports: new Set(),
   presentation: false,
   replay: { active: false, index: 0, timer: null },
+  eventAnalysis: null,
+  detailUpdatedAt: null,
+  detailRefreshedAt: 0,
 };
 
 function pinKey(analysisId) {
@@ -112,6 +115,10 @@ function analysisButton(item) {
       state.statusPageOffset = 0;
       state.pinnedFinding = readPinnedFinding(item.analysis_id);
       stopReplay();
+      state.eventAnalysis = null;
+      state.detail = null;
+      state.detailUpdatedAt = null;
+      state.detailRefreshedAt = 0;
     }
     state.selected = routeId;
     window.history.replaceState({}, "", `/analyses/${encodeURIComponent(routeId)}`);
@@ -514,6 +521,8 @@ function renderPinnedOutputs() {
 }
 
 function renderEvents() {
+  const timeline = document.getElementById("events");
+  const followTail = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 60;
   const search = document.getElementById("log-search").value.trim().toLowerCase();
   const status = document.getElementById("log-status").value;
   const items = state.events.filter((item) => {
@@ -536,8 +545,7 @@ function renderEvents() {
     if (item.error_code) event.append(el("div", item.error_code, "error mono"));
     return event;
   }) : empty("조건에 맞는 로그가 없습니다."));
-  const timeline = document.getElementById("events");
-  timeline.scrollTop = timeline.scrollHeight;
+  if (followTail) timeline.scrollTop = timeline.scrollHeight;
 }
 
 async function showArtifact(item) {
@@ -619,7 +627,8 @@ function selectableArtifact(item) {
 function renderArtifacts() {
   const search = document.getElementById("artifact-search").value.trim().toLowerCase();
   const artifacts = (state.detail?.artifacts || []).filter((item) => [item.kind, item.data_kind, ...item.stages, ...item.hypothesis_ids].join(" ").toLowerCase().includes(search));
-  document.getElementById("artifact-count").textContent = `${artifacts.length}/${state.detail?.artifacts.length || 0}개`;
+  const omitted = state.detail?.artifact_omitted_count || 0;
+  document.getElementById("artifact-count").textContent = `${artifacts.length}/${state.detail?.artifacts.length || 0}개${omitted ? ` · 최소 ${omitted}개 미표시 (전체 ZIP 불가)` : ""}`;
   replace("artifacts", artifacts.length ? artifacts.map(selectableArtifact) : empty("조건에 맞는 아티팩트가 없습니다."));
 }
 
@@ -852,19 +861,15 @@ function toggleReplay() {
   }, 1200);
 }
 
-async function fetchEvents(encoded) {
-  const incremental = Boolean(state.eventCursor);
-  const url = `/api/analyses/${encoded}/events${incremental ? `?after=${encodeURIComponent(state.eventCursor)}` : ""}`;
+async function fetchEvents(encoded, cursor) {
+  const eventUrl = `/api/analyses/${encoded}/events`;
+  const url = cursor ? `${eventUrl}?after=${encodeURIComponent(cursor)}` : eventUrl;
   try {
-    const incoming = await getJson(url);
-    state.events = incremental ? [...state.events, ...incoming] : incoming;
+    return { items: await getJson(url), reset: false };
   } catch (error) {
-    if (!incremental) throw error;
-    state.events = await getJson(`/api/analyses/${encoded}/events`);
+    if (!cursor || !String(error).includes("(404)")) throw error;
+    return { items: await getJson(eventUrl), reset: true };
   }
-  state.eventCursor = state.events.at(-1)?.event_id || null;
-  document.getElementById("log-stream-status").textContent = state.eventCursor ? "증분 로그 연결됨" : "이벤트 대기 중";
-  return state.events;
 }
 
 async function loadStatusPage(encoded, offset = 0) {
@@ -900,6 +905,7 @@ function renderDetail(detail) {
   renderKpis(detail.kpis);
   renderStatusGrid(state.statusPage);
   renderExecutionHistory(state.events);
+  renderEvents();
   renderReadiness(detail.readiness || []);
   renderUsage(detail.usage || {});
   renderStaticTools(detail.static_tools || []);
@@ -908,7 +914,6 @@ function renderDetail(detail) {
   renderFailureGuidance(detail.pipeline || []);
   renderHypotheses(detail.hypotheses || []);
   renderChains(detail.hypotheses || []);
-  renderEvents();
   renderArtifacts();
   const artifactMap = new Map((detail.artifacts || []).map((item) => [item.artifact_id, item]));
   state.artifactMap = artifactMap;
@@ -918,10 +923,10 @@ function renderDetail(detail) {
   renderPinnedOutputs();
   const bundle = document.getElementById("bundle-download");
   bundle.href = detail.bundle_url || "#";
-  bundle.classList.toggle("hidden", !detail.bundle_url);
+  bundle.classList.toggle("hidden", !detail.bundle_url || !detail.artifact_projection_complete);
   const presentation = document.getElementById("presentation-download");
   presentation.href = detail.presentation_bundle_url || "#";
-  presentation.classList.toggle("hidden", !detail.presentation_bundle_url);
+  presentation.classList.toggle("hidden", !detail.presentation_bundle_url || !detail.artifact_projection_complete);
   const logs = document.getElementById("logs-download");
   logs.href = detail.logs_url || "#";
   updateSelectionLink();
@@ -931,6 +936,10 @@ function renderDetail(detail) {
 function clearDetail(message) {
   state.detail = null;
   state.events = [];
+  state.eventCursor = null;
+  state.eventAnalysis = null;
+  state.detailUpdatedAt = null;
+  state.detailRefreshedAt = 0;
   state.statusPage = null;
   state.statusPageOffset = 0;
   replace("overview", empty(message));
@@ -967,20 +976,51 @@ const refresh = singleFlight(async () => {
       clearDetail("분석을 실행하면 단계별 현황이 표시됩니다.");
       notice.textContent = "저장된 분석이 없습니다.";
     } else {
-      const requestedSelection = state.selected;
+      const selected = state.selected;
       const requestedOffset = state.statusPageOffset;
-      const encoded = encodeURIComponent(state.selected);
-      const [detail, , page] = await Promise.all([
-        getJson(`/api/analyses/${encoded}`),
-        fetchEvents(encoded),
+      const encoded = encodeURIComponent(selected);
+      if (state.eventAnalysis !== selected) {
+        state.events = [];
+        state.eventCursor = null;
+        state.detail = null;
+        state.statusPage = null;
+        state.eventAnalysis = selected;
+        renderEvents();
+      }
+      const summary = analyses.find((item) => item.analysis_id === selected || item.display_analysis_id === selected);
+      const needsDetail = !state.detail || state.detailUpdatedAt !== summary?.updated_at || Date.now() - state.detailRefreshedAt > 30000;
+      const [initialDetail, eventDelta, page] = await Promise.all([
+        needsDetail ? getJson(`/api/analyses/${encoded}`) : Promise.resolve(null),
+        fetchEvents(encoded, state.eventCursor),
         loadStatusPage(encoded, requestedOffset),
       ]);
-      if (state.selected !== requestedSelection || state.statusPageOffset !== requestedOffset) {
+      if (state.selected !== selected || state.statusPageOffset !== requestedOffset) {
+        window.setTimeout(refresh, 0);
+        return;
+      }
+      const pageChanged = JSON.stringify(page) !== JSON.stringify(state.statusPage);
+      const nextEvents = eventDelta.reset ? eventDelta.items : [...state.events, ...eventDelta.items];
+      const detail = initialDetail || (eventDelta.items.length ? await getJson(`/api/analyses/${encoded}`) : state.detail);
+      if (state.selected !== selected || state.statusPageOffset !== requestedOffset) {
         window.setTimeout(refresh, 0);
         return;
       }
       state.statusPage = page;
-      renderDetail(detail);
+      state.events = nextEvents;
+      state.eventCursor = nextEvents.at(-1)?.event_id || null;
+      document.getElementById("log-stream-status").textContent = state.eventCursor ? "증분 로그 연결됨" : "이벤트 대기 중";
+      if (detail !== state.detail) {
+        renderDetail(detail);
+        state.detailUpdatedAt = summary?.updated_at;
+        state.detailRefreshedAt = Date.now();
+      } else {
+        if (pageChanged) renderStatusGrid(page);
+        if (eventDelta.reset || eventDelta.items.length) {
+          renderExecutionHistory(state.events);
+          renderEvents();
+          applyReplay(state.replay.active ? state.replay.index : Math.max(0, state.events.length - 1));
+        }
+      }
       notice.textContent = detail.stale ? "실행이 멈췄을 수 있습니다." : "저장된 최신 상태를 표시합니다.";
       notice.classList.toggle("warning", detail.stale);
     }
