@@ -205,6 +205,7 @@ async def test_missing_python_playwright_browser_rebuilds_only_the_container_ima
     execution_ref = artifacts.put_json(
         {
             "kind": "simple_poc_execution",
+            "attempt_id": checkpoint.attempt_id,
             "stderr_ref": stderr_ref.model_dump(mode="json"),
         }
     )
@@ -256,6 +257,7 @@ async def test_poc_permission_error_regenerates_input_without_widening_workspace
     execution_ref = artifacts.put_json(
         {
             "kind": "simple_poc_execution",
+            "attempt_id": checkpoint.attempt_id,
             "stderr_ref": stderr_ref.model_dump(mode="json"),
         }
     )
@@ -312,9 +314,11 @@ async def test_unbound_permission_text_does_not_force_poc_regeneration(
     assert client.calls == 1
 
 
+@pytest.mark.parametrize("recorded_attempt", [None, "different-attempt"])
 @pytest.mark.asyncio
 async def test_other_attempt_permission_error_does_not_force_regeneration(
     tmp_path: Path,
+    recorded_attempt: str | None,
 ) -> None:
     checkpoint = _running_checkpoint()
     artifacts = SimpleArtifactRepository(tmp_path, checkpoint.identity)
@@ -322,7 +326,9 @@ async def test_other_attempt_permission_error_does_not_force_regeneration(
     execution_ref = artifacts.put_json(
         {
             "kind": "simple_poc_execution",
-            "attempt_id": "different-attempt",
+            **(
+                {"attempt_id": recorded_attempt} if recorded_attempt is not None else {}
+            ),
             "stderr_ref": stderr_ref.model_dump(mode="json"),
         }
     )

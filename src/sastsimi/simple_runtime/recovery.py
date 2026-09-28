@@ -310,11 +310,7 @@ class SimpleRecoveryCoordinator:
                 "simple_poc_execution"
             ):
                 continue
-            recorded_attempt = execution.get("attempt_id")
-            if (
-                recorded_attempt is not None
-                and recorded_attempt != checkpoint.attempt_id
-            ):
+            if execution.get("attempt_id") != checkpoint.attempt_id:
                 continue
             raw_stderr_ref = execution.get("stderr_ref")
             if raw_stderr_ref is None:
