@@ -104,7 +104,7 @@ sastsimi analyze https://github.com/owner/repository.git --commit <정확한-40�
 
 OpenGrep이 실패해도 AST와 설정된 CodeQL 결과는 보존합니다. 제품 범위의 미지원 파일은 확장자가 없어도 경로와 이유를 기록합니다. 일부 파일·규칙 조합이 검증되고 정적 bundle·coverage artifact가 온전하면 `STATIC_DONE`은 검증된 근거를 게시하고 후속 Agent로 진행할 수 있습니다. 미검증 조합의 raw hit는 Agent 후보나 Finding 근거에 넣지 않습니다. 검증 근거가 전혀 없거나 무결성이 깨지면 `BLOCKED`입니다. 대시보드는 검증/예상 수, 누락·미지원 이유와 전체 목록의 페이지 조회를 제공합니다.
 
-같은 commit·제품 범위·규칙·도구 지문에서 해시를 재검증한 파일·규칙 증거만 재개에 재사용합니다. `PARTIAL` 분석은 남은 정적 조합을 다시 시도하며, 완료된 Agent는 원래 입력 참조에 묶어 유지하고 새 근거에서 나온 가설만 추가합니다. 미지원 제품 언어를 완료로 간주하지 않습니다.
+같은 commit·제품 범위·규칙·도구 지문에서 해시를 재검증한 파일·규칙 증거만 재개에 재사용합니다. `PARTIAL` 분석에 미완료 Agent·PoC가 있으면 `resume`은 검증된 정적 근거를 재사용해 그 작업을 먼저 마칩니다. 후속 작업이 끝난 뒤 다시 `resume`하면 남은 정적 조합을 시도하며, 완료된 Agent는 원래 입력 참조에 묶어 유지하고 새 근거에서 나온 가설만 추가합니다. 미지원 제품 언어를 완료로 간주하지 않습니다.
 
 Python AST는 사실(facts) 저장 상한에 도달해도 선택된 제품 Python 파일을 계속 파싱합니다. 파싱 실패·용량 초과 파일은 불완전한 범위로 기록하며 사용 가능한 검증 부분이 있으면 `PARTIAL`로 진행할 수 있습니다. 패키지 설정을 읽지 못해 실제 배포 진입점을 확인할 수 없는 경우는 `STATIC_SCOPE_MANIFEST_UNVERIFIED`로 차단합니다.
 
@@ -114,7 +114,7 @@ Python AST는 사실(facts) 저장 상한에 도달해도 선택된 제품 Pytho
 
 scanner 실행 요청은 시작 전 `STARTED`와 종료 결과를 실행 ledger에 남깁니다. 완료 증거는 같은 commit·규칙·도구·요청 설명자와 원문 해시를 재검증한 파일·규칙 조합에만 부여합니다. coverage artifact의 각 미검증 조합에서 `known_attempt_count`는 완료 기록이 남은 scanner 실행 요청 수, `known_attempts_by_engine`는 그 OpenGrep·Semgrep별 수입니다. `history_complete`는 전체 실행 요청 이력을 정확히 셀 수 있는지 나타내며, 이전 summary나 미완료 `STARTED` 기록이 남아 있다면 `attempt_count`는 `null`입니다(완전하면 정확한 총 요청 수). `latest_error_code`·`latest_error_ref`는 가장 최근 기록된 실패 코드와 비공개 오류 근거 참조입니다. 캐시 재사용과 실행 전 검사는 호출로 세지 않습니다.
 
-정적 검사 한 회 예산 `static_scan_pass_seconds`의 기본값은 180초이며 `setup --static-scan-pass-seconds <초>`로 바꿀 수 있습니다. 예산이 끝난 조합은 `not_attempted_budget`로 남고 같은 범위의 `resume`에서 다시 시도합니다. 이는 분석 전체의 누적 시간 제한과 별개입니다.
+정적 검사 한 회 예산 `static_scan_pass_seconds`의 기본값은 180초이며 `setup --static-scan-pass-seconds <초>`로 바꿀 수 있습니다. 예산이 끝난 조합은 `not_attempted_budget`로 남으며, 미완료 Agent·PoC를 마친 뒤 같은 범위의 `resume`에서 다시 시도합니다. 이는 분석 전체의 누적 시간 제한과 별개입니다.
 
 [기존 Dify 정적 검사 검증](docs/validation/2026-09-27-dify-static-coverage.md)은 변경 전 관찰 기록입니다. [새 정적 재시험](docs/validation/2026-09-28-dify-static-retest.md)과 [전체 파이프라인 판정](docs/validation/2026-09-28-dify-end-to-end.md)은 실제 진행 상태와 확인된 한계를 구분해 기록합니다.
 
