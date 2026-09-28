@@ -315,15 +315,17 @@ def assess_scan(
         pair for pair in allowed if pair[0] in scanned and pair not in reasons
     )
     normalized_results: list[dict[str, object]] = []
+    result_paths: dict[str, str] = {}
     for result in cast(list[dict[str, object]], parsed["results"]):
         path_value = result["path"]
-        relative = (
-            _safe_relative_from_root(plan.workspace, path_value)
-            if isinstance(path_value, str)
-            else None
-        )
-        if relative is None:
+        if not isinstance(path_value, str):
             raise ValueError("STATIC_SCAN_RESULT_PATH_INVALID")
+        relative = result_paths.get(path_value)
+        if relative is None:
+            relative = _safe_relative_from_root(plan.workspace, path_value)
+            if relative is None:
+                raise ValueError("STATIC_SCAN_RESULT_PATH_INVALID")
+            result_paths[path_value] = relative
         pair = (relative, cast(str, result["check_id"]))
         if pair in allowed:
             normalized_results.append(
@@ -333,6 +335,9 @@ def assess_scan(
                     "scan_incomplete": pair not in verified,
                 }
             )
+    for raw_path, relative in result_paths.items():
+        if _safe_relative_from_root(plan.workspace, raw_path) != relative:
+            raise ValueError("STATIC_SCAN_RESULT_PATH_INVALID")
     return CoverageSlice(
         engine=engine,
         batch_key=batch.key,

@@ -159,6 +159,73 @@ def test_absolute_scanner_paths_are_normalized_on_all_platforms(tmp_path: Path) 
     assert slice_.normalized_results[0]["path"] == "app.ts"
 
 
+def test_repeated_result_path_is_resolved_once_per_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, rules = _plan(tmp_path)
+    path = tmp_path / "app.ts"
+    original_resolve = Path.resolve
+    path_resolutions = 0
+
+    def counting_resolve(self: Path, strict: bool = False) -> Path:
+        nonlocal path_resolutions
+        if self == path:
+            path_resolutions += 1
+        return original_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", counting_resolve)
+    raw = _raw(
+        scanned=["app.ts"],
+        results=[
+            {
+                "check_id": "rule.js",
+                "path": "app.ts",
+                "start": {"line": 1, "col": column},
+                "end": {"line": 1, "col": column + 1},
+            }
+            for column in range(40)
+        ],
+    )
+
+    slice_ = assess_scan(plan, rules.batches[0], raw, engine="opengrep")
+
+    assert len(slice_.normalized_results) == 40
+    assert all(result["path"] == "app.ts" for result in slice_.normalized_results)
+    assert slice_.verified_pairs == frozenset({("app.ts", "rule.js")})
+    assert path_resolutions <= 3
+
+
+def test_repeated_result_path_is_rechecked_after_normalization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, rules = _plan(tmp_path)
+    path = tmp_path / "app.ts"
+    outside = tmp_path.parent / f"{tmp_path.name}-redirect.ts"
+    outside.write_text("foo()\n", encoding="utf-8")
+    original_resolve = Path.resolve
+    path_resolutions = 0
+
+    def redirected_resolve(self: Path, strict: bool = False) -> Path:
+        nonlocal path_resolutions
+        if self == path:
+            path_resolutions += 1
+            if path_resolutions >= 3:
+                return outside
+        return original_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", redirected_resolve)
+    raw = _raw(
+        scanned=["app.ts"],
+        results=[
+            {"check_id": "rule.js", "path": "app.ts", "start": {"line": 1}}
+            for _ in range(20)
+        ],
+    )
+
+    with pytest.raises(ValueError, match="STATIC_SCAN_RESULT_PATH_INVALID"):
+        assess_scan(plan, rules.batches[0], raw, engine="opengrep")
+
+
 def test_scanned_file_with_parse_warning_remains_gap(tmp_path: Path) -> None:
     plan, rules = _plan(tmp_path)
     raw = _raw(
