@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Pydantic, SQLite, pytest, OpenGrep, Semgrep CE, CodeQL CLI 2.27.0, Windows PowerShell.
 
-**Spec:** `docs/superpowers/specs/2026-09-28-product-code-static-scope-design.md`
+**Spec:** `docs/plans/2026-09-28-product-code-static-scope-design.md`
 
 ## Global Constraints
 
