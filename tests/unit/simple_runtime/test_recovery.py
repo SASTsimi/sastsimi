@@ -313,6 +313,44 @@ async def test_unbound_permission_text_does_not_force_poc_regeneration(
 
 
 @pytest.mark.asyncio
+async def test_other_attempt_permission_error_does_not_force_regeneration(
+    tmp_path: Path,
+) -> None:
+    checkpoint = _running_checkpoint()
+    artifacts = SimpleArtifactRepository(tmp_path, checkpoint.identity)
+    stderr_ref = artifacts.put_bytes(b"PermissionError: storage", "text/plain")
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "attempt_id": "different-attempt",
+            "stderr_ref": stderr_ref.model_dump(mode="json"),
+        }
+    )
+    client = DecisionClient(
+        {
+            "category": "TERMINAL",
+            "action": "STOP",
+            "diagnosis": "stale execution evidence",
+            "guidance": "manual review",
+            "environment_patch": "",
+        }
+    )
+
+    result = await SimpleRecoveryCoordinator(client=client, artifacts=artifacts).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_EXECUTION_FAILED",
+            retryable=True,
+            safe_message="PoC execution failed",
+            evidence_refs=(execution_ref, stderr_ref),
+        ),
+    )
+
+    assert result.decision.action is RecoveryAction.STOP
+    assert client.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_browser_error_text_without_execution_record_does_not_force_rebuild(
     tmp_path: Path,
 ) -> None:
