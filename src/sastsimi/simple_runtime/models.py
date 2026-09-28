@@ -37,11 +37,10 @@ MAX_RECOVERY_ATTEMPTS = 3
 STAGE_VERSION: dict[SimpleStage, str] = {
     stage: (
         "3"
-        if stage is SimpleStage.REPORT_DONE
+        if stage in {SimpleStage.REPORT_DONE, SimpleStage.VERIFICATION_INITIAL_DONE}
         else "2"
         if stage
         in {
-            SimpleStage.VERIFICATION_INITIAL_DONE,
             SimpleStage.POC_EXECUTION_DONE,
             SimpleStage.POC_CANDIDATE_DONE,
             SimpleStage.VERIFICATION_FINAL_DONE,

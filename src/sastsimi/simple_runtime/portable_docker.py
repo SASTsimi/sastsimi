@@ -516,6 +516,12 @@ class DirectEnvironmentPreparer:
         requirements: tuple[str, ...],
     ) -> ReproductionEnvironment:
         target_manifest = self._target_manifest_path(prior)
+        if (
+            target_manifest is None
+            and (self._workspace / "pyproject.toml").is_file()
+            and self._target_install_layer("pyproject.toml")
+        ):
+            target_manifest = "pyproject.toml"
         target_install = self._target_install_layer(target_manifest)
         dockerfile_path = self._workspace / "Dockerfile"
         if dockerfile_path.is_file():
@@ -556,6 +562,7 @@ class DirectEnvironmentPreparer:
                 )
                 if (
                     not degraded
+                    and not target_install
                     and target_manifest in {None, "requirements.txt", "pyproject.toml"}
                     and self._dependency_install_failed(error, dockerfile)
                 ):
@@ -819,10 +826,7 @@ class DirectEnvironmentPreparer:
         return None
 
     def _target_install_layer(self, manifest_path: str | None) -> bytes:
-        if manifest_path is None or manifest_path in {
-            "requirements.txt",
-            "pyproject.toml",
-        }:
+        if manifest_path is None or manifest_path == "requirements.txt":
             return b""
         if any(char in manifest_path for char in "\r\n\x00\\"):
             raise ValueError("TARGET_MANIFEST_PATH_UNSAFE")
@@ -844,7 +848,11 @@ class DirectEnvironmentPreparer:
             ).encode()
         if relative.name != "pyproject.toml":
             raise ValueError("TARGET_MANIFEST_UNSUPPORTED")
-        project_dir = f"/workspace/{relative.parent.as_posix()}"
+        project_dir = (
+            "/workspace"
+            if relative.parent == PurePosixPath(".")
+            else f"/workspace/{relative.parent.as_posix()}"
+        )
         source_path = (
             f"RUN ln -s {shlex.quote(project_dir)} /opt/sastsimi-target-source\n"
             'ENV PYTHONPATH="/opt/sastsimi-target-source:'
@@ -858,6 +866,8 @@ class DirectEnvironmentPreparer:
         uv_config = tool.get("uv", {}) if isinstance(tool, dict) else {}
         uv_sources = uv_config.get("sources") if isinstance(uv_config, dict) else None
         if not isinstance(uv_sources, dict) or not uv_sources:
+            if manifest_path == "pyproject.toml":
+                return b""
             return (
                 "RUN python -m pip install --no-cache-dir "
                 f"{shlex.quote(project_dir)}\n"
@@ -890,7 +900,11 @@ class DirectEnvironmentPreparer:
         elif (self._workspace / "requirements.txt").is_file():
             install = "RUN pip install --no-cache-dir -r requirements.txt"
         elif (self._workspace / "pyproject.toml").is_file():
-            install = "RUN pip install --no-cache-dir ."
+            install = (
+                ""
+                if self._target_install_layer("pyproject.toml")
+                else "RUN pip install --no-cache-dir ."
+            )
         else:
             install = ""
         return (

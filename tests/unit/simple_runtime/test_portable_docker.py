@@ -25,6 +25,7 @@ from sastsimi.simple_runtime.portable_docker import (
     DirectEnvironmentPreparer,
     PortableDockerRuntime,
 )
+from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
 class _RecordingPortableDockerRuntime(PortableDockerRuntime):
@@ -278,8 +279,40 @@ async def test_runtime_process_preserves_programfiles_for_windows_docker_plugins
     assert "SASTSIMI_TEST_SECRET" not in child_environment
 
 
-def test_target_environment_change_invalidates_initial_verification() -> None:
-    assert STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE] == "2"
+def test_target_environment_change_invalidates_only_initial_verification_and_later(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-old-environment",
+        workspace_id="workspace-old-environment",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-old-environment",
+    )
+    for stage, version in (
+        (SimpleStage.PRO_CON_DONE, STAGE_VERSION[SimpleStage.PRO_CON_DONE]),
+        (SimpleStage.VERIFICATION_INITIAL_DONE, "2"),
+        (SimpleStage.POC_CANDIDATE_DONE, STAGE_VERSION[SimpleStage.POC_CANDIDATE_DONE]),
+    ):
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=identity,
+                stage=stage,
+                stage_version=version,
+                status=StageStatus.SUCCEEDED,
+                input_refs=(),
+                input_hash=input_reference_hash(()),
+            )
+        )
+
+    assert store.reusable(identity, SimpleStage.PRO_CON_DONE, ())
+    assert not store.reusable(identity, SimpleStage.VERIFICATION_INITIAL_DONE, ())
+    store.invalidate_from(
+        identity, SimpleStage.VERIFICATION_INITIAL_DONE, new_inputs=()
+    )
+    assert store.get(identity, SimpleStage.PRO_CON_DONE) is not None
+    assert store.get(identity, SimpleStage.VERIFICATION_INITIAL_DONE) is None
+    assert store.get(identity, SimpleStage.POC_CANDIDATE_DONE) is None
 
 
 @pytest.mark.asyncio
@@ -547,6 +580,138 @@ async def test_generated_image_uses_uv_for_nested_workspace_sources(
         b'/opt/sastsimi-target-source/src:${PYTHONPATH}"' in built
     )
     assert b"pip install --no-cache-dir /workspace/backend" not in built
+
+
+@pytest.mark.asyncio
+async def test_generated_image_uses_uv_for_root_workspace_sources(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("import local_agent\n", encoding="utf-8")
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "example-root"\nversion = "0.1.0"\n'
+        'dependencies = ["local-agent"]\n'
+        '[tool.uv.sources]\nlocal-agent = { path = "local-agent" }\n',
+        encoding="utf-8",
+    )
+    (workspace / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-root-uv",
+        workspace_id="workspace-root-uv",
+        commit_id="d" * 40,
+        hypothesis_id="hypothesis-root-uv",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    proposal_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "proposal": {"code_locations": ["app.py:1"]},
+        }
+    )
+    pro_con = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(proposal_ref,),
+        input_hash=input_reference_hash((proposal_ref,)),
+    )
+    docker = _BuildDocker()
+
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    ).prepare(
+        _environment_checkpoint(artifacts, action="RETRY_STAGE", patch=""),
+        {SimpleStage.PRO_CON_DONE: pro_con},
+        (),
+    )
+
+    built = docker.dockerfiles[0]
+    assert b"cd /workspace && uv sync --frozen --no-dev --no-default-groups" in built
+    assert b"ln -s /workspace/.venv /opt/sastsimi-target-venv" in built
+    assert b"pip install --no-cache-dir ." not in built
+    assert json.loads(artifacts.read(result.recipe_ref))["target_manifest_path"] == (
+        "pyproject.toml"
+    )
+
+
+@pytest.mark.asyncio
+async def test_root_uv_install_failure_does_not_fall_back_to_no_install(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "example-root"\nversion = "0.1.0"\n'
+        'dependencies = ["local-agent"]\n'
+        '[tool.uv.sources]\nlocal-agent = { path = "local-agent" }\n',
+        encoding="utf-8",
+    )
+    (workspace / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-root-uv-failure",
+        workspace_id="workspace-root-uv-failure",
+        commit_id="e" * 40,
+        hypothesis_id="hypothesis-root-uv-failure",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    docker = _FailingBuildDocker(
+        [b"RUN cd /workspace && uv sync --frozen: exit code 1"]
+    )
+
+    with pytest.raises(DockerOperationError, match="DOCKER_BUILD_FAILED") as failure:
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+        ).prepare(
+            _environment_checkpoint(artifacts, action="RETRY_STAGE", patch=""),
+            {},
+            (),
+        )
+
+    assert b"uv sync --frozen" in docker.dockerfiles[0]
+    assert len(docker.dockerfiles) == 1
+    recipe = json.loads(artifacts.read(failure.value.recipe_ref))  # type: ignore[attr-defined]
+    assert recipe["degraded"] is False
+    assert recipe["status"] == "BLOCKED"
+
+
+@pytest.mark.asyncio
+async def test_plain_root_pyproject_keeps_existing_pip_and_fallback(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "example-root"\nversion = "0.1.0"\n',
+        encoding="utf-8",
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-plain-root",
+        workspace_id="workspace-plain-root",
+        commit_id="f" * 40,
+        hypothesis_id="hypothesis-plain-root",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    docker = _FailingBuildDocker([b"RUN pip install --no-cache-dir .: exit code 1"])
+
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    ).prepare(
+        _environment_checkpoint(artifacts, action="RETRY_STAGE", patch=""),
+        {},
+        (),
+    )
+
+    assert b"RUN pip install --no-cache-dir ." in docker.dockerfiles[0]
+    assert b"uv sync" not in docker.dockerfiles[0]
+    assert len(docker.dockerfiles) == 2
+    assert json.loads(artifacts.read(result.recipe_ref))["degraded"] is True
 
 
 @pytest.mark.asyncio
