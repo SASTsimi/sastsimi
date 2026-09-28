@@ -2392,9 +2392,10 @@ async def test_successful_chaining_requires_trusted_output_before_completion(
         )
 
     async def invalid_chaining(
-        _checkpoint: StageCheckpoint,
-        _prior: Mapping[SimpleStage, StageCheckpoint],
+        checkpoint: StageCheckpoint,
+        prior: Mapping[SimpleStage, StageCheckpoint],
     ) -> StageResult:
+        del checkpoint, prior
         return StageResult(output_refs=invalid_refs)
 
     def runner_factory(
