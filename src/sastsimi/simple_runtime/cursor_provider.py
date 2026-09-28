@@ -32,6 +32,7 @@ from .provider import (
     _validate_schema,
 )
 from .store import SimpleCheckpointStore
+from .usage_values import canonical_cost, cost_minor_units, token_count
 
 _LOG = logging.getLogger(__name__)
 _MAX_RAW_BYTES = 512 * 1024
@@ -349,11 +350,11 @@ def _error_code(error: BaseException) -> tuple[str, bool]:
 
 
 def _token_count(value: int | float | None) -> int | None:
-    return int(value) if value is not None else None
+    return token_count(value)
 
 
 def _cost_cents(value: int | float | None) -> float | None:
-    return float(value) if value is not None else None
+    return cost_minor_units(value)
 
 
 class CursorProvider:
@@ -524,7 +525,7 @@ class CursorProvider:
                         parsed_output_ref=parsed_ref,
                         input_tokens=_token_count(usage.get("input_tokens")),
                         output_tokens=_token_count(usage.get("output_tokens")),
-                        cost_minor_units=usage.get("cost_minor_units"),
+                        cost_minor_units=_cost_cents(usage.get("cost_minor_units")),
                         on_demand_possible=True,
                     )
                     self._record_attempt(
@@ -632,7 +633,13 @@ class CursorProvider:
                 "parsed_output_ref": parsed_ref.model_dump(mode="json")
                 if parsed_ref
                 else None,
-                "usage": dict(usage),
+                "usage": {
+                    "input_tokens": _token_count(usage.get("input_tokens")),
+                    "output_tokens": _token_count(usage.get("output_tokens")),
+                    "cost_minor_units": canonical_cost(
+                        _cost_cents(usage.get("cost_minor_units"))
+                    ),
+                },
                 "on_demand_possible": True,
             }
         )

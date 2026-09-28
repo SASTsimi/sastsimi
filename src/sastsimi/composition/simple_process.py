@@ -18,9 +18,12 @@ class _LimitedOutput:
     def __init__(self, limit: int) -> None:
         self._limit = limit
         self._data = bytearray()
+        self.truncated = False
 
     def write(self, chunk: bytes) -> None:
         remaining = self._limit - len(self._data)
+        if len(chunk) > remaining:
+            self.truncated = True
         if remaining > 0:
             self._data.extend(chunk[:remaining])
 
@@ -30,6 +33,18 @@ class _LimitedOutput:
 
 
 class LocalProcessExecutor:
+    """Run scanner tools with a 4 GiB default per-call memory ceiling.
+
+    Windows caps committed memory for the whole Job Object. POSIX RLIMIT_AS
+    caps virtual address space per process, including each descendant, but
+    does not bound the descendant tree's aggregate RSS.
+    """
+
+    def __init__(self, *, memory_limit_bytes: int = 4 * 1024**3) -> None:
+        if memory_limit_bytes <= 0:
+            raise ValueError("PROCESS_MEMORY_LIMIT_INVALID")
+        self.memory_limit_bytes = memory_limit_bytes
+
     async def run(
         self,
         argv: Sequence[str],
@@ -59,7 +74,11 @@ class LocalProcessExecutor:
         )
         stdout = _LimitedOutput(32 * 1024 * 1024)
         stderr = _LimitedOutput(1024 * 1024)
-        backend = WindowsProcessBackend() if os.name == "nt" else PosixProcessBackend()
+        backend = (
+            WindowsProcessBackend(memory_limit_bytes=self.memory_limit_bytes)
+            if os.name == "nt"
+            else PosixProcessBackend(memory_limit_bytes=self.memory_limit_bytes)
+        )
         result = await backend.run(
             spec, timeout_seconds * 1000, stdout, stderr, asyncio.Event()
         )
@@ -69,6 +88,8 @@ class LocalProcessExecutor:
             returncode=result.return_code or 0,
             stdout=stdout.data,
             stderr=stderr.data,
+            stdout_truncated=stdout.truncated,
+            stderr_truncated=stderr.truncated,
         )
 
     @staticmethod

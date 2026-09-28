@@ -51,6 +51,10 @@ from sastsimi.static_analysis.codeql_adapter import (
     CodeQLProcessAdapter,
     digest_path,
 )
+from sastsimi.static_analysis.codeql_provision_source import (
+    codeql_manifest_sha256,
+    selected_codeql_tracked_files,
+)
 from sastsimi.static_analysis.container_codeql import (
     ContainerCodeQLSpec,
     build_container_codeql_create_argv,
@@ -1070,22 +1074,6 @@ class _LazyCodeQLAdapter:
         )
 
     @staticmethod
-    def _tracked_manifest_sha256(tracked: tuple[TrackedFile, ...]) -> str:
-        return hashlib.sha256(
-            canonical_bytes(
-                [
-                    {
-                        "git_path": item.git_path,
-                        "git_mode": item.git_mode,
-                        "blob_id": item.blob_id,
-                        "size_bytes": item.size_bytes,
-                    }
-                    for item in sorted(tracked, key=lambda item: item.git_path)
-                ]
-            )
-        ).hexdigest()
-
-    @staticmethod
     def _require_quota_binding(
         binding: object,
         *,
@@ -1289,9 +1277,10 @@ class _LazyCodeQLAdapter:
         if boundary is None:
             raise ValueError("CODEQL_APPROVED_BOUNDARY_MISMATCH")
         full_tracked = self._tracked_files_for(request.workspace)
+        product_tracked = selected_codeql_tracked_files(workspace_root, full_tracked)
         authorized_paths = frozenset(str(path) for path in request.action.file_paths)
         tracked = tuple(
-            item for item in full_tracked if item.git_path in authorized_paths
+            item for item in product_tracked if item.git_path in authorized_paths
         )
         if (
             not tracked
@@ -1375,7 +1364,7 @@ class _LazyCodeQLAdapter:
                     repository_url=str(request.workspace.repository_url),
                     commit_id=str(request.workspace.commit_id),
                     language=language,
-                    tracked_manifest_sha256=self._tracked_manifest_sha256(full_tracked),
+                    tracked_manifest_sha256=codeql_manifest_sha256(product_tracked),
                     profile_ref=profile_ref,
                     quota_binding=database_binding,
                     cancellation_requested=cancellation.is_set,
@@ -1523,22 +1512,6 @@ class _LazyContainerCodeQLAdapter:
         self._databases = RegisteredCodeQLDatabaseProvider(config)
         self._port_factory = port_factory
         self._active: dict[str, ContainerCodeQLProcessAdapter] = {}
-
-    @staticmethod
-    def _tracked_manifest_sha256(tracked: tuple[TrackedFile, ...]) -> str:
-        return hashlib.sha256(
-            canonical_bytes(
-                [
-                    {
-                        "git_path": item.git_path,
-                        "git_mode": item.git_mode,
-                        "blob_id": item.blob_id,
-                        "size_bytes": item.size_bytes,
-                    }
-                    for item in sorted(tracked, key=lambda item: item.git_path)
-                ]
-            )
-        ).hexdigest()
 
     def _profile_matches(self, profile: StaticToolProfile) -> bool:
         boundary = profile.codeql_boundary
@@ -1699,8 +1672,9 @@ class _LazyContainerCodeQLAdapter:
         if attempt_id in self._active:
             raise ValueError("CODEQL_ATTEMPT_ALREADY_ACTIVE")
         full_tracked = self._tracked_files_for(request.workspace)
+        product_tracked = selected_codeql_tracked_files(workspace_root, full_tracked)
         authorized = frozenset(str(path) for path in request.action.file_paths)
-        tracked = tuple(item for item in full_tracked if item.git_path in authorized)
+        tracked = tuple(item for item in product_tracked if item.git_path in authorized)
         if (
             not tracked
             or len(tracked) != len(authorized)
@@ -1736,7 +1710,7 @@ class _LazyContainerCodeQLAdapter:
                 repository_url=str(request.workspace.repository_url),
                 commit_id=str(request.workspace.commit_id),
                 language=language,
-                tracked_manifest_sha256=self._tracked_manifest_sha256(full_tracked),
+                tracked_manifest_sha256=codeql_manifest_sha256(product_tracked),
             )
             if self._config.nano_cpus % 1_000_000 != 0:
                 raise ValueError("CODEQL_CONTAINER_CPU_LIMIT_INVALID")

@@ -15,8 +15,10 @@ from typing import Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from sastsimi.config.user_config import (
+    ElapsedLimit,
     SimpleExecutionProfile,
     SimpleToolBinding,
+    TokenLimit,
     UserConfig,
     UserConfigStore,
 )
@@ -60,8 +62,9 @@ class SetupChoices(BaseModel):
     credential_ref: str
     execution_profile: Literal["FULL", "LIGHTWEIGHT"]
     max_cost_minor_units: int = Field(gt=0)
-    max_tokens: int = Field(gt=0)
-    max_elapsed_seconds: int = Field(gt=0)
+    max_tokens: TokenLimit = "unlimited"
+    max_elapsed_seconds: ElapsedLimit = "unlimited"
+    static_scan_pass_seconds: int = Field(default=180, gt=0)
     docker_network: Literal["NONE", "BRIDGE"]
     agent_models: dict[str, str] = Field(default_factory=dict)
     llm_timeout_seconds: int = Field(default=180, gt=0, le=3600)
@@ -468,6 +471,7 @@ class SetupService:
             max_cost_minor_units=choices.max_cost_minor_units,
             max_tokens=choices.max_tokens,
             max_elapsed_seconds=choices.max_elapsed_seconds,
+            static_scan_pass_seconds=choices.static_scan_pass_seconds,
             docker_network=choices.docker_network,
             enabled_tools=enabled_tools,
             detected_versions=detected_versions,
@@ -509,6 +513,7 @@ class SetupService:
             max_cost_minor_units=choices.max_cost_minor_units,
             max_tokens=choices.max_tokens,
             max_elapsed_seconds=choices.max_elapsed_seconds,
+            static_scan_pass_seconds=choices.static_scan_pass_seconds,
             docker_network=choices.docker_network,
             tools=bindings,
             agent_models=choices.agent_models,

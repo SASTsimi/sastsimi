@@ -79,3 +79,30 @@ def test_strict_context_rejects_large_redacted_input_without_truncation(
 
     with pytest.raises(ValueError, match="SIMPLE_RUNTIME_CONTEXT_TOO_LARGE"):
         artifacts.prompt_context_strict((policy_ref, technical_ref))
+
+
+def test_oversized_corrupt_scan_artifact_is_quarantined_before_retry(
+    tmp_path: Path,
+) -> None:
+    artifacts = _repository(tmp_path)
+    expected = b'{"results":[],"errors":[]}'
+    ref = artifacts.put_bytes(expected, "application/json")
+    path = artifacts.artifacts.path_for(ref.content_hash)
+    path.write_bytes(b"x" * 257)
+
+    assert artifacts.quarantine_corrupt(ref, max_bytes=256)
+    assert not path.exists()
+    assert artifacts.put_bytes(expected, "application/json") == ref
+    assert artifacts.read_bounded(ref, 256) == expected
+
+
+def test_valid_artifact_above_scan_reader_limit_is_not_quarantined(
+    tmp_path: Path,
+) -> None:
+    artifacts = _repository(tmp_path)
+    ref = artifacts.put_bytes(b"valid historical artifact", "application/json")
+    path = artifacts.artifacts.path_for(ref.content_hash)
+
+    assert not artifacts.quarantine_corrupt(ref, max_bytes=8)
+    assert path.is_file()
+    assert artifacts.read(ref) == b"valid historical artifact"

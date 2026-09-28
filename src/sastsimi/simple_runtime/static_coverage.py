@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections import Counter, deque
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
 
@@ -16,8 +16,10 @@ from sastsimi.contracts.refs import StoredDataRef
 from .opengrep_rule_batches import RuleBatch, RuleBatchPlan, parse_rule_batch
 
 _SNIPPET_LIMIT = 500
+_MAX_STATIC_CANDIDATES = 500_000
+_MAX_STATIC_CANDIDATE_RAW_BYTES = 4 * 1024 * 1024 * 1024
 
-_POLICY_VERSION = 1
+_POLICY_VERSION = 2
 _LANGUAGE_EXTENSIONS: dict[str, frozenset[str]] = {
     "python": frozenset({".py", ".pyi"}),
     "javascript": frozenset(
@@ -25,31 +27,81 @@ _LANGUAGE_EXTENSIONS: dict[str, frozenset[str]] = {
     ),
     "typescript": frozenset({".ts", ".tsx", ".mts", ".cts"}),
 }
-_KNOWN_SOURCE_EXTENSIONS = frozenset(
+_NON_SOURCE_EXTENSIONS = frozenset(
     {
-        ".go",
-        ".java",
-        ".rs",
-        ".rb",
-        ".php",
-        ".cs",
-        ".cpp",
-        ".cc",
-        ".c",
-        ".h",
-        ".hpp",
-        ".swift",
-        ".kt",
-        ".scala",
-        ".sh",
-        ".ps1",
-        ".vue",
-        ".svelte",
-        ".lua",
-        ".ex",
-        ".exs",
-        ".dart",
-        ".sql",
+        ".adoc",
+        ".bz2",
+        ".cer",
+        ".cfg",
+        ".conf",
+        ".crt",
+        ".csv",
+        ".diff",
+        ".dockerignore",
+        ".eot",
+        ".env",
+        ".example",
+        ".gif",
+        ".gz",
+        ".ico",
+        ".ini",
+        ".jpeg",
+        ".jpg",
+        ".json",
+        ".jsonl",
+        ".key",
+        ".lock",
+        ".log",
+        ".map",
+        ".md",
+        ".mod",
+        ".otf",
+        ".patch",
+        ".pdf",
+        ".pem",
+        ".png",
+        ".properties",
+        ".rst",
+        ".snap",
+        ".svg",
+        ".sum",
+        ".tar",
+        ".tgz",
+        ".toml",
+        ".tsv",
+        ".ttf",
+        ".txt",
+        ".typed",
+        ".webp",
+        ".woff",
+        ".woff2",
+        ".xml",
+        ".xz",
+        ".yaml",
+        ".yml",
+        ".zip",
+    }
+)
+_NON_SOURCE_BASENAMES = frozenset(
+    {
+        ".dockerignore",
+        ".editorconfig",
+        ".eslintignore",
+        ".gitattributes",
+        ".gitignore",
+        ".npmignore",
+        ".nvmrc",
+        ".prettierignore",
+        ".python-version",
+        ".tool-versions",
+        "authors",
+        "changelog",
+        "code_of_conduct",
+        "contributors",
+        "license",
+        "notice",
+        "readme",
+        "security",
     }
 )
 
@@ -64,6 +116,44 @@ class StaticCoveragePlan:
     unavailable_pairs: frozenset[Pair]
     unsupported: tuple[tuple[str, int], ...]
     excluded_paths: tuple[str, ...]
+    unsupported_files: tuple[tuple[str, str], ...] = ()
+
+
+class StaticCandidateLimitError(Exception):
+    """A scan cannot retain all candidate evidence within the finite budget."""
+
+    def __init__(self) -> None:
+        super().__init__("STATIC_CANDIDATES_TOO_LARGE")
+
+
+@dataclass(slots=True)
+class StaticCandidateBudget:
+    """Charge each retained scan, including repeated evaluation of one raw result."""
+
+    max_results: int = _MAX_STATIC_CANDIDATES
+    max_raw_bytes: int = _MAX_STATIC_CANDIDATE_RAW_BYTES
+    used_results: int = field(default=0, init=False)
+    used_raw_bytes: int = field(default=0, init=False)
+
+    def __post_init__(self) -> None:
+        if self.max_results < 0 or self.max_raw_bytes < 0:
+            raise ValueError("STATIC_CANDIDATE_BUDGET_INVALID")
+
+    def reserve_raw(self, size: int) -> None:
+        if size > self.max_raw_bytes - self.used_raw_bytes:
+            raise StaticCandidateLimitError()
+        self.used_raw_bytes += size
+
+    def release_raw(self, size: int) -> None:
+        self.used_raw_bytes -= size
+
+    def require_results(self, additional: int) -> None:
+        if additional > self.max_results - self.used_results:
+            raise StaticCandidateLimitError()
+
+    def claim_results(self, count: int) -> None:
+        self.require_results(count)
+        self.used_results += count
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +183,7 @@ class StaticCoverageReport:
     gaps: tuple[CoverageGap, ...]
     unsupported: tuple[tuple[str, int], ...]
     excluded_paths: tuple[str, ...]
+    unsupported_files: tuple[tuple[str, str], ...] = ()
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -108,14 +199,17 @@ class StaticCoverageReport:
                 {"extension": extension, "file_count": count}
                 for extension, count in self.unsupported
             ],
+            "unsupported_files": [
+                {"path": path, "reason": reason}
+                for path, reason in self.unsupported_files
+            ],
             "excluded_paths": list(self.excluded_paths),
         }
 
 
-def _safe_relative(workspace: Path, raw: str) -> str | None:
+def _safe_relative_from_root(root: Path, raw: str) -> str | None:
     if not raw or "\x00" in raw:
         return None
-    root = workspace.resolve()
     supplied = Path(raw)
     candidate = supplied if supplied.is_absolute() else root / supplied
     try:
@@ -130,6 +224,31 @@ def _safe_relative(workspace: Path, raw: str) -> str | None:
     return relative.as_posix()
 
 
+def static_coverage_fingerprint(
+    tracked: Sequence[str],
+    commit_id: str,
+    rules: RuleBatchPlan,
+    *,
+    fallback_tool_fingerprint: str | None = None,
+    scope_fingerprint: str | None = None,
+) -> str:
+    """Hash the coverage identity without rechecking the pinned checkout."""
+
+    data: dict[str, object] = {
+        "version": _POLICY_VERSION,
+        "commit_id": commit_id,
+        "tracked": sorted(set(tracked)),
+        "rules_fingerprint": rules.fingerprint,
+        "fallback_tool_fingerprint": fallback_tool_fingerprint,
+        "language_extensions": {
+            key: sorted(value) for key, value in sorted(_LANGUAGE_EXTENSIONS.items())
+        },
+    }
+    if scope_fingerprint is not None:
+        data["scope_fingerprint"] = scope_fingerprint
+    return hashlib.sha256(canonical_bytes(data)).hexdigest()
+
+
 def plan_static_coverage(
     workspace: Path,
     tracked: Sequence[str],
@@ -137,6 +256,7 @@ def plan_static_coverage(
     rules: RuleBatchPlan,
     *,
     fallback_tool_fingerprint: str | None = None,
+    scope_fingerprint: str | None = None,
 ) -> StaticCoveragePlan:
     """Bind applicable pairs to one checkout, rule catalog, and scanner digest."""
 
@@ -152,7 +272,8 @@ def plan_static_coverage(
     unavailable_pairs: set[Pair] = set()
     excluded: set[str] = set()
     unsupported: Counter[str] = Counter()
-    known = frozenset().union(*_LANGUAGE_EXTENSIONS.values())
+    unsupported_files: set[tuple[str, str]] = set()
+    root = workspace.resolve()
     for raw in sorted(set(tracked)):
         if (
             not raw
@@ -163,7 +284,7 @@ def plan_static_coverage(
             or Path(raw).is_absolute()
         ):
             raise ValueError("STATIC_COVERAGE_TRACKED_PATH_INVALID")
-        relative = _safe_relative(workspace, raw)
+        relative = _safe_relative_from_root(root, raw)
         if relative is None:
             excluded.add(raw)
             relative = raw
@@ -183,34 +304,34 @@ def plan_static_coverage(
                 if unavailable:
                     unavailable_pairs.add((relative, rule_id))
                 matched = True
-        if not matched and extension in _KNOWN_SOURCE_EXTENSIONS | known:
+        if (
+            not matched
+            and extension not in _NON_SOURCE_EXTENSIONS
+            and Path(relative).name.lower() not in _NON_SOURCE_BASENAMES
+            and not Path(relative).name.lower().startswith(".env.")
+            and Path(relative).name.lower() != ".env"
+        ):
             unsupported[extension] += 1
-    fingerprint = hashlib.sha256(
-        canonical_bytes(
-            {
-                "version": _POLICY_VERSION,
-                "commit_id": commit_id,
-                "tracked": sorted(set(tracked)),
-                "rules_fingerprint": rules.fingerprint,
-                "fallback_tool_fingerprint": fallback_tool_fingerprint,
-                "language_extensions": {
-                    key: sorted(value)
-                    for key, value in sorted(_LANGUAGE_EXTENSIONS.items())
-                },
-            }
-        )
-    ).hexdigest()
+            unsupported_files.add((relative, "no_applicable_rule"))
+    fingerprint = static_coverage_fingerprint(
+        tracked,
+        commit_id,
+        rules,
+        fallback_tool_fingerprint=fallback_tool_fingerprint,
+        scope_fingerprint=scope_fingerprint,
+    )
     return StaticCoveragePlan(
-        workspace=workspace.resolve(),
+        workspace=root,
         fingerprint=fingerprint,
         expected_pairs=frozenset(pairs),
         unavailable_pairs=frozenset(unavailable_pairs),
         unsupported=tuple(sorted(unsupported.items())),
         excluded_paths=tuple(sorted(excluded)),
+        unsupported_files=tuple(sorted(unsupported_files)),
     )
 
 
-def _paths(value: object, workspace: Path) -> set[str]:
+def _paths(value: object, root: Path) -> set[str]:
     if not isinstance(value, list):
         raise ValueError("STATIC_SCAN_PATHS_INVALID")
     paths: set[str] = set()
@@ -218,7 +339,7 @@ def _paths(value: object, workspace: Path) -> set[str]:
         raw = item.get("path") if isinstance(item, dict) else item
         if not isinstance(raw, str):
             raise ValueError("STATIC_SCAN_PATHS_INVALID")
-        path = _safe_relative(workspace, raw)
+        path = _safe_relative_from_root(root, raw)
         if path is None:
             raise ValueError("STATIC_SCAN_PATHS_INVALID")
         paths.add(path)
@@ -232,8 +353,32 @@ def assess_scan(
     *,
     engine: Literal["opengrep", "semgrep"],
     targets: Sequence[str] | None = None,
+    candidate_budget: StaticCandidateBudget | None = None,
 ) -> CoverageSlice:
     """Only explicit, error-free scanned paths earn this batch's rule coverage."""
+
+    budget = (
+        candidate_budget if candidate_budget is not None else StaticCandidateBudget()
+    )
+    budget.reserve_raw(len(raw))
+    try:
+        return _assess_scan(
+            plan, batch, raw, engine=engine, targets=targets, budget=budget
+        )
+    except Exception:
+        budget.release_raw(len(raw))
+        raise
+
+
+def _assess_scan(
+    plan: StaticCoveragePlan,
+    batch: RuleBatch,
+    raw: bytes,
+    *,
+    engine: Literal["opengrep", "semgrep"],
+    targets: Sequence[str] | None,
+    budget: StaticCandidateBudget,
+) -> CoverageSlice:
 
     parsed = parse_rule_batch(raw, batch, allow_errors=True)
     paths = parsed.get("paths")
@@ -242,13 +387,25 @@ def assess_scan(
     scanned = _paths(paths.get("scanned"), plan.workspace)
     skipped = _paths(paths.get("skipped", []), plan.workspace)
     target_set = _paths(list(targets), plan.workspace) if targets is not None else None
-    allowed = {
-        pair
-        for pair in plan.expected_pairs
-        if pair not in plan.unavailable_pairs
-        and pair[1] in batch.rule_ids
-        and (target_set is None or pair[0] in target_set)
-    }
+    if target_set is not None and not (scanned | skipped) <= target_set:
+        raise ValueError("STATIC_SCAN_SCOPE_MISMATCH")
+    if target_set is None:
+        allowed = {
+            pair
+            for pair in plan.expected_pairs
+            if pair not in plan.unavailable_pairs and pair[1] in batch.rule_ids
+        }
+    else:
+        # A fallback node names at most a small target chunk. Probe only those
+        # file/rule combinations rather than walking the entire repository plan
+        # again for every retry and replayed artifact.
+        allowed = {
+            (path, rule_id)
+            for path in target_set
+            for rule_id in batch.rule_ids
+            if (path, rule_id) in plan.expected_pairs
+            and (path, rule_id) not in plan.unavailable_pairs
+        }
     reasons: dict[Pair, str] = {}
     errors = parsed.get("errors", [])
     assert isinstance(errors, list)
@@ -256,7 +413,7 @@ def assess_scan(
         error = cast(dict[str, object], raw_error)
         path_value = error.get("path")
         path = (
-            _safe_relative(plan.workspace, path_value)
+            _safe_relative_from_root(plan.workspace, path_value)
             if isinstance(path_value, str)
             else None
         )
@@ -264,6 +421,8 @@ def assess_scan(
             for pair in allowed:
                 reasons[pair] = "unlocated_scan_error"
             continue
+        if target_set is not None and path not in target_set:
+            raise ValueError("STATIC_SCAN_SCOPE_MISMATCH")
         for pair in allowed:
             if pair[0] == path:
                 if error.get("type") == "Timeout":
@@ -288,17 +447,22 @@ def assess_scan(
         pair for pair in allowed if pair[0] in scanned and pair not in reasons
     )
     normalized_results: list[dict[str, object]] = []
+    result_paths: dict[str, str] = {}
     for result in cast(list[dict[str, object]], parsed["results"]):
         path_value = result["path"]
-        relative = (
-            _safe_relative(plan.workspace, path_value)
-            if isinstance(path_value, str)
-            else None
-        )
-        if relative is None:
+        if not isinstance(path_value, str):
             raise ValueError("STATIC_SCAN_RESULT_PATH_INVALID")
+        relative = result_paths.get(path_value)
+        if relative is None:
+            relative = _safe_relative_from_root(plan.workspace, path_value)
+            if relative is None:
+                raise ValueError("STATIC_SCAN_RESULT_PATH_INVALID")
+            result_paths[path_value] = relative
         pair = (relative, cast(str, result["check_id"]))
+        if target_set is not None and relative not in target_set:
+            raise ValueError("STATIC_SCAN_SCOPE_MISMATCH")
         if pair in allowed:
+            budget.require_results(len(normalized_results) + 1)
             normalized_results.append(
                 {
                     **result,
@@ -306,7 +470,13 @@ def assess_scan(
                     "scan_incomplete": pair not in verified,
                 }
             )
-    return CoverageSlice(
+    for raw_path, relative in result_paths.items():
+        if _safe_relative_from_root(plan.workspace, raw_path) != relative:
+            raise ValueError("STATIC_SCAN_RESULT_PATH_INVALID")
+    # The immutable raw artifact retains every hit. Keep only normalized hits in
+    # memory; downstream coverage/merge consumers need parsed scan metadata only.
+    parsed["results"] = []
+    slice_ = CoverageSlice(
         engine=engine,
         batch_key=batch.key,
         rule_ids=batch.rule_ids,
@@ -319,6 +489,8 @@ def assess_scan(
         parsed=parsed,
         normalized_results=tuple(normalized_results),
     )
+    budget.claim_results(len(normalized_results))
+    return slice_
 
 
 def finish_coverage(
@@ -350,6 +522,7 @@ def finish_coverage(
         gaps=gaps,
         unsupported=plan.unsupported,
         excluded_paths=plan.excluded_paths,
+        unsupported_files=plan.unsupported_files,
     )
 
 
@@ -370,6 +543,12 @@ def merge_static_candidates(
 ) -> bytes:
     """Deduplicate verified hits while preserving fair per-rule visibility."""
 
+    remaining = _MAX_STATIC_CANDIDATES
+    for slice_ in slices:
+        remaining -= len(slice_.normalized_results)
+        if remaining < 0:
+            raise StaticCandidateLimitError()
+
     buckets: dict[str, deque[dict[str, object]]] = {
         rule_id: deque() for rule_id in plan.rule_ids
     }
@@ -388,6 +567,8 @@ def merge_static_candidates(
                 or type(line) is not int
             ):
                 raise ValueError("STATIC_CANDIDATE_INVALID")
+            if (path, rule_id) not in slice_.verified_pairs:
+                continue
             key = (
                 rule_id,
                 path,

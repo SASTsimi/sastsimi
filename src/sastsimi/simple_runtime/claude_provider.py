@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 from time import monotonic
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 from uuid import uuid4
 from weakref import WeakKeyDictionary
 
@@ -29,6 +29,7 @@ from .artifacts import SimpleArtifactRepository
 from .models import StageFailure
 from .provider import SimpleLLMCallResult, _validate_schema
 from .store import SimpleCheckpointStore
+from .usage_values import canonical_cost, cost_minor_units, token_count
 
 _VERIFIED_VERSION = "2.1.280"
 _MAX_STREAM_BYTES = 4 * 1024 * 1024
@@ -262,7 +263,7 @@ def _parse_stream(raw: bytes, model: str) -> ClaudeCLIResponse:
             if (
                 isinstance(reported_cost, (int, float))
                 and not isinstance(reported_cost, bool)
-                and reported_cost >= 0
+                and cost_minor_units(reported_cost) is not None
             ):
                 total_cost_usd = reported_cost
             state = "DONE"
@@ -610,9 +611,9 @@ class ClaudeProvider:
                         elapsed_ms=max(0, int((monotonic() - started) * 1000)),
                         raw_output_ref=raw_ref,
                         parsed_output_ref=parsed_ref,
-                        input_tokens=response.input_tokens,
-                        output_tokens=response.output_tokens,
-                        cost_minor_units=response.cost_minor_units,
+                        input_tokens=token_count(response.input_tokens),
+                        output_tokens=token_count(response.output_tokens),
+                        cost_minor_units=cost_minor_units(response.cost_minor_units),
                         on_demand_possible=True,
                     )
                 except asyncio.CancelledError:
@@ -684,6 +685,9 @@ class ClaudeProvider:
         usage: Mapping[str, int | float | None],
     ) -> None:
         elapsed = max(0, int((monotonic() - started) * 1000))
+        input_tokens = token_count(usage.get("input_tokens"))
+        output_tokens = token_count(usage.get("output_tokens"))
+        cost = cost_minor_units(usage.get("cost_minor_units"))
         _LOG.info(
             "claude_call analysis_id=%s agent=%s model=%s "
             "attempt=%d elapsed_ms=%d status=%s",
@@ -707,7 +711,11 @@ class ClaudeProvider:
                 "parsed_output_ref": parsed_ref.model_dump(mode="json")
                 if parsed_ref
                 else None,
-                "usage": dict(usage),
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cost_minor_units": canonical_cost(cost),
+                },
                 "on_demand_possible": True,
             }
         )
@@ -719,9 +727,9 @@ class ClaudeProvider:
             attempt_number=attempt,
             status=status,
             elapsed_ms=elapsed,
-            input_tokens=cast(int | None, usage.get("input_tokens")),
-            output_tokens=cast(int | None, usage.get("output_tokens")),
-            cost_cents=cast(float | None, usage.get("cost_minor_units")),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_cents=cost,
             artifact_ref=artifact_ref,
         )
 

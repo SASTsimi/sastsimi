@@ -188,6 +188,28 @@ def create_server(
                 elif (
                     len(parts) == 4
                     and parts[:2] == ("api", "analyses")
+                    and parts[3] == "static-coverage"
+                ):
+                    parameters = parse_qs(parsed.query)
+                    try:
+                        kind = parameters.get("kind", ["gaps"])[0]
+                        offset = int(parameters.get("offset", ["0"])[0])
+                        limit = int(parameters.get("limit", ["100"])[0])
+                        page = query.get_static_coverage_page(
+                            parts[2], kind=kind, offset=offset, limit=limit
+                        )
+                    except ValueError:
+                        self._response(
+                            HTTPStatus.BAD_REQUEST,
+                            b'{"error":"invalid_page"}',
+                            "application/json; charset=utf-8",
+                            send_body,
+                        )
+                    else:
+                        self._json(page, send_body)
+                elif (
+                    len(parts) == 4
+                    and parts[:2] == ("api", "analyses")
                     and parts[3] == "events"
                 ):
                     after = parse_qs(parsed.query).get("after", [None])[0]

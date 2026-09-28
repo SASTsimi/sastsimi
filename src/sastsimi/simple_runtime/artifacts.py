@@ -82,9 +82,13 @@ class SimpleArtifactRepository:
             raise ValueError("SIMPLE_RUNTIME_EXACT_REFERENCE_MISMATCH")
         return payload
 
-    def quarantine_corrupt(self, ref: StoredDataRef) -> bool:
+    def quarantine_corrupt(
+        self, ref: StoredDataRef, *, max_bytes: int | None = None
+    ) -> bool:
         """Move only a verified-invalid CAS file aside before an exact retry."""
 
+        if max_bytes is not None and max_bytes < 0:
+            raise ValueError("SIMPLE_RUNTIME_ARTIFACT_LIMIT_INVALID")
         self._require_scope(ref)
         if (
             ref.record_id is not None
@@ -103,7 +107,20 @@ class SimpleArtifactRepository:
             or not path.resolve(strict=True).is_relative_to(self.artifacts.root)
         ):
             raise ValueError("SIMPLE_RUNTIME_ARTIFACT_PATH_UNSAFE")
-        if hashlib.sha256(path.read_bytes()).hexdigest() == ref.content_hash:
+        # The scan reader may reject a historically valid large object. Hash
+        # it in bounded memory before deciding to move this global CAS path.
+        with path.open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                raise ValueError("SIMPLE_RUNTIME_ARTIFACT_PATH_UNSAFE")
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            closed = os.fstat(stream.fileno())
+            if (opened.st_size, opened.st_mtime_ns) != (
+                closed.st_size,
+                closed.st_mtime_ns,
+            ):
+                raise ValueError("SIMPLE_RUNTIME_ARTIFACT_CHANGED")
+        if digest == ref.content_hash:
             return False
         quarantine = self.paths.quarantine
         if quarantine.is_symlink() or not quarantine.resolve().is_relative_to(

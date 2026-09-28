@@ -1538,6 +1538,51 @@ async def test_one_valid_flow_does_not_hide_a_second_unsafe_flow(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("location_kind", ["result", "flow"])
+async def test_product_scope_rejects_sarif_result_from_excluded_test_file(
+    codeql_fixture: dict[str, Any], location_kind: str
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    result = flow_result([physical("src/app.py", 1), physical("src/sink.py", 2)])
+    if location_kind == "result":
+        result["locations"] = [physical("tests/test_app.py", 3)]
+    else:
+        result["codeFlows"] = [
+            {
+                "threadFlows": [
+                    {
+                        "locations": [
+                            physical("src/app.py", 1),
+                            physical("tests/test_app.py", 3),
+                        ]
+                    }
+                ]
+            }
+        ]
+    executable = codeql_fixture["executable"]
+    tool_profile = profile(executable)
+    _, request = workspace_and_request(tool_profile)
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=codeql_fixture["inputs"],
+        runner_factory=RunnerFactory(FakeRunner(sarif=sarif(results=[result]))),
+    )
+
+    observed = await adapter.execute(
+        request,
+        fixture_workspace(codeql_fixture),
+        tool_profile,
+        deadline(str(request.action.action_id)),
+    )
+
+    assert observed.status == "FAILED"
+    assert observed.facts == () and observed.relations == ()
+    assert any(error.code == "STATIC_OUTPUT_MALFORMED" for error in observed.errors)
+
+
+@pytest.mark.asyncio
 async def test_each_valid_flow_keeps_its_own_endpoint_fact_provenance(
     codeql_fixture: dict[str, Any],
 ) -> None:

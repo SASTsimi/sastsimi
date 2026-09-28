@@ -168,19 +168,23 @@ async def test_static_bootstrap_persists_exact_policy_snapshot(
         hypothesis_id=None,
     )
 
-    result = await bootstrap.run(
-        SimpleAnalysisRequest(
-            data_dir=tmp_path,
-            repository="https://github.com/acme/app",
-            commit="a" * 40,
-        ),
-        identity,
-    )
+    with pytest.raises(
+        bootstrap_stages.StaticCoverageBlocked, match="STATIC_PRODUCT_SOURCE_EMPTY"
+    ) as caught:
+        await bootstrap.run(
+            SimpleAnalysisRequest(
+                data_dir=tmp_path,
+                repository="https://github.com/acme/app",
+                commit="a" * 40,
+            ),
+            identity,
+        )
 
     assert discovery.calls == 1
-    assert result.policy_snapshot_ref is not None
     artifacts = SimpleArtifactRepository(tmp_path, identity)
-    snapshot = json.loads(artifacts.read(result.policy_snapshot_ref))
+    bundle = json.loads(artifacts.read(caught.value.bundle_ref))
+    snapshot_ref = StoredDataRef.model_validate(bundle["policy_snapshot_ref"])
+    snapshot = json.loads(artifacts.read(snapshot_ref))
     assert snapshot["kind"] == "simple_policy_snapshot"
     assert snapshot["analysis_id"] == "analysis-1"
     assert snapshot["status"] == status

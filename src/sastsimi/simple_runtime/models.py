@@ -36,12 +36,13 @@ HYPOTHESIS_STAGES: tuple[SimpleStage, ...] = STAGE_ORDER[2:]
 MAX_RECOVERY_ATTEMPTS = 3
 STAGE_VERSION: dict[SimpleStage, str] = {
     stage: (
-        "3"
+        "5"
+        if stage is SimpleStage.VERIFICATION_INITIAL_DONE
+        else "3"
         if stage is SimpleStage.REPORT_DONE
         else "2"
         if stage
         in {
-            SimpleStage.VERIFICATION_INITIAL_DONE,
             SimpleStage.POC_EXECUTION_DONE,
             SimpleStage.POC_CANDIDATE_DONE,
             SimpleStage.VERIFICATION_FINAL_DONE,
@@ -85,6 +86,8 @@ class SimpleAnalysisRun(ContractModel):
     workspace_path: Path | None = None
     repository_profile_ref: StoredDataRef | None = None
     static_bundle_ref: StoredDataRef | None = None
+    static_coverage_ref: StoredDataRef | None = None
+    static_disposition: Literal["FULL", "PARTIAL"] = "FULL"
     security_policy_ref: StoredDataRef | None = None
     policy_snapshot_ref: StoredDataRef | None = None
     hypothesis_ids: tuple[str, ...] = ()

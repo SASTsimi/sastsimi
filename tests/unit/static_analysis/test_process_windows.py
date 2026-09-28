@@ -68,7 +68,9 @@ class FakeWin32Api:
     def create_job(self) -> object:
         return self._step("create_job", "job")
 
-    def set_kill_on_close(self, job: object) -> None:
+    def set_kill_on_close(
+        self, job: object, *, memory_limit_bytes: int | None = None
+    ) -> None:
         self._step("configure_job", None)
 
     def assign_process(self, job: object, process: object) -> None:
@@ -539,10 +541,12 @@ class FakeNativeKernel:
         self.CancelSynchronousIo = NativeCall(
             lambda *_: self._result("CancelSynchronousIo")
         )
+        self.SetInformationJobObject = NativeCall(
+            lambda *_: self._result("SetInformationJobObject")
+        )
         for name in (
             "CreateProcessW",
             "CreateJobObjectW",
-            "SetInformationJobObject",
             "AssignProcessToJobObject",
             "ResumeThread",
             "WaitForSingleObject",
@@ -595,6 +599,55 @@ class FakeNativeKernel:
     def _read_file(self, *_: object) -> bool:
         _set_last_error(self.pipe_error)
         return False
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Win32 ctypes boundary")
+def test_ctypes_job_sets_aggregate_committed_memory_limit() -> None:
+    from sastsimi.static_analysis.process_windows import CtypesWin32Api
+
+    class BasicLimits(ctypes.Structure):
+        _fields_ = [
+            ("process_time", ctypes.c_longlong),
+            ("job_time", ctypes.c_longlong),
+            ("flags", ctypes.c_uint32),
+            ("minimum_working_set", ctypes.c_size_t),
+            ("maximum_working_set", ctypes.c_size_t),
+            ("active_processes", ctypes.c_uint32),
+            ("affinity", ctypes.c_size_t),
+            ("priority", ctypes.c_uint32),
+            ("scheduling", ctypes.c_uint32),
+        ]
+
+    class ExtendedLimits(ctypes.Structure):
+        _fields_ = [
+            ("basic", BasicLimits),
+            ("io", ctypes.c_ulonglong * 6),
+            ("process_memory", ctypes.c_size_t),
+            ("job_memory", ctypes.c_size_t),
+            ("peak_process_memory", ctypes.c_size_t),
+            ("peak_job_memory", ctypes.c_size_t),
+        ]
+
+    observed: list[tuple[int, int]] = []
+    kernel = FakeNativeKernel()
+
+    def record_limits(
+        _job: object, information_class: int, address: object, size: int
+    ) -> bool:
+        assert information_class == 9
+        assert size == ctypes.sizeof(ExtendedLimits)
+        limits = ctypes.cast(
+            cast(Any, address), ctypes.POINTER(ExtendedLimits)
+        ).contents
+        observed.append((limits.basic.flags, limits.job_memory))
+        return True
+
+    kernel.SetInformationJobObject = NativeCall(record_limits)
+    api = CtypesWin32Api(kernel32=kernel)
+
+    api.set_kill_on_close(ctypes.c_void_p(10), memory_limit_bytes=4 * 1024**3)
+
+    assert observed == [(0x00002000 | 0x00000200, 4 * 1024**3)]
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Win32 ctypes boundary")

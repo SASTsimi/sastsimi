@@ -17,6 +17,7 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.ports.dto import MonotonicActionDeadline, ProcessSpec, TrackedFile
 from sastsimi.security.sensitive_paths import DEFAULT_SENSITIVE_PATH_POLICY
 
+from .file_scope import build_static_file_scope
 from .process import AttemptOutputBudget, SafeProcessRunner
 from .repository_loader import _build_manifest
 
@@ -100,7 +101,19 @@ def _git(
     return result.stdout
 
 
-def _manifest_digest(tracked: tuple[TrackedFile, ...]) -> str:
+def selected_codeql_tracked_files(
+    repository: Path, tracked: tuple[TrackedFile, ...]
+) -> tuple[TrackedFile, ...]:
+    """Use the shared product-file scope before CodeQL sees source paths."""
+
+    scope = build_static_file_scope(
+        repository, tuple(item.git_path for item in tracked)
+    )
+    selected = frozenset(scope.selected_paths)
+    return tuple(item for item in tracked if item.git_path in selected)
+
+
+def codeql_manifest_sha256(tracked: tuple[TrackedFile, ...]) -> str:
     return hashlib.sha256(
         canonical_bytes(
             [
@@ -110,7 +123,7 @@ def _manifest_digest(tracked: tuple[TrackedFile, ...]) -> str:
                     "blob_id": item.blob_id,
                     "size_bytes": item.size_bytes,
                 }
-                for item in tracked
+                for item in sorted(tracked, key=lambda value: value.git_path)
             ]
         )
     ).hexdigest()
@@ -182,7 +195,10 @@ def prepare_exact_source(
         tracked, _gaps = _build_manifest(repository, raw, DEFAULT_SENSITIVE_PATH_POLICY)
         if not tracked:
             raise ValueError("CODEQL_PROVISION_SOURCE_MISMATCH")
-        for item in tracked:
+        selected = selected_codeql_tracked_files(repository, tracked)
+        if not selected:
+            raise ValueError("CODEQL_PROVISION_SOURCE_MISMATCH")
+        for item in selected:
             source = repository.joinpath(*item.git_path.split("/"))
             destination_file = target.joinpath(*item.git_path.split("/"))
             try:
@@ -224,8 +240,13 @@ def prepare_exact_source(
         _make_container_readable(target)
     return PreparedCodeQLSource(
         root=target,
-        tracked_manifest_sha256=_manifest_digest(tracked),
+        tracked_manifest_sha256=codeql_manifest_sha256(selected),
     )
 
 
-__all__ = ["PreparedCodeQLSource", "prepare_exact_source"]
+__all__ = [
+    "PreparedCodeQLSource",
+    "codeql_manifest_sha256",
+    "prepare_exact_source",
+    "selected_codeql_tracked_files",
+]

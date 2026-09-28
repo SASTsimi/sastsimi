@@ -200,6 +200,48 @@ def test_static_attempts_are_fingerprinted_and_scoped(tmp_path: Path) -> None:
         )
 
 
+def test_legacy_static_attempt_migration_locks_before_schema_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE simple_static_scan_attempts (analysis_id TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO simple_static_scan_attempts VALUES ('existing')"
+        )
+    statements: list[str] = []
+    original_connect = SimpleCheckpointStore._connect
+
+    def traced_connect(self: SimpleCheckpointStore) -> sqlite3.Connection:
+        connection = original_connect(self)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(SimpleCheckpointStore, "_connect", traced_connect)
+    SimpleCheckpointStore(database)
+    schema_read = next(
+        index
+        for index, statement in enumerate(statements)
+        if "PRAGMA table_info(simple_static_scan_attempts)" in statement
+    )
+    assert any(
+        statement.strip().upper() == "BEGIN IMMEDIATE"
+        for statement in statements[:schema_read]
+    )
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT analysis_id FROM simple_static_scan_attempts"
+        ).fetchone() == ("existing",)
+        assert "request_ref_json" in {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(simple_static_scan_attempts)"
+            )
+        }
+
+
 def test_static_failed_attempt_can_have_no_raw_output(tmp_path: Path) -> None:
     identity = _identity()
     store = SimpleCheckpointStore(tmp_path / "checkpoints.sqlite3")

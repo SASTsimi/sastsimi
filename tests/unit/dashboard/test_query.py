@@ -163,7 +163,13 @@ def _static_identity() -> CheckpointIdentity:
     )
 
 
-def _attach_static_coverage(tmp_path: Path, *, blocked: bool, corrupt: bool = False):
+def _attach_static_coverage(
+    tmp_path: Path,
+    *,
+    blocked: bool,
+    corrupt: bool = False,
+    limitations_only: bool = False,
+):
     identity = _static_identity()
     artifacts = SimpleArtifactRepository(tmp_path, identity)
     gaps = [
@@ -181,15 +187,29 @@ def _attach_static_coverage(tmp_path: Path, *, blocked: bool, corrupt: bool = Fa
             "workspace_id": identity.workspace_id,
             "commit_id": identity.commit_id,
             "fingerprint": "f" * 64,
-            "expected_count": 110,
+            "expected_count": 5 if limitations_only else 110,
             "verified_count": 5,
-            "gaps": gaps,
-            "unsupported": [{"extension": ".go", "file_count": 3}],
+            "gaps": [] if limitations_only else gaps,
+            "unsupported": []
+            if limitations_only
+            else [
+                {"extension": ".go", "file_count": 3},
+                {"extension": "", "file_count": 1},
+            ],
+            "unsupported_files": []
+            if limitations_only
+            else [
+                {"path": "tools/launcher", "reason": "unsupported_extension"},
+                {"path": "src/driver.go", "reason": "unsupported_extension"},
+            ],
             "ast_parse_error_count": 2,
+            "ast_oversize_count": 1 if limitations_only else 0,
             "ast_truncated": True,
             "codeql_configured": True,
             "codeql_executed": not blocked,
             "codeql_scope": "python_only",
+            "codeql_error": "CODEQL_ANALYZE_FAILED" if limitations_only else None,
+            "engine_errors": ["SEMGREP_EXECUTION_FAILED"] if limitations_only else [],
         }
     )
     bundle_ref = artifacts.put_json(
@@ -238,12 +258,118 @@ def test_static_coverage_summary_shows_bounded_relative_gaps(
         "reason": "parse_or_scan_error",
     }
     assert "C:\\" not in detail.model_dump_json()
-    assert detail.static_coverage_unsupported == ((".go", 3),)
+    assert detail.static_coverage_unsupported == ((".go", 3), ("", 1))
+    assert detail.static_coverage_unsupported_count == 2
+    assert detail.static_coverage_reason_counts == {
+        "ast_parse_errors": 2,
+        "parse_or_scan_error": 105,
+        "unsupported_extension": 2,
+    }
     assert detail.static_ast_parse_error_count == 2
     assert detail.static_ast_truncated is True
     assert detail.static_codeql_configured is True
     assert detail.static_codeql_executed is (not blocked)
     assert detail.static_codeql_scope == "python_only"
+
+
+def test_partial_without_gaps_exposes_engine_limitation_reasons(tmp_path: Path) -> None:
+    seed(tmp_path)
+    coverage_ref = _attach_static_coverage(
+        tmp_path, blocked=False, limitations_only=True
+    )
+    query = DashboardQuery(tmp_path)
+    run = query._simple_run("analysis-a")
+    assert run is not None
+    SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3").save_analysis_run(
+        run.model_copy(
+            update={
+                "static_disposition": "PARTIAL",
+                "static_coverage_ref": coverage_ref,
+            }
+        )
+    )
+
+    detail = query.get_analysis("analysis-a")
+    assert detail.static_disposition == "PARTIAL"
+    assert detail.static_coverage_gap_count == 0
+    assert detail.static_coverage_unsupported_count == 0
+    assert detail.static_coverage_reason_counts == {
+        "SEMGREP_EXECUTION_FAILED": 1,
+        "ast_oversize_files": 1,
+        "ast_parse_errors": 2,
+        "codeql_error": 1,
+    }
+
+
+def test_static_coverage_pages_include_full_ledger_and_bounded_limits(
+    tmp_path: Path,
+) -> None:
+    seed(tmp_path)
+    coverage_ref = _attach_static_coverage(tmp_path, blocked=False)
+    query = DashboardQuery(tmp_path)
+
+    gaps = query.get_static_coverage_page("A-001", kind="gaps", offset=100, limit=20)
+    assert gaps.total == 105
+    assert len(gaps.items) == 5
+    assert gaps.items[0] == {
+        "path": "src/file-100.ts",
+        "rule_id": "rule.js",
+        "reason": "parse_or_scan_error",
+    }
+    assert gaps.coverage_digest == coverage_ref.content_hash
+
+    unsupported = query.get_static_coverage_page(
+        "analysis-a", kind="unsupported", offset=0, limit=1
+    )
+    assert unsupported.total == 2
+    assert unsupported.items == (
+        {"path": "tools/launcher", "reason": "unsupported_extension"},
+    )
+    with pytest.raises(ValueError):
+        query.get_static_coverage_page("analysis-a", kind="gaps", offset=0, limit=101)
+
+
+def test_corrupt_static_coverage_has_no_paginated_ledger(tmp_path: Path) -> None:
+    seed(tmp_path)
+    _attach_static_coverage(tmp_path, blocked=True, corrupt=True)
+    with pytest.raises(DashboardNotFound):
+        DashboardQuery(tmp_path).get_static_coverage_page(
+            "analysis-a", kind="gaps", offset=0, limit=20
+        )
+
+
+def test_partial_run_disposition_and_coverage_ref_are_projected(tmp_path: Path) -> None:
+    seed(tmp_path)
+    coverage_ref = _attach_static_coverage(tmp_path, blocked=False)
+    query = DashboardQuery(tmp_path)
+    run = query._simple_run("analysis-a")
+    assert run is not None
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    store.save_analysis_run(
+        run.model_copy(
+            update={
+                "static_disposition": "PARTIAL",
+                "static_coverage_ref": coverage_ref,
+            }
+        )
+    )
+
+    detail = query.get_analysis("analysis-a")
+    assert detail.static_disposition == "PARTIAL"
+    assert detail.static_coverage_digest == coverage_ref.content_hash
+    assert query.list_analyses()[0].static_disposition == "PARTIAL"
+
+    store.save_analysis_run(
+        run.model_copy(
+            update={
+                "static_disposition": "PARTIAL",
+                "static_coverage_ref": ref("wrong"),
+            }
+        )
+    )
+    assert query.get_analysis("analysis-a").static_coverage_expected is None
+    with pytest.raises(DashboardNotFound):
+        query.get_static_coverage_page("analysis-a", kind="gaps", offset=0, limit=10)
 
 
 def test_corrupt_static_coverage_is_unavailable_not_complete(tmp_path: Path) -> None:

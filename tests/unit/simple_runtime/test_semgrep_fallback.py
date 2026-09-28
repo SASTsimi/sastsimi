@@ -26,9 +26,10 @@ class _Result:
             b'{"results": [], "errors": [], "paths": {"scanned": [], "skipped": []}}'
         ),
         returncode: int = 0,
+        stderr: bytes = b"",
     ) -> None:
         self.stdout = stdout
-        self.stderr = b""
+        self.stderr = stderr
         self.returncode = returncode
 
 
@@ -66,7 +67,11 @@ class _Process:
                 output.symlink_to(external)
             except OSError as error:
                 pytest.skip(f"file symlinks unavailable on this host: {error}")
-        return _Result(stdout=b"", returncode=self.result.returncode)
+        return _Result(
+            stdout=self.result.stdout if self.output_mode == "missing" else b"",
+            stderr=self.result.stderr,
+            returncode=self.result.returncode,
+        )
 
 
 def _fixture(tmp_path: Path) -> tuple[Path, Path, SimpleToolBinding]:
@@ -84,6 +89,32 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, SimpleToolBinding]:
         executable_sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
     )
     return workspace, rules, binding
+
+
+def test_precomputed_command_prefix_matches_exact_targeted_argv(
+    tmp_path: Path,
+) -> None:
+    workspace, rules, binding = _fixture(tmp_path)
+    output = tmp_path / "output.json"
+    prefix = semgrep_module.build_semgrep_argv_prefix(
+        binding,
+        rules,
+        ("skip.rule",),
+        output,
+        30,
+    )
+    command = semgrep_module.build_semgrep_argv(
+        binding,
+        workspace,
+        rules,
+        ("bad.ts", "good.ts"),
+        ("skip.rule",),
+        output,
+        30,
+        targets_verified=True,
+    )
+
+    assert (*prefix, "bad.ts", "good.ts") == command
 
 
 @pytest.mark.asyncio
@@ -124,6 +155,100 @@ async def test_fallback_only_receives_failed_paths_and_rules(tmp_path: Path) -> 
     assert not Path(argv[argv.index("--output") + 1]).exists()
     assert cwd == workspace
     assert timeout == 23
+
+
+@pytest.mark.asyncio
+async def test_invocation_observer_runs_once_before_successful_process_call(
+    tmp_path: Path,
+) -> None:
+    workspace, rules, binding = _fixture(tmp_path)
+    process = _Process(_Result())
+    invocations: list[str] = []
+
+    def on_invocation() -> None:
+        assert process.calls == []
+        invocations.append("attempt")
+
+    await run_semgrep_fallback(
+        process,
+        binding,
+        workspace,
+        rules,
+        ["bad.ts"],
+        [],
+        23,
+        output_dir=tmp_path,
+        on_invocation=on_invocation,
+    )
+
+    assert invocations == ["attempt"]
+    assert len(process.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_input,code",
+    [
+        ("tool", "SEMGREP_TOOL_UNAVAILABLE"),
+        ("path", "SEMGREP_RESULT_INVALID"),
+        ("argv", "SEMGREP_RESULT_INVALID"),
+    ],
+)
+async def test_invocation_observer_skips_preflight_errors(
+    tmp_path: Path, invalid_input: str, code: str
+) -> None:
+    workspace, rules, binding = _fixture(tmp_path)
+    process = _Process(_Result())
+    targets = ["bad.ts"]
+    excluded_rule_ids: list[str] = []
+    if invalid_input == "tool":
+        binding.executable_path.unlink()
+    elif invalid_input == "path":
+        targets = ["../rules.yml"]
+    else:
+        excluded_rule_ids = ["invalid/rule"]
+    invocations: list[str] = []
+
+    with pytest.raises(RuntimeError, match=code):
+        await run_semgrep_fallback(
+            process,
+            binding,
+            workspace,
+            rules,
+            targets,
+            excluded_rule_ids,
+            23,
+            output_dir=tmp_path,
+            on_invocation=lambda: invocations.append("attempt"),
+        )
+
+    assert invocations == []
+    assert process.calls == []
+
+
+@pytest.mark.asyncio
+async def test_invocation_observer_runs_once_when_process_times_out(
+    tmp_path: Path,
+) -> None:
+    workspace, rules, binding = _fixture(tmp_path)
+    process = _Process(TimeoutError())
+    invocations: list[str] = []
+
+    with pytest.raises(RuntimeError, match="EXTERNAL_TOOL_TIMEOUT"):
+        await run_semgrep_fallback(
+            process,
+            binding,
+            workspace,
+            rules,
+            ["bad.ts"],
+            [],
+            23,
+            output_dir=tmp_path,
+            on_invocation=lambda: invocations.append("attempt"),
+        )
+
+    assert invocations == ["attempt"]
+    assert len(process.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -312,6 +437,40 @@ async def test_nonzero_exit_preserves_bounded_raw_without_claiming_success(
             output_dir=tmp_path,
         )
     assert caught.value.raw_output == raw
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stdout,stderr,expected_raw",
+    [
+        (b"", b"stderr-diagnostic", b"stderr-d"),
+        (b"stdout-diagnostic", b"stderr-diagnostic", b"stdout-d"),
+    ],
+)
+async def test_nonzero_exit_without_output_preserves_bounded_process_diagnostic(
+    tmp_path: Path, stdout: bytes, stderr: bytes, expected_raw: bytes
+) -> None:
+    workspace, rules, binding = _fixture(tmp_path)
+    process = _Process(
+        _Result(stdout=stdout, stderr=stderr, returncode=2), output_mode="missing"
+    )
+
+    with pytest.raises(
+        SemgrepFallbackError, match="SEMGREP_EXECUTION_FAILED"
+    ) as caught:
+        await run_semgrep_fallback(
+            process,
+            binding,
+            workspace,
+            rules,
+            ["bad.ts"],
+            [],
+            23,
+            output_dir=tmp_path,
+            max_output_bytes=8,
+        )
+
+    assert caught.value.raw_output == expected_raw
 
 
 @pytest.mark.asyncio

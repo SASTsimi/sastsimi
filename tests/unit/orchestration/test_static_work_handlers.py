@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -10,11 +11,30 @@ import pytest
 from sastsimi.contracts.actions import ActionRequest
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import RunStoredDataRef, reference
-from sastsimi.contracts.static import RepositorySelectedTool, RepositoryTrackedFile
-from sastsimi.contracts.work import WorkAttempt, WorkExecutionState, WorkType
+from sastsimi.contracts.refs import (
+    HostConfigurationRef,
+    RunStoredDataRef,
+    StoredDataRef,
+    reference,
+)
+from sastsimi.contracts.static import (
+    CodeWorkspace,
+    RepositoryExecutionSelection,
+    RepositoryProfile,
+    RepositorySelectedTool,
+    RepositoryTrackedFile,
+    StaticToolProfile,
+)
+from sastsimi.contracts.work import (
+    WorkAttempt,
+    WorkExecutionState,
+    WorkStatus,
+    WorkType,
+)
 from sastsimi.orchestration.static_work_handlers import (
+    StaticProductionGraph,
     StaticToolCall,
+    StaticToolRoute,
     StaticToolWorkHandler,
     require_current_work_context,
     resolve_static_tool_recovery_action,
@@ -136,7 +156,14 @@ def _recovery_runner(
     return cast(WorkflowRunner, SimpleNamespace(runtime=runtime)), blocked
 
 
-def test_selected_static_paths_follow_only_the_selected_language() -> None:
+def test_selected_static_paths_follow_only_the_selected_language(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "app.py").write_text("print('app')\n", encoding="utf-8")
+    (source / "app.js").write_text("console.log('app')\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("docs\n", encoding="utf-8")
     tracked = tuple(
         RepositoryTrackedFile.model_validate(
             {
@@ -173,10 +200,317 @@ def test_selected_static_paths_follow_only_the_selected_language() -> None:
         )
     )
 
-    assert selected_static_paths(tracked, tool) == (
+    assert selected_static_paths(tracked, tool, workspace_root=tmp_path) == (
         "src/app.js",
         "src/app.py",
     )
+
+
+def test_selected_static_paths_excludes_tests_before_creating_tool_actions(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('app')\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_app.py").write_text(
+        "def test_app():\n    assert True\n", encoding="utf-8"
+    )
+    tracked = tuple(
+        RepositoryTrackedFile.model_validate(
+            {
+                "git_path": path,
+                "git_mode": "100644",
+                "blob_id": key * 40,
+                "content_sha256": key * 64,
+                "size_bytes": 1,
+            }
+        )
+        for path, key in (("src/app.py", "a"), ("tests/test_app.py", "b"))
+    )
+    tool = RepositorySelectedTool.model_validate_json(
+        canonical_bytes(
+            {
+                "adapter_key": "CODEQL",
+                "operation": "ANALYZE",
+                "tool_profile_ref": {
+                    "stored_data_id": "profile-s1",
+                    "data_kind": "static_tool_profile",
+                    "record_id": "profile-r1",
+                    "content_hash": "d" * 64,
+                    "host_id": "host-a",
+                    "publication_analysis_id": "published-analysis",
+                    "publication_workspace_id": "published-workspace",
+                    "publication_commit_id": "published-commit",
+                },
+                "languages": ("PYTHON",),
+            }
+        )
+    )
+
+    assert selected_static_paths(tracked, tool, workspace_root=tmp_path) == (
+        "src/app.py",
+    )
+
+
+@pytest.mark.parametrize("javascript_is_product", [True, False])
+def test_product_scope_skips_test_only_tools_without_stalling_fanout(
+    tmp_path: Path,
+    javascript_is_product: bool,
+) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    javascript_path = "src/app.js" if javascript_is_product else "tests/test_only.js"
+    (tmp_path / javascript_path).write_text("console.log('app')\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_only.py").write_text(
+        "def test_only():\n    assert True\n", encoding="utf-8"
+    )
+    tracked = tuple(
+        RepositoryTrackedFile.model_validate(
+            {
+                "git_path": path,
+                "git_mode": "100644",
+                "blob_id": key * 40,
+                "content_sha256": key * 64,
+                "size_bytes": 1,
+            }
+        )
+        for path, key in ((javascript_path, "a"), ("tests/test_only.py", "b"))
+    )
+    workspace_data = make("CodeWorkspace")
+    workspace_data.update(status="READY", commit_id="c1")
+    workspace = CodeWorkspace.model_validate_json(canonical_bytes(workspace_data))
+    workspace_ref = RunStoredDataRef.model_validate(reference(workspace))
+    repository_data = make("RepositoryProfile")
+    repository_data.update(
+        workspace_ref=workspace_ref,
+        tracked_files=tracked,
+        manifest_hash=content_hash(
+            tuple(item.model_dump(mode="json") for item in tracked)
+        ),
+        languages=(
+            {"name": "PYTHON", "evidence_paths": ("tests/test_only.py",)},
+            {"name": "JAVASCRIPT", "evidence_paths": (javascript_path,)},
+        ),
+    )
+    repository = RepositoryProfile.model_validate_json(canonical_bytes(repository_data))
+    repository_ref = StoredDataRef.model_validate(reference(repository))
+
+    def profile(adapter: str, key: str) -> StaticToolProfile:
+        data = make("StaticToolProfile")
+        data["meta"].update(record_id=f"static_tool_profile-{key}")
+        data.update(
+            host_id="host1",
+            profile_key=key,
+            purpose="PRODUCTION",
+            status="ACTIVE",
+            adapter_key=adapter,
+            tool_name="AST" if adapter == "PYTHON_AST" else "OPENGREP",
+            tool_kind="STRUCTURE" if adapter == "PYTHON_AST" else "RULE_BASED",
+            executable_sha256="a" * 64,
+            capability_evidence_ref={
+                **make("RepositoryExecutionSelection")["git_clone_profile_ref"],
+                "data_kind": "tool_capability_evidence",
+            },
+        )
+        return StaticToolProfile.model_validate_json(canonical_bytes(data))
+
+    python_profile = profile("PYTHON_AST", "python")
+    js_profile = profile("OPENGREP", "javascript")
+    python_ref = HostConfigurationRef.model_validate(reference(python_profile))
+    js_ref = HostConfigurationRef.model_validate(reference(js_profile))
+    selected = (
+        RepositorySelectedTool.model_validate(
+            {
+                "adapter_key": "PYTHON_AST",
+                "operation": "PARSE",
+                "tool_profile_ref": python_ref,
+                "languages": ("PYTHON",),
+            }
+        ),
+        RepositorySelectedTool.model_validate(
+            {
+                "adapter_key": "OPENGREP",
+                "operation": "ANALYZE",
+                "tool_profile_ref": js_ref,
+                "languages": ("PYTHON", "JAVASCRIPT"),
+            }
+        ),
+    )
+    selection_data = make("RepositoryExecutionSelection")
+    selection_data.update(
+        status="READY",
+        repository_profile_ref=repository_ref,
+        languages=("PYTHON", "JAVASCRIPT"),
+        selected_tools=selected,
+        errors=(),
+        gaps=tuple(
+            {
+                **make("DataGap"),
+                "gap_id": f"missing-codeql-{language.lower()}",
+                "code": f"NO_ACTIVE_STATIC_CAPABILITY:CODEQL:{language}",
+            }
+            for language in ("PYTHON", "JAVASCRIPT")
+        ),
+    )
+    selection = RepositoryExecutionSelection.model_validate_json(
+        canonical_bytes(selection_data)
+    )
+    selection_ref = StoredDataRef.model_validate(reference(selection))
+    profile_work = _context().work.model_copy(
+        update={
+            "work_type": WorkType.REPOSITORY_PROFILE,
+            "status": WorkStatus.SUCCEEDED,
+            "input_refs": (workspace_ref,),
+            "output_refs": (repository_ref, selection_ref),
+        }
+    )
+    works: dict[str, WorkExecutionState] = {str(profile_work.work_id): profile_work}
+    enqueued: list[WorkExecutionState] = []
+    records = {
+        workspace_ref: workspace,
+        repository_ref: repository,
+        selection_ref: selection,
+    }
+    profiles = {python_ref: python_profile, js_ref: js_profile}
+
+    def ensure_enqueue(
+        _scope: StoredDataRef,
+        work_meta: RecordMeta,
+        work_type: WorkType,
+        _subject_type: object,
+        _subject_id: str,
+        _requester: object,
+        *,
+        stable_key: str,
+        inputs: tuple[object, ...],
+    ) -> WorkExecutionState:
+        work = profile_work.model_copy(
+            update={
+                "meta": work_meta,
+                "work_id": "stable-" + content_hash(stable_key)[:32],
+                "work_type": work_type,
+                "status": WorkStatus.PENDING,
+                "input_refs": inputs,
+                "output_refs": (),
+                "dedupe_key": content_hash([stable_key, inputs]),
+            }
+        )
+        enqueued.append(work)
+        works[str(work.work_id)] = work
+        return work
+
+    budget_ref = StoredDataRef.model_validate(ref("budget_binding"))
+    runtime = SimpleNamespace(
+        work=SimpleNamespace(get=lambda work_id: works[work_id]),
+        unit_of_work=SimpleNamespace(
+            records=SimpleNamespace(get_exact=lambda exact_ref: records[exact_ref])
+        ),
+        configuration=SimpleNamespace(
+            resolve_static_tool_profile_ref=lambda exact_ref: profiles[exact_ref]
+        ),
+        budget_registry=SimpleNamespace(
+            current_state=lambda _analysis_id: SimpleNamespace(
+                budget_binding_ref=budget_ref,
+                workspace_id=repository.workspace_id,
+                commit_id=repository.commit_id,
+            )
+        ),
+    )
+    runner = cast(
+        WorkflowRunner,
+        SimpleNamespace(
+            runtime=runtime,
+            metadata=lambda _source, _kind: RecordMeta.model_validate_json(
+                canonical_bytes(
+                    meta("work_execution_state", hypothesis=None, attempt=None)
+                )
+            ).model_dump(),
+            ensure_enqueue=ensure_enqueue,
+        ),
+    )
+    config_ref = StoredDataRef.model_validate(
+        ref("static_analysis_config", record=False)
+    )
+    graph = StaticProductionGraph(
+        runner=runner,
+        work_query=cast(
+            Any,
+            SimpleNamespace(work_for_run=lambda _analysis_id: tuple(works.values())),
+        ),
+        requester_identity_ref=budget_ref,
+        routes=(
+            StaticToolRoute(python_ref, config_ref, None),
+            StaticToolRoute(
+                js_ref,
+                config_ref,
+                StoredDataRef.model_validate(ref("rule_catalog")),
+                ("rule-1",),
+            ),
+        ),
+        workspace_locator=cast(
+            Any, SimpleNamespace(root_for=lambda _workspace: tmp_path)
+        ),
+    )
+
+    assert selected_static_paths(tracked, selected[0], workspace_root=tmp_path) == ()
+    assert selected_static_paths(tracked, selected[1], workspace_root=tmp_path) == (
+        (javascript_path,) if javascript_is_product else ()
+    )
+    if not javascript_is_product:
+        with pytest.raises(ValueError, match="STATIC_PRODUCT_SOURCE_EMPTY"):
+            graph.ensure_static_tools(
+                profile_work=profile_work,
+                repository=repository,
+                repository_ref=repository_ref,
+                selection=selection,
+                selection_ref=selection_ref,
+            )
+        assert enqueued == []
+        return
+    children = graph.ensure_static_tools(
+        profile_work=profile_work,
+        repository=repository,
+        repository_ref=repository_ref,
+        selection=selection,
+        selection_ref=selection_ref,
+    )
+    assert len(children) == 1
+    assert js_ref in children[0].input_refs
+    assert python_ref not in children[0].input_refs
+    completed = children[0].model_copy(
+        update={
+            "status": WorkStatus.SUCCEEDED,
+            "output_refs": (StoredDataRef.model_validate(ref("tool_run_result")),),
+        }
+    )
+    works[str(completed.work_id)] = completed
+    normalized = graph.ensure_normalization(completed)
+    assert normalized is not None
+    assert normalized.work_type == WorkType.STATIC_NORMALIZE
+    legacy_normalization_key = "static-normalize:" + selection_ref.content_hash
+    assert str(normalized.work_id) != (
+        "stable-" + content_hash(legacy_normalization_key)[:32]
+    )
+    assert all(item.work_type != WorkType.STATIC_TOOL for item in enqueued[1:])
+
+    legacy_key = f"static-tool:{selection_ref.content_hash}:{js_ref.content_hash}"
+    legacy = completed.model_copy(
+        update={
+            "work_id": "stable-" + content_hash(legacy_key)[:32],
+            "dedupe_key": content_hash([legacy_key, completed.input_refs]),
+        }
+    )
+    works[str(legacy.work_id)] = legacy
+    with pytest.raises(ValueError, match="STATIC_SCOPE_CHANGED_NEW_ANALYSIS_REQUIRED"):
+        graph.ensure_static_tools(
+            profile_work=profile_work,
+            repository=repository,
+            repository_ref=repository_ref,
+            selection=selection,
+            selection_ref=selection_ref,
+        )
+    with pytest.raises(ValueError, match="STATIC_SCOPE_CHANGED_NEW_ANALYSIS_REQUIRED"):
+        graph.ensure_normalization(legacy)
 
 
 def test_claimed_adapter_rejects_a_stale_work_revision() -> None:

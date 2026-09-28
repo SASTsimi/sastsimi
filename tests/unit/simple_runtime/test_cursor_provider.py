@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.call_queue import RunUsageBudget
 from sastsimi.simple_runtime.cursor_provider import (
     CursorCLIRateLimitError,
     CursorModelCatalog,
@@ -17,6 +18,7 @@ from sastsimi.simple_runtime.cursor_provider import (
 )
 from sastsimi.simple_runtime.models import CheckpointIdentity, StageFailure
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
+from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
 class RateLimitError(Exception):
@@ -177,7 +179,14 @@ async def test_rate_limit_retries_but_auth_does_not(
 ) -> None:
     monkeypatch.setenv("CURSOR_API_KEY", "test-key")
     limited = FakeTransport([RateLimitError(), '{"verdict":"TRUE"}'])
-    result = await call(provider(tmp_path, limited))
+    budget = RunUsageBudget(
+        store=SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3"),
+        analysis_id="analysis-1",
+        max_tokens=1000,
+        max_cost_minor_units=1000,
+        max_elapsed_seconds="unlimited",
+    )
+    result = await call(provider(tmp_path, limited, budget_check=budget.check))
     assert isinstance(result, SimpleLLMCallResult)
     assert len(limited.calls) == 2
     auth = FakeTransport([AuthenticationError()])
@@ -185,6 +194,74 @@ async def test_rate_limit_retries_but_auth_does_not(
     assert isinstance(result, StageFailure)
     assert result.code == "CURSOR_AUTH_FAILED"
     assert len(auth.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_invalid_negative_cursor_usage_cannot_reduce_run_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class InvalidUsageTransport(FakeTransport):
+        async def complete(
+            self, *, api_key: str, model: str, prompt: str, timeout: float
+        ) -> tuple[str, dict[str, int | float | None]]:
+            raw, _ = await super().complete(
+                api_key=api_key, model=model, prompt=prompt, timeout=timeout
+            )
+            return raw, {
+                "input_tokens": -100,
+                "output_tokens": 3,
+                "cost_minor_units": -4,
+            }
+
+    monkeypatch.setenv("CURSOR_API_KEY", "test-key")
+    budget = RunUsageBudget(
+        store=SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3"),
+        analysis_id="analysis-1",
+        max_tokens=1000,
+        max_cost_minor_units=1000,
+        max_elapsed_seconds="unlimited",
+    )
+    result = await call(
+        provider(
+            tmp_path,
+            InvalidUsageTransport(['{"verdict":"TRUE"}']),
+            budget_check=budget.check,
+        )
+    )
+
+    assert isinstance(result, SimpleLLMCallResult)
+    assert result.input_tokens is None
+    assert result.cost_minor_units is None
+    failure = budget.check()
+    assert isinstance(failure, StageFailure)
+    assert failure.code == "LLM_TOKEN_USAGE_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_cursor_fractional_cost_is_recorded_without_invalid_artifact(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class CostTransport(FakeTransport):
+        async def complete(
+            self, *, api_key: str, model: str, prompt: str, timeout: float
+        ) -> tuple[str, dict[str, int | float | None]]:
+            raw, usage = await super().complete(
+                api_key=api_key, model=model, prompt=prompt, timeout=timeout
+            )
+            usage["cost_minor_units"] = 1.5
+            return raw, usage
+
+    monkeypatch.setenv("CURSOR_API_KEY", "test-key")
+    result = await call(provider(tmp_path, CostTransport(['{"verdict":"TRUE"}'])))
+
+    assert isinstance(result, SimpleLLMCallResult)
+    assert result.cost_minor_units == 1.5
+    with sqlite3.connect(tmp_path / "db" / "sastsimi.sqlite3") as connection:
+        stored = connection.execute(
+            "SELECT cost_cents FROM simple_llm_attempts WHERE analysis_id = ?",
+            ("analysis-1",),
+        ).fetchone()
+    assert stored == (1.5,)
 
 
 @pytest.mark.asyncio

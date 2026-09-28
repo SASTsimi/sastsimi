@@ -86,6 +86,7 @@ def choices_from_args(
         max_cost_minor_units=args.max_cost_minor_units,
         max_tokens=args.max_tokens,
         max_elapsed_seconds=args.max_elapsed_seconds,
+        static_scan_pass_seconds=getattr(args, "static_scan_pass_seconds", 180),
         docker_network=docker_network,
         agent_models=agent_models,
         llm_timeout_seconds=getattr(args, "llm_timeout_seconds", 180),

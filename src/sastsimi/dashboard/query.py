@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast, overload
@@ -54,6 +54,7 @@ from .models import (
     HypothesisProgressView,
     LLMInvocationView,
     StageProgressView,
+    StaticCoveragePageView,
     StaticToolProgressView,
 )
 
@@ -1009,7 +1010,16 @@ class DashboardQuery:
             workspace_id=latest.identity.workspace_id,
             commit_id=latest.identity.commit_id,
             current_stage=progress.current_stage or latest.stage.value,
-            status=progress.status,
+            status=(
+                "PARTIAL"
+                if progress.status == "COMPLETE"
+                and run is not None
+                and getattr(run, "static_disposition", "FULL") == "PARTIAL"
+                else progress.status
+            ),
+            static_disposition=(
+                getattr(run, "static_disposition", "FULL") if run else None
+            ),
             completed_count=completed,
             stage_count=len(values),
             hypothesis_count=len(hypotheses),
@@ -1117,6 +1127,123 @@ class DashboardQuery:
     def _static_coverage_projection(
         self, checkpoints: list[StageCheckpoint]
     ) -> dict[str, object]:
+        loaded = self._validated_static_coverage(checkpoints)
+        if loaded is None:
+            return {}
+        coverage, digest = loaded
+        expected = coverage["expected_count"]
+        verified = coverage["verified_count"]
+        gaps = coverage["gaps"]
+        unsupported_files = coverage.get("unsupported_files", [])
+        assert isinstance(expected, int)
+        assert isinstance(verified, int)
+        assert isinstance(gaps, list)
+        assert isinstance(unsupported_files, list)
+        raw_unsupported = coverage["unsupported"]
+        assert isinstance(raw_unsupported, list)
+        unsupported = tuple(
+            (str(item["extension"]), int(item["file_count"]))
+            for item in raw_unsupported
+        )
+        reasons = Counter(str(item["reason"]) for item in gaps + unsupported_files)
+        parse_count = coverage.get("ast_parse_error_count")
+        oversize_count = coverage.get("ast_oversize_count", 0)
+        codeql_error = coverage.get("codeql_error")
+        engine_errors = coverage.get("engine_errors", [])
+        truncated = coverage.get("ast_truncated")
+        engines = coverage.get("engine_verified_counts", {})
+        codeql_configured = coverage.get("codeql_configured")
+        codeql_executed = coverage.get("codeql_executed")
+        codeql_scope = coverage.get("codeql_scope")
+        if (
+            type(parse_count) is not int
+            or parse_count < 0
+            or type(oversize_count) is not int
+            or oversize_count < 0
+            or (
+                codeql_error is not None
+                and (
+                    not isinstance(codeql_error, str)
+                    or not _RULE_NAME.fullmatch(codeql_error)
+                )
+            )
+            or not isinstance(engine_errors, list)
+            or len(engine_errors) > 32
+            or any(
+                not isinstance(error, str) or not _RULE_NAME.fullmatch(error)
+                for error in engine_errors
+            )
+            or type(truncated) is not bool
+            or not isinstance(engines, dict)
+            or any(
+                name not in {"opengrep", "semgrep"}
+                or type(count) is not int
+                or count < 0
+                for name, count in engines.items()
+            )
+            or (codeql_configured is not None and type(codeql_configured) is not bool)
+            or (codeql_executed is not None and type(codeql_executed) is not bool)
+            or codeql_scope not in (None, "python_only")
+        ):
+            return {}
+        if parse_count:
+            reasons["ast_parse_errors"] += parse_count
+        if oversize_count:
+            reasons["ast_oversize_files"] += oversize_count
+        if codeql_error is not None:
+            reasons["codeql_error"] += 1
+        reasons.update(engine_errors)
+        return {
+            "static_coverage_expected": expected,
+            "static_coverage_verified": verified,
+            "static_coverage_gap_count": len(gaps),
+            "static_coverage_gap_preview": tuple(gaps[:100]),
+            "static_coverage_unsupported": unsupported,
+            "static_coverage_unsupported_count": (
+                len(unsupported_files)
+                if "unsupported_files" in coverage
+                else sum(count for _, count in unsupported)
+            ),
+            "static_coverage_reason_counts": dict(sorted(reasons.items())),
+            "static_coverage_digest": digest,
+            "static_ast_parse_error_count": parse_count,
+            "static_ast_truncated": truncated,
+            "static_coverage_engines": engines,
+            "static_codeql_configured": codeql_configured,
+            "static_codeql_executed": codeql_executed,
+            "static_codeql_scope": codeql_scope,
+        }
+
+    def get_static_coverage_page(
+        self, analysis_id: str, *, kind: str, offset: int, limit: int
+    ) -> StaticCoveragePageView:
+        if kind not in {"gaps", "unsupported"} or offset < 0 or not 1 <= limit <= 100:
+            raise ValueError("DASHBOARD_COVERAGE_PAGE_INVALID")
+        analysis_id = self._resolve_analysis_id(analysis_id)
+        self._validate_analysis_id(analysis_id)
+        checkpoints = [
+            item
+            for item in self._checkpoints()
+            if item.identity.analysis_id == analysis_id
+        ]
+        loaded = self._validated_static_coverage(checkpoints)
+        if loaded is None:
+            raise DashboardNotFound("DASHBOARD_COVERAGE_NOT_FOUND")
+        coverage, digest = loaded
+        items = coverage.get("gaps" if kind == "gaps" else "unsupported_files", [])
+        assert isinstance(items, list)
+        return StaticCoveragePageView(
+            kind=kind,
+            total=len(items),
+            offset=offset,
+            limit=limit,
+            coverage_digest=digest,
+            items=tuple(items[offset : offset + limit]),
+        )
+
+    def _validated_static_coverage(
+        self, checkpoints: list[StageCheckpoint]
+    ) -> tuple[dict[str, object], str] | None:
         static = next(
             (
                 item
@@ -1127,19 +1254,19 @@ class DashboardQuery:
             None,
         )
         if static is None:
-            return {}
+            return None
         artifacts = SimpleArtifactRepository(self._data_dir, static.identity)
         coverage: object = None
         try:
             if static.status is StageStatus.SUCCEEDED:
                 if len(static.output_refs) < 2:
-                    return {}
+                    return None
                 bundle = json.loads(artifacts.read(static.output_refs[1]))
                 if (
                     not isinstance(bundle, dict)
                     or bundle.get("kind") != "simple_static_fact_bundle"
                 ):
-                    return {}
+                    return None
                 coverage_ref = StoredDataRef.model_validate(
                     bundle["static_coverage_ref"]
                 )
@@ -1152,20 +1279,25 @@ class DashboardQuery:
                         and candidate.get("kind") == "simple_static_coverage_v1"
                     ):
                         coverage = candidate
+                        coverage_ref = ref
                         break
         except (OSError, ValueError, KeyError, TypeError):
-            return {}
+            return None
         if (
             not isinstance(coverage, dict)
             or coverage.get("kind") != "simple_static_coverage_v1"
         ):
-            return {}
+            return None
         if (
             coverage.get("analysis_id") != static.identity.analysis_id
             or coverage.get("workspace_id") != static.identity.workspace_id
             or coverage.get("commit_id") != static.identity.commit_id
         ):
-            return {}
+            return None
+        run = self._simple_run(static.identity.analysis_id)
+        run_ref = getattr(run, "static_coverage_ref", None) if run else None
+        if run_ref is not None and run_ref != coverage_ref:
+            return None
         expected = coverage.get("expected_count")
         verified = coverage.get("verified_count")
         gaps = coverage.get("gaps")
@@ -1178,11 +1310,10 @@ class DashboardQuery:
             or not isinstance(gaps, list)
             or len(gaps) != expected - verified
         ):
-            return {}
-        preview: list[dict[str, str]] = []
-        for item in gaps[:100]:
+            return None
+        for item in gaps:
             if not isinstance(item, dict):
-                return {}
+                return None
             path = item.get("path")
             rule_id = item.get("rule_id")
             reason = item.get("reason")
@@ -1200,60 +1331,46 @@ class DashboardQuery:
                 or not isinstance(reason, str)
                 or not _RULE_NAME.fullmatch(reason)
             ):
-                return {}
-            preview.append({"path": path, "rule_id": rule_id, "reason": reason})
+                return None
+        unsupported_files = coverage.get("unsupported_files", [])
+        if not isinstance(unsupported_files, list):
+            return None
+        for item in unsupported_files:
+            if not isinstance(item, dict) or set(item) != {"path", "reason"}:
+                return None
+            path, reason = item["path"], item["reason"]
+            if (
+                not isinstance(path, str)
+                or not path
+                or len(path) > 512
+                or path.startswith("/")
+                or ".." in PurePosixPath(path).parts
+                or "\\" in path
+                or ":" in path
+                or any(ord(character) < 32 for character in path)
+                or not isinstance(reason, str)
+                or not _RULE_NAME.fullmatch(reason)
+            ):
+                return None
         raw_unsupported = coverage.get("unsupported", [])
         if not isinstance(raw_unsupported, list):
-            return {}
-        unsupported: list[tuple[str, int]] = []
+            return None
         for item in raw_unsupported:
             if not isinstance(item, dict):
-                return {}
+                return None
             extension = item.get("extension")
             count = item.get("file_count")
             if (
                 not isinstance(extension, str)
-                or not re.fullmatch(r"\.[A-Za-z0-9]{1,12}", extension)
+                or (
+                    extension != ""
+                    and not re.fullmatch(r"\.[A-Za-z0-9]{1,12}", extension)
+                )
                 or type(count) is not int
                 or count < 0
             ):
-                return {}
-            unsupported.append((extension, count))
-        parse_count = coverage.get("ast_parse_error_count")
-        truncated = coverage.get("ast_truncated")
-        engines = coverage.get("engine_verified_counts", {})
-        codeql_configured = coverage.get("codeql_configured")
-        codeql_executed = coverage.get("codeql_executed")
-        codeql_scope = coverage.get("codeql_scope")
-        if (
-            type(parse_count) is not int
-            or parse_count < 0
-            or type(truncated) is not bool
-            or not isinstance(engines, dict)
-            or any(
-                name not in {"opengrep", "semgrep"}
-                or type(count) is not int
-                or count < 0
-                for name, count in engines.items()
-            )
-            or (codeql_configured is not None and type(codeql_configured) is not bool)
-            or (codeql_executed is not None and type(codeql_executed) is not bool)
-            or codeql_scope not in (None, "python_only")
-        ):
-            return {}
-        return {
-            "static_coverage_expected": expected,
-            "static_coverage_verified": verified,
-            "static_coverage_gap_count": len(gaps),
-            "static_coverage_gap_preview": tuple(preview),
-            "static_coverage_unsupported": tuple(unsupported),
-            "static_ast_parse_error_count": parse_count,
-            "static_ast_truncated": truncated,
-            "static_coverage_engines": engines,
-            "static_codeql_configured": codeql_configured,
-            "static_codeql_executed": codeql_executed,
-            "static_codeql_scope": codeql_scope,
-        }
+                return None
+        return coverage, coverage_ref.content_hash
 
     @staticmethod
     def _pipeline(

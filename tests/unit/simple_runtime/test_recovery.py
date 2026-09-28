@@ -205,6 +205,7 @@ async def test_missing_python_playwright_browser_rebuilds_only_the_container_ima
     execution_ref = artifacts.put_json(
         {
             "kind": "simple_poc_execution",
+            "attempt_id": checkpoint.attempt_id,
             "stderr_ref": stderr_ref.model_dump(mode="json"),
         }
     )
@@ -241,6 +242,118 @@ async def test_missing_python_playwright_browser_rebuilds_only_the_container_ima
         result.decision.environment_patch
     )
     assert client.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_poc_permission_error_regenerates_input_without_widening_workspace(
+    tmp_path: Path,
+) -> None:
+    checkpoint = _running_checkpoint()
+    artifacts = SimpleArtifactRepository(tmp_path, checkpoint.identity)
+    stderr_ref = artifacts.put_bytes(
+        b"Traceback: Path(root).mkdir\nPermissionError: storage",
+        "text/plain",
+    )
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "attempt_id": checkpoint.attempt_id,
+            "stderr_ref": stderr_ref.model_dump(mode="json"),
+        }
+    )
+    client = DecisionClient({})
+
+    result = await SimpleRecoveryCoordinator(
+        client=client,
+        artifacts=artifacts,
+    ).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_EXECUTION_FAILED",
+            retryable=True,
+            safe_message="PoC execution failed",
+            evidence_refs=(execution_ref, stderr_ref),
+        ),
+    )
+
+    assert result.decision.category is RecoveryCategory.GENERATED_INPUT
+    assert result.decision.action is RecoveryAction.REGENERATE_INPUT
+    assert result.decision.environment_patch == ""
+    assert "/tmp" in result.decision.guidance
+    assert client.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_unbound_permission_text_does_not_force_poc_regeneration(
+    tmp_path: Path,
+) -> None:
+    checkpoint = _running_checkpoint()
+    artifacts = SimpleArtifactRepository(tmp_path, checkpoint.identity)
+    stderr_ref = artifacts.put_bytes(b"PermissionError: storage", "text/plain")
+    client = DecisionClient(
+        {
+            "category": "TERMINAL",
+            "action": "STOP",
+            "diagnosis": "unbound output",
+            "guidance": "manual review",
+            "environment_patch": "",
+        }
+    )
+
+    result = await SimpleRecoveryCoordinator(client=client, artifacts=artifacts).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_EXECUTION_FAILED",
+            retryable=True,
+            safe_message="PoC execution failed",
+            evidence_refs=(stderr_ref,),
+        ),
+    )
+
+    assert result.decision.action is RecoveryAction.STOP
+    assert client.calls == 1
+
+
+@pytest.mark.parametrize("recorded_attempt", [None, "different-attempt"])
+@pytest.mark.asyncio
+async def test_other_attempt_permission_error_does_not_force_regeneration(
+    tmp_path: Path,
+    recorded_attempt: str | None,
+) -> None:
+    checkpoint = _running_checkpoint()
+    artifacts = SimpleArtifactRepository(tmp_path, checkpoint.identity)
+    stderr_ref = artifacts.put_bytes(b"PermissionError: storage", "text/plain")
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            **(
+                {"attempt_id": recorded_attempt} if recorded_attempt is not None else {}
+            ),
+            "stderr_ref": stderr_ref.model_dump(mode="json"),
+        }
+    )
+    client = DecisionClient(
+        {
+            "category": "TERMINAL",
+            "action": "STOP",
+            "diagnosis": "stale execution evidence",
+            "guidance": "manual review",
+            "environment_patch": "",
+        }
+    )
+
+    result = await SimpleRecoveryCoordinator(client=client, artifacts=artifacts).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_EXECUTION_FAILED",
+            retryable=True,
+            safe_message="PoC execution failed",
+            evidence_refs=(execution_ref, stderr_ref),
+        ),
+    )
+
+    assert result.decision.action is RecoveryAction.STOP
+    assert client.calls == 1
 
 
 @pytest.mark.asyncio

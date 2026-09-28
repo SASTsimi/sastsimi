@@ -1,6 +1,7 @@
 const routeMatch = window.location.pathname.match(/^\/analyses\/([^/]+)$/);
 const state = {
   selected: routeMatch ? decodeURIComponent(routeMatch[1]) : null,
+  coveragePages: { gaps: null, unsupported: null },
   detail: null,
   events: [],
   selectedArtifacts: new Set(),
@@ -59,6 +60,8 @@ function analysisButton(item) {
   const row = el("div", undefined, "status-row");
   row.append(badge(item.status), el("span", `${item.progress_percent}%`));
   button.append(row);
+  button.append(el("div", `현재 단계: ${item.current_stage}`, "meta"));
+  if (item.static_disposition === "PARTIAL") button.append(el("div", "정적 분석 일부만 검증됨", "warning"));
   if (item.on_demand_possible) button.append(el("div", "추가 사용량 과금 가능", "meta"));
   button.addEventListener("click", () => {
     if (state.selected !== routeId) {
@@ -69,6 +72,7 @@ function analysisButton(item) {
       state.detail = null;
     }
     state.selected = routeId;
+    state.coveragePages = { gaps: null, unsupported: null };
     window.history.replaceState({}, "", `/analyses/${encodeURIComponent(routeId)}`);
     refresh();
   });
@@ -85,9 +89,18 @@ function recoveryAttempt(item) {
 
 function staticCoverageNodes(detail) {
   if (detail.static_coverage_expected == null || detail.static_coverage_verified == null) {
-    return [el("div", "정적 검사 커버리지: 확인 불가 (검증된 기록 없음)", "meta")];
+    return [
+      ...(detail.static_disposition === "PARTIAL" ? [el("div", "부분 분석: 커버리지 증거를 확인할 수 없습니다.", "warning")] : []),
+      el("div", "정적 검사 커버리지: 확인 불가 (검증된 기록 없음)", "meta")
+    ];
   }
   const nodes = [el("div", `정적 검사 파일·규칙: 검증 ${detail.static_coverage_verified}/${detail.static_coverage_expected} · 미검증 ${detail.static_coverage_gap_count}`, "meta")];
+  if (detail.static_disposition === "PARTIAL" || detail.static_coverage_gap_count > 0 || detail.static_coverage_unsupported_count > 0) {
+    nodes.unshift(el("div", "부분 분석: 정적 검사가 불완전합니다. 확인된 Finding은 전체 검사 완료를 뜻하지 않습니다.", "warning"));
+  }
+  nodes.push(el("div", `지원되지 않는 제품 파일 ${detail.static_coverage_unsupported_count ?? "확인 불가"}개 · 커버리지 SHA-256 ${detail.static_coverage_digest || "확인 불가"}`, "meta"));
+  const reasons = Object.entries(detail.static_coverage_reason_counts || {}).map(([reason, count]) => `${reason} ${count}개`).join(" · ");
+  if (reasons) nodes.push(el("div", `제한 이유: ${reasons}`, "meta"));
   const engines = Object.entries(detail.static_coverage_engines || {}).map(([name, count]) => `${name} ${count}`).join(" · ");
   if (engines) nodes.push(el("div", `검증 엔진: ${engines}`, "meta"));
   if (detail.static_codeql_configured === true) {
@@ -97,7 +110,7 @@ function staticCoverageNodes(detail) {
   }
   if (detail.static_ast_parse_error_count || detail.static_ast_truncated) nodes.push(el("div", `Python AST 파싱 오류 ${detail.static_ast_parse_error_count || 0} · 사실 수 제한 ${detail.static_ast_truncated ? "도달" : "미도달"}`, "meta"));
   if (detail.static_coverage_unsupported?.length) {
-    const unsupported = detail.static_coverage_unsupported.map(([extension, count]) => `${extension} ${count}개`).join(" · ");
+    const unsupported = detail.static_coverage_unsupported.map(([extension, count]) => `${extension || "확장자 없음"} ${count}개`).join(" · ");
     nodes.push(el("div", `알려진 소스 확장자 중 현재 규칙 범위 밖: ${unsupported}`, "meta"));
   }
   if (detail.static_coverage_gap_preview?.length) {
@@ -105,6 +118,41 @@ function staticCoverageNodes(detail) {
     details.append(el("summary", `미검증 파일·규칙 보기 (${detail.static_coverage_gap_count}개 중 최대 100개)`));
     detail.static_coverage_gap_preview.forEach((gap) => details.append(el("div", `${gap.path} · ${gap.rule_id} · ${gap.reason}`, "meta")));
     nodes.push(details);
+  }
+  for (const kind of ["gaps", "unsupported"]) {
+    const count = kind === "gaps" ? detail.static_coverage_gap_count : detail.static_coverage_unsupported_count;
+    if (!count) continue;
+    if (state.coveragePages[kind]?.coverage_digest !== detail.static_coverage_digest) state.coveragePages[kind] = null;
+    const page = state.coveragePages[kind];
+    const section = el("section", undefined, "coverage-ledger");
+    section.append(el("strong", `${kind === "gaps" ? "미검증 파일·규칙" : "지원되지 않는 파일"} 전체 원장 (${count}개)`));
+    if (page) {
+      for (const item of page.items) section.append(el("div", `${item.path} · ${item.rule_id ? `${item.rule_id} · ` : ""}${item.reason}`, "meta"));
+      section.append(el("div", `${page.offset + 1}–${page.offset + page.items.length} / ${page.total}`, "meta"));
+    }
+    const offset = page?.offset || 0;
+    const controls = el("div", undefined, "coverage-controls");
+    for (const [label, nextOffset, enabled] of [
+      ["이전", Math.max(0, offset - 100), Boolean(page && offset > 0)],
+      [page ? "다음" : "목록 열기", page ? offset + 100 : 0, !page || offset + 100 < count]
+    ]) {
+      const button = el("button", label);
+      button.disabled = !enabled;
+      button.addEventListener("click", async () => {
+        try {
+          const routeId = detail.display_analysis_id || detail.analysis_id;
+          state.coveragePages[kind] = await getJson(`/api/analyses/${encodeURIComponent(routeId)}/static-coverage?kind=${kind}&offset=${nextOffset}&limit=100`);
+          if ((state.selected === routeId || state.selected === detail.analysis_id) && state.detail?.analysis_id === detail.analysis_id) {
+            renderOverview(state.detail);
+          }
+        } catch (_) {
+          section.append(el("div", "원장 조회 실패", "error"));
+        }
+      });
+      controls.append(button);
+    }
+    section.append(controls);
+    nodes.push(section);
   }
   return nodes;
 }
@@ -127,9 +175,13 @@ function renderOverview(detail) {
     ["가설", String(detail.hypothesis_count)],
     ["Finding", String(detail.finding_count)],
     ["미확정 / 근거 부족", `${detail.inconclusive_hypothesis_count} / ${detail.rejected_hypothesis_count}`],
+    ["완료 작업", `${detail.completed_units}/${detail.known_units}`],
+    ["Primitive 허용 / 제외", `${detail.admitted_primitive_count} / ${detail.excluded_primitive_count}`],
+    ["체이닝 자식", String(detail.child_hypothesis_count)],
     ["LLM 호출", String(detail.llm_attempt_count || 0)],
     ["LLM 토큰", `입력 ${detail.llm_input_tokens || 0} / 출력 ${detail.llm_output_tokens || 0}`],
     ["확인된 비용", detail.llm_cost_minor_units == null ? "미제공" : `${detail.llm_cost_minor_units}¢`],
+    ["비용 미제공 호출", String(detail.llm_unknown_cost_calls || 0)],
     ["경과 시간", formatDuration(detail.elapsed_ms)],
     ["마지막 갱신", formatTime(detail.last_updated_at)],
   ];

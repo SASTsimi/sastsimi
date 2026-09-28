@@ -51,3 +51,36 @@ def plan_semgrep_target_chunks(
     if current:
         result.append(current)
     return tuple(result)
+
+
+def split_target_chunks_by_source_bytes(
+    roots: Sequence[Sequence[str]],
+    size_for: Callable[[str], int],
+    *,
+    max_bytes: int,
+) -> tuple[tuple[str, ...], ...]:
+    """Further split command-safe roots without omitting oversized singletons."""
+
+    if max_bytes < 1:
+        raise RuntimeError("SCAN_SOURCE_BYTE_LIMIT_INVALID")
+    result: list[tuple[str, ...]] = []
+    for root in roots:
+        current: list[str] = []
+        total = 0
+        for target in root:
+            size = size_for(target)
+            if type(size) is not int or size < 0:
+                raise RuntimeError("SCAN_TARGET_SIZE_INVALID")
+            if current and total + size > max_bytes:
+                result.append(tuple(current))
+                current = []
+                total = 0
+            current.append(target)
+            total += size
+            if size > max_bytes:
+                result.append(tuple(current))
+                current = []
+                total = 0
+        if current:
+            result.append(tuple(current))
+    return tuple(result)

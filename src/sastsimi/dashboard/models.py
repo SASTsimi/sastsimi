@@ -18,6 +18,7 @@ class AnalysisSummaryView(ContractModel):
     commit_id: str | None = None
     current_stage: str
     status: str
+    static_disposition: str | None = None
     completed_count: int
     stage_count: int
     hypothesis_count: int
@@ -179,6 +180,9 @@ class AnalysisDetailView(AnalysisSummaryView):
     static_coverage_gap_count: int | None = None
     static_coverage_gap_preview: tuple[dict[str, str], ...] = ()
     static_coverage_unsupported: tuple[tuple[str, int], ...] = ()
+    static_coverage_unsupported_count: int | None = None
+    static_coverage_reason_counts: dict[str, int] = Field(default_factory=dict)
+    static_coverage_digest: str | None = None
     static_ast_parse_error_count: int | None = None
     static_ast_truncated: bool | None = None
     static_coverage_engines: dict[str, int] = Field(default_factory=dict)
@@ -195,6 +199,15 @@ class AnalysisDetailView(AnalysisSummaryView):
     evidence_artifact_ids: tuple[str, ...] = ()
     logs_url: str | None = None
     bundle_url: str | None = None
+
+
+class StaticCoveragePageView(ContractModel):
+    kind: str
+    total: int
+    offset: int
+    limit: int
+    coverage_digest: str
+    items: tuple[dict[str, str], ...]
 
 
 __all__ = [

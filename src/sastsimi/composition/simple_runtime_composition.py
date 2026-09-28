@@ -367,6 +367,7 @@ def build_analysis_application(
         recovery_factory=recovery_factory,
         max_parallel_hypotheses=profile.max_parallel_hypotheses,
         max_elapsed_seconds=profile.max_elapsed_seconds,
+        max_tokens=profile.max_tokens,
     )
 
 
@@ -462,7 +463,10 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         while not task.done():
             if started:
                 try:
-                    current = ProgressProjector(self._store).snapshot(started[0])
+                    run = self._store.require_analysis_run(started[0])
+                    current = ProgressProjector(self._store).snapshot(
+                        started[0], static_disposition=run.static_disposition
+                    )
                 except LookupError:
                     current = None
                 if current is not None and current != last:
@@ -471,15 +475,20 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             await asyncio.sleep(0.2)
         outcome = await task
         if started:
-            current = ProgressProjector(self._store).snapshot(started[0])
+            run = self._store.require_analysis_run(started[0])
+            current = ProgressProjector(self._store).snapshot(
+                started[0], static_disposition=run.static_disposition
+            )
             if current != last:
                 callback(current)
         return outcome
 
     def status(self, analysis_id: str) -> dict[str, object]:
         exact = self._display.resolve(analysis_id)
-        snapshot = ProgressProjector(self._store).snapshot(exact)
         run = self._store.require_analysis_run(exact)
+        snapshot = ProgressProjector(self._store).snapshot(
+            exact, static_disposition=run.static_disposition
+        )
         return {
             "analysis_id": run.display_analysis_id,
             "exact_analysis_id": exact,

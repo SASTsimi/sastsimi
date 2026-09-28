@@ -25,16 +25,22 @@ button:hover, button.selected, button:focus-visible { border-color: #5de0c0; out
 .text-link { font-size: .82rem; white-space: nowrap; }
 .hidden { display: none !important; }
 .notice { padding: .7rem .9rem; border: 1px solid #28506a; border-radius: 10px; background: #0c2130; color: #b9cad4; }
-.warning { border-color: #8f6728 !important; background: #302515 !important; color: #ffd38a !important; }
+.warning { border-color: #8f6728 !important; border-left: 4px solid #ffb347; padding: .55rem .7rem; margin: .5rem 0; background: #302515 !important; color: #ffd38a !important; font-weight: 750; }
 .success { color: #8ef3d8; }
 .error { color: #ff9b9b !important; }
 .meta { color: #9cb1bf; font-size: .82rem; }
+.status { color: #5de0c0; font-weight: 750; }
+.coverage-ledger { margin-top: .65rem; padding: .65rem; border: 1px solid #35536a; border-radius: 8px; overflow-wrap: anywhere; }
+.coverage-controls { display: flex; gap: .5rem; margin-top: .5rem; }
+.coverage-controls button { width: auto; padding: .35rem .65rem; }
+.coverage-controls button:disabled { opacity: .5; cursor: default; }
 .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .repository { margin: .55rem 0 1rem; overflow-wrap: anywhere; }
 .badge { display: inline-flex; width: fit-content; padding: .2rem .45rem; border: 1px solid #526979; border-radius: 999px; color: #c8d7e0; font-size: .7rem; font-weight: 800; letter-spacing: .03em; }
 .status-succeeded, .status-complete { border-color: #33856f; color: #8ef3d8; }
 .status-running { border-color: #367eaa; color: #84d3ff; }
+.status-partial { border-color: #8f6728; color: #ffd38a; }
 .status-failed, .status-blocked { border-color: #a44747; color: #ff9b9b; }
 .status-skipped, .status-not_started { color: #9cb1bf; }
 .progress-wrap { width: 100%; height: 12px; margin-top: .9rem; overflow: hidden; border-radius: 999px; background: #183447; }

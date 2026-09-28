@@ -100,6 +100,35 @@ def test_progress_counts_known_work_and_only_complete_reaches_100(
     assert complete.percent == 100
 
 
+def test_partial_static_scope_never_projects_complete_or_full_coverage(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    analysis = CheckpointIdentity(
+        analysis_id="analysis-partial",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    hypothesis = analysis.model_copy(update={"hypothesis_id": "hypothesis-1"})
+    _save(store, analysis, SimpleStage.STATIC_DONE)
+    _save(store, analysis, SimpleStage.HYPOTHESIS_DONE)
+    for stage in HYPOTHESIS_STAGES:
+        _save(
+            store,
+            hypothesis,
+            stage,
+            verdict="TRUE" if stage is SimpleStage.VERIFICATION_FINAL_DONE else None,
+        )
+
+    snapshot = ProgressProjector(store).snapshot(
+        "analysis-partial", static_disposition="PARTIAL"
+    )
+
+    assert snapshot.status == "PARTIAL"
+    assert snapshot.percent < 100
+
+
 def test_false_is_terminal_without_becoming_a_failed_analysis(tmp_path: Path) -> None:
     store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
     identity = CheckpointIdentity(

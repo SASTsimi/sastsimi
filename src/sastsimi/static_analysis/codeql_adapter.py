@@ -380,6 +380,10 @@ class _MalformedSarif(ValueError):
     pass
 
 
+class _ForeignSarifLocation(ValueError):
+    pass
+
+
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
 
@@ -632,7 +636,7 @@ def _location(value: object, tracked: frozenset[str]) -> CandidateLocation:
         raise ValueError("CODEQL_LOCATION_UNSAFE")
     file_path = _safe_git_path(unquote(split.path))
     if file_path not in tracked:
-        raise ValueError("CODEQL_LOCATION_FOREIGN")
+        raise _ForeignSarifLocation("CODEQL_LOCATION_FOREIGN")
     start_line = region.get("startLine")
     end_line = region.get("endLine", start_line)
     start_column = region.get("startColumn")
@@ -815,6 +819,8 @@ def _decode_sarif(
             for raw_location in locations:
                 try:
                     result_locations.append(_location(raw_location, tracked))
+                except _ForeignSarifLocation as error:
+                    raise _MalformedSarif("STATIC_OUTPUT_MALFORMED") from error
                 except ValueError:
                     location_issue = True
         else:
@@ -867,6 +873,8 @@ def _decode_sarif(
                             decoded = tuple(
                                 _location(item, tracked) for item in raw_locations
                             )
+                        except _ForeignSarifLocation as error:
+                            raise _MalformedSarif("STATIC_OUTPUT_MALFORMED") from error
                         except ValueError:
                             flow_issue = True
                             continue

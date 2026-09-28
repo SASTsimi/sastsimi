@@ -8,7 +8,7 @@ from sastsimi.simple_runtime.recovery import MAX_RECOVERY_ATTEMPTS
 
 class ProgressSnapshot(ContractModel):
     analysis_id: str
-    status: Literal["RUNNING", "BLOCKED", "FAILED", "COMPLETE"]
+    status: Literal["RUNNING", "BLOCKED", "FAILED", "COMPLETE", "PARTIAL"]
     completed_units: int
     skipped_units: int = 0
     known_units: int

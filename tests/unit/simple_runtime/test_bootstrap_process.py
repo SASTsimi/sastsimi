@@ -136,3 +136,22 @@ async def test_captured_tool_output_is_bounded() -> None:
     assert len(result.stderr) == 1024 * 1024
     assert result.stdout[-1:] == b"x"
     assert result.stderr[-1:] == b"y"
+    assert result.stdout_truncated
+    assert result.stderr_truncated
+
+
+@pytest.mark.asyncio
+async def test_tool_cannot_allocate_past_per_call_memory_limit() -> None:
+    result = await LocalProcessExecutor(memory_limit_bytes=128 * 1024 * 1024).run(
+        (
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            "data = bytearray(256 * 1024 * 1024); print(len(data))",
+        ),
+        timeout_seconds=10,
+    )
+
+    assert result.returncode != 0
+    assert b"268435456" not in result.stdout

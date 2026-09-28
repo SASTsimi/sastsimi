@@ -116,6 +116,104 @@ def test_known_usage_ceiling_blocks_next_call(tmp_path: Path) -> None:
     assert failure.code == "LLM_TOKEN_BUDGET_EXHAUSTED"
 
 
+def test_unlimited_token_budget_keeps_ledger_and_cost_ceiling(tmp_path: Path) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-unlimited-tokens",
+        workspace_id="workspace-unlimited-tokens",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    store = SimpleCheckpointStore(artifacts.paths.database)
+    ref = artifacts.put_json({"kind": "attempt"})
+    store.record_llm_attempt(
+        attempt_id="large",
+        analysis_id=identity.analysis_id,
+        agent="hypothesis",
+        model="test",
+        attempt_number=1,
+        status="SUCCEEDED",
+        elapsed_ms=100,
+        input_tokens=1_500_000,
+        output_tokens=20,
+        cost_cents=9.0,
+        artifact_ref=ref,
+    )
+    store.record_llm_attempt(
+        attempt_id="unmeasured",
+        analysis_id=identity.analysis_id,
+        agent="hypothesis",
+        model="test",
+        attempt_number=2,
+        status="TIMED_OUT",
+        elapsed_ms=100,
+        input_tokens=None,
+        output_tokens=None,
+        cost_cents=None,
+        artifact_ref=ref,
+    )
+    unlimited = RunUsageBudget(
+        store=store,
+        analysis_id=identity.analysis_id,
+        max_tokens="unlimited",
+        max_cost_minor_units=10,
+        max_elapsed_seconds="unlimited",
+    )
+    assert unlimited.check() is None
+    assert store.usage_summary(identity.analysis_id)["input_tokens"] == 1_500_000
+    cost_limited = RunUsageBudget(
+        store=store,
+        analysis_id=identity.analysis_id,
+        max_tokens="unlimited",
+        max_cost_minor_units=9,
+        max_elapsed_seconds="unlimited",
+    )
+    assert (failure := cost_limited.check()) is not None
+    assert failure.code == "LLM_COST_BUDGET_EXHAUSTED"
+
+
+def test_unlimited_elapsed_budget_keeps_cost_ceiling(tmp_path: Path) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-unlimited",
+        workspace_id="workspace-unlimited",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    store = SimpleCheckpointStore(artifacts.paths.database)
+    ref = artifacts.put_json({"kind": "attempt"})
+    store.record_llm_attempt(
+        attempt_id="slow",
+        analysis_id=identity.analysis_id,
+        agent="hypothesis",
+        model="test",
+        attempt_number=1,
+        status="SUCCEEDED",
+        elapsed_ms=3_700_000,
+        input_tokens=1,
+        output_tokens=1,
+        cost_cents=9.0,
+        artifact_ref=ref,
+    )
+    budget = RunUsageBudget(
+        store=store,
+        analysis_id=identity.analysis_id,
+        max_tokens=100,
+        max_cost_minor_units=10,
+        max_elapsed_seconds="unlimited",
+    )
+    assert budget.check() is None
+    limited = RunUsageBudget(
+        store=store,
+        analysis_id=identity.analysis_id,
+        max_tokens=100,
+        max_cost_minor_units=9,
+        max_elapsed_seconds="unlimited",
+    )
+    assert (failure := limited.check()) is not None
+    assert failure.code == "LLM_COST_BUDGET_EXHAUSTED"
+
+
 def test_elapsed_budget_uses_durable_llm_attempt_time_not_analysis_age(
     tmp_path: Path,
 ) -> None:
@@ -146,8 +244,8 @@ def test_elapsed_budget_uses_durable_llm_attempt_time_not_analysis_age(
         attempt_number=1,
         status="SUCCEEDED",
         elapsed_ms=499,
-        input_tokens=None,
-        output_tokens=None,
+        input_tokens=0,
+        output_tokens=0,
         cost_cents=None,
         artifact_ref=ref,
     )
@@ -168,8 +266,8 @@ def test_elapsed_budget_uses_durable_llm_attempt_time_not_analysis_age(
         attempt_number=1,
         status="SUCCEEDED",
         elapsed_ms=501,
-        input_tokens=None,
-        output_tokens=None,
+        input_tokens=0,
+        output_tokens=0,
         cost_cents=None,
         artifact_ref=ref,
     )

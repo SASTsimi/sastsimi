@@ -1,11 +1,19 @@
 import hashlib
 import json
+import os
+import shutil
+import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
 
+from sastsimi.config.user_config import (
+    ElapsedLimit,
+    SimpleExecutionProfile,
+    SimpleToolBinding,
+)
 from sastsimi.sandbox.docker_adapter import DockerCommandOutcome, DockerOperationError
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
@@ -20,6 +28,7 @@ from sastsimi.simple_runtime.portable_docker import (
     DirectEnvironmentPreparer,
     PortableDockerRuntime,
 )
+from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
 class _RecordingPortableDockerRuntime(PortableDockerRuntime):
@@ -41,6 +50,81 @@ class _RecordingPortableDockerRuntime(PortableDockerRuntime):
             stderr=b"",
             timed_out=False,
         )
+
+
+class _BuildFailurePortableDockerRuntime(PortableDockerRuntime):
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, ...]] = []
+        self._network = "none"
+        self._timeout = 60
+
+    async def _run(
+        self,
+        args: Sequence[str],
+        *,
+        timeout_seconds: int,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        del timeout_seconds, input_bytes
+        self.calls.append(tuple(args))
+        return DockerCommandOutcome(
+            exit_code=1,
+            stdout=b"",
+            stderr=b"uv sync: Git executable not found\n",
+            timed_out=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_failed_docker_build_keeps_diagnostic_output() -> None:
+    docker = _BuildFailurePortableDockerRuntime()
+
+    with pytest.raises(DockerOperationError) as failure:
+        await docker.build_or_reuse(
+            workspace=Path.cwd(),
+            dockerfile=b"FROM python:3.12-slim\n",
+            cache_key="diagnostic-build",
+            labels={},
+        )
+
+    assert "--quiet" not in docker.calls[1]
+    assert failure.value.outcome is not None
+    assert b"Git executable not found" in failure.value.outcome.stderr
+
+
+@pytest.mark.parametrize(
+    ("elapsed_limit", "expected_timeout"),
+    [(7200, 7200), ("unlimited", 3600)],
+)
+def test_docker_call_timeout_preserves_finite_configuration(
+    elapsed_limit: ElapsedLimit, expected_timeout: int
+) -> None:
+    profile = SimpleExecutionProfile(
+        provider_profile_ref="test",
+        provider="test",
+        model="test",
+        auth_mode="API_KEY",
+        credential_ref="env:TEST_API_KEY",
+        data_dir=Path.cwd(),
+        workspace_root=Path.cwd(),
+        max_cost_minor_units=1,
+        max_tokens=1,
+        docker_network="NONE",
+        max_elapsed_seconds=elapsed_limit,
+        tools={
+            "docker": SimpleToolBinding(
+                executable_path=Path("docker"),
+                version="test",
+                executable_sha256="a" * 64,
+            )
+        },
+        max_parallel_builds=1,
+        max_parallel_containers=1,
+    )
+
+    runtime = PortableDockerRuntime(profile)
+
+    assert runtime._timeout == expected_timeout
 
 
 class _BuildDocker:
@@ -238,8 +322,82 @@ async def test_runtime_process_preserves_programfiles_for_windows_docker_plugins
     assert "SASTSIMI_TEST_SECRET" not in child_environment
 
 
-def test_target_environment_change_invalidates_initial_verification() -> None:
-    assert STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE] == "2"
+@pytest.mark.asyncio
+async def test_runtime_process_keeps_end_of_large_docker_diagnostics() -> None:
+    runtime = PortableDockerRuntime.__new__(PortableDockerRuntime)
+    runtime._executable = Path(sys.executable)
+
+    outcome = await runtime._run(
+        (
+            "-c",
+            "import sys; "
+            "sys.stdout.buffer.write(b'o' * (1024 * 1024 + 64) + b'OUT-END'); "
+            "sys.stderr.buffer.write(b'e' * (1024 * 1024 + 64) + b'GIT-ERROR')",
+        ),
+        timeout_seconds=30,
+    )
+
+    assert outcome.exit_code == 0
+    assert outcome.stdout.endswith(b"OUT-END")
+    assert outcome.stderr.endswith(b"GIT-ERROR")
+    assert len(outcome.stdout) <= 1024 * 1024
+    assert len(outcome.stderr) <= 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_runtime_process_sends_input_while_draining_output() -> None:
+    runtime = PortableDockerRuntime.__new__(PortableDockerRuntime)
+    runtime._executable = Path(sys.executable)
+    payload = b"Dockerfile" * 100_000
+
+    outcome = await runtime._run(
+        (
+            "-c",
+            "import sys; data = sys.stdin.buffer.read(); "
+            "sys.stdout.write(str(len(data)))",
+        ),
+        timeout_seconds=30,
+        input_bytes=payload,
+    )
+
+    assert outcome.exit_code == 0
+    assert outcome.stdout == b"1000000"
+
+
+def test_target_environment_change_invalidates_only_initial_verification_and_later(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-old-environment",
+        workspace_id="workspace-old-environment",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-old-environment",
+    )
+    for stage, version in (
+        (SimpleStage.PRO_CON_DONE, STAGE_VERSION[SimpleStage.PRO_CON_DONE]),
+        (SimpleStage.VERIFICATION_INITIAL_DONE, "3"),
+        (SimpleStage.POC_CANDIDATE_DONE, STAGE_VERSION[SimpleStage.POC_CANDIDATE_DONE]),
+    ):
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=identity,
+                stage=stage,
+                stage_version=version,
+                status=StageStatus.SUCCEEDED,
+                input_refs=(),
+                input_hash=input_reference_hash(()),
+            )
+        )
+
+    assert store.reusable(identity, SimpleStage.PRO_CON_DONE, ())
+    assert not store.reusable(identity, SimpleStage.VERIFICATION_INITIAL_DONE, ())
+    store.invalidate_from(
+        identity, SimpleStage.VERIFICATION_INITIAL_DONE, new_inputs=()
+    )
+    assert store.get(identity, SimpleStage.PRO_CON_DONE) is not None
+    assert store.get(identity, SimpleStage.VERIFICATION_INITIAL_DONE) is None
+    assert store.get(identity, SimpleStage.POC_CANDIDATE_DONE) is None
 
 
 @pytest.mark.asyncio
@@ -296,7 +454,7 @@ def test_repository_buster_dockerfile_uses_archive_mirrors_before_apt() -> None:
     assert prepared.index(b"archive.debian.org") < prepared.index(b"apt-get update")
 
 
-def test_target_requirements_are_resolved_from_exact_hypothesis(
+def test_target_manifest_is_resolved_from_exact_hypothesis(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -331,9 +489,701 @@ def test_target_requirements_are_resolved_from_exact_hypothesis(
         workspace=workspace,
     )
 
-    resolved = preparer._target_requirements_path({SimpleStage.PRO_CON_DONE: pro_con})
+    resolved = preparer._target_manifest_path({SimpleStage.PRO_CON_DONE: pro_con})
 
     assert resolved == "nested/lab/requirements.txt"
+
+    backslash_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "proposal": {"code_locations": [r"nested\lab\main.py:1"]},
+        }
+    )
+    backslash_inputs = (backslash_ref,)
+    backslash_pro_con = pro_con.model_copy(
+        update={
+            "input_refs": backslash_inputs,
+            "input_hash": input_reference_hash(backslash_inputs),
+        }
+    )
+    assert (
+        preparer._target_manifest_path({SimpleStage.PRO_CON_DONE: backslash_pro_con})
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "pyproject_body",
+    [
+        '[project]\nname = "plain-root"\nversion = "0.1.0"\n',
+        "[project\n",
+    ],
+)
+def test_root_requirements_remain_selected_without_uv_sources(
+    tmp_path: Path, pyproject_body: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("pass\n", encoding="utf-8")
+    (workspace / "requirements.txt").write_text("flask\n", encoding="utf-8")
+    (workspace / "pyproject.toml").write_text(pyproject_body, encoding="utf-8")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-root-pip",
+        workspace_id="workspace-root-pip",
+        commit_id="c" * 40,
+        hypothesis_id="hypothesis-root-pip",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    proposal_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "proposal": {"code_locations": ["app.py:1"]},
+        }
+    )
+    pro_con = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(proposal_ref,),
+        input_hash=input_reference_hash((proposal_ref,)),
+    )
+    preparer = DirectEnvironmentPreparer(
+        docker=object(),  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    )
+
+    assert preparer._target_manifest_path({SimpleStage.PRO_CON_DONE: pro_con}) == (
+        "requirements.txt"
+    )
+
+
+def test_target_manifest_rejects_symlinked_source(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "real.py").write_text("pass\n", encoding="utf-8")
+    (workspace / "requirements.txt").write_text("Flask\n", encoding="utf-8")
+    try:
+        (workspace / "link.py").symlink_to(workspace / "real.py")
+    except (OSError, NotImplementedError):
+        pytest.skip("This Windows account cannot create symbolic links")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-symlink",
+        workspace_id="workspace-symlink",
+        commit_id="d" * 40,
+        hypothesis_id="hypothesis-symlink",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    proposal_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "proposal": {"code_locations": ["link.py:1"]},
+        }
+    )
+    pro_con = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(proposal_ref,),
+        input_hash=input_reference_hash((proposal_ref,)),
+    )
+    preparer = DirectEnvironmentPreparer(
+        docker=object(),  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    )
+
+    assert preparer._target_manifest_path({SimpleStage.PRO_CON_DONE: pro_con}) is None
+
+
+@pytest.mark.asyncio
+async def test_generated_image_installs_nearest_nested_pyproject(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    target = workspace / "service"
+    target.mkdir(parents=True)
+    (target / "app.py").write_text("import socketio\n", encoding="utf-8")
+    (target / "pyproject.toml").write_text(
+        '[project]\nname = "example-service"\nversion = "0.1.0"\n'
+        'dependencies = ["python-socketio"]\n',
+        encoding="utf-8",
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-nested-project",
+        workspace_id="workspace-nested-project",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-nested-project",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    proposal_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "proposal": {"code_locations": ["service/app.py:1"]},
+        }
+    )
+    pro_con = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(proposal_ref,),
+        input_hash=input_reference_hash((proposal_ref,)),
+    )
+    docker = _BuildDocker()
+
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    ).prepare(
+        _environment_checkpoint(artifacts, action="RETRY_STAGE", patch=""),
+        {SimpleStage.PRO_CON_DONE: pro_con},
+        (),
+    )
+
+    assert (
+        b"python -m pip install --no-cache-dir /workspace/service"
+        in docker.dockerfiles[0]
+    )
+    assert (
+        b"ln -s /workspace/service /opt/sastsimi-target-source" in docker.dockerfiles[0]
+    )
+    recipe = json.loads(artifacts.read(result.recipe_ref))
+    assert recipe["target_manifest_path"] == "service/pyproject.toml"
+
+
+@pytest.mark.asyncio
+async def test_generated_image_uses_uv_for_nested_workspace_sources(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    project = workspace / "backend"
+    project.mkdir(parents=True)
+    (project / "app.py").write_text("import socketio\n", encoding="utf-8")
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "example-service"\nversion = "0.1.0"\n'
+        'dependencies = ["local-agent"]\n'
+        '[tool.uv.sources]\nlocal-agent = { path = "../local-agent" }\n',
+        encoding="utf-8",
+    )
+    (project / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-uv-project",
+        workspace_id="workspace-uv-project",
+        commit_id="b" * 40,
+        hypothesis_id="hypothesis-uv-project",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    proposal_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "proposal": {"code_locations": ["backend/app.py:1"]},
+        }
+    )
+    pro_con = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(proposal_ref,),
+        input_hash=input_reference_hash((proposal_ref,)),
+    )
+    docker = _BuildDocker()
+
+    await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    ).prepare(
+        _environment_checkpoint(artifacts, action="RETRY_STAGE", patch=""),
+        {SimpleStage.PRO_CON_DONE: pro_con},
+        (),
+    )
+
+    built = docker.dockerfiles[0]
+    assert b"python -m pip install --no-cache-dir uv" in built
+    assert b"uv sync --frozen --no-dev" in built
+    assert b"--no-default-groups" not in built
+    assert b"ln -s /workspace/backend/.venv /opt/sastsimi-target-venv" in built
+    assert b"ENV VIRTUAL_ENV=/opt/sastsimi-target-venv" in built
+    assert b'ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"' in built
+    assert b"ln -s /workspace/backend /opt/sastsimi-target-source" in built
+    assert (
+        b'ENV PYTHONPATH="/opt/sastsimi-target-source:'
+        b'/opt/sastsimi-target-source/src:${PYTHONPATH}"' in built
+    )
+    assert b"pip install --no-cache-dir /workspace/backend" not in built
+
+
+@pytest.mark.asyncio
+async def test_nested_workspace_member_uses_root_uv_environment(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    project = workspace / "apps" / "worker"
+    project.mkdir(parents=True)
+    (project / "app.py").write_text("import local_lib\n", encoding="utf-8")
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "example-worker"\nversion = "0.1.0"\n'
+        'dependencies = ["local-lib"]\n',
+        encoding="utf-8",
+    )
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "example-root"\nversion = "0.1.0"\n'
+        'requires-python = ">=3.12,<3.13"\n'
+        '[tool.uv.workspace]\nmembers = ["apps/*"]\n'
+        '[tool.uv.sources]\nlocal-lib = { path = "libs/local-lib" }\n',
+        encoding="utf-8",
+    )
+    (workspace / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-member-uv",
+        workspace_id="workspace-member-uv",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-member-uv",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    proposal_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "proposal": {"code_locations": ["apps/worker/app.py:1"]},
+        }
+    )
+    pro_con = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(proposal_ref,),
+        input_hash=input_reference_hash((proposal_ref,)),
+    )
+    docker = _BuildDocker()
+
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    ).prepare(
+        _environment_checkpoint(artifacts, action="RETRY_STAGE", patch=""),
+        {SimpleStage.PRO_CON_DONE: pro_con},
+        (),
+    )
+
+    built = docker.dockerfiles[0]
+    assert b"cd /workspace && uv sync --package example-worker --frozen" in built
+    assert b"test -x /workspace/.venv/bin/python" in built
+    assert b"ln -s /workspace/.venv /opt/sastsimi-target-venv" in built
+    assert b"/workspace/apps/worker/.venv" not in built
+    assert b"pip install --no-cache-dir /workspace/apps/worker" not in built
+    assert json.loads(artifacts.read(result.recipe_ref))["target_manifest_path"] == (
+        "apps/worker/pyproject.toml"
+    )
+
+
+def test_uv_workspace_member_sync_creates_root_environment(tmp_path: Path) -> None:
+    executable = shutil.which("uv")
+    if executable is None:
+        sibling = Path(sys.executable).with_name(
+            "uv.exe" if sys.platform == "win32" else "uv"
+        )
+        if sibling.is_file():
+            executable = str(sibling)
+    if executable is None:
+        pytest.skip("uv is not installed for the offline workspace smoke test")
+
+    workspace = tmp_path / "workspace"
+    member = workspace / "apps" / "worker"
+    local_lib = workspace / "libs" / "local-lib"
+    member.mkdir(parents=True)
+    local_lib.mkdir(parents=True)
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "example-root"\nversion = "0.1.0"\n'
+        'requires-python = ">=3.12,<3.13"\n'
+        '[tool.uv.workspace]\nmembers = ["apps/*"]\n'
+        '[tool.uv.sources]\nlocal-lib = { path = "libs/local-lib" }\n',
+        encoding="utf-8",
+    )
+    (member / "pyproject.toml").write_text(
+        '[project]\nname = "example-worker"\nversion = "0.1.0"\n'
+        'requires-python = ">=3.12,<3.13"\n'
+        'dependencies = ["local-lib"]\n',
+        encoding="utf-8",
+    )
+    (local_lib / "pyproject.toml").write_text(
+        '[project]\nname = "local-lib"\nversion = "0.1.0"\n'
+        'requires-python = ">=3.12,<3.13"\n'
+        "[tool.uv]\npackage = false\n",
+        encoding="utf-8",
+    )
+    env = {**os.environ, "UV_CACHE_DIR": str(tmp_path / "uv-cache")}
+    locked = subprocess.run(
+        [executable, "lock", "--offline"],
+        cwd=workspace,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert locked.returncode == 0, locked.stderr
+
+    synced = subprocess.run(
+        [
+            executable,
+            "sync",
+            "--offline",
+            "--frozen",
+            "--package",
+            "example-worker",
+            "--no-dev",
+            "--python",
+            sys.executable,
+        ],
+        cwd=workspace,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert synced.returncode == 0, synced.stderr
+    interpreter = "python.exe" if sys.platform == "win32" else "python"
+    scripts = "Scripts" if sys.platform == "win32" else "bin"
+    assert (workspace / ".venv" / scripts / interpreter).is_file()
+    assert not (member / ".venv").exists()
+
+
+@pytest.mark.asyncio
+async def test_generated_image_uses_uv_for_root_workspace_sources(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("import local_agent\n", encoding="utf-8")
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "example-root"\nversion = "0.1.0"\n'
+        'dependencies = ["local-agent"]\n'
+        '[tool.uv.sources]\nlocal-agent = { path = "local-agent" }\n',
+        encoding="utf-8",
+    )
+    (workspace / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-root-uv",
+        workspace_id="workspace-root-uv",
+        commit_id="d" * 40,
+        hypothesis_id="hypothesis-root-uv",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    proposal_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "proposal": {"code_locations": ["app.py:1"]},
+        }
+    )
+    pro_con = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(proposal_ref,),
+        input_hash=input_reference_hash((proposal_ref,)),
+    )
+    docker = _BuildDocker()
+
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    ).prepare(
+        _environment_checkpoint(artifacts, action="RETRY_STAGE", patch=""),
+        {SimpleStage.PRO_CON_DONE: pro_con},
+        (),
+    )
+
+    built = docker.dockerfiles[0]
+    assert b"cd /workspace && uv sync --frozen --no-dev" in built
+    assert b"--no-default-groups" not in built
+    assert b"apt-get install -y --no-install-recommends git" in built
+    assert built.index(b"apt-get install -y --no-install-recommends git") < built.index(
+        b"uv sync"
+    )
+    assert b"ln -s /workspace/.venv /opt/sastsimi-target-venv" in built
+    assert b"pip install --no-cache-dir ." not in built
+    assert json.loads(artifacts.read(result.recipe_ref))["target_manifest_path"] == (
+        "pyproject.toml"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("base_image", ["python:3.12-slim", "python:3.12-alpine"])
+async def test_repository_uv_image_can_install_git_before_sync(
+    tmp_path: Path, base_image: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    original = f"FROM {base_image}\nUSER nobody\nWORKDIR /service\n".encode()
+    (workspace / "Dockerfile").write_bytes(original)
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "example-root"\nversion = "0.1.0"\n'
+        'dependencies = ["remote-lib"]\n'
+        '[tool.uv.sources]\nremote-lib = { git = "https://example.org/lib.git" }\n',
+        encoding="utf-8",
+    )
+    (workspace / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-repository-uv-git",
+        workspace_id="workspace-repository-uv-git",
+        commit_id="d" * 40,
+        hypothesis_id="hypothesis-repository-uv-git",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    docker = _BuildDocker()
+
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    ).prepare(
+        _environment_checkpoint(artifacts, action="RETRY_STAGE", patch=""),
+        {},
+        (),
+    )
+
+    built = docker.dockerfiles[0]
+    assert built.startswith(original)
+    assert built.index(b"USER root") < built.index(b"command -v git")
+    assert built.index(b"command -v git") < built.index(b"uv sync --frozen")
+    assert b"apt-get install -y --no-install-recommends git" in built
+    assert b"apk add --no-cache git" in built
+    assert b"SASTSIMI_GIT_UNAVAILABLE" in built
+    assert (workspace / "Dockerfile").read_bytes() == original
+    assert json.loads(artifacts.read(result.recipe_ref))["dockerfile_source"] == (
+        "REPOSITORY_DOCKERFILE"
+    )
+
+
+@pytest.mark.asyncio
+async def test_uv_sync_includes_project_default_runtime_groups(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "example-root"\nversion = "0.1.0"\n'
+        '[dependency-groups]\nruntime = ["pydantic-settings"]\n'
+        'dev = ["pytest"]\n'
+        '[tool.uv]\ndefault-groups = ["runtime", "dev"]\n',
+        encoding="utf-8",
+    )
+    (workspace / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-default-runtime-groups",
+        workspace_id="workspace-default-runtime-groups",
+        commit_id="e" * 40,
+        hypothesis_id="hypothesis-default-runtime-groups",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    docker = _BuildDocker()
+
+    await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    ).prepare(
+        _environment_checkpoint(artifacts, action="RETRY_STAGE", patch=""),
+        {},
+        (),
+    )
+
+    built = docker.dockerfiles[0]
+    assert b"uv sync --frozen --no-dev" in built
+    assert b"--no-default-groups" not in built
+
+
+@pytest.mark.parametrize(
+    "uv_sources",
+    ["", '[tool.uv.sources]\nlocal-lib = { path = "libs/local-lib" }\n'],
+)
+@pytest.mark.asyncio
+async def test_root_uv_lock_takes_precedence_over_requirements(
+    tmp_path: Path, uv_sources: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("import local_lib\n", encoding="utf-8")
+    (workspace / "requirements.txt").write_text("other-package\n", encoding="utf-8")
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "example-root"\nversion = "0.1.0"\n'
+        'dependencies = ["local-lib"]\n'
+        f"{uv_sources}",
+        encoding="utf-8",
+    )
+    (workspace / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-root-mixed",
+        workspace_id="workspace-root-mixed",
+        commit_id="b" * 40,
+        hypothesis_id="hypothesis-root-mixed",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    proposal_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "proposal": {"code_locations": ["app.py:1"]},
+        }
+    )
+    pro_con = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(proposal_ref,),
+        input_hash=input_reference_hash((proposal_ref,)),
+    )
+    docker = _BuildDocker()
+
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    ).prepare(
+        _environment_checkpoint(artifacts, action="RETRY_STAGE", patch=""),
+        {SimpleStage.PRO_CON_DONE: pro_con},
+        (),
+    )
+
+    built = docker.dockerfiles[0]
+    assert b"cd /workspace && uv sync --frozen" in built
+    assert b"pip install --no-cache-dir -r requirements.txt" not in built
+    assert json.loads(artifacts.read(result.recipe_ref))["target_manifest_path"] == (
+        "pyproject.toml"
+    )
+
+
+@pytest.mark.asyncio
+async def test_root_uv_install_failure_does_not_fall_back_to_no_install(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "example-root"\nversion = "0.1.0"\n'
+        'dependencies = ["local-agent"]\n'
+        '[tool.uv.sources]\nlocal-agent = { path = "local-agent" }\n',
+        encoding="utf-8",
+    )
+    (workspace / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-root-uv-failure",
+        workspace_id="workspace-root-uv-failure",
+        commit_id="e" * 40,
+        hypothesis_id="hypothesis-root-uv-failure",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    docker = _FailingBuildDocker(
+        [b"RUN cd /workspace && uv sync --frozen: exit code 1"]
+    )
+
+    with pytest.raises(DockerOperationError, match="DOCKER_BUILD_FAILED") as failure:
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+        ).prepare(
+            _environment_checkpoint(artifacts, action="RETRY_STAGE", patch=""),
+            {},
+            (),
+        )
+
+    assert b"uv sync --frozen" in docker.dockerfiles[0]
+    assert len(docker.dockerfiles) == 1
+    recipe = json.loads(artifacts.read(failure.value.recipe_ref))  # type: ignore[attr-defined]
+    assert recipe["degraded"] is False
+    assert recipe["status"] == "BLOCKED"
+
+
+@pytest.mark.asyncio
+async def test_plain_root_pyproject_keeps_existing_pip_and_fallback(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "example-root"\nversion = "0.1.0"\n',
+        encoding="utf-8",
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-plain-root",
+        workspace_id="workspace-plain-root",
+        commit_id="f" * 40,
+        hypothesis_id="hypothesis-plain-root",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    docker = _FailingBuildDocker([b"RUN pip install --no-cache-dir .: exit code 1"])
+
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    ).prepare(
+        _environment_checkpoint(artifacts, action="RETRY_STAGE", patch=""),
+        {},
+        (),
+    )
+
+    assert b"RUN pip install --no-cache-dir ." in docker.dockerfiles[0]
+    assert b"uv sync" not in docker.dockerfiles[0]
+    assert len(docker.dockerfiles) == 2
+    assert json.loads(artifacts.read(result.recipe_ref))["degraded"] is True
+
+
+@pytest.mark.asyncio
+async def test_nested_manifest_install_failure_stays_blocked(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    project = workspace / "service"
+    project.mkdir(parents=True)
+    (project / "app.py").write_text("pass\n", encoding="utf-8")
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "example"\nversion = "0.1.0"\n', encoding="utf-8"
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-install-failure",
+        workspace_id="workspace-install-failure",
+        commit_id="c" * 40,
+        hypothesis_id="hypothesis-install-failure",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    proposal_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "proposal": {"code_locations": ["service/app.py:1"]},
+        }
+    )
+    pro_con = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(proposal_ref,),
+        input_hash=input_reference_hash((proposal_ref,)),
+    )
+    docker = _FailingBuildDocker(
+        [b"RUN python -m pip install --no-cache-dir /workspace/service: exit code 1"]
+    )
+
+    with pytest.raises(DockerOperationError) as failure:
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+        ).prepare(
+            _environment_checkpoint(artifacts, action="RETRY_STAGE", patch=""),
+            {SimpleStage.PRO_CON_DONE: pro_con},
+            (),
+        )
+
+    assert len(docker.dockerfiles) == 1
+    assert (
+        b"python -m pip install --no-cache-dir /workspace/service"
+        in docker.dockerfiles[0]
+    )
+    recipe = json.loads(artifacts.read(failure.value.recipe_ref))  # type: ignore[attr-defined]
+    assert recipe["status"] == "BLOCKED"
+    assert recipe["degraded"] is False
+    assert len(recipe["build_attempt_refs"]) == 1
 
 
 @pytest.mark.parametrize(

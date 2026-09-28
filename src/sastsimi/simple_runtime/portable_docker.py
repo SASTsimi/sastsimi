@@ -9,7 +9,9 @@ import os
 import re
 import shlex
 import socket
+import tomllib
 from collections.abc import Mapping, Sequence
+from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 
 from sastsimi.config.user_config import SimpleExecutionProfile
@@ -61,7 +63,10 @@ class PortableDockerRuntime:
         except KeyError:
             raise ValueError("DOCKER_NOT_CONFIGURED") from None
         self._network = "default" if profile.docker_network == "BRIDGE" else "none"
-        self._timeout = max(30, profile.max_elapsed_seconds)
+        configured_timeout = profile.max_elapsed_seconds
+        self._timeout = max(
+            30, 3600 if configured_timeout == "unlimited" else configured_timeout
+        )
         self._build_slots = asyncio.Semaphore(profile.max_parallel_builds)
         self._container_slots = asyncio.Semaphore(profile.max_parallel_containers)
         self._container_limit = profile.max_parallel_containers
@@ -107,7 +112,6 @@ class PortableDockerRuntime:
             return self._image_digest(inspected.stdout)
         args: list[str] = [
             "build",
-            "--quiet",
             "--pull=false",
             "--network",
             self._network,
@@ -403,30 +407,76 @@ class PortableDockerRuntime:
             stderr=asyncio.subprocess.PIPE,
             env=self._environment(),
         )
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(input_bytes),
-                timeout=timeout_seconds,
+        assert process.stdout is not None
+        assert process.stderr is not None
+        stdout_tail = bytearray()
+        stderr_tail = bytearray()
+        tasks = [
+            asyncio.create_task(self._read_output_tail(process.stdout, stdout_tail)),
+            asyncio.create_task(self._read_output_tail(process.stderr, stderr_tail)),
+            asyncio.create_task(process.wait()),
+        ]
+        if process.stdin is not None:
+            assert input_bytes is not None
+            tasks.append(
+                asyncio.create_task(self._write_input(process.stdin, input_bytes))
             )
+        try:
+            _, pending = await asyncio.wait(tasks, timeout=timeout_seconds)
+            if pending:
+                if process.returncode is None:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                await asyncio.gather(*tasks, return_exceptions=True)
+                return DockerCommandOutcome(
+                    exit_code=-1,
+                    stdout=bytes(stdout_tail),
+                    stderr=bytes(stderr_tail),
+                    timed_out=True,
+                )
+            await asyncio.gather(*tasks)
             return DockerCommandOutcome(
                 exit_code=process.returncode or 0,
-                stdout=stdout[:_MAX_OUTPUT],
-                stderr=stderr[:_MAX_OUTPUT],
+                stdout=bytes(stdout_tail),
+                stderr=bytes(stderr_tail),
                 timed_out=False,
             )
-        except TimeoutError:
-            process.kill()
-            stdout, stderr = await process.communicate()
-            return DockerCommandOutcome(
-                exit_code=-1,
-                stdout=stdout[:_MAX_OUTPUT],
-                stderr=stderr[:_MAX_OUTPUT],
-                timed_out=True,
-            )
         except asyncio.CancelledError:
-            process.kill()
-            await process.communicate()
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+            await asyncio.gather(*tasks, return_exceptions=True)
             raise
+
+    @staticmethod
+    async def _read_output_tail(stream: asyncio.StreamReader, tail: bytearray) -> None:
+        while chunk := await stream.read(64 * 1024):
+            if len(chunk) >= _MAX_OUTPUT:
+                tail[:] = chunk[-_MAX_OUTPUT:]
+            else:
+                overflow = len(tail) + len(chunk) - _MAX_OUTPUT
+                if overflow > 0:
+                    del tail[:overflow]
+                tail.extend(chunk)
+
+    @staticmethod
+    async def _write_input(stream: asyncio.StreamWriter, payload: bytes) -> None:
+        try:
+            for offset in range(0, len(payload), 64 * 1024):
+                stream.write(payload[offset : offset + 64 * 1024])
+                await stream.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            stream.close()
+            try:
+                await stream.wait_closed()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     @staticmethod
     def _environment() -> dict[str, str]:
@@ -511,21 +561,35 @@ class DirectEnvironmentPreparer:
         prior: Mapping[SimpleStage, StageCheckpoint],
         requirements: tuple[str, ...],
     ) -> ReproductionEnvironment:
-        target_requirements = self._target_requirements_path(prior)
-        target_install = self._target_install_layer(target_requirements)
+        target_manifest = self._target_manifest_path(prior)
+        if (
+            target_manifest is None
+            and (self._workspace / "pyproject.toml").is_file()
+            and self._target_install_layer("pyproject.toml")
+        ):
+            target_manifest = "pyproject.toml"
+        target_install = self._target_install_layer(target_manifest)
         dockerfile_path = self._workspace / "Dockerfile"
         if dockerfile_path.is_file():
+            git_install = (
+                self._repository_git_install_layer()
+                if target_install.startswith(
+                    b"RUN python -m pip install --no-cache-dir uv\n"
+                )
+                else b""
+            )
             dockerfile = self._portable_repository_dockerfile(
                 dockerfile_path.read_bytes()
             ) + (
                 b"\nUSER root\nWORKDIR /workspace\nCOPY . /workspace\n"
+                + git_install
                 + target_install
                 + b"RUN chmod -R a+rX /workspace && mkdir -p /tmp "
                 b"&& chmod 1777 /tmp\n"
             )
             source = "REPOSITORY_DOCKERFILE"
         else:
-            dockerfile = self._generated_dockerfile(target_requirements)
+            dockerfile = self._generated_dockerfile(target_manifest)
             source = "GENERATED"
         dockerfile += self._recovery_patch(checkpoint)
         dockerfile_ref = self._artifacts.put_bytes(dockerfile, "text/x-dockerfile")
@@ -550,7 +614,12 @@ class DirectEnvironmentPreparer:
                         checkpoint, source, dockerfile_ref, "FAILED", error
                     )
                 )
-                if not degraded and self._dependency_install_failed(error, dockerfile):
+                if (
+                    not degraded
+                    and not target_install
+                    and target_manifest in {None, "requirements.txt", "pyproject.toml"}
+                    and self._dependency_install_failed(error, dockerfile)
+                ):
                     dockerfile = self._generated_dockerfile(include_dependencies=False)
                     dockerfile_ref = self._artifacts.put_bytes(
                         dockerfile, "text/x-dockerfile"
@@ -563,7 +632,7 @@ class DirectEnvironmentPreparer:
                         checkpoint,
                         source,
                         dockerfile_ref,
-                        target_requirements,
+                        target_manifest,
                         requirements,
                         attempt_refs,
                         degraded,
@@ -583,7 +652,7 @@ class DirectEnvironmentPreparer:
                     checkpoint,
                     source,
                     dockerfile_ref,
-                    target_requirements,
+                    target_manifest,
                     requirements,
                     attempt_refs,
                     degraded,
@@ -656,7 +725,7 @@ class DirectEnvironmentPreparer:
         checkpoint: StageCheckpoint,
         source: str,
         dockerfile_ref: StoredDataRef,
-        target_requirements: str | None,
+        target_manifest: str | None,
         requirements: tuple[str, ...],
         attempt_refs: list[StoredDataRef],
         degraded: bool,
@@ -672,7 +741,13 @@ class DirectEnvironmentPreparer:
             "attempt_id": checkpoint.attempt_id,
             "dockerfile_source": source,
             "dockerfile_ref": dockerfile_ref.model_dump(mode="json"),
-            "target_requirements_path": target_requirements,
+            "target_requirements_path": (
+                target_manifest
+                if target_manifest is not None
+                and PurePosixPath(target_manifest).name == "requirements.txt"
+                else None
+            ),
+            "target_manifest_path": target_manifest,
             "requirements": requirements,
             "build_attempt_refs": [ref.model_dump(mode="json") for ref in attempt_refs],
             "degraded": degraded,
@@ -738,7 +813,28 @@ class DirectEnvironmentPreparer:
                 prepared.append(archive_setup)
         return b"".join(prepared)
 
-    def _target_requirements_path(
+    @staticmethod
+    def _repository_git_install_layer() -> bytes:
+        """Install Git for uv on supported Linux bases, or fail the build."""
+
+        return (
+            b"RUN if ! command -v git >/dev/null 2>&1; then "
+            b"if command -v apt-get >/dev/null 2>&1; then "
+            b"apt-get update && apt-get install -y --no-install-recommends "
+            b"git ca-certificates && rm -rf /var/lib/apt/lists/*; "
+            b"elif command -v apk >/dev/null 2>&1; then "
+            b"apk add --no-cache git ca-certificates; "
+            b"elif command -v dnf >/dev/null 2>&1; then "
+            b"dnf install -y git ca-certificates && dnf clean all; "
+            b"elif command -v microdnf >/dev/null 2>&1; then "
+            b"microdnf install -y git ca-certificates && microdnf clean all; "
+            b"elif command -v yum >/dev/null 2>&1; then "
+            b"yum install -y git ca-certificates && yum clean all; "
+            b"else echo SASTSIMI_GIT_UNAVAILABLE: "
+            b"no supported package manager >&2; exit 1; fi; fi\n"
+        )
+
+    def _target_manifest_path(
         self,
         prior: Mapping[SimpleStage, StageCheckpoint],
     ) -> str | None:
@@ -771,54 +867,262 @@ class DirectEnvironmentPreparer:
                     or not line.isdigit()
                     or relative.is_absolute()
                     or ".." in relative.parts
+                    or "\\" in relative_text
+                ):
+                    continue
+                candidate_source = root / Path(*relative.parts)
+                if candidate_source.is_symlink() or any(
+                    parent.is_symlink()
+                    for parent in candidate_source.parents
+                    if parent.is_relative_to(root)
                 ):
                     continue
                 try:
-                    source = (root / Path(*relative.parts)).resolve(strict=True)
+                    source = candidate_source.resolve(strict=True)
                 except OSError:
                     continue
                 if not source.is_relative_to(root):
                     continue
+                if not source.is_file() or source.is_symlink():
+                    continue
                 current = source.parent
                 while current.is_relative_to(root):
-                    candidate = current / "requirements.txt"
-                    if candidate.is_file() and not candidate.is_symlink():
-                        return candidate.relative_to(root).as_posix()
+                    pyproject = current / "pyproject.toml"
+                    prefer_uv = False
+                    if (
+                        (current / "requirements.txt").is_file()
+                        and pyproject.is_file()
+                        and not pyproject.is_symlink()
+                    ):
+                        try:
+                            prefer_uv = (
+                                self._uv_sync_target(
+                                    current, self._read_project(pyproject)
+                                )
+                                is not None
+                            )
+                        except ValueError as error:
+                            if str(error) != "TARGET_MANIFEST_INVALID":
+                                raise
+                    names = (
+                        ("pyproject.toml", "requirements.txt")
+                        if prefer_uv
+                        else ("requirements.txt", "pyproject.toml")
+                    )
+                    for name in names:
+                        candidate = current / name
+                        if (
+                            candidate.is_file()
+                            and not candidate.is_symlink()
+                            and candidate.resolve().is_relative_to(root)
+                        ):
+                            return candidate.relative_to(root).as_posix()
                     if current == root:
                         break
                     current = current.parent
         return None
 
     @staticmethod
-    def _target_install_layer(requirements_path: str | None) -> bytes:
-        if requirements_path in {None, "requirements.txt"}:
+    def _read_project(path: Path) -> dict[str, object]:
+        try:
+            return tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+            raise ValueError("TARGET_MANIFEST_INVALID") from None
+
+    @staticmethod
+    def _uv_config(project: Mapping[str, object]) -> Mapping[str, object]:
+        tool = project.get("tool")
+        uv = tool.get("uv") if isinstance(tool, dict) else None
+        return uv if isinstance(uv, dict) else {}
+
+    @staticmethod
+    def _workspace_pattern_matches(relative: PurePosixPath, patterns: object) -> bool:
+        if not isinstance(patterns, list):
+            return False
+
+        def matches(
+            path_parts: tuple[str, ...], pattern_parts: tuple[str, ...]
+        ) -> bool:
+            if not pattern_parts:
+                return not path_parts
+            if pattern_parts[0] == "**":
+                return (
+                    matches(path_parts, pattern_parts[1:])
+                    or bool(path_parts)
+                    and matches(path_parts[1:], pattern_parts)
+                )
+            return (
+                bool(path_parts)
+                and fnmatchcase(path_parts[0], pattern_parts[0])
+                and matches(path_parts[1:], pattern_parts[1:])
+            )
+
+        for pattern in patterns:
+            if not isinstance(pattern, str) or any(
+                char in pattern for char in "\r\n\x00\\:"
+            ):
+                continue
+            parsed = PurePosixPath(pattern)
+            if parsed.is_absolute() or ".." in parsed.parts:
+                continue
+            if matches(relative.parts, parsed.parts):
+                return True
+        return False
+
+    def _uv_sync_target(
+        self, project_dir: Path, project: Mapping[str, object]
+    ) -> tuple[Path, str | None] | None:
+        uv_config = self._uv_config(project)
+        if isinstance(uv_config.get("workspace"), dict):
+            return project_dir, None
+
+        workspace = self._workspace.resolve()
+        for parent in project_dir.parents:
+            if not parent.is_relative_to(workspace):
+                break
+            manifest = parent / "pyproject.toml"
+            if not manifest.is_file():
+                continue
+            if manifest.is_symlink() or not manifest.resolve().is_relative_to(
+                workspace
+            ):
+                raise ValueError("TARGET_MANIFEST_PATH_UNSAFE")
+            parent_uv = self._uv_config(self._read_project(manifest))
+            workspace_config = parent_uv.get("workspace")
+            if not isinstance(workspace_config, dict):
+                continue
+            relative = PurePosixPath(project_dir.relative_to(parent).as_posix())
+            if self._workspace_pattern_matches(
+                relative, workspace_config.get("members")
+            ) and not self._workspace_pattern_matches(
+                relative, workspace_config.get("exclude")
+            ):
+                metadata = project.get("project")
+                name = metadata.get("name") if isinstance(metadata, dict) else None
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError("TARGET_MANIFEST_INVALID")
+                return parent, name
+
+        sources = uv_config.get("sources")
+        if isinstance(sources, dict) and sources:
+            return project_dir, None
+        lock = project_dir / "uv.lock"
+        if lock.is_symlink():
+            raise ValueError("TARGET_LOCK_PATH_UNSAFE")
+        if lock.is_file():
+            return project_dir, None
+        return None
+
+    def _target_install_layer(self, manifest_path: str | None) -> bytes:
+        if manifest_path is None or manifest_path == "requirements.txt":
             return b""
-        absolute = f"/workspace/{requirements_path}"
+        if any(char in manifest_path for char in "\r\n\x00\\"):
+            raise ValueError("TARGET_MANIFEST_PATH_UNSAFE")
+        relative = PurePosixPath(manifest_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("TARGET_MANIFEST_PATH_UNSAFE")
+        host_path = self._workspace.joinpath(*relative.parts)
+        root = self._workspace.resolve()
+        if (
+            not host_path.is_file()
+            or host_path.is_symlink()
+            or not host_path.resolve().is_relative_to(root)
+            or any(
+                parent.is_symlink()
+                for parent in host_path.parents
+                if parent.is_relative_to(root)
+            )
+        ):
+            raise ValueError("TARGET_MANIFEST_PATH_UNSAFE")
+        absolute = f"/workspace/{manifest_path}"
+        if relative.name == "requirements.txt":
+            return (
+                f"RUN python -m pip install --no-cache-dir -r {shlex.quote(absolute)}\n"
+            ).encode()
+        if relative.name != "pyproject.toml":
+            raise ValueError("TARGET_MANIFEST_UNSUPPORTED")
+        project_dir = (
+            "/workspace"
+            if relative.parent == PurePosixPath(".")
+            else f"/workspace/{relative.parent.as_posix()}"
+        )
+        source_path = (
+            f"RUN ln -s {shlex.quote(project_dir)} /opt/sastsimi-target-source\n"
+            'ENV PYTHONPATH="/opt/sastsimi-target-source:'
+            '/opt/sastsimi-target-source/src:${PYTHONPATH}"\n'
+        )
+        uv_target = self._uv_sync_target(
+            host_path.parent, self._read_project(host_path)
+        )
+        if uv_target is None:
+            if manifest_path == "pyproject.toml":
+                return b""
+            return (
+                "RUN python -m pip install --no-cache-dir "
+                f"{shlex.quote(project_dir)}\n"
+                f"{source_path}"
+            ).encode()
+        uv_root, member_name = uv_target
+        lock = uv_root / "uv.lock"
+        if lock.is_symlink():
+            raise ValueError("TARGET_LOCK_PATH_UNSAFE")
+        frozen = " --frozen" if lock.is_file() else ""
+        uv_root_path = (
+            "/workspace"
+            if uv_root == root
+            else f"/workspace/{uv_root.relative_to(root).as_posix()}"
+        )
+        member = f" --package {shlex.quote(member_name)}" if member_name else ""
         return (
-            f"RUN python -m pip install --no-cache-dir -r {shlex.quote(absolute)}\n"
+            "RUN python -m pip install --no-cache-dir uv\n"
+            f"RUN cd {shlex.quote(uv_root_path)} && uv sync{member}{frozen} "
+            "--no-dev && "
+            f"test -x {shlex.quote(uv_root_path + '/.venv/bin/python')} && "
+            f"ln -s {shlex.quote(uv_root_path + '/.venv')} "
+            "/opt/sastsimi-target-venv\n"
+            "ENV VIRTUAL_ENV=/opt/sastsimi-target-venv\n"
+            'ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"\n'
+            f"{source_path}"
         ).encode()
 
     def _generated_dockerfile(
         self,
-        target_requirements: str | None = None,
+        target_manifest: str | None = None,
         *,
         include_dependencies: bool = True,
     ) -> bytes:
         if not include_dependencies:
             install = ""
-            target_requirements = None
-        elif (self._workspace / "requirements.txt").is_file():
+            target_manifest = None
+        target_install = self._target_install_layer(target_manifest)
+        uses_uv = target_install.startswith(
+            b"RUN python -m pip install --no-cache-dir uv\n"
+        )
+        if include_dependencies and uses_uv:
+            install = ""
+        elif include_dependencies and (self._workspace / "requirements.txt").is_file():
             install = "RUN pip install --no-cache-dir -r requirements.txt"
-        elif (self._workspace / "pyproject.toml").is_file():
-            install = "RUN pip install --no-cache-dir ."
+        elif include_dependencies and (self._workspace / "pyproject.toml").is_file():
+            install = (
+                ""
+                if self._target_install_layer("pyproject.toml")
+                else "RUN pip install --no-cache-dir ."
+            )
         else:
             install = ""
+        git_install = (
+            "RUN apt-get update && apt-get install -y --no-install-recommends "
+            "git ca-certificates && rm -rf /var/lib/apt/lists/*\n"
+            if uses_uv
+            else ""
+        )
         return (
             "FROM python:3.12-slim\n"
             "WORKDIR /workspace\n"
             "COPY . /workspace\n"
             f"{install}\n"
-            f"{self._target_install_layer(target_requirements).decode('utf-8')}"
+            f"{git_install}"
+            f"{target_install.decode('utf-8')}"
             "RUN chmod -R a+rX /workspace && mkdir -p /tmp && chmod 1777 /tmp\n"
             'CMD ["sleep", "infinity"]\n'
         ).encode()

@@ -315,8 +315,19 @@ SYMBOL_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
     ),
     "sastsimi.orchestration.static_work_handlers": frozenset(
         {
+            "sastsimi.static_analysis.file_scope",
+            "sastsimi.static_analysis.file_scope.build_static_file_scope",
             "sastsimi.static_analysis.repository_profile.static_tool_work_inputs",
             "sastsimi.storage.context_policy.resolve_context_ceiling",
+        }
+    ),
+    # Both static entrypoints need the same pure, product-only file selector.
+    # Keep this exception specific to the selector instead of opening the
+    # static-analysis package to the entire simple runtime.
+    "sastsimi.simple_runtime.bootstrap_stages": frozenset(
+        {
+            "sastsimi.static_analysis.file_scope",
+            "sastsimi.static_analysis.file_scope.build_static_file_scope",
         }
     ),
 }

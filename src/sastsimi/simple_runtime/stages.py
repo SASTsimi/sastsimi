@@ -25,8 +25,16 @@ from sastsimi.observability.agent_activity import (
     ActivityKind,
     AgentActivityEvent,
 )
-from sastsimi.reporting.bilingual_bundle import BundleFacts, render_bundle_files
+from sastsimi.reporting.bilingual_bundle import (
+    BundleFacts,
+    coverage_report_lines,
+    render_bundle_files,
+)
 from sastsimi.reporting.bundle_files import PublishedBundle, publish_bundle
+from sastsimi.reporting.coverage_disclosure import (
+    CoverageDisclosure,
+    coverage_disclosure,
+)
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.sandbox.docker_adapter import DockerAdapter, DockerOperationError
 
@@ -59,6 +67,29 @@ _POC_SOURCE_CONTEXT_BYTES = 128_000
 _POC_SOURCE_MAX_REQUESTS = 32
 _POC_SOURCE_ARTIFACT_BYTES = 96_000
 _REPORT_DRAFT_MAX_BYTES = 4 * 1024 * 1024
+
+
+def _has_python_import_failure(output: bytes) -> bool:
+    traceback_started = False
+    for line in output.splitlines():
+        if line == b"Traceback (most recent call last):":
+            traceback_started = True
+        elif traceback_started and line.startswith(
+            (b"ModuleNotFoundError: ", b"ImportError: ")
+        ):
+            return True
+        interpreter, marker, module = (
+            line.strip().rsplit(b"/", 1)[-1].partition(b": No module named ")
+        )
+        if (
+            marker
+            and interpreter.startswith(b"python")
+            and b" " not in interpreter
+            and module
+        ):
+            return True
+    return False
+
 
 _ROLE_BY_STAGE: dict[SimpleStage, str] = {
     SimpleStage.PRO_CON_DONE: "Pro·Con Agents",
@@ -306,8 +337,15 @@ must execute locally inside the prepared container using only `/workspace`,
 It must not require caller-provided URLs, cookies, credentials, secrets, or
 undeclared environment variables. It must exit 0 only when the exact hypothesis
 is reproduced, exit 1 when it is actually disproved, and use exit 2 only for a
-real script/runtime error. `/workspace` contains source files but may not contain
-`.git`; inspect current files directly and do not run Git commands. Harmless
+real script/runtime error. /workspace is read-only source; /tmp is the only
+writable runtime area. Keep source imports and route application runtime storage,
+cache, databases, and other scratch paths to isolated paths under /tmp before
+initializing the application. If a prior attempt failed creating a relative path
+under /workspace, find the repository's configuration for that runtime storage
+path and set it to /tmp before importing or calling application startup; do not
+repeat the same setup error, chmod /workspace, or modify repository files.
+`/workspace` may not contain `.git`; inspect current files directly and do not
+run Git commands. Harmless
 fixture values must use neutral names such as `fixture_value`, not secret-shaped
 or credential-named assignments. Do not return a placeholder or merely print
 INCONCLUSIVE. When previous candidate and execution artifacts are supplied,
@@ -646,6 +684,17 @@ class PoCExecutionStage:
                     code="POC_EXECUTION_FAILED",
                     retryable=True,
                     safe_message="PoC script did not produce a usable observation",
+                    evidence_refs=(execution_ref, stdout_ref, stderr_ref, cleanup_ref),
+                )
+            )
+        if _has_python_import_failure(outcome.stderr) or _has_python_import_failure(
+            outcome.stdout
+        ):
+            raise StageBlocked(
+                StageFailure(
+                    code="POC_EXECUTION_FAILED",
+                    retryable=True,
+                    safe_message="PoC raised a Python import error",
                     evidence_refs=(execution_ref, stdout_ref, stderr_ref, cleanup_ref),
                 )
             )
@@ -1702,11 +1751,13 @@ this local route requires citations=[].
         result, draft_ref, content, reused_draft = await self._draft(
             checkpoint, prior, finding.output_refs[0]
         )
+        coverage = self._coverage(checkpoint)
         rendered = self._render(
             content.ko.model_dump(mode="json"),
             checkpoint,
             prior,
             finding.output_refs[0],
+            coverage,
         )
         inspected = redact_projected_json(
             canonical_bytes({"markdown": rendered.decode("utf-8")})
@@ -1726,7 +1777,7 @@ this local route requires citations=[].
             self._artifacts.paths.database
         ).get_or_allocate(checkpoint.identity.analysis_id, finding.output_refs[0])
         bundle = self._publish_bundle(
-            content, checkpoint, prior, finding.output_refs[0], display_id
+            content, checkpoint, prior, finding.output_refs[0], display_id, coverage
         )
         report_path = report_dir / f"{display_id}.md"
         temporary = report_path.with_suffix(".md.next")
@@ -1818,6 +1869,7 @@ this local route requires citations=[].
         prior: Mapping[SimpleStage, StageCheckpoint],
         finding_ref: StoredDataRef,
         display_id: str,
+        coverage: CoverageDisclosure | None,
     ) -> PublishedBundle:
         poc = self._validated_poc(prior)
         cwe = self._result(prior[SimpleStage.CWE_DONE].output_refs[0])
@@ -1846,6 +1898,7 @@ this local route requires citations=[].
             ("scope", prior[SimpleStage.SCOPE_GATE_DONE].output_refs[0]),
             ("stdout", poc.stdout_ref),
             ("stderr", poc.stderr_ref),
+            *((("static_coverage", coverage.ref),) if coverage is not None else ()),
         )
         facts = BundleFacts(
             analysis_id=checkpoint.identity.analysis_id,
@@ -1871,6 +1924,7 @@ this local route requires citations=[].
             poc_language="shell",
             poc_original_sha256=poc.content_ref.content_hash,
             source_refs=source_refs,
+            coverage=coverage,
         )
         files = render_bundle_files(
             facts,
@@ -1894,6 +1948,7 @@ this local route requires citations=[].
         checkpoint: StageCheckpoint,
         prior: Mapping[SimpleStage, StageCheckpoint],
         finding_ref: StoredDataRef,
+        coverage: CoverageDisclosure | None,
     ) -> bytes:
         poc = self._validated_poc(prior)
         cwe = self._result(prior[SimpleStage.CWE_DONE].output_refs[0])
@@ -1938,6 +1993,7 @@ this local route requires citations=[].
             f"- Hypothesis: `{checkpoint.identity.hypothesis_id}`",
             f"- Finding: `{finding_ref.content_hash}`",
             f"- CWE: `{cwe.get('primary_cwe', 'UNCLASSIFIED')}`",
+            *coverage_report_lines(coverage, korean=True),
             "",
             str(value["summary"]),
             "",
@@ -2006,6 +2062,29 @@ this local route requires citations=[].
             "",
         ]
         return "\n".join(lines).encode("utf-8")
+
+    def _coverage(self, checkpoint: StageCheckpoint) -> CoverageDisclosure | None:
+        if self._store is None:
+            return None
+        try:
+            run = self._store.require_analysis_run(checkpoint.identity.analysis_id)
+        except LookupError:
+            return None
+        ref = run.static_coverage_ref
+        if ref is None:
+            return None
+        raw = self._artifacts.read(ref)
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("REPORT_STATIC_COVERAGE_INVALID")
+        return coverage_disclosure(
+            data,
+            ref,
+            analysis_id=checkpoint.identity.analysis_id,
+            workspace_id=checkpoint.identity.workspace_id,
+            commit_id=checkpoint.identity.commit_id,
+            disposition=run.static_disposition,
+        )
 
     def _validated_poc(
         self,

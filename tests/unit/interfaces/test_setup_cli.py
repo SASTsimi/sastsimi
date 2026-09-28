@@ -125,6 +125,156 @@ def test_new_codex_setup_defaults_to_gpt_6_sol(tmp_path: Path, capsys) -> None:
     assert load_simple_execution_profile(service._profile_path).model == "gpt-6-sol"
 
 
+def test_new_setup_defaults_to_unlimited_cumulative_time(
+    tmp_path: Path, capsys
+) -> None:
+    from sastsimi.config.user_config import load_simple_execution_profile
+
+    service = _service(tmp_path)
+    code = main(
+        [
+            "setup",
+            "--non-interactive",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--auth",
+            "subscription",
+            "--provider",
+            "codex",
+            "--profile",
+            "full",
+            "--format",
+            "json",
+        ],
+        setup_service=service,
+    )
+
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "READY"
+    assert service.config_store.load().max_elapsed_seconds == "unlimited"
+    profile = load_simple_execution_profile(service._profile_path)
+    assert profile.max_elapsed_seconds == "unlimited"
+    assert 'max_elapsed_seconds = "unlimited"' in service._profile_path.read_text()
+
+
+def test_new_setup_defaults_to_unlimited_cumulative_tokens(
+    tmp_path: Path, capsys
+) -> None:
+    from sastsimi.config.user_config import load_simple_execution_profile
+
+    service = _service(tmp_path)
+    code = main(
+        [
+            "setup",
+            "--non-interactive",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--auth",
+            "subscription",
+            "--provider",
+            "codex",
+            "--profile",
+            "full",
+            "--format",
+            "json",
+        ],
+        setup_service=service,
+    )
+
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "READY"
+    assert service.config_store.load().max_tokens == "unlimited"
+    profile = load_simple_execution_profile(service._profile_path)
+    assert profile.max_tokens == "unlimited"
+    assert 'max_tokens = "unlimited"' in service._profile_path.read_text()
+
+
+def test_setup_preserves_explicit_positive_token_ceiling(
+    tmp_path: Path, capsys
+) -> None:
+    service = _service(tmp_path)
+    code = main(
+        [
+            "setup",
+            "--non-interactive",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--auth",
+            "subscription",
+            "--provider",
+            "codex",
+            "--profile",
+            "full",
+            "--max-tokens",
+            "77",
+            "--format",
+            "json",
+        ],
+        setup_service=service,
+    )
+
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "READY"
+    assert service.config_store.load().max_tokens == 77
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "not-a-limit"])
+def test_setup_rejects_invalid_token_ceiling(
+    tmp_path: Path, capsys, value: str
+) -> None:
+    service = _service(tmp_path)
+    code = main(
+        [
+            "setup",
+            "--non-interactive",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--auth",
+            "subscription",
+            "--provider",
+            "codex",
+            "--profile",
+            "full",
+            "--max-tokens",
+            value,
+            "--format",
+            "json",
+        ],
+        setup_service=service,
+    )
+
+    assert code != 0
+    assert not service.config_store.path.exists()
+    capsys.readouterr()
+
+
+def test_explicit_positive_cumulative_time_is_preserved(tmp_path: Path, capsys) -> None:
+    service = _service(tmp_path)
+    code = main(
+        [
+            "setup",
+            "--non-interactive",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--auth",
+            "subscription",
+            "--provider",
+            "codex",
+            "--profile",
+            "full",
+            "--max-elapsed-seconds",
+            "77",
+            "--format",
+            "json",
+        ],
+        setup_service=service,
+    )
+
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "READY"
+    assert service.config_store.load().max_elapsed_seconds == 77
+
+
 def test_semgrep_setup_opt_in_records_binding(tmp_path: Path, capsys) -> None:
     from sastsimi.config.user_config import load_simple_execution_profile
 
@@ -155,6 +305,34 @@ def test_semgrep_setup_opt_in_records_binding(tmp_path: Path, capsys) -> None:
     profile = load_simple_execution_profile(service._profile_path)
     assert profile.semgrep_fallback is True
     assert "semgrep" in profile.tools
+
+
+def test_setup_cli_rejects_test_inclusion_option(tmp_path: Path) -> None:
+    from sastsimi.interfaces.cli.exit_codes import ExitCode
+
+    service = _service(tmp_path)
+    code = main(
+        [
+            "setup",
+            "--non-interactive",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--auth",
+            "subscription",
+            "--provider",
+            "codex",
+            "--model",
+            "gpt-6-sol",
+            "--profile",
+            "full",
+            "--include-tests",
+            "--format",
+            "json",
+        ],
+        setup_service=service,
+    )
+    assert code == int(ExitCode.INPUT_ERROR)
+    assert not service.config_store.path.exists()
 
 
 def test_semgrep_missing_blocks_only_opted_in_setup(tmp_path: Path, capsys) -> None:

@@ -12,6 +12,7 @@ import pytest
 
 from sastsimi.config.user_config import SimpleToolBinding
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.call_queue import RunUsageBudget
 from sastsimi.simple_runtime.claude_provider import (
     ClaudeBoundaryError,
     ClaudeCLIResponse,
@@ -23,6 +24,7 @@ from sastsimi.simple_runtime.claude_provider import (
 )
 from sastsimi.simple_runtime.models import CheckpointIdentity, StageFailure
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
+from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
 def _binding(tmp_path: Path) -> SimpleToolBinding:
@@ -539,7 +541,14 @@ async def test_claude_rate_limit_retries_once_then_succeeds(tmp_path: Path) -> N
             ClaudeCLIResponse(raw_output=b"response", value={"ok": True}),
         ]
     )
-    result = await _provider(tmp_path, fake, retries=1).call(
+    budget = RunUsageBudget(
+        store=SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3"),
+        analysis_id="analysis-1",
+        max_tokens=1000,
+        max_cost_minor_units=1000,
+        max_elapsed_seconds="unlimited",
+    )
+    result = await _provider(tmp_path, fake, retries=1, budget_check=budget.check).call(
         prompt=b"agent prompt",
         output_schema={
             "type": "object",
@@ -550,3 +559,32 @@ async def test_claude_rate_limit_retries_once_then_succeeds(tmp_path: Path) -> N
     )
     assert isinstance(result, SimpleLLMCallResult)
     assert len(fake.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_claude_fractional_cost_is_recorded_without_invalid_artifact(
+    tmp_path: Path,
+) -> None:
+    fake = FakeTransport(
+        [
+            ClaudeCLIResponse(
+                raw_output=b"response",
+                value={"ok": True},
+                input_tokens=4,
+                output_tokens=2,
+                cost_minor_units=1.5,
+            )
+        ]
+    )
+    result = await _provider(tmp_path, fake).call(
+        prompt=b"agent prompt",
+        output_schema={
+            "type": "object",
+            "required": ["ok"],
+            "properties": {"ok": {"type": "boolean"}},
+        },
+        timeout_ms=5_000,
+    )
+
+    assert isinstance(result, SimpleLLMCallResult)
+    assert result.cost_minor_units == 1.5

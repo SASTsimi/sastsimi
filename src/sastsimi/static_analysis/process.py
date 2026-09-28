@@ -28,6 +28,13 @@ from .process_windows import BackendExecution as BackendExecution
 from .process_windows import OutputSink as OutputSink
 from .process_windows import WindowsProcessBackend as WindowsProcessBackend
 
+_POSIX_MEMORY_LIMIT_WRAPPER = (
+    "import os,resource,sys;"
+    "limit=int(sys.argv[1]);"
+    "resource.setrlimit(resource.RLIMIT_AS,(limit,limit));"
+    "os.execvpe(sys.argv[2],sys.argv[2:],os.environ)"
+)
+
 
 class ProcessBackend(Protocol):
     async def run(
@@ -141,9 +148,12 @@ class PosixProcessBackend:
         self,
         *,
         spawn: Callable[..., object] | None = None,
+        memory_limit_bytes: int | None = None,
         drain_timeout_seconds: float = 1.0,
         termination_timeout_seconds: float = 1.0,
     ) -> None:
+        if memory_limit_bytes is not None and memory_limit_bytes <= 0:
+            raise ValueError("PROCESS_MEMORY_LIMIT_INVALID")
         if drain_timeout_seconds <= 0:
             raise ValueError("PROCESS_DRAIN_TIMEOUT_INVALID")
         if termination_timeout_seconds <= 0:
@@ -151,6 +161,7 @@ class PosixProcessBackend:
         self._processes: dict[str, asyncio.subprocess.Process] = {}
         self._cancelled: set[str] = set()
         self._spawn = spawn or asyncio.create_subprocess_exec
+        self._memory_limit_bytes = memory_limit_bytes
         self._registry_lock = asyncio.Lock()
         self._drain_timeout_seconds = drain_timeout_seconds
         self._termination_timeout_seconds = termination_timeout_seconds
@@ -169,8 +180,21 @@ class PosixProcessBackend:
             async with self._registry_lock:
                 if cancel_event.is_set() or spec.attempt_id in self._cancelled:
                     return None, True
+                argv = spec.argv
+                if self._memory_limit_bytes is not None:
+                    # The wrapper sets RLIMIT_AS before exec. The limit is
+                    # inherited by descendants, but is per process on POSIX.
+                    argv = (
+                        sys.executable,
+                        "-I",
+                        "-S",
+                        "-c",
+                        _POSIX_MEMORY_LIMIT_WRAPPER,
+                        str(self._memory_limit_bytes),
+                        *spec.argv,
+                    )
                 spawned = self._spawn(
-                    *spec.argv,
+                    *argv,
                     cwd=spec.cwd,
                     env=dict(spec.env),
                     stdin=asyncio.subprocess.DEVNULL,

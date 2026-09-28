@@ -575,6 +575,91 @@ async def test_restart_does_not_grant_fourth_attempt(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_stale_exhausted_stage_restarts_at_new_version(tmp_path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "stale-version" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.PRO_CON_DONE)
+    pro_con = store.require(_identity(), SimpleStage.PRO_CON_DONE)
+    inputs = pro_con.output_refs
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=_identity(),
+            stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+            stage_version="4",
+            status=StageStatus.BLOCKED,
+            input_refs=inputs,
+            input_hash=input_reference_hash(inputs),
+            attempt_id="old-attempt",
+            attempt_number=3,
+            error_code="RECOVERY_EXHAUSTED",
+            retryable=False,
+            recovery_lineage_id="c" * 64,
+            recovery_origin_stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+        )
+    )
+    store.save_success(
+        _checkpoint(SimpleStage.POC_CANDIDATE_DONE, inputs=(_ref("old-input"),)),
+        outputs=(_ref("old-candidate"),),
+    )
+    calls: list[SimpleStage] = []
+
+    outcome = await SimpleRuntimeRunner(
+        store,
+        _recording_handlers(calls),
+        recovery=_Recovery(tmp_path),
+    ).resume_hypothesis(_identity())
+
+    initial = store.require(_identity(), SimpleStage.VERIFICATION_INITIAL_DONE)
+    candidate = store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE)
+    assert outcome.status is StageStatus.SUCCEEDED
+    assert outcome.current_stage is SimpleStage.REPORT_DONE
+    assert calls[:2] == [
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+        SimpleStage.POC_CANDIDATE_DONE,
+    ]
+    assert store.require(_identity(), SimpleStage.PRO_CON_DONE) == pro_con
+    assert initial.stage_version == "5"
+    assert initial.attempt_number == 1
+    assert initial.recovery_lineage_id is None
+    assert initial.input_refs == inputs
+    assert candidate.output_refs == (_ref("poc_candidate_done-result"),)
+
+
+@pytest.mark.asyncio
+async def test_current_version_exhausted_stage_stays_blocked(tmp_path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "current-version" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.PRO_CON_DONE)
+    inputs = store.require(_identity(), SimpleStage.PRO_CON_DONE).output_refs
+    exhausted = StageCheckpoint(
+        identity=_identity(),
+        stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+        stage_version="5",
+        status=StageStatus.BLOCKED,
+        input_refs=inputs,
+        input_hash=input_reference_hash(inputs),
+        attempt_id="current-attempt",
+        attempt_number=3,
+        error_code="RECOVERY_EXHAUSTED",
+        retryable=False,
+    )
+    store.save_checkpoint(exhausted)
+    calls: list[SimpleStage] = []
+
+    outcome = await SimpleRuntimeRunner(
+        store,
+        _recording_handlers(calls),
+        recovery=_Recovery(tmp_path),
+    ).resume_hypothesis(_identity())
+
+    assert outcome.status is StageStatus.BLOCKED
+    assert outcome.current_stage is SimpleStage.VERIFICATION_INITIAL_DONE
+    assert outcome.error_code == "RECOVERY_EXHAUSTED"
+    assert calls == []
+    assert (
+        store.require(_identity(), SimpleStage.VERIFICATION_INITIAL_DONE) == exhausted
+    )
+
+
+@pytest.mark.asyncio
 async def test_changed_input_starts_a_new_recovery_lineage(tmp_path) -> None:
     store = SimpleCheckpointStore(tmp_path / "changed" / "sastsimi.sqlite3")
     old_inputs = (_ref("proposal-old"),)
