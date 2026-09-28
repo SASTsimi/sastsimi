@@ -64,7 +64,7 @@ MAX_REPAIR_ATTEMPTS = 3
 # was actually resolved between attempts.  Only a code this stage has never
 # produced before resets the count - real progress, not a different flavor
 # of the same wall.
-MAX_STALL_REPEATS = 4
+MAX_STALL_REPEATS = 3
 
 
 class RunOutcome(ContractModel):
