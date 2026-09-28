@@ -45,6 +45,7 @@ from sastsimi.simple_runtime.scope_policy import (
 )
 from sastsimi.simple_runtime.store import ROLE_BY_STAGE, SimpleCheckpointStore
 
+from .markdown_view import preview_markdown
 from .models import (
     AgentActivityView,
     AnalysisDetailView,
@@ -319,11 +320,28 @@ class DashboardQuery:
         if item is None:
             raise DashboardNotFound("DASHBOARD_ARTIFACT_NOT_FOUND")
         kind, media_type, raw, parsed = item
+        preview = (
+            preview_markdown(raw.decode("utf-8", "replace"))
+            if media_type in {"text/markdown", "text/plain"}
+            else None
+        )
         return ArtifactContentView(
             artifact_id=artifact_id,
             kind=kind,
             media_type=media_type,
-            content=parsed if parsed is not None else raw.decode("utf-8", "replace"),
+            content=(
+                parsed
+                if parsed is not None
+                else preview.markdown
+                if preview is not None and media_type == "text/markdown"
+                else raw.decode("utf-8", "replace")
+            ),
+            rendered_html=preview.rendered_html if preview is not None else None,
+            truncated=preview.truncated if preview is not None else False,
+            download_url=(
+                f"/api/analyses/{quote(exact, safe='')}/artifacts/{artifact_id}"
+                "?download=1"
+            ),
         )
 
     def artifact_bytes(
@@ -647,6 +665,29 @@ class DashboardQuery:
                 for nested in self._nested_refs(parsed):
                     enqueue(nested, stage, hypothesis)
             contents[ref.content_hash] = (kind, media_type, raw, parsed)
+
+        markdown_digests = {
+            checkpoint.output_refs[1].content_hash
+            for checkpoint in values
+            if checkpoint.stage is SimpleStage.REPORT_DONE
+            and checkpoint.status is StageStatus.SUCCEEDED
+            and len(checkpoint.output_refs) >= 2
+        }
+        for _, _, _, parsed in contents.values():
+            if (
+                not isinstance(parsed, dict)
+                or parsed.get("kind") != "simple_policy_snapshot"
+            ):
+                continue
+            try:
+                body_ref = StoredDataRef.model_validate(parsed["body_ref"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            markdown_digests.add(body_ref.content_hash)
+        for digest in markdown_digests & contents.keys():
+            kind, media_type, raw, parsed = contents[digest]
+            if media_type == "text/plain":
+                contents[digest] = (kind, "text/markdown", raw, parsed)
 
         artifacts = tuple(
             ArtifactView(
@@ -2067,6 +2108,9 @@ class DashboardQuery:
                         else None
                     ),
                     attachment_urls=self._attachment_urls(analysis_id, display_id),
+                    attachment_preview_urls=self._attachment_preview_urls(
+                        analysis_id, display_id
+                    ),
                 )
             )
         return tuple(reports)
@@ -2087,6 +2131,21 @@ class DashboardQuery:
         return {
             **{item.path: f"{prefix}/files/{item.path}" for item in manifest.files},
             "bundle.zip": f"{prefix}/bundle.zip",
+        }
+
+    def _attachment_preview_urls(
+        self, analysis_id: str, display_id: str
+    ) -> dict[str, str]:
+        try:
+            manifest, _, _ = self._report_bundle(analysis_id, display_id)
+        except DashboardNotFound:
+            return {}
+        prefix = f"/reports/{analysis_id}/{display_id}/files"
+        return {
+            item.path: f"{prefix}/{item.path}/preview"
+            for item in manifest.files
+            if item.path.endswith(".md")
+            and item.media_type.lower().startswith("text/markdown")
         }
 
     def _full_runtime_summaries(self) -> tuple[AnalysisSummaryView, ...]:

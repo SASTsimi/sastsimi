@@ -418,10 +418,13 @@ async function showArtifact(item) {
     const actions = el("div", undefined, "actions");
     const copy = el("button", "복사", "small-button");
     const isJson = typeof payload.content !== "string";
+    const canRenderMarkdown = typeof payload.rendered_html === "string";
+    const isMarkdown = payload.media_type === "text/markdown" && canRenderMarkdown;
     const raw = isJson ? JSON.stringify(payload.content) : payload.content;
     const pretty = isJson ? JSON.stringify(payload.content, null, 2) : payload.content;
     let rawMode = false;
-    const content = el("pre", pretty, "code-view");
+    const content = isMarkdown ? el("div", undefined, "markdown-content") : el("pre", pretty, "code-view");
+    if (isMarkdown) content.innerHTML = payload.rendered_html;
     copy.addEventListener("click", async () => {
       await navigator.clipboard.writeText(raw);
       copy.textContent = "복사됨";
@@ -434,12 +437,23 @@ async function showArtifact(item) {
         toggle.textContent = rawMode ? "트리 보기" : "원문 보기";
       });
       actions.append(toggle);
+    } else if (canRenderMarkdown) {
+      const toggle = el("button", isMarkdown ? "원문 보기" : "Markdown 보기", "small-button");
+      toggle.addEventListener("click", () => {
+        rawMode = !rawMode;
+        const rendered = isMarkdown ? !rawMode : rawMode;
+        content.className = rendered ? "markdown-content" : "code-view";
+        if (rendered) content.innerHTML = payload.rendered_html;
+        else content.textContent = raw;
+        toggle.textContent = rendered ? "원문 보기" : isMarkdown ? "렌더링 보기" : "Markdown 보기";
+      });
+      actions.append(toggle);
     }
     const download = el("a", "다운로드", "download small-button");
     download.href = item.download_url;
     actions.append(copy, download);
     toolbar.append(actions);
-    viewer.replaceChildren(toolbar, content);
+    viewer.replaceChildren(toolbar, ...(payload.truncated ? [el("p", "미리보기는 1 MiB까지만 표시합니다. 전체 내용은 다운로드하세요.", "meta")] : []), content);
   } catch (error) {
     viewer.replaceChildren(el("div", String(error), "error"));
   }
@@ -504,32 +518,6 @@ function renderArtifactSubset(target, ids, artifactMap, message) {
   replace(target, items.length ? items.map(artifactButton) : empty(message));
 }
 
-function renderMarkdown(markdown) {
-  const fragment = document.createDocumentFragment();
-  let list = null;
-  markdown.split(/\r?\n/).forEach((line) => {
-    const heading = line.match(/^(#{1,4})\s+(.+)$/);
-    const bullet = line.match(/^[-*]\s+(.+)$/);
-    if (heading) {
-      list = null;
-      fragment.append(el(`h${heading[1].length}`, heading[2]));
-    } else if (bullet) {
-      if (!list) {
-        list = el("ul");
-        fragment.append(list);
-      }
-      list.append(el("li", bullet[1]));
-    } else if (!line.trim()) {
-      list = null;
-      fragment.append(document.createElement("br"));
-    } else {
-      list = null;
-      fragment.append(el("p", line));
-    }
-  });
-  return fragment;
-}
-
 async function showReport(item) {
   const viewer = document.getElementById("report-viewer");
   viewer.classList.remove("empty");
@@ -543,7 +531,9 @@ async function showReport(item) {
     let raw = false;
     const content = el("div", undefined, "markdown-content");
     const paint = () => {
-      content.replaceChildren(raw ? el("pre", payload.markdown, "code-view") : renderMarkdown(payload.markdown));
+      content.className = raw ? "code-view" : "markdown-content";
+      if (raw) content.textContent = payload.markdown;
+      else content.innerHTML = payload.rendered_html;
       toggle.textContent = raw ? "렌더링 보기" : "원문 보기";
     };
     toggle.addEventListener("click", () => { raw = !raw; paint(); });
@@ -552,7 +542,7 @@ async function showReport(item) {
     actions.append(toggle, download);
     toolbar.append(actions);
     paint();
-    viewer.replaceChildren(toolbar, content);
+    viewer.replaceChildren(toolbar, ...(payload.truncated ? [el("p", "미리보기는 1 MiB까지만 표시합니다. 전체 내용은 다운로드하세요.", "meta")] : []), content);
   } catch (error) {
     viewer.replaceChildren(el("div", String(error), "error"));
   }
@@ -592,6 +582,15 @@ function renderReports(items) {
       "bundle.zip": "첨부파일 ZIP",
     };
     Object.entries(item.attachment_urls || {}).forEach(([name, url]) => {
+      if (item.attachment_preview_urls?.[name]) {
+        const preview = el("button", `${labels[name] || name} 보기`, "small-button");
+        preview.addEventListener("click", () => showReport({
+          display_id: name,
+          view_url: item.attachment_preview_urls[name],
+          download_url: url,
+        }));
+        row.append(preview);
+      }
       const attachment = el("a", labels[name] || name, "report-attachment");
       attachment.href = url;
       attachment.download = name.split("/").pop();

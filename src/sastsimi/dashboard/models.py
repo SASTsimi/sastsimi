@@ -139,6 +139,9 @@ class ArtifactContentView(ContractModel):
     kind: str
     media_type: str
     content: JsonValue | str
+    rendered_html: str | None = None
+    truncated: bool = False
+    download_url: str | None = None
 
 
 class ArtifactRelationView(ContractModel):
@@ -241,6 +244,7 @@ class FindingReportView(ContractModel):
     english_view_url: str | None = None
     english_download_url: str | None = None
     attachment_urls: dict[str, str] = {}
+    attachment_preview_urls: dict[str, str] = {}
 
 
 class FindingTraceView(ContractModel):

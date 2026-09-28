@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Literal, cast
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from .markdown_view import preview_markdown
 from .query import DashboardBadRequest, DashboardNotFound, DashboardQuery
 
 _STATIC = Path(__file__).with_name("static")
@@ -126,12 +127,21 @@ def create_server(
                     if language not in {"ko", "en"}:
                         raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
                     report_language = cast(Literal["ko", "en"], language)
+                    preview = preview_markdown(
+                        query.report_markdown(
+                            parts[2], parts[4], language=report_language
+                        )
+                    )
                     self._json(
                         {
                             "display_id": parts[4],
                             "language": language,
-                            "markdown": query.report_markdown(
-                                parts[2], parts[4], language=report_language
+                            "markdown": preview.markdown,
+                            "rendered_html": preview.rendered_html,
+                            "truncated": preview.truncated,
+                            "download_url": (
+                                f"/api/analyses/{parts[2]}/reports/{parts[4]}/download"
+                                f"?lang={language}"
                             ),
                         },
                         send_body,
@@ -264,6 +274,35 @@ def create_server(
                             else query.report_content(parts[1], display_id)
                         ),
                         "text/markdown; charset=utf-8",
+                        send_body,
+                    )
+                elif (
+                    len(parts) >= 6
+                    and parts[0] == "reports"
+                    and parts[3] == "files"
+                    and parts[-1] == "preview"
+                ):
+                    name = "/".join(parts[4:-1])
+                    if not name.endswith(".md"):
+                        raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
+                    body, media_type = query.report_attachment(parts[1], parts[2], name)
+                    if not media_type.lower().startswith("text/markdown"):
+                        raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
+                    try:
+                        preview = preview_markdown(body.decode("utf-8"))
+                    except UnicodeDecodeError as error:
+                        raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
+                    self._json(
+                        {
+                            "display_id": name,
+                            "language": "en" if name.endswith("_en.md") else "ko",
+                            "markdown": preview.markdown,
+                            "rendered_html": preview.rendered_html,
+                            "truncated": preview.truncated,
+                            "download_url": (
+                                f"/reports/{parts[1]}/{parts[2]}/files/{name}"
+                            ),
+                        },
                         send_body,
                     )
                 elif len(parts) >= 5 and parts[0] == "reports" and parts[3] == "files":

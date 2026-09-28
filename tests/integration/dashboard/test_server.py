@@ -388,11 +388,11 @@ def test_server_serves_redacted_artifacts_reports_logs_and_bundle(tmp_path) -> N
         english_report = json.loads(
             request(f"{base}/api/analyses/A-001/reports/F-001?lang=en").read()
         )
-        assert english_report == {
-            "display_id": "F-001",
-            "language": "en",
-            "markdown": "# English report",
-        }
+        assert english_report["display_id"] == "F-001"
+        assert english_report["language"] == "en"
+        assert english_report["markdown"] == "# English report"
+        assert english_report["rendered_html"] == "<h1>English report</h1>\n"
+        assert english_report["truncated"] is False
         english_download = request(
             f"{base}/api/analyses/A-001/reports/F-001/download?lang=en"
         )
@@ -610,6 +610,86 @@ def test_status_cells_endpoint_pages_and_rejects_invalid_request(tmp_path) -> No
         assert payload["items"][0]["id"] == "hypothesis-1"
         assert request(f"{base}/api/analyses/A-001/status-cells?limit=0").status == 400
         assert request(f"{base}/api/analyses/analysis-other/status-cells").status == 404
+
+
+def test_verified_markdown_artifact_has_safe_preview_and_download(tmp_path) -> None:
+    seed(tmp_path)
+    with running_server(tmp_path) as base:
+        detail = json.loads(request(f"{base}/api/analyses/A-001").read())
+        markdown = next(
+            item
+            for item in detail["artifacts"]
+            if item["media_type"] == "text/markdown"
+        )
+        payload = json.loads(request(f"{base}{markdown['view_url']}").read())
+        assert payload["rendered_html"].startswith("<h1>")
+        assert payload["truncated"] is False
+        assert payload["download_url"] == markdown["download_url"]
+        assert request(f"{base}{markdown['download_url']}").read().startswith(b"#")
+        report = json.loads(request(f"{base}/api/analyses/A-001/reports/F-001").read())
+        assert report["rendered_html"].startswith("<h1>")
+        assert report["truncated"] is False
+        assert request(f"{base}/api/analyses/A-001/reports/%2e%2e").status == 404
+
+
+def test_verified_markdown_attachments_have_sanitized_preview(tmp_path) -> None:
+    seed(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    finding = FindingDisplayIdStore.resolve_existing(
+        store.database_path, "analysis-1", "F-001"
+    )
+    attach_current_bundle(tmp_path, identity, finding, "F-001")
+    with running_server(tmp_path) as base:
+        detail = json.loads(request(f"{base}/api/analyses/A-001").read())
+        previews = detail["reports"][0]["attachment_preview_urls"]
+        assert set(previews) == {"report_en.md", "report_kr.md"}
+        payload = json.loads(request(f"{base}{previews['report_en.md']}").read())
+        assert payload["rendered_html"].startswith("<h1>English report</h1>")
+        assert payload["download_url"].endswith("/files/report_en.md")
+        assert (
+            request(f"{base}/reports/analysis-1/F-001/files/poc.sh/preview").status
+            == 404
+        )
+
+
+def test_legacy_text_artifact_can_use_markdown_view_without_media_metadata(
+    tmp_path,
+) -> None:
+    seed(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    markdown_ref = SimpleArtifactRepository(tmp_path, identity).put_bytes(
+        b"**bold**", "text/markdown"
+    )
+    SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3").save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.CWE_DONE,
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(markdown_ref,),
+        )
+    )
+    with running_server(tmp_path) as base:
+        payload = json.loads(
+            request(
+                f"{base}/api/analyses/A-001/artifacts/{markdown_ref.content_hash}"
+            ).read()
+        )
+        assert payload["media_type"] == "text/plain"
+        assert "<strong>bold</strong>" in payload["rendered_html"]
+        assert payload["content"] == "**bold**"
 
 
 # mypy: disable-error-code="no-untyped-def"
