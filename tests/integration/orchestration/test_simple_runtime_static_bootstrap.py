@@ -1032,12 +1032,17 @@ async def test_codeql_database_create_sees_only_selected_product_source(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("dataset_present", "first_analyze_fails"),
+    [(False, False), (True, False), (False, True)],
+)
 async def test_codeql_rebuilds_incomplete_cached_database_without_overwriting_it(
-    tmp_path: Path,
+    tmp_path: Path, dataset_present: bool, first_analyze_fails: bool
 ) -> None:
     class IncompleteDatabaseProcess(_Process):
-        def __init__(self, incomplete: Path) -> None:
+        def __init__(self, incomplete: Path, fail_first_analyze: bool) -> None:
             self.incomplete = incomplete
+            self.fail_first_analyze = fail_first_analyze
             self.created: list[Path] = []
             self.analyzed: list[Path] = []
 
@@ -1070,6 +1075,8 @@ async def test_codeql_rebuilds_incomplete_cached_database_without_overwriting_it
                 self.analyzed.append(database)
                 if database == self.incomplete:
                     return ProcessResult(2, b"", b"database needs to be finalized")
+                if self.fail_first_analyze and len(self.analyzed) == 1:
+                    return ProcessResult(2, b"", b"query failed")
             return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
 
     profile = _profile(tmp_path)
@@ -1089,7 +1096,9 @@ async def test_codeql_rebuilds_incomplete_cached_database_without_overwriting_it
     incomplete.mkdir(parents=True)
     (incomplete / "codeql-database.yml").write_text("ok", encoding="utf-8")
     (incomplete / "working").mkdir()
-    process = IncompleteDatabaseProcess(incomplete)
+    if dataset_present:
+        (incomplete / "db-python").mkdir()
+    process = IncompleteDatabaseProcess(incomplete, first_analyze_fails)
     bootstrap = DirectStaticBootstrap(
         profile=profile,
         process=process,
@@ -1097,6 +1106,11 @@ async def test_codeql_rebuilds_incomplete_cached_database_without_overwriting_it
         static_material_root=tmp_path,
     )
 
+    if first_analyze_fails:
+        with pytest.raises(RuntimeError, match="^CODEQL_ANALYZE_FAILED$"):
+            await bootstrap._run_codeql(
+                workspace, profile.data_dir, repository, commit, "retry-incomplete"
+            )
     raw = await bootstrap._run_codeql(
         workspace, profile.data_dir, repository, commit, "retry-incomplete"
     )
@@ -1106,7 +1120,7 @@ async def test_codeql_rebuilds_incomplete_cached_database_without_overwriting_it
     assert (incomplete / "codeql-database.yml").is_file()
     assert len(process.created) == 1
     assert process.created[0] != incomplete
-    assert process.analyzed == process.created
+    assert process.analyzed == process.created * (2 if first_analyze_fails else 1)
 
 
 @pytest.mark.asyncio

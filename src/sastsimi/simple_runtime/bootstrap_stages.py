@@ -2696,9 +2696,45 @@ class DirectStaticBootstrap:
         root = data_dir / "codeql" / key
         database = root / "database"
         output = root / f"results-{analysis_key}.sarif"
+        completion = root / f"r-{analysis_key[:12]}.json"
         root.mkdir(parents=True, exist_ok=True)
         codeql = self._tool("codeql")
-        database_ready = await self._codeql_database_ready(codeql, database, workspace)
+        binding = self._profile.tools["codeql"]
+        cache_fingerprint = hashlib.sha256(
+            canonical_bytes(
+                {
+                    "kind": "simple_codeql_database_v1",
+                    "repository": repository,
+                    "commit": commit,
+                    "scope_fingerprint": scope.fingerprint,
+                    "codeql_version": binding.version,
+                    "codeql_executable_sha256": binding.executable_sha256,
+                }
+            )
+        ).hexdigest()
+        database_ready = False
+        try:
+            if not completion.is_symlink():
+                recorded_raw = completion.read_bytes()
+                if len(recorded_raw) <= 4096:
+                    recorded = json.loads(recorded_raw)
+                    if isinstance(recorded, dict) and recorded.get(
+                        "fingerprint"
+                    ) == cache_fingerprint:
+                        name = recorded.get("database")
+                        if isinstance(name, str) and (
+                            name == "database"
+                            or re.fullmatch(r"db-[0-9a-f]{12}", name)
+                        ):
+                            candidate = root / name
+                            if not candidate.is_symlink():
+                                database_ready = await self._codeql_database_ready(
+                                    codeql, candidate, workspace
+                                )
+                                if database_ready:
+                                    database = candidate
+        except (OSError, ValueError):
+            pass
         if not database_ready:
             if database.exists():
                 database = root / f"db-{uuid4().hex[:12]}"
@@ -2762,6 +2798,19 @@ class DirectStaticBootstrap:
                 )
                 if created.returncode != 0:
                     raise RuntimeError("CODEQL_DATABASE_CREATE_FAILED")
+            if completion.is_symlink():
+                raise RuntimeError("CODEQL_DATABASE_CREATE_FAILED")
+            try:
+                completion.write_bytes(
+                    canonical_bytes(
+                        {
+                            "database": database.name,
+                            "fingerprint": cache_fingerprint,
+                        }
+                    )
+                )
+            except OSError:
+                raise RuntimeError("CODEQL_DATABASE_CREATE_FAILED") from None
         output.unlink(missing_ok=True)
         analyzed = await self._process.run(
             (
