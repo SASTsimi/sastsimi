@@ -322,6 +322,48 @@ async def test_runtime_process_preserves_programfiles_for_windows_docker_plugins
     assert "SASTSIMI_TEST_SECRET" not in child_environment
 
 
+@pytest.mark.asyncio
+async def test_runtime_process_keeps_end_of_large_docker_diagnostics() -> None:
+    runtime = PortableDockerRuntime.__new__(PortableDockerRuntime)
+    runtime._executable = Path(sys.executable)
+
+    outcome = await runtime._run(
+        (
+            "-c",
+            "import sys; "
+            "sys.stdout.buffer.write(b'o' * (1024 * 1024 + 64) + b'OUT-END'); "
+            "sys.stderr.buffer.write(b'e' * (1024 * 1024 + 64) + b'GIT-ERROR')",
+        ),
+        timeout_seconds=30,
+    )
+
+    assert outcome.exit_code == 0
+    assert outcome.stdout.endswith(b"OUT-END")
+    assert outcome.stderr.endswith(b"GIT-ERROR")
+    assert len(outcome.stdout) <= 1024 * 1024
+    assert len(outcome.stderr) <= 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_runtime_process_sends_input_while_draining_output() -> None:
+    runtime = PortableDockerRuntime.__new__(PortableDockerRuntime)
+    runtime._executable = Path(sys.executable)
+    payload = b"Dockerfile" * 100_000
+
+    outcome = await runtime._run(
+        (
+            "-c",
+            "import sys; data = sys.stdin.buffer.read(); "
+            "sys.stdout.write(str(len(data)))",
+        ),
+        timeout_seconds=30,
+        input_bytes=payload,
+    )
+
+    assert outcome.exit_code == 0
+    assert outcome.stdout == b"1000000"
+
+
 def test_target_environment_change_invalidates_only_initial_verification_and_later(
     tmp_path: Path,
 ) -> None:
@@ -659,7 +701,8 @@ async def test_generated_image_uses_uv_for_nested_workspace_sources(
 
     built = docker.dockerfiles[0]
     assert b"python -m pip install --no-cache-dir uv" in built
-    assert b"uv sync --frozen --no-dev --no-default-groups" in built
+    assert b"uv sync --frozen --no-dev" in built
+    assert b"--no-default-groups" not in built
     assert b"ln -s /workspace/backend/.venv /opt/sastsimi-target-venv" in built
     assert b"ENV VIRTUAL_ENV=/opt/sastsimi-target-venv" in built
     assert b'ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"' in built
@@ -791,7 +834,6 @@ def test_uv_workspace_member_sync_creates_root_environment(tmp_path: Path) -> No
             "--package",
             "example-worker",
             "--no-dev",
-            "--no-default-groups",
             "--python",
             sys.executable,
         ],
@@ -856,7 +898,8 @@ async def test_generated_image_uses_uv_for_root_workspace_sources(
     )
 
     built = docker.dockerfiles[0]
-    assert b"cd /workspace && uv sync --frozen --no-dev --no-default-groups" in built
+    assert b"cd /workspace && uv sync --frozen --no-dev" in built
+    assert b"--no-default-groups" not in built
     assert b"apt-get install -y --no-install-recommends git" in built
     assert built.index(b"apt-get install -y --no-install-recommends git") < built.index(
         b"uv sync"
@@ -866,6 +909,90 @@ async def test_generated_image_uses_uv_for_root_workspace_sources(
     assert json.loads(artifacts.read(result.recipe_ref))["target_manifest_path"] == (
         "pyproject.toml"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("base_image", ["python:3.12-slim", "python:3.12-alpine"])
+async def test_repository_uv_image_can_install_git_before_sync(
+    tmp_path: Path, base_image: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    original = f"FROM {base_image}\nUSER nobody\nWORKDIR /service\n".encode()
+    (workspace / "Dockerfile").write_bytes(original)
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "example-root"\nversion = "0.1.0"\n'
+        'dependencies = ["remote-lib"]\n'
+        '[tool.uv.sources]\nremote-lib = { git = "https://example.org/lib.git" }\n',
+        encoding="utf-8",
+    )
+    (workspace / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-repository-uv-git",
+        workspace_id="workspace-repository-uv-git",
+        commit_id="d" * 40,
+        hypothesis_id="hypothesis-repository-uv-git",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    docker = _BuildDocker()
+
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    ).prepare(
+        _environment_checkpoint(artifacts, action="RETRY_STAGE", patch=""),
+        {},
+        (),
+    )
+
+    built = docker.dockerfiles[0]
+    assert built.startswith(original)
+    assert built.index(b"USER root") < built.index(b"command -v git")
+    assert built.index(b"command -v git") < built.index(b"uv sync --frozen")
+    assert b"apt-get install -y --no-install-recommends git" in built
+    assert b"apk add --no-cache git" in built
+    assert b"SASTSIMI_GIT_UNAVAILABLE" in built
+    assert (workspace / "Dockerfile").read_bytes() == original
+    assert json.loads(artifacts.read(result.recipe_ref))["dockerfile_source"] == (
+        "REPOSITORY_DOCKERFILE"
+    )
+
+
+@pytest.mark.asyncio
+async def test_uv_sync_includes_project_default_runtime_groups(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "example-root"\nversion = "0.1.0"\n'
+        '[dependency-groups]\nruntime = ["pydantic-settings"]\n'
+        'dev = ["pytest"]\n'
+        '[tool.uv]\ndefault-groups = ["runtime", "dev"]\n',
+        encoding="utf-8",
+    )
+    (workspace / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-default-runtime-groups",
+        workspace_id="workspace-default-runtime-groups",
+        commit_id="e" * 40,
+        hypothesis_id="hypothesis-default-runtime-groups",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    docker = _BuildDocker()
+
+    await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    ).prepare(
+        _environment_checkpoint(artifacts, action="RETRY_STAGE", patch=""),
+        {},
+        (),
+    )
+
+    built = docker.dockerfiles[0]
+    assert b"uv sync --frozen --no-dev" in built
+    assert b"--no-default-groups" not in built
 
 
 @pytest.mark.parametrize(

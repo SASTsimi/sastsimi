@@ -407,30 +407,76 @@ class PortableDockerRuntime:
             stderr=asyncio.subprocess.PIPE,
             env=self._environment(),
         )
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(input_bytes),
-                timeout=timeout_seconds,
+        assert process.stdout is not None
+        assert process.stderr is not None
+        stdout_tail = bytearray()
+        stderr_tail = bytearray()
+        tasks = [
+            asyncio.create_task(self._read_output_tail(process.stdout, stdout_tail)),
+            asyncio.create_task(self._read_output_tail(process.stderr, stderr_tail)),
+            asyncio.create_task(process.wait()),
+        ]
+        if process.stdin is not None:
+            assert input_bytes is not None
+            tasks.append(
+                asyncio.create_task(self._write_input(process.stdin, input_bytes))
             )
+        try:
+            _, pending = await asyncio.wait(tasks, timeout=timeout_seconds)
+            if pending:
+                if process.returncode is None:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                await asyncio.gather(*tasks, return_exceptions=True)
+                return DockerCommandOutcome(
+                    exit_code=-1,
+                    stdout=bytes(stdout_tail),
+                    stderr=bytes(stderr_tail),
+                    timed_out=True,
+                )
+            await asyncio.gather(*tasks)
             return DockerCommandOutcome(
                 exit_code=process.returncode or 0,
-                stdout=stdout[:_MAX_OUTPUT],
-                stderr=stderr[:_MAX_OUTPUT],
+                stdout=bytes(stdout_tail),
+                stderr=bytes(stderr_tail),
                 timed_out=False,
             )
-        except TimeoutError:
-            process.kill()
-            stdout, stderr = await process.communicate()
-            return DockerCommandOutcome(
-                exit_code=-1,
-                stdout=stdout[:_MAX_OUTPUT],
-                stderr=stderr[:_MAX_OUTPUT],
-                timed_out=True,
-            )
         except asyncio.CancelledError:
-            process.kill()
-            await process.communicate()
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+            await asyncio.gather(*tasks, return_exceptions=True)
             raise
+
+    @staticmethod
+    async def _read_output_tail(stream: asyncio.StreamReader, tail: bytearray) -> None:
+        while chunk := await stream.read(64 * 1024):
+            if len(chunk) >= _MAX_OUTPUT:
+                tail[:] = chunk[-_MAX_OUTPUT:]
+            else:
+                overflow = len(tail) + len(chunk) - _MAX_OUTPUT
+                if overflow > 0:
+                    del tail[:overflow]
+                tail.extend(chunk)
+
+    @staticmethod
+    async def _write_input(stream: asyncio.StreamWriter, payload: bytes) -> None:
+        try:
+            for offset in range(0, len(payload), 64 * 1024):
+                stream.write(payload[offset : offset + 64 * 1024])
+                await stream.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            stream.close()
+            try:
+                await stream.wait_closed()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     @staticmethod
     def _environment() -> dict[str, str]:
@@ -525,10 +571,18 @@ class DirectEnvironmentPreparer:
         target_install = self._target_install_layer(target_manifest)
         dockerfile_path = self._workspace / "Dockerfile"
         if dockerfile_path.is_file():
+            git_install = (
+                self._repository_git_install_layer()
+                if target_install.startswith(
+                    b"RUN python -m pip install --no-cache-dir uv\n"
+                )
+                else b""
+            )
             dockerfile = self._portable_repository_dockerfile(
                 dockerfile_path.read_bytes()
             ) + (
                 b"\nUSER root\nWORKDIR /workspace\nCOPY . /workspace\n"
+                + git_install
                 + target_install
                 + b"RUN chmod -R a+rX /workspace && mkdir -p /tmp "
                 b"&& chmod 1777 /tmp\n"
@@ -758,6 +812,27 @@ class DirectEnvironmentPreparer:
             if normalized.startswith(b"from ") and b"buster" in normalized:
                 prepared.append(archive_setup)
         return b"".join(prepared)
+
+    @staticmethod
+    def _repository_git_install_layer() -> bytes:
+        """Install Git for uv on supported Linux bases, or fail the build."""
+
+        return (
+            b"RUN if ! command -v git >/dev/null 2>&1; then "
+            b"if command -v apt-get >/dev/null 2>&1; then "
+            b"apt-get update && apt-get install -y --no-install-recommends "
+            b"git ca-certificates && rm -rf /var/lib/apt/lists/*; "
+            b"elif command -v apk >/dev/null 2>&1; then "
+            b"apk add --no-cache git ca-certificates; "
+            b"elif command -v dnf >/dev/null 2>&1; then "
+            b"dnf install -y git ca-certificates && dnf clean all; "
+            b"elif command -v microdnf >/dev/null 2>&1; then "
+            b"microdnf install -y git ca-certificates && microdnf clean all; "
+            b"elif command -v yum >/dev/null 2>&1; then "
+            b"yum install -y git ca-certificates && yum clean all; "
+            b"else echo SASTSIMI_GIT_UNAVAILABLE: "
+            b"no supported package manager >&2; exit 1; fi; fi\n"
+        )
 
     def _target_manifest_path(
         self,
@@ -1001,7 +1076,7 @@ class DirectEnvironmentPreparer:
         return (
             "RUN python -m pip install --no-cache-dir uv\n"
             f"RUN cd {shlex.quote(uv_root_path)} && uv sync{member}{frozen} "
-            "--no-dev --no-default-groups && "
+            "--no-dev && "
             f"test -x {shlex.quote(uv_root_path + '/.venv/bin/python')} && "
             f"ln -s {shlex.quote(uv_root_path + '/.venv')} "
             "/opt/sastsimi-target-venv\n"

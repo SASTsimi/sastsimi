@@ -584,7 +584,7 @@ async def test_stale_exhausted_stage_restarts_at_new_version(tmp_path) -> None:
         StageCheckpoint(
             identity=_identity(),
             stage=SimpleStage.VERIFICATION_INITIAL_DONE,
-            stage_version="3",
+            stage_version="4",
             status=StageStatus.BLOCKED,
             input_refs=inputs,
             input_hash=input_reference_hash(inputs),
@@ -617,7 +617,7 @@ async def test_stale_exhausted_stage_restarts_at_new_version(tmp_path) -> None:
         SimpleStage.POC_CANDIDATE_DONE,
     ]
     assert store.require(_identity(), SimpleStage.PRO_CON_DONE) == pro_con
-    assert initial.stage_version == "4"
+    assert initial.stage_version == "5"
     assert initial.attempt_number == 1
     assert initial.recovery_lineage_id is None
     assert initial.input_refs == inputs
@@ -632,7 +632,7 @@ async def test_current_version_exhausted_stage_stays_blocked(tmp_path) -> None:
     exhausted = StageCheckpoint(
         identity=_identity(),
         stage=SimpleStage.VERIFICATION_INITIAL_DONE,
-        stage_version="4",
+        stage_version="5",
         status=StageStatus.BLOCKED,
         input_refs=inputs,
         input_hash=input_reference_hash(inputs),
