@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Pydantic, SQLite, pytest, 표준 라이브러리 HTTP 서버, vanilla JS/CSS, Windows PowerShell. Markdown은 `markdown-it-py>=4.2,<5` + `nh3>=0.3,<1`로 서버에서 변환·정제한다.
 
-**Spec:** `docs/superpowers/specs/2026-09-28-pr195-observability-dashboard-design.md`
+**Spec:** `docs/plans/2026-09-28-pr195-observability-dashboard-design.md`
 
 ## Global Constraints
 
