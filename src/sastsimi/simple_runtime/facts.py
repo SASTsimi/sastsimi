@@ -21,11 +21,24 @@ function's location is given so the agent can ask for it.
 from __future__ import annotations
 
 import ast
+import re
 import warnings
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+# A checkout's tests are shipped with it (14-73% of the Python files in the
+# repositories measured), and a route decorator never lives there - but a
+# `@mock.patch(...)` does, and its `.patch` attribute matched a routing verb,
+# so every entry point found in saleor/paperless/taiga/pinry was a test's mock.
+# Entry-point detection skips these paths; they stay readable on request.
+_TEST_PATH = re.compile(
+    r"(^|/)(tests?|testing|fixtures)/"
+    r"|(^|/)(test_[^/]*|conftest|tests|[^/]*_test)\.py$"
+)
+# Attribute chains that own a `.patch`/`.get`/... method that is not a route.
+_NON_ROUTE_RECEIVERS = frozenset({"mock", "unittest.mock", "mocker", "patch"})
 
 _ROUTE_VERBS = frozenset(
     {
@@ -93,6 +106,14 @@ def _route_of(decorator: ast.expr) -> dict[str, Any] | None:
     verb = decorator.func.attr if isinstance(decorator.func, ast.Attribute) else None
     if verb is None or verb.lower() not in _ROUTE_VERBS:
         return None
+    # `@mock.patch(...)` is not a PATCH route; its receiver gives it away.
+    if isinstance(decorator.func, ast.Attribute):
+        receiver = _name(decorator.func.value)
+        if receiver is not None and (
+            receiver in _NON_ROUTE_RECEIVERS
+            or receiver.split(".")[-1] in {"mock", "patch"}
+        ):
+            return None
     path: str | None = None
     if decorator.args and isinstance(decorator.args[0], ast.Constant):
         value = decorator.args[0].value
@@ -300,7 +321,9 @@ def _parse(path: Path) -> ast.Module | None:
 def extract_flows(workspace: Path, sources: Sequence[str]) -> dict[str, Any]:
     """Every entry point in the checkout and the calls its input reaches."""
 
-    python = [path for path in sources if path.endswith(".py")]
+    python = [
+        path for path in sources if path.endswith(".py") and not _TEST_PATH.search(path)
+    ]
     trees: dict[str, ast.Module] = {}
     unparsed: list[str] = []
     for path in python:
