@@ -209,6 +209,24 @@ class SimpleRecoveryCoordinator:
                 ),
             )
 
+        stderr = self._poc_execution_stderr(checkpoint, failure)
+        if stderr is not None and (
+            b"PermissionError" in stderr or b"Read-only file system" in stderr
+        ):
+            return self._store(
+                checkpoint,
+                failure,
+                RecoveryDecision(
+                    category=RecoveryCategory.GENERATED_INPUT,
+                    action=RecoveryAction.REGENERATE_INPUT,
+                    diagnosis="PoC runtime write was denied inside the container",
+                    guidance=(
+                        "Keep /workspace read-only; configure application runtime "
+                        "storage and scratch paths under /tmp before startup"
+                    ),
+                ),
+            )
+
         refs = tuple(dict.fromkeys(checkpoint.input_refs + failure.evidence_refs))
         context = self._artifacts.prompt_context(refs)
         prompt = b"\n".join(
@@ -264,6 +282,20 @@ class SimpleRecoveryCoordinator:
     def _missing_playwright_browser(
         self, checkpoint: StageCheckpoint, failure: StageFailure
     ) -> str | None:
+        stderr = self._poc_execution_stderr(checkpoint, failure)
+        if (
+            stderr is None
+            or b"BrowserType.launch: Executable doesn't exist at " not in stderr
+        ):
+            return None
+        for browser in _PLAYWRIGHT_BROWSERS:
+            if b"ms-playwright/" + browser.encode("ascii") in stderr:
+                return browser
+        return None
+
+    def _poc_execution_stderr(
+        self, checkpoint: StageCheckpoint, failure: StageFailure
+    ) -> bytes | None:
         if (
             checkpoint.stage is not SimpleStage.POC_EXECUTION_DONE
             or failure.code != "POC_EXECUTION_FAILED"
@@ -291,11 +323,7 @@ class SimpleRecoveryCoordinator:
                 stderr = self._artifacts.read(stderr_ref)[-16_384:]
             except (OSError, ValueError):
                 continue
-            if b"BrowserType.launch: Executable doesn't exist at " not in stderr:
-                continue
-            for browser in _PLAYWRIGHT_BROWSERS:
-                if b"ms-playwright/" + browser.encode("ascii") in stderr:
-                    return browser
+            return stderr
         return None
 
     @staticmethod
