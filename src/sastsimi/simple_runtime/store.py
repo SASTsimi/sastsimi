@@ -1583,6 +1583,18 @@ class SimpleCheckpointStore:
         error_code: str | None = None,
     ) -> AgentActivityEvent:
         attempt_id = checkpoint.attempt_id or "checkpoint"
+        metrics: dict[str, int] = {}
+        if kind is ActivityKind.STAGE_COMPLETED and status is StageStatus.SUCCEEDED:
+            metrics["processed"] = 1
+            metrics["artifacts"] = len(output_refs)
+            if checkpoint.stage is SimpleStage.HYPOTHESIS_DONE:
+                metrics["candidates"] = len(output_refs)
+            elif (
+                checkpoint.stage is SimpleStage.FINDING_DONE
+                and checkpoint.verdict == "TRUE"
+                and checkpoint.validated_poc_ref is not None
+            ):
+                metrics["findings"] = 1
         event_key = ":".join(
             (
                 checkpoint.identity.analysis_id,
@@ -1605,6 +1617,7 @@ class SimpleCheckpointStore:
             kind=kind,
             status=status.value,
             summary_ko=summary_ko,
+            metrics=metrics,
             input_refs=checkpoint.input_refs,
             output_refs=output_refs,
             error_code=error_code,

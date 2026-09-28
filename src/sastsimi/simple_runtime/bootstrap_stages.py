@@ -10,12 +10,15 @@ import time
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
 from sastsimi.config.user_config import SimpleExecutionProfile, SimpleToolBinding
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
+from sastsimi.storage.agent_activity import AgentActivityStore
 
 from .application import (
     HypothesisSeed,
@@ -194,6 +197,56 @@ class DirectStaticBootstrap:
             return source_checkout
         raise RuntimeError("STATIC_ANALYSIS_MATERIALS_MISSING")
 
+    def _record_tool_activity(
+        self,
+        identity: CheckpointIdentity,
+        *,
+        substage: str,
+        kind: ActivityKind,
+        status: str,
+        metrics: dict[str, int],
+        summary_ko: str,
+    ) -> None:
+        """Persist a bounded, idempotent summary without scanner output or paths."""
+        encoded = canonical_bytes(
+            {
+                "analysis": identity.analysis_id,
+                "commit": identity.commit_id,
+                "substage": substage,
+                "kind": kind.value,
+                "status": status,
+                "metrics": metrics,
+            }
+        )
+        digest = hashlib.sha256(encoded).hexdigest()
+        activity = AgentActivityStore(
+            self._profile.data_dir / "db" / "sastsimi.sqlite3"
+        )
+        if activity.has_event(digest):
+            return
+        now = datetime.now(UTC)
+        activity.append(
+            AgentActivityEvent(
+                event_id=digest,
+                analysis_id=identity.analysis_id,
+                workspace_id=identity.workspace_id,
+                commit_id=identity.commit_id,
+                hypothesis_id=identity.hypothesis_id,
+                stage="STATIC_DONE",
+                agent_role="Static Analysis Runtime",
+                attempt_id=f"static-{digest[:20]}",
+                sequence=1,
+                kind=kind,
+                status=status,
+                summary_ko=summary_ko,
+                tool_name=substage.lower(),
+                substage=substage,
+                metrics=metrics,
+                started_at=now,
+                finished_at=None if kind is ActivityKind.STAGE_STARTED else now,
+            )
+        )
+
     async def run(
         self,
         request: SimpleAnalysisRequest,
@@ -207,8 +260,43 @@ class DirectStaticBootstrap:
         artifacts = SimpleArtifactRepository(request.data_dir, identity)
         repository_ref = artifacts.put_json(repository_profile)
 
+        self._record_tool_activity(
+            identity,
+            substage="AST",
+            kind=ActivityKind.STAGE_STARTED,
+            status="RUNNING",
+            metrics={"expected": sum(path.endswith(".py") for path in tracked)},
+            summary_ko="Python 구문 분석을 시작했습니다.",
+        )
         ast_result = self._python_ast(workspace, tracked)
         ast_ref = artifacts.put_json(ast_result)
+        expected_python = sum(path.endswith(".py") for path in tracked)
+        files_examined = ast_result.get("files_examined")
+        files_parsed = ast_result.get("files_parsed")
+        ast_metrics = {"expected": expected_python, "artifacts": 1}
+        if (
+            type(files_examined) is int
+            and type(files_parsed) is int
+            and 0 <= files_parsed <= files_examined <= expected_python
+        ):
+            ast_metrics.update(
+                processed=files_examined,
+                verified=files_parsed,
+                remaining=expected_python - files_examined,
+            )
+        parse_count = ast_result.get("parse_error_count")
+        self._record_tool_activity(
+            identity,
+            substage="AST",
+            kind=ActivityKind.TOOL_COMPLETED,
+            status="SUCCEEDED"
+            if parse_count == 0
+            else "PARTIAL"
+            if type(parse_count) is int
+            else "UNKNOWN",
+            metrics=ast_metrics,
+            summary_ko="Python 구문 분석 결과를 저장했습니다.",
+        )
         rule_plan = None
         coverage_plan = None
         slices: list[CoverageSlice] = []
@@ -231,6 +319,14 @@ class DirectStaticBootstrap:
                 rule_plan,
                 fallback_tool_fingerprint=self._fallback_fingerprint(),
             )
+            self._record_tool_activity(
+                identity,
+                substage="OpenGrep",
+                kind=ActivityKind.STAGE_STARTED,
+                status="RUNNING",
+                metrics={"expected": len(coverage_plan.expected_pairs)},
+                summary_ko="OpenGrep 규칙 검사를 시작했습니다.",
+            )
             slices, engine_refs, scan_errors = await self._collect_opengrep(
                 workspace,
                 request,
@@ -245,10 +341,41 @@ class DirectStaticBootstrap:
             if code in _WORKSPACE_INTEGRITY_ERRORS:
                 raise RuntimeError(code) from error
             scan_errors.append(code)
+        if coverage_plan is not None and rule_plan is not None:
+            opengrep_verified = set().union(
+                *(item.verified_pairs for item in slices if item.engine == "opengrep")
+            )
+            opengrep_candidates = json.loads(merge_static_candidates(rule_plan, slices))
+            self._record_tool_activity(
+                identity,
+                substage="OpenGrep",
+                kind=ActivityKind.STAGE_BLOCKED
+                if scan_errors
+                else ActivityKind.TOOL_COMPLETED,
+                status="BLOCKED" if scan_errors else "SUCCEEDED",
+                metrics={
+                    "artifacts": len(engine_refs),
+                    "expected": len(coverage_plan.expected_pairs),
+                    "verified": len(opengrep_verified),
+                    "remaining": max(
+                        0, len(coverage_plan.expected_pairs) - len(opengrep_verified)
+                    ),
+                    "candidates": len(opengrep_candidates["results"]),
+                },
+                summary_ko="OpenGrep 검사 결과를 저장했습니다.",
+            )
         codeql_ref: StoredDataRef | None = None
         codeql_findings: list[dict[str, object]] = []
         codeql_error: str | None = None
         if "codeql" in self._profile.tools:
+            self._record_tool_activity(
+                identity,
+                substage="CodeQL",
+                kind=ActivityKind.STAGE_STARTED,
+                status="RUNNING",
+                metrics={},
+                summary_ko="CodeQL 검사를 시작했습니다.",
+            )
             try:
                 codeql_raw = await self._run_codeql(
                     workspace,
@@ -261,10 +388,32 @@ class DirectStaticBootstrap:
                 codeql_findings = self._codeql_findings(workspace, codeql_raw)
             except (OSError, RuntimeError, ValueError) as error:
                 codeql_error = self._safe_static_error(error, "CODEQL_EXECUTION_FAILED")
+            self._record_tool_activity(
+                identity,
+                substage="CodeQL",
+                kind=ActivityKind.STAGE_BLOCKED
+                if codeql_error
+                else ActivityKind.TOOL_COMPLETED,
+                status="BLOCKED" if codeql_error else "SUCCEEDED",
+                metrics={
+                    "processed": 1,
+                    "artifacts": int(codeql_ref is not None),
+                    "candidates": len(codeql_findings),
+                },
+                summary_ko="CodeQL 검사 결과를 저장했습니다.",
+            )
         coverage_report: StaticCoverageReport | None = None
         fallback_errors: list[str] = []
         if rule_plan is not None and coverage_plan is not None:
             if self._profile.semgrep_fallback:
+                self._record_tool_activity(
+                    identity,
+                    substage="Semgrep",
+                    kind=ActivityKind.STAGE_STARTED,
+                    status="RUNNING",
+                    metrics={},
+                    summary_ko="미검증 범위의 대체 검사를 시작했습니다.",
+                )
                 (
                     fallback_slices,
                     fallback_refs,
@@ -282,6 +431,22 @@ class DirectStaticBootstrap:
                 slices.extend(fallback_slices)
                 engine_refs.extend(fallback_refs)
                 scan_errors.extend(fallback_errors)
+                semgrep_verified = set().union(
+                    *(item.verified_pairs for item in fallback_slices)
+                )
+                self._record_tool_activity(
+                    identity,
+                    substage="Semgrep",
+                    kind=ActivityKind.STAGE_BLOCKED
+                    if fallback_errors
+                    else ActivityKind.TOOL_COMPLETED,
+                    status="BLOCKED" if fallback_errors else "SUCCEEDED",
+                    metrics={
+                        "artifacts": len(fallback_refs),
+                        "verified": len(semgrep_verified),
+                    },
+                    summary_ko="대체 검사 결과를 저장했습니다.",
+                )
             coverage_report = finish_coverage(coverage_plan, slices)
             coverage_data = coverage_report.to_json()
             opengrep_raw = merge_static_candidates(rule_plan, slices)
@@ -714,9 +879,12 @@ class DirectStaticBootstrap:
         facts: list[dict[str, object]] = []
         parse_errors: list[str] = []
         oversize_count = 0
+        files_examined = 0
+        files_parsed = 0
         for relative in tracked:
             if not relative.endswith(".py") or len(facts) >= _MAX_FACTS:
                 continue
+            files_examined += 1
             path = workspace / relative
             try:
                 if path.stat().st_size > _MAX_SOURCE_BYTES:
@@ -726,6 +894,7 @@ class DirectStaticBootstrap:
             except (OSError, UnicodeError, SyntaxError):
                 parse_errors.append(relative)
                 continue
+            files_parsed += 1
             for node in ast.walk(tree):
                 if isinstance(
                     node,
@@ -757,6 +926,8 @@ class DirectStaticBootstrap:
             "facts": facts,
             "parse_errors": parse_errors[:100],
             "parse_error_count": len(parse_errors),
+            "files_examined": files_examined,
+            "files_parsed": files_parsed,
             "oversize_count": oversize_count,
             "truncated": len(facts) >= _MAX_FACTS,
         }

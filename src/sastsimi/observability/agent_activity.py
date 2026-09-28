@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.prompt_redaction import assert_safe_provider_text
@@ -16,6 +16,17 @@ _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _WINDOWS_ABSOLUTE = re.compile(r"(?i)(?:^|\s)[a-z]:[\\/]")
 _POSIX_HOST_ABSOLUTE = re.compile(
     r"(?:^|\s)/(?:home|Users|root|var|etc|opt|private|mnt)/"
+)
+_METRIC_KEYS = frozenset(
+    {
+        "expected",
+        "processed",
+        "verified",
+        "remaining",
+        "artifacts",
+        "candidates",
+        "findings",
+    }
 )
 
 
@@ -48,6 +59,8 @@ class AgentActivityEvent(ContractModel):
     input_refs: tuple[StoredDataRef, ...] = ()
     output_refs: tuple[StoredDataRef, ...] = ()
     tool_name: str | None = None
+    substage: str | None = Field(default=None, min_length=1, max_length=128)
+    metrics: dict[str, int] = Field(default_factory=dict)
     tool_result_refs: tuple[StoredDataRef, ...] = ()
     provider: str | None = None
     model: str | None = None
@@ -57,6 +70,19 @@ class AgentActivityEvent(ContractModel):
     started_at: datetime
     finished_at: datetime | None = None
     elapsed_ms: int | None = Field(default=None, ge=0)
+
+    @field_validator("metrics", mode="before")
+    @classmethod
+    def valid_metrics(cls, value: object) -> dict[str, int]:
+        if not isinstance(value, dict) or any(
+            key not in _METRIC_KEYS
+            or type(count) is not int
+            or count < 0
+            or count > 1_000_000_000
+            for key, count in value.items()
+        ):
+            raise ValueError("AGENT_ACTIVITY_METRICS_INVALID")
+        return value
 
     @model_validator(mode="after")
     def validate_public_event(self) -> AgentActivityEvent:
@@ -79,6 +105,7 @@ class AgentActivityEvent(ContractModel):
                 self.status,
                 self.summary_ko,
                 self.tool_name,
+                self.substage,
                 self.provider,
                 self.model,
                 self.error_code,

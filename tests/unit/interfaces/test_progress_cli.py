@@ -20,6 +20,8 @@ class _Event:
     tool_name: str | None = "opengrep"
     summary_ko: str = "근거를 저장했습니다."
     started_at: datetime = datetime(2026, 1, 1, tzinfo=UTC)
+    substage: str | None = None
+    metrics: dict[str, int] | None = None
 
 
 def _events(_analysis_id: str) -> Iterable[ProgressEvent]:
@@ -118,3 +120,28 @@ def test_progress_renders_agent_tool_event_once_and_saves_it(tmp_path: Path) -> 
     log = (tmp_path / "analysis-1.log").read_text(encoding="utf-8")
     assert log.count('"event":"event-1"') == 1
     assert '"agent":"Pro Agent","tool":"opengrep"' in log
+
+
+def test_candidate_is_not_confirmed(tmp_path: Path) -> None:
+    sample = _Event(
+        event_id="candidate-event",
+        substage="OpenGrep",
+        metrics={"artifacts": 3, "candidates": 2, "findings": 0, "verified": 4},
+    )
+    stream = StringIO()
+    renderer = ProgressRenderer(
+        stream=stream,
+        is_tty=False,
+        log_dir=tmp_path,
+        event_reader=lambda _id: (cast(ProgressEvent, sample),),
+    )
+    renderer.render(_snapshot(10))
+    output = stream.getvalue()
+    assert "OpenGrep" in output
+    assert "후보=2" in output
+    assert "산출물=3" in output
+    assert "확정=0" in output
+    assert "검증=4" in output
+    log = (tmp_path / "analysis-1.log").read_text(encoding="utf-8")
+    assert '"candidates":2' in log
+    assert '"findings":0' in log
