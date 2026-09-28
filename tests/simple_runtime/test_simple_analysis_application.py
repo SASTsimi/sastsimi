@@ -15,6 +15,7 @@ from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.simple_runtime.application import (
+    ChainingEvidenceInvalid,
     HypothesisSeed,
     SimpleAnalysisApplication,
     SimpleAnalysisRequest,
@@ -86,6 +87,41 @@ def _ref(name: str) -> StoredDataRef:
         commit_id=CommitId("a" * 40),
         record_id=None,
     )
+
+
+def _admitted_primitive(
+    store: SimpleCheckpointStore,
+    artifacts: SimpleArtifactRepository,
+    identity: CheckpointIdentity,
+    *,
+    required: tuple[str, ...] = (),
+    provided: tuple[str, ...] = (),
+) -> StoredDataRef:
+    ref = artifacts.put_json(
+        {
+            "kind": "simple_primitive",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "source_hypothesis_id": identity.hypothesis_id,
+            "required_capabilities": required,
+            "provided_capabilities": provided,
+        }
+    )
+    existing = store.get(identity, SimpleStage.PRIMITIVE_ADMISSION_DONE)
+    store.save_checkpoint(
+        existing.model_copy(update={"output_refs": (ref,)})
+        if existing is not None
+        else StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.PRIMITIVE_ADMISSION_DONE,
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(ref,),
+        )
+    )
+    return ref
 
 
 class _Static:
@@ -555,24 +591,38 @@ async def test_partial_resume_advances_unfinished_agent_before_retrying_static(
         assert store.get(child, SimpleStage.CHAINING_DONE) is None
     elif interruption == "unregistered_chain_child":
         prior_agent = store.require(child, SimpleStage.CHAINING_DONE)
-        chained_ref = SimpleArtifactRepository(tmp_path, child).put_json(
+        artifacts = SimpleArtifactRepository(tmp_path, child)
+        second_parent = child.model_copy(update={"hypothesis_id": "hypothesis-2"})
+        upstream_ref = _admitted_primitive(
+            store, artifacts, child, provided=("route_access",)
+        )
+        downstream_ref = _admitted_primitive(
+            store, artifacts, second_parent, required=("route_access",)
+        )
+        chained_ref = artifacts.put_json(
             {
                 "kind": "simple_chaining_result",
                 "analysis_id": child.analysis_id,
                 "source_hypothesis_id": child.hypothesis_id,
                 "status": "MATERIAL_CHILD",
-                "considered_primitive_refs": [],
+                "considered_primitive_refs": [
+                    upstream_ref.model_dump(mode="json"),
+                    downstream_ref.model_dump(mode="json"),
+                ],
                 "children": [
                     {
-                        "upstream_primitive_hash": "a" * 64,
-                        "downstream_primitive_hash": "b" * 64,
+                        "upstream_primitive_hash": upstream_ref.content_hash,
+                        "downstream_primitive_hash": downstream_ref.content_hash,
                         "title": "compound finding",
                         "vulnerability_type": "compound",
                         "summary": "A second primitive extends the first",
                         "rationale": "Matching capabilities",
                         "code_locations": ["app.py:1"],
                         "parent_hypothesis_ids": ["hypothesis-1", "hypothesis-2"],
-                        "parent_primitive_refs": [],
+                        "parent_primitive_refs": [
+                            upstream_ref.model_dump(mode="json"),
+                            downstream_ref.model_dump(mode="json"),
+                        ],
                     }
                 ],
             }
@@ -2260,8 +2310,9 @@ async def test_blocked_hypothesis_does_not_stop_independent_sibling(
     )
 
 
+@pytest.mark.parametrize("invalid_tail", [False, True])
 def test_chaining_child_is_added_once_to_durable_analysis_queue(
-    tmp_path: Path,
+    tmp_path: Path, invalid_tail: bool,
 ) -> None:
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
     application = SimpleAnalysisApplication(
@@ -2278,26 +2329,47 @@ def test_chaining_child_is_added_once_to_durable_analysis_queue(
         hypothesis_id="hypothesis-1",
     )
     artifacts = SimpleArtifactRepository(tmp_path, identity)
+    second_parent = identity.model_copy(update={"hypothesis_id": "hypothesis-2"})
+    upstream_ref = _admitted_primitive(
+        store, artifacts, identity, provided=("route_access",)
+    )
+    downstream_ref = _admitted_primitive(
+        store, artifacts, second_parent, required=("route_access",)
+    )
+    valid_child = {
+        "upstream_primitive_hash": upstream_ref.content_hash,
+        "downstream_primitive_hash": downstream_ref.content_hash,
+        "title": "compound finding",
+        "vulnerability_type": "compound",
+        "summary": "A second primitive extends the first",
+        "rationale": "Matching capabilities",
+        "code_locations": ["app.py:1"],
+        "parent_hypothesis_ids": ["hypothesis-1", "hypothesis-2"],
+        "parent_primitive_refs": [
+            upstream_ref.model_dump(mode="json"),
+            downstream_ref.model_dump(mode="json"),
+        ],
+    }
+    children = [valid_child]
+    if invalid_tail:
+        children.append(
+            {
+                **valid_child,
+                "title": "invalid second child",
+                "parent_hypothesis_ids": ["hypothesis-1", "unknown-parent"],
+            }
+        )
     chaining_ref = artifacts.put_json(
         {
             "kind": "simple_chaining_result",
             "analysis_id": identity.analysis_id,
             "source_hypothesis_id": identity.hypothesis_id,
-            "considered_primitive_refs": [],
-            "status": "MATERIAL_CHILD",
-            "children": [
-                {
-                    "upstream_primitive_hash": "a" * 64,
-                    "downstream_primitive_hash": "b" * 64,
-                    "title": "compound finding",
-                    "vulnerability_type": "compound",
-                    "summary": "A second primitive extends the first",
-                    "rationale": "Matching capabilities",
-                    "code_locations": ["app.py:1"],
-                    "parent_hypothesis_ids": ["hypothesis-1", "hypothesis-2"],
-                    "parent_primitive_refs": [],
-                }
+            "considered_primitive_refs": [
+                upstream_ref.model_dump(mode="json"),
+                downstream_ref.model_dump(mode="json"),
             ],
+            "status": "MATERIAL_CHILD",
+            "children": children,
         }
     )
     store.save_checkpoint(
@@ -2324,6 +2396,16 @@ def test_chaining_child_is_added_once_to_durable_analysis_queue(
         workspace_path=tmp_path / "workspace",
     )
 
+    if invalid_tail:
+        with pytest.raises(ChainingEvidenceInvalid):
+            application._register_chain_children(run, application_identity, static)
+        assert not any(
+            checkpoint.identity.hypothesis_id.startswith("hypothesis-chain-")
+            for checkpoint in store.list_checkpoints(identity.analysis_id)
+            if checkpoint.identity.hypothesis_id is not None
+        )
+        return
+
     updated = application._register_chain_children(run, application_identity, static)
     repeated = application._register_chain_children(
         updated,
@@ -2340,7 +2422,14 @@ def test_chaining_child_is_added_once_to_durable_analysis_queue(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "invalidity",
-    ["empty", "unreadable", "malformed_json", "malformed_children", "partial_children"],
+    [
+        "empty",
+        "unreadable",
+        "malformed_json",
+        "malformed_children",
+        "partial_children",
+        "unbound_child",
+    ],
 )
 async def test_successful_chaining_requires_trusted_output_before_completion(
     tmp_path: Path, invalidity: str
@@ -2362,6 +2451,31 @@ async def test_successful_chaining_requires_trusted_output_before_completion(
         invalid_refs = (
             artifacts.put_json(
                 {"kind": "simple_chaining_result", "children": {"not": "a list"}}
+            ),
+        )
+    elif invalidity == "unbound_child":
+        invalid_refs = (
+            artifacts.put_json(
+                {
+                    "kind": "simple_chaining_result",
+                    "analysis_id": identity.analysis_id,
+                    "source_hypothesis_id": identity.hypothesis_id,
+                    "considered_primitive_refs": [],
+                    "status": "MATERIAL_CHILD",
+                    "children": [
+                        {
+                            "upstream_primitive_hash": "a" * 64,
+                            "downstream_primitive_hash": "b" * 64,
+                            "title": "unbound child",
+                            "vulnerability_type": "compound",
+                            "summary": "No admitted primitive supports this child",
+                            "rationale": "Claimed matching capabilities",
+                            "code_locations": ["app.py:1"],
+                            "parent_hypothesis_ids": ["hypothesis-1"],
+                            "parent_primitive_refs": [],
+                        }
+                    ],
+                }
             ),
         )
     else:

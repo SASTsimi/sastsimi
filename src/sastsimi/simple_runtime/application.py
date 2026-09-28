@@ -1095,6 +1095,7 @@ class SimpleAnalysisApplication:
             or value.get("source_hypothesis_id") != parent.hypothesis_id
             or not isinstance(value.get("considered_primitive_refs"), list)
             or not isinstance(children, list)
+            or len(children) > 4
             or value.get("status")
             != ("MATERIAL_CHILD" if children else "NO_MATERIAL_CHILD")
             or any(
@@ -1125,6 +1126,64 @@ class SimpleAnalysisApplication:
             )
         ):
             raise ChainingEvidenceInvalid(checkpoint)
+        if children:
+            try:
+                considered = tuple(
+                    StoredDataRef.model_validate(item)
+                    for item in value["considered_primitive_refs"]
+                )
+                admitted = {
+                    ref: item
+                    for item in self._store.list_checkpoints(run.analysis_id)
+                    if item.stage is SimpleStage.PRIMITIVE_ADMISSION_DONE
+                    and item.stage_version == STAGE_VERSION[item.stage]
+                    and item.status is StageStatus.SUCCEEDED
+                    and item.identity.analysis_id == parent.analysis_id
+                    and item.identity.workspace_id == parent.workspace_id
+                    and item.identity.commit_id == parent.commit_id
+                    and item.identity.hypothesis_id in run.hypothesis_ids
+                    for ref in item.output_refs
+                }
+                primitives: dict[str, tuple[StoredDataRef, str]] = {}
+                for ref in considered:
+                    owner = admitted.get(ref)
+                    if owner is None or ref.content_hash in primitives:
+                        raise ChainingEvidenceInvalid(checkpoint)
+                    primitive = json.loads(artifacts.read(ref))
+                    if (
+                        not isinstance(primitive, dict)
+                        or primitive.get("kind") != "simple_primitive"
+                        or primitive.get("analysis_id") != parent.analysis_id
+                        or primitive.get("workspace_id") != parent.workspace_id
+                        or primitive.get("commit_id") != parent.commit_id
+                        or owner.identity.hypothesis_id is None
+                        or primitive.get("source_hypothesis_id")
+                        != owner.identity.hypothesis_id
+                    ):
+                        raise ChainingEvidenceInvalid(checkpoint)
+                    primitives[ref.content_hash] = (
+                        ref,
+                        owner.identity.hypothesis_id,
+                    )
+                for child_value in children:
+                    upstream = primitives.get(child_value["upstream_primitive_hash"])
+                    downstream = primitives.get(
+                        child_value["downstream_primitive_hash"]
+                    )
+                    if upstream is None or downstream is None or upstream == downstream:
+                        raise ChainingEvidenceInvalid(checkpoint)
+                    parent_refs = tuple(
+                        StoredDataRef.model_validate(item)
+                        for item in child_value["parent_primitive_refs"]
+                    )
+                    expected_parents = sorted({upstream[1], downstream[1]})
+                    if (
+                        parent_refs != (upstream[0], downstream[0])
+                        or child_value["parent_hypothesis_ids"] != expected_parents
+                    ):
+                        raise ChainingEvidenceInvalid(checkpoint)
+            except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as error:
+                raise ChainingEvidenceInvalid(checkpoint) from error
         hypothesis_ids = list(run.hypothesis_ids)
         parents = dict(run.parent_hypothesis_ids)
         depths = dict(run.chain_depths)
