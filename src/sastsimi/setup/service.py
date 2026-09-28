@@ -64,6 +64,8 @@ class SetupChoices(BaseModel):
     max_elapsed_seconds: int = Field(gt=0)
     docker_network: Literal["NONE", "BRIDGE"]
     agent_models: dict[str, str] = Field(default_factory=dict)
+    reasoning_effort: str | None = None
+    agent_reasoning_efforts: dict[str, str] = Field(default_factory=dict)
     llm_timeout_seconds: int = Field(default=180, gt=0, le=3600)
     llm_max_retries: int = Field(default=2, ge=0, le=5)
     llm_max_concurrency: int = Field(default=2, gt=0, le=32)
@@ -473,6 +475,8 @@ class SetupService:
             detected_versions=detected_versions,
             setup_ready=ready,
             agent_models=choices.agent_models,
+            reasoning_effort=choices.reasoning_effort,
+            agent_reasoning_efforts=choices.agent_reasoning_efforts,
             llm_timeout_seconds=choices.llm_timeout_seconds,
             llm_max_retries=choices.llm_max_retries,
             llm_max_concurrency=choices.llm_max_concurrency,
@@ -512,6 +516,8 @@ class SetupService:
             docker_network=choices.docker_network,
             tools=bindings,
             agent_models=choices.agent_models,
+            reasoning_effort=choices.reasoning_effort,
+            agent_reasoning_efforts=choices.agent_reasoning_efforts,
             llm_timeout_seconds=choices.llm_timeout_seconds,
             llm_max_retries=choices.llm_max_retries,
             llm_max_concurrency=choices.llm_max_concurrency,

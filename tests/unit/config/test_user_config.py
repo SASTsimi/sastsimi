@@ -98,6 +98,65 @@ def test_agent_model_override_rejects_unknown_role() -> None:
         UserConfig.safe_agent_models({"verification_reslut": "some-model"})
 
 
+def _reasoning_config(tmp_path: Path) -> UserConfig:
+    return UserConfig(
+        data_dir=tmp_path / "data",
+        profile_path=tmp_path / "profile.toml",
+        auth_mode="SUBSCRIPTION_LOGIN",
+        provider="codex",
+        model="configured-model",
+        credential_ref="OFFICIAL_CLIENT_SESSION",
+        execution_profile="FULL",
+        max_cost_minor_units=10_000,
+        max_tokens=500_000,
+        max_elapsed_seconds=3_600,
+        docker_network="NONE",
+        enabled_tools=("AST", "OPENGREP", "CODEQL", "DOCKER"),
+        detected_versions={},
+        setup_ready=True,
+    )
+
+
+def test_old_config_has_no_reasoning(tmp_path: Path) -> None:
+    store = UserConfigStore(tmp_path / "config.toml")
+    store.save(_reasoning_config(tmp_path))
+
+    loaded = store.load()
+    assert loaded.reasoning_effort is None
+    assert loaded.agent_reasoning_efforts == {}
+    assert "reasoning_effort" not in (tmp_path / "config.toml").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_agent_reasoning_overrides_default(tmp_path: Path) -> None:
+    profile = SimpleExecutionProfile(
+        provider_profile_ref="local-codex",
+        provider="codex",
+        model="configured-model",
+        auth_mode="SUBSCRIPTION_LOGIN",
+        credential_ref="OFFICIAL_CLIENT_SESSION",
+        data_dir=tmp_path / "data",
+        workspace_root=tmp_path / "workspaces",
+        max_cost_minor_units=10_000,
+        max_tokens=500_000,
+        max_elapsed_seconds=3_600,
+        docker_network="NONE",
+        tools={},
+        reasoning_effort="medium",
+        agent_reasoning_efforts={"verification_result": "high"},
+    )
+    assert profile.resolve_reasoning_effort("verification_result") == "high"
+    assert profile.resolve_reasoning_effort("hypothesis") == "medium"
+
+
+def test_unknown_agent_reasoning_rejected(tmp_path: Path) -> None:
+    payload = _reasoning_config(tmp_path).model_dump()
+    payload["agent_reasoning_efforts"] = {"verification_reslut": "high"}
+    with pytest.raises(ValueError, match="USER_CONFIG_AGENT_REASONING_INVALID"):
+        UserConfig.model_validate(payload)
+
+
 def test_claude_subscription_profile_round_trip_and_api_key_rejected(
     tmp_path: Path,
 ) -> None:

@@ -55,6 +55,16 @@ def choices_from_args(
         if not separator or not name or not model_name:
             raise ValueError("AGENT_MODEL_FORMAT_INVALID")
         agent_models[name] = model_name
+    agent_reasoning_efforts: dict[str, str] = {}
+    raw_env_reasoning = os.environ.get("SASTSIMI_AGENT_REASONING_EFFORTS", "")
+    raw_agent_reasoning = [item for item in raw_env_reasoning.split(",") if item] + (
+        getattr(args, "agent_reasoning_effort", None) or []
+    )
+    for item in raw_agent_reasoning:
+        name, separator, effort = item.partition("=")
+        if not separator or not name or not effort:
+            raise ValueError("AGENT_REASONING_FORMAT_INVALID")
+        agent_reasoning_efforts[name] = effort
     model = args.model or (
         os.environ.get("SASTSIMI_CURSOR_MODEL") if provider == "cursor" else None
     )
@@ -88,6 +98,11 @@ def choices_from_args(
         max_elapsed_seconds=args.max_elapsed_seconds,
         docker_network=docker_network,
         agent_models=agent_models,
+        reasoning_effort=(
+            getattr(args, "reasoning_effort", None)
+            or os.environ.get("SASTSIMI_REASONING_EFFORT")
+        ),
+        agent_reasoning_efforts=agent_reasoning_efforts,
         llm_timeout_seconds=getattr(args, "llm_timeout_seconds", 180),
         llm_max_retries=getattr(args, "llm_max_retries", 2),
         llm_max_concurrency=getattr(args, "llm_max_concurrency", 2),

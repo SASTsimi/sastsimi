@@ -160,6 +160,8 @@ def main(
     setup_parser.add_argument("--provider")
     setup_parser.add_argument("--model")
     setup_parser.add_argument("--agent-model", action="append", default=[])
+    setup_parser.add_argument("--reasoning-effort")
+    setup_parser.add_argument("--agent-reasoning-effort", action="append", default=[])
     setup_parser.add_argument("--llm-timeout-seconds", type=int, default=180)
     setup_parser.add_argument("--llm-max-retries", type=int, default=2)
     setup_parser.add_argument("--llm-max-concurrency", type=int, default=2)
