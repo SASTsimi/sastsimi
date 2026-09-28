@@ -14,6 +14,10 @@ from pydantic import JsonValue
 
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.prompt_redaction import (
+    redact_projected_json,
+    redact_untrusted_text,
+)
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.providers.base import CodexProcessRequest, CodexProcessRunner
 
@@ -30,6 +34,8 @@ class SimpleLLMCallResult(ContractModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     elapsed_ms: int | None = None
+    request_ref: StoredDataRef | None = None
+    response_ref: StoredDataRef | None = None
     raw_output_ref: StoredDataRef | None = None
     parsed_output_ref: StoredDataRef | None = None
     input_tokens: int | None = None
@@ -47,6 +53,71 @@ class SimpleLLMClient(Protocol):
         timeout_ms: int,
         agent_name: str = "agent",
     ) -> SimpleLLMCallResult | StageFailure: ...
+
+
+class InvocationArtifactWriter(Protocol):
+    def put_json(self, value: object) -> StoredDataRef: ...
+
+
+def _request_artifact(
+    artifacts: InvocationArtifactWriter | None,
+    *,
+    invocation_id: str,
+    provider: str,
+    model: str,
+    prompt: bytes,
+    output_schema: Mapping[str, Any],
+) -> StoredDataRef | None:
+    if artifacts is None:
+        return None
+    try:
+        safe_prompt = redact_untrusted_text(prompt).data.decode(
+            "utf-8", errors="replace"
+        )
+    except ValueError:
+        safe_prompt = "[CONTENT_REDACTED]"
+    return artifacts.put_json(
+        {
+            "kind": "simple_llm_request",
+            "invocation_id": invocation_id,
+            "provider": provider,
+            "model": model,
+            "template_revision": "simple-runtime-inline-v1",
+            "prompt": safe_prompt,
+            "output_schema": dict(output_schema),
+        }
+    )
+
+
+def _response_artifact(
+    artifacts: InvocationArtifactWriter | None,
+    *,
+    invocation_id: str,
+    provider: str,
+    model: str,
+    canonical: bytes,
+    input_tokens: int | None,
+    output_tokens: int | None,
+) -> StoredDataRef | None:
+    if artifacts is None:
+        return None
+    try:
+        response = json.loads(redact_projected_json(canonical).data)
+    except (ValueError, TypeError, json.JSONDecodeError):
+        response = "[CONTENT_REDACTED]"
+    return artifacts.put_json(
+        {
+            "kind": "simple_llm_response",
+            "invocation_id": invocation_id,
+            "provider": provider,
+            "model": model,
+            "response": response,
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            },
+        }
+    )
 
 
 def _matches_type(value: object, expected: str) -> bool:
@@ -137,11 +208,13 @@ class SimpleCodexClient:
         runner: CodexProcessRunner,
         provider_profile_ref: StoredDataRef,
         model: str,
+        artifacts: InvocationArtifactWriter | None = None,
     ) -> None:
         self._runner = runner
         self._provider_profile_ref = provider_profile_ref
         self._model = model
         self._lock = asyncio.Lock()
+        self._artifacts = artifacts
 
     async def call(
         self,
@@ -153,6 +226,14 @@ class SimpleCodexClient:
     ) -> SimpleLLMCallResult | StageFailure:
         prompt_digest = hashlib.sha256(prompt).hexdigest()
         invocation_id = f"simple-{uuid4().hex}"
+        request_ref = _request_artifact(
+            self._artifacts,
+            invocation_id=invocation_id,
+            provider="codex-cli",
+            model=self._model,
+            prompt=prompt,
+            output_schema=output_schema,
+        )
         request = CodexProcessRequest(
             invocation_id=invocation_id,
             provider_profile_ref=self._provider_profile_ref,
@@ -172,6 +253,7 @@ class SimpleCodexClient:
                 code=result.status,
                 retryable=result.status in {"RATE_LIMITED", "TIMED_OUT", "FAILED"},
                 safe_message=f"Codex call did not succeed: {result.status}",
+                evidence_refs=((request_ref,) if request_ref is not None else ()),
             )
         try:
             value = json.loads(result.final_message.decode("utf-8"))
@@ -202,6 +284,16 @@ class SimpleCodexClient:
             started_at=started_at,
             finished_at=finished_at,
             elapsed_ms=elapsed_ms,
+            request_ref=request_ref,
+            response_ref=_response_artifact(
+                self._artifacts,
+                invocation_id=invocation_id,
+                provider="codex-cli",
+                model=self._model,
+                canonical=canonical,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+            ),
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
         )
@@ -210,13 +302,20 @@ class SimpleCodexClient:
 class SimpleOpenAIClient:
     """Minimal official Responses API client for the sequential local path."""
 
-    def __init__(self, *, credential_ref: str, model: str) -> None:
+    def __init__(
+        self,
+        *,
+        credential_ref: str,
+        model: str,
+        artifacts: InvocationArtifactWriter | None = None,
+    ) -> None:
         variable = credential_ref.removeprefix("env:")
         if variable == credential_ref:
             raise ValueError("CREDENTIAL_REFERENCE_INVALID")
         self._variable = variable
         self._model = model
         self._lock = asyncio.Lock()
+        self._artifacts = artifacts
 
     async def call(
         self,
@@ -243,6 +342,14 @@ class SimpleOpenAIClient:
             )
         prompt_digest = hashlib.sha256(prompt).hexdigest()
         invocation_id = f"simple-{uuid4().hex}"
+        request_ref = _request_artifact(
+            self._artifacts,
+            invocation_id=invocation_id,
+            provider="openai-api",
+            model=self._model,
+            prompt=prompt,
+            output_schema=output_schema,
+        )
         started_at = datetime.now(UTC)
         started = monotonic()
         try:
@@ -270,6 +377,7 @@ class SimpleOpenAIClient:
                 code="TIMED_OUT",
                 retryable=True,
                 safe_message="OpenAI request timed out",
+                evidence_refs=((request_ref,) if request_ref is not None else ()),
             )
         except Exception as error:
             name = type(error).__name__.lower()
@@ -287,6 +395,7 @@ class SimpleOpenAIClient:
                 code=code,
                 retryable=code in {"RATE_LIMITED", "FAILED"},
                 safe_message="OpenAI request did not complete",
+                evidence_refs=((request_ref,) if request_ref is not None else ()),
             )
         finished_at = datetime.now(UTC)
         elapsed_ms = max(0, int((monotonic() - started) * 1000))
@@ -315,6 +424,16 @@ class SimpleOpenAIClient:
             started_at=started_at,
             finished_at=finished_at,
             elapsed_ms=elapsed_ms,
+            request_ref=request_ref,
+            response_ref=_response_artifact(
+                self._artifacts,
+                invocation_id=invocation_id,
+                provider="openai-api",
+                model=self._model,
+                canonical=canonical,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            ),
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
@@ -325,4 +444,5 @@ __all__ = [
     "SimpleLLMCallResult",
     "SimpleLLMClient",
     "SimpleOpenAIClient",
+    "InvocationArtifactWriter",
 ]
