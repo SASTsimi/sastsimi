@@ -1776,6 +1776,29 @@ class DirectStaticBootstrap:
                         return
 
                     previous = attempts.get(batch.key)
+                    if (
+                        previous is not None
+                        and previous.status == "BLOCKED"
+                        and previous.error_code == "EXTERNAL_TOOL_TIMEOUT"
+                        and len(targets) > 1
+                    ):
+                        # This exact chunk already exhausted a finite subprocess
+                        # timeout. It supplied no reusable coverage proof, so
+                        # rescan its pending pairs in smaller bounded chunks.
+                        if previous.raw_ref is not None:
+                            refs.append(previous.raw_ref)
+                        midpoint = len(targets) // 2
+                        await run_node(
+                            targets[:midpoint],
+                            rule_ids,
+                            retry_timeout=retry_timeout,
+                        )
+                        await run_node(
+                            targets[midpoint:],
+                            rule_ids,
+                            retry_timeout=retry_timeout,
+                        )
+                        return
                     code: str | None = None
                     cached: CoverageSlice | None = None
                     current_slice: CoverageSlice | None = None

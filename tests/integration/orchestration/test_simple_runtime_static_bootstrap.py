@@ -1045,6 +1045,57 @@ async def test_adaptive_semgrep_uses_128_target_roots_and_replays_success(
 
 
 @pytest.mark.asyncio
+async def test_semgrep_resume_splits_previously_timed_out_parent_without_rerun(
+    tmp_path: Path,
+) -> None:
+    singleton_attempts: dict[str, int] = {}
+
+    def timeout_parent_then_recover_children(
+        targets: tuple[str, ...], _command: tuple[str, ...]
+    ) -> BaseException | None:
+        if len(targets) > 1:
+            return TimeoutError()
+        target = targets[0]
+        singleton_attempts[target] = singleton_attempts.get(target, 0) + 1
+        if singleton_attempts[target] == 1:
+            return RuntimeError("transient child failure")
+        return None
+
+    process = _AdaptiveSemgrepProcess(timeout_parent_then_recover_children)
+    fixture = _adaptive_semgrep_fixture(tmp_path, process, count=2)
+    first, _refs, _errors = await _run_adaptive_semgrep(fixture)
+    assert finish_coverage(fixture[4], first).verified_count == 0
+    assert {gap.path for gap in finish_coverage(fixture[4], first).gaps} == {
+        "file-000.py",
+        "file-001.py",
+    }
+    _, profile, identity, _batches, coverage, _workspace, _rules = fixture
+    parent_attempt = next(
+        attempt
+        for attempt in _store(profile).list_static_scan_attempts(
+            identity, _request(profile).repository, coverage.fingerprint
+        )
+        if attempt.tool == "semgrep" and attempt.error_code == "EXTERNAL_TOOL_TIMEOUT"
+    )
+    assert parent_attempt.raw_ref is None
+    assert tuple(targets for targets, _ in process.calls) == (
+        ("file-000.py", "file-001.py"),
+        ("file-000.py",),
+        ("file-001.py",),
+    )
+
+    resumed, _refs, errors = await _run_adaptive_semgrep(fixture)
+    assert errors == []
+    assert tuple(targets for targets, _ in process.calls[3:]) == (
+        ("file-000.py",),
+        ("file-001.py",),
+    )
+    assert len([targets for targets, _ in process.calls if len(targets) == 2]) == 1
+    assert finish_coverage(fixture[4], resumed).verified_count == 2
+    assert finish_coverage(fixture[4], resumed).gaps == ()
+
+
+@pytest.mark.asyncio
 async def test_semgrep_resume_reuses_proof_after_missing_pair_changes(
     tmp_path: Path,
 ) -> None:
