@@ -65,6 +65,12 @@ class StaticEvidenceInvalid(ValueError):
         super().__init__("STATIC_EVIDENCE_INVALID")
 
 
+class ChainingEvidenceInvalid(ValueError):
+    def __init__(self, checkpoint: StageCheckpoint) -> None:
+        self.checkpoint = checkpoint
+        super().__init__("CHAINING_EVIDENCE_INVALID")
+
+
 class HypothesisSeed(ContractModel):
     hypothesis_id: str
     proposal_ref: StoredDataRef
@@ -375,11 +381,17 @@ class SimpleAnalysisApplication:
             if retry_partial_static:
                 # Chaining may have completed just before the process stopped,
                 # leaving its children outside the durable hypothesis queue.
-                for hypothesis_id in run.hypothesis_ids:
-                    child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
-                    run = self._register_chain_children(
-                        run, child, self._static_for_child(static, child)
-                    )
+                try:
+                    for hypothesis_id in run.hypothesis_ids:
+                        child = identity.model_copy(
+                            update={"hypothesis_id": hypothesis_id}
+                        )
+                        run = self._register_chain_children(
+                            run, child, self._static_for_child(static, child)
+                        )
+                except ChainingEvidenceInvalid as error:
+                    failed = self._block_invalid_chaining(error.checkpoint)
+                    return self._bootstrap_outcome(run, failed)
                 retry_partial_static = self._downstream_terminal(run)
         if retry_partial_static:
             return await self._run_static(run, identity)
@@ -1022,7 +1034,16 @@ class SimpleAnalysisApplication:
                     ):
                         incomplete = outcome
                     continue
-                run = self._register_chain_children(run, child, static)
+                try:
+                    run = self._register_chain_children(run, child, static)
+                except ChainingEvidenceInvalid as error:
+                    failed = self._block_invalid_chaining(error.checkpoint)
+                    if incomplete is None:
+                        incomplete = RunOutcome(
+                            current_stage=failed.stage,
+                            status=failed.status,
+                            error_code=failed.error_code,
+                        )
         if incomplete is not None:
             outcome_status: Literal["BLOCKED", "FAILED"] = (
                 "BLOCKED" if incomplete.status is StageStatus.BLOCKED else "FAILED"
@@ -1056,16 +1077,54 @@ class SimpleAnalysisApplication:
         static: StaticBootstrapResult,
     ) -> SimpleAnalysisRun:
         checkpoint = self._store.get(parent, SimpleStage.CHAINING_DONE)
-        if checkpoint is None or len(checkpoint.output_refs) != 1:
+        if checkpoint is None or checkpoint.status is not StageStatus.SUCCEEDED:
             return run
+        if len(checkpoint.output_refs) != 1:
+            raise ChainingEvidenceInvalid(checkpoint)
         artifacts = SimpleArtifactRepository(self._data_dir, parent)
         try:
             value = json.loads(artifacts.read(checkpoint.output_refs[0]))
-            children = value.get("children", [])
-        except (OSError, ValueError, json.JSONDecodeError):
-            return run
-        if not isinstance(children, list):
-            return run
+        except (OSError, ValueError, TypeError, sqlite3.Error) as error:
+            raise ChainingEvidenceInvalid(checkpoint) from error
+        if not isinstance(value, dict):
+            raise ChainingEvidenceInvalid(checkpoint)
+        children = value.get("children")
+        if (
+            value.get("kind") != "simple_chaining_result"
+            or value.get("analysis_id") != parent.analysis_id
+            or value.get("source_hypothesis_id") != parent.hypothesis_id
+            or not isinstance(value.get("considered_primitive_refs"), list)
+            or not isinstance(children, list)
+            or value.get("status")
+            != ("MATERIAL_CHILD" if children else "NO_MATERIAL_CHILD")
+            or any(
+                not isinstance(child, dict)
+                or any(
+                    not isinstance(child.get(key), str)
+                    for key in (
+                        "upstream_primitive_hash",
+                        "downstream_primitive_hash",
+                        "title",
+                        "vulnerability_type",
+                        "summary",
+                        "rationale",
+                    )
+                )
+                or not isinstance(child.get("code_locations"), list)
+                or not all(
+                    isinstance(location, str) for location in child["code_locations"]
+                )
+                or not isinstance(child.get("parent_hypothesis_ids"), list)
+                or not child["parent_hypothesis_ids"]
+                or not all(
+                    isinstance(hypothesis_id, str)
+                    for hypothesis_id in child["parent_hypothesis_ids"]
+                )
+                or not isinstance(child.get("parent_primitive_refs"), list)
+                for child in children
+            )
+        ):
+            raise ChainingEvidenceInvalid(checkpoint)
         hypothesis_ids = list(run.hypothesis_ids)
         parents = dict(run.parent_hypothesis_ids)
         depths = dict(run.chain_depths)
@@ -1126,6 +1185,18 @@ class SimpleAnalysisApplication:
         )
         self._store.save_analysis_run(updated)
         return updated
+
+    def _block_invalid_chaining(self, checkpoint: StageCheckpoint) -> StageCheckpoint:
+        return self._store.mark_failure(
+            checkpoint,
+            StageFailure(
+                code="CHAINING_EVIDENCE_INVALID",
+                retryable=False,
+                safe_message="Stored chaining evidence cannot be trusted",
+                evidence_refs=checkpoint.output_refs,
+            ),
+            StageStatus.BLOCKED,
+        )
 
     @staticmethod
     def _stage_result(*refs: StoredDataRef) -> StageResult:

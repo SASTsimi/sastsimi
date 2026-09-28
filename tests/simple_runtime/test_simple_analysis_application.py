@@ -124,8 +124,22 @@ def _runner(
     _static: StaticBootstrapResult,
     *,
     final_verdict: Literal["FALSE", "HOLD"] = "FALSE",
+    data_dir: Path | None = None,
 ) -> SimpleRuntimeRunner:
-    del identity, _static
+    del _static
+    chaining_ref = None
+    if final_verdict == "HOLD":
+        assert data_dir is not None
+        chaining_ref = SimpleArtifactRepository(data_dir, identity).put_json(
+            {
+                "kind": "simple_chaining_result",
+                "analysis_id": identity.analysis_id,
+                "source_hypothesis_id": identity.hypothesis_id,
+                "considered_primitive_refs": [],
+                "status": "NO_MATERIAL_CHILD",
+                "children": [],
+            }
+        )
     handlers: dict[SimpleStage, Any] = {}
     for stage in tuple(SimpleStage)[2:]:
 
@@ -136,7 +150,11 @@ def _runner(
             current: SimpleStage = stage,
         ) -> StageResult:
             return StageResult(
-                output_refs=(_ref(current.value.lower()),),
+                output_refs=(
+                    (chaining_ref,)
+                    if current is SimpleStage.CHAINING_DONE and chaining_ref is not None
+                    else (_ref(current.value.lower()),)
+                ),
                 verdict=final_verdict
                 if current is SimpleStage.VERIFICATION_FINAL_DONE
                 else None,
@@ -358,13 +376,29 @@ async def test_verified_partial_static_evidence_runs_agents_but_never_completes(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "interruption",
-    ["pending", "stale", "hold_before_chaining", "unregistered_chain_child"],
-    ids=["pending", "stale", "hold-before-chaining", "unregistered-chain-child"],
+    [
+        "pending",
+        "stale",
+        "hold_before_chaining",
+        "unregistered_chain_child",
+        "untrusted_chaining_output",
+    ],
+    ids=[
+        "pending",
+        "stale",
+        "hold-before-chaining",
+        "unregistered-chain-child",
+        "untrusted-chaining-output",
+    ],
 )
 async def test_partial_resume_advances_unfinished_agent_before_retrying_static(
     tmp_path: Path,
     interruption: Literal[
-        "pending", "stale", "hold_before_chaining", "unregistered_chain_child"
+        "pending",
+        "stale",
+        "hold_before_chaining",
+        "unregistered_chain_child",
+        "untrusted_chaining_output",
     ],
 ) -> None:
     class PartialStatic:
@@ -374,7 +408,14 @@ async def test_partial_resume_advances_unfinished_agent_before_retrying_static(
             self, request: SimpleAnalysisRequest, identity: CheckpointIdentity
         ) -> StaticBootstrapResult:
             self.calls += 1
-            if interruption == "unregistered_chain_child" and self.calls > 1:
+            if (
+                interruption
+                in {
+                    "unregistered_chain_child",
+                    "untrusted_chaining_output",
+                }
+                and self.calls > 1
+            ):
                 raise RuntimeError("STATIC_RETRY_BEFORE_CHAIN_CHILD")
             artifacts = SimpleArtifactRepository(request.data_dir, identity)
             coverage_ref = artifacts.put_json(
@@ -464,8 +505,14 @@ async def test_partial_resume_advances_unfinished_agent_before_retrying_static(
             child,
             bootstrap,
             final_verdict="HOLD"
-            if interruption in {"hold_before_chaining", "unregistered_chain_child"}
+            if interruption
+            in {
+                "hold_before_chaining",
+                "unregistered_chain_child",
+                "untrusted_chaining_output",
+            }
             else "FALSE",
+            data_dir=tmp_path,
         ),
         id_factory=iter(("analysis-partial-pending-agent", "workspace-1")).__next__,
     )
@@ -539,6 +586,14 @@ async def test_partial_resume_advances_unfinished_agent_before_retrying_static(
             "hypothesis-1",
             "hypothesis-2",
         )
+    elif interruption == "untrusted_chaining_output":
+        prior_agent = store.require(child, SimpleStage.CHAINING_DONE)
+        malformed_ref = SimpleArtifactRepository(tmp_path, child).put_bytes(
+            b"{", "application/json"
+        )
+        store.save_checkpoint(
+            prior_agent.model_copy(update={"output_refs": (malformed_ref,)})
+        )
     else:
         prior_agent = store.require(child, SimpleStage.PRO_CON_DONE)
         store.replace_from(
@@ -554,6 +609,16 @@ async def test_partial_resume_advances_unfinished_agent_before_retrying_static(
     resumed = await application.resume(first.display_analysis_id)
 
     assert static.calls == 1
+    if interruption == "untrusted_chaining_output":
+        assert (resumed.status, resumed.error_code) == (
+            "BLOCKED",
+            "CHAINING_EVIDENCE_INVALID",
+        )
+        blocked = store.require(child, SimpleStage.CHAINING_DONE)
+        assert blocked.status is StageStatus.BLOCKED
+        assert blocked.output_refs == (malformed_ref,)
+        assert SimpleArtifactRepository(tmp_path, child).read(malformed_ref) == b"{"
+        return
     assert resumed.status == "PARTIAL", resumed.error_code
     if interruption == "unregistered_chain_child":
         run = store.require_analysis_run(first.identity.analysis_id)
@@ -2216,10 +2281,21 @@ def test_chaining_child_is_added_once_to_durable_analysis_queue(
     chaining_ref = artifacts.put_json(
         {
             "kind": "simple_chaining_result",
+            "analysis_id": identity.analysis_id,
+            "source_hypothesis_id": identity.hypothesis_id,
+            "considered_primitive_refs": [],
+            "status": "MATERIAL_CHILD",
             "children": [
                 {
+                    "upstream_primitive_hash": "a" * 64,
+                    "downstream_primitive_hash": "b" * 64,
                     "title": "compound finding",
+                    "vulnerability_type": "compound",
+                    "summary": "A second primitive extends the first",
+                    "rationale": "Matching capabilities",
+                    "code_locations": ["app.py:1"],
                     "parent_hypothesis_ids": ["hypothesis-1", "hypothesis-2"],
+                    "parent_primitive_refs": [],
                 }
             ],
         }
@@ -2259,6 +2335,111 @@ def test_chaining_child_is_added_once_to_durable_analysis_queue(
     assert repeated.hypothesis_ids == updated.hypothesis_ids
     child_id = updated.hypothesis_ids[-1]
     assert updated.chain_depths[child_id] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalidity",
+    ["empty", "unreadable", "malformed_json", "malformed_children", "partial_children"],
+)
+async def test_successful_chaining_requires_trusted_output_before_completion(
+    tmp_path: Path, invalidity: str
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-invalid-chain",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    if invalidity == "empty":
+        invalid_refs: tuple[StoredDataRef, ...] = ()
+    elif invalidity == "unreadable":
+        invalid_refs = (_ref("missing-chaining"),)
+    elif invalidity == "malformed_json":
+        invalid_refs = (artifacts.put_bytes(b"{", "application/json"),)
+    elif invalidity == "malformed_children":
+        invalid_refs = (
+            artifacts.put_json(
+                {"kind": "simple_chaining_result", "children": {"not": "a list"}}
+            ),
+        )
+    else:
+        invalid_refs = (
+            artifacts.put_json(
+                {
+                    "kind": "simple_chaining_result",
+                    "analysis_id": identity.analysis_id,
+                    "source_hypothesis_id": identity.hypothesis_id,
+                    "considered_primitive_refs": [],
+                    "status": "MATERIAL_CHILD",
+                    "children": [
+                        {
+                            "upstream_primitive_hash": "a" * 64,
+                            "downstream_primitive_hash": "b" * 64,
+                            "title": "valid child",
+                            "vulnerability_type": "compound",
+                            "summary": "Valid candidate",
+                            "rationale": "Matching capabilities",
+                            "code_locations": ["app.py:1"],
+                            "parent_hypothesis_ids": ["hypothesis-1"],
+                            "parent_primitive_refs": [],
+                        },
+                        {"title": "incomplete child"},
+                    ],
+                }
+            ),
+        )
+
+    async def invalid_chaining(
+        _checkpoint: StageCheckpoint,
+        _prior: Mapping[SimpleStage, StageCheckpoint],
+    ) -> StageResult:
+        return StageResult(output_refs=invalid_refs)
+
+    def runner_factory(
+        current_store: SimpleCheckpointStore,
+        child: CheckpointIdentity,
+        static: StaticBootstrapResult,
+    ) -> SimpleRuntimeRunner:
+        baseline = _runner(
+            current_store, child, static, final_verdict="HOLD", data_dir=tmp_path
+        )
+        return SimpleRuntimeRunner(
+            current_store,
+            {**baseline.handlers, SimpleStage.CHAINING_DONE: invalid_chaining},
+        )
+
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=runner_factory,
+        id_factory=iter(("analysis-invalid-chain", "workspace-1")).__next__,
+    )
+
+    outcome = await application.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        )
+    )
+
+    assert (outcome.status, outcome.error_code) == (
+        "BLOCKED",
+        "CHAINING_EVIDENCE_INVALID",
+    )
+    checkpoint = store.require(identity, SimpleStage.CHAINING_DONE)
+    assert checkpoint.status is StageStatus.BLOCKED
+    assert checkpoint.output_refs == invalid_refs
+    assert store.require_analysis_run(identity.analysis_id).hypothesis_ids == (
+        "hypothesis-1",
+    )
+    if invalidity == "malformed_json":
+        assert artifacts.read(invalid_refs[0]) == b"{"
 
 
 @pytest.mark.parametrize(

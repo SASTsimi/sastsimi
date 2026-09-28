@@ -272,6 +272,21 @@ async def test_synthetic_static_gap_then_poc_error_resumes_to_restricted_bundle(
                     store=current_store,
                     repository_url=repository,
                 )(checkpoint, prior)
+            if stage is SimpleStage.CHAINING_DONE:
+                return StageResult(
+                    output_refs=(
+                        artifacts.put_json(
+                            {
+                                "kind": "simple_chaining_result",
+                                "analysis_id": identity.analysis_id,
+                                "source_hypothesis_id": identity.hypothesis_id,
+                                "considered_primitive_refs": [],
+                                "status": "NO_MATERIAL_CHILD",
+                                "children": [],
+                            }
+                        ),
+                    )
+                )
             return StageResult(
                 output_refs=(
                     artifacts.put_json(
