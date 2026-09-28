@@ -931,6 +931,11 @@ class DirectEnvironmentPreparer:
         sources = uv_config.get("sources")
         if isinstance(sources, dict) and sources:
             return project_dir, None
+        lock = project_dir / "uv.lock"
+        if lock.is_symlink():
+            raise ValueError("TARGET_LOCK_PATH_UNSAFE")
+        if lock.is_file():
+            return project_dir, None
         return None
 
     def _target_install_layer(self, manifest_path: str | None) -> bytes:

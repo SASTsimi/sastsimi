@@ -868,9 +868,13 @@ async def test_generated_image_uses_uv_for_root_workspace_sources(
     )
 
 
+@pytest.mark.parametrize(
+    "uv_sources",
+    ["", '[tool.uv.sources]\nlocal-lib = { path = "libs/local-lib" }\n'],
+)
 @pytest.mark.asyncio
-async def test_root_uv_sources_take_precedence_over_requirements(
-    tmp_path: Path,
+async def test_root_uv_lock_takes_precedence_over_requirements(
+    tmp_path: Path, uv_sources: str
 ) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -879,7 +883,7 @@ async def test_root_uv_sources_take_precedence_over_requirements(
     (workspace / "pyproject.toml").write_text(
         '[project]\nname = "example-root"\nversion = "0.1.0"\n'
         'dependencies = ["local-lib"]\n'
-        '[tool.uv.sources]\nlocal-lib = { path = "libs/local-lib" }\n',
+        f"{uv_sources}",
         encoding="utf-8",
     )
     (workspace / "uv.lock").write_text("version = 1\n", encoding="utf-8")
