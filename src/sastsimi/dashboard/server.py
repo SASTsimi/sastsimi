@@ -12,7 +12,7 @@ from io import BytesIO
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from .query import DashboardNotFound, DashboardQuery
+from .query import DashboardIncomplete, DashboardNotFound, DashboardQuery
 
 _STATIC = Path(__file__).with_name("static")
 _CSP = (
@@ -233,6 +233,13 @@ def create_server(
                     )
                 else:
                     raise DashboardNotFound("DASHBOARD_ROUTE_NOT_FOUND")
+            except DashboardIncomplete:
+                self._response(
+                    HTTPStatus.CONFLICT,
+                    b'{"error":"incomplete_export"}',
+                    "application/json; charset=utf-8",
+                    send_body,
+                )
             except DashboardNotFound:
                 self._response(
                     HTTPStatus.NOT_FOUND,

@@ -172,6 +172,8 @@ class FindingReportView(ContractModel):
 
 
 class AnalysisDetailView(AnalysisSummaryView):
+    artifact_projection_complete: bool = True
+    artifact_omitted_count: int = 0
     static_coverage_expected: int | None = None
     static_coverage_verified: int | None = None
     static_coverage_gap_count: int | None = None

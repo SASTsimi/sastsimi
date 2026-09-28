@@ -115,9 +115,11 @@ CLI 진행 로그는 분석별로 data directory의 `logs/<analysis-id>.log`에�
 경로와 숨겨진 추론을 제거한 뒤 아티팩트로 저장합니다. 이전 분석에는 이 항목이
 없을 수 있습니다.
 
-영문 Markdown 보고서가 `reports/<analysis-id>/F-NNN.en.md`에 준비되어 있으면
-같은 Finding을 선택하거나 전체 ZIP을 받을 때 `reports/en/`에 함께 포함됩니다.
-대시보드는 영문 내용을 새로 번역하거나 판정을 변경하지 않습니다.
+영문 Markdown은 현재 Finding의 검증된 첨부 manifest에 있을 때만 전체·선택 결과 ZIP의
+`reports/en/`에 포함됩니다. 디스크에 남은 단독 `F-NNN.en.md`는 검증 없이 포함하지
+않습니다. 보고서 미리보기·다운로드·ZIP은 동일한 Scope Gate 보호를 적용합니다.
+아티팩트가 표시 한도를 넘어 일부만 보이면 대시보드가 최소 누락 개수를 알리고
+불완전한 전체 ZIP을 차단합니다. 표시된 자료는 선택 ZIP으로 받을 수 있습니다.
 
 짧은 발표용 실행 순서와 고정된 취약 저장소 예시는
 [대시보드 발표 시나리오](dashboard-demo.md)를 참고합니다.

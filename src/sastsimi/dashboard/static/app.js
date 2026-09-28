@@ -5,7 +5,11 @@ const state = {
   events: [],
   selectedArtifacts: new Set(),
   selectedReports: new Set(),
+  eventAnalysis: null,
+  detailUpdatedAt: null,
+  detailRefreshedAt: 0,
 };
+let refreshInFlight = false;
 
 function el(tag, text, className) {
   const node = document.createElement(tag);
@@ -60,6 +64,9 @@ function analysisButton(item) {
     if (state.selected !== routeId) {
       state.selectedArtifacts.clear();
       state.selectedReports.clear();
+      state.events = [];
+      state.eventAnalysis = null;
+      state.detail = null;
     }
     state.selected = routeId;
     window.history.replaceState({}, "", `/analyses/${encodeURIComponent(routeId)}`);
@@ -211,6 +218,8 @@ function renderChains(items) {
 }
 
 function renderEvents() {
+  const timeline = document.getElementById("events");
+  const followTail = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 60;
   const search = document.getElementById("log-search").value.trim().toLowerCase();
   const status = document.getElementById("log-status").value;
   const items = state.events.filter((item) => {
@@ -229,8 +238,7 @@ function renderEvents() {
     if (item.error_code) event.append(el("div", item.error_code, "error mono"));
     return event;
   }) : empty("조건에 맞는 로그가 없습니다."));
-  const timeline = document.getElementById("events");
-  timeline.scrollTop = timeline.scrollHeight;
+  if (followTail) timeline.scrollTop = timeline.scrollHeight;
 }
 
 async function showArtifact(item) {
@@ -298,7 +306,8 @@ function selectableArtifact(item) {
 function renderArtifacts() {
   const search = document.getElementById("artifact-search").value.trim().toLowerCase();
   const artifacts = (state.detail?.artifacts || []).filter((item) => [item.kind, item.data_kind, ...item.stages, ...item.hypothesis_ids].join(" ").toLowerCase().includes(search));
-  document.getElementById("artifact-count").textContent = `${artifacts.length}/${state.detail?.artifacts.length || 0}개`;
+  const omitted = state.detail?.artifact_omitted_count || 0;
+  document.getElementById("artifact-count").textContent = `${artifacts.length}/${state.detail?.artifacts.length || 0}개${omitted ? ` · 최소 ${omitted}개 미표시 (전체 ZIP 불가)` : ""}`;
   replace("artifacts", artifacts.length ? artifacts.map(selectableArtifact) : empty("조건에 맞는 아티팩트가 없습니다."));
 }
 
@@ -435,15 +444,13 @@ function updateSelectionLink() {
   document.getElementById("logs-selection").classList.remove("hidden");
 }
 
-function renderDetail(detail, events) {
+function renderDetail(detail) {
   state.detail = detail;
-  state.events = events;
   renderOverview(detail);
   renderStaticTools(detail.static_tools || []);
   renderPipeline(detail.pipeline || []);
   renderHypotheses(detail.hypotheses || []);
   renderChains(detail.hypotheses || []);
-  renderEvents();
   renderArtifacts();
   const artifactMap = new Map((detail.artifacts || []).map((item) => [item.artifact_id, item]));
   renderInvocations(detail.llm_invocations || [], artifactMap);
@@ -452,7 +459,7 @@ function renderDetail(detail, events) {
   renderReports(detail.reports || []);
   const bundle = document.getElementById("bundle-download");
   bundle.href = detail.bundle_url || "#";
-  bundle.classList.toggle("hidden", !detail.bundle_url);
+  bundle.classList.toggle("hidden", !detail.bundle_url || !detail.artifact_projection_complete);
   const logs = document.getElementById("logs-download");
   logs.href = detail.logs_url || "#";
   updateSelectionLink();
@@ -469,6 +476,8 @@ function clearDetail(message) {
 }
 
 async function refresh() {
+  if (refreshInFlight) return;
+  refreshInFlight = true;
   const connection = document.getElementById("connection");
   const notice = document.getElementById("notice");
   try {
@@ -479,12 +488,38 @@ async function refresh() {
       clearDetail("분석을 실행하면 단계별 현황이 표시됩니다.");
       notice.textContent = "저장된 분석이 없습니다.";
     } else {
-      const encoded = encodeURIComponent(state.selected);
-      const [detail, events] = await Promise.all([
-        getJson(`/api/analyses/${encoded}`),
-        getJson(`/api/analyses/${encoded}/events`),
+      const selected = state.selected;
+      const encoded = encodeURIComponent(selected);
+      if (state.eventAnalysis !== selected) {
+        state.events = [];
+        state.eventAnalysis = selected;
+        renderEvents();
+      }
+      const summary = analyses.find((item) => item.analysis_id === selected || item.display_analysis_id === selected);
+      const cursor = state.events.at(-1)?.event_id;
+      const eventUrl = `/api/analyses/${encoded}/events`;
+      const eventRequest = getJson(cursor ? `${eventUrl}?after=${encodeURIComponent(cursor)}` : eventUrl)
+        .then((items) => ({ items, reset: false }))
+        .catch(async (error) => {
+          if (!cursor || !String(error).includes("(404)")) throw error;
+          return { items: await getJson(eventUrl), reset: true };
+        });
+      const needsDetail = !state.detail || state.detailUpdatedAt !== summary?.updated_at || Date.now() - state.detailRefreshedAt > 30000;
+      const [initialDetail, eventDelta] = await Promise.all([
+        needsDetail ? getJson(`/api/analyses/${encoded}`) : Promise.resolve(null),
+        eventRequest,
       ]);
-      renderDetail(detail, events);
+      if (selected !== state.selected) return;
+      const detail = initialDetail || (eventDelta.items.length ? await getJson(`/api/analyses/${encoded}`) : state.detail);
+      if (selected !== state.selected) return;
+      if (detail !== state.detail) {
+        renderDetail(detail);
+        state.detailUpdatedAt = summary?.updated_at;
+        state.detailRefreshedAt = Date.now();
+      }
+      if (eventDelta.reset) state.events = eventDelta.items;
+      else state.events.push(...eventDelta.items);
+      if (eventDelta.reset || eventDelta.items.length) renderEvents();
       notice.textContent = detail.stale ? "실행이 멈췄을 수 있습니다." : "저장된 최신 상태를 표시합니다.";
       notice.classList.toggle("warning", detail.stale);
     }
@@ -496,6 +531,8 @@ async function refresh() {
     connection.classList.add("error");
     notice.textContent = `데이터를 불러오지 못했습니다: ${error}`;
     notice.classList.add("warning");
+  } finally {
+    refreshInFlight = false;
   }
 }
 

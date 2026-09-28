@@ -306,7 +306,7 @@ def test_server_serves_redacted_artifacts_reports_logs_and_bundle(tmp_path) -> N
             names = set(archive.namelist())
             assert "manifest.json" in names
             assert "reports/F-001.md" in names
-            assert "reports/en/F-001.md" in names
+            assert "reports/en/F-001.md" not in names
             assert "logs/console.log" in names
             assert any(
                 name.startswith("artifacts/simple_validated_poc-") for name in names
@@ -386,6 +386,95 @@ def test_server_exposes_bounded_static_coverage_for_blocked_run(tmp_path) -> Non
     ]
 
 
+def test_static_tools_show_actual_fallback_and_partial_ast(tmp_path) -> None:
+    seed(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    coverage = artifacts.put_json(
+        {
+            "kind": "simple_static_coverage_v1",
+            "analysis_id": "analysis-1",
+            "workspace_id": "workspace-1",
+            "commit_id": "commit-1",
+            "expected_count": 2,
+            "verified_count": 2,
+            "gaps": [],
+            "unsupported": [],
+            "ast_parse_error_count": 1,
+            "ast_truncated": False,
+            "engine_verified_counts": {"opengrep": 0, "semgrep": 2},
+            "codeql_configured": True,
+            "codeql_executed": False,
+            "codeql_scope": "python_only",
+        }
+    )
+    bundle = artifacts.put_json(
+        {
+            "kind": "simple_static_fact_bundle",
+            "static_coverage_ref": coverage.model_dump(mode="json"),
+            "opengrep_findings": [],
+            "codeql_findings": [],
+            "codeql_executed": False,
+        }
+    )
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = store.require_analysis_run("analysis-1")
+    store.save_analysis_run(run.model_copy(update={"static_bundle_ref": bundle}))
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.STATIC_DONE,
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(coverage, bundle),
+        )
+    )
+    with running_server(tmp_path) as base:
+        detail = json.loads(request(f"{base}/api/analyses/A-001").read())
+    tools = {item["tool"]: item["status"] for item in detail["static_tools"]}
+    assert tools["AST"] == "PARTIAL"
+    assert tools["OpenGrep"] == "SKIPPED"
+    assert tools["Semgrep CE"] == "SUCCEEDED"
+    assert tools["CodeQL"] == "SKIPPED"
+
+
+def test_large_artifact_projection_blocks_incomplete_whole_zip(tmp_path) -> None:
+    seed(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    original = store.require(identity, SimpleStage.POC_CANDIDATE_DONE)
+    extras = tuple(
+        artifacts.put_json({"kind": "extra", "index": index}) for index in range(513)
+    )
+    store.save_checkpoint(
+        original.model_copy(update={"output_refs": original.output_refs + extras})
+    )
+    with running_server(tmp_path) as base:
+        detail = json.loads(request(f"{base}/api/analyses/A-001").read())
+        response = request(f"{base}/api/analyses/A-001/bundle.zip")
+        selected = request(
+            f"{base}/api/analyses/A-001/bundle.zip?selected=1"
+            f"&artifact={detail['artifacts'][0]['artifact_id']}"
+        )
+    assert detail["artifact_projection_complete"] is False
+    assert detail["artifact_omitted_count"] >= 1
+    assert response.status == 409
+    assert json.loads(response.read())["error"] == "incomplete_export"
+    assert selected.status == 200
+
+
 def test_server_restricts_persisted_legacy_allow_markdown(tmp_path) -> None:
     seed(tmp_path)
     identity = CheckpointIdentity(
@@ -413,11 +502,22 @@ def test_server_restricts_persisted_legacy_allow_markdown(tmp_path) -> None:
     with running_server(tmp_path) as base:
         detail = json.loads(request(f"{base}/api/analyses/A-001").read())
         public = request(f"{base}/reports/analysis-1/F-001.md").read().decode()
+        preview = json.loads(
+            request(f"{base}/api/analyses/A-001/reports/F-001").read()
+        )["markdown"]
+        download = (
+            request(f"{base}/api/analyses/A-001/reports/F-001/download").read().decode()
+        )
+        with zipfile.ZipFile(
+            BytesIO(request(f"{base}/api/analyses/A-001/bundle.zip").read())
+        ) as archive:
+            bundled = archive.read("reports/F-001.md").decode()
 
     assert detail["hypotheses"][0]["scope_status"] == "UNCERTAIN"
     assert detail["hypotheses"][0]["external_disclosure_allowed"] is False
     assert "허용: 예" not in public
     assert "제보 불가" in public
+    assert preview == download == bundled == public
     assert old_path.read_text(encoding="utf-8") == old_text
 
 
@@ -428,8 +528,15 @@ def test_server_serves_exact_report_artifact_not_mutated_file(tmp_path) -> None:
 
     with running_server(tmp_path) as base:
         public = request(f"{base}/reports/analysis-1/F-001.md").read().decode()
+        preview = json.loads(
+            request(f"{base}/api/analyses/A-001/reports/F-001").read()
+        )["markdown"]
+        download = (
+            request(f"{base}/api/analyses/A-001/reports/F-001/download").read().decode()
+        )
 
     assert public == "# 한국어 보고서"
+    assert preview == download == public
 
 
 def test_server_downloads_only_current_manifest_files(tmp_path) -> None:
@@ -446,6 +553,9 @@ def test_server_downloads_only_current_manifest_files(tmp_path) -> None:
     )
     attach_current_bundle(tmp_path, identity, finding, "F-001")
     poc = b"#!/bin/sh\nprintf ok\n"
+    (tmp_path / "reports" / "analysis-1" / "F-001.en.md").write_text(
+        "# unverified disk change", encoding="utf-8"
+    )
 
     with running_server(tmp_path) as base:
         detail = json.loads(request(f"{base}/api/analyses/A-001").read())
@@ -459,6 +569,13 @@ def test_server_downloads_only_current_manifest_files(tmp_path) -> None:
         assert response.headers["Cache-Control"] == "no-store"
         assert request(f"{base}{urls['poc.sh']}", method="HEAD").status == 200
         assert request(f"{base}{urls['bundle.zip']}").read()[:2] == b"PK"
+        with zipfile.ZipFile(
+            BytesIO(request(f"{base}/api/analyses/A-001/bundle.zip").read())
+        ) as archive:
+            assert archive.read("reports/en/F-001.md") == b"# English report\n"
+            assert archive.read("reports/F-001.md") == "# 한국어 보고서\n".encode()
+            assert archive.read("reports/F-001/poc.sh") == poc
+            assert "reports/F-001/evidence/provenance.json" in archive.namelist()
         assert (
             request(f"{base}/reports/analysis-1/F-001/files/%2e%2e/poc.sh").status
             == 404
@@ -467,11 +584,45 @@ def test_server_downloads_only_current_manifest_files(tmp_path) -> None:
             request(f"{base}/reports/analysis-1/F-001/files/manifest.json").status
             == 404
         )
+        (tmp_path / "reports" / "analysis-1" / "F-001" / "bundle.zip").write_bytes(
+            b"tampered"
+        )
+        broken = request(f"{base}/api/analyses/A-001/bundle.zip")
+        assert broken.status == 409
+        assert json.loads(broken.read())["error"] == "incomplete_export"
 
 
 def test_server_rejects_non_loopback_bind(tmp_path) -> None:
     with pytest.raises(ValueError, match="DASHBOARD_LOOPBACK_ONLY"):
         create_server(tmp_path, host="0.0.0.0", port=8765)
+
+
+def test_event_cursor_keeps_late_written_event(tmp_path) -> None:
+    seed(tmp_path)
+    with running_server(tmp_path) as base:
+        initial = json.loads(request(f"{base}/api/analyses/A-001/events").read())
+        assert [item["event_id"] for item in initial] == ["event-llm-1"]
+        AgentActivityStore(tmp_path / "db" / "sastsimi.sqlite3").append(
+            AgentActivityEvent(
+                event_id="event-late-write",
+                analysis_id="analysis-1",
+                workspace_id="workspace-1",
+                commit_id="commit-1",
+                hypothesis_id="hypothesis-1",
+                stage="POC_EXECUTION_DONE",
+                agent_role="PoC Agent",
+                attempt_id="attempt-late-write",
+                sequence=1,
+                kind=ActivityKind.STAGE_COMPLETED,
+                status="SUCCEEDED",
+                summary_ko="뒤늦게 기록된 이벤트",
+                started_at=datetime(2020, 1, 1, tzinfo=UTC),
+            )
+        )
+        later = json.loads(
+            request(f"{base}/api/analyses/A-001/events?after=event-llm-1").read()
+        )
+    assert [item["event_id"] for item in later] == ["event-late-write"]
 
 
 # mypy: disable-error-code="no-untyped-def"
