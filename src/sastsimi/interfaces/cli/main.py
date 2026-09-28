@@ -10,9 +10,7 @@ from uuid import uuid4
 
 from sastsimi import bootstrap
 from sastsimi.config.production_profile import load_production_profile
-from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.config.user_config import UserConfigStore
-from sastsimi.dashboard.query import DashboardQuery
 from sastsimi.interfaces.cli import analyze as analyze_command
 from sastsimi.interfaces.cli import cancel as cancel_command
 from sastsimi.interfaces.cli import capability as capability_command
@@ -30,7 +28,6 @@ from sastsimi.interfaces.cli import simple_evaluation as simple_evaluation_comma
 from sastsimi.interfaces.cli import status as status_command
 from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.output import emit_data, emit_result
-from sastsimi.interfaces.cli.progress import ProgressRenderer
 from sastsimi.orchestration.production_onboarding_builder import (
     ApprovedProbeResolver,
 )
@@ -162,6 +159,22 @@ def main(
     setup_parser.add_argument("--auth", choices=["api-key", "subscription"])
     setup_parser.add_argument("--provider")
     setup_parser.add_argument("--model")
+    setup_parser.add_argument("--agent-model", action="append", default=[])
+    setup_parser.add_argument("--llm-timeout-seconds", type=int, default=180)
+    setup_parser.add_argument("--llm-max-retries", type=int, default=2)
+    setup_parser.add_argument("--llm-max-concurrency", type=int, default=2)
+    setup_parser.add_argument(
+        "--hypothesis-feed", choices=["current", "facts_survey"], default="current"
+    )
+    setup_parser.add_argument("--max-parallel-hypotheses", type=int, default=1)
+    setup_parser.add_argument("--max-parallel-builds", type=int, default=1)
+    setup_parser.add_argument("--max-parallel-containers", type=int, default=1)
+    setup_parser.add_argument("--cursor-allow-on-demand", action="store_true")
+    setup_parser.add_argument("--semgrep-fallback", action="store_true")
+    setup_parser.add_argument(
+        "--fallback-provider", choices=["none", "openai", "codex"], default="none"
+    )
+    setup_parser.add_argument("--fallback-model")
     setup_parser.add_argument(
         "--profile", dest="execution_profile", choices=["full", "lightweight"]
     )
@@ -172,6 +185,11 @@ def main(
     setup_parser.add_argument("--max-tokens", type=int, default=1_000_000)
     setup_parser.add_argument("--max-elapsed-seconds", type=int, default=3_600)
     setup_parser.add_argument("--format", choices=["text", "json"])
+    subparsers.add_parser(
+        "cursor-models",
+        help="list model IDs from the Cursor CLI login or CURSOR_API_KEY",
+        allow_abbrev=False,
+    )
     doctor_parser = subparsers.add_parser(
         "doctor", help="read-only foundation host checks", allow_abbrev=False
     )
@@ -389,12 +407,13 @@ def main(
     try:
         raw_argv = list(sys.argv[1:]) if argv is None else argv
         args = parser.parse_args(_normalize_public_argv(raw_argv))
+        command_name = str(args.command or "doctor")
         requested_output = getattr(args, "format", None)
         if requested_output is not None:
             output_format = requested_output
         selected_user_store = user_config_store or UserConfigStore()
         user_config = None
-        if args.command != "setup":
+        if args.command not in {"setup", "cursor-models"}:
             try:
                 user_config = selected_user_store.load()
             except ValueError:
@@ -421,6 +440,39 @@ def main(
 
                 public_application = build_public_simple_runtime(selected_user_store)
             return public_application
+
+        if args.command == "cursor-models":
+            from sastsimi.composition.simple_runtime_composition import (
+                list_cursor_models,
+            )
+
+            try:
+                models = asyncio.run(list_cursor_models())
+            except ValueError as error:
+                cursor_setup_code = (
+                    "CURSOR_CLI_NOT_INSTALLED"
+                    if str(error) == "CURSOR_CLI_NOT_INSTALLED"
+                    else "CURSOR_AUTH_REQUIRED"
+                )
+                sys.stderr.write(
+                    cursor_setup_code + ": install or log in to Cursor CLI\n"
+                )
+                return int(ExitCode.CONFIG_ERROR)
+            except Exception as error:
+                name = type(error).__name__
+                cursor_error_code = (
+                    "CURSOR_AUTH_FAILED"
+                    if name in {"AuthenticationError", "CursorCLIAuthenticationError"}
+                    else "CURSOR_MODEL_CATALOG_FAILED"
+                )
+                sys.stderr.write(
+                    cursor_error_code
+                    + ": check Cursor CLI login or API key and connectivity\n"
+                )
+                return int(ExitCode.BLOCKED)
+            for model_id in sorted(models):
+                sys.stdout.write(model_id + "\n")
+            return int(ExitCode.OK)
 
         if args.command == "setup":
             command_name = "setup"
@@ -498,11 +550,10 @@ def main(
                     and not args.no_progress
                     and callable(progress_call)
                 ):
-                    renderer = ProgressRenderer(
-                        stream=sys.stdout,
+                    renderer = dashboard_command.progress_renderer(
+                        config.data_dir,
+                        sys.stdout,
                         is_tty=sys.stdout.isatty(),
-                        log_dir=RuntimePaths(config.data_dir).logs,
-                        event_reader=DashboardQuery(config.data_dir).list_events,
                     )
                     data = progress_call(repository, args.commit, renderer.render)
                 else:
@@ -611,11 +662,10 @@ def main(
                     and not args.no_progress
                     and callable(progress_call)
                 ):
-                    renderer = ProgressRenderer(
-                        stream=sys.stdout,
+                    renderer = dashboard_command.progress_renderer(
+                        config.data_dir,
+                        sys.stdout,
                         is_tty=sys.stdout.isatty(),
-                        log_dir=RuntimePaths(config.data_dir).logs,
-                        event_reader=DashboardQuery(config.data_dir).list_events,
                     )
                     data = progress_call(args.analysis_id, renderer.render)
                 else:
@@ -726,29 +776,37 @@ def main(
             if args.report_command == "show" and callable(show_public):
                 sys.stdout.write(show_public(args.finding_id))
             elif args.report_command == "export" and callable(export_public):
+                path = export_public(args.finding_id)
+                data = {"finding_id": args.finding_id, "path": path}
+                bundle_public = getattr(
+                    report_application, "export_report_bundle", None
+                )
+                if callable(bundle_public):
+                    bundle_path = bundle_public(args.finding_id)
+                    if bundle_path is not None:
+                        data["bundle_path"] = bundle_path
                 emit_data(
                     output_format,
                     sys.stdout,
                     command=command_name,
-                    data={
-                        "finding_id": args.finding_id,
-                        "path": export_public(args.finding_id),
-                    },
+                    data=data,
                 )
             elif args.report_command == "show":
                 sys.stdout.write(report_command.show(config.data_dir, args.finding_id))
             else:
                 path = report_command.export(config.data_dir, args.finding_id)
+                data = {
+                    "finding_id": args.finding_id,
+                    "path": report_command.safe_export_reference(config.data_dir, path),
+                }
+                bundle_path = report_command.bundle_reference(config.data_dir, path)
+                if bundle_path is not None:
+                    data["bundle_path"] = bundle_path
                 emit_data(
                     output_format,
                     sys.stdout,
                     command=command_name,
-                    data={
-                        "finding_id": args.finding_id,
-                        "path": report_command.safe_export_reference(
-                            config.data_dir, path
-                        ),
-                    },
+                    data=data,
                 )
             return int(ExitCode.OK)
         if args.command == "onboarding":
@@ -945,14 +1003,22 @@ def main(
         code = ExitCode.INTEGRITY_ERROR
     except public_command.PublicCommandUnavailable:
         code = ExitCode.CONFIG_ERROR
-    except Exception:
+    except Exception as error:
         trace_id = "trace-" + str(uuid4())
         logger = bootstrap.build_diagnostic_logger(sys.stderr, "ERROR")
         logger.error(
-            bootstrap.diagnostic_event("internal_error", {}, trace_id=trace_id)
+            bootstrap.diagnostic_event(
+                "internal_error",
+                {"error_type": type(error).__name__},
+                trace_id=trace_id,
+            )
         )
         emit_result(
-            ExitCode.INTERNAL_ERROR, output_format, sys.stderr, trace_id=trace_id
+            ExitCode.INTERNAL_ERROR,
+            output_format,
+            sys.stderr,
+            command=command_name,
+            trace_id=trace_id,
         )
         return int(ExitCode.INTERNAL_ERROR)
     emit_result(code, output_format, sys.stderr, command=command_name)

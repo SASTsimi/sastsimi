@@ -36,8 +36,12 @@ class SimpleLLMCallResult(ContractModel):
     elapsed_ms: int | None = None
     request_ref: StoredDataRef | None = None
     response_ref: StoredDataRef | None = None
+    raw_output_ref: StoredDataRef | None = None
+    parsed_output_ref: StoredDataRef | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cost_minor_units: float | None = None
+    on_demand_possible: bool = False
 
 
 class SimpleLLMClient(Protocol):
@@ -47,6 +51,7 @@ class SimpleLLMClient(Protocol):
         prompt: bytes,
         output_schema: Mapping[str, Any],
         timeout_ms: int,
+        agent_name: str = "agent",
     ) -> SimpleLLMCallResult | StageFailure: ...
 
 
@@ -127,6 +132,20 @@ def _matches_type(value: object, expected: str) -> bool:
 
 
 def _validate_schema(value: object, schema: Mapping[str, Any], path: str = "$") -> None:
+    alternatives = schema.get("anyOf")
+    if isinstance(alternatives, list):
+        valid = False
+        for alternative in alternatives:
+            if not isinstance(alternative, dict):
+                continue
+            try:
+                _validate_schema(value, alternative, path)
+            except ValueError:
+                continue
+            valid = True
+            break
+        if not valid:
+            raise ValueError(path)
     expected = schema.get("type")
     if isinstance(expected, str) and not _matches_type(value, expected):
         raise ValueError(path)
@@ -151,9 +170,16 @@ def _validate_schema(value: object, schema: Mapping[str, Any], path: str = "$") 
             child = properties.get(key)
             if isinstance(child, dict):
                 _validate_schema(item, child, f"{path}.{key}")
-    if isinstance(value, list) and isinstance(schema.get("items"), dict):
-        for index, item in enumerate(value):
-            _validate_schema(item, schema["items"], f"{path}[{index}]")
+    if isinstance(value, list):
+        max_items = schema.get("maxItems")
+        if isinstance(max_items, int) and len(value) > max_items:
+            raise ValueError(path)
+        min_items = schema.get("minItems")
+        if isinstance(min_items, int) and len(value) < min_items:
+            raise ValueError(path)
+        if isinstance(schema.get("items"), dict):
+            for index, item in enumerate(value):
+                _validate_schema(item, schema["items"], f"{path}[{index}]")
 
 
 class SimpleCodexClient:
@@ -179,6 +205,7 @@ class SimpleCodexClient:
         prompt: bytes,
         output_schema: Mapping[str, Any],
         timeout_ms: int,
+        agent_name: str = "agent",
     ) -> SimpleLLMCallResult | StageFailure:
         prompt_digest = hashlib.sha256(prompt).hexdigest()
         invocation_id = f"simple-{uuid4().hex}"
@@ -207,8 +234,7 @@ class SimpleCodexClient:
         if result.status != "SUCCEEDED" or result.final_message is None:
             return StageFailure(
                 code=result.status,
-                retryable=result.status
-                in {"AUTH_REQUIRED", "RATE_LIMITED", "TIMED_OUT", "FAILED"},
+                retryable=result.status in {"RATE_LIMITED", "TIMED_OUT", "FAILED"},
                 safe_message=f"Codex call did not succeed: {result.status}",
                 evidence_refs=((request_ref,) if request_ref is not None else ()),
             )
@@ -278,12 +304,13 @@ class SimpleOpenAIClient:
         prompt: bytes,
         output_schema: Mapping[str, Any],
         timeout_ms: int,
+        agent_name: str = "agent",
     ) -> SimpleLLMCallResult | StageFailure:
         credential = os.environ.get(self._variable)
         if credential is None or not credential or credential != credential.strip():
             return StageFailure(
                 code="AUTH_REQUIRED",
-                retryable=True,
+                retryable=False,
                 safe_message="Configured API credential is unavailable",
             )
         try:
@@ -291,7 +318,7 @@ class SimpleOpenAIClient:
         except (ImportError, AttributeError):
             return StageFailure(
                 code="OPENAI_SDK_UNAVAILABLE",
-                retryable=True,
+                retryable=False,
                 safe_message="Official OpenAI SDK is unavailable",
             )
         prompt_digest = hashlib.sha256(prompt).hexdigest()
@@ -335,16 +362,19 @@ class SimpleOpenAIClient:
             )
         except Exception as error:
             name = type(error).__name__.lower()
+            status = getattr(error, "status_code", None)
             code = (
                 "AUTH_REQUIRED"
-                if "authentication" in name
+                if status in {401, 403} or "authentication" in name
                 else "RATE_LIMITED"
-                if "ratelimit" in name
+                if status == 429 or "ratelimit" in name
+                else "MODEL_OR_REQUEST_UNSUPPORTED"
+                if status in {400, 404}
                 else "FAILED"
             )
             return StageFailure(
                 code=code,
-                retryable=True,
+                retryable=code in {"RATE_LIMITED", "FAILED"},
                 safe_message="OpenAI request did not complete",
                 evidence_refs=((request_ref,) if request_ref is not None else ()),
             )

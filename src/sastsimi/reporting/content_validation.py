@@ -8,6 +8,7 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.llm import LLMInvocationRequest
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.reporting import (
+    BilingualReportContent,
     ReportContent,
     parse_validated_report_content,
     validate_report_content,
@@ -43,7 +44,7 @@ class ReporterOutputSemanticValidator:
             or reference(verification) != candidates[0]
         ):
             raise ValueError("REPORTER_OUTPUT_CONTEXT_MISMATCH")
-        content = ReportContent.model_validate_json(canonical_bytes(value))
+        content = BilingualReportContent.model_validate_json(canonical_bytes(value))
         allowed = tuple(
             location
             for claim in (
@@ -62,7 +63,7 @@ def read_validated_report_content(
     ref: StoredDataRef,
     *,
     allowed_locations: tuple[CodeLocation, ...],
-) -> ReportContent:
+) -> ReportContent | BilingualReportContent:
     if (
         ref.record_id is not None
         or ref.data_kind != "artifact"

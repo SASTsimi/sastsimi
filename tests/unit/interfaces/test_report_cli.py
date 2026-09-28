@@ -98,6 +98,42 @@ def test_report_show_and_export_cli(
     }
 
 
+def test_report_export_adds_existing_bundle_reference(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exported = tmp_path / "reports" / "analysis-1" / "F-001.md"
+    exported.parent.mkdir(parents=True)
+    exported.write_text("# report", encoding="utf-8")
+    monkeypatch.setattr(
+        report_command, "export", lambda _data_dir, _finding_id: exported
+    )
+    monkeypatch.setattr(
+        report_command,
+        "bundle_reference",
+        lambda _data_dir, _exported: "reports/analysis-1/F-001/bundle.zip",
+        raising=False,
+    )
+    assert (
+        main(
+            [
+                "--data-dir",
+                str(tmp_path),
+                "report",
+                "export",
+                "finding-1",
+                "--format",
+                "markdown",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["bundle_path"] == (
+        "reports/analysis-1/F-001/bundle.zip"
+    )
+
+
 def test_report_export_rejects_a_path_outside_the_data_directory(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

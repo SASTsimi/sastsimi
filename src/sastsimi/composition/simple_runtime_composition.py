@@ -19,6 +19,10 @@ from sastsimi.config.user_config import (
 from sastsimi.contracts.ids import AnalysisId, CommitId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.orchestration.run_scope_plan import PlannedRunScope
+from sastsimi.policy.adapters.official_http import (
+    PinnedHttpsTransport,
+    resolve_public_addresses,
+)
 from sastsimi.ports.public_commands import PublicCommandApplication
 from sastsimi.progress.models import ProgressSnapshot
 from sastsimi.progress.projector import ProgressProjector
@@ -27,6 +31,7 @@ from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.runtime.system_support import SystemClock, UUIDIds
 from sastsimi.sandbox.docker_adapter import DockerAdapter
+from sastsimi.setup.service import SystemToolDiscovery
 from sastsimi.simple_runtime.application import (
     SimpleAnalysisApplication,
     SimpleAnalysisOutcome,
@@ -38,6 +43,20 @@ from sastsimi.simple_runtime.bootstrap_stages import (
     DirectHypothesisBootstrap,
     DirectStaticBootstrap,
 )
+from sastsimi.simple_runtime.call_queue import RunLimitedClient, RunUsageBudget
+from sastsimi.simple_runtime.claude_provider import (
+    ClaudeProvider,
+    OfficialClaudeCLITransport,
+)
+from sastsimi.simple_runtime.cursor_provider import (
+    CursorCLIAuthenticationError,
+    CursorModelCatalog,
+    CursorProvider,
+    OfficialCursorCLITransport,
+    OfficialCursorTransport,
+)
+from sastsimi.simple_runtime.gate_guard import technical_gate_accepted
+from sastsimi.simple_runtime.github_policy import GitHubPolicyDiscovery
 from sastsimi.simple_runtime.models import CheckpointIdentity, SimpleStage
 from sastsimi.simple_runtime.portable_docker import (
     DirectEnvironmentPreparer,
@@ -46,11 +65,19 @@ from sastsimi.simple_runtime.portable_docker import (
 )
 from sastsimi.simple_runtime.provider import (
     SimpleCodexClient,
+    SimpleLLMClient,
     SimpleOpenAIClient,
 )
+from sastsimi.simple_runtime.recovery import SimpleRecoveryCoordinator
 from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
+from sastsimi.simple_runtime.scope_policy import (
+    project_scope_review,
+    safe_public_report,
+)
 from sastsimi.simple_runtime.stages import build_stage_handlers
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
+
+from .simple_process import LocalProcessExecutor
 
 
 def _codex_home() -> Path:
@@ -58,21 +85,160 @@ def _codex_home() -> Path:
     return Path(configured).expanduser() if configured else Path.home() / ".codex"
 
 
+async def list_cursor_models() -> set[str]:
+    """Account-specific Cursor model IDs without exposing the credential."""
+    import tempfile
+
+    key = os.environ.get("CURSOR_API_KEY", "")
+    inspection = SystemToolDiscovery._inspect_cursor_agent()
+    if inspection.available and inspection.executable is not None:
+        client = OfficialCursorCLITransport(str(inspection.executable))
+        try:
+            return await client.list_models("")
+        except CursorCLIAuthenticationError:
+            if not key:
+                raise
+    if key and key == key.strip():
+        return await OfficialCursorTransport(tempfile.gettempdir()).list_models(key)
+    raise ValueError("CURSOR_CLI_NOT_INSTALLED")
+
+
 class SimpleClientFactory:
     def __init__(self, profile: SimpleExecutionProfile) -> None:
         self._profile = profile
+        self._semaphore = asyncio.Semaphore(profile.llm_max_concurrency)
+        self._cursor_models = CursorModelCatalog()
+        self._store = SimpleCheckpointStore(
+            profile.data_dir / "db" / "sastsimi.sqlite3"
+        )
+
+    def _budget(self, identity: CheckpointIdentity) -> RunUsageBudget:
+        return RunUsageBudget(
+            store=self._store,
+            analysis_id=identity.analysis_id,
+            max_tokens=self._profile.max_tokens,
+            max_cost_minor_units=self._profile.max_cost_minor_units,
+            max_elapsed_seconds=self._profile.max_elapsed_seconds,
+        )
+
+    def _limited(
+        self,
+        inner: SimpleLLMClient,
+        identity: CheckpointIdentity,
+        artifacts: SimpleArtifactRepository,
+        model: str,
+        *,
+        max_retries: int | None = None,
+    ) -> RunLimitedClient:
+        return RunLimitedClient(
+            inner=inner,
+            semaphore=self._semaphore,
+            artifacts=artifacts,
+            store=self._store,
+            model=model,
+            max_retries=self._profile.llm_max_retries
+            if max_retries is None
+            else max_retries,
+            max_tokens=self._profile.max_tokens,
+            max_cost_minor_units=self._profile.max_cost_minor_units,
+            max_elapsed_seconds=self._profile.max_elapsed_seconds,
+        )
 
     def __call__(
         self,
         identity: CheckpointIdentity,
         artifacts: SimpleArtifactRepository,
-    ) -> SimpleCodexClient | SimpleOpenAIClient:
-        if self._profile.auth_mode == "API_KEY":
-            return SimpleOpenAIClient(
-                credential_ref=self._profile.credential_ref,
-                model=self._profile.model,
-                artifacts=artifacts,
+    ) -> SimpleLLMClient:
+        if self._profile.provider == "claude":
+            try:
+                tool = self._profile.tools["claude"]
+            except KeyError:
+                raise ValueError("CLAUDE_CLI_NOT_CONFIGURED") from None
+            config_dir = Path(
+                os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude"
             )
+            return ClaudeProvider(
+                artifacts=artifacts,
+                default_model=self._profile.model,
+                agent_models=self._profile.agent_models,
+                timeout_seconds=self._profile.llm_timeout_seconds,
+                max_retries=min(self._profile.llm_max_retries, 2),
+                semaphore=self._semaphore,
+                transport=OfficialClaudeCLITransport(tool, config_dir),
+                budget_check=self._budget(identity).check,
+            )
+        if self._profile.provider == "cursor":
+            fallback: SimpleLLMClient | None = None
+            if self._profile.fallback_provider == "openai":
+                fallback = self._limited(
+                    SimpleOpenAIClient(
+                        credential_ref="env:OPENAI_API_KEY",
+                        model=self._profile.fallback_model or "",
+                        artifacts=artifacts,
+                    ),
+                    identity,
+                    artifacts,
+                    self._profile.fallback_model or "",
+                    max_retries=0,
+                )
+            elif self._profile.fallback_provider == "codex":
+                fallback = self._limited(
+                    self._codex(
+                        identity, artifacts, self._profile.fallback_model or ""
+                    ),
+                    identity,
+                    artifacts,
+                    self._profile.fallback_model or "",
+                    max_retries=0,
+                )
+            cli_login = self._profile.auth_mode == "SUBSCRIPTION_LOGIN"
+            transport = None
+            if cli_login:
+                inspection = SystemToolDiscovery._inspect_cursor_agent()
+                if not inspection.available or inspection.executable is None:
+                    raise ValueError("CURSOR_CLI_NOT_INSTALLED")
+                transport = OfficialCursorCLITransport(str(inspection.executable))
+            return CursorProvider(
+                artifacts=artifacts,
+                default_model=self._profile.model,
+                agent_models=self._profile.agent_models,
+                timeout_seconds=self._profile.llm_timeout_seconds,
+                max_retries=min(
+                    self._profile.llm_max_retries,
+                    1 if fallback is not None else 2,
+                ),
+                semaphore=self._semaphore,
+                budget_check=self._budget(identity).check,
+                allow_on_demand=self._profile.cursor_allow_on_demand,
+                fallback=fallback,
+                transport=transport,
+                use_cli_login=cli_login,
+                model_catalog=self._cursor_models,
+            )
+        if self._profile.provider == "openai":
+            return self._limited(
+                SimpleOpenAIClient(
+                    credential_ref=self._profile.credential_ref,
+                    model=self._profile.model,
+                    artifacts=artifacts,
+                ),
+                identity,
+                artifacts,
+                self._profile.model,
+            )
+        return self._limited(
+            self._codex(identity, artifacts, self._profile.model),
+            identity,
+            artifacts,
+            self._profile.model,
+        )
+
+    def _codex(
+        self,
+        identity: CheckpointIdentity,
+        artifacts: SimpleArtifactRepository,
+        model: str,
+    ) -> SimpleCodexClient:
         try:
             tool = self._profile.tools["codex"]
         except KeyError:
@@ -83,7 +249,7 @@ class SimpleClientFactory:
             executable_sha256=tool.executable_sha256,
             codex_home=_codex_home(),
             client_version=tool.version,
-            model=self._profile.model,
+            model=model,
         )
         scope = PlannedRunScope(
             analysis_id=AnalysisId(identity.analysis_id),
@@ -104,7 +270,7 @@ class SimpleClientFactory:
         return SimpleCodexClient(
             runner=CodexCliProcessRunner(binding=binding.binding),
             provider_profile_ref=provider_ref,
-            model=self._profile.model,
+            model=model,
             artifacts=artifacts,
         )
 
@@ -118,6 +284,15 @@ def build_analysis_application(
     client_factory = SimpleClientFactory(profile)
     docker = PortableDockerRuntime(profile)
 
+    def recovery_factory(
+        identity: CheckpointIdentity,
+    ) -> SimpleRecoveryCoordinator:
+        artifacts = SimpleArtifactRepository(data_dir, identity)
+        return SimpleRecoveryCoordinator(
+            client=client_factory(identity, artifacts),
+            artifacts=artifacts,
+        )
+
     def runner_factory(
         runtime_store: SimpleCheckpointStore,
         identity: CheckpointIdentity,
@@ -130,6 +305,12 @@ def build_analysis_application(
             artifacts=artifacts,
             workspace=static.workspace_path,
         )
+        try:
+            repository_url = runtime_store.require_analysis_run(
+                identity.analysis_id
+            ).repository
+        except LookupError:
+            repository_url = None
         return SimpleRuntimeRunner(
             runtime_store,
             build_stage_handlers(
@@ -139,21 +320,53 @@ def build_analysis_application(
                 containers=PortableContainerFactory(docker),
                 environments=environments,
                 store=runtime_store,
+                security_policy_ref=static.security_policy_ref,
+                policy_snapshot_ref=static.policy_snapshot_ref,
+                repository_url=repository_url,
+                workspace_path=static.workspace_path,
+                static_bundle_ref=static.static_bundle_ref,
+                git_executable=(
+                    str(profile.tools["git"].executable_path)
+                    if "git" in profile.tools
+                    else "git"
+                ),
             ),
+            recovery=recovery_factory(identity),
+            policy_snapshot_ref=static.policy_snapshot_ref,
         )
 
     return SimpleAnalysisApplication(
         data_dir=data_dir,
+        llm_provider=profile.provider,
+        on_demand_possible=(
+            profile.provider == "claude"
+            or profile.provider == "cursor"
+            and profile.cursor_allow_on_demand
+        ),
         store=store,
-        static_bootstrap=DirectStaticBootstrap(profile=profile),
+        static_bootstrap=DirectStaticBootstrap(
+            profile=profile,
+            process=LocalProcessExecutor(),
+            store=store,
+            policy_discovery=GitHubPolicyDiscovery(
+                transport=PinnedHttpsTransport(),
+                resolver=resolve_public_addresses,
+                clock=SystemClock(),
+            ),
+        ),
         hypothesis_bootstrap=DirectHypothesisBootstrap(
             data_dir=data_dir,
             client_factory=client_factory,
+            feed=profile.hypothesis_feed,
+            store=store,
         ),
         runner_factory=runner_factory,
         profile_ref=profile.provider_profile_ref,
         provider=profile.provider,
         model=profile.model,
+        recovery_factory=recovery_factory,
+        max_parallel_hypotheses=profile.max_parallel_hypotheses,
+        max_elapsed_seconds=profile.max_elapsed_seconds,
     )
 
 
@@ -206,11 +419,14 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             build_analysis_application(self._config, self._profile).resume(analysis_id)
         )
         run = self._store.require_analysis_run(outcome.identity.analysis_id)
-        return self._outcome(
+        data = self._outcome(
             outcome.display_analysis_id,
             run.repository,
             run.commit_id,
         )
+        if outcome.error_code == "ANALYSIS_ALREADY_RUNNING":
+            data["resume_skipped_reason"] = outcome.error_code
+        return data
 
     def resume_with_progress(
         self,
@@ -227,11 +443,14 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
 
         outcome = asyncio.run(run())
         stored = self._store.require_analysis_run(outcome.identity.analysis_id)
-        return self._outcome(
+        data = self._outcome(
             outcome.display_analysis_id,
             stored.repository,
             stored.commit_id,
         )
+        if outcome.error_code == "ANALYSIS_ALREADY_RUNNING":
+            data["resume_skipped_reason"] = outcome.error_code
+        return data
 
     async def _track(
         self,
@@ -270,6 +489,11 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             "known_units": snapshot.known_units,
             "current_stage": snapshot.current_stage,
             "current_hypothesis_id": snapshot.current_hypothesis_id,
+            "attempt_number": snapshot.attempt_number,
+            "attempt_limit": snapshot.attempt_limit,
+            "error_code": snapshot.error_code,
+            "inconclusive_hypothesis_count": snapshot.inconclusive_hypothesis_count,
+            "rejected_hypothesis_count": snapshot.rejected_hypothesis_count,
         }
 
     def result(self, analysis_id: str) -> dict[str, object]:
@@ -279,7 +503,12 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         findings = [
             checkpoint
             for checkpoint in checkpoints
-            if checkpoint.stage is SimpleStage.FINDING_DONE and checkpoint.output_refs
+            if checkpoint.stage is SimpleStage.FINDING_DONE
+            and checkpoint.output_refs
+            and technical_gate_accepted(
+                self._store.get(checkpoint.identity, SimpleStage.TECH_GATE_DONE),
+                SimpleArtifactRepository(self._config.data_dir, checkpoint.identity),
+            )
         ]
         return {
             **self.status(run.display_analysis_id),
@@ -309,6 +538,11 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
     def report(self, finding_id: str) -> str:
         identity, _finding_ref = self._finding_identity(finding_id)
         checkpoint = self._store.require(identity, SimpleStage.REPORT_DONE)
+        if not technical_gate_accepted(
+            self._store.get(identity, SimpleStage.TECH_GATE_DONE),
+            SimpleArtifactRepository(self._config.data_dir, identity),
+        ):
+            raise LookupError("CURRENT_REPORT_NOT_FOUND")
         if (
             not self._store.reusable(
                 identity,
@@ -318,11 +552,19 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             or len(checkpoint.output_refs) < 2
         ):
             raise LookupError("CURRENT_REPORT_NOT_FOUND")
-        return (
-            SimpleArtifactRepository(self._config.data_dir, identity)
-            .read(checkpoint.output_refs[1])
-            .decode("utf-8", errors="strict")
+        artifacts = SimpleArtifactRepository(self._config.data_dir, identity)
+        raw = artifacts.read(checkpoint.output_refs[1])
+        try:
+            run = self._store.require_analysis_run(identity.analysis_id)
+        except LookupError:
+            run = None
+        review = project_scope_review(
+            self._store.get(identity, SimpleStage.SCOPE_GATE_DONE),
+            artifacts,
+            policy_snapshot_ref=run.policy_snapshot_ref if run else None,
+            repository_url=run.repository if run else None,
         )
+        return safe_public_report(raw, review).decode("utf-8", errors="strict")
 
     def export_report(self, finding_id: str) -> str:
         identity, _finding_ref = self._finding_identity(finding_id)
@@ -333,16 +575,57 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         report_path = Path(checkpoint.markdown_path).resolve()
         report_root = (self._config.data_dir / "reports").resolve()
         try:
-            relative = report_path.relative_to(self._config.data_dir.resolve())
+            report_path.relative_to(self._config.data_dir.resolve())
             report_path.relative_to(report_root)
         except ValueError as error:
             raise ValueError("REPORT_PATH_OUTSIDE_DATA_DIR") from error
+        original = SimpleArtifactRepository(self._config.data_dir, identity).read(
+            checkpoint.output_refs[1]
+        )
+        if content != original:
+            report_path = report_path.with_name(f"{report_path.stem}.restricted.md")
+        relative = report_path.relative_to(self._config.data_dir.resolve())
         report_path.parent.mkdir(parents=True, exist_ok=True)
         if not report_path.exists() or report_path.read_bytes() != content:
             temporary = report_path.with_suffix(".md.next")
             temporary.write_bytes(content)
             os.replace(temporary, report_path)
         return relative.as_posix()
+
+    def export_report_bundle(self, finding_id: str) -> str | None:
+        """Expose only a current, verified local ZIP; keep older reports unchanged."""
+
+        identity, finding_ref = self._finding_identity(finding_id)
+        self.report(finding_id)
+        try:
+            prior = {
+                item.stage: item
+                for item in self._store.list_checkpoints(identity.analysis_id)
+                if item.identity == identity
+            }
+            artifacts = SimpleArtifactRepository(self._config.data_dir, identity)
+            try:
+                run = self._store.require_analysis_run(identity.analysis_id)
+            except LookupError:
+                run = None
+            review = project_scope_review(
+                prior.get(SimpleStage.SCOPE_GATE_DONE),
+                artifacts,
+                policy_snapshot_ref=run.policy_snapshot_ref if run else None,
+                repository_url=run.repository if run else None,
+            )
+            artifacts.verified_report_bundle(
+                checkpoints=prior,
+                finding_ref=finding_ref,
+                display_id=finding_id,
+                scope_status=str(review["status"]),
+                public_projection=lambda body: safe_public_report(body, review),
+            )
+            return (
+                Path("reports") / identity.analysis_id / finding_id / "bundle.zip"
+            ).as_posix()
+        except (KeyError, OSError, ValueError):
+            return None
 
     def _finding_identity(
         self,
@@ -398,4 +681,5 @@ __all__ = [
     "SimpleClientFactory",
     "build_analysis_application",
     "build_public_simple_runtime",
+    "list_cursor_models",
 ]

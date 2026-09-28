@@ -5,8 +5,13 @@ from __future__ import annotations
 import ipaddress
 import sys
 from pathlib import Path
+from typing import TextIO
 
+from sastsimi.config.runtime_paths import RuntimePaths
+from sastsimi.dashboard.query import DashboardQuery
 from sastsimi.dashboard.server import serve_dashboard
+
+from .progress import ProgressRenderer
 
 
 def _loopback(host: str) -> bool:
@@ -30,4 +35,17 @@ def run(data_dir: Path, host: str, port: int) -> None:
         return
 
 
-__all__ = ["run"]
+def progress_renderer(
+    data_dir: Path, stream: TextIO, *, is_tty: bool
+) -> ProgressRenderer:
+    """Build the CLI renderer at the dashboard adapter boundary."""
+
+    return ProgressRenderer(
+        stream=stream,
+        is_tty=is_tty,
+        log_dir=RuntimePaths(data_dir).logs,
+        event_reader=DashboardQuery(data_dir).list_events,
+    )
+
+
+__all__ = ["progress_renderer", "run"]

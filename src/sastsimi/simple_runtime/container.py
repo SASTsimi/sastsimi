@@ -139,5 +139,28 @@ class SimpleLocalContainerFactory:
         await self._docker.start(container_id)
         return container_id
 
+    async def release(self, checkpoint: StageCheckpoint, container_id: str) -> bool:
+        if checkpoint.attempt_id is None:
+            return False
+        identity = checkpoint.identity
+        state = await self._docker.inspect(container_id)
+        expected = {
+            "sastsimi.owner": "reproduction-setup-automation",
+            "sastsimi.analysis-id": identity.analysis_id,
+            "sastsimi.workspace-id": identity.workspace_id,
+            "sastsimi.commit-id": identity.commit_id,
+            "sastsimi.hypothesis-id": identity.hypothesis_id or "analysis",
+            "sastsimi.attempt-id": checkpoint.attempt_id,
+            "sastsimi.resource-kind": "container",
+        }
+        if (
+            state.container_id != container_id
+            or not state.labels.get("sastsimi.resource-id")
+            or any(state.labels.get(key) != value for key, value in expected.items())
+        ):
+            return False
+        await self._docker.remove((container_id,))
+        return True
+
 
 __all__ = ["SimpleLocalContainerFactory", "build_simple_docker_adapter"]

@@ -1,12 +1,15 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [string]$RepositoryRoot = (Join-Path $PSScriptRoot '..')
+    [string]$RepositoryRoot
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
+    $RepositoryRoot = Join-Path $PSScriptRoot '..'
+}
 $root = [System.IO.Path]::GetFullPath($RepositoryRoot)
 $failures = [System.Collections.Generic.List[string]]::new()
 
@@ -50,7 +53,6 @@ foreach ($relativePath in $required) {
 }
 
 $obsolete = @(
-    '.superpowers',
     'docs/architecture-v5',
     'docs/governance',
     'docs/handoff',
@@ -64,6 +66,14 @@ foreach ($relativePath in $obsolete) {
     if (Test-Path -LiteralPath (Join-Path $root $relativePath)) {
         Add-Failure "obsolete documentation surface still exists: $relativePath"
     }
+}
+
+$trackedSuperpowers = @(& git -C $root ls-files -- '.superpowers')
+if ($LASTEXITCODE -ne 0) {
+    throw 'Unable to list Git-tracked SDD files.'
+}
+if ($trackedSuperpowers.Count -gt 0) {
+    Add-Failure 'obsolete documentation surface still exists: .superpowers'
 }
 
 $markdown = @(& git -C $root ls-files -- '*.md')
@@ -88,7 +98,7 @@ foreach ($relativePath in $markdown) {
     }
     $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $sourcePath
     foreach ($needle in $obsoleteReferences) {
-        if ($text.Contains($needle, [System.StringComparison]::OrdinalIgnoreCase)) {
+        if ($text.IndexOf($needle, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
             Add-Failure "obsolete documentation reference in ${relativePath}: $needle"
         }
     }
@@ -172,7 +182,7 @@ if (Test-Path -LiteralPath $pipelinePath -PathType Leaf) {
 $decisions = @(Get-ChildItem -LiteralPath (Join-Path $root 'docs/decisions') -File -Filter 'ADR-*.md')
 foreach ($decision in $decisions) {
     $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $decision.FullName
-    if (-not $text.Contains('상태: `ACCEPTED`', [System.StringComparison]::Ordinal)) {
+    if ($text.IndexOf('상태: `ACCEPTED`', [System.StringComparison]::Ordinal) -lt 0) {
         Add-Failure "current decision is not ACCEPTED: $($decision.Name)"
     }
 }

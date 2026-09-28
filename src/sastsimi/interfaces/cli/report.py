@@ -19,6 +19,8 @@ class ReportService(Protocol):
 
     def export(self, finding_id: str) -> Path: ...
 
+    def bundle_reference(self, exported: Path) -> str | None: ...
+
 
 def service(data_dir: Path) -> ReportService:
     return cast(ReportService, bootstrap.build_report_markdown_service(data_dir))
@@ -49,3 +51,16 @@ def safe_export_reference(data_dir: Path, exported: Path) -> str:
     if not relative.parts or relative.parts[0] != "reports":
         raise ReportCommandError
     return relative.as_posix()
+
+
+def bundle_reference(data_dir: Path, exported: Path) -> str | None:
+    """Return the current v2 ZIP path through the report service."""
+
+    relative = safe_export_reference(data_dir, exported)
+    bundle = data_dir / Path(relative).parent / Path(relative).stem
+    if not (bundle / "manifest.json").is_file():
+        return None
+    try:
+        return service(data_dir).bundle_reference(exported)
+    except ValueError as error:
+        raise ReportCommandError from error

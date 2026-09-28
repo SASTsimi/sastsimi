@@ -7,8 +7,8 @@ import re
 import sqlite3
 from collections import defaultdict
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import Any, Literal, overload
+from pathlib import Path, PurePosixPath
+from typing import Any, Literal, cast, overload
 
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.prompt_redaction import (
@@ -19,17 +19,30 @@ from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.observability.agent_activity import AgentActivityEvent
 from sastsimi.progress.projector import ProgressProjector
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
+from sastsimi.reporting.bundle_files import (
+    MAX_BUNDLE_FILE_BYTES,
+    ReportBundleManifest,
+    read_bundle_file,
+)
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.gate_guard import technical_gate_accepted
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
+    STAGE_VERSION,
     CheckpointIdentity,
     SimpleAnalysisRun,
     SimpleStage,
     StageCheckpoint,
     StageStatus,
+    terminal_gate_outcome,
+    terminal_poc_outcome,
 )
-from sastsimi.simple_runtime.store import ROLE_BY_STAGE
+from sastsimi.simple_runtime.scope_policy import (
+    project_scope_review,
+    safe_public_report,
+)
+from sastsimi.simple_runtime.store import ROLE_BY_STAGE, SimpleCheckpointStore
 
 from .models import (
     AgentActivityView,
@@ -51,6 +64,7 @@ from .models import (
 
 _ANALYSIS_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _DISPLAY_ID = re.compile(r"F-[0-9]{3,}\Z")
+_RULE_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_ARTIFACT_BYTES = 1024 * 1024
 _MAX_ARTIFACTS = 512
@@ -272,9 +286,9 @@ class DashboardQuery:
     ) -> str:
         exact = self._resolved(analysis_id)
         try:
-            return self.report_path(
-                exact, display_id, language=language
-            ).read_text(encoding="utf-8")
+            return self.report_path(exact, display_id, language=language).read_text(
+                encoding="utf-8"
+            )
         except (OSError, UnicodeDecodeError) as error:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
 
@@ -333,9 +347,7 @@ class DashboardQuery:
             kind, media_type, raw, _ = item
             suffix = ".json" if media_type == "application/json" else ".txt"
             safe_kind = re.sub(r"[^A-Za-z0-9_.-]", "-", kind)[:80] or "artifact"
-            members[
-                f"artifacts/{safe_kind}-{artifact.artifact_id[:12]}{suffix}"
-            ] = raw
+            members[f"artifacts/{safe_kind}-{artifact.artifact_id[:12]}{suffix}"] = raw
         for report in detail.reports:
             if report_ids is not None and report.display_id not in report_ids:
                 continue
@@ -360,9 +372,7 @@ class DashboardQuery:
         detail = self.get_analysis(exact)
         members = self.bundle_members(exact)
         english = [
-            report.display_id
-            for report in detail.reports
-            if report.english_available
+            report.display_id for report in detail.reports if report.english_available
         ]
         steps = (
             "# SASTSIMI 발표 패키지\n\n"
@@ -481,11 +491,7 @@ class DashboardQuery:
                 safe = redact_untrusted_text(raw).data
             except ValueError:
                 safe = b"[CONTENT_REDACTED]"
-            media = (
-                "text/markdown"
-                if safe.lstrip().startswith(b"#")
-                else "text/plain"
-            )
+            media = "text/markdown" if safe.lstrip().startswith(b"#") else "text/plain"
             return media, safe, None, None
 
     def _artifact_projection(
@@ -706,10 +712,10 @@ class DashboardQuery:
                 continue
             kind = artifact_payload.get("kind")
             artifact_invocation_id = artifact_payload.get("invocation_id")
-            if (
-                kind not in {"simple_llm_request", "simple_llm_response"}
-                or not isinstance(artifact_invocation_id, str)
-            ):
+            if kind not in {
+                "simple_llm_request",
+                "simple_llm_response",
+            } or not isinstance(artifact_invocation_id, str):
                 continue
             artifacts_by_invocation[artifact_invocation_id][str(kind)] = (
                 artifact_id,
@@ -775,11 +781,61 @@ class DashboardQuery:
         if _DISPLAY_ID.fullmatch(display_id) is None:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
         try:
-            FindingDisplayIdStore.resolve_existing(
+            finding_ref = FindingDisplayIdStore.resolve_existing(
                 self._database, analysis_id, display_id
             )
         except (LookupError, OSError, sqlite3.Error, ValueError) as error:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
+        checkpoints = tuple(
+            checkpoint
+            for checkpoint in self._checkpoints()
+            if checkpoint.identity.analysis_id == analysis_id
+        )
+        finding = next(
+            (
+                checkpoint
+                for checkpoint in checkpoints
+                if checkpoint.stage is SimpleStage.FINDING_DONE
+                and checkpoint.status is StageStatus.SUCCEEDED
+                and finding_ref in checkpoint.output_refs
+            ),
+            None,
+        )
+        if finding is None:
+            raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
+        report = next(
+            (
+                checkpoint
+                for checkpoint in checkpoints
+                if checkpoint.identity.hypothesis_id == finding.identity.hypothesis_id
+                and checkpoint.stage is SimpleStage.REPORT_DONE
+                and checkpoint.status is StageStatus.SUCCEEDED
+                and checkpoint.stage_version == STAGE_VERSION[SimpleStage.REPORT_DONE]
+                and finding_ref in checkpoint.input_refs
+                and len(checkpoint.output_refs) >= 2
+                and checkpoint.markdown_path is not None
+            ),
+            None,
+        )
+        gate = next(
+            (
+                checkpoint
+                for checkpoint in checkpoints
+                if checkpoint.identity.hypothesis_id == finding.identity.hypothesis_id
+                and checkpoint.stage is SimpleStage.TECH_GATE_DONE
+            ),
+            None,
+        )
+        if report is None or report.markdown_path is None:
+            raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
+        try:
+            accepted = technical_gate_accepted(
+                gate, SimpleArtifactRepository(self._data_dir, finding.identity)
+            )
+        except (OSError, ValueError, sqlite3.Error) as error:
+            raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
+        if not accepted:
+            raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
         root = (self._data_dir / "reports").resolve()
         expected_parent = root / analysis_id
         suffix = ".en.md" if language == "en" else ".md"
@@ -788,9 +844,121 @@ class DashboardQuery:
             resolved = path.resolve(strict=True)
         except OSError as error:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
-        if resolved.parent != expected_parent or not resolved.is_file():
+        if (
+            resolved.parent != expected_parent
+            or not resolved.is_file()
+            or (language == "ko" and resolved != Path(report.markdown_path).resolve())
+        ):
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
         return resolved
+
+    def report_content(self, analysis_id: str, display_id: str) -> bytes:
+        """Serve a guarded projection, never an old unverified ALLOW file."""
+
+        self.report_path(analysis_id, display_id)
+        try:
+            finding_ref = FindingDisplayIdStore.resolve_existing(
+                self._database, analysis_id, display_id
+            )
+            checkpoints = self._checkpoints()
+            finding = next(
+                checkpoint
+                for checkpoint in checkpoints
+                if checkpoint.identity.analysis_id == analysis_id
+                and checkpoint.stage is SimpleStage.FINDING_DONE
+                and finding_ref in checkpoint.output_refs
+            )
+            report = next(
+                checkpoint
+                for checkpoint in checkpoints
+                if checkpoint.identity == finding.identity
+                and checkpoint.stage is SimpleStage.REPORT_DONE
+                and checkpoint.status is StageStatus.SUCCEEDED
+                and checkpoint.stage_version == STAGE_VERSION[SimpleStage.REPORT_DONE]
+                and finding_ref in checkpoint.input_refs
+                and len(checkpoint.output_refs) >= 2
+            )
+            scope = next(
+                (
+                    checkpoint
+                    for checkpoint in checkpoints
+                    if checkpoint.identity == finding.identity
+                    and checkpoint.stage is SimpleStage.SCOPE_GATE_DONE
+                ),
+                None,
+            )
+            review = self._scope_review(
+                finding.identity, scope, self._simple_run(analysis_id)
+            )
+            raw = SimpleArtifactRepository(self._data_dir, finding.identity).read(
+                report.output_refs[1]
+            )
+            return safe_public_report(raw, review)
+        except (LookupError, OSError, ValueError, sqlite3.Error) as error:
+            raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
+
+    def _report_bundle(
+        self, analysis_id: str, display_id: str
+    ) -> tuple[ReportBundleManifest, bytes, SimpleArtifactRepository]:
+        """Authorize the current bundle, not a path found on disk."""
+
+        self.report_path(analysis_id, display_id)
+        try:
+            finding_ref = FindingDisplayIdStore.resolve_existing(
+                self._database, analysis_id, display_id
+            )
+            checkpoints = self._checkpoints()
+            finding = next(
+                item
+                for item in checkpoints
+                if item.identity.analysis_id == analysis_id
+                and item.stage is SimpleStage.FINDING_DONE
+                and item.status is StageStatus.SUCCEEDED
+                and finding_ref in item.output_refs
+            )
+            artifacts = SimpleArtifactRepository(self._data_dir, finding.identity)
+            prior = {
+                item.stage: item
+                for item in checkpoints
+                if item.identity == finding.identity
+            }
+            review = self._scope_review(
+                finding.identity,
+                prior.get(SimpleStage.SCOPE_GATE_DONE),
+                self._simple_run(analysis_id),
+            )
+            manifest, archive = artifacts.verified_report_bundle(
+                checkpoints=prior,
+                finding_ref=finding_ref,
+                display_id=display_id,
+                scope_status=str(review["status"]),
+                public_projection=lambda body: safe_public_report(body, review),
+            )
+            return manifest, archive, artifacts
+        except (
+            LookupError,
+            OSError,
+            ValueError,
+            TypeError,
+            StopIteration,
+            sqlite3.Error,
+        ) as error:
+            raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
+
+    def report_attachment(
+        self, analysis_id: str, display_id: str, path: str
+    ) -> tuple[bytes, str]:
+        manifest, archive, artifacts = self._report_bundle(analysis_id, display_id)
+        try:
+            if path == "bundle.zip":
+                return archive, "application/zip"
+            return read_bundle_file(
+                manifest,
+                path,
+                lambda ref: artifacts.read_bounded(ref, MAX_BUNDLE_FILE_BYTES),
+            )
+        except (OSError, ValueError) as error:
+            raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
 
     @overload
     def _project_analysis(
@@ -822,6 +990,7 @@ class DashboardQuery:
             if checkpoint.identity.hypothesis_id is not None:
                 hypothesis_groups[checkpoint.identity.hypothesis_id].append(checkpoint)
         run = self._simple_run(analysis_id)
+        usage = self._usage_summary(analysis_id)
         hypotheses = tuple(
             self._project_hypothesis(
                 analysis_id,
@@ -849,12 +1018,32 @@ class DashboardQuery:
             display_analysis_id=(run.display_analysis_id if run else None),
             workspace_id=latest.identity.workspace_id,
             commit_id=latest.identity.commit_id,
-            current_stage=latest.stage.value,
-            status=self._aggregate_status(values),
+            current_stage=progress.current_stage or latest.stage.value,
+            status=progress.status,
             completed_count=completed,
             stage_count=len(values),
             hypothesis_count=len(hypotheses),
             finding_count=len(reports),
+            inconclusive_hypothesis_count=progress.inconclusive_hypothesis_count,
+            rejected_hypothesis_count=progress.rejected_hypothesis_count,
+            llm_provider=(run.llm_provider if run else None),
+            on_demand_possible=(run.on_demand_possible if run else False),
+            llm_attempt_count=int(usage["calls"] or 0),
+            llm_input_tokens=int(usage["input_tokens"] or 0),
+            llm_output_tokens=int(usage["output_tokens"] or 0),
+            llm_cost_minor_units=(
+                float(usage["cost_minor_units"])
+                if usage["cost_minor_units"] is not None
+                else None
+            ),
+            llm_unknown_cost_calls=int(usage["unknown_cost_calls"] or 0),
+            cursor_input_tokens=int(usage["input_tokens"] or 0),
+            cursor_output_tokens=int(usage["output_tokens"] or 0),
+            cursor_cost_cents=(
+                float(usage["cost_minor_units"])
+                if usage["cost_minor_units"] is not None
+                else None
+            ),
             progress_percent=progress.percent,
             completed_units=progress.completed_units,
             known_units=progress.known_units,
@@ -910,42 +1099,186 @@ class DashboardQuery:
                 )
                 static_tools = self._static_tools(run, values)
                 hypotheses = self._with_hypothesis_metadata(hypotheses, contents)
-            return AnalysisDetailView(
-                **data.model_dump(),
-                hypotheses=hypotheses,
-                reports=reports,
-                pipeline=self._pipeline(values, run),
-                static_tools=static_tools,
-                static_tool_findings=self._static_tool_findings(contents),
-                readiness=self._readiness(
-                    analysis_id,
-                    run,
-                    static_tools,
-                    artifacts,
-                    reports,
-                ),
-                usage=self._usage_summary(invocations),
-                artifacts=artifacts,
-                artifact_relations=self._artifact_relations(contents),
-                finding_traces=self._finding_traces(
-                    analysis_id,
-                    reports,
-                    hypotheses,
-                    artifacts,
-                    contents,
-                    poc_ids,
-                    evidence_ids,
-                ),
-                llm_invocations=invocations,
-                poc_artifact_ids=poc_ids,
-                evidence_artifact_ids=evidence_ids,
-                logs_url=f"/api/analyses/{analysis_id}/logs/download",
-                bundle_url=f"/api/analyses/{analysis_id}/bundle.zip",
-                presentation_bundle_url=(
-                    f"/api/analyses/{analysis_id}/presentation.zip"
-                ),
+            return AnalysisDetailView.model_validate(
+                {
+                    **data.model_dump(),
+                    **self._static_coverage_projection(values),
+                    "hypotheses": hypotheses,
+                    "reports": reports,
+                    "pipeline": self._pipeline(values, run),
+                    "static_tools": static_tools,
+                    "static_tool_findings": self._static_tool_findings(contents),
+                    "readiness": self._readiness(
+                        analysis_id,
+                        run,
+                        static_tools,
+                        artifacts,
+                        reports,
+                    ),
+                    "usage": self._invocation_usage_summary(invocations),
+                    "artifacts": artifacts,
+                    "artifact_relations": self._artifact_relations(contents),
+                    "finding_traces": self._finding_traces(
+                        analysis_id,
+                        reports,
+                        hypotheses,
+                        artifacts,
+                        contents,
+                        poc_ids,
+                        evidence_ids,
+                    ),
+                    "llm_invocations": invocations,
+                    "poc_artifact_ids": poc_ids,
+                    "evidence_artifact_ids": evidence_ids,
+                    "logs_url": f"/api/analyses/{analysis_id}/logs/download",
+                    "bundle_url": f"/api/analyses/{analysis_id}/bundle.zip",
+                    "presentation_bundle_url": (
+                        f"/api/analyses/{analysis_id}/presentation.zip"
+                    ),
+                }
             )
         return data
+
+    def _static_coverage_projection(
+        self, checkpoints: list[StageCheckpoint]
+    ) -> dict[str, object]:
+        static = next(
+            (
+                item
+                for item in checkpoints
+                if item.stage is SimpleStage.STATIC_DONE
+                and item.identity.hypothesis_id is None
+            ),
+            None,
+        )
+        if static is None:
+            return {}
+        artifacts = SimpleArtifactRepository(self._data_dir, static.identity)
+        coverage: object = None
+        try:
+            if static.status is StageStatus.SUCCEEDED:
+                if len(static.output_refs) < 2:
+                    return {}
+                bundle = json.loads(artifacts.read(static.output_refs[1]))
+                if (
+                    not isinstance(bundle, dict)
+                    or bundle.get("kind") != "simple_static_fact_bundle"
+                ):
+                    return {}
+                coverage_ref = StoredDataRef.model_validate(
+                    bundle["static_coverage_ref"]
+                )
+                coverage = json.loads(artifacts.read(coverage_ref))
+            elif static.status is StageStatus.BLOCKED:
+                for ref in static.output_refs:
+                    candidate = json.loads(artifacts.read(ref))
+                    if (
+                        isinstance(candidate, dict)
+                        and candidate.get("kind") == "simple_static_coverage_v1"
+                    ):
+                        coverage = candidate
+                        break
+        except (OSError, ValueError, KeyError, TypeError):
+            return {}
+        if (
+            not isinstance(coverage, dict)
+            or coverage.get("kind") != "simple_static_coverage_v1"
+        ):
+            return {}
+        if (
+            coverage.get("analysis_id") != static.identity.analysis_id
+            or coverage.get("workspace_id") != static.identity.workspace_id
+            or coverage.get("commit_id") != static.identity.commit_id
+        ):
+            return {}
+        expected = coverage.get("expected_count")
+        verified = coverage.get("verified_count")
+        gaps = coverage.get("gaps")
+        if (
+            type(expected) is not int
+            or type(verified) is not int
+            or expected < 0
+            or verified < 0
+            or verified > expected
+            or not isinstance(gaps, list)
+            or len(gaps) != expected - verified
+        ):
+            return {}
+        preview: list[dict[str, str]] = []
+        for item in gaps[:100]:
+            if not isinstance(item, dict):
+                return {}
+            path = item.get("path")
+            rule_id = item.get("rule_id")
+            reason = item.get("reason")
+            if (
+                not isinstance(path, str)
+                or not path
+                or len(path) > 512
+                or path.startswith("/")
+                or ".." in PurePosixPath(path).parts
+                or "\\" in path
+                or ":" in path
+                or any(ord(character) < 32 for character in path)
+                or not isinstance(rule_id, str)
+                or not _RULE_NAME.fullmatch(rule_id)
+                or not isinstance(reason, str)
+                or not _RULE_NAME.fullmatch(reason)
+            ):
+                return {}
+            preview.append({"path": path, "rule_id": rule_id, "reason": reason})
+        raw_unsupported = coverage.get("unsupported", [])
+        if not isinstance(raw_unsupported, list):
+            return {}
+        unsupported: list[tuple[str, int]] = []
+        for item in raw_unsupported:
+            if not isinstance(item, dict):
+                return {}
+            extension = item.get("extension")
+            count = item.get("file_count")
+            if (
+                not isinstance(extension, str)
+                or not re.fullmatch(r"\.[A-Za-z0-9]{1,12}", extension)
+                or type(count) is not int
+                or count < 0
+            ):
+                return {}
+            unsupported.append((extension, count))
+        parse_count = coverage.get("ast_parse_error_count")
+        truncated = coverage.get("ast_truncated")
+        engines = coverage.get("engine_verified_counts", {})
+        codeql_configured = coverage.get("codeql_configured")
+        codeql_executed = coverage.get("codeql_executed")
+        codeql_scope = coverage.get("codeql_scope")
+        if (
+            type(parse_count) is not int
+            or parse_count < 0
+            or type(truncated) is not bool
+            or not isinstance(engines, dict)
+            or any(
+                name not in {"opengrep", "semgrep"}
+                or type(count) is not int
+                or count < 0
+                for name, count in engines.items()
+            )
+            or (codeql_configured is not None and type(codeql_configured) is not bool)
+            or (codeql_executed is not None and type(codeql_executed) is not bool)
+            or codeql_scope not in (None, "python_only")
+        ):
+            return {}
+        return {
+            "static_coverage_expected": expected,
+            "static_coverage_verified": verified,
+            "static_coverage_gap_count": len(gaps),
+            "static_coverage_gap_preview": tuple(preview),
+            "static_coverage_unsupported": tuple(unsupported),
+            "static_ast_parse_error_count": parse_count,
+            "static_ast_truncated": truncated,
+            "static_coverage_engines": engines,
+            "static_codeql_configured": codeql_configured,
+            "static_codeql_executed": codeql_executed,
+            "static_codeql_scope": codeql_scope,
+        }
 
     @staticmethod
     def _artifact_relations(
@@ -993,8 +1326,7 @@ class DashboardQuery:
             (
                 item[3]
                 for item in contents.values()
-                if item[0] == "simple_static_fact_bundle"
-                and isinstance(item[3], dict)
+                if item[0] == "simple_static_fact_bundle" and isinstance(item[3], dict)
             ),
             None,
         )
@@ -1118,9 +1450,7 @@ class DashboardQuery:
                     verdict=(hypothesis.verdict if hypothesis else None),
                     validated_poc=(hypothesis.validated_poc if hypothesis else False),
                     artifact_ids=tuple(sorted(related)),
-                    poc_artifact_ids=tuple(
-                        item for item in poc_ids if item in related
-                    ),
+                    poc_artifact_ids=tuple(item for item in poc_ids if item in related),
                     evidence_artifact_ids=tuple(
                         item for item in evidence_ids if item in related
                     ),
@@ -1286,7 +1616,7 @@ class DashboardQuery:
         )
 
     @staticmethod
-    def _usage_summary(
+    def _invocation_usage_summary(
         invocations: tuple[LLMInvocationView, ...],
     ) -> UsageSummaryView:
         input_tokens = sum(item.input_tokens or 0 for item in invocations)
@@ -1328,8 +1658,7 @@ class DashboardQuery:
             return "setup에서 선택한 정적분석 도구 경로와 실행 권한을 확인하세요."
         if any(value in code for value in ("RATE_LIMIT", "TIMEOUT")):
             return (
-                "Provider 한도와 네트워크 상태를 확인한 뒤 실패 단계부터 "
-                "resume 하세요."
+                "Provider 한도와 네트워크 상태를 확인한 뒤 실패 단계부터 resume 하세요."
             )
         return (
             "오류 코드를 기록하고 docs/troubleshooting.md의 안전한 복구 "
@@ -1340,9 +1669,7 @@ class DashboardQuery:
     def _pipeline(
         values: list[StageCheckpoint], run: SimpleAnalysisRun | None
     ) -> tuple[StageProgressView, ...]:
-        actual = {
-            (item.identity.hypothesis_id, item.stage): item for item in values
-        }
+        actual = {(item.identity.hypothesis_id, item.stage): item for item in values}
         result: list[StageProgressView] = []
 
         def append(stage: SimpleStage, hypothesis_id: str | None) -> None:
@@ -1351,9 +1678,7 @@ class DashboardQuery:
                 StageProgressView(
                     stage=stage.value,
                     label_ko=_STAGE_LABELS[stage],
-                    status=(
-                        checkpoint.status.value if checkpoint else "NOT_STARTED"
-                    ),
+                    status=(checkpoint.status.value if checkpoint else "NOT_STARTED"),
                     hypothesis_id=hypothesis_id,
                     agent_role=ROLE_BY_STAGE[stage],
                     attempt_number=(checkpoint.attempt_number if checkpoint else 0),
@@ -1468,21 +1793,84 @@ class DashboardQuery:
             ),
             None,
         )
+        execution = next(
+            (item for item in values if item.stage is SimpleStage.POC_EXECUTION_DONE),
+            None,
+        )
+        gate = next(
+            (item for item in values if item.stage is SimpleStage.TECH_GATE_DONE),
+            None,
+        )
+        scope = next(
+            (item for item in values if item.stage is SimpleStage.SCOPE_GATE_DONE),
+            None,
+        )
+        review = self._scope_review(latest.identity, scope, run)
+        source = review["policy_source"]
+        assert isinstance(source, dict)
+        progress = ProgressProjector(_CheckpointProjection(tuple(values))).snapshot(
+            analysis_id
+        )
         return HypothesisProgressView(
             analysis_id=analysis_id,
             hypothesis_id=hypothesis_id,
-            current_stage=latest.stage.value,
-            status=DashboardQuery._aggregate_status(values),
+            current_stage=progress.current_stage or latest.stage.value,
+            status=progress.status,
             completed_count=completed,
             stage_count=len(values),
-            error_code=latest.error_code,
+            error_code=progress.error_code,
             verdict=final.verdict if final else None,
+            disposition=terminal_poc_outcome(execution) or terminal_gate_outcome(gate),
+            scope_status=str(review["status"]),
+            scope_collection_status=str(source.get("collection_status", "UNVERIFIED")),
+            scope_source_url=(
+                source.get("source_url")
+                if isinstance(source.get("source_url"), str)
+                and review["provenance_verified"] is True
+                else None
+            ),
+            scope_source_revision=(
+                source.get("blob_sha")
+                if isinstance(source.get("blob_sha"), str)
+                and review["provenance_verified"] is True
+                else None
+            ),
+            scope_reasons=tuple(
+                str(item) for item in cast(list[object], review["checks"])
+            ),
+            scope_missing_information=tuple(
+                str(item) for item in cast(list[object], review["missing_information"])
+            ),
+            scope_axes=cast(dict[str, dict[str, object]], review["axes"]),
+            private_reporting_policy_passed=(
+                review["private_reporting_policy_passed"] is True
+            ),
+            external_disclosure_allowed=(review["external_disclosure_allowed"] is True),
+            resume_available=(
+                progress.status in {"BLOCKED", "FAILED"}
+                and any(item.retryable for item in values)
+            ),
             validated_poc=any(item.validated_poc_ref is not None for item in values),
             parent_hypothesis_ids=(
                 run.parent_hypothesis_ids.get(hypothesis_id, ()) if run else ()
             ),
             chain_depth=(run.chain_depths.get(hypothesis_id, 0) if run else 0),
+            attempt_number=progress.attempt_number,
             updated_at=latest.updated_at,
+        )
+
+    def _scope_review(
+        self,
+        identity: CheckpointIdentity,
+        checkpoint: StageCheckpoint | None,
+        run: SimpleAnalysisRun | None,
+    ) -> dict[str, object]:
+        artifacts = SimpleArtifactRepository(self._data_dir, identity)
+        return project_scope_review(
+            checkpoint,
+            artifacts,
+            policy_snapshot_ref=run.policy_snapshot_ref if run else None,
+            repository_url=run.repository if run else None,
         )
 
     def _simple_run(self, analysis_id: str) -> SimpleAnalysisRun | None:
@@ -1499,6 +1887,20 @@ class DashboardQuery:
             return SimpleAnalysisRun.model_validate_json(row[0])
         except ValueError:
             return None
+
+    def _usage_summary(self, analysis_id: str) -> dict[str, int | float | None]:
+        with self._connect() as connection:
+            if not self._table_exists(connection, "simple_llm_attempts"):
+                return {
+                    "calls": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cost_minor_units": None,
+                    "unknown_cost_calls": 0,
+                }
+            return SimpleCheckpointStore.usage_summary_from_connection(
+                connection, analysis_id
+            )
 
     def _resolve_analysis_id(self, value: str) -> str:
         """Resolve public A-NNN names without breaking older exact-ID data."""
@@ -1525,17 +1927,13 @@ class DashboardQuery:
                 self.report_path(analysis_id, display_id)
             except DashboardNotFound:
                 continue
-            english_available = self._english_report_available(
-                analysis_id, display_id
-            )
+            english_available = self._english_report_available(analysis_id, display_id)
             reports.append(
                 FindingReportView(
                     analysis_id=analysis_id,
                     display_id=display_id,
                     url=f"/reports/{analysis_id}/{display_id}.md",
-                    view_url=(
-                        f"/api/analyses/{analysis_id}/reports/{display_id}"
-                    ),
+                    view_url=(f"/api/analyses/{analysis_id}/reports/{display_id}"),
                     download_url=(
                         f"/api/analyses/{analysis_id}/reports/{display_id}/download"
                     ),
@@ -1550,6 +1948,7 @@ class DashboardQuery:
                         if english_available
                         else None
                     ),
+                    attachment_urls=self._attachment_urls(analysis_id, display_id),
                 )
             )
         return tuple(reports)
@@ -1560,6 +1959,17 @@ class DashboardQuery:
         except DashboardNotFound:
             return False
         return True
+
+    def _attachment_urls(self, analysis_id: str, display_id: str) -> dict[str, str]:
+        try:
+            manifest, _, _ = self._report_bundle(analysis_id, display_id)
+        except DashboardNotFound:
+            return {}
+        prefix = f"/reports/{analysis_id}/{display_id}"
+        return {
+            **{item.path: f"{prefix}/files/{item.path}" for item in manifest.files},
+            "bundle.zip": f"{prefix}/bundle.zip",
+        }
 
     def _full_runtime_summaries(self) -> tuple[AnalysisSummaryView, ...]:
         with self._connect() as connection:

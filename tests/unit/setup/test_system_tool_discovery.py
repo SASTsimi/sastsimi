@@ -157,3 +157,21 @@ def test_windows_opengrep_release_binary_name_is_discovered(
     assert inspected.available is True
     assert inspected.executable == executable.resolve()
     assert inspected.version == "1.30.0"
+
+
+def test_semgrep_discovery_binds_native_executable_digest(
+    tmp_path, monkeypatch
+) -> None:
+    executable = tmp_path / "semgrep.exe"
+    executable.write_bytes(b"local-semgrep")
+    monkeypatch.setattr("sastsimi.setup.service.shutil.which", lambda _name: executable)
+    monkeypatch.setattr(
+        "sastsimi.setup.service.subprocess.run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, "1.178.0\n", ""),
+    )
+    inspected = SystemToolDiscovery._inspect("semgrep", ("semgrep", "--version"))
+    assert inspected.available is True
+    assert inspected.executable == executable.resolve()
+    assert inspected.version == "1.178.0"
+    assert inspected.executable_sha256 is not None
+    assert len(inspected.executable_sha256) == 64

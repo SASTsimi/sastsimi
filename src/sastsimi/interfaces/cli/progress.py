@@ -129,19 +129,22 @@ class ProgressRenderer:
             return
         self._log_dir.mkdir(parents=True, exist_ok=True)
         path = self._log_dir / f"{analysis_id}.log"
-        line = json.dumps(
-            {
-                "timestamp": event.started_at.isoformat(),
-                "event": event.event_id,
-                "status": event.status,
-                "stage": event.stage,
-                "agent": event.agent_role,
-                "tool": tool,
-                "summary": event.summary_ko,
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ) + "\n"
+        line = (
+            json.dumps(
+                {
+                    "timestamp": event.started_at.isoformat(),
+                    "event": event.event_id,
+                    "status": event.status,
+                    "stage": event.stage,
+                    "agent": event.agent_role,
+                    "tool": tool,
+                    "summary": event.summary_ko,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
         with path.open("a", encoding="utf-8", newline="") as stream:
             stream.write(line)
 

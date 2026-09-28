@@ -192,14 +192,10 @@ def create_server(
                     parameters = parse_qs(parsed.query)
                     selected = parameters.get("selected") == ["1"]
                     artifact_ids = (
-                        frozenset(parameters.get("artifact", ()))
-                        if selected
-                        else None
+                        frozenset(parameters.get("artifact", ())) if selected else None
                     )
                     report_ids = (
-                        frozenset(parameters.get("report", ()))
-                        if selected
-                        else None
+                        frozenset(parameters.get("report", ())) if selected else None
                     )
                     buffer = BytesIO()
                     with zipfile.ZipFile(
@@ -237,14 +233,44 @@ def create_server(
                         raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
                     english = parts[2].endswith(".en.md")
                     display_id = parts[2][:-6] if english else parts[2][:-3]
-                    self._file(
-                        query.report_path(
-                            parts[1],
-                            display_id,
-                            language="en" if english else "ko",
+                    self._response(
+                        HTTPStatus.OK,
+                        (
+                            query.report_markdown(
+                                parts[1], display_id, language="en"
+                            ).encode("utf-8")
+                            if english
+                            else query.report_content(parts[1], display_id)
                         ),
                         "text/markdown; charset=utf-8",
                         send_body,
+                    )
+                elif len(parts) >= 5 and parts[0] == "reports" and parts[3] == "files":
+                    name = "/".join(parts[4:])
+                    body, media_type = query.report_attachment(parts[1], parts[2], name)
+                    self._response(
+                        HTTPStatus.OK,
+                        body,
+                        media_type,
+                        send_body,
+                        content_disposition=(
+                            f'attachment; filename="{name.rsplit("/", 1)[-1]}"'
+                        ),
+                    )
+                elif (
+                    len(parts) == 4
+                    and parts[0] == "reports"
+                    and parts[3] == "bundle.zip"
+                ):
+                    body, media_type = query.report_attachment(
+                        parts[1], parts[2], "bundle.zip"
+                    )
+                    self._response(
+                        HTTPStatus.OK,
+                        body,
+                        media_type,
+                        send_body,
+                        content_disposition='attachment; filename="bundle.zip"',
                     )
                 else:
                     raise DashboardNotFound("DASHBOARD_ROUTE_NOT_FOUND")
@@ -329,6 +355,7 @@ def create_server(
             send_body: bool,
             *,
             extra_headers: dict[str, str] | None = None,
+            content_disposition: str | None = None,
         ) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
@@ -339,6 +366,8 @@ def create_server(
             self.send_header("Referrer-Policy", "no-referrer")
             for name, value in (extra_headers or {}).items():
                 self.send_header(name, value)
+            if content_disposition is not None:
+                self.send_header("Content-Disposition", content_disposition)
             self.end_headers()
             if send_body:
                 self.wfile.write(body)

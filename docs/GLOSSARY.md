@@ -18,6 +18,8 @@
 | `hypothesis_id` | 취약점 가설 하나를 구분하는 ID |
 | `attempt_id` | 같은 단계의 실행 또는 재시도 한 번을 구분하는 ID |
 | `record_id` | 저장된 결과의 정확한 수정본을 구분하는 ID |
+| 자동 복구 | 재시도 가능한 실행 오류를 분류하고, 제한된 수정 또는 재생성 후 같은 분석을 다시 진행하는 절차 |
+| 복구 결정 | 오류 증거와 저장소 설정을 바탕으로 재시도·입력 재생성·일회용 환경 재구성·중단 중 하나를 선택해 저장한 기록 |
 
 ## 상태와 판정
 
@@ -32,8 +34,12 @@
 | `FALSE` | 실제 반증 근거로 가설이 성립하지 않음을 확정한 판정 |
 | `HOLD` | 정보나 조건이 부족해 판단을 보류한 판정 |
 | `REVISE` | Technical Gate가 같은 가설의 Verification 보완을 요구한 결과 |
+| `RECOVERY_EXHAUSTED` | 같은 복구 계보가 최대 3회에 도달해 자동 재시도를 안전하게 중단한 상태 |
 
 오류, 인증 실패, 도구 미설치, timeout과 Docker 실패는 `FALSE`의 근거가 아닙니다.
+이러한 실행 오류는 취약점 판정이 아니라 미검증 상태로 남습니다. 한 가설의 복구가
+끝나도 독립적인 다른 가설은 계속 실행하며, 입력과 오류가 바뀌지 않은 소진 계보는
+무한히 다시 시도하지 않습니다.
 
 ## Agent와 비-LLM 구성요소
 
@@ -48,7 +54,7 @@
 | `Technical Gate Agent` | LLM | 근거·PoC·CWE 연결성 검토 |
 | `Rule Scope Gate Agent` | LLM | 공식 정책의 범위와 시험 제한 검토 |
 | `Chaining Agent` | LLM | Primitive를 연결해 자식 가설 제안 |
-| `Reporter Agent` | LLM | 검증된 사실을 한국어 보고서로 정리 |
+| `Reporter Agent` | LLM | 검증된 사실을 바탕으로 영문·국문 보고서 설명 작성 |
 | `Runtime` | 비-LLM | ID, 순서, 상태, 저장, 재시도와 권한 검사 |
 | `Primitive Admission Runtime` | 비-LLM | Gate 결과를 정해진 규칙에 적용해 체이닝 재료 허용 여부 기록 |
 | `Reproduction Runtime` | 비-LLM | 검증된 PoC 후보를 Docker에서 실행하고 실제 결과 기록 |
@@ -70,7 +76,7 @@ Agent 이름과 역할은 특정 Provider나 model에 고정되지 않습니다.
 | `validated PoC` | 같은 attempt의 Docker 실행에서 가설을 실제로 지지한 PoC |
 | `CWE` | 취약점 종류를 나타내는 국제 분류 번호 |
 | `Primitive` | 연계 취약점에서 필요한 조건과 얻는 결과를 표현하는 재료 |
-| `Finding` | 두 Gate까지 통과해 저장된 확정 취약점 기록 |
+| `Finding` | Technical Gate가 승인한 기술적 취약점과 Scope Gate의 제보 가능 여부를 함께 기록한 결과. Scope가 `UNCERTAIN` 또는 `DENY`여도 내부 검토용으로 생성될 수 있음 |
 | `ReportDraft` | Finding과 검증 자료만 사용해 만든 보고서 초안 |
 
 ## 검토와 출력
@@ -78,9 +84,11 @@ Agent 이름과 역할은 특정 Provider나 model에 고정되지 않습니다.
 | 용어 | 쉬운 뜻 |
 |---|---|
 | `Technical Gate` | 기술 근거, validated PoC와 CWE가 서로 맞는지 확인하는 단계 |
-| `Rule Scope Gate` | 공식 정책상 범위, 금지 시험과 외부 전달 가능성을 확인하는 단계 |
+| `Rule Scope Gate` | 공식 정책상 범위, 금지 시험과 비공개 제보 조건을 근거별로 예비 판정하는 단계 |
+| 정책 snapshot | 분석 시작 시 공식 정책의 출처·개정·본문 hash·수집 상태를 저장한 불변 기록. `resume`에서는 같은 기록을 사용 |
 | `Chaining` | 기존 Primitive를 연결해 더 큰 영향을 낼 수 있는 새 가설을 만드는 과정 |
-| `F-NNN` | 사람이 보기 쉬운 Finding 번호와 Markdown 파일명 |
+| `F-NNN` | 사람이 보기 쉬운 Finding 번호. 기존 `F-NNN.md`와 새 `F-NNN/` 번들에 공통 사용 |
+| 보고서 번들 | 한 Finding의 영문·국문 Markdown, 검증된 PoC, 선별된 근거, manifest와 ZIP |
 | `Dashboard` | 분석 상태, Agent 활동과 결과를 보여 주는 로컬 읽기 전용 화면 |
 | `Agent activity` | 숨겨진 생각 원문이 아니라 확인한 근거·행동·판정 이유를 정리한 감사 기록 |
 

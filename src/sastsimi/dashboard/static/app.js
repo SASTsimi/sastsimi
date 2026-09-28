@@ -80,6 +80,7 @@ function analysisButton(item) {
   const row = el("div", undefined, "status-row");
   row.append(badge(item.status), el("span", `${item.progress_percent}%`));
   button.append(row);
+  if (item.on_demand_possible) button.append(el("div", "추가 사용량 과금 가능", "meta"));
   button.addEventListener("click", () => {
     if (state.selected !== routeId) {
       state.selectedArtifacts.clear();
@@ -94,6 +95,40 @@ function analysisButton(item) {
     refresh();
   });
   return button;
+}
+
+function recoveryAttempt(item) {
+  if (item.disposition || item.status === "COMPLETE") return null;
+  if (item.attempt_number > 1 || item.error_code === "RECOVERY_EXHAUSTED") {
+    return el("div", `복구 시도 ${item.attempt_number}/${item.attempt_limit}`, "meta");
+  }
+  return null;
+}
+
+function staticCoverageNodes(detail) {
+  if (detail.static_coverage_expected == null || detail.static_coverage_verified == null) {
+    return [el("div", "정적 검사 커버리지: 확인 불가 (검증된 기록 없음)", "meta")];
+  }
+  const nodes = [el("div", `정적 검사 파일·규칙: 검증 ${detail.static_coverage_verified}/${detail.static_coverage_expected} · 미검증 ${detail.static_coverage_gap_count}`, "meta")];
+  const engines = Object.entries(detail.static_coverage_engines || {}).map(([name, count]) => `${name} ${count}`).join(" · ");
+  if (engines) nodes.push(el("div", `검증 엔진: ${engines}`, "meta"));
+  if (detail.static_codeql_configured === true) {
+    nodes.push(el("div", `CodeQL: ${detail.static_codeql_scope === "python_only" ? "Python만" : "범위 확인 불가"} · ${detail.static_codeql_executed ? "실행 완료" : "실행 미완료"}`, "meta"));
+  } else if (detail.static_codeql_configured === false) {
+    nodes.push(el("div", "CodeQL: 미설정", "meta"));
+  }
+  if (detail.static_ast_parse_error_count || detail.static_ast_truncated) nodes.push(el("div", `Python AST 파싱 오류 ${detail.static_ast_parse_error_count || 0} · 사실 수 제한 ${detail.static_ast_truncated ? "도달" : "미도달"}`, "meta"));
+  if (detail.static_coverage_unsupported?.length) {
+    const unsupported = detail.static_coverage_unsupported.map(([extension, count]) => `${extension} ${count}개`).join(" · ");
+    nodes.push(el("div", `알려진 소스 확장자 중 현재 규칙 범위 밖: ${unsupported}`, "meta"));
+  }
+  if (detail.static_coverage_gap_preview?.length) {
+    const details = el("details");
+    details.append(el("summary", `미검증 파일·규칙 보기 (${detail.static_coverage_gap_count}개 중 최대 100개)`));
+    detail.static_coverage_gap_preview.forEach((gap) => details.append(el("div", `${gap.path} · ${gap.rule_id} · ${gap.reason}`, "meta")));
+    nodes.push(details);
+  }
+  return nodes;
 }
 
 function renderOverview(detail) {
@@ -113,6 +148,10 @@ function renderOverview(detail) {
     ["종료", detail.finished_at ? formatTime(detail.finished_at) : "진행 중"],
     ["가설", String(detail.hypothesis_count)],
     ["Finding", String(detail.finding_count)],
+    ["미확정 / 근거 부족", `${detail.inconclusive_hypothesis_count} / ${detail.rejected_hypothesis_count}`],
+    ["LLM 호출", String(detail.llm_attempt_count || 0)],
+    ["LLM 토큰", `입력 ${detail.llm_input_tokens || 0} / 출력 ${detail.llm_output_tokens || 0}`],
+    ["확인된 비용", detail.llm_cost_minor_units == null ? "미제공" : `${detail.llm_cost_minor_units}¢`],
     ["경과 시간", formatDuration(detail.elapsed_ms)],
     ["마지막 갱신", formatTime(detail.last_updated_at)],
   ];
@@ -127,6 +166,8 @@ function renderOverview(detail) {
   bar.style.width = `${detail.progress_percent}%`;
   progress.append(bar);
   box.append(progress);
+  staticCoverageNodes(detail).forEach((node) => box.append(node));
+  if (detail.on_demand_possible) box.append(el("div", "추가 사용량 과금 가능", "warning"));
   if (detail.stale) box.append(el("div", "30초 넘게 갱신되지 않았습니다. 실행 상태와 터미널을 확인하세요.", "warning"));
   replace("overview", [box]);
   document.getElementById("overview").classList.remove("empty");
@@ -227,7 +268,26 @@ function renderHypotheses(items) {
     if (item.vulnerability_type) card.append(el("div", item.vulnerability_type, "hypothesis-type"));
     card.append(el("div", `${item.current_stage} · ${item.completed_count}/${item.stage_count}`, "meta"));
     if (item.verdict) card.append(el("div", `판정: ${item.verdict}`));
+    if (item.disposition === "INCONCLUSIVE") card.append(el("div", "Gate 미확정 · 제보 불가", "warning"));
+    if (item.disposition === "REJECT") card.append(el("div", "Gate 거절 · 제보 불가", "warning"));
     if (item.validated_poc) card.append(el("div", "검증된 PoC 있음", "success"));
+    const scope = item.scope_status || "UNCERTAIN";
+    const reporting = item.private_reporting_policy_passed ? "비공개 제보 정책 예비 판정 통과·사람 검토 필수" : scope === "DENY" ? "정책상 제보 제외" : "비공개 제보 허가 미확인";
+    card.append(el("div", `Scope Gate ${scope} · 정책 ${item.scope_collection_status || "UNVERIFIED"} · ${reporting} · 외부 공개 허용 미확인`, "meta"));
+    if (item.scope_source_url) {
+      const source = el("a", `정책 출처 · ${item.scope_source_revision || "개정 미확인"}`);
+      source.href = item.scope_source_url;
+      source.target = "_blank";
+      source.rel = "noreferrer";
+      card.append(source);
+    }
+    Object.entries(item.scope_axes || {}).forEach(([axis, evidence]) => {
+      const quote = evidence.quote ? ` · ${evidence.line}행 “${evidence.quote}”` : "";
+      card.append(el("div", `${axis}: ${evidence.status}${quote} · ${evidence.reason}`, "meta"));
+    });
+    if (item.scope_reasons?.length) card.append(el("div", `정책 판정 이유: ${item.scope_reasons.join(", ")}`, "meta"));
+    const attempt = recoveryAttempt(item);
+    if (attempt) card.append(attempt);
     if (item.error_code) card.append(el("div", item.error_code, "error mono"));
     return card;
   }) : empty("생성된 가설이 없습니다."));
@@ -524,6 +584,19 @@ function renderReports(items) {
     } else {
       row.append(el("span", "영문 미생성", "badge status-waiting"));
     }
+    const labels = {
+      "report_en.md": "영문 보고서",
+      "report_kr.md": "국문 보고서",
+      "poc.sh": "검증 PoC",
+      "poc.py": "검증 PoC",
+      "bundle.zip": "첨부파일 ZIP",
+    };
+    Object.entries(item.attachment_urls || {}).forEach(([name, url]) => {
+      const attachment = el("a", labels[name] || name, "report-attachment");
+      attachment.href = url;
+      attachment.download = name.split("/").pop();
+      row.append(attachment);
+    });
     return row;
   }) : empty("생성된 보고서가 없습니다."));
 }

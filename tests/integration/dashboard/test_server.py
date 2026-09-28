@@ -17,6 +17,7 @@ from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
+    STAGE_VERSION,
     CheckpointIdentity,
     SimpleAnalysisRun,
     SimpleStage,
@@ -26,6 +27,7 @@ from sastsimi.simple_runtime.models import (
 )
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from sastsimi.storage.agent_activity import AgentActivityStore
+from tests.support.current_bundle import attach_current_bundle
 
 
 def seed(data_dir) -> None:
@@ -108,9 +110,7 @@ def seed(data_dir) -> None:
         {
             "kind": "simple_static_fact_bundle",
             "ast_summary": {
-                "facts": [
-                    {"path": "app.py", "line": 10, "name": "request.args"}
-                ]
+                "facts": [{"path": "app.py", "line": 10, "name": "request.args"}]
             },
             "opengrep_findings": [
                 {
@@ -221,6 +221,36 @@ def seed(data_dir) -> None:
     logs = data_dir / "logs" / "analysis-1.log"
     logs.parent.mkdir(parents=True)
     logs.write_text("stage=POC_CANDIDATE_DONE status=SUCCEEDED\n", encoding="utf-8")
+    artifacts = SimpleArtifactRepository(data_dir, identity)
+    gate_ref = artifacts.put_json(
+        {"kind": "simple_technical_gate", "result": {"status": "ACCEPT"}}
+    )
+    store = SimpleCheckpointStore(database)
+    for stage, inputs, outputs in (
+        (SimpleStage.TECH_GATE_DONE, (), (gate_ref,)),
+        (SimpleStage.FINDING_DONE, (), (finding_ref,)),
+        (
+            SimpleStage.REPORT_DONE,
+            (finding_ref,),
+            (
+                artifacts.put_json({"kind": "draft"}),
+                artifacts.put_bytes("# 한국어 보고서".encode(), "text/markdown"),
+            ),
+        ),
+    ):
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=identity,
+                stage=stage,
+                stage_version=STAGE_VERSION[stage],
+                status=StageStatus.SUCCEEDED,
+                input_refs=inputs,
+                input_hash=input_reference_hash(inputs),
+                output_refs=outputs,
+                gate_decision="ACCEPT" if stage is SimpleStage.TECH_GATE_DONE else None,
+                markdown_path=str(report) if stage is SimpleStage.REPORT_DONE else None,
+            )
+        )
 
 
 @contextmanager
@@ -353,14 +383,10 @@ def test_server_serves_redacted_artifacts_reports_logs_and_bundle(tmp_path) -> N
         assert downloaded.headers["Content-Disposition"].startswith("attachment;")
         assert "do-not-show" not in downloaded.read().decode()
 
-        report = json.loads(
-            request(f"{base}/api/analyses/A-001/reports/F-001").read()
-        )
+        report = json.loads(request(f"{base}/api/analyses/A-001/reports/F-001").read())
         assert report["markdown"] == "# 한국어 보고서"
         english_report = json.loads(
-            request(
-                f"{base}/api/analyses/A-001/reports/F-001?lang=en"
-            ).read()
+            request(f"{base}/api/analyses/A-001/reports/F-001?lang=en").read()
         )
         assert english_report == {
             "display_id": "F-001",
@@ -372,21 +398,22 @@ def test_server_serves_redacted_artifacts_reports_logs_and_bundle(tmp_path) -> N
         )
         assert "F-001.en.md" in english_download.headers["Content-Disposition"]
         assert english_download.read().decode() == "# English report"
-        assert request(
-            f"{base}/api/analyses/A-001/reports/F-001?lang=fr"
-        ).status == 404
-        assert "POC_CANDIDATE_DONE" in request(
-            f"{base}/api/analyses/A-001/logs/download"
-        ).read().decode()
+        assert request(f"{base}/api/analyses/A-001/reports/F-001?lang=fr").status == 404
+        assert (
+            "POC_CANDIDATE_DONE"
+            in request(f"{base}/api/analyses/A-001/logs/download").read().decode()
+        )
 
-        assert json.loads(
-            request(
-                f"{base}/api/analyses/A-001/events?after=event-llm-1"
-            ).read()
-        ) == []
-        assert request(
-            f"{base}/api/analyses/A-001/events?after=missing-event"
-        ).status == 404
+        assert (
+            json.loads(
+                request(f"{base}/api/analyses/A-001/events?after=event-llm-1").read()
+            )
+            == []
+        )
+        assert (
+            request(f"{base}/api/analyses/A-001/events?after=missing-event").status
+            == 404
+        )
 
         bundle = request(f"{base}/api/analyses/A-001/bundle.zip").read()
         with zipfile.ZipFile(BytesIO(bundle)) as archive:
@@ -396,13 +423,10 @@ def test_server_serves_redacted_artifacts_reports_logs_and_bundle(tmp_path) -> N
             assert "reports/en/F-001.md" in names
             assert "logs/console.log" in names
             assert any(
-                name.startswith("artifacts/simple_validated_poc-")
-                for name in names
+                name.startswith("artifacts/simple_validated_poc-") for name in names
             )
 
-        presentation = request(
-            f"{base}/api/analyses/A-001/presentation.zip"
-        ).read()
+        presentation = request(f"{base}/api/analyses/A-001/presentation.zip").read()
         with zipfile.ZipFile(BytesIO(presentation)) as archive:
             names = set(archive.namelist())
             assert "presentation/README.md" in names
@@ -422,12 +446,152 @@ def test_server_serves_redacted_artifacts_reports_logs_and_bundle(tmp_path) -> N
             assert "logs/console.log" not in names
             assert "reports/F-001.md" not in names
             assert len([name for name in names if name.startswith("artifacts/")]) == 1
-        assert request(
-            f"{base}/api/analyses/A-001/artifacts/..%2Fsecret"
-        ).status == 404
-        assert request(
-            f"{base}/api/analyses/A-001/bundle.zip?selected=1&artifact={'0' * 64}"
-        ).status == 404
+        assert request(f"{base}/api/analyses/A-001/artifacts/..%2Fsecret").status == 404
+        assert (
+            request(
+                f"{base}/api/analyses/A-001/bundle.zip?selected=1&artifact={'0' * 64}"
+            ).status
+            == 404
+        )
+
+
+def test_server_exposes_bounded_static_coverage_for_blocked_run(tmp_path) -> None:
+    seed(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    coverage_ref = SimpleArtifactRepository(tmp_path, identity).put_json(
+        {
+            "kind": "simple_static_coverage_v1",
+            "analysis_id": "analysis-1",
+            "workspace_id": "workspace-1",
+            "commit_id": "commit-1",
+            "fingerprint": "f" * 64,
+            "expected_count": 2,
+            "verified_count": 1,
+            "gaps": [
+                {
+                    "path": "src/app.ts",
+                    "rule_id": "rule.js",
+                    "reason": "parse_or_scan_error",
+                }
+            ],
+            "unsupported": [],
+            "ast_parse_error_count": 0,
+            "ast_truncated": False,
+            "codeql_configured": True,
+            "codeql_executed": False,
+            "codeql_scope": "python_only",
+        }
+    )
+    SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3").save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.STATIC_DONE,
+            status=StageStatus.BLOCKED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(coverage_ref,),
+            error_code="STATIC_COVERAGE_INCOMPLETE",
+            retryable=False,
+        )
+    )
+    with running_server(tmp_path) as base:
+        payload = json.loads(request(f"{base}/api/analyses/A-001").read())
+    assert payload["static_coverage_expected"] == 2
+    assert payload["static_coverage_verified"] == 1
+    assert payload["static_codeql_configured"] is True
+    assert payload["static_codeql_executed"] is False
+    assert payload["static_codeql_scope"] == "python_only"
+    assert payload["static_coverage_gap_preview"] == [
+        {"path": "src/app.ts", "rule_id": "rule.js", "reason": "parse_or_scan_error"}
+    ]
+
+
+def test_server_restricts_persisted_legacy_allow_markdown(tmp_path) -> None:
+    seed(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    gate_ref = artifacts.put_json({"result": {"status": "ALLOW"}})
+    SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3").save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.SCOPE_GATE_DONE,
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(gate_ref,),
+        )
+    )
+    old_path = tmp_path / "reports" / "analysis-1" / "F-001.md"
+    old_text = "# Legacy\n- 상태: CONFIRMED\n- 외부 제출·공개 허용: 예\n"
+    old_path.write_text(old_text, encoding="utf-8")
+
+    with running_server(tmp_path) as base:
+        detail = json.loads(request(f"{base}/api/analyses/A-001").read())
+        public = request(f"{base}/reports/analysis-1/F-001.md").read().decode()
+
+    assert detail["hypotheses"][0]["scope_status"] == "UNCERTAIN"
+    assert detail["hypotheses"][0]["external_disclosure_allowed"] is False
+    assert "허용: 예" not in public
+    assert "제보 불가" in public
+    assert old_path.read_text(encoding="utf-8") == old_text
+
+
+def test_server_serves_exact_report_artifact_not_mutated_file(tmp_path) -> None:
+    seed(tmp_path)
+    report_path = tmp_path / "reports" / "analysis-1" / "F-001.md"
+    report_path.write_text("# altered after generation", encoding="utf-8")
+
+    with running_server(tmp_path) as base:
+        public = request(f"{base}/reports/analysis-1/F-001.md").read().decode()
+
+    assert public == "# 한국어 보고서"
+
+
+def test_server_downloads_only_current_manifest_files(tmp_path) -> None:
+    seed(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    finding = FindingDisplayIdStore.resolve_existing(
+        store.database_path, "analysis-1", "F-001"
+    )
+    attach_current_bundle(tmp_path, identity, finding, "F-001")
+    poc = b"#!/bin/sh\nprintf ok\n"
+
+    with running_server(tmp_path) as base:
+        detail = json.loads(request(f"{base}/api/analyses/A-001").read())
+        urls = detail["reports"][0]["attachment_urls"]
+        response = request(f"{base}{urls['poc.sh']}")
+        assert response.status == 200
+        assert response.read() == poc
+        assert (
+            response.headers["Content-Disposition"] == 'attachment; filename="poc.sh"'
+        )
+        assert response.headers["Cache-Control"] == "no-store"
+        assert request(f"{base}{urls['poc.sh']}", method="HEAD").status == 200
+        assert request(f"{base}{urls['bundle.zip']}").read()[:2] == b"PK"
+        assert (
+            request(f"{base}/reports/analysis-1/F-001/files/%2e%2e/poc.sh").status
+            == 404
+        )
+        assert (
+            request(f"{base}/reports/analysis-1/F-001/files/manifest.json").status
+            == 404
+        )
 
 
 def test_server_rejects_non_loopback_bind(tmp_path) -> None:

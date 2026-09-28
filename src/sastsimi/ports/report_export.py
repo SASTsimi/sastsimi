@@ -17,7 +17,13 @@ from sastsimi.contracts.gates import (
     RuleScopeImpactReview,
     TechnicalEvidenceReview,
 )
-from sastsimi.contracts.reporting import Finding, ReportContent, ReportDraft
+from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.reporting import (
+    BilingualReportContent,
+    Finding,
+    ReportContent,
+    ReportDraft,
+)
 from sastsimi.contracts.verification import VerificationResult
 
 
@@ -40,11 +46,17 @@ class CurrentReport:
     poc_candidate: PoCCandidate
     agent_log: AgentLog
     execution_command: SandboxCommandRecord
-    content: ReportContent
+    content: ReportContent | BilingualReportContent
     poc_text: str
     report_action: ActionRequest
     report_decision: ActionDecision
     purpose: Purpose = Purpose.PRODUCTION
+    repository_url: str | None = None
+    stdout_bytes: bytes | None = None
+    stderr_bytes: bytes | None = None
+    stdout_ref: StoredDataRef | None = None
+    stderr_ref: StoredDataRef | None = None
+    execution_exit_code: int | None = None
 
     @property
     def analysis_id(self) -> str:
@@ -66,6 +78,12 @@ class CurrentReportSource(Protocol):
     def list_current(self, analysis_id: str) -> tuple[CurrentReport, ...]: ...
 
     def get_current(self, finding_id: str) -> CurrentReport: ...
+
+    def read_artifact(self, ref: StoredDataRef) -> bytes: ...
+
+    def put_artifact(
+        self, scope_ref: StoredDataRef, body: bytes, media_type: str
+    ) -> StoredDataRef: ...
 
 
 __all__ = [

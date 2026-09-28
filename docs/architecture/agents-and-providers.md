@@ -16,7 +16,8 @@ Agent 이름은 역할을 뜻하며 특정 회사나 모델 이름이 아닙니�
 - Technical Gate Agent: 근거·PoC·CWE 연결성 검토
 - Rule Scope Gate Agent: 공식 정책 범위와 시험 제한 검토
 - Chaining Agent: Primitive 조합으로 자식 가설 제안
-- Reporter Agent: 검증된 사실만 한국어 보고서로 구성
+- Reporter Agent: 검증된 사실만으로 영문·국문 설명을 한 번에 작성; Runtime이
+  같은 근거를 두 Markdown과 검증된 첨부파일에 반영
 
 비-LLM Runtime은 ID 발급, 순서, 상태, 저장, 재시도, 권한 및 exact reference 검사를
 담당합니다. Agent 출력만으로 Docker 실행이나 최종 결과 저장을 승인하지 않습니다.

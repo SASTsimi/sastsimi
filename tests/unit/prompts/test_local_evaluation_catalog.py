@@ -155,3 +155,43 @@ def test_verification_rejects_primitive_without_exact_evidence() -> None:
 def test_unknown_route_is_fail_closed() -> None:
     with pytest.raises(ValueError, match="LOCAL_EVALUATION_OUTPUT_ROUTE_UNAVAILABLE"):
         local_output_schema("HYPOTHESIS", "UNKNOWN")
+
+
+def test_reporter_schema_requires_one_bilingual_v2_response() -> None:
+    schema = json.loads(local_output_schema("REPORTER", "CREATE_DRAFT"))
+    assert schema["properties"]["schema_version"]["const"] == 2
+    value = {
+        "schema_version": 2,
+        "en": {
+            "title": "Title",
+            "summary": "Summary",
+            "details": "Details",
+            "impact": "Impact",
+            "recommendation": "Fix",
+            "limitations": [],
+            "review_items": [],
+        },
+        "ko": {
+            "title": "제목",
+            "summary": "요약",
+            "details": "설명",
+            "impact": "영향",
+            "recommendation": "수정",
+            "limitations": [],
+            "review_items": [],
+        },
+        "citations": [],
+    }
+    validate_local_output("REPORTER", "CREATE_DRAFT", value)
+    with pytest.raises(ValueError, match="LOCAL_EVALUATION_OUTPUT_INVALID"):
+        validate_local_output(
+            "REPORTER",
+            "CREATE_DRAFT",
+            {
+                "title": "Legacy",
+                "summary": "Old",
+                "details": "Old",
+                "recommendation": "Old",
+                "citations": [],
+            },
+        )

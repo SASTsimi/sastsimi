@@ -72,10 +72,25 @@ async def _reporter_case(
     data = fixture()
     data.raw_output = raw_output or canonical_bytes(
         {
-            "title": "Validated finding",
-            "summary": "The validated path is exploitable.",
-            "details": "Static and dynamic evidence agree.",
-            "recommendation": "Validate and constrain the input.",
+            "schema_version": 2,
+            "en": {
+                "title": "Validated finding",
+                "summary": "The validated path is exploitable.",
+                "details": "Static and dynamic evidence agree.",
+                "impact": "Potential unauthorized access.",
+                "recommendation": "Validate and constrain the input.",
+                "limitations": [],
+                "review_items": [],
+            },
+            "ko": {
+                "title": "검증된 발견",
+                "summary": "검증된 경로에서 취약성이 확인되었습니다.",
+                "details": "정적 및 동적 근거가 일치합니다.",
+                "impact": "비인가 접근 가능성.",
+                "recommendation": "입력을 검증하고 제한하세요.",
+                "limitations": [],
+                "review_items": [],
+            },
             "citations": [],
         }
     )
@@ -227,7 +242,8 @@ async def test_reporter_accepts_verification_owned_create_draft_decision() -> No
         call=case.call,
     )
 
-    assert content.title == "Validated finding"
+    assert content.en.title == "Validated finding"
+    assert content.ko.title == "검증된 발견"
     assert content_ref == case.invocation.result.parsed_output_ref
     assert used_ref == case.claimed_ref
     assert used_ref == case.invocation.request.action_decision_ref

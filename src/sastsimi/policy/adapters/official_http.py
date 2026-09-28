@@ -215,7 +215,6 @@ class OfficialHttpPolicySource:
         return OfficialPolicySource(check, safe_body)
 
     def _pin(self, url: str, entry: ProgramCatalogEntry) -> PinnedHttpRequest:
-        parsed = urlsplit(url)
         allowed_hosts = {
             host.casefold()
             for host in (
@@ -224,38 +223,10 @@ class OfficialHttpPolicySource:
             )
             if host is not None
         }
-        host = parsed.hostname.casefold() if parsed.hostname else ""
-        if (
-            parsed.scheme != "https"
-            or host not in allowed_hosts
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.port not in {None, 443}
-            or parsed.fragment
-            or any(
-                name.casefold() in _SENSITIVE_QUERY_NAMES
-                for name, _value in parse_qsl(parsed.query, keep_blank_values=True)
-            )
-        ):
-            raise PolicySourceBoundaryError("POLICY_REDIRECT_DENIED")
-        try:
-            addresses = self._resolver(host)
-            parsed_addresses = tuple(ipaddress.ip_address(value) for value in addresses)
-        except (KeyError, ValueError, OSError) as error:
-            raise PolicySourceBoundaryError("POLICY_SOURCE_DNS_INVALID") from error
-        if not parsed_addresses or any(
-            not address.is_global for address in parsed_addresses
-        ):
-            raise PolicySourceBoundaryError("POLICY_SOURCE_SSRF_DENIED")
-        target = parsed.path or "/"
-        if parsed.query:
-            target += "?" + parsed.query
-        return PinnedHttpRequest(
+        return pin_approved_https_request(
             url=url,
-            host=host,
-            port=443,
-            target=target,
-            pinned_ip=str(parsed_addresses[0]),
+            allowed_hosts=allowed_hosts,
+            resolver=self._resolver,
             timeout_seconds=entry.timeout_seconds,
             max_response_bytes=entry.max_response_bytes,
             headers={"accept": ", ".join(entry.allowed_content_types)},
@@ -263,6 +234,56 @@ class OfficialHttpPolicySource:
 
     def _commit(self, data: bytes, media_type: str) -> StoredDataRef:
         return self._artifacts.commit(self._artifacts.stage_bytes(data, media_type))
+
+
+def pin_approved_https_request(
+    *,
+    url: str,
+    allowed_hosts: set[str] | frozenset[str],
+    resolver: HostResolver,
+    timeout_seconds: int,
+    max_response_bytes: int,
+    headers: Mapping[str, str],
+) -> PinnedHttpRequest:
+    """Build a TLS/DNS-pinned request for an exact trusted HTTPS host set."""
+
+    parsed = urlsplit(url)
+    host = parsed.hostname.casefold() if parsed.hostname else ""
+    if (
+        parsed.scheme != "https"
+        or host not in {value.casefold() for value in allowed_hosts}
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port not in {None, 443}
+        or parsed.fragment
+        or any(
+            name.casefold() in _SENSITIVE_QUERY_NAMES
+            for name, _value in parse_qsl(parsed.query, keep_blank_values=True)
+        )
+    ):
+        raise PolicySourceBoundaryError("POLICY_REDIRECT_DENIED")
+    try:
+        addresses = resolver(host)
+        parsed_addresses = tuple(ipaddress.ip_address(value) for value in addresses)
+    except (KeyError, ValueError, OSError) as error:
+        raise PolicySourceBoundaryError("POLICY_SOURCE_DNS_INVALID") from error
+    if not parsed_addresses or any(
+        not address.is_global for address in parsed_addresses
+    ):
+        raise PolicySourceBoundaryError("POLICY_SOURCE_SSRF_DENIED")
+    target = parsed.path or "/"
+    if parsed.query:
+        target += "?" + parsed.query
+    return PinnedHttpRequest(
+        url=url,
+        host=host,
+        port=443,
+        target=target,
+        pinned_ip=str(parsed_addresses[0]),
+        timeout_seconds=timeout_seconds,
+        max_response_bytes=max_response_bytes,
+        headers=headers,
+    )
 
 
 def resolve_public_addresses(host: str) -> tuple[str, ...]:
@@ -286,5 +307,6 @@ __all__ = [
     "PolicyHttpTransport",
     "PolicySourceBoundaryError",
     "PinnedHttpsTransport",
+    "pin_approved_https_request",
     "resolve_public_addresses",
 ]
