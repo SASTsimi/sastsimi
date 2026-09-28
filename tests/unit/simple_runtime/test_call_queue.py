@@ -66,7 +66,7 @@ def _wrapper(
     *,
     max_retries: int = 2,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-    max_tokens: int = 1000,
+    max_tokens: int | str = 1000,
 ) -> RunLimitedClient:
     identity = CheckpointIdentity(
         analysis_id="analysis-queue",
@@ -173,6 +173,27 @@ async def test_missing_tokens_in_persisted_attempt_block_resumed_call(
     assert isinstance(resumed, StageFailure)
     assert resumed.code == "LLM_TOKEN_USAGE_UNAVAILABLE"
     assert inner.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_unlimited_tokens_allows_resumed_call_after_unmeasured_attempt(
+    tmp_path: Path,
+) -> None:
+    unmeasured = SimpleLLMCallResult(
+        value={"ok": True}, prompt_digest="a" * 64, output_digest="b" * 64
+    )
+    inner = _Client([unmeasured, _success()])
+    gate = asyncio.Semaphore(1)
+    first = await _wrapper(
+        tmp_path, inner, gate, max_retries=0, max_tokens="unlimited"
+    ).call(prompt=b"safe", output_schema={}, timeout_ms=1000)
+    resumed = await _wrapper(
+        tmp_path, inner, gate, max_retries=0, max_tokens="unlimited"
+    ).call(prompt=b"safe", output_schema={}, timeout_ms=1000)
+
+    assert isinstance(first, SimpleLLMCallResult)
+    assert isinstance(resumed, SimpleLLMCallResult)
+    assert inner.calls == 2
 
 
 @pytest.mark.asyncio

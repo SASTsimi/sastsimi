@@ -35,6 +35,7 @@ _AGENT_NAMES = frozenset(
 )
 
 ElapsedLimit = Annotated[int, Field(gt=0)] | Literal["unlimited"]
+TokenLimit = Annotated[int, Field(gt=0)] | Literal["unlimited"]
 
 
 def finite_call_timeout(limit: ElapsedLimit, cap: int) -> int:
@@ -44,7 +45,7 @@ def finite_call_timeout(limit: ElapsedLimit, cap: int) -> int:
     return cap if limit == "unlimited" else min(limit, cap)
 
 
-def _elapsed_toml(limit: ElapsedLimit) -> str:
+def _limit_toml(limit: ElapsedLimit | TokenLimit) -> str:
     return _quoted(limit) if limit == "unlimited" else str(limit)
 
 
@@ -130,7 +131,7 @@ class UserConfig(BaseModel):
     credential_ref: str
     execution_profile: Literal["FULL", "LIGHTWEIGHT"]
     max_cost_minor_units: int = Field(gt=0)
-    max_tokens: int = Field(gt=0)
+    max_tokens: TokenLimit = "unlimited"
     max_elapsed_seconds: ElapsedLimit = "unlimited"
     static_scan_pass_seconds: int = Field(default=180, gt=0)
     docker_network: Literal["NONE", "BRIDGE"]
@@ -235,8 +236,8 @@ class UserConfig(BaseModel):
             f"credential_ref = {_quoted(self.credential_ref)}",
             f"execution_profile = {_quoted(self.execution_profile)}",
             f"max_cost_minor_units = {self.max_cost_minor_units}",
-            f"max_tokens = {self.max_tokens}",
-            f"max_elapsed_seconds = {_elapsed_toml(self.max_elapsed_seconds)}",
+            f"max_tokens = {_limit_toml(self.max_tokens)}",
+            f"max_elapsed_seconds = {_limit_toml(self.max_elapsed_seconds)}",
             f"static_scan_pass_seconds = {self.static_scan_pass_seconds}",
             f"docker_network = {_quoted(self.docker_network)}",
             f"enabled_tools = {_string_array(tuple(self.enabled_tools))}",
@@ -305,7 +306,7 @@ class SimpleExecutionProfile(BaseModel):
     data_dir: Path
     workspace_root: Path
     max_cost_minor_units: int = Field(gt=0)
-    max_tokens: int = Field(gt=0)
+    max_tokens: TokenLimit = "unlimited"
     max_elapsed_seconds: ElapsedLimit = "unlimited"
     static_scan_pass_seconds: int = Field(default=180, gt=0)
     docker_network: Literal["NONE", "BRIDGE"]
@@ -374,8 +375,8 @@ class SimpleExecutionProfile(BaseModel):
             f"data_dir = {_quoted(self.data_dir.as_posix())}",
             f"workspace_root = {_quoted(self.workspace_root.as_posix())}",
             f"max_cost_minor_units = {self.max_cost_minor_units}",
-            f"max_tokens = {self.max_tokens}",
-            f"max_elapsed_seconds = {_elapsed_toml(self.max_elapsed_seconds)}",
+            f"max_tokens = {_limit_toml(self.max_tokens)}",
+            f"max_elapsed_seconds = {_limit_toml(self.max_elapsed_seconds)}",
             f"static_scan_pass_seconds = {self.static_scan_pass_seconds}",
             f"docker_network = {_quoted(self.docker_network)}",
             f"llm_timeout_seconds = {self.llm_timeout_seconds}",

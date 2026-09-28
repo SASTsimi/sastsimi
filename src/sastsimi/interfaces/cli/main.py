@@ -74,6 +74,20 @@ def _elapsed_limit(value: str) -> int | str:
     return seconds
 
 
+def _token_limit(value: str) -> int | str:
+    if value == "unlimited":
+        return value
+    try:
+        tokens = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "positive tokens or unlimited required"
+        ) from error
+    if tokens < 1:
+        raise argparse.ArgumentTypeError("positive tokens or unlimited required")
+    return tokens
+
+
 def _normalize_public_argv(argv: list[str] | None) -> list[str] | None:
     """Translate compact report syntax while preserving legacy subcommands."""
 
@@ -197,7 +211,7 @@ def main(
         "--docker-network", choices=["none", "bridge"], default="none"
     )
     setup_parser.add_argument("--max-cost-minor-units", type=int, default=100_000)
-    setup_parser.add_argument("--max-tokens", type=int, default=1_000_000)
+    setup_parser.add_argument("--max-tokens", type=_token_limit, default="unlimited")
     setup_parser.add_argument(
         "--max-elapsed-seconds", type=_elapsed_limit, default="unlimited"
     )

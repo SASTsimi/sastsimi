@@ -18,6 +18,7 @@ from sastsimi.config.user_config import (
     ElapsedLimit,
     SimpleExecutionProfile,
     SimpleToolBinding,
+    TokenLimit,
     UserConfig,
     UserConfigStore,
 )
@@ -61,7 +62,7 @@ class SetupChoices(BaseModel):
     credential_ref: str
     execution_profile: Literal["FULL", "LIGHTWEIGHT"]
     max_cost_minor_units: int = Field(gt=0)
-    max_tokens: int = Field(gt=0)
+    max_tokens: TokenLimit = "unlimited"
     max_elapsed_seconds: ElapsedLimit = "unlimited"
     static_scan_pass_seconds: int = Field(default=180, gt=0)
     docker_network: Literal["NONE", "BRIDGE"]

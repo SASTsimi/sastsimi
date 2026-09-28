@@ -1200,6 +1200,49 @@ class SimpleCheckpointStore:
         finally:
             connection.close()
 
+    def reopen_token_budget_failures(self, analysis_id: str) -> int:
+        """Reopen only token-ceiling failures on an unlimited-token resume."""
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ?",
+                (analysis_id,),
+            ).fetchall()
+            reopened = 0
+            for row in rows:
+                checkpoint = StageCheckpoint.model_validate_json(row[0])
+                if (
+                    checkpoint.status is not StageStatus.FAILED
+                    or checkpoint.error_code
+                    not in {
+                        "LLM_TOKEN_BUDGET_EXHAUSTED",
+                        "LLM_TOKEN_USAGE_UNAVAILABLE",
+                    }
+                ):
+                    continue
+                pending = checkpoint.model_copy(
+                    update={
+                        "status": StageStatus.PENDING,
+                        "attempt_id": None,
+                        "output_refs": (),
+                        "error_code": None,
+                        "retryable": False,
+                        "updated_at": datetime.now(UTC),
+                    }
+                )
+                self._upsert_checkpoint_connection(connection, pending)
+                reopened += 1
+            connection.commit()
+            return reopened
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def require_analysis_run(self, analysis_id: str) -> SimpleAnalysisRun:
         with self._connect() as connection:
             row = connection.execute(

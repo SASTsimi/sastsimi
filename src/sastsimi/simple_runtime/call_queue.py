@@ -11,7 +11,7 @@ from time import monotonic
 from typing import Any
 from uuid import uuid4
 
-from sastsimi.config.user_config import ElapsedLimit
+from sastsimi.config.user_config import ElapsedLimit, TokenLimit
 from sastsimi.contracts.refs import StoredDataRef
 
 from .artifacts import SimpleArtifactRepository
@@ -64,7 +64,7 @@ class RunUsageBudget:
         *,
         store: SimpleCheckpointStore,
         analysis_id: str,
-        max_tokens: int,
+        max_tokens: TokenLimit,
         max_cost_minor_units: int,
         max_elapsed_seconds: ElapsedLimit,
     ) -> None:
@@ -77,7 +77,7 @@ class RunUsageBudget:
     def check(self) -> StageFailure | None:
         summary = self._store.usage_summary(self._analysis_id)
         tokens = int(summary["input_tokens"] or 0) + int(summary["output_tokens"] or 0)
-        if tokens >= self._max_tokens:
+        if self._max_tokens != "unlimited" and tokens >= self._max_tokens:
             return StageFailure(
                 code="LLM_TOKEN_BUDGET_EXHAUSTED",
                 retryable=False,
@@ -100,22 +100,23 @@ class RunUsageBudget:
                 retryable=False,
                 safe_message="Analysis elapsed-time ceiling has been reached",
             )
-        with sqlite3.connect(self._store.database_path) as connection:
-            unknown_tokens = connection.execute(
-                "SELECT 1 FROM simple_llm_attempts "
-                "WHERE analysis_id = ? "
-                "AND (input_tokens IS NULL OR output_tokens IS NULL) "
-                "AND status NOT IN ("
-                f"{','.join('?' for _ in _NO_MODEL_RESPONSE_STATUSES)}) "
-                "LIMIT 1",
-                (self._analysis_id, *_NO_MODEL_RESPONSE_STATUSES),
-            ).fetchone()
-        if unknown_tokens is not None:
-            return StageFailure(
-                code="LLM_TOKEN_USAGE_UNAVAILABLE",
-                retryable=False,
-                safe_message="A previous LLM attempt did not report token usage",
-            )
+        if self._max_tokens != "unlimited":
+            with sqlite3.connect(self._store.database_path) as connection:
+                unknown_tokens = connection.execute(
+                    "SELECT 1 FROM simple_llm_attempts "
+                    "WHERE analysis_id = ? "
+                    "AND (input_tokens IS NULL OR output_tokens IS NULL) "
+                    "AND status NOT IN ("
+                    f"{','.join('?' for _ in _NO_MODEL_RESPONSE_STATUSES)}) "
+                    "LIMIT 1",
+                    (self._analysis_id, *_NO_MODEL_RESPONSE_STATUSES),
+                ).fetchone()
+            if unknown_tokens is not None:
+                return StageFailure(
+                    code="LLM_TOKEN_USAGE_UNAVAILABLE",
+                    retryable=False,
+                    safe_message="A previous LLM attempt did not report token usage",
+                )
         return None
 
 
@@ -131,7 +132,7 @@ class RunLimitedClient:
         store: SimpleCheckpointStore,
         model: str,
         max_retries: int,
-        max_tokens: int,
+        max_tokens: TokenLimit,
         max_cost_minor_units: int,
         max_elapsed_seconds: ElapsedLimit,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,

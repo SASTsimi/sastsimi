@@ -1776,6 +1776,90 @@ async def test_resume_reopens_only_elapsed_failure_with_remaining_budget(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_code",
+    ["LLM_TOKEN_BUDGET_EXHAUSTED", "LLM_TOKEN_USAGE_UNAVAILABLE"],
+)
+@pytest.mark.parametrize(
+    ("max_tokens", "expected_status"),
+    [("unlimited", "COMPLETE"), (5, "FAILED")],
+)
+async def test_resume_reopens_token_failures_only_without_cumulative_token_limit(
+    tmp_path: Path,
+    failure_code: str,
+    max_tokens: int | str,
+    expected_status: str,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    recovery = _RecoveryFactory(tmp_path)
+
+    def recovering_runner(
+        current_store: SimpleCheckpointStore,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+    ) -> SimpleRuntimeRunner:
+        baseline = _runner(current_store, identity, static)
+        return SimpleRuntimeRunner(current_store, baseline.handlers, recovery=recovery)
+
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=recovering_runner,
+        recovery_factory=recovery,
+        max_tokens=max_tokens,
+        id_factory=iter(("analysis-1", "workspace-1")).__next__,
+    )
+    outcome = await application.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        )
+    )
+    child = outcome.identity.model_copy(update={"hypothesis_id": "hypothesis-1"})
+    checkpoint = store.require(child, SimpleStage.PRO_CON_DONE)
+    store.save_checkpoint(
+        checkpoint.model_copy(
+            update={
+                "status": StageStatus.FAILED,
+                "error_code": failure_code,
+                "retryable": False,
+                "output_refs": (),
+            }
+        )
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, outcome.identity)
+    store.record_llm_attempt(
+        attempt_id="recorded",
+        analysis_id=outcome.identity.analysis_id,
+        agent="pro_con",
+        model="test",
+        attempt_number=1,
+        status=(
+            "TIMED_OUT"
+            if failure_code == "LLM_TOKEN_USAGE_UNAVAILABLE"
+            else "SUCCEEDED"
+        ),
+        elapsed_ms=100,
+        input_tokens=None if failure_code == "LLM_TOKEN_USAGE_UNAVAILABLE" else 8,
+        output_tokens=None if failure_code == "LLM_TOKEN_USAGE_UNAVAILABLE" else 2,
+        cost_cents=None,
+        artifact_ref=artifacts.put_json({"kind": "attempt"}),
+    )
+
+    resumed = await application.resume(outcome.display_analysis_id)
+
+    assert resumed.status == expected_status
+    assert recovery.calls == []
+    assert store.require(child, SimpleStage.PRO_CON_DONE).status is (
+        StageStatus.SUCCEEDED if expected_status == "COMPLETE" else StageStatus.FAILED
+    )
+    assert store.require(child, SimpleStage.VERIFICATION_FINAL_DONE).attempt_number == 1
+
+
+@pytest.mark.asyncio
 async def test_blocked_hypothesis_does_not_stop_independent_sibling(
     tmp_path: Path,
 ) -> None:

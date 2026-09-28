@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Literal, Protocol
 from uuid import uuid4
 
-from sastsimi.config.user_config import ElapsedLimit
+from sastsimi.config.user_config import ElapsedLimit, TokenLimit
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
@@ -114,6 +114,7 @@ class SimpleAnalysisApplication:
         on_demand_possible: bool = False,
         max_parallel_hypotheses: int = 1,
         max_elapsed_seconds: ElapsedLimit | None = None,
+        max_tokens: TokenLimit | None = None,
     ) -> None:
         if not 1 <= max_parallel_hypotheses <= 32:
             raise ValueError("PARALLEL_HYPOTHESIS_LIMIT_INVALID")
@@ -129,6 +130,7 @@ class SimpleAnalysisApplication:
         self._on_demand_possible = on_demand_possible
         self._max_parallel_hypotheses = max_parallel_hypotheses
         self._max_elapsed_seconds = max_elapsed_seconds
+        self._max_tokens = max_tokens
 
     async def analyze(
         self,
@@ -332,6 +334,8 @@ class SimpleAnalysisApplication:
         self._promote_legacy_inconclusive_pocs(exact)
         if self._max_elapsed_seconds is not None:
             self._store.reopen_elapsed_budget_failures(exact, self._max_elapsed_seconds)
+        if self._max_tokens == "unlimited":
+            self._store.reopen_token_budget_failures(exact)
         if (
             run.workspace_path is None
             or run.repository_profile_ref is None

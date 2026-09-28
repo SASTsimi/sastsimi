@@ -31,7 +31,7 @@ sastsimi resume A-001
 실행 프로세스가 종료됐는데 checkpoint가 `RUNNING`으로 남은 경우에는
 `resume A-001`로 중단 지점의 복구를 시도할 수 있습니다.
 
-`LLM_TOKEN_BUDGET_EXHAUSTED`는 저장된 입력·출력 토큰 합계가 설정 한도에 도달해 다음 요청을 차단한 상태입니다. 요청 전 검사이므로 한 번의 호출이 한도를 넘어설 수 있습니다. `LLM_TOKEN_USAGE_UNAVAILABLE`은 이전 시도의 토큰 수치를 확인할 수 없어 후속 요청을 차단한 상태입니다. Codex CLI의 정상 완료 이벤트에 포함된 토큰은 기록하지만 누락·잘못된 사용량은 성공으로 인정하지 않습니다. Cursor CLI는 정상 응답에도 토큰 수치가 없어 첫 호출은 성공할 수 있지만 같은 분석의 다음 LLM 요청이 차단될 수 있습니다. `resume`해도 저장된 미확인 시도는 남습니다.
+`LLM_TOKEN_BUDGET_EXHAUSTED`는 숫자로 설정한 누적 토큰 한도에 도달해 다음 요청을 차단한 상태입니다. 요청 전 검사이므로 한 번의 호출이 한도를 넘어설 수 있습니다. `LLM_TOKEN_USAGE_UNAVAILABLE`은 숫자 한도가 설정됐지만 이전 시도의 토큰 수치를 확인할 수 없어 후속 요청을 차단한 상태입니다. 새 `setup`의 기본값 `max_tokens = "unlimited"`에서는 이 두 차단을 적용하지 않습니다. 기존 설치의 `config.toml`과 `profile.toml` 모두 `max_tokens`를 `"unlimited"`로 바꾼 뒤 `resume`하면 해당 실패 단계를 다시 시도할 수 있습니다. 사용량 미확인 기록은 지우지 않으며 Codex CLI의 누락·잘못된 정상 완료 이벤트도 성공으로 인정하지 않습니다. Cursor CLI에서 토큰 수치가 없는 정상 응답은 무제한 설정에서 다음 요청을 차단하지 않지만 사용량은 미확인으로 남습니다.
 
 `LLM_COST_USAGE_UNAVAILABLE`은 이전 OpenAI API 시도의 신뢰할 수 있는 금액이 없어 후속 API 요청을 차단한 상태입니다. API adapter는 실제 청구 금액을 산출하지 않습니다. Codex·Cursor CLI는 비용을 제공하지 않고 Cursor SDK의 비용 확정도 늦을 수 있습니다. `max_cost_minor_units`는 기록된 신뢰 가능한 비용에만 다음 요청 전에 적용되므로 실제 청구액의 정확한 상한은 아닙니다. Provider 계정의 사용량과 지출 설정을 확인하세요. 미확인 시도가 남아 있으면 `resume`만 반복해도 차단이 해소되지 않습니다.
 

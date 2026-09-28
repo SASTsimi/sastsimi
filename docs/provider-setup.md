@@ -35,7 +35,7 @@ sastsimi setup --auth api-key --provider openai --model <model>
 
 설정 파일에는 `env:OPENAI_API_KEY`라는 환경변수 참조만 저장됩니다. 분석을 실행하는 각 터미널이나 서비스에도 해당 환경변수가 있어야 합니다.
 
-Responses API가 제공한 유효한 입력·출력 토큰은 호출 기록에 저장하고, 기록된 누적 토큰이 `max_tokens`에 도달하면 다음 요청을 차단합니다. 이 검사는 요청 전에 수행하므로 요청 하나가 토큰 한도를 넘길 수 있습니다. 토큰 수치를 확인할 수 없었던 시도가 있으면 후속 LLM 요청은 `LLM_TOKEN_USAGE_UNAVAILABLE`로 차단됩니다. 현재 API adapter는 신뢰할 수 있는 요청별 청구 금액을 산출하지 않습니다. 첫 비용 미확인 API 시도 뒤의 후속 API 요청은 `LLM_COST_USAGE_UNAVAILABLE`로 차단하지만, 이미 수행된 요청의 금액이나 정확한 `max_cost_minor_units` 상한을 보장하지는 않습니다. 실제 청구액은 계정 사용량에서 확인하세요.
+Responses API가 제공한 유효한 입력·출력 토큰은 호출 기록에 저장합니다. 새 `setup`의 누적 토큰 한도 `max_tokens`는 `unlimited`입니다. 양의 정수로 지정한 경우에만 기록된 사용량이 한도에 도달하거나 이전 시도의 토큰 수치를 확인할 수 없을 때 후속 요청을 차단합니다. 요청 전 검사이므로 요청 하나가 숫자 한도를 넘길 수 있습니다. 현재 API adapter는 신뢰할 수 있는 요청별 청구 금액을 산출하지 않습니다. 첫 비용 미확인 API 시도 뒤의 후속 API 요청은 `LLM_COST_USAGE_UNAVAILABLE`로 차단하지만, 이미 수행된 요청의 금액이나 정확한 `max_cost_minor_units` 상한을 보장하지는 않습니다. 실제 청구액은 계정 사용량에서 확인하세요.
 
 ## Codex 회원 로그인
 
@@ -53,9 +53,11 @@ Agent 호출은 같은 인증 파일을 동시에 갱신하는 충돌을 줄이�
 
 새 Codex `setup`에서 모델을 생략하면 기본 제안은 `gpt-6-sol`입니다. 기존 설치의 모델은 자동으로 변경하지 않습니다. 현재 로그인에서 해당 모델을 실제 사용할 수 있는지 분석 전에 확인하세요. 특정 모델을 쓰려면 언제든 `--model <확인한-ID>`로 덮어쓸 수 있습니다.
 
-Codex CLI의 완료 이벤트에 유효한 입력·출력 토큰이 있으면 SimpleRuntime가 이를 호출 기록에 저장합니다. 성공한 CLI 응답에는 이 수치가 필요하며, 없거나 잘못된 완료 이벤트는 `INVALID_OUTPUT`입니다. 저장된 누적 토큰이 `max_tokens`에 도달하면 다음 LLM 요청을 차단하지만 요청 하나가 한도를 넘길 수 있습니다. 토큰 사용량을 확인할 수 없었던 시도가 남아 있으면 후속 요청은 `LLM_TOKEN_USAGE_UNAVAILABLE`로 차단됩니다. Codex CLI는 이 경로에서 금액 정보를 제공하지 않아 `max_cost_minor_units`로 실제 청구액을 강제할 수 없습니다. 대시보드의 미제공 비용은 0이나 무료라는 뜻이 아니며 회원 사용량은 Codex 계정에서 확인하세요.
+Codex CLI의 완료 이벤트에 유효한 입력·출력 토큰이 있으면 SimpleRuntime가 이를 호출 기록에 저장합니다. 성공한 CLI 응답에는 이 수치가 필요하며, 없거나 잘못된 완료 이벤트는 `INVALID_OUTPUT`입니다. 기본값 `max_tokens = "unlimited"`는 누적 토큰으로 후속 요청을 차단하지 않습니다. `--max-tokens <양의 정수>`를 지정한 경우에는 누적 사용량이나 이전 시도의 사용량 미확인을 다음 요청 전에 검사합니다. Codex CLI는 이 경로에서 금액 정보를 제공하지 않아 `max_cost_minor_units`로 실제 청구액을 강제할 수 없습니다. 대시보드의 미제공 비용은 0이나 무료라는 뜻이 아니며 회원 사용량은 Codex 계정에서 확인하세요.
 
 새 `setup`의 `max_elapsed_seconds` 기본값은 `unlimited`입니다. 기존 숫자 설정은 재개 간 DB에 기록된 LLM 시도의 누적 실행시간 상한으로 계속 적용되며, 다음 LLM 요청 전에 확인합니다. 분석을 중단한 시간·Docker 작업 시간은 소모하지 않습니다. 이 값은 이미 실행 중인 요청이나 Docker 작업을 즉시 종료하는 타이머가 아니며, 개별 호출 타임아웃과 취소는 별도로 유지됩니다. 기존 숫자 한도에 도달한 분석은 계정 사용량을 확인하고 설정을 높이거나 `unlimited`로 바꾼 후 `resume`하세요.
+
+새 `setup`의 `max_tokens` 기본값도 `unlimited`입니다. 기존 설치에 저장된 숫자 한도는 자동 변경되지 않으므로 무제한을 적용하려면 `config.toml`과 `profile.toml`의 `max_tokens = "unlimited"`를 확인하세요. 숫자 토큰 한도를 사용하다 `LLM_TOKEN_BUDGET_EXHAUSTED` 또는 `LLM_TOKEN_USAGE_UNAVAILABLE`로 중단된 분석은 무제한으로 바꿔 `resume`하면 해당 실패 단계만 다시 시도합니다. 누락된 사용량은 여전히 누락으로 기록되며 성공한 근거처럼 취급하지 않습니다. Provider 계정 자체의 사용량 및 결제 한도는 별도로 확인해야 합니다.
 
 ## Cursor 회원 로그인 또는 API key (선택형)
 
