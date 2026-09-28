@@ -5,7 +5,7 @@ import logging
 import sqlite3
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -66,7 +66,7 @@ def _wrapper(
     *,
     max_retries: int = 2,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-    max_tokens: int | str = 1000,
+    max_tokens: int | Literal["unlimited"] = 1000,
 ) -> RunLimitedClient:
     identity = CheckpointIdentity(
         analysis_id="analysis-queue",

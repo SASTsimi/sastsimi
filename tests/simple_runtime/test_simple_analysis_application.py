@@ -6,7 +6,7 @@ import json
 import sqlite3
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -1790,7 +1790,7 @@ async def test_resume_reopens_only_elapsed_failure_with_remaining_budget(
 async def test_resume_reopens_token_failures_only_without_cumulative_token_limit(
     tmp_path: Path,
     failure_code: str,
-    max_tokens: int | str,
+    max_tokens: int | Literal["unlimited"],
     expected_status: str,
 ) -> None:
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
