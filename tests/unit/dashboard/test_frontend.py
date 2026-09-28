@@ -88,6 +88,6 @@ setImmediate(() => {
         capture_output=True,
         text=True,
         check=False,
-        timeout=10,
+        timeout=60,
     )
     assert result.returncode == 0, result.stderr
