@@ -23,14 +23,18 @@ def _loopback(host: str) -> bool:
         return False
 
 
-def run(data_dir: Path, host: str, port: int) -> None:
+def run(data_dir: Path, host: str, port: int, *, demo: bool = False) -> None:
     if not _loopback(host):
         raise ValueError("DASHBOARD_LOOPBACK_ONLY")
     if not 1 <= port <= 65535:
         raise ValueError("DASHBOARD_PORT_INVALID")
-    sys.stdout.write(f"대시보드: http://{host}:{port}\n종료: Ctrl+C\n")
+    mode = " · 시연용 가상 데이터 (실제 분석 결과 아님)" if demo else ""
+    sys.stdout.write(f"대시보드: http://{host}:{port}{mode}\n종료: Ctrl+C\n")
     try:
-        serve_dashboard(data_dir, host, port)
+        if demo:
+            serve_dashboard(data_dir, host, port, demo=True)
+        else:
+            serve_dashboard(data_dir, host, port)
     except KeyboardInterrupt:
         return
 

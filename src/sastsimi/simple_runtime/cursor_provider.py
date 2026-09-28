@@ -16,6 +16,7 @@ import re
 import subprocess
 import tempfile
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import monotonic
 from typing import Any, Protocol
@@ -31,17 +32,30 @@ from .provider import (
     SimpleLLMClient,
     _validate_schema,
 )
+from .reasoning import validate_reasoning_effort
 from .store import SimpleCheckpointStore
 
 _LOG = logging.getLogger(__name__)
 _MAX_RAW_BYTES = 512 * 1024
 
 
+@dataclass(frozen=True)
+class CursorModelCapability:
+    """Parameter IDs and exact values read from this account's SDK catalog."""
+
+    parameter_id: str | None = None
+    supported_levels: frozenset[str] = frozenset()
+
+
+type CursorModels = set[str] | dict[str, CursorModelCapability]
+type CursorModelChoice = str | Mapping[str, Any]
+
+
 class CursorTransport(Protocol):
-    async def list_models(self, api_key: str) -> set[str]: ...
+    async def list_models(self, api_key: str) -> CursorModels: ...
 
     async def complete(
-        self, *, api_key: str, model: str, prompt: str, timeout: float
+        self, *, api_key: str, model: CursorModelChoice, prompt: str, timeout: float
     ) -> tuple[str, dict[str, int | float | None]]: ...
 
 
@@ -51,17 +65,37 @@ class OfficialCursorTransport:
     def __init__(self, workspace: str) -> None:
         self._workspace = workspace
 
-    async def list_models(self, api_key: str) -> set[str]:
+    async def list_models(self, api_key: str) -> CursorModels:
         from cursor_sdk import AsyncClient, AsyncCursor
 
         async with await AsyncClient.launch_bridge(
             workspace=self._workspace, client_timeout=30, max_retries=0
         ) as client:
             models = await AsyncCursor.models.list(client=client, api_key=api_key)
-            return {item.id for item in models}
+            result: dict[str, CursorModelCapability] = {}
+            for item in models:
+                candidates = [
+                    parameter
+                    for parameter in item.parameters
+                    if parameter.id.lower().replace("_", " ")
+                    in {"reasoning", "reasoning effort"}
+                    or parameter.display_name.lower()
+                    in {"reasoning", "reasoning effort"}
+                ]
+                result[item.id] = (
+                    CursorModelCapability(
+                        parameter_id=candidates[0].id,
+                        supported_levels=frozenset(
+                            value.value for value in candidates[0].values
+                        ),
+                    )
+                    if len(candidates) == 1
+                    else CursorModelCapability()
+                )
+            return result
 
     async def complete(
-        self, *, api_key: str, model: str, prompt: str, timeout: float
+        self, *, api_key: str, model: CursorModelChoice, prompt: str, timeout: float
     ) -> tuple[str, dict[str, int | float | None]]:
         from cursor_sdk import AgentOptions, AsyncClient, LocalAgentOptions
 
@@ -247,9 +281,11 @@ class OfficialCursorCLITransport:
         return models
 
     async def complete(
-        self, *, api_key: str, model: str, prompt: str, timeout: float
+        self, *, api_key: str, model: CursorModelChoice, prompt: str, timeout: float
     ) -> tuple[str, dict[str, int | float | None]]:
         del api_key
+        if not isinstance(model, str):
+            raise CursorCLIModelError()
         output = await self._run(
             "--print",
             "--trust",
@@ -307,7 +343,7 @@ class CursorCLITemporaryError(Exception):
 
 class CursorModelCatalog:
     def __init__(self) -> None:
-        self.models: set[str] | None = None
+        self.models: CursorModels | None = None
         self.credential_digest: str | None = None
         self.refreshed_at: float = 0.0
         self.lock = asyncio.Lock()
@@ -372,6 +408,8 @@ class CursorProvider:
         use_cli_login: bool = False,
         model_catalog: CursorModelCatalog | None = None,
         budget_check: Callable[[], StageFailure | None] | None = None,
+        reasoning_effort: str | None = None,
+        agent_reasoning_efforts: Mapping[str, str] | None = None,
     ) -> None:
         self._artifacts = artifacts
         self._default_model = default_model
@@ -386,8 +424,10 @@ class CursorProvider:
         self._attempt_store = SimpleCheckpointStore(artifacts.paths.database)
         self._catalog = model_catalog or CursorModelCatalog()
         self._budget_check = budget_check
+        self._reasoning_effort = reasoning_effort
+        self._agent_reasoning_efforts = dict(agent_reasoning_efforts or {})
 
-    async def _models(self, key: str) -> set[str]:
+    async def _models(self, key: str) -> CursorModels:
         async with self._catalog.lock:
             marker = hashlib.sha256(key.encode("utf-8")).hexdigest()
             if (
@@ -437,6 +477,15 @@ class CursorProvider:
                 ),
             )
         model = self._agent_models.get(agent_name, self._default_model)
+        selected_effort = self._agent_reasoning_efforts.get(
+            agent_name, self._reasoning_effort
+        )
+        if self._use_cli_login and selected_effort is not None:
+            unsupported = validate_reasoning_effort(
+                "cursor-cli", model, selected_effort, supported_levels=None
+            )
+            assert isinstance(unsupported, StageFailure)
+            return unsupported
         try:
             models = await self._models(key)
         except Exception as error:
@@ -463,6 +512,28 @@ class CursorProvider:
                     "run sastsimi cursor-models and select a returned ID"
                 ),
             )
+
+        capability = models.get(model) if isinstance(models, dict) else None
+        effort = validate_reasoning_effort(
+            "cursor-sdk",
+            model,
+            selected_effort,
+            supported_levels=capability.supported_levels
+            if capability is not None
+            else None,
+        )
+        if isinstance(effort, StageFailure):
+            return effort
+        model_choice: CursorModelChoice = model
+        if (
+            effort is not None
+            and capability is not None
+            and capability.parameter_id is not None
+        ):
+            model_choice = {
+                "id": model,
+                "params": [{"id": capability.parameter_id, "value": effort}],
+            }
 
         timeout = min(self._timeout, max(1, timeout_ms) / 1000)
         schema_text = json.dumps(output_schema, ensure_ascii=False, sort_keys=True)
@@ -492,7 +563,7 @@ class CursorProvider:
                     raw, usage = await asyncio.wait_for(
                         self._transport.complete(
                             api_key=key,
-                            model=model,
+                            model=model_choice,
                             prompt=base_prompt + correction,
                             timeout=timeout,
                         ),

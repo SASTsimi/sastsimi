@@ -57,6 +57,7 @@ class CodexProcessRequest:
     prompt: bytes
     output_schema: bytes
     timeout_ms: int
+    reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True)

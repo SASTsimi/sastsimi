@@ -1,0 +1,7 @@
+{
+  "analysis_id": "demo-analysis",
+  "display_analysis_id": "DEMO-001",
+  "repository": "https://example.invalid/sastsimi-demo",
+  "hypothesis_count": 4,
+  "confirmed_findings": 0
+}

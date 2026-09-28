@@ -102,9 +102,28 @@ class ProgressRenderer:
             self._seen_event_ids.add(event.event_id)
             tool = event.tool_name or "-"
             summary = " ".join(event.summary_ko.splitlines())
+            substage = getattr(event, "substage", None)
+            metrics = getattr(event, "metrics", None) or {}
+            labels = {
+                "artifacts": "산출물",
+                "expected": "전체",
+                "processed": "처리",
+                "verified": "검증",
+                "remaining": "남음",
+                "candidates": "후보",
+                "findings": "확정",
+            }
+            counts = " ".join(
+                f"{labels[key]}={metrics[key]}"
+                for key in sorted(metrics)
+                if key in labels
+            )
             line = (
                 f"[{event.status}] {event.stage} · {event.agent_role} · "
-                f"tool={tool} · {summary}"
+                f"tool={tool}"
+                + (f" · {substage}" if substage else "")
+                + (f" · {counts}" if counts else "")
+                + f" · {summary}"
             )
             color = (
                 "\033[31m"
@@ -138,6 +157,8 @@ class ProgressRenderer:
                     "stage": event.stage,
                     "agent": event.agent_role,
                     "tool": tool,
+                    "substage": getattr(event, "substage", None),
+                    "metrics": getattr(event, "metrics", None) or {},
                     "summary": event.summary_ko,
                 },
                 ensure_ascii=False,

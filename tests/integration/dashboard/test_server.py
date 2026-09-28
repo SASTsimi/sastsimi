@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import threading
 import urllib.error
@@ -9,11 +8,10 @@ import zipfile
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 
-from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
-from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.dashboard.server import create_server
 from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
@@ -86,6 +84,17 @@ def seed(data_dir) -> None:
     hypothesis_proposal = artifacts.put_json(
         {
             "kind": "simple_hypothesis_proposal",
+            "analysis_id": "analysis-1",
+            "hypothesis_id": "hypothesis-1",
+            "proposal": {
+                "title": "Unsafe command flow",
+                "vulnerability_type": "Command Injection",
+                "summary": "User input can reach a process execution call.",
+                "code_locations": ["app.py:10", "app.py:24"],
+                "source": "request.args['command']",
+                "sink": "subprocess.run(command)",
+                "rationale": "The value is not validated before execution.",
+            },
             "llm_request_ref": hypothesis_request.model_dump(mode="json"),
             "llm_response_ref": hypothesis_response.model_dump(mode="json"),
         }
@@ -101,9 +110,37 @@ def seed(data_dir) -> None:
     static_bundle = artifacts.put_json(
         {
             "kind": "simple_static_fact_bundle",
-            "opengrep_findings": [{"path": "app.py"}],
-            "codeql_findings": [],
+            "ast_summary": {
+                "facts": [{"path": "app.py", "line": 10, "name": "request.args"}]
+            },
+            "opengrep_findings": [
+                {
+                    "path": "app.py",
+                    "line": 24,
+                    "check_id": "opengrep.command-injection",
+                }
+            ],
+            "codeql_findings": [
+                {
+                    "path": "app.py",
+                    "line": 24,
+                    "rule_id": "py/command-line-injection",
+                }
+            ],
             "codeql_executed": True,
+        }
+    )
+    finding_ref = artifacts.put_json(
+        {
+            "kind": "simple_finding",
+            "status": "CONFIRMED_INTERNAL",
+            "analysis_id": "analysis-1",
+            "hypothesis_id": "hypothesis-1",
+            "validated_poc_ref": poc.model_dump(mode="json"),
+            "source_refs": [
+                static_bundle.model_dump(mode="json"),
+                hypothesis_proposal.model_dump(mode="json"),
+            ],
         }
     )
     store = SimpleCheckpointStore(database)
@@ -142,6 +179,18 @@ def seed(data_dir) -> None:
         ),
         outputs=(poc,),
     )
+    store.save_success(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.FINDING_DONE,
+            status=StageStatus.PENDING,
+            input_refs=(poc,),
+            input_hash=input_reference_hash((poc,)),
+            validated_poc_ref=poc,
+            verdict="TRUE",
+        ),
+        outputs=(finding_ref,),
+    )
     AgentActivityStore(database).append(
         AgentActivityEvent(
             event_id="event-llm-1",
@@ -164,14 +213,6 @@ def seed(data_dir) -> None:
             output_digest="1" * 64,
             started_at=datetime.now(UTC),
         )
-    )
-    finding_ref = StoredDataRef(
-        stored_data_id=StoredDataId("finding-stored"),
-        data_kind="finding",
-        content_hash=hashlib.sha256(b"finding").hexdigest(),
-        workspace_id=WorkspaceId("workspace-1"),
-        commit_id=CommitId("commit-1"),
-        record_id=RecordId("finding-record"),
     )
     FindingDisplayIdStore(database).get_or_allocate("analysis-1", finding_ref)
     report = data_dir / "reports" / "analysis-1" / "F-001.md"
@@ -214,8 +255,8 @@ def seed(data_dir) -> None:
 
 
 @contextmanager
-def running_server(data_dir):
-    server = create_server(data_dir, host="127.0.0.1", port=0)
+def running_server(data_dir, *, demo: bool = False):
+    server = create_server(data_dir, host="127.0.0.1", port=0, demo=demo)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -235,6 +276,47 @@ def request(url: str, *, method: str = "GET"):
         return error
 
 
+def test_demo_mode_uses_synthetic_memory_data_without_touching_database(
+    tmp_path,
+) -> None:
+    expected = json.loads(
+        (
+            Path(__file__).resolve().parents[2] / "fixtures" / "dashboard_demo.json"
+        ).read_text(encoding="utf-8")
+    )
+    with running_server(tmp_path, demo=True) as base:
+        meta = json.loads(request(f"{base}/api/meta").read())
+        analyses = json.loads(request(f"{base}/api/analyses").read())
+        detail = json.loads(request(f"{base}/api/analyses/DEMO-001").read())
+        cells = json.loads(
+            request(
+                f"{base}/api/analyses/DEMO-001/status-cells?offset=0&limit=2"
+            ).read()
+        )
+        events = json.loads(request(f"{base}/api/analyses/DEMO-001/events").read())
+        page = request(base).read().decode()
+        assert meta == {"demo": True}
+        assert 'id="demo-banner"' in page
+        assert analyses[0]["analysis_id"] == expected["analysis_id"]
+        assert analyses[0]["repository"] == expected["repository"]
+        assert detail["display_analysis_id"] == expected["display_analysis_id"]
+        assert detail["hypothesis_count"] == expected["hypothesis_count"]
+        assert detail["kpis"]["confirmed_findings"] == expected["confirmed_findings"]
+        assert cells["total"] >= 2
+        assert len(cells["items"]) == 2
+        assert events and all(
+            event["analysis_id"] == "demo-analysis" for event in events
+        )
+        assert request(f"{base}/api/analyses/DEMO-001/bundle.zip").status == 404
+        assert request(f"{base}/api/analyses", method="POST").status == 405
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_live_dashboard_metadata_is_not_demo(tmp_path) -> None:
+    with running_server(tmp_path) as base:
+        assert json.loads(request(f"{base}/api/meta").read()) == {"demo": False}
+
+
 def test_server_is_local_read_only_and_serves_current_state(tmp_path) -> None:
     seed(tmp_path)
     with running_server(tmp_path) as base:
@@ -246,6 +328,17 @@ def test_server_is_local_read_only_and_serves_current_state(tmp_path) -> None:
         assert response.headers["X-Content-Type-Options"] == "nosniff"
         assert request(f"{base}/api/analyses", method="POST").status == 405
         assert request(f"{base}/analyses/A-001").status == 200
+        page = request(f"{base}/analyses/A-001").read().decode()
+        assert 'id="presentation-toggle"' in page
+        assert 'id="kpi-grid"' in page
+        assert 'id="status-grid"' in page
+        assert 'id="execution-history"' in page
+        assert 'id="compare-analysis"' in page
+        assert 'id="replay-toggle"' in page
+        assert 'id="finding-traces"' in page
+        assert 'id="artifact-relations"' in page
+        assert 'id="readiness"' in page
+        assert 'id="usage"' in page
         assert (
             json.loads(request(f"{base}/api/analyses/A-001").read())["analysis_id"]
             == "analysis-1"
@@ -264,10 +357,51 @@ def test_server_serves_redacted_artifacts_reports_logs_and_bundle(tmp_path) -> N
             "status": "NOT_STARTED",
             "finding_count": 1,
         }
+        assert detail["static_tools"][2]["finding_count"] == 1
+        overlap = next(
+            item
+            for item in detail["static_tool_findings"]
+            if item["location"] == "app.py:24"
+        )
+        assert overlap["overlap"] is True
+        assert overlap["tools"] == ["CodeQL", "OpenGrep"]
         assert detail["commit_id"] == "commit-1"
         assert detail["profile_ref"] == "profile-test"
         assert detail["provider"] == "codex-cli"
         assert detail["model"] == "gpt-test"
+        assert detail["hypotheses"][0]["source"] == "request.args['command']"
+        assert detail["hypotheses"][0]["sink"] == "subprocess.run(command)"
+        assert detail["hypotheses"][0]["vulnerability_type"] == ("Command Injection")
+        assert detail["usage"] == {
+            "invocation_count": 2,
+            "succeeded_count": 2,
+            "failed_count": 0,
+            "retry_count": 0,
+            "known_usage_count": 1,
+            "unknown_usage_count": 1,
+            "input_tokens": 10,
+            "output_tokens": 4,
+            "total_tokens": 14,
+            "elapsed_ms": 0,
+        }
+        readiness = {item["key"]: item for item in detail["readiness"]}
+        assert readiness["exact-target"]["status"] == "READY"
+        assert readiness["llm-provider"]["status"] == "READY"
+        assert readiness["static-core"]["status"] == "WAITING"
+        assert readiness["presentation-output"]["status"] == "READY"
+        assert detail["presentation_bundle_url"].endswith("/presentation.zip")
+        assert detail["reports"][0]["english_available"] is False
+        assert detail["reports"][0]["english_view_url"] is None
+        assert detail["artifact_relations"]
+        trace = detail["finding_traces"][0]
+        assert trace["display_id"] == "F-001"
+        assert trace["hypothesis_id"] == "hypothesis-1"
+        assert trace["source"] == "request.args['command']"
+        assert trace["sink"] == "subprocess.run(command)"
+        assert trace["validated_poc"] is True
+        assert trace["poc_artifact_ids"]
+        assert trace["evidence_artifact_ids"]
+        assert trace["english_available"] is False
         assert len(detail["llm_invocations"]) == 2
         invocation = next(
             item
@@ -296,9 +430,26 @@ def test_server_serves_redacted_artifacts_reports_logs_and_bundle(tmp_path) -> N
 
         report = json.loads(request(f"{base}/api/analyses/A-001/reports/F-001").read())
         assert report["markdown"] == "# 한국어 보고서"
+        assert request(f"{base}/api/analyses/A-001/reports/F-001?lang=en").status == 404
+        assert (
+            request(f"{base}/api/analyses/A-001/reports/F-001/download?lang=en").status
+            == 404
+        )
+        assert request(f"{base}/api/analyses/A-001/reports/F-001?lang=fr").status == 404
         assert (
             "POC_CANDIDATE_DONE"
             in request(f"{base}/api/analyses/A-001/logs/download").read().decode()
+        )
+
+        assert (
+            json.loads(
+                request(f"{base}/api/analyses/A-001/events?after=event-llm-1").read()
+            )
+            == []
+        )
+        assert (
+            request(f"{base}/api/analyses/A-001/events?after=missing-event").status
+            == 404
         )
 
         bundle = request(f"{base}/api/analyses/A-001/bundle.zip").read()
@@ -311,6 +462,17 @@ def test_server_serves_redacted_artifacts_reports_logs_and_bundle(tmp_path) -> N
             assert any(
                 name.startswith("artifacts/simple_validated_poc-") for name in names
             )
+
+        presentation = request(f"{base}/api/analyses/A-001/presentation.zip").read()
+        with zipfile.ZipFile(BytesIO(presentation)) as archive:
+            names = set(archive.namelist())
+            assert "presentation/README.md" in names
+            assert "presentation/summary.json" in names
+            assert "reports/F-001.md" in names
+            assert "reports/en/F-001.md" not in names
+            summary = json.loads(archive.read("presentation/summary.json"))
+            assert summary["analysis_id"] == "analysis-1"
+            assert summary["english_report_ids"] == []
 
         selected_bundle = request(
             f"{base}/api/analyses/A-001/bundle.zip?selected=1&artifact={request_id}"
@@ -595,6 +757,109 @@ def test_server_downloads_only_current_manifest_files(tmp_path) -> None:
 def test_server_rejects_non_loopback_bind(tmp_path) -> None:
     with pytest.raises(ValueError, match="DASHBOARD_LOOPBACK_ONLY"):
         create_server(tmp_path, host="0.0.0.0", port=8765)
+
+
+def test_status_cells_endpoint_pages_and_rejects_invalid_request(tmp_path) -> None:
+    seed(tmp_path)
+    with running_server(tmp_path) as base:
+        response = request(f"{base}/api/analyses/A-001/status-cells?offset=0&limit=1")
+        payload = json.loads(response.read())
+        assert response.status == 200
+        assert payload["total"] == 1
+        assert len(payload["items"]) == 1
+        assert payload["items"][0]["id"] == "hypothesis-1"
+        assert request(f"{base}/api/analyses/A-001/status-cells?limit=0").status == 400
+        assert request(f"{base}/api/analyses/analysis-other/status-cells").status == 404
+
+
+def test_verified_markdown_artifact_has_safe_preview_and_download(tmp_path) -> None:
+    seed(tmp_path)
+    with running_server(tmp_path) as base:
+        detail = json.loads(request(f"{base}/api/analyses/A-001").read())
+        markdown = next(
+            item
+            for item in detail["artifacts"]
+            if item["media_type"] == "text/markdown"
+        )
+        payload = json.loads(request(f"{base}{markdown['view_url']}").read())
+        assert payload["rendered_html"].startswith("<h1>")
+        assert payload["truncated"] is False
+        assert payload["download_url"] == markdown["download_url"]
+        assert request(f"{base}{markdown['download_url']}").read().startswith(b"#")
+        report = json.loads(request(f"{base}/api/analyses/A-001/reports/F-001").read())
+        assert report["rendered_html"].startswith("<h1>")
+        assert report["truncated"] is False
+        assert request(f"{base}/api/analyses/A-001/reports/%2e%2e").status == 404
+
+
+def test_verified_markdown_attachments_have_sanitized_preview(tmp_path) -> None:
+    seed(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    finding = FindingDisplayIdStore.resolve_existing(
+        store.database_path, "analysis-1", "F-001"
+    )
+    attach_current_bundle(tmp_path, identity, finding, "F-001")
+    with running_server(tmp_path) as base:
+        detail = json.loads(request(f"{base}/api/analyses/A-001").read())
+        assert detail["reports"][0]["english_available"] is True
+        english = json.loads(
+            request(f"{base}/api/analyses/A-001/reports/F-001?lang=en").read()
+        )
+        assert english["markdown"] == "# English report\n"
+        assert english["rendered_html"] == "<h1>English report</h1>\n"
+        assert (
+            request(f"{base}/api/analyses/A-001/reports/F-001/download?lang=en").read()
+            == b"# English report\n"
+        )
+        previews = detail["reports"][0]["attachment_preview_urls"]
+        assert set(previews) == {"report_en.md", "report_kr.md"}
+        payload = json.loads(request(f"{base}{previews['report_en.md']}").read())
+        assert payload["rendered_html"].startswith("<h1>English report</h1>")
+        assert payload["download_url"].endswith("/files/report_en.md")
+        assert (
+            request(f"{base}/reports/analysis-1/F-001/files/poc.sh/preview").status
+            == 404
+        )
+
+
+def test_legacy_text_artifact_can_use_markdown_view_without_media_metadata(
+    tmp_path,
+) -> None:
+    seed(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    markdown_ref = SimpleArtifactRepository(tmp_path, identity).put_bytes(
+        b"**bold**", "text/markdown"
+    )
+    SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3").save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.CWE_DONE,
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(markdown_ref,),
+        )
+    )
+    with running_server(tmp_path) as base:
+        payload = json.loads(
+            request(
+                f"{base}/api/analyses/A-001/artifacts/{markdown_ref.content_hash}"
+            ).read()
+        )
+        assert payload["media_type"] == "text/plain"
+        assert "<strong>bold</strong>" in payload["rendered_html"]
+        assert payload["content"] == "**bold**"
 
 
 def test_event_cursor_keeps_late_written_event(tmp_path) -> None:

@@ -75,6 +75,19 @@ def test_invalid_environment_fails_before_override(environ: dict[str, str]) -> N
         load_config(environ=environ, cli={"log_level": "INFO"})
 
 
+def test_setup_reasoning_environment_is_explicitly_allowed() -> None:
+    from sastsimi.config.loader import load_config
+
+    config = load_config(
+        environ={
+            "SASTSIMI_REASONING_EFFORT": "high",
+            "SASTSIMI_AGENT_REASONING_EFFORTS": "verification_result=xhigh",
+        }
+    )
+    assert config.setup_reasoning_effort == "high"
+    assert config.setup_agent_reasoning_efforts == "verification_result=xhigh"
+
+
 @pytest.mark.parametrize(
     "cli", [{"schema_version": 1}, {"secret": "x"}, {"output_format": "yaml"}]
 )

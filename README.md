@@ -23,7 +23,7 @@
 - **실행으로 확인하는 PoC**: Agent가 요청한 고정 commit의 Git 추적 소스만 제한적으로 확인하고 Docker에서 재현합니다. 최종 `TRUE` 판정에는 실행에 성공한 validated PoC가 필요합니다.
 - **연계형 취약점 탐색**: 이미 확인한 취약 조건을 연결해 더 큰 영향으로 이어지는 새 가설을 검증합니다.
 - **중단 지점부터 재개**: 성공한 저장소 준비·정적 분석·Agent 결과·Docker 이미지는 재사용하고 실패한 단계부터 이어서 실행합니다. Technical Gate의 근거 보완 요청은 새 PoC 후보부터 다시 검증합니다.
-- **진행 상황 확인**: CLI 진행 표시와 로컬 읽기 전용 대시보드에서 단계, 가설, 오류, Finding과 보고서를 확인할 수 있습니다.
+- **진행 상황 확인**: CLI는 정적 검사 세부 단계·검증된 처리 수·후보 수를, 로컬 읽기 전용 대시보드는 커버리지·가설 상태 격자·이력·아티팩트와 보고서를 보여 줍니다. 후보와 확정 Finding은 구분합니다.
 - **검토 가능한 결과물**: 기존 한국어 Markdown과 함께, 새 Finding에는 영문·국문 보고서 및 검증된 PoC·근거 파일을 묶어 제공합니다. 외부 제보·공개 여부는 사람이 결정합니다.
 - **정책 근거별 Scope Gate**: 공개 GitHub 저장소의 공식 `SECURITY.md`를 확인하고 정책 출처·개정과 인용 근거를 보고서와 대시보드에 표시합니다. 정책이 없거나 근거가 부족하면 외부 제보 가능 여부는 `UNCERTAIN`입니다.
 
@@ -65,6 +65,7 @@ sastsimi setup --non-interactive --auth subscription --provider codex --model gp
 ```
 
 `setup`은 기본 저장 위치, Provider·모델, 분석 도구, 사용 제한과 Docker 네트워크를 구성합니다. Codex에서 모델을 생략하면 새 설정의 기본 제안은 `gpt-6-sol`이며, 기존 설치 설정은 자동으로 바뀌지 않습니다. 다른 모델은 `--model`로 지정하세요. API key와 로그인 token은 설정 파일에 직접 저장하지 않습니다. `full`에는 CodeQL query pack이 필요합니다.
+추론 수준은 `--reasoning-effort medium`, 특정 Agent override는 `--agent-reasoning-effort verification_result=high`처럼 setup 시 지정할 수 있습니다. 미지정이면 기존 Provider 기본 동작을 유지하며, 지원하지 않는 조합은 실패 처리합니다. [Provider별 설정](docs/provider-setup.md#codex-회원-로그인)에 우선순위와 지원 범위가 있습니다.
 
 OpenGrep에서 파싱 경고·미검사·건너뜀 등으로 검증되지 않은 파일·규칙 조합만 로컬 Semgrep CE로 재검사하려면, 분석 시작 전 또는 기존 분석이 `BLOCKED`로 종료된 뒤 다음 PowerShell 한 줄 명령들을 순서대로 실행합니다. 후자의 경우 설정 후 `sastsimi resume A-001`로 이어갑니다. Semgrep은 기본값에서는 사용하지 않으며, `setup`을 다시 실행하면 기존 사용자 설정이 갱신되므로 다른 제한·모델 옵션도 필요에 맞게 함께 지정하세요. 로컬 규칙만 사용하며 분석 중 자동 설치나 계정 로그인은 하지 않습니다.
 
@@ -118,6 +119,7 @@ sastsimi report export F-001 --format markdown
 ```
 
 대시보드는 기본적으로 `http://127.0.0.1:8765`에서 열립니다. 조회 전용이며 판정, 재시도 또는 공개 승인 상태를 직접 변경하지 않습니다.
+발표 화면만 연습할 때는 `sastsimi dashboard --demo`로 실제 DB를 읽지 않는 가상 데이터를 볼 수 있습니다. 화면에는 `DEMO` 표시가 고정되고, 가상 데이터는 제보 가능한 결과가 아닙니다. PowerShell 녹화 도우미와 별도 MP4 전달 방법은 [3–5분 시연 안내](docs/dashboard-demo.md)에 있습니다.
 보고서 미리보기·다운로드·결과 ZIP은 같은 검증된 보고서 내용을 사용합니다. 영문 보고서와 PoC·증거는 현재 Finding의 검증된 첨부 manifest가 있을 때만 결과 ZIP에 포함됩니다. 아티팩트가 표시 한도(최대 512개, 파일당 1 MiB, 전체 64 MiB)를 넘거나 읽을 수 없으면 누락 최소 개수를 표시하고 불완전한 전체 ZIP은 제공하지 않습니다. 표시된 자료의 선택 다운로드는 계속 사용할 수 있습니다.
 
 ## 동작 방식

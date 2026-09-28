@@ -314,6 +314,10 @@ class CodexCliProcessRunner:
         ]
         for override in _CONFIG_OVERRIDES:
             arguments.extend(("--config", override))
+        if request.reasoning_effort is not None:
+            arguments.extend(
+                ("--config", f'model_reasoning_effort="{request.reasoning_effort}"')
+            )
         for feature in _DISABLED_FEATURES:
             arguments.extend(("--disable", feature))
         arguments.extend(("--enable", "skip_host_skill_discovery", "-"))
@@ -1065,6 +1069,9 @@ def _validate_process_request(request: CodexProcessRequest) -> None:
             for character in request.model
         )
         or request.timeout_ms <= 0
+        or request.reasoning_effort is not None
+        and request.reasoning_effort
+        not in {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
         or not request.prompt
         or not request.output_schema
     ):

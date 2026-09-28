@@ -35,4 +35,23 @@ def test_dashboard_cli_rejects_external_host(tmp_path) -> None:
     )
 
 
+def test_dashboard_cli_demo_mode_does_not_use_production_data(
+    monkeypatch, tmp_path
+) -> None:
+    called = {}
+
+    def fake(data_dir, host, port, *, demo=False):
+        called.update(data_dir=data_dir, host=host, port=port, demo=demo)
+
+    monkeypatch.setattr(dashboard_command, "serve_dashboard", fake)
+    assert main(["--data-dir", str(tmp_path), "dashboard", "--demo"]) == 0
+    assert called == {
+        "data_dir": tmp_path,
+        "host": "127.0.0.1",
+        "port": 8765,
+        "demo": True,
+    }
+    assert list(tmp_path.iterdir()) == []
+
+
 # mypy: disable-error-code="no-untyped-def,var-annotated"

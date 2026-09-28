@@ -97,6 +97,80 @@ def test_setup_cli_writes_ready_secret_free_configuration(
     assert "sk-" not in raw
 
 
+def test_setup_reasoning_roundtrip(tmp_path: Path, capsys) -> None:
+    from sastsimi.config.user_config import load_simple_execution_profile
+
+    service = _service(tmp_path)
+    code = main(
+        [
+            "setup",
+            "--non-interactive",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--auth",
+            "subscription",
+            "--provider",
+            "codex",
+            "--model",
+            "configured-model",
+            "--profile",
+            "lightweight",
+            "--reasoning-effort",
+            "medium",
+            "--agent-reasoning-effort",
+            "verification_result=high",
+            "--format",
+            "json",
+        ],
+        setup_service=service,
+    )
+
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "READY"
+    config = service.config_store.load()
+    profile = load_simple_execution_profile(tmp_path / "profile.toml")
+    assert config.reasoning_effort == "medium"
+    assert config.agent_reasoning_efforts == {"verification_result": "high"}
+    assert profile.resolve_reasoning_effort("verification_result") == "high"
+
+
+def test_setup_cli_reasoning_overrides_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    monkeypatch.setenv("SASTSIMI_REASONING_EFFORT", "low")
+    monkeypatch.setenv("SASTSIMI_AGENT_REASONING_EFFORTS", "verification_result=medium")
+    service = _service(tmp_path)
+    code = main(
+        [
+            "setup",
+            "--non-interactive",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--auth",
+            "subscription",
+            "--provider",
+            "codex",
+            "--model",
+            "configured-model",
+            "--profile",
+            "lightweight",
+            "--reasoning-effort",
+            "high",
+            "--agent-reasoning-effort",
+            "verification_result=xhigh",
+            "--format",
+            "json",
+        ],
+        setup_service=service,
+    )
+
+    assert code == 0
+    capsys.readouterr()
+    config = service.config_store.load()
+    assert config.reasoning_effort == "high"
+    assert config.agent_reasoning_efforts == {"verification_result": "xhigh"}
+
+
 def test_new_codex_setup_defaults_to_gpt_6_sol(tmp_path: Path, capsys) -> None:
     from sastsimi.config.user_config import load_simple_execution_profile
 

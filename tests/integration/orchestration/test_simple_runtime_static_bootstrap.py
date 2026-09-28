@@ -40,6 +40,7 @@ from sastsimi.simple_runtime.static_coverage import (
     plan_static_coverage,
 )
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
+from sastsimi.storage.agent_activity import AgentActivityStore
 
 
 class _Process:
@@ -311,6 +312,34 @@ async def test_all_batches_use_original_config_and_full_root(tmp_path: Path) -> 
     )
     assert {item["check_id"] for item in aggregate["results"]} == set(rule_ids)
     assert len(aggregate["batches"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_static_tool_boundaries_show_verified_counts_and_resume_reuses_event_id(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    store = _store(profile)
+    identity = _identity("analysis-metrics")
+    bootstrap = DirectStaticBootstrap(
+        profile=profile, process=_Process(), store=store, static_material_root=tmp_path
+    )
+    await bootstrap.run(_request(profile), identity)
+    activity = AgentActivityStore(profile.data_dir / "db" / "sastsimi.sqlite3")
+    events = activity.list_analysis(identity.analysis_id)
+    completed = {
+        item.substage: item for item in events if item.kind.value == "TOOL_COMPLETED"
+    }
+    assert completed["AST"].metrics["processed"] == 1
+    assert completed["OpenGrep"].metrics["verified"] == 1
+    assert completed["OpenGrep"].metrics["candidates"] == 1
+    assert completed["CodeQL"].metrics["candidates"] == 1
+    ids = {item.event_id for item in events}
+
+    await bootstrap.run(_request(profile), identity)
+    resumed = activity.list_analysis(identity.analysis_id)
+    assert {item.event_id for item in resumed} == ids
+    assert len(resumed) == len(events)
 
 
 @pytest.mark.asyncio

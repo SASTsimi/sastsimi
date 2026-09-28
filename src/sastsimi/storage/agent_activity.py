@@ -80,6 +80,17 @@ class AgentActivityStore:
             self.append_connection(connection, event)
             connection.commit()
 
+    def has_event(self, event_id: str) -> bool:
+        """Check one stable event ID without loading the full activity history."""
+        with self._connect() as connection:
+            return (
+                connection.execute(
+                    "SELECT 1 FROM agent_activity_events WHERE event_id = ?",
+                    (event_id,),
+                ).fetchone()
+                is not None
+            )
+
     def list_analysis(
         self,
         analysis_id: str,

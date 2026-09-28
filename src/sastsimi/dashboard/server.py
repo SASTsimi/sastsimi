@@ -10,9 +10,17 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
+from typing import Literal, cast
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from .query import DashboardIncomplete, DashboardNotFound, DashboardQuery
+from .demo import DemoDashboardQuery
+from .markdown_view import preview_markdown
+from .query import (
+    DashboardBadRequest,
+    DashboardIncomplete,
+    DashboardNotFound,
+    DashboardQuery,
+)
 
 _STATIC = Path(__file__).with_name("static")
 _CSP = (
@@ -35,12 +43,13 @@ def create_server(
     *,
     host: str = "127.0.0.1",
     port: int = 8765,
+    demo: bool = False,
 ) -> ThreadingHTTPServer:
     if not _loopback(host):
         raise ValueError("DASHBOARD_LOOPBACK_ONLY")
     if not 0 <= port <= 65535:
         raise ValueError("DASHBOARD_PORT_INVALID")
-    query = DashboardQuery(data_dir)
+    query: DashboardQuery = DemoDashboardQuery() if demo else DashboardQuery(data_dir)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -68,6 +77,15 @@ def create_server(
             parsed = urlsplit(self.path)
             parts = tuple(unquote(part) for part in parsed.path.split("/") if part)
             try:
+                if demo and (
+                    (parts and parts[0] == "reports")
+                    or (
+                        len(parts) >= 4
+                        and parts[:2] == ("api", "analyses")
+                        and parts[3] not in {"status-cells", "events"}
+                    )
+                ):
+                    raise DashboardNotFound("DASHBOARD_DEMO_ROUTE_NOT_FOUND")
                 if not parts:
                     self._file(
                         _STATIC / "index.html",
@@ -93,6 +111,8 @@ def create_server(
                         "text/javascript; charset=utf-8",
                         send_body,
                     )
+                elif parts == ("api", "meta"):
+                    self._json({"demo": demo}, send_body)
                 elif parts == ("api", "analyses"):
                     self._json(query.list_analyses(), send_body)
                 elif (
@@ -121,10 +141,26 @@ def create_server(
                     and parts[:2] == ("api", "analyses")
                     and parts[3] == "reports"
                 ):
+                    language = parse_qs(parsed.query).get("lang", ["ko"])[0]
+                    if language not in {"ko", "en"}:
+                        raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
+                    report_language = cast(Literal["ko", "en"], language)
+                    preview = preview_markdown(
+                        query.report_markdown(
+                            parts[2], parts[4], language=report_language
+                        )
+                    )
                     self._json(
                         {
                             "display_id": parts[4],
-                            "markdown": query.report_markdown(parts[2], parts[4]),
+                            "language": language,
+                            "markdown": preview.markdown,
+                            "rendered_html": preview.rendered_html,
+                            "truncated": preview.truncated,
+                            "download_url": (
+                                f"/api/analyses/{parts[2]}/reports/{parts[4]}/download"
+                                f"?lang={language}"
+                            ),
                         },
                         send_body,
                     )
@@ -134,10 +170,16 @@ def create_server(
                     and parts[3] == "reports"
                     and parts[5] == "download"
                 ):
+                    language = parse_qs(parsed.query).get("lang", ["ko"])[0]
+                    if language not in {"ko", "en"}:
+                        raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
+                    report_language = cast(Literal["ko", "en"], language)
                     self._download(
-                        query.report_markdown(parts[2], parts[4]).encode("utf-8"),
+                        query.report_markdown(
+                            parts[2], parts[4], language=report_language
+                        ).encode("utf-8"),
                         "text/markdown; charset=utf-8",
-                        f"{parts[4]}.md",
+                        f"{parts[4]}{'.en' if language == 'en' else ''}.md",
                         send_body,
                     )
                 elif (
@@ -149,6 +191,25 @@ def create_server(
                         query.logs_bytes(parts[2]),
                         "application/x-ndjson; charset=utf-8",
                         f"{parts[2]}-console.log",
+                        send_body,
+                    )
+                elif (
+                    len(parts) == 4
+                    and parts[:2] == ("api", "analyses")
+                    and parts[3] == "presentation.zip"
+                ):
+                    buffer = BytesIO()
+                    with zipfile.ZipFile(
+                        buffer, "w", compression=zipfile.ZIP_DEFLATED
+                    ) as archive:
+                        for name, body in query.presentation_bundle_members(
+                            parts[2]
+                        ).items():
+                            archive.writestr(name, body)
+                    self._download(
+                        buffer.getvalue(),
+                        "application/zip",
+                        f"{parts[2]}-presentation.zip",
                         send_body,
                     )
                 elif (
@@ -188,6 +249,27 @@ def create_server(
                 elif (
                     len(parts) == 4
                     and parts[:2] == ("api", "analyses")
+                    and parts[3] == "status-cells"
+                ):
+                    parameters = parse_qs(parsed.query, keep_blank_values=True)
+                    if any(
+                        len(parameters.get(name, ())) != 1
+                        for name in ("offset", "limit")
+                        if name in parameters
+                    ):
+                        raise DashboardBadRequest("DASHBOARD_PAGE_INVALID")
+                    try:
+                        offset = int(parameters.get("offset", ["0"])[0])
+                        limit = int(parameters.get("limit", ["100"])[0])
+                    except ValueError as error:
+                        raise DashboardBadRequest("DASHBOARD_PAGE_INVALID") from error
+                    self._json(
+                        query.list_status_cells(parts[2], offset=offset, limit=limit),
+                        send_body,
+                    )
+                elif (
+                    len(parts) == 4
+                    and parts[:2] == ("api", "analyses")
                     and parts[3] == "events"
                 ):
                     after = parse_qs(parsed.query).get("after", [None])[0]
@@ -198,10 +280,47 @@ def create_server(
                 elif len(parts) == 3 and parts[0] == "reports":
                     if not parts[2].endswith(".md"):
                         raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
+                    english = parts[2].endswith(".en.md")
+                    display_id = parts[2][:-6] if english else parts[2][:-3]
                     self._response(
                         HTTPStatus.OK,
-                        query.report_content(parts[1], parts[2][:-3]),
+                        (
+                            query.report_markdown(
+                                parts[1], display_id, language="en"
+                            ).encode("utf-8")
+                            if english
+                            else query.report_content(parts[1], display_id)
+                        ),
                         "text/markdown; charset=utf-8",
+                        send_body,
+                    )
+                elif (
+                    len(parts) >= 6
+                    and parts[0] == "reports"
+                    and parts[3] == "files"
+                    and parts[-1] == "preview"
+                ):
+                    name = "/".join(parts[4:-1])
+                    if not name.endswith(".md"):
+                        raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
+                    body, media_type = query.report_attachment(parts[1], parts[2], name)
+                    if not media_type.lower().startswith("text/markdown"):
+                        raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
+                    try:
+                        preview = preview_markdown(body.decode("utf-8"))
+                    except UnicodeDecodeError as error:
+                        raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
+                    self._json(
+                        {
+                            "display_id": name,
+                            "language": "en" if name.endswith("_en.md") else "ko",
+                            "markdown": preview.markdown,
+                            "rendered_html": preview.rendered_html,
+                            "truncated": preview.truncated,
+                            "download_url": (
+                                f"/reports/{parts[1]}/{parts[2]}/files/{name}"
+                            ),
+                        },
                         send_body,
                     )
                 elif len(parts) >= 5 and parts[0] == "reports" and parts[3] == "files":
@@ -233,6 +352,13 @@ def create_server(
                     )
                 else:
                     raise DashboardNotFound("DASHBOARD_ROUTE_NOT_FOUND")
+            except DashboardBadRequest:
+                self._response(
+                    HTTPStatus.BAD_REQUEST,
+                    b'{"error":"bad_request"}',
+                    "application/json; charset=utf-8",
+                    send_body,
+                )
             except DashboardIncomplete:
                 self._response(
                     HTTPStatus.CONFLICT,
@@ -347,8 +473,10 @@ def serve_dashboard(
     data_dir: str | Path,
     host: str = "127.0.0.1",
     port: int = 8765,
+    *,
+    demo: bool = False,
 ) -> None:
-    server = create_server(data_dir, host=host, port=port)
+    server = create_server(data_dir, host=host, port=port, demo=demo)
     try:
         server.serve_forever()
     finally:

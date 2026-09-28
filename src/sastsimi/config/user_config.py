@@ -124,6 +124,8 @@ class UserConfig(BaseModel):
     detected_versions: dict[str, str]
     setup_ready: bool
     agent_models: dict[str, str] = Field(default_factory=dict)
+    reasoning_effort: str | None = None
+    agent_reasoning_efforts: dict[str, str] = Field(default_factory=dict)
     llm_timeout_seconds: int = Field(default=180, gt=0, le=3600)
     llm_max_retries: int = Field(default=2, ge=0, le=5)
     llm_max_concurrency: int = Field(default=2, gt=0, le=32)
@@ -163,6 +165,23 @@ class UserConfig(BaseModel):
             for name, model in values.items()
         ):
             raise ValueError("USER_CONFIG_AGENT_MODEL_INVALID")
+        return dict(sorted(values.items()))
+
+    @field_validator("reasoning_effort")
+    @classmethod
+    def safe_reasoning_effort(cls, value: str | None) -> str | None:
+        if value is not None and _SAFE_NAME.fullmatch(value) is None:
+            raise ValueError("USER_CONFIG_REASONING_INVALID")
+        return value
+
+    @field_validator("agent_reasoning_efforts")
+    @classmethod
+    def safe_agent_reasoning_efforts(cls, values: dict[str, str]) -> dict[str, str]:
+        if any(
+            name not in _AGENT_NAMES or _SAFE_NAME.fullmatch(effort) is None
+            for name, effort in values.items()
+        ):
+            raise ValueError("USER_CONFIG_AGENT_REASONING_INVALID")
         return dict(sorted(values.items()))
 
     @field_validator("fallback_model")
@@ -226,6 +245,11 @@ class UserConfig(BaseModel):
             f"docker_network = {_quoted(self.docker_network)}",
             f"enabled_tools = {_string_array(tuple(self.enabled_tools))}",
             f"setup_ready = {str(self.setup_ready).lower()}",
+            *(
+                [f"reasoning_effort = {_quoted(self.reasoning_effort)}"]
+                if self.reasoning_effort is not None
+                else []
+            ),
             f"llm_timeout_seconds = {self.llm_timeout_seconds}",
             f"llm_max_retries = {self.llm_max_retries}",
             f"llm_max_concurrency = {self.llm_max_concurrency}",
@@ -246,6 +270,18 @@ class UserConfig(BaseModel):
             *(
                 f"{name} = {_quoted(model)}"
                 for name, model in self.agent_models.items()
+            ),
+            *(
+                [
+                    "",
+                    "[agent_reasoning_efforts]",
+                    *(
+                        f"{name} = {_quoted(effort)}"
+                        for name, effort in self.agent_reasoning_efforts.items()
+                    ),
+                ]
+                if self.agent_reasoning_efforts
+                else []
             ),
             "",
             "[detected_versions]",
@@ -295,6 +331,8 @@ class SimpleExecutionProfile(BaseModel):
     docker_network: Literal["NONE", "BRIDGE"]
     tools: dict[str, SimpleToolBinding]
     agent_models: dict[str, str] = Field(default_factory=dict)
+    reasoning_effort: str | None = None
+    agent_reasoning_efforts: dict[str, str] = Field(default_factory=dict)
     llm_timeout_seconds: int = Field(default=180, gt=0, le=3600)
     llm_max_retries: int = Field(default=2, ge=0, le=5)
     llm_max_concurrency: int = Field(default=2, gt=0, le=32)
@@ -342,10 +380,15 @@ class SimpleExecutionProfile(BaseModel):
         ):
             raise ValueError("CLAUDE_SUBSCRIPTION_REQUIRED")
         UserConfig.safe_agent_models(self.agent_models)
+        UserConfig.safe_reasoning_effort(self.reasoning_effort)
+        UserConfig.safe_agent_reasoning_efforts(self.agent_reasoning_efforts)
         UserConfig.safe_fallback_model(self.fallback_model)
         if self.fallback_provider != "none" and self.fallback_model is None:
             raise ValueError("FALLBACK_MODEL_REQUIRED")
         return self
+
+    def resolve_reasoning_effort(self, agent_name: str) -> str | None:
+        return self.agent_reasoning_efforts.get(agent_name, self.reasoning_effort)
 
     def to_toml(self) -> str:
         lines = [
@@ -364,6 +407,11 @@ class SimpleExecutionProfile(BaseModel):
             f"llm_timeout_seconds = {self.llm_timeout_seconds}",
             f"llm_max_retries = {self.llm_max_retries}",
             f"llm_max_concurrency = {self.llm_max_concurrency}",
+            *(
+                [f"reasoning_effort = {_quoted(self.reasoning_effort)}"]
+                if self.reasoning_effort is not None
+                else []
+            ),
             f"hypothesis_feed = {_quoted(self.hypothesis_feed)}",
             f"semgrep_fallback = {str(self.semgrep_fallback).lower()}",
             f"max_parallel_hypotheses = {self.max_parallel_hypotheses}",
@@ -381,6 +429,18 @@ class SimpleExecutionProfile(BaseModel):
             *(
                 f"{name} = {_quoted(model)}"
                 for name, model in self.agent_models.items()
+            ),
+            *(
+                [
+                    "",
+                    "[agent_reasoning_efforts]",
+                    *(
+                        f"{name} = {_quoted(effort)}"
+                        for name, effort in self.agent_reasoning_efforts.items()
+                    ),
+                ]
+                if self.agent_reasoning_efforts
+                else []
             ),
             "",
             "[tools]",

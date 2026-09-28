@@ -12,6 +12,8 @@ class AppConfig(BaseModel):
     schema_version: Literal[1] = 1
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     output_format: Literal["text", "json"] = "text"
+    setup_reasoning_effort: str | None = Field(default=None, exclude=True)
+    setup_agent_reasoning_efforts: str | None = Field(default=None, exclude=True)
     data_dir: Path = Field(
         default_factory=lambda: Path(user_state_dir("sastsimi")),
         exclude=True,

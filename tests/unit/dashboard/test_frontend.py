@@ -31,6 +31,7 @@ class Element {
   constructor() {
     this.classList = { add() {}, remove() {}, toggle() {} };
     this.children = [];
+    this.dataset = {};
     this.style = {};
     this.value = "";
     this.scrollTop = 0;
@@ -62,14 +63,25 @@ const context = {
   URLSearchParams, Intl, Date, Promise, encodeURIComponent, decodeURIComponent,
 };
 vm.createContext(context);
-vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), context);
-assert.equal(pending.length, 1);
-vm.runInContext("refresh()", context);
-assert.equal(pending.length, 1, "a second refresh must not overlap");
-pending.shift().resolve({ ok: true, json: async () => [] });
-setImmediate(() => {
-  assert.equal(vm.runInContext("refreshInFlight", context), false);
-  const timeline = nodes.get("events");
+const source = fs.readFileSync(process.argv[1], "utf8");
+assert.match(source, /const refresh = singleFlight\(/);
+const listenersStart = source.indexOf(
+  'document.getElementById("log-search").addEventListener'
+);
+vm.runInContext(source.slice(0, listenersStart), context);
+(async () => {
+  const guarded = vm.runInContext(`singleFlight(async () => {
+    state.testInvocations = (state.testInvocations || 0) + 1;
+    await new Promise(resolve => { state.resolveTest = resolve; });
+  })`, context);
+  const first = guarded();
+  const second = guarded();
+  assert.equal(first, second, "a second refresh must not overlap");
+  await Promise.resolve();
+  assert.equal(vm.runInContext("state.testInvocations", context), 1);
+  vm.runInContext("state.resolveTest()", context);
+  await first;
+  const timeline = context.document.getElementById("events");
   timeline.scrollHeight = 400;
   timeline.clientHeight = 100;
   timeline.scrollTop = 100;
@@ -81,7 +93,16 @@ setImmediate(() => {
   timeline.scrollTop = 295;
   vm.runInContext("renderEvents()", context);
   assert.equal(timeline.scrollTop, 400, "tail followers see new logs");
-});
+  for (const name of [
+    "renderOverview", "renderKpis", "renderStatusGrid", "renderExecutionHistory",
+    "renderReadiness", "renderUsage", "renderStaticTools", "renderStaticToolFindings",
+    "renderPipeline", "renderFailureGuidance", "renderHypotheses", "renderChains",
+    "renderArtifacts", "renderInvocations", "renderArtifactRelations",
+    "renderFindingTraces", "renderPinnedOutputs", "updateSelectionLink", "applyReplay"
+  ]) vm.runInContext(`${name} = () => {}`, context);
+  vm.runInContext("renderDetail({ analysis_id: 'test', artifacts: [] })", context);
+  assert.equal(timeline.children.length, 1, "initial detail displays collected events");
+})().catch(error => { console.error(error); process.exitCode = 1; });
 """
     result = subprocess.run(
         [node, "-e", harness, str(script)],
