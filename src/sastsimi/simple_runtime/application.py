@@ -110,6 +110,9 @@ class SimpleAnalysisApplication:
         runner_factory: RunnerFactory,
         recovery_factory: RecoveryFactory | None = None,
         id_factory: Callable[[], str] | None = None,
+        profile_ref: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
         llm_provider: str | None = None,
         on_demand_possible: bool = False,
         max_parallel_hypotheses: int = 1,
@@ -126,6 +129,9 @@ class SimpleAnalysisApplication:
         self._recovery_factory = recovery_factory
         self._ids = id_factory or (lambda: uuid4().hex)
         self._display = AnalysisDisplayIdStore(store.database_path)
+        self._profile_ref = profile_ref
+        self._provider = provider
+        self._model = model
         self._llm_provider = llm_provider
         self._on_demand_possible = on_demand_possible
         self._max_parallel_hypotheses = max_parallel_hypotheses
@@ -153,6 +159,9 @@ class SimpleAnalysisApplication:
             workspace_id=workspace_id,
             commit_id=request.commit.lower(),
             repository=request.repository,
+            profile_ref=self._profile_ref,
+            provider=self._provider,
+            model=self._model,
             started_at=datetime.now(UTC),
             llm_provider=self._llm_provider,
             on_demand_possible=self._on_demand_possible,

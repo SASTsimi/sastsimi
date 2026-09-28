@@ -76,6 +76,9 @@ class SimpleAnalysisRun(ContractModel):
     workspace_id: str
     commit_id: str
     repository: str
+    profile_ref: str | None = None
+    provider: str | None = None
+    model: str | None = None
     started_at: datetime | None = None
     llm_provider: str | None = None
     on_demand_possible: bool = False

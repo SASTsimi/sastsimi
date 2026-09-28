@@ -28,7 +28,6 @@ from sastsimi.interfaces.cli import simple_evaluation as simple_evaluation_comma
 from sastsimi.interfaces.cli import status as status_command
 from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.output import emit_data, emit_result
-from sastsimi.interfaces.cli.progress import ProgressRenderer
 from sastsimi.orchestration.production_onboarding_builder import (
     ApprovedProbeResolver,
 )
@@ -582,8 +581,9 @@ def main(
                     and not args.no_progress
                     and callable(progress_call)
                 ):
-                    renderer = ProgressRenderer(
-                        stream=sys.stdout,
+                    renderer = dashboard_command.progress_renderer(
+                        config.data_dir,
+                        sys.stdout,
                         is_tty=sys.stdout.isatty(),
                     )
                     data = progress_call(repository, args.commit, renderer.render)
@@ -693,8 +693,9 @@ def main(
                     and not args.no_progress
                     and callable(progress_call)
                 ):
-                    renderer = ProgressRenderer(
-                        stream=sys.stdout,
+                    renderer = dashboard_command.progress_renderer(
+                        config.data_dir,
+                        sys.stdout,
                         is_tty=sys.stdout.isatty(),
                     )
                     data = progress_call(args.analysis_id, renderer.render)

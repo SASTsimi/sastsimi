@@ -11,6 +11,7 @@
 | [`installation.md`](./installation.md) | Windows와 Linux/WSL 설치, 외부 프로그램 준비 |
 | [`provider-setup.md`](./provider-setup.md) | API Key와 공식 Codex 회원 로그인 설정 |
 | [`usage.md`](./usage.md) | `setup`, `analyze`, `status`, `resume`, 대시보드와 보고서 사용법 |
+| [`dashboard-demo.md`](./dashboard-demo.md) | 고정된 취약 저장소와 짧은 대시보드 발표 순서 |
 | [`troubleshooting.md`](./troubleshooting.md) | 인증·정적 도구·Docker·보고서 오류의 안전한 해결 방법 |
 
 ## 운영·공통 안내

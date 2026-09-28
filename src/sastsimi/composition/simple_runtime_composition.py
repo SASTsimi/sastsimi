@@ -174,6 +174,7 @@ class SimpleClientFactory:
                     SimpleOpenAIClient(
                         credential_ref="env:OPENAI_API_KEY",
                         model=self._profile.fallback_model or "",
+                        artifacts=artifacts,
                     ),
                     identity,
                     artifacts,
@@ -219,6 +220,7 @@ class SimpleClientFactory:
                 SimpleOpenAIClient(
                     credential_ref=self._profile.credential_ref,
                     model=self._profile.model,
+                    artifacts=artifacts,
                 ),
                 identity,
                 artifacts,
@@ -269,6 +271,7 @@ class SimpleClientFactory:
             runner=CodexCliProcessRunner(binding=binding.binding),
             provider_profile_ref=provider_ref,
             model=model,
+            artifacts=artifacts,
         )
 
 
@@ -358,6 +361,9 @@ def build_analysis_application(
             store=store,
         ),
         runner_factory=runner_factory,
+        profile_ref=profile.provider_profile_ref,
+        provider=profile.provider,
+        model=profile.model,
         recovery_factory=recovery_factory,
         max_parallel_hypotheses=profile.max_parallel_hypotheses,
         max_elapsed_seconds=profile.max_elapsed_seconds,
