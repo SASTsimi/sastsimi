@@ -5,6 +5,9 @@ const state = {
   detail: null,
   events: [],
   eventCursor: null,
+  statusPage: null,
+  statusPageOffset: 0,
+  statusPageRequest: null,
   artifactMap: new Map(),
   pinnedFinding: null,
   selectedArtifacts: new Set(),
@@ -57,6 +60,24 @@ function formatNumber(value) {
   return Number(value || 0).toLocaleString("ko-KR");
 }
 
+function ratioPercent(done, total) {
+  if (!Number.isInteger(done) || !Number.isInteger(total) || total <= 0) return null;
+  return Math.max(0, Math.min(100, Math.round((done / total) * 100)));
+}
+
+function singleFlight(task) {
+  let active = null;
+  return (...args) => {
+    if (active) return active;
+    active = Promise.resolve().then(() => task(...args)).finally(() => { active = null; });
+    return active;
+  };
+}
+
+function knownCount(value) {
+  return Number.isInteger(value) && value >= 0 ? formatNumber(value) : "—";
+}
+
 async function getJson(url) {
   const response = await fetch(url, { cache: "no-store" });
   if (!response.ok) throw new Error(`요청 실패 (${response.status})`);
@@ -87,6 +108,8 @@ function analysisButton(item) {
       state.selectedReports.clear();
       state.events = [];
       state.eventCursor = null;
+      state.statusPage = null;
+      state.statusPageOffset = 0;
       state.pinnedFinding = readPinnedFinding(item.analysis_id);
       stopReplay();
     }
@@ -147,7 +170,7 @@ function renderOverview(detail) {
     ["시작", formatTime(detail.started_at)],
     ["종료", detail.finished_at ? formatTime(detail.finished_at) : "진행 중"],
     ["가설", String(detail.hypothesis_count)],
-    ["Finding", String(detail.finding_count)],
+    ["보고서", String(detail.finding_count)],
     ["미확정 / 근거 부족", `${detail.inconclusive_hypothesis_count} / ${detail.rejected_hypothesis_count}`],
     ["LLM 호출", String(detail.llm_attempt_count || 0)],
     ["LLM 토큰", `입력 ${detail.llm_input_tokens || 0} / 출력 ${detail.llm_output_tokens || 0}`],
@@ -171,6 +194,112 @@ function renderOverview(detail) {
   if (detail.stale) box.append(el("div", "30초 넘게 갱신되지 않았습니다. 실행 상태와 터미널을 확인하세요.", "warning"));
   replace("overview", [box]);
   document.getElementById("overview").classList.remove("empty");
+}
+
+function renderKpis(kpis = {}) {
+  const discovery = ratioPercent(kpis.discovery_done, kpis.discovery_total);
+  const verification = ratioPercent(kpis.verification_done, kpis.verification_total);
+  document.getElementById("kpi-discovery").textContent = discovery === null ? "—" : `${discovery}%`;
+  document.getElementById("kpi-verification").textContent = verification === null ? "—" : `${verification}%`;
+  document.getElementById("kpi-remaining").textContent = knownCount(kpis.remaining_work);
+  document.getElementById("kpi-confirmed").textContent = knownCount(kpis.confirmed_findings);
+  document.getElementById("kpi-discovery-count").textContent = kpis.discovery_total == null
+    ? "검증 범위 미확인"
+    : `검증 ${knownCount(kpis.discovery_done)} / ${knownCount(kpis.discovery_total)}`;
+  document.getElementById("kpi-verification-count").textContent = kpis.verification_total == null
+    ? "가설 총량 미확인"
+    : `완료 ${knownCount(kpis.verification_done)} / ${knownCount(kpis.verification_total)}`;
+  [
+    ["discovery-progress", discovery, kpis.discovery_done, kpis.discovery_total],
+    ["verification-progress", verification, kpis.verification_done, kpis.verification_total],
+  ].forEach(([id, percent, done, total]) => {
+    const progress = document.getElementById(id);
+    const label = document.getElementById(`${id}-label`);
+    if (percent === null) {
+      progress.removeAttribute("value");
+      progress.setAttribute("aria-valuetext", "미확인");
+      label.textContent = "—";
+    } else {
+      progress.value = percent;
+      progress.setAttribute("aria-valuetext", `${knownCount(done)} / ${knownCount(total)}`);
+      label.textContent = `${percent}% · ${knownCount(done)}/${knownCount(total)}`;
+    }
+  });
+}
+
+function renderStatusGrid(page) {
+  const grid = document.getElementById("status-grid");
+  const count = document.getElementById("status-grid-count");
+  const label = document.getElementById("status-page-label");
+  const previous = document.getElementById("status-page-prev");
+  const next = document.getElementById("status-page-next");
+  if (!page) {
+    grid.replaceChildren(el("div", "상태를 불러오는 중입니다.", "empty"));
+    count.textContent = "총량 미확인";
+    label.textContent = "—";
+    previous.disabled = true;
+    next.disabled = true;
+    return;
+  }
+  count.textContent = `가설 ${knownCount(page.total)}개 · 현재 ${page.items.length}개`;
+  label.textContent = page.total
+    ? `${page.offset + 1}–${page.offset + page.items.length} / ${page.total}`
+    : "가설 0개";
+  previous.disabled = page.offset === 0;
+  next.disabled = page.offset + page.items.length >= page.total;
+  grid.setAttribute("aria-rowcount", String(page.total));
+  grid.replaceChildren(...(page.items.length ? page.items.map((item, index) => {
+    const button = el("button", String(page.offset + index + 1), `status-cell status-${item.status.toLowerCase()}`);
+    button.type = "button";
+    button.setAttribute("role", "gridcell");
+    button.setAttribute("aria-label", `${item.label_ko} · ${item.status} · ${item.id}`);
+    button.title = `${item.label_ko} · ${item.status}`;
+    button.addEventListener("click", () => {
+      const target = document.getElementById(`hypothesis-${item.id}`);
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.focus({ preventScroll: true });
+      }
+    });
+    return button;
+  }) : empty("생성된 가설이 없습니다.")));
+}
+
+function metricSummary(metrics = {}) {
+  const labels = {
+    expected: "대상", processed: "처리", verified: "검증", remaining: "남음",
+    artifacts: "산출물", candidates: "후보", findings: "확정",
+  };
+  return Object.entries(metrics)
+    .filter(([name, value]) => labels[name] && Number.isInteger(value))
+    .map(([name, value]) => `${labels[name]} ${formatNumber(value)}`)
+    .join(" · ");
+}
+
+function renderExecutionHistory(events) {
+  const body = document.getElementById("execution-history");
+  const recent = events.slice(-12).reverse();
+  if (!recent.length) {
+    const row = el("tr");
+    const cell = el("td", "기록된 실행 이벤트가 없습니다.", "empty");
+    cell.colSpan = 5;
+    row.append(cell);
+    body.replaceChildren(row);
+    return;
+  }
+  body.replaceChildren(...recent.map((item) => {
+    const row = el("tr");
+    row.append(
+      el("td", formatTime(item.started_at)),
+      el("td", [item.stage, item.substage || item.tool_name].filter(Boolean).join(" / "), "mono"),
+      el("td", item.summary_ko),
+      el("td", metricSummary(item.metrics) || "—"),
+    );
+    const status = el("td");
+    status.append(badge(item.status));
+    row.append(status);
+    return row;
+  }));
 }
 
 function renderStaticTools(items) {
@@ -261,6 +390,8 @@ function renderPipeline(items) {
 function renderHypotheses(items) {
   replace("hypotheses", items.length ? items.map((item) => {
     const card = el("div", undefined, "card");
+    card.id = `hypothesis-${item.hypothesis_id}`;
+    card.tabIndex = -1;
     const row = el("div", undefined, "status-row");
     row.append(el("strong", item.title || item.hypothesis_id), badge(item.status));
     card.append(row);
@@ -399,6 +530,8 @@ function renderEvents() {
     event.append(el("div", `${item.stage} · ${item.agent_role} · ${formatDuration(item.elapsed_ms)}`, "meta"));
     if (item.hypothesis_id) event.append(el("div", item.hypothesis_id, "mono meta"));
     if (item.tool_name) event.append(el("div", `도구: ${item.tool_name}`, "meta"));
+    if (item.substage) event.append(el("div", `세부 단계: ${item.substage}`, "meta"));
+    if (item.metrics && Object.keys(item.metrics).length) event.append(el("div", metricSummary(item.metrics), "meta"));
     if (item.provider) event.append(el("div", `LLM: ${item.provider} / ${item.model || "미확인"}`, "meta"));
     if (item.error_code) event.append(el("div", item.error_code, "error mono"));
     return event;
@@ -734,10 +867,39 @@ async function fetchEvents(encoded) {
   return state.events;
 }
 
+async function loadStatusPage(encoded, offset = 0) {
+  const key = `${encoded}:${offset}`;
+  if (state.statusPageRequest?.key === key) return state.statusPageRequest.promise;
+  const entry = { key, promise: null };
+  entry.promise = getJson(`/api/analyses/${encoded}/status-cells?offset=${offset}&limit=200`)
+    .finally(() => {
+      if (state.statusPageRequest === entry) state.statusPageRequest = null;
+    });
+  state.statusPageRequest = entry;
+  return entry.promise;
+}
+
+async function changeStatusPage(offset) {
+  if (!state.selected) return;
+  const selected = state.selected;
+  state.statusPageOffset = offset;
+  try {
+    const page = await loadStatusPage(encodeURIComponent(selected), offset);
+    if (state.selected !== selected || state.statusPageOffset !== offset) return;
+    state.statusPage = page;
+    renderStatusGrid(page);
+  } catch (error) {
+    document.getElementById("status-grid-count").textContent = `상태 조회 실패: ${error}`;
+  }
+}
+
 function renderDetail(detail) {
   state.detail = detail;
   if (state.pinnedFinding === null) state.pinnedFinding = readPinnedFinding(detail.analysis_id);
   renderOverview(detail);
+  renderKpis(detail.kpis);
+  renderStatusGrid(state.statusPage);
+  renderExecutionHistory(state.events);
   renderReadiness(detail.readiness || []);
   renderUsage(detail.usage || {});
   renderStaticTools(detail.static_tools || []);
@@ -769,7 +931,12 @@ function renderDetail(detail) {
 function clearDetail(message) {
   state.detail = null;
   state.events = [];
+  state.statusPage = null;
+  state.statusPageOffset = 0;
   replace("overview", empty(message));
+  renderKpis();
+  renderStatusGrid(null);
+  renderExecutionHistory([]);
   ["readiness", "usage", "static-tools", "static-tool-findings", "pipeline", "failure-guidance", "hypotheses", "events", "chains", "finding-traces", "artifacts", "llm-invocations", "artifact-relations", "poc", "evidence", "reports"].forEach((id) => replace(id, []));
   document.getElementById("usage-coverage").textContent = "";
   document.getElementById("bundle-download").classList.add("hidden");
@@ -787,7 +954,7 @@ function setPresentationMode(enabled) {
   if (enabled) window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
-async function refresh() {
+const refresh = singleFlight(async () => {
   const connection = document.getElementById("connection");
   const notice = document.getElementById("notice");
   try {
@@ -800,11 +967,19 @@ async function refresh() {
       clearDetail("분석을 실행하면 단계별 현황이 표시됩니다.");
       notice.textContent = "저장된 분석이 없습니다.";
     } else {
+      const requestedSelection = state.selected;
+      const requestedOffset = state.statusPageOffset;
       const encoded = encodeURIComponent(state.selected);
-      const [detail] = await Promise.all([
+      const [detail, , page] = await Promise.all([
         getJson(`/api/analyses/${encoded}`),
         fetchEvents(encoded),
+        loadStatusPage(encoded, requestedOffset),
       ]);
+      if (state.selected !== requestedSelection || state.statusPageOffset !== requestedOffset) {
+        window.setTimeout(refresh, 0);
+        return;
+      }
+      state.statusPage = page;
       renderDetail(detail);
       notice.textContent = detail.stale ? "실행이 멈췄을 수 있습니다." : "저장된 최신 상태를 표시합니다.";
       notice.classList.toggle("warning", detail.stale);
@@ -818,7 +993,7 @@ async function refresh() {
     notice.textContent = `데이터를 불러오지 못했습니다: ${error}`;
     notice.classList.add("warning");
   }
-}
+});
 
 document.getElementById("log-search").addEventListener("input", renderEvents);
 document.getElementById("log-status").addEventListener("change", renderEvents);
@@ -834,6 +1009,8 @@ document.getElementById("replay-slider").addEventListener("input", (event) => {
   applyReplay(Number(event.target.value));
 });
 document.getElementById("presentation-toggle").addEventListener("click", () => setPresentationMode(!state.presentation));
+document.getElementById("status-page-prev").addEventListener("click", () => changeStatusPage(Math.max(0, state.statusPageOffset - 200)));
+document.getElementById("status-page-next").addEventListener("click", () => changeStatusPage(state.statusPageOffset + 200));
 document.addEventListener("keydown", (event) => {
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement) return;
   if (event.key.toLowerCase() === "p") setPresentationMode(!state.presentation);

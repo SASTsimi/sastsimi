@@ -135,3 +135,61 @@ body.presentation .chain-flow { padding: 1.05rem; }
 @media (max-width: 1200px) { .metric-grid { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 900px) { main, .grid, .artifact-layout, .readiness-usage-grid { grid-template-columns: 1fr; } header { padding: 1.4rem; } aside { position: static; } .artifact-list { max-height: 18rem; } .flow-lane { grid-template-columns: 1fr; } .flow-arrow { justify-self: center; transform: rotate(90deg); } .trace-steps { grid-template-columns: 1fr; overflow: visible; } .trace-arrow { justify-self: center; transform: rotate(90deg); } body.presentation .pipeline { grid-template-columns: repeat(2, minmax(150px, 1fr)); } }
 @media (max-width: 560px) { header { display: block; } .header-actions { justify-items: start; margin-top: 1rem; } .metric-grid, .tool-grid, .readiness-grid, .usage-grid { grid-template-columns: 1fr 1fr; } .filters { display: grid; } .panel-heading { align-items: flex-start; } }
+
+/* The priority view deliberately stays quiet and scannable during long analyses. */
+:root { background: #191b1f; color: #edf0f2; }
+body { background: #191b1f; }
+header { background: #202226; border-bottom-color: #383c42; }
+aside, .panel { background: #282b30; border-color: #3a3e45; box-shadow: none; }
+button, .card, .tool-card, .stage { background: #30343a; border-color: #454a52; }
+.notice, .metric, .readiness-card, .usage-metric { background: #25292e; border-color: #454a52; }
+.content { gap: 1rem; }
+.priority-view { display: grid; gap: 1rem; }
+.kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; }
+.kpi-card { display: grid; align-content: center; justify-items: center; gap: .35rem; min-height: 7.2rem; padding: 1rem; border-radius: 5px; color: #fff; text-align: center; }
+.kpi-card h2 { margin: 0; font-size: .92rem; font-weight: 700; }
+.kpi-card strong { font-size: clamp(1.65rem, 2.5vw, 2.35rem); line-height: 1.1; font-variant-numeric: tabular-nums; }
+.kpi-detail { font-size: .76rem; color: rgba(255,255,255,.88); }
+.kpi-discovery { background: linear-gradient(115deg, #1597aa, #17879d); }
+.kpi-verification { background: linear-gradient(115deg, #f0ad0a, #db9404); }
+.kpi-remaining { background: linear-gradient(115deg, #6678dc, #7952ac); }
+.kpi-confirmed { background: linear-gradient(115deg, #23a64f, #19bb89); }
+.status-legend { display: flex; flex-wrap: wrap; gap: .4rem .8rem; margin: .55rem 0 .8rem; color: #bcc3ca; font-size: .76rem; }
+.status-legend span::before { content: ""; display: inline-block; width: .65rem; height: .65rem; margin-right: .3rem; border-radius: 2px; background: #777e86; }
+.status-legend span:nth-child(2)::before { background: #21a3bd; }
+.status-legend span:nth-child(3)::before { background: #d9aa27; }
+.status-legend span:nth-child(4)::before { background: #22b973; }
+.status-legend span:nth-child(5)::before { background: #ce6a6a; }
+.status-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(42px, 1fr)); gap: .27rem; max-height: 20rem; overflow: auto; padding: .4rem; border: 1px solid #444850; border-radius: 6px; background: #212429; }
+.status-cell { width: 100%; min-height: 2.5rem; padding: .25rem; border: 1px solid transparent; border-radius: 4px; background: #707881; color: #fff; text-align: center; font-size: .7rem; font-weight: 800; }
+.status-cell.status-running { background: #209db7; color: #fff; }
+.status-cell.status-complete, .status-cell.status-succeeded { background: #c89924; color: #fff; }
+.status-cell.status-confirmed { background: #20b574; color: #fff; }
+.status-cell.status-failed, .status-cell.status-blocked { background: #c56363; color: #fff; }
+.status-cell:hover { filter: brightness(1.15); border-color: #fff; }
+.status-cell:focus-visible, button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible { outline: 3px solid #fff2a1; outline-offset: 2px; }
+.page-controls { display: flex; justify-content: space-between; align-items: center; gap: .75rem; margin-top: .75rem; }
+.page-controls button:disabled { cursor: default; opacity: .45; }
+.overall-progress-panel { display: grid; gap: .85rem; }
+.overall-progress-panel h2 { margin-bottom: 0; }
+.progress-lane { display: grid; gap: .28rem; font-size: .85rem; }
+.progress-lane strong { font-variant-numeric: tabular-nums; }
+.progress-lane progress { display: block; width: 100%; height: 1.1rem; border: 0; border-radius: 4px; overflow: hidden; background: #1d2229; color: #17bdd4; accent-color: #17bdd4; }
+.progress-lane:nth-of-type(2) progress { color: #ffbc13; accent-color: #ffbc13; }
+.progress-lane progress::-webkit-progress-bar { background: #1d2229; }
+.progress-lane progress::-webkit-progress-value { background: #17bdd4; }
+.progress-lane:nth-of-type(2) progress::-webkit-progress-value { background: #ffbc13; }
+.progress-lane progress::-moz-progress-bar { background: #17bdd4; }
+.progress-lane:nth-of-type(2) progress::-moz-progress-bar { background: #ffbc13; }
+.history-scroll { max-height: 17rem; overflow: auto; }
+.history-panel table { width: 100%; border-collapse: collapse; text-align: left; font-size: .79rem; }
+.history-panel th, .history-panel td { padding: .55rem .6rem; border-bottom: 1px solid #3a3f46; vertical-align: top; }
+.history-panel th { position: sticky; top: 0; z-index: 1; background: #34383e; white-space: nowrap; }
+.history-panel td:nth-child(2), .history-panel td:nth-child(4) { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.markdown-content pre { max-width: 100%; overflow-x: auto; padding: .8rem; border-radius: 6px; background: #1c2025; }
+.markdown-content code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.markdown-content table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+.markdown-content th, .markdown-content td { padding: .35rem .6rem; border: 1px solid #5a616a; }
+@media (max-width: 1220px) { .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 620px) { .kpi-grid { grid-template-columns: 1fr; } .status-grid { grid-template-columns: repeat(auto-fill, minmax(38px, 1fr)); } .page-controls { flex-wrap: wrap; } .history-panel table { min-width: 600px; } }
+@media (prefers-reduced-motion: reduce) { .progress-bar { transition: none; } }

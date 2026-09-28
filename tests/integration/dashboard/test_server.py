@@ -288,6 +288,9 @@ def test_server_is_local_read_only_and_serves_current_state(tmp_path) -> None:
         assert request(f"{base}/analyses/A-001").status == 200
         page = request(f"{base}/analyses/A-001").read().decode()
         assert 'id="presentation-toggle"' in page
+        assert 'id="kpi-grid"' in page
+        assert 'id="status-grid"' in page
+        assert 'id="execution-history"' in page
         assert 'id="compare-analysis"' in page
         assert 'id="replay-toggle"' in page
         assert 'id="finding-traces"' in page

@@ -35,6 +35,33 @@
     </aside>
     <section class="content">
       <div id="notice" class="notice" role="status" aria-live="polite">분석 데이터를 불러오는 중입니다.</div>
+      <section class="priority-view" aria-label="분석 핵심 현황">
+        <div id="kpi-grid" class="kpi-grid">
+          <article class="kpi-card kpi-discovery"><h2>정적 검사 커버리지</h2><strong id="kpi-discovery">—</strong><span id="kpi-discovery-count" class="kpi-detail">검증 범위 미확인</span></article>
+          <article class="kpi-card kpi-verification"><h2>가설 검증 진행</h2><strong id="kpi-verification">—</strong><span id="kpi-verification-count" class="kpi-detail">가설 총량 미확인</span></article>
+          <article class="kpi-card kpi-remaining"><h2>남은 가설</h2><strong id="kpi-remaining">—</strong><span class="kpi-detail">확인된 가설 기준</span></article>
+          <article class="kpi-card kpi-confirmed"><h2>확정 Finding</h2><strong id="kpi-confirmed">—</strong><span class="kpi-detail">후보·미확정 제외</span></article>
+        </div>
+        <section class="panel status-grid-panel" aria-labelledby="status-grid-title">
+          <div class="panel-heading"><h2 id="status-grid-title">가설 상태 격자</h2><span id="status-grid-count" class="meta">항목 불러오는 중</span></div>
+          <div class="status-legend" aria-label="상태 범례"><span>대기</span><span>분석 중</span><span>완료·미확정</span><span>확정</span><span>차단·실패</span></div>
+          <div id="status-grid" class="status-grid" role="grid" aria-label="가설별 분석 상태"></div>
+          <div class="page-controls">
+            <button id="status-page-prev" class="small-button" type="button" disabled>이전 200개</button>
+            <span id="status-page-label" class="meta" aria-live="polite">—</span>
+            <button id="status-page-next" class="small-button" type="button" disabled>다음 200개</button>
+          </div>
+        </section>
+        <section class="panel overall-progress-panel" aria-labelledby="overall-progress-title">
+          <h2 id="overall-progress-title">전체 진행</h2>
+          <div class="progress-lane"><div class="status-row"><span>정적 검사 커버리지</span><strong id="discovery-progress-label">—</strong></div><progress id="discovery-progress" max="100" aria-label="정적 검사 커버리지"></progress></div>
+          <div class="progress-lane"><div class="status-row"><span>가설 검증 진행</span><strong id="verification-progress-label">—</strong></div><progress id="verification-progress" max="100" aria-label="가설 검증 진행"></progress></div>
+        </section>
+        <section class="panel history-panel" aria-labelledby="execution-history-title">
+          <div class="panel-heading"><h2 id="execution-history-title">실행 이력</h2><span class="meta">저장된 이벤트 기준 · 최근 12건</span></div>
+          <div class="history-scroll"><table><thead><tr><th scope="col">시각</th><th scope="col">단계·도구</th><th scope="col">결과</th><th scope="col">수량</th><th scope="col">상태</th></tr></thead><tbody id="execution-history"></tbody></table></div>
+        </section>
+      </section>
       <div id="overview" class="panel empty">분석을 선택하세요.</div>
       <div class="grid readiness-usage-grid">
         <section class="panel">
