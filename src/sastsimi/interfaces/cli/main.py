@@ -186,6 +186,7 @@ def main(
     setup_parser.add_argument("--max-parallel-containers", type=int, default=1)
     setup_parser.add_argument("--cursor-allow-on-demand", action="store_true")
     setup_parser.add_argument("--semgrep-fallback", action="store_true")
+    setup_parser.add_argument("--include-tests", action="store_true")
     setup_parser.add_argument(
         "--fallback-provider", choices=["none", "openai", "codex"], default="none"
     )

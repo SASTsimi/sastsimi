@@ -1,5 +1,6 @@
 """Static-analysis adapters."""
 
+from .file_scope import build_static_file_scope as build_static_file_scope
 from .repository_profile import (
     RepositoryExecutionSelector as RepositoryExecutionSelector,
 )

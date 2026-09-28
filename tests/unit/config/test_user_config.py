@@ -73,6 +73,28 @@ def test_semgrep_fallback_defaults_off_and_round_trips(tmp_path: Path) -> None:
     assert store.load().semgrep_fallback is True
 
 
+def test_include_tests_defaults_off_and_round_trips(tmp_path: Path) -> None:
+    config = UserConfig(
+        data_dir=tmp_path / "data",
+        profile_path=tmp_path / "profile.toml",
+        auth_mode="API_KEY",
+        provider="openai",
+        model="configured-model",
+        credential_ref="env:OPENAI_API_KEY",
+        execution_profile="FULL",
+        max_cost_minor_units=10_000,
+        max_tokens=500_000,
+        docker_network="NONE",
+        enabled_tools=("AST", "OPENGREP", "CODEQL", "DOCKER"),
+        detected_versions={},
+        setup_ready=True,
+    )
+    assert config.include_tests is False
+    store = UserConfigStore(tmp_path / "config.toml")
+    store.save(config.model_copy(update={"include_tests": True}))
+    assert store.load().include_tests is True
+
+
 def test_user_config_rejects_literal_credentials(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="USER_CONFIG_CREDENTIAL_REF_INVALID"):
         UserConfig(

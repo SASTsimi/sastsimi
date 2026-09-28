@@ -70,6 +70,7 @@ class SetupChoices(BaseModel):
     llm_max_concurrency: int = Field(default=2, gt=0, le=32)
     hypothesis_feed: Literal["current", "facts_survey"] = "current"
     semgrep_fallback: bool = False
+    include_tests: bool = False
     max_parallel_hypotheses: int = Field(default=1, gt=0, le=32)
     max_parallel_builds: int = Field(default=1, gt=0, le=32)
     max_parallel_containers: int = Field(default=1, gt=0, le=32)
@@ -479,6 +480,7 @@ class SetupService:
             llm_max_concurrency=choices.llm_max_concurrency,
             hypothesis_feed=choices.hypothesis_feed,
             semgrep_fallback=choices.semgrep_fallback,
+            include_tests=choices.include_tests,
             max_parallel_hypotheses=choices.max_parallel_hypotheses,
             max_parallel_builds=choices.max_parallel_builds,
             max_parallel_containers=choices.max_parallel_containers,
@@ -518,6 +520,7 @@ class SetupService:
             llm_max_concurrency=choices.llm_max_concurrency,
             hypothesis_feed=choices.hypothesis_feed,
             semgrep_fallback=choices.semgrep_fallback,
+            include_tests=choices.include_tests,
             max_parallel_hypotheses=choices.max_parallel_hypotheses,
             max_parallel_builds=choices.max_parallel_builds,
             max_parallel_containers=choices.max_parallel_containers,
