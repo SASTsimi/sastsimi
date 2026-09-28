@@ -39,9 +39,29 @@ def emit_public(
         stream.write(f"진행률: {data['percent']}%\n")
     if "current_stage" in data:
         stream.write(f"현재 단계: {data['current_stage']}\n")
+    attempt_number = data.get("attempt_number")
+    attempt_limit = data.get("attempt_limit")
+    if (
+        isinstance(attempt_number, int)
+        and isinstance(attempt_limit, int)
+        and (attempt_number > 1 or data.get("error_code") == "RECOVERY_EXHAUSTED")
+    ):
+        stream.write(f"복구 시도: {attempt_number}/{attempt_limit}\n")
+    if data.get("error_code"):
+        stream.write(f"오류: {data['error_code']}\n")
+    if command == "resume" and data.get("resume_skipped_reason") == (
+        "ANALYSIS_ALREADY_RUNNING"
+    ):
+        stream.write(
+            "이미 다른 프로세스가 이 분석을 실행 중이어서 재개를 건너뛰었습니다.\n"
+        )
+        return
     if "finding_count" in data:
         stream.write(f"Finding: {data['finding_count']}개\n")
     if data.get("status") in {"BLOCKED", "FAILED"}:
+        if data.get("error_code") == "RECOVERY_EXHAUSTED":
+            stream.write("자동 복구 한도에 도달해 수동 검토가 필요합니다.\n")
+            return
         stream.write(
             "앞 단계를 다시 실행하지 않고 이어서 실행하려면:\n\n"
             f"sastsimi resume {data.get('analysis_id', '')}\n"

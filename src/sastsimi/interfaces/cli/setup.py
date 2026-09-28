@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from argparse import Namespace
 from collections.abc import Callable
 from pathlib import Path
@@ -25,15 +26,40 @@ def choices_from_args(
         entered = input_fn(f"{prompt} [{default}]: ").strip()
         return entered or default
 
-    auth = value(args.auth, "인증 방식(api-key/subscription)", "subscription")
+    requested_provider = args.provider or os.environ.get("SASTSIMI_LLM_PROVIDER")
+    auth = value(
+        args.auth,
+        "인증 방식(api-key/subscription)",
+        "subscription",
+    )
     provider = value(
-        args.provider,
+        requested_provider,
         "Provider",
         "codex" if auth == "subscription" else "openai",
     )
     credential_ref = (
-        "OFFICIAL_CLIENT_SESSION" if auth == "subscription" else "env:OPENAI_API_KEY"
+        "CLAUDE_CLI_LOGIN"
+        if provider == "claude" and auth == "subscription"
+        else "CURSOR_CLI_LOGIN"
+        if provider == "cursor" and auth == "subscription"
+        else "env:CURSOR_API_KEY"
+        if provider == "cursor" and auth == "api-key"
+        else "OFFICIAL_CLIENT_SESSION"
+        if auth == "subscription"
+        else "env:OPENAI_API_KEY"
     )
+    raw_agent_models = getattr(args, "agent_model", None) or []
+    agent_models: dict[str, str] = {}
+    for item in raw_agent_models:
+        name, separator, model_name = item.partition("=")
+        if not separator or not name or not model_name:
+            raise ValueError("AGENT_MODEL_FORMAT_INVALID")
+        agent_models[name] = model_name
+    model = args.model or (
+        os.environ.get("SASTSIMI_CURSOR_MODEL") if provider == "cursor" else None
+    )
+    if provider in {"cursor", "claude"} and not model and non_interactive:
+        raise ValueError(f"{provider.upper()}_MODEL_REQUIRED: use --model")
     execution_profile_value = (args.execution_profile or "full").upper()
     if execution_profile_value not in {"FULL", "LIGHTWEIGHT"}:
         raise ValueError("SETUP_EXECUTION_PROFILE_INVALID")
@@ -46,13 +72,33 @@ def choices_from_args(
         data_dir=Path(args.setup_data_dir or user_data_dir("sastsimi")).absolute(),
         auth_mode="SUBSCRIPTION_LOGIN" if auth == "subscription" else "API_KEY",
         provider=provider,
-        model=value(args.model, "모델", "gpt-5.6-sol"),
+        model=value(
+            model,
+            "모델",
+            ""
+            if provider in {"cursor", "claude"}
+            else "gpt-6-sol"
+            if provider == "codex"
+            else "gpt-5.6-sol",
+        ),
         credential_ref=credential_ref,
         execution_profile=execution_profile,
         max_cost_minor_units=args.max_cost_minor_units,
         max_tokens=args.max_tokens,
         max_elapsed_seconds=args.max_elapsed_seconds,
         docker_network=docker_network,
+        agent_models=agent_models,
+        llm_timeout_seconds=getattr(args, "llm_timeout_seconds", 180),
+        llm_max_retries=getattr(args, "llm_max_retries", 2),
+        llm_max_concurrency=getattr(args, "llm_max_concurrency", 2),
+        hypothesis_feed=getattr(args, "hypothesis_feed", "current"),
+        semgrep_fallback=bool(getattr(args, "semgrep_fallback", False)),
+        max_parallel_hypotheses=getattr(args, "max_parallel_hypotheses", 1),
+        max_parallel_builds=getattr(args, "max_parallel_builds", 1),
+        max_parallel_containers=getattr(args, "max_parallel_containers", 1),
+        cursor_allow_on_demand=bool(getattr(args, "cursor_allow_on_demand", False)),
+        fallback_provider=getattr(args, "fallback_provider", "none"),
+        fallback_model=getattr(args, "fallback_model", None),
     )
 
 

@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.observability.agent_activity import (
     ActivityKind,
@@ -26,6 +28,11 @@ from .models import (
     StageStatus,
     input_reference_hash,
 )
+from .recovery import (
+    MAX_RECOVERY_ATTEMPTS,
+    RecoveryAction,
+    RecoveryResolution,
+)
 
 ROLE_BY_STAGE: dict[SimpleStage, str] = {
     SimpleStage.STATIC_DONE: "Static Analysis Runtime",
@@ -43,6 +50,17 @@ ROLE_BY_STAGE: dict[SimpleStage, str] = {
     SimpleStage.FINDING_DONE: "Finding Runtime",
     SimpleStage.REPORT_DONE: "Reporter Agent",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class StaticScanAttempt:
+    fingerprint: str
+    tool: str
+    run_key: str
+    status: Literal["SUCCEEDED", "BLOCKED"]
+    raw_ref: StoredDataRef | None
+    coverage_ref: StoredDataRef | None
+    error_code: str | None
 
 
 class SimpleCheckpointStore:
@@ -83,22 +101,685 @@ class SimpleCheckpointStore:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_llm_attempts (
+                    attempt_id TEXT PRIMARY KEY,
+                    analysis_id TEXT NOT NULL,
+                    agent TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    attempt_number INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    elapsed_ms INTEGER NOT NULL,
+                    input_tokens INTEGER,
+                    output_tokens INTEGER,
+                    cost_cents REAL,
+                    artifact_ref_json TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_hypothesis_survey_progress (
+                    analysis_id TEXT NOT NULL,
+                    bundle_hash TEXT NOT NULL,
+                    item_key TEXT NOT NULL,
+                    ref_json TEXT NOT NULL,
+                    PRIMARY KEY (analysis_id, bundle_hash, item_key)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_opengrep_batch_progress (
+                    analysis_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    repository TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    batch_key TEXT NOT NULL,
+                    ref_json TEXT NOT NULL,
+                    PRIMARY KEY (
+                        analysis_id, workspace_id, commit_id,
+                        repository, fingerprint, batch_key
+                    )
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_static_scan_attempts (
+                    analysis_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    repository TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    tool TEXT NOT NULL,
+                    run_key TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    raw_ref_json TEXT,
+                    coverage_ref_json TEXT,
+                    error_code TEXT,
+                    PRIMARY KEY (
+                        analysis_id, workspace_id, commit_id,
+                        repository, fingerprint, tool, run_key
+                    )
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_report_drafts (
+                    identity_json TEXT NOT NULL,
+                    input_hash TEXT NOT NULL,
+                    stage_version TEXT NOT NULL,
+                    finding_ref_json TEXT NOT NULL,
+                    draft_ref_json TEXT NOT NULL,
+                    PRIMARY KEY (identity_json, input_hash, stage_version)
+                )
+                """
+            )
 
     @property
     def database_path(self) -> Path:
         return self._database_path
 
+    @staticmethod
+    def _opengrep_batch_key(
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str,
+        batch_key: str,
+    ) -> tuple[str, str, str, str, str, str]:
+        if identity.hypothesis_id is not None or not all(
+            value.strip() for value in (repository, fingerprint, batch_key)
+        ):
+            raise ValueError("OPENGREP_BATCH_KEY_INVALID")
+        return (
+            identity.analysis_id,
+            identity.workspace_id,
+            identity.commit_id,
+            repository,
+            fingerprint,
+            batch_key,
+        )
+
+    @staticmethod
+    def _require_opengrep_ref_scope(
+        identity: CheckpointIdentity, ref: StoredDataRef
+    ) -> None:
+        if (str(ref.workspace_id), str(ref.commit_id)) != (
+            identity.workspace_id,
+            identity.commit_id,
+        ) or (
+            ref.record_id is not None
+            or ref.data_kind != "artifact"
+            or str(ref.stored_data_id) != ref.content_hash
+        ):
+            raise ValueError("OPENGREP_BATCH_REF_SCOPE_MISMATCH")
+
+    @classmethod
+    def _valid_opengrep_batch_ref(
+        cls, identity: CheckpointIdentity, raw: str
+    ) -> StoredDataRef | None:
+        try:
+            ref = StoredDataRef.model_validate_json(raw)
+            cls._require_opengrep_ref_scope(identity, ref)
+        except ValueError:
+            return None
+        return ref
+
+    def opengrep_batch_ref(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str,
+        batch_key: str,
+    ) -> StoredDataRef | None:
+        key = self._opengrep_batch_key(identity, repository, fingerprint, batch_key)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT ref_json FROM simple_opengrep_batch_progress "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND repository = ? AND fingerprint = ? AND batch_key = ?",
+                key,
+            ).fetchone()
+        if row is None:
+            return None
+        return self._valid_opengrep_batch_ref(identity, row["ref_json"])
+
+    def opengrep_partial_refs(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprints: frozenset[str],
+        batch_key: str,
+    ) -> tuple[StoredDataRef, ...]:
+        """Return separately proven partial raws for the same scoped batch."""
+
+        self._opengrep_batch_key(identity, repository, "partial", batch_key)
+        if not fingerprints:
+            return ()
+        prefix = f"{batch_key}:partial:"
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT fingerprint, ref_json FROM simple_opengrep_batch_progress "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND repository = ? AND substr(batch_key, 1, ?) = ? "
+                "ORDER BY rowid DESC",
+                (
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    repository,
+                    len(prefix),
+                    prefix,
+                ),
+            ).fetchall()
+        refs: list[StoredDataRef] = []
+        for row in rows:
+            if row["fingerprint"] not in fingerprints:
+                continue
+            ref = self._valid_opengrep_batch_ref(identity, row["ref_json"])
+            if ref is not None and ref not in refs:
+                refs.append(ref)
+        return tuple(refs)
+
+    def save_opengrep_partial_proof(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str,
+        batch_key: str,
+        ref: StoredDataRef,
+    ) -> None:
+        """Keep complementary exit-zero partial evidence across resumes."""
+
+        self.save_opengrep_batch(
+            identity,
+            repository,
+            fingerprint,
+            f"{batch_key}:partial:{ref.content_hash}",
+            ref,
+        )
+
+    def save_opengrep_batch(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str,
+        batch_key: str,
+        ref: StoredDataRef,
+        *,
+        replaces: StoredDataRef | None = None,
+    ) -> None:
+        """Record one accepted batch; replace only an explicitly matched old ref."""
+
+        key = self._opengrep_batch_key(identity, repository, fingerprint, batch_key)
+        self._require_opengrep_ref_scope(identity, ref)
+        encoded = ref.model_dump_json()
+        with self._connect() as connection:
+            if replaces is None:
+                inserted = connection.execute(
+                    "INSERT OR IGNORE INTO simple_opengrep_batch_progress "
+                    "(analysis_id, workspace_id, commit_id, repository, "
+                    "fingerprint, batch_key, ref_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (*key, encoded),
+                )
+                if inserted.rowcount == 1:
+                    return
+            row = connection.execute(
+                "SELECT ref_json FROM simple_opengrep_batch_progress "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND repository = ? AND fingerprint = ? AND batch_key = ?",
+                key,
+            ).fetchone()
+            if row is None:
+                raise ValueError("OPENGREP_BATCH_PROGRESS_CONFLICT")
+            current = self._valid_opengrep_batch_ref(identity, row["ref_json"])
+            if current == ref:
+                return
+            if current is not None and (replaces is None or current != replaces):
+                raise ValueError("OPENGREP_BATCH_PROGRESS_CONFLICT")
+            updated = connection.execute(
+                "UPDATE simple_opengrep_batch_progress SET ref_json = ? "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND repository = ? AND fingerprint = ? AND batch_key = ? "
+                "AND ref_json = ?",
+                (encoded, *key, row["ref_json"]),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("OPENGREP_BATCH_PROGRESS_CONFLICT")
+
+    @staticmethod
+    def _static_ref_json(
+        identity: CheckpointIdentity, ref: StoredDataRef | None
+    ) -> str | None:
+        if ref is None:
+            return None
+        try:
+            SimpleCheckpointStore._require_opengrep_ref_scope(identity, ref)
+        except ValueError as error:
+            raise ValueError("STATIC_SCAN_REF_SCOPE_MISMATCH") from error
+        return ref.model_dump_json()
+
+    def save_static_scan_attempt(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str,
+        tool: str,
+        run_key: str,
+        status: Literal["SUCCEEDED", "BLOCKED"],
+        raw_ref: StoredDataRef | None,
+        coverage_ref: StoredDataRef | None,
+        error_code: str | None,
+    ) -> None:
+        if identity.hypothesis_id is not None or not all(
+            part.strip() for part in (repository, fingerprint, tool, run_key)
+        ):
+            raise ValueError("STATIC_SCAN_KEY_INVALID")
+        raw_json = self._static_ref_json(identity, raw_ref)
+        coverage_json = self._static_ref_json(identity, coverage_ref)
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO simple_static_scan_attempts "
+                "(analysis_id, workspace_id, commit_id, repository, fingerprint, "
+                "tool, run_key, status, raw_ref_json, coverage_ref_json, error_code) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (analysis_id, workspace_id, commit_id, repository, "
+                "fingerprint, tool, run_key) DO UPDATE SET "
+                "status=excluded.status, raw_ref_json=excluded.raw_ref_json, "
+                "coverage_ref_json=excluded.coverage_ref_json, "
+                "error_code=excluded.error_code",
+                (
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    repository,
+                    fingerprint,
+                    tool,
+                    run_key,
+                    status,
+                    raw_json,
+                    coverage_json,
+                    error_code,
+                ),
+            )
+
+    def list_static_scan_attempts(
+        self, identity: CheckpointIdentity, repository: str, fingerprint: str
+    ) -> tuple[StaticScanAttempt, ...]:
+        if identity.hypothesis_id is not None:
+            raise ValueError("STATIC_SCAN_KEY_INVALID")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT tool, run_key, status, raw_ref_json, coverage_ref_json, "
+                "error_code FROM simple_static_scan_attempts "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND repository = ? AND fingerprint = ? ORDER BY tool, run_key",
+                (
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    repository,
+                    fingerprint,
+                ),
+            ).fetchall()
+        attempts: list[StaticScanAttempt] = []
+        for row in rows:
+            if row["status"] not in {"SUCCEEDED", "BLOCKED"}:
+                continue
+            raw_ref = (
+                self._valid_opengrep_batch_ref(identity, row["raw_ref_json"])
+                if row["raw_ref_json"] is not None
+                else None
+            )
+            coverage_ref = (
+                self._valid_opengrep_batch_ref(identity, row["coverage_ref_json"])
+                if row["coverage_ref_json"] is not None
+                else None
+            )
+            if (
+                row["raw_ref_json"] is not None
+                and raw_ref is None
+                or row["coverage_ref_json"] is not None
+                and coverage_ref is None
+            ):
+                continue
+            attempts.append(
+                StaticScanAttempt(
+                    fingerprint=fingerprint,
+                    tool=row["tool"],
+                    run_key=row["run_key"],
+                    status=row["status"],
+                    raw_ref=raw_ref,
+                    coverage_ref=coverage_ref,
+                    error_code=row["error_code"],
+                )
+            )
+        return tuple(attempts)
+
+    def list_static_scan_attempts_for_run_key(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        tool: str,
+        run_key: str,
+    ) -> tuple[StaticScanAttempt, ...]:
+        """Find exact-run prior attempts across coverage fingerprints, newest first."""
+
+        if identity.hypothesis_id is not None or not all(
+            part.strip() for part in (repository, tool, run_key)
+        ):
+            raise ValueError("STATIC_SCAN_KEY_INVALID")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT fingerprint, tool, run_key, status, raw_ref_json, "
+                "coverage_ref_json, "
+                "error_code FROM simple_static_scan_attempts "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND repository = ? AND tool = ? AND run_key = ? "
+                "ORDER BY rowid DESC",
+                (
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    repository,
+                    tool,
+                    run_key,
+                ),
+            ).fetchall()
+        attempts: list[StaticScanAttempt] = []
+        for row in rows:
+            if row["status"] not in {"SUCCEEDED", "BLOCKED"}:
+                continue
+            raw_ref = (
+                self._valid_opengrep_batch_ref(identity, row["raw_ref_json"])
+                if row["raw_ref_json"] is not None
+                else None
+            )
+            coverage_ref = (
+                self._valid_opengrep_batch_ref(identity, row["coverage_ref_json"])
+                if row["coverage_ref_json"] is not None
+                else None
+            )
+            if (
+                row["raw_ref_json"] is not None
+                and raw_ref is None
+                or row["coverage_ref_json"] is not None
+                and coverage_ref is None
+            ):
+                continue
+            attempts.append(
+                StaticScanAttempt(
+                    fingerprint=row["fingerprint"],
+                    tool=row["tool"],
+                    run_key=row["run_key"],
+                    status=row["status"],
+                    raw_ref=raw_ref,
+                    coverage_ref=coverage_ref,
+                    error_code=row["error_code"],
+                )
+            )
+        return tuple(attempts)
+
+    def save_survey_progress(
+        self, analysis_id: str, bundle_hash: str, item_key: str, ref: StoredDataRef
+    ) -> None:
+        """Durably record one immutable survey decision before advancing."""
+
+        encoded = ref.model_dump_json()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT ref_json FROM simple_hypothesis_survey_progress "
+                "WHERE analysis_id = ? AND bundle_hash = ? AND item_key = ?",
+                (analysis_id, bundle_hash, item_key),
+            ).fetchone()
+            if row is not None:
+                if StoredDataRef.model_validate_json(row[0]) != ref:
+                    raise ValueError("SURVEY_PROGRESS_CONFLICT")
+                return
+            connection.execute(
+                "INSERT INTO simple_hypothesis_survey_progress "
+                "(analysis_id, bundle_hash, item_key, ref_json) VALUES (?, ?, ?, ?)",
+                (analysis_id, bundle_hash, item_key, encoded),
+            )
+
+    def survey_progress(
+        self, analysis_id: str, bundle_hash: str
+    ) -> dict[str, StoredDataRef]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT item_key, ref_json FROM simple_hypothesis_survey_progress "
+                "WHERE analysis_id = ? AND bundle_hash = ? ORDER BY item_key",
+                (analysis_id, bundle_hash),
+            ).fetchall()
+        return {
+            str(row["item_key"]): StoredDataRef.model_validate_json(row["ref_json"])
+            for row in rows
+        }
+
+    def report_draft(
+        self,
+        identity: CheckpointIdentity,
+        source_hash: str,
+        finding_ref: StoredDataRef,
+    ) -> StoredDataRef | None:
+        """Find a validated draft for the exact current Finding and source set."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT finding_ref_json, draft_ref_json FROM simple_report_drafts "
+                "WHERE identity_json = ? AND input_hash = ? AND stage_version = ?",
+                (
+                    identity.model_dump_json(),
+                    source_hash,
+                    STAGE_VERSION[SimpleStage.REPORT_DONE],
+                ),
+            ).fetchone()
+        if row is None:
+            return None
+        if StoredDataRef.model_validate_json(row["finding_ref_json"]) != finding_ref:
+            raise ValueError("REPORT_DRAFT_FINDING_CONFLICT")
+        return StoredDataRef.model_validate_json(row["draft_ref_json"])
+
+    def save_report_draft(
+        self,
+        identity: CheckpointIdentity,
+        source_hash: str,
+        finding_ref: StoredDataRef,
+        draft_ref: StoredDataRef,
+    ) -> None:
+        """Persist the validated LLM draft before fallible report publication."""
+
+        values = (
+            identity.model_dump_json(),
+            source_hash,
+            STAGE_VERSION[SimpleStage.REPORT_DONE],
+            finding_ref.model_dump_json(),
+            draft_ref.model_dump_json(),
+        )
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO simple_report_drafts "
+                "(identity_json, input_hash, stage_version, "
+                "finding_ref_json, draft_ref_json) VALUES (?, ?, ?, ?, ?)",
+                values,
+            )
+            if cursor.rowcount == 0:
+                row = connection.execute(
+                    "SELECT finding_ref_json, draft_ref_json FROM simple_report_drafts "
+                    "WHERE identity_json = ? AND input_hash = ? AND stage_version = ?",
+                    values[:3],
+                ).fetchone()
+                if (
+                    row is None
+                    or (row["finding_ref_json"], row["draft_ref_json"]) != values[3:]
+                ):
+                    raise ValueError("REPORT_DRAFT_CONFLICT")
+
     def save_analysis_run(self, run: object) -> None:
         validated = SimpleAnalysisRun.model_validate(run)
         with self._connect() as connection:
-            connection.execute(
+            self._upsert_analysis_run_connection(connection, validated)
+
+    @staticmethod
+    def _upsert_analysis_run_connection(
+        connection: sqlite3.Connection, run: SimpleAnalysisRun
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO simple_analysis_runs (analysis_id, run_json)
+            VALUES (?, ?)
+            ON CONFLICT (analysis_id) DO UPDATE SET run_json = excluded.run_json
+            """,
+            (run.analysis_id, run.model_dump_json()),
+        )
+
+    def record_llm_attempt(
+        self,
+        *,
+        attempt_id: str,
+        analysis_id: str,
+        agent: str,
+        model: str,
+        attempt_number: int,
+        status: str,
+        elapsed_ms: int,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        cost_cents: float | None,
+        artifact_ref: StoredDataRef,
+    ) -> None:
+        values = (
+            attempt_id,
+            analysis_id,
+            agent,
+            model,
+            attempt_number,
+            status,
+            elapsed_ms,
+            input_tokens,
+            output_tokens,
+            cost_cents,
+            artifact_ref.model_dump_json(),
+        )
+        with self._connect() as connection:
+            cursor = connection.execute(
                 """
-                INSERT INTO simple_analysis_runs (analysis_id, run_json)
-                VALUES (?, ?)
-                ON CONFLICT (analysis_id) DO UPDATE SET run_json = excluded.run_json
+                INSERT OR IGNORE INTO simple_llm_attempts (
+                    attempt_id, analysis_id, agent, model, attempt_number,
+                    status, elapsed_ms, input_tokens, output_tokens,
+                    cost_cents, artifact_ref_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (validated.analysis_id, validated.model_dump_json()),
+                values,
             )
+            if cursor.rowcount == 0:
+                row = connection.execute(
+                    "SELECT * FROM simple_llm_attempts WHERE attempt_id = ?",
+                    (attempt_id,),
+                ).fetchone()
+                if row is None or tuple(row) != values:
+                    raise ValueError("LLM_ATTEMPT_CONFLICT")
+
+    @staticmethod
+    def usage_summary_from_connection(
+        connection: sqlite3.Connection, analysis_id: str
+    ) -> dict[str, int | float | None]:
+        row = connection.execute(
+            """
+            SELECT COUNT(*) AS calls,
+                   COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                   COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                   SUM(cost_cents) AS cost_minor_units,
+                   COALESCE(SUM(CASE WHEN cost_cents IS NULL THEN 1 ELSE 0 END), 0)
+                       AS unknown_cost_calls
+            FROM simple_llm_attempts WHERE analysis_id = ?
+            """,
+            (analysis_id,),
+        ).fetchone()
+        assert row is not None
+        return {
+            "calls": int(row["calls"]),
+            "input_tokens": int(row["input_tokens"]),
+            "output_tokens": int(row["output_tokens"]),
+            "cost_minor_units": (
+                float(row["cost_minor_units"])
+                if row["cost_minor_units"] is not None
+                else None
+            ),
+            "unknown_cost_calls": int(row["unknown_cost_calls"]),
+        }
+
+    def usage_summary(self, analysis_id: str) -> dict[str, int | float | None]:
+        with self._connect() as connection:
+            return self.usage_summary_from_connection(connection, analysis_id)
+
+    def llm_elapsed_ms(self, analysis_id: str) -> int:
+        """Return elapsed time of recorded LLM attempts across every resume."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COALESCE(SUM(elapsed_ms), 0) "
+                "FROM simple_llm_attempts WHERE analysis_id = ?",
+                (analysis_id,),
+            ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    def reopen_elapsed_budget_failures(
+        self, analysis_id: str, max_elapsed_seconds: int
+    ) -> int:
+        """Reopen elapsed-limit failures only on explicit resume with headroom."""
+
+        if max_elapsed_seconds < 1:
+            raise ValueError("LLM_ELAPSED_BUDGET_INVALID")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            elapsed = connection.execute(
+                "SELECT COALESCE(SUM(elapsed_ms), 0) "
+                "FROM simple_llm_attempts WHERE analysis_id = ?",
+                (analysis_id,),
+            ).fetchone()
+            assert elapsed is not None
+            if int(elapsed[0]) >= max_elapsed_seconds * 1000:
+                connection.commit()
+                return 0
+            rows = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ?",
+                (analysis_id,),
+            ).fetchall()
+            reopened = 0
+            for row in rows:
+                checkpoint = StageCheckpoint.model_validate_json(row[0])
+                if (
+                    checkpoint.status is not StageStatus.FAILED
+                    or checkpoint.error_code != "LLM_ELAPSED_BUDGET_EXHAUSTED"
+                ):
+                    continue
+                pending = checkpoint.model_copy(
+                    update={
+                        "status": StageStatus.PENDING,
+                        "attempt_id": None,
+                        "output_refs": (),
+                        "error_code": None,
+                        "retryable": False,
+                        "updated_at": datetime.now(UTC),
+                    }
+                )
+                self._upsert_checkpoint_connection(connection, pending)
+                reopened += 1
+            connection.commit()
+            return reopened
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def require_analysis_run(self, analysis_id: str) -> SimpleAnalysisRun:
         with self._connect() as connection:
@@ -278,15 +959,33 @@ class SimpleCheckpointStore:
     ) -> StageCheckpoint:
         previous = self.get(identity, stage)
         reusable_state = previous or inherit_from
+        recovery_refs = reusable_state.recovery_decision_refs if reusable_state else ()
+        exact_inputs = tuple(dict.fromkeys(input_refs + recovery_refs))
+        if previous is not None:
+            attempt_number = previous.attempt_number + 1
+        elif inherit_from is not None and inherit_from.recovery_lineage_id is not None:
+            attempt_number = inherit_from.attempt_number
+        else:
+            attempt_number = 1
         checkpoint = StageCheckpoint(
             identity=identity,
             stage=stage,
             stage_version=STAGE_VERSION[stage],
             status=StageStatus.RUNNING,
-            input_refs=input_refs,
-            input_hash=input_reference_hash(input_refs),
+            input_refs=exact_inputs,
+            input_hash=input_reference_hash(exact_inputs),
             attempt_id=attempt_id,
-            attempt_number=(previous.attempt_number if previous else 0) + 1,
+            attempt_number=attempt_number,
+            gate_revision_count=(
+                reusable_state.gate_revision_count if reusable_state else 0
+            ),
+            recovery_lineage_id=(
+                reusable_state.recovery_lineage_id if reusable_state else None
+            ),
+            recovery_origin_stage=(
+                reusable_state.recovery_origin_stage if reusable_state else None
+            ),
+            recovery_decision_refs=recovery_refs,
             recipe_ref=reusable_state.recipe_ref if reusable_state else None,
             image_digest=reusable_state.image_digest if reusable_state else None,
             container_id=reusable_state.container_id if reusable_state else None,
@@ -309,23 +1008,40 @@ class SimpleCheckpointStore:
         self,
         checkpoint: StageCheckpoint,
         result: StageResult,
+        *,
+        analysis_run: SimpleAnalysisRun | None = None,
     ) -> StageCheckpoint:
-        completed = checkpoint.model_copy(
-            update={
-                "status": StageStatus.SUCCEEDED,
-                "output_refs": result.output_refs,
-                "error_code": None,
-                "retryable": False,
-                "recipe_ref": result.recipe_ref or checkpoint.recipe_ref,
-                "image_digest": result.image_digest or checkpoint.image_digest,
-                "container_id": result.container_id or checkpoint.container_id,
-                "validated_poc_ref": result.validated_poc_ref,
-                "report_ref": result.report_ref,
-                "verdict": result.verdict,
-                "markdown_path": result.markdown_path,
-                "updated_at": datetime.now(UTC),
-            }
-        )
+        if analysis_run is not None and (
+            checkpoint.stage is not SimpleStage.STATIC_DONE
+            or analysis_run.analysis_id != checkpoint.identity.analysis_id
+            or analysis_run.workspace_id != checkpoint.identity.workspace_id
+            or analysis_run.commit_id != checkpoint.identity.commit_id
+        ):
+            raise ValueError("STATIC_RUN_IDENTITY_MISMATCH")
+        updates: dict[str, object] = {
+            "status": StageStatus.SUCCEEDED,
+            "output_refs": result.output_refs,
+            "error_code": None,
+            "retryable": False,
+            "recipe_ref": result.recipe_ref or checkpoint.recipe_ref,
+            "image_digest": result.image_digest or checkpoint.image_digest,
+            "container_id": result.container_id or checkpoint.container_id,
+            "validated_poc_ref": result.validated_poc_ref,
+            "report_ref": result.report_ref,
+            "bundle_manifest_ref": result.bundle_manifest_ref,
+            "bundle_archive_ref": result.bundle_archive_ref,
+            "verdict": result.verdict,
+            "gate_decision": result.gate_decision,
+            "markdown_path": result.markdown_path,
+            "updated_at": datetime.now(UTC),
+        }
+        if checkpoint.recovery_origin_stage is checkpoint.stage:
+            updates.update(
+                recovery_lineage_id=None,
+                recovery_origin_stage=None,
+                recovery_decision_refs=(),
+            )
+        completed = checkpoint.model_copy(update=updates)
         final_sequence = (
             max(
                 (event.sequence for event in result.activity_events),
@@ -335,6 +1051,7 @@ class SimpleCheckpointStore:
         )
         self._write(
             completed,
+            analysis_run=analysis_run,
             activity_events=(
                 *result.activity_events,
                 self._lifecycle_event(
@@ -387,6 +1104,376 @@ class SimpleCheckpointStore:
         )
         return failed
 
+    def prepare_recovery(
+        self,
+        failed: StageCheckpoint,
+        resolution: RecoveryResolution,
+        restart_stage: SimpleStage,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Record one decision and atomically seed its next bounded attempt."""
+
+        if failed.status not in {StageStatus.BLOCKED, StageStatus.FAILED}:
+            raise ValueError("RECOVERY_CHECKPOINT_NOT_FAILED")
+        if resolution.decision.action is RecoveryAction.STOP:
+            raise ValueError("RECOVERY_STOP_CANNOT_PREPARE")
+        if STAGE_ORDER.index(restart_stage) > STAGE_ORDER.index(failed.stage):
+            raise ValueError("RECOVERY_RESTART_STAGE_INVALID")
+        restart = self.get(failed.identity, restart_stage)
+        decision_refs = tuple(
+            dict.fromkeys(failed.recovery_decision_refs + (resolution.decision_ref,))
+        )
+        original_inputs = restart.input_refs if restart is not None else ()
+        inputs = tuple(
+            dict.fromkeys(
+                original_inputs + failed.input_refs + failed.output_refs + decision_refs
+            )
+        )
+        lineage_id = (
+            failed.recovery_lineage_id
+            or hashlib.sha256(
+                canonical_bytes(
+                    {
+                        "identity": failed.identity,
+                        "stage": failed.stage.value,
+                        "stage_version": failed.stage_version,
+                        "input_hash": failed.input_hash,
+                        "error_code": failed.error_code,
+                    }
+                )
+            ).hexdigest()
+        )
+        rebuild = resolution.decision.action is RecoveryAction.REBUILD_ENVIRONMENT
+        pending = StageCheckpoint(
+            identity=failed.identity,
+            stage=restart_stage,
+            stage_version=STAGE_VERSION[restart_stage],
+            status=StageStatus.PENDING,
+            input_refs=inputs,
+            input_hash=input_reference_hash(inputs),
+            attempt_number=failed.attempt_number,
+            gate_revision_count=failed.gate_revision_count,
+            recovery_lineage_id=lineage_id,
+            recovery_origin_stage=(failed.recovery_origin_stage or failed.stage),
+            recovery_decision_refs=decision_refs,
+            recipe_ref=None if rebuild else failed.recipe_ref,
+            image_digest=None if rebuild else failed.image_digest,
+            container_id=None,
+        )
+        first_index = STAGE_ORDER.index(restart_stage)
+        stages = tuple(item.value for item in STAGE_ORDER[first_index:])
+        placeholders = ",".join("?" for _ in stages)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            event = self._recovery_event(connection, failed, resolution)
+            AgentActivityStore.append_connection(connection, event)
+            connection.execute(
+                f"""
+                DELETE FROM simple_runtime_checkpoints
+                WHERE analysis_id = ?
+                  AND hypothesis_key = ?
+                  AND stage IN ({placeholders})
+                """,  # noqa: S608 - placeholders are generated, never user supplied.
+                (
+                    failed.identity.analysis_id,
+                    self._hypothesis_key(failed.identity),
+                    *stages,
+                ),
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return pending
+
+    def prepare_gate_revision(
+        self,
+        gate: StageCheckpoint,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Atomically restart PoC from one accepted revision request."""
+
+        if (
+            gate.stage is not SimpleStage.TECH_GATE_DONE
+            or gate.stage_version != STAGE_VERSION[SimpleStage.TECH_GATE_DONE]
+            or gate.status is not StageStatus.SUCCEEDED
+            or gate.gate_decision != "REVISE"
+            or len(gate.output_refs) != 1
+            or gate.gate_revision_count >= 2
+        ):
+            raise ValueError("GATE_REVISION_NOT_PREPARABLE")
+        identity = gate.identity
+        key = self._hypothesis_key(identity)
+        stages = tuple(
+            stage.value
+            for stage in STAGE_ORDER[
+                STAGE_ORDER.index(SimpleStage.POC_CANDIDATE_DONE) :
+            ]
+        )
+        placeholders = ",".join("?" for _ in stages)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            def checkpoint_at(stage: SimpleStage) -> StageCheckpoint | None:
+                row = connection.execute(
+                    """
+                    SELECT checkpoint_json FROM simple_runtime_checkpoints
+                    WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?
+                    """,
+                    (identity.analysis_id, key, stage.value),
+                ).fetchone()
+                return (
+                    StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                    if row is not None
+                    else None
+                )
+
+            current = checkpoint_at(SimpleStage.TECH_GATE_DONE)
+            candidate = checkpoint_at(SimpleStage.POC_CANDIDATE_DONE)
+            if current is None:
+                if (
+                    candidate is not None
+                    and candidate.status is StageStatus.PENDING
+                    and candidate.gate_revision_count == gate.gate_revision_count + 1
+                    and candidate.input_refs
+                    and candidate.input_refs[0] == gate.output_refs[0]
+                ):
+                    connection.commit()
+                    return candidate
+                raise ValueError("GATE_REVISION_STALE")
+            if current != gate:
+                raise ValueError("GATE_REVISION_STALE")
+            if candidate is None or candidate.status is not StageStatus.SUCCEEDED:
+                raise ValueError("GATE_REVISION_CANDIDATE_MISSING")
+            execution = checkpoint_at(SimpleStage.POC_EXECUTION_DONE)
+            if execution is None or execution.status is not StageStatus.SUCCEEDED:
+                raise ValueError("GATE_REVISION_EXECUTION_MISSING")
+            inputs = tuple(
+                dict.fromkeys(
+                    gate.output_refs
+                    + candidate.input_refs
+                    + candidate.output_refs
+                    + execution.output_refs
+                )
+            )
+            pending = StageCheckpoint(
+                identity=identity,
+                stage=SimpleStage.POC_CANDIDATE_DONE,
+                stage_version=STAGE_VERSION[SimpleStage.POC_CANDIDATE_DONE],
+                status=StageStatus.PENDING,
+                input_refs=inputs,
+                input_hash=input_reference_hash(inputs),
+                gate_revision_count=gate.gate_revision_count + 1,
+                recipe_ref=candidate.recipe_ref or gate.recipe_ref,
+                image_digest=candidate.image_digest or gate.image_digest,
+            )
+            connection.execute(
+                f"""
+                DELETE FROM simple_runtime_checkpoints
+                WHERE analysis_id = ? AND hypothesis_key = ?
+                  AND stage IN ({placeholders})
+                """,  # noqa: S608 - generated stage placeholders only.
+                (identity.analysis_id, key, *stages),
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+            return pending
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def record_recovery_stop(
+        self,
+        failed: StageCheckpoint,
+        resolution: RecoveryResolution,
+        *,
+        fail_before_commit: bool = False,
+    ) -> None:
+        if resolution.decision.action is not RecoveryAction.STOP:
+            raise ValueError("RECOVERY_STOP_ACTION_REQUIRED")
+        self.record_recovery_decision(
+            failed,
+            resolution,
+            fail_before_commit=fail_before_commit,
+        )
+
+    def record_recovery_decision(
+        self,
+        failed: StageCheckpoint,
+        resolution: RecoveryResolution,
+        *,
+        fail_before_commit: bool = False,
+    ) -> None:
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._upsert_checkpoint_connection(connection, failed)
+            event = self._recovery_event(connection, failed, resolution)
+            AgentActivityStore.append_connection(connection, event)
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def mark_recovery_exhausted(
+        self,
+        checkpoint: StageCheckpoint,
+    ) -> StageCheckpoint:
+        exhausted = checkpoint.model_copy(
+            update={
+                "status": StageStatus.BLOCKED,
+                "error_code": "RECOVERY_EXHAUSTED",
+                "retryable": False,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        self._write(
+            exhausted,
+            activity_events=(
+                self._lifecycle_event(
+                    exhausted,
+                    ActivityKind.STAGE_BLOCKED,
+                    sequence=self._stage_sequence(exhausted.stage, 100),
+                    status=StageStatus.BLOCKED,
+                    summary_ko=(
+                        f"자동 복구가 attempt {exhausted.attempt_number}/"
+                        f"{MAX_RECOVERY_ATTEMPTS}에서 종료됐습니다."
+                    ),
+                    output_refs=exhausted.output_refs,
+                    error_code="RECOVERY_EXHAUSTED",
+                ),
+            ),
+        )
+        return exhausted
+
+    def promote_inconclusive_execution(
+        self, exhausted: StageCheckpoint
+    ) -> StageCheckpoint:
+        """Atomically preserve an executed, evidence-checked PoC as non-reportable."""
+
+        if (
+            exhausted.stage is not SimpleStage.POC_EXECUTION_DONE
+            or exhausted.stage_version != STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
+            or exhausted.status is not StageStatus.BLOCKED
+            or exhausted.error_code != "RECOVERY_EXHAUSTED"
+            or exhausted.attempt_number < MAX_RECOVERY_ATTEMPTS
+            or len(exhausted.output_refs) != 2
+            or exhausted.validated_poc_ref is not None
+        ):
+            raise ValueError("POC_INCONCLUSIVE_PROMOTION_INVALID")
+        completed = exhausted.model_copy(
+            update={
+                "status": StageStatus.SUCCEEDED,
+                "verdict": "HOLD",
+                "error_code": None,
+                "retryable": False,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (
+                    exhausted.identity.analysis_id,
+                    self._hypothesis_key(exhausted.identity),
+                    exhausted.stage.value,
+                ),
+            ).fetchone()
+            if (
+                row is None
+                or StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                != exhausted
+            ):
+                raise ValueError("POC_INCONCLUSIVE_PROMOTION_STALE")
+            self._upsert_checkpoint_connection(connection, completed)
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    completed,
+                    ActivityKind.STAGE_COMPLETED,
+                    sequence=self._stage_sequence(completed.stage, 2),
+                    status=StageStatus.SUCCEEDED,
+                    summary_ko=(
+                        "완료된 PoC 실행의 반복된 근거 부족을 미확정으로 기록했습니다."
+                    ),
+                    output_refs=completed.output_refs,
+                ),
+            )
+            connection.commit()
+            return completed
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def _recovery_event(
+        self,
+        connection: sqlite3.Connection,
+        failed: StageCheckpoint,
+        resolution: RecoveryResolution,
+    ) -> AgentActivityEvent:
+        base = self._stage_sequence(failed.stage, 40)
+        rows = connection.execute(
+            "SELECT sequence, event_json FROM agent_activity_events "
+            "WHERE analysis_id = ? AND hypothesis_key = ? AND attempt_id = ? "
+            "AND sequence >= ? AND sequence < ? ORDER BY sequence",
+            (
+                failed.identity.analysis_id,
+                self._hypothesis_key(failed.identity),
+                failed.attempt_id or "checkpoint",
+                base,
+                base + 59,
+            ),
+        ).fetchall()
+        used = {int(row["sequence"]) for row in rows}
+        for row in rows:
+            existing = AgentActivityEvent.model_validate_json(row["event_json"])
+            if (
+                existing.stage == failed.stage.value
+                and existing.kind is ActivityKind.DECISION_RECORDED
+                and existing.output_refs == (resolution.decision_ref,)
+            ):
+                return existing
+        sequence = next(
+            (value for value in range(base, base + 59) if value not in used),
+            None,
+        )
+        if sequence is None:
+            raise ValueError("RECOVERY_EVENT_SEQUENCE_EXHAUSTED")
+        return self._lifecycle_event(
+            failed,
+            ActivityKind.DECISION_RECORDED,
+            sequence=sequence,
+            status=StageStatus.BLOCKED,
+            summary_ko=(
+                f"자동 복구 결정 {resolution.decision.action.value} · "
+                f"attempt {failed.attempt_number}/{MAX_RECOVERY_ATTEMPTS}"
+            ),
+            output_refs=(resolution.decision_ref,),
+            error_code=failed.error_code,
+        )
+
     def require(
         self,
         identity: CheckpointIdentity,
@@ -430,35 +1517,15 @@ class SimpleCheckpointStore:
         checkpoint: StageCheckpoint,
         *,
         fail_before_commit: bool = False,
+        analysis_run: SimpleAnalysisRun | None = None,
         activity_events: tuple[AgentActivityEvent, ...] = (),
     ) -> None:
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
-                """
-                INSERT INTO simple_runtime_checkpoints (
-                    analysis_id,
-                    hypothesis_key,
-                    stage,
-                    checkpoint_json,
-                    input_hash,
-                    updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT (analysis_id, hypothesis_key, stage) DO UPDATE SET
-                    checkpoint_json = excluded.checkpoint_json,
-                    input_hash = excluded.input_hash,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    checkpoint.identity.analysis_id,
-                    self._hypothesis_key(checkpoint.identity),
-                    checkpoint.stage.value,
-                    checkpoint.model_dump_json(),
-                    checkpoint.input_hash,
-                    checkpoint.updated_at.isoformat(),
-                ),
-            )
+            self._upsert_checkpoint_connection(connection, checkpoint)
+            if analysis_run is not None:
+                self._upsert_analysis_run_connection(connection, analysis_run)
             for event in activity_events:
                 AgentActivityStore.append_connection(connection, event)
             if fail_before_commit:
@@ -469,6 +1536,36 @@ class SimpleCheckpointStore:
             raise
         finally:
             connection.close()
+
+    def _upsert_checkpoint_connection(
+        self,
+        connection: sqlite3.Connection,
+        checkpoint: StageCheckpoint,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO simple_runtime_checkpoints (
+                analysis_id,
+                hypothesis_key,
+                stage,
+                checkpoint_json,
+                input_hash,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (analysis_id, hypothesis_key, stage) DO UPDATE SET
+                checkpoint_json = excluded.checkpoint_json,
+                input_hash = excluded.input_hash,
+                updated_at = excluded.updated_at
+            """,
+            (
+                checkpoint.identity.analysis_id,
+                self._hypothesis_key(checkpoint.identity),
+                checkpoint.stage.value,
+                checkpoint.model_dump_json(),
+                checkpoint.input_hash,
+                checkpoint.updated_at.isoformat(),
+            ),
+        )
 
     @staticmethod
     def _stage_sequence(stage: SimpleStage, offset: int) -> int:
@@ -548,6 +1645,45 @@ class SimpleCheckpointStore:
                 ),
             )
             connection.commit()
+
+    def replace_from(
+        self,
+        pending: StageCheckpoint,
+        *,
+        fail_before_commit: bool = False,
+    ) -> None:
+        """Atomically invalidate downstream stages and seed a replay checkpoint."""
+
+        if pending.status is not StageStatus.PENDING:
+            raise ValueError("REPLAY_CHECKPOINT_NOT_PENDING")
+        first_index = STAGE_ORDER.index(pending.stage)
+        stages = tuple(item.value for item in STAGE_ORDER[first_index:])
+        placeholders = ",".join("?" for _ in stages)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                f"""
+                DELETE FROM simple_runtime_checkpoints
+                WHERE analysis_id = ?
+                  AND hypothesis_key = ?
+                  AND stage IN ({placeholders})
+                """,  # noqa: S608 - placeholders are generated, never user supplied.
+                (
+                    pending.identity.analysis_id,
+                    self._hypothesis_key(pending.identity),
+                    *stages,
+                ),
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def _first_value(
         self,

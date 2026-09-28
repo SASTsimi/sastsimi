@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import StringIO
-from typing import Literal
+from pathlib import Path
+from typing import Literal, cast
 
-from sastsimi.interfaces.cli.progress import ProgressRenderer
+from sastsimi.interfaces.cli.progress import ProgressEvent, ProgressRenderer
 from sastsimi.progress.models import ProgressSnapshot
 
 
@@ -18,6 +20,10 @@ class _Event:
     tool_name: str | None = "opengrep"
     summary_ko: str = "근거를 저장했습니다."
     started_at: datetime = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def _events(_analysis_id: str) -> Iterable[ProgressEvent]:
+    return (cast(ProgressEvent, _Event()),)
 
 
 def _snapshot(
@@ -65,7 +71,7 @@ def test_non_tty_progress_only_emits_stage_transitions() -> None:
 
 
 def test_progress_is_appended_to_analysis_log_without_terminal_coloring(
-    tmp_path,
+    tmp_path: Path,
 ) -> None:
     stream = StringIO()
     renderer = ProgressRenderer(
@@ -84,7 +90,7 @@ def test_progress_is_appended_to_analysis_log_without_terminal_coloring(
     assert "\033[" not in log
 
 
-def test_progress_log_rejects_unsafe_analysis_path(tmp_path) -> None:
+def test_progress_log_rejects_unsafe_analysis_path(tmp_path: Path) -> None:
     renderer = ProgressRenderer(
         stream=StringIO(),
         is_tty=False,
@@ -96,13 +102,13 @@ def test_progress_log_rejects_unsafe_analysis_path(tmp_path) -> None:
     assert not list(tmp_path.iterdir())
 
 
-def test_progress_renders_agent_tool_event_once_and_saves_it(tmp_path) -> None:
+def test_progress_renders_agent_tool_event_once_and_saves_it(tmp_path: Path) -> None:
     stream = StringIO()
     renderer = ProgressRenderer(
         stream=stream,
         is_tty=False,
         log_dir=tmp_path,
-        event_reader=lambda _analysis_id: (_Event(),),
+        event_reader=_events,
     )
 
     renderer.render(_snapshot(10))

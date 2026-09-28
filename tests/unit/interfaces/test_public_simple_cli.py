@@ -24,7 +24,14 @@ class _PublicApplication:
         }
 
     def status(self, analysis_id: str) -> dict[str, object]:
-        return {"analysis_id": analysis_id, "status": "BLOCKED", "percent": 40}
+        return {
+            "analysis_id": analysis_id,
+            "status": "BLOCKED",
+            "percent": 40,
+            "attempt_number": 3,
+            "attempt_limit": 3,
+            "error_code": "RECOVERY_EXHAUSTED",
+        }
 
     def resume(self, analysis_id: str) -> dict[str, object]:
         return {"analysis_id": analysis_id, "status": "COMPLETE", "percent": 100}
@@ -40,6 +47,9 @@ class _PublicApplication:
 
     def export_report(self, finding_id: str) -> str:
         return f"reports/analysis/{finding_id}.md"
+
+    def export_report_bundle(self, finding_id: str) -> str:
+        return f"reports/analysis/{finding_id}/bundle.zip"
 
 
 class _ProgressApplication(_PublicApplication):
@@ -72,6 +82,34 @@ class _ProgressApplication(_PublicApplication):
         return self.analyze(repository, commit)
 
 
+class _BusyPublicApplication(_PublicApplication):
+    def resume(self, analysis_id: str) -> dict[str, object]:
+        return {
+            "analysis_id": analysis_id,
+            "status": "RUNNING",
+            "percent": 60,
+            "resume_skipped_reason": "ANALYSIS_ALREADY_RUNNING",
+        }
+
+
+def test_public_report_export_includes_additive_bundle_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        main(
+            ["report", "export", "F-001", "--format", "markdown"],
+            public_application=_PublicApplication(),
+            user_config_store=_config(tmp_path),
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out) == {
+        "finding_id": "F-001",
+        "path": "reports/analysis/F-001.md",
+        "bundle_path": "reports/analysis/F-001/bundle.zip",
+    }
+
+
 def _config(tmp_path: Path) -> UserConfigStore:
     store = UserConfigStore(tmp_path / "config.toml")
     store.save(
@@ -93,6 +131,22 @@ def _config(tmp_path: Path) -> UserConfigStore:
         )
     )
     return store
+
+
+def test_public_resume_explains_concurrent_run_without_internal_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code = main(
+        ["resume", "A-001", "--no-progress"],
+        public_application=_BusyPublicApplication(),
+        user_config_store=_config(tmp_path),
+    )
+
+    assert code == 0
+    output = capsys.readouterr()
+    assert "이미 다른 프로세스" in output.out
+    assert "INTERNAL_ERROR" not in output.err
 
 
 def test_public_analyze_uses_positional_repo_and_human_output(
@@ -136,6 +190,9 @@ def test_public_commands_emit_json_only_when_requested(
     )
     payload = json.loads(capsys.readouterr().out)
     assert payload["data"]["percent"] == 40
+    status = payload["data"]
+    assert status["attempt_number"] == 3
+    assert status["attempt_limit"] == 3
 
     assert (
         main(
@@ -180,6 +237,26 @@ def test_public_analyze_renders_checkpoint_progress_when_enabled(
     assert "현재 단계: STATIC_DONE (1/4)" in output
     assert "현재 단계: REPORT_DONE (4/4)" in output
     assert "분석 ID: A-001" in output
+
+
+def test_public_status_shows_recovery_attempt_and_terminal_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert (
+        main(
+            ["status", "A-001"],
+            public_application=_PublicApplication(),
+            user_config_store=_config(tmp_path),
+        )
+        == 0
+    )
+
+    output = capsys.readouterr().out
+    assert "복구 시도: 3/3" in output
+    assert "오류: RECOVERY_EXHAUSTED" in output
+    assert "수동 검토가 필요합니다" in output
+    assert "sastsimi resume" not in output
 
 
 def test_public_poc_and_report_aliases_keep_legacy_report_commands(

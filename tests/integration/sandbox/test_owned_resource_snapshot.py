@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import errno
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
 from pathlib import Path
@@ -46,6 +48,47 @@ def _inventory(path: Path | None) -> tuple[OwnedResourceRegistry, StoredDataRef]
         preservation_reason="REUSABLE_BASELINE",
     )
     return registry, ref
+
+
+def test_journal_retries_transient_replace_denial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal = tmp_path / "owned.json"
+    real_replace = os.replace
+    attempts = 0
+
+    def flaky_replace(source: Path, target: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PermissionError(errno.EACCES, "transient sharing violation")
+        real_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+
+    _inventory(journal)
+
+    assert attempts > 1
+    assert json.loads(journal.read_text(encoding="utf-8"))["resources"]
+
+
+def test_journal_stops_after_bounded_replace_denials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempts = 0
+
+    def deny_replace(_source: Path, _target: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise PermissionError(errno.EACCES, "persistent access denied")
+
+    monkeypatch.setattr(os, "replace", deny_replace)
+
+    with pytest.raises(PermissionError, match="persistent access denied"):
+        _inventory(tmp_path / "owned.json")
+
+    assert attempts == 5
+    assert list(tmp_path.glob(".owned.json.*.tmp")) == []
 
 
 def test_resource_publication_precedes_serialized_cancellation_latch(

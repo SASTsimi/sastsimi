@@ -666,6 +666,36 @@ async def test_posix_real_process_preserves_argv_env_and_kills_descendant(
         pytest.fail("POSIX descendant remained alive after process-group cancellation")
 
 
+@pytest.mark.asyncio
+async def test_posix_spawn_closes_stdin_for_external_tools(tmp_path: Path) -> None:
+    from sastsimi.static_analysis.process import PosixProcessBackend
+
+    class CompletedProcess:
+        pid = 123
+        stdout = None
+        stderr = None
+        returncode = 0
+
+        async def wait(self) -> int:
+            return 0
+
+    async def spawn(*argv: str, **kwargs: Any) -> asyncio.subprocess.Process:
+        del argv
+        assert kwargs["stdin"] == asyncio.subprocess.DEVNULL
+        return cast(asyncio.subprocess.Process, CompletedProcess())
+
+    request = replace(
+        spec(tmp_path, Path(sys.executable)),
+        argv=(sys.executable, "-c", "pass"),
+        cwd=tmp_path,
+        attempt_output_dir=tmp_path / "attempt",
+    )
+    result = await PosixProcessBackend(spawn=spawn).run(
+        request, 10_000, DiscardSink(), DiscardSink(), asyncio.Event()
+    )
+    assert result.return_code == 0
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process boundary")
 @pytest.mark.asyncio
 async def test_posix_cancel_during_spawn_waits_for_registration_then_kills(

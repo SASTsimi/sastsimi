@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import JsonValue
+from pydantic import Field, JsonValue
 
 from sastsimi.contracts.base import ContractModel
 from sastsimi.observability.agent_activity import ActivityKind
+from sastsimi.simple_runtime.recovery import MAX_RECOVERY_ATTEMPTS
 
 
 class AnalysisSummaryView(ContractModel):
@@ -21,6 +22,18 @@ class AnalysisSummaryView(ContractModel):
     stage_count: int
     hypothesis_count: int
     finding_count: int
+    inconclusive_hypothesis_count: int = 0
+    rejected_hypothesis_count: int = 0
+    llm_provider: str | None = None
+    on_demand_possible: bool = False
+    llm_attempt_count: int = 0
+    llm_input_tokens: int = 0
+    llm_output_tokens: int = 0
+    llm_cost_minor_units: float | None = None
+    llm_unknown_cost_calls: int = 0
+    cursor_input_tokens: int = 0
+    cursor_output_tokens: int = 0
+    cursor_cost_cents: float | None = None
     progress_percent: int = 0
     completed_units: int = 0
     known_units: int = 0
@@ -108,9 +121,22 @@ class HypothesisProgressView(ContractModel):
     stage_count: int
     error_code: str | None = None
     verdict: str | None = None
+    disposition: str | None = None
+    scope_status: str | None = None
+    scope_collection_status: str | None = None
+    scope_source_url: str | None = None
+    scope_source_revision: str | None = None
+    scope_reasons: tuple[str, ...] = ()
+    scope_missing_information: tuple[str, ...] = ()
+    scope_axes: dict[str, dict[str, object]] = Field(default_factory=dict)
+    private_reporting_policy_passed: bool = False
+    external_disclosure_allowed: bool = False
+    resume_available: bool = False
     validated_poc: bool = False
     parent_hypothesis_ids: tuple[str, ...] = ()
     chain_depth: int = 0
+    attempt_number: int = 1
+    attempt_limit: int = MAX_RECOVERY_ATTEMPTS
     updated_at: datetime | None = None
 
 
@@ -142,9 +168,21 @@ class FindingReportView(ContractModel):
     url: str
     view_url: str
     download_url: str
+    attachment_urls: dict[str, str] = {}
 
 
 class AnalysisDetailView(AnalysisSummaryView):
+    static_coverage_expected: int | None = None
+    static_coverage_verified: int | None = None
+    static_coverage_gap_count: int | None = None
+    static_coverage_gap_preview: tuple[dict[str, str], ...] = ()
+    static_coverage_unsupported: tuple[tuple[str, int], ...] = ()
+    static_ast_parse_error_count: int | None = None
+    static_ast_truncated: bool | None = None
+    static_coverage_engines: dict[str, int] = Field(default_factory=dict)
+    static_codeql_configured: bool | None = None
+    static_codeql_executed: bool | None = None
+    static_codeql_scope: str | None = None
     hypotheses: tuple[HypothesisProgressView, ...] = ()
     reports: tuple[FindingReportView, ...] = ()
     pipeline: tuple[StageProgressView, ...] = ()

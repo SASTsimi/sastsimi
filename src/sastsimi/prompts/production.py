@@ -155,7 +155,7 @@ REQUIRED_PRODUCTION_PROMPT_ROUTES = (
         "REPORTER",
         "CREATE_DRAFT",
         "report_draft",
-        "src/sastsimi/prompts/templates/reporter/create-draft/1.0.0.md",
+        "src/sastsimi/prompts/templates/reporter/create-draft/1.1.0.md",
     ),
     _required(
         "POLICY_PARSER",

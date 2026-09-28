@@ -10,6 +10,26 @@ sastsimi resume A-001
 ```
 
 `resume`은 성공한 앞 단계를 재사용하고 실패한 단계부터 이어갑니다.
+정책 snapshot은 최초 분석 시 고정되므로 `resume`으로 최신 GitHub 정책을 다시
+받지는 않습니다. 정책이 새로 게시되거나 바뀌었다면 새 분석을 시작하세요.
+
+`LLM_ELAPSED_BUDGET_EXHAUSTED`는 DB에 기록된 LLM 시도 시간의 누적 상한에
+도달했다는 뜻입니다. 중단 중 경과한 시간은 새 버전에서 이 한도를 소모하지
+않습니다. 추가 사용을 허용하려면 계정 사용량과 설정의 `max_elapsed_seconds`를
+확인한 뒤 한도를 명시적으로 높이고 `resume`하세요. 시간이 남아 있는 예전
+`FAILED` 체크포인트만 명시적 재개 때 다시 실행하며, 이미 성공한 Agent 결과와
+다른 비재시도 오류는 건드리지 않습니다.
+
+`status`가 `INTERNAL_ERROR`를 내면 함께 기록된 `trace_id`와 안전한
+`error_type`을 보관하고 한 번 다시 조회하세요. CLI가 오류를 `doctor`처럼 다른
+명령으로 표시하지 않도록 요청한 명령 이름을 함께 출력합니다. 반복되면 두 값과
+실행 시각을 전달해 원인을 조사하고, DB나 분석 기록을 삭제하지 마세요.
+특히 서로 다른 checkout의 코드를 같은 `.venv`와 데이터 디렉터리에서 번갈아
+실행하면, 구버전 코드가 새 체크포인트 필드를 읽지 못해 `ValidationError`가
+날 수 있습니다. 설치된 실행 파일이 어느 checkout을 import하는지 확인하고
+분석·조회·재개에 같은 버전의 코드를 사용하세요. DB를 초기화하는 해결책은 아닙니다.
+실행 프로세스가 종료됐는데 checkpoint가 `RUNNING`으로 남은 경우에는
+`resume A-001`로 중단 지점의 복구를 시도할 수 있습니다.
 
 ## `sastsimi` 명령이 없음
 
@@ -62,7 +82,55 @@ codex login
 
 ## OpenGrep 또는 CodeQL 실패
 
+같은 저장소와 commit을 서로 다른 분석 ID에서 동시에 시작하면 현재 공유 CodeQL 데이터베이스 생성이 충돌할 수 있습니다. 해당 조합의 분석은 하나씩 실행하고, `CODEQL_DATABASE_CREATE_FAILED`나 `CODEQL_ANALYZE_FAILED`가 발생하면 다른 실행이 종료된 뒤 실패한 분석을 재개하세요. 이 제한은 정적 검사 누락을 성공으로 바꾸지 않습니다.
+
+OpenGrep의 `PartialParsing`·구문 오류는 `paths.scanned`에 파일이 보여도 파일·규칙별 검사 완료가 아닙니다. 이때 AST와 설정된 CodeQL 결과는 계속 저장합니다. 대시보드의 정적 검사 항목에서 검증 수, 미검증 상대 경로·규칙·이유를 확인하세요. 범위 밖 언어는 별도 표시하며 Python-only CodeQL을 OpenGrep 규칙의 대체 증거로 세지 않습니다. 누락이 남으면 `COMPLETE`로 바꾸지 않고 `BLOCKED`를 유지합니다.
+
+선택형 Semgrep CE를 쓰려면 Windows PowerShell의 `.venv`에서 각 줄을 한 줄 명령으로 실행합니다. `setup`을 다시 실행할 때 기존 제한·모델 옵션도 필요하면 함께 지정하세요. 분석 중에는 Semgrep을 자동 설치하거나 원격 규칙을 받지 않습니다.
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m pip install semgrep
+semgrep --version
+sastsimi setup --non-interactive --auth subscription --provider codex --model gpt-6-sol --profile full --docker-network none --semgrep-fallback
+sastsimi resume A-001
+```
+
+Semgrep 미설정은 `SEMGREP_TOOL_UNAVAILABLE`, 실행 실패는 `SEMGREP_EXECUTION_FAILED`, 잘못되거나 잘린 JSON은 `SEMGREP_RESULT_INVALID`로 남습니다. 실행 오류는 취약점 반증이 아닙니다. 같은 입력에서 위치가 확인된 결정적 파싱 경고 외 누락이 없으면 `resume`으로 OpenGrep을 반복하지 않으며, 규칙·추적 파일·도구 지문이 바뀐 뒤 다시 검사할 수 있습니다. Semgrep fallback을 켠 경우에는 OpenGrep의 검증된 부분 결과만 재사용하고 파싱 경고·미검사·시간 초과 등 모든 미검증 파일·규칙 조합을 Semgrep에 넘깁니다. Semgrep도 해당 조합을 검증하지 못하면 `BLOCKED`입니다. fallback이 꺼져 있고 결정적 파싱 경고 외 누락이 있으면 OpenGrep 재시도 대상입니다.
+
+결정적 파싱 오류 외에 Semgrep 실행 오류나 설정된 CodeQL 오류가 남아 있으면 재시도 가능 상태를 유지합니다. 파싱 오류만 남아 `retryable=false`가 된 분석은 검사 구현 코드만 교체해도 동일한 입력·규칙·도구 지문에서 자동 재실행되지 않습니다. 그런 수정의 효과를 확인하려면 새 분석 ID로 다시 시작하세요. 이 제한은 아직 해결되지 않은 범위를 `COMPLETE`로 표시하지 않기 위한 것입니다.
+
+Semgrep fallback을 켜고 실행 파일이 검증된 경우 OpenGrep 규칙 묶음의 각 실행은 최대 120초이며, 시간 초과된 파일·규칙은 완료로 세지 않고 Semgrep에 넘깁니다. Semgrep 실행 파일이 없거나 바뀌었다면 OpenGrep의 원래 실행시간을 보존합니다. Semgrep 재검사는 한 번에 최대 128파일과 Windows 명령줄 24,000 UTF-16 단위를 지키며, JSON 결과를 크기 제한이 있는 분석별 임시 파일로 받습니다. Semgrep 한 묶음의 실행도 최대 120초로 제한하며 느리거나 실패한 묶음의 미검증 파일·규칙만 더 작게 나눕니다. 한 경로만 너무 길면 그 경로를 미검증으로 기록한 뒤 나머지를 검사합니다. 파일 하나의 프로세스 시간 초과나 JSON `Timeout`은 `--timeout 30`으로 한 번만 다시 검사합니다. `SEMGREP_COMMAND_TOO_LONG`이나 `SEMGREP_RETRY_BUDGET_EXCEEDED`도 검사 완료가 아니라 명시적인 미검증 이유입니다. `sastsimi dashboard`의 정적 검사 항목에서 검증 수와 미검증 상대 경로·규칙·이유의 첫 100개를 확인하세요. 전체 누락은 coverage artifact에 보존되고, 하나라도 남으면 `STATIC_DONE`은 `BLOCKED`입니다. 완료된 묶음과 검증된 부분 결과는 같은 입력·도구 지문에서 `resume`할 때 재사용하지만, 결정적 파싱 오류를 무한 반복하지는 않습니다.
+
 `sastsimi setup`을 다시 실행해 현재 실행 파일을 확인합니다. Full profile의 CodeQL은 Python database를 만들고 제한된 query suite를 실행하므로 첫 분석에 시간이 걸릴 수 있습니다. 같은 저장소와 commit의 성공 결과는 재개 시 재사용합니다.
+
+큰 저장소에서는 `sastsimi status A-001 --format json`의 `current_stage`가
+`STATIC_DONE`, 진행률이 `0%`여도 정적 단계의 체크포인트가 아직 실행 중일 수
+있습니다. `RUNNING`이고 오류 코드가 없다면 그 숫자만으로 중단을 판단하지
+마세요. 같은 분석의 `resume`을 동시에 실행하지 말고, 원래 실행 프로세스가
+종료됐거나 상태가 `BLOCKED`/`FAILED`로 바뀐 뒤 오류 코드를 확인해 재개하세요.
+분석용 `workspaces/<workspace-id>` checkout도 실행 중에는 직접 수정하지 마세요. 도구는 실행 전 상태를 검사하지만 중간 수정은 지원하지 않으므로, 의심되면 해당 결과를 근거로 쓰지 말고 새 분석 ID로 다시 시작해야 합니다.
+
+OpenGrep 규칙 묶음 전체는 한 번의 정적 분석 시도에서 1시간과 프로필의
+`max_elapsed_seconds` 중 짧은 시간을 함께 사용합니다. 정적 도구 실행시간은
+누적 LLM 사용시간에 더해지지 않습니다. 묶음별로 새 1시간을 부여하지 않으므로
+총 검사 시간이 늘어 추가 재개가 필요할 수 있습니다. 원본 규칙과 저장소 범위는
+그대로이며 저장소별 별도 설정은 필요 없습니다.
+
+시간 초과나 취소 시 하위 프로세스 트리 정리를 시도하고 `EXTERNAL_TOOL_TIMEOUT`을
+취약점 반증으로 취급하지 않습니다. 정확한 분석·저장소·commit·도구 지문과 CAS를
+다시 확인해 완료된 묶음은 재사용하고, 실패한 묶음은 이미 검증된 부분 결과를
+보존한 채 재시도합니다. 단, 위의 위치가 확인된 파싱 경고는 선택형 Semgrep fallback에서 검증된 부분 결과를 재사용하고 남은 조합만 재검사합니다. 모든 엔진을 마친 뒤에도 미검증 파일·규칙 조합이 남거나 설정된 CodeQL이 실패하면 전체 성공 전이므로 `STATIC_DONE`이 `BLOCKED`이며 가설·Finding·보고서를
+만들지 않습니다. CodeQL SARIF도 분석별 파일로 분리하고 재시도 전 해당 파일을
+지웁니다. 기존 프로세스가 끝났고 도구 상태를 확인했다면 PowerShell에서 다음
+한 줄로 이어갑니다.
+
+```powershell
+sastsimi resume A-001
+```
+
+데이터 폴더 전체나 다른 분석의 파일은 임의로 삭제하지 마세요. 재개 후에도 모든
+저장소가 `COMPLETE`가 된다고 보장하지는 않습니다.
 
 CodeQL package가 없으면 다음으로 설치 상태를 확인합니다.
 
@@ -85,9 +153,36 @@ docker version
 docker info
 ```
 
-Docker Desktop은 Linux container 모드여야 합니다. Repository Dockerfile이 있으면 우선 사용하고, 없으면 Python package 파일을 바탕으로 기본 Dockerfile을 만듭니다. package 설치나 image build가 실패하면 환경을 고친 뒤 `sastsimi resume A-001`을 실행합니다.
+Docker Desktop은 Linux container 모드여야 합니다. 저장소 Dockerfile이 있으면 우선 사용하고, 없으면 Python package 파일을 바탕으로 기본 Dockerfile을 만듭니다. 의존성 설치 단계의 빌드 실패가 확인된 경우에만 설치를 생략한 Python 소스 전용 image를 한 번 더 시도합니다. 이 경우 recipe의 `dockerfile_source`가 `GENERATED_NO_INSTALL`, `degraded`가 `true`가 되고 두 빌드 시도와 원본 진단이 artifact에 남습니다. 소스 전용 image가 만들어졌다는 사실만으로 PoC 검증이나 취약점 판정이 성공한 것은 아닙니다. 두 빌드가 모두 실패하거나 실패 원인이 의존성 설치가 아니면 `DOCKER_BUILD_FAILED`로 중단하고 환경을 확인한 뒤 `sastsimi resume A-001`을 실행합니다.
+
+PoC 종료 후에는 현재 가설·시도에 정확히 속한 컨테이너만 확인하고 정리합니다. `OWNED_CONTAINER_CLEANUP_FAILED`나 `DOCKER_CONTAINER_LIMIT_REACHED`가 나오면 소유 라벨이 확인되지 않은 컨테이너를 임의로 지우지 말고 상태를 확인하세요. Windows에서 종료된 프로세스의 PID 소유 여부를 확실히 증명할 수 없는 오래된 컨테이너는 자동 정리하지 않습니다. Docker 실행 오류는 가설 반증(`FALSE`)으로 처리하지 않습니다.
+
+Windows에서 Docker 소유 리소스 journal 파일의 원자적 교체가 일시적인 공유 거부로 실패하면 최대 5회 재시도합니다. 계속 `Access denied`가 나면 권한이나 보안 프로그램 점유를 확인하세요. 이때 다른 분석의 컨테이너를 임의로 정리하지 않습니다.
+
+Python Playwright가 PoC 실행 중 `BrowserType.launch: Executable doesn't exist`
+오류를 내고 실제 실행 stderr가 누락된 Chromium·Firefox·WebKit 바이너리를 가리키면,
+해당 가설의 일회용 Docker 이미지에만 공식 브라우저와 시스템 의존성을 설치해
+재시도합니다. 설치 경로는 비루트 PoC 사용자도 읽을 수 있는 이미지 내부의 공유
+경로로 고정합니다. [Playwright 공식 문서](https://playwright.dev/python/docs/browsers)의
+설치·공유 경로 방식을 따르며, Docker 빌드에서 다운로드가 불가능하거나 이미지가
+지원되지 않으면 실행 오류로 `BLOCKED`에 남깁니다. 대상 저장소나 호스트 파일은
+수정하지 않고 PoC 런타임 네트워크 차단도 해제하지 않습니다.
+
+`POC_INCONCLUSIVE`는 스크립트 실행이 완료됐지만 출력만으로 가설을 지지하거나
+반증할 수 없다는 뜻입니다. 제한된 횟수 안에서 PoC 입력을 보강하고,
+복구 상한에 이른 마지막 실행이 종료 코드 0이면서 여전히 근거 부족이면
+가설을 `INCONCLUSIVE`·제보 불가로 종료합니다.
+전체 가설이 분석상 종료되고 다른 실행 오류가 없으면 분석 상태는 `COMPLETE`입니다.
+반면 `POC_EXECUTION_FAILED`와 Docker/Provider 오류는 완료된 관찰이 아니므로
+계속 `BLOCKED` 또는 판정 없는 `FAILED`로 남습니다.
 
 PoC 초안은 validated PoC가 아닙니다. 같은 attempt에서 실제 실행이 성공하고 가설을 지지해야만 validated PoC가 됩니다.
+
+PoC Agent에는 Pro·Con Agent가 요청한 저장소 상대 경로 중 고정 commit의 Git 추적 파일만 전달합니다. 본문은 현재 작업 폴더가 아니라 고정 commit의 Git blob에서 읽어 재개 중 파일 변경의 영향을 받지 않습니다. 경로 이탈, 심볼릭 링크, 비추적 파일과 크기 한도 초과 파일은 거부하고 `simple_requested_sources` artifact에 제공·거부 내역을 남깁니다. PoC 단계는 원본 소스 총량 128,000바이트, 요청 경로 32개, JSON 변환 후 프롬프트 source artifact 96,000바이트로 제한합니다. 큰 파일은 내용을 읽기 전에 거부하고, 포장 후 한도를 넘는 파일은 `PROMPT_BUDGET_EXHAUSTED`로 남깁니다. 이 근거 제공은 재현 코드의 성공을 보장하지 않습니다.
+
+동적 실행 오류의 복구 계보가 최대 3회 시도를 소진하면 `RECOVERY_EXHAUSTED`로 남습니다. `resume`은 이미 소진된 시도를 자동으로 초기화하지 않으므로 같은 오류를 반복 호출해도 해결되지 않습니다. 도구 수정 후 새 분석을 시작하고 이전 분석·artifact는 보존하세요.
+
+Technical Gate의 `REVISE`는 Docker 오류가 아니라 검증 근거 보완 요청입니다. Runtime은 요청을 저장하고 해당 가설의 PoC 후보부터 Docker 실행·최종 Verification·Gate를 새 시도로 진행합니다. Gate 결정은 최대 세 번이며, 마지막에도 `REVISE`이면 `INCONCLUSIVE`, 명시적으로 `REJECT`이면 제보 불가로 끝납니다. 이 두 결과는 Finding 없이 분석을 `COMPLETE`로 끝낼 수 있지만 취약점 반증이나 제보 승인을 뜻하지 않습니다. `resume`으로 같은 Gate를 무한 재시도하지 않습니다. Docker·인증·Provider·DB 실행 오류는 여전히 `BLOCKED` 또는 `FAILED`이며 미확정 판정으로 바꾸지 않습니다.
 
 ## 대시보드에 분석이 없음
 
@@ -118,6 +213,38 @@ sastsimi resume A-001
 ```
 
 오래된 Markdown을 최신 결과처럼 복사하지 않습니다.
+
+## Scope Gate가 `UNCERTAIN`이거나 보고서가 제한됨
+
+보고서와 대시보드에서 정책 수집 상태·출처·개정, 다섯 항목의 인용과 이유를 확인하세요.
+`ABSENT`는 공식 위치에 정책이 확인되지 않았다는 뜻이고, `FETCH_FAILED`는 조회에
+실패했다는 뜻입니다. `UNVERIFIED`는 대상 또는 정책 출처를 검증하지 못했다는 뜻입니다.
+이 상태나 인용 근거 부족은 명시적 정책 금지인 `DENY`가 아니며 외부 제보 가능 여부를
+`UNCERTAIN`으로 남깁니다. GitHub 외 저장소와 로컬 Git 경로에는 공식 GitHub 정책
+자동 조회가 적용되지 않습니다. 저장소의 임의 `SECURITY.md`나 비공개 제보 버튼만으로
+허가를 확정하지 않습니다.
+
+이전 분석의 근거 없는 `ALLOW`가 있으면 CLI의 `report`와 대시보드는 제한된 내용을
+보여 주고, `report F-001 --export markdown`은 기존 원본을 보존한 채
+`F-001.restricted.md`를 만듭니다. 원본을 외부에 전달하지 마세요. 정책이나 도구가
+갱신됐더라도 기존 분석의 snapshot은 자동 변경되지 않으므로 새 분석으로 다시
+판정해야 합니다. `ALLOW`도 정책상 비공개 제보 조건만 나타내며 외부 공개 승인이
+아닙니다. `COMPLETE`나 기술적 `TRUE` 역시 외부 제보 승인이 아닙니다.
+
+## 영문·국문 보고서 또는 첨부파일 링크가 보이지 않음
+
+새 번들은 검증된 Finding의 Reporter가 성공하고 manifest·정확한 아티팩트
+참조·파일 해시가 모두 일치할 때만 대시보드에서 제공합니다. 이전 버전의 단일
+`F-NNN.md`에는 새 번들이 자동 생성되지 않습니다. Scope Gate 근거가 부족해
+기존 공개 보고서가 제한되면 `poc.sh`와 ZIP을 포함한 첨부 링크도 이를
+우회해 공개하지 않습니다. `sastsimi status A-001`로 분석·Reporter 상태를
+확인하고, 정책 출처와 검토 항목을 대시보드에서 확인하세요.
+
+manifest가 없거나 참조·해시가 맞지 않으면 파일이 디스크에 보여도 안전한
+다운로드로 취급하지 않습니다. DB와 보고서 폴더를 삭제하거나 파일을 직접
+외부로 보내지 말고 오류 코드와 분석 ID를 보존해 원인을 조사하세요. 영향
+버전·패치 버전·심각도/CVSS가 `Needs review`로 남은 것은 생성 오류가 아니라
+해당 근거를 분석 결과만으로 확정할 수 없다는 뜻입니다.
 
 ## INTERNAL_ERROR
 

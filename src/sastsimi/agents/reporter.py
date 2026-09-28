@@ -9,7 +9,7 @@ from sastsimi.contracts.actions import ActionType, RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
-from sastsimi.contracts.reporting import ReportContent
+from sastsimi.contracts.reporting import BilingualReportContent
 from sastsimi.contracts.work import WorkExecutionState, WorkStatus, WorkType
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.llm_invocation import (
@@ -46,7 +46,7 @@ class ReporterCallRefs:
 class ReporterProposal:
     """Untrusted content proposal plus its exact authorized-call provenance."""
 
-    content: ReportContent
+    content: BilingualReportContent
     content_ref: StoredDataRef
     action_decision_ref: StoredDataRef
     invocation: PersistedLLMInvocation
@@ -98,7 +98,9 @@ class ReporterAgent:
         *,
         work: WorkExecutionState,
         call: ReporterCallRefs,
-    ) -> tuple[ReportContent, StoredDataRef, StoredDataRef, tuple[RecordRef, ...]]:
+    ) -> tuple[
+        BilingualReportContent, StoredDataRef, StoredDataRef, tuple[RecordRef, ...]
+    ]:
         result = invocation.result
         validated = self._validate_provenance(
             records=self._records,
@@ -123,7 +125,7 @@ class ReporterAgent:
         try:
             with self._artifacts.open_verified(content_ref) as stream:
                 raw = stream.read()
-            content = ReportContent.model_validate_json(raw)
+            content = BilingualReportContent.model_validate_json(raw)
         except ValueError:
             raise
         except Exception as error:

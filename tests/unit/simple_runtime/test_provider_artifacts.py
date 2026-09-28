@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -20,7 +21,9 @@ class _Runner:
 
 
 @pytest.mark.asyncio
-async def test_codex_call_persists_redacted_request_and_response(tmp_path) -> None:
+async def test_codex_call_persists_redacted_request_and_response(
+    tmp_path: Path,
+) -> None:
     artifacts = SimpleArtifactRepository(
         tmp_path,
         CheckpointIdentity(

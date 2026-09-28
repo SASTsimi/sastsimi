@@ -6,7 +6,7 @@
 기본 설정을 읽고 `SimpleAnalysisApplication`을 구성한 뒤 다음 순서로 진행합니다.
 
 ```text
-저장소 준비 + AST/OpenGrep/CodeQL 정적 분석
+저장소 준비 + AST/OpenGrep/CodeQL 정적 분석 + 공식 정책 snapshot 수집
 → STATIC_DONE
 → Hypothesis Agent
 → HYPOTHESIS_DONE
@@ -38,10 +38,17 @@
 
 정적 분석은 취약점을 확정하지 않고 Agent가 검토할 코드 사실을 만듭니다. 각 가설은
 자기 checkpoint를 가지며, Chaining이 만든 자식 가설도 같은 전체 검증을 다시 거칩니다.
+공개 GitHub 정책 수집은 분석 시작 시 한 번 수행하고 같은 분석의 Scope Gate가 저장된
+snapshot을 공유합니다. `resume`은 외부 정책을 다시 조회하지 않습니다.
 
 최종 `FALSE`는 `VERIFICATION_FINAL_DONE`에서 끝납니다. `HOLD`는 Primitive와
 Chaining에는 사용할 수 있지만 CWE, 두 Gate, Finding과 보고서로 진행하지 않습니다.
 `TRUE`는 실행에 성공한 validated PoC가 있어야 뒤 단계로 진행합니다.
+Technical Gate의 `ACCEPT`만 Scope Gate와 Finding으로 이어집니다. `REJECT`는
+제보 불가로 종료하고, `REVISE`는 해당 가설의 PoC 후보부터 다시 검증합니다.
+세 번째 Gate 결정까지도 `REVISE`이면 `INCONCLUSIVE`로 종료합니다. 이 두 종료는
+보고서를 만들지 않지만, 다른 가설에도 실행 오류가 없고 모두 종료됐다면 분석 상태는
+`COMPLETE`입니다. `COMPLETE`는 취약점 확정이 아닙니다.
 
 ## 코드 위치
 

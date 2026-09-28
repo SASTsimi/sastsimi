@@ -1,10 +1,13 @@
-"""Small sequential application service for new and resumed repository analyses."""
+"""Application service for new and resumed local repository analyses."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import sqlite3
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Protocol
 from uuid import uuid4
@@ -16,6 +19,7 @@ from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 
 from .artifacts import SimpleArtifactRepository
 from .models import (
+    STAGE_VERSION,
     CheckpointIdentity,
     SimpleAnalysisRun,
     SimpleStage,
@@ -25,6 +29,12 @@ from .models import (
     StageStatus,
     input_reference_hash,
 )
+from .recovery import (
+    MAX_RECOVERY_ATTEMPTS,
+    RecoveryAction,
+    RecoveryCoordinator,
+)
+from .run_lease import AnalysisRunBusy, analysis_run_lease
 from .runner import RunOutcome, SimpleRuntimeRunner
 from .store import SimpleCheckpointStore
 
@@ -39,6 +49,8 @@ class StaticBootstrapResult(ContractModel):
     repository_profile_ref: StoredDataRef
     static_bundle_ref: StoredDataRef
     workspace_path: Path
+    security_policy_ref: StoredDataRef | None = None
+    policy_snapshot_ref: StoredDataRef | None = None
 
 
 class HypothesisSeed(ContractModel):
@@ -67,13 +79,14 @@ class HypothesisBootstrap(Protocol):
         self,
         identity: CheckpointIdentity,
         static: StaticBootstrapResult,
-    ) -> tuple[HypothesisSeed, ...]: ...
+    ) -> tuple[HypothesisSeed, ...] | StageFailure: ...
 
 
 type RunnerFactory = Callable[
     [SimpleCheckpointStore, CheckpointIdentity, StaticBootstrapResult],
     SimpleRuntimeRunner,
 ]
+type RecoveryFactory = Callable[[CheckpointIdentity], RecoveryCoordinator]
 
 
 class SimpleAnalysisApplication:
@@ -85,21 +98,33 @@ class SimpleAnalysisApplication:
         static_bootstrap: StaticBootstrap,
         hypothesis_bootstrap: HypothesisBootstrap,
         runner_factory: RunnerFactory,
+        recovery_factory: RecoveryFactory | None = None,
         id_factory: Callable[[], str] | None = None,
         profile_ref: str | None = None,
         provider: str | None = None,
         model: str | None = None,
+        llm_provider: str | None = None,
+        on_demand_possible: bool = False,
+        max_parallel_hypotheses: int = 1,
+        max_elapsed_seconds: int | None = None,
     ) -> None:
+        if not 1 <= max_parallel_hypotheses <= 32:
+            raise ValueError("PARALLEL_HYPOTHESIS_LIMIT_INVALID")
         self._data_dir = data_dir
         self._store = store
         self._static = static_bootstrap
         self._hypotheses = hypothesis_bootstrap
         self._runner_factory = runner_factory
+        self._recovery_factory = recovery_factory
         self._ids = id_factory or (lambda: uuid4().hex)
         self._display = AnalysisDisplayIdStore(store.database_path)
         self._profile_ref = profile_ref
         self._provider = provider
         self._model = model
+        self._llm_provider = llm_provider
+        self._on_demand_possible = on_demand_possible
+        self._max_parallel_hypotheses = max_parallel_hypotheses
+        self._max_elapsed_seconds = max_elapsed_seconds
 
     async def analyze(
         self,
@@ -125,69 +150,133 @@ class SimpleAnalysisApplication:
             profile_ref=self._profile_ref,
             provider=self._provider,
             model=self._model,
+            started_at=datetime.now(UTC),
+            llm_provider=self._llm_provider,
+            on_demand_possible=self._on_demand_possible,
         )
-        self._store.save_analysis_run(run)
-        if on_analysis_started is not None:
-            on_analysis_started(analysis_id)
-        return await self._run_static(run, identity)
+        with analysis_run_lease(self._data_dir, analysis_id):
+            self._store.save_analysis_run(run)
+            if on_analysis_started is not None:
+                on_analysis_started(analysis_id)
+            return await self._run_static(run, identity)
 
     async def _run_static(
         self,
         run: SimpleAnalysisRun,
         identity: CheckpointIdentity,
     ) -> SimpleAnalysisOutcome:
-        checkpoint = self._store.mark_running(
-            identity,
-            SimpleStage.STATIC_DONE,
-            (),
-            attempt_id=uuid4().hex,
-        )
-        try:
-            static = await self._static.run(
-                SimpleAnalysisRequest(
-                    data_dir=self._data_dir,
-                    repository=run.repository,
-                    commit=run.commit_id,
-                ),
+        while True:
+            should_retry, terminal = await self._resume_bootstrap_failure(
                 identity,
+                SimpleStage.STATIC_DONE,
             )
-        except Exception as error:
-            failed = self._store.mark_failure(
-                checkpoint,
-                StageFailure(
+            if should_retry:
+                continue
+            if terminal is not None:
+                return self._bootstrap_outcome(run, terminal)
+            checkpoint = self._store.mark_running(
+                identity,
+                SimpleStage.STATIC_DONE,
+                self._store.input_refs_for(identity, SimpleStage.STATIC_DONE),
+                attempt_id=uuid4().hex,
+            )
+            try:
+                static = await self._static.run(
+                    SimpleAnalysisRequest(
+                        data_dir=self._data_dir,
+                        repository=run.repository,
+                        commit=run.commit_id,
+                    ),
+                    identity,
+                )
+            except Exception as error:
+                coverage_ref = getattr(error, "coverage_ref", None)
+                bundle_ref = getattr(error, "bundle_ref", None)
+                static_evidence = tuple(
+                    ref
+                    for ref in (coverage_ref, bundle_ref)
+                    if isinstance(ref, StoredDataRef)
+                )
+                has_static_evidence = bool(static_evidence)
+                failure = StageFailure(
                     code=self._safe_error_code(error, "STATIC_BOOTSTRAP_BLOCKED"),
-                    retryable=True,
+                    retryable=(
+                        bool(getattr(error, "retryable", True))
+                        if has_static_evidence
+                        else True
+                    ),
                     safe_message="Repository or static analysis did not complete",
+                    evidence_refs=static_evidence,
+                )
+                failed = self._store.mark_failure(
+                    checkpoint,
+                    failure,
+                    StageStatus.BLOCKED,
+                )
+                if not has_static_evidence and await self._prepare_bootstrap_retry(
+                    failed, failure
+                ):
+                    continue
+                return self._bootstrap_outcome(
+                    run,
+                    self._store.require(identity, SimpleStage.STATIC_DONE),
+                )
+            updated_run = run.model_copy(
+                update={
+                    "workspace_path": static.workspace_path,
+                    "repository_profile_ref": static.repository_profile_ref,
+                    "static_bundle_ref": static.static_bundle_ref,
+                    "security_policy_ref": static.security_policy_ref,
+                    "policy_snapshot_ref": static.policy_snapshot_ref,
+                }
+            )
+            self._store.complete(
+                checkpoint,
+                self._stage_result(
+                    static.repository_profile_ref,
+                    static.static_bundle_ref,
+                    *(
+                        (static.policy_snapshot_ref,)
+                        if static.policy_snapshot_ref is not None
+                        else ()
+                    ),
                 ),
-                StageStatus.BLOCKED,
+                analysis_run=updated_run,
             )
-            return SimpleAnalysisOutcome(
-                identity=identity,
-                display_analysis_id=run.display_analysis_id,
-                status="BLOCKED",
-                current_stage=failed.stage,
-                error_code=failed.error_code,
-            )
-        self._store.complete(
-            checkpoint,
-            self._stage_result(
-                static.repository_profile_ref,
-                static.static_bundle_ref,
-            ),
-        )
-        updated_run = run.model_copy(
-            update={
-                "workspace_path": static.workspace_path,
-                "repository_profile_ref": static.repository_profile_ref,
-                "static_bundle_ref": static.static_bundle_ref,
-            }
-        )
-        self._store.save_analysis_run(updated_run)
+            break
         return await self._propose_and_run(updated_run, identity, static)
 
     async def resume(self, analysis_id_or_display: str) -> SimpleAnalysisOutcome:
         exact = self._display.resolve(analysis_id_or_display)
+        try:
+            with analysis_run_lease(self._data_dir, exact):
+                return await self._resume_locked(exact)
+        except AnalysisRunBusy:
+            run = self._store.require_analysis_run(exact)
+            checkpoints = self._store.list_checkpoints(exact)
+            current_stage = (
+                max(checkpoints, key=lambda item: item.updated_at).stage
+                if checkpoints
+                else SimpleStage.STATIC_DONE
+            )
+            return SimpleAnalysisOutcome(
+                identity=CheckpointIdentity(
+                    analysis_id=run.analysis_id,
+                    workspace_id=run.workspace_id,
+                    commit_id=run.commit_id,
+                    hypothesis_id=None,
+                ),
+                display_analysis_id=run.display_analysis_id,
+                status="RUNNING",
+                current_stage=current_stage,
+                error_code="ANALYSIS_ALREADY_RUNNING",
+            )
+
+    async def _resume_locked(self, exact: str) -> SimpleAnalysisOutcome:
         run = self._store.require_analysis_run(exact)
+        self._promote_legacy_inconclusive_pocs(exact)
+        if self._max_elapsed_seconds is not None:
+            self._store.reopen_elapsed_budget_failures(exact, self._max_elapsed_seconds)
         identity = CheckpointIdentity(
             analysis_id=run.analysis_id,
             workspace_id=run.workspace_id,
@@ -204,10 +293,61 @@ class SimpleAnalysisApplication:
             repository_profile_ref=run.repository_profile_ref,
             static_bundle_ref=run.static_bundle_ref,
             workspace_path=run.workspace_path,
+            security_policy_ref=run.security_policy_ref,
+            policy_snapshot_ref=run.policy_snapshot_ref,
         )
         if not run.hypothesis_ids:
             return await self._propose_and_run(run, identity, static)
         return await self._run_hypotheses(run, identity, static)
+
+    def _promote_legacy_inconclusive_pocs(self, analysis_id: str) -> int:
+        """Reclassify only exact exhausted PoCs that actually ran inconclusively."""
+
+        promoted = 0
+        for checkpoint in self._store.list_checkpoints(analysis_id):
+            if (
+                checkpoint.stage is not SimpleStage.POC_EXECUTION_DONE
+                or checkpoint.stage_version
+                != STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
+                or checkpoint.status is not StageStatus.BLOCKED
+                or checkpoint.error_code != "RECOVERY_EXHAUSTED"
+                or checkpoint.attempt_number < MAX_RECOVERY_ATTEMPTS
+                or len(checkpoint.output_refs) != 2
+                or checkpoint.validated_poc_ref is not None
+            ):
+                continue
+            execution_ref, interpretation_ref = checkpoint.output_refs
+            artifacts = SimpleArtifactRepository(self._data_dir, checkpoint.identity)
+            try:
+                execution = json.loads(artifacts.read(execution_ref))
+                interpretation = json.loads(artifacts.read(interpretation_ref))
+            except (OSError, ValueError, sqlite3.Error):
+                continue
+            if not isinstance(execution, dict) or not isinstance(interpretation, dict):
+                continue
+            result = interpretation.get("result")
+            exit_code = execution.get("exit_code")
+            if (
+                execution.get("kind") != "simple_poc_execution"
+                or execution.get("attempt_id") != checkpoint.attempt_id
+                or execution.get("timed_out") is not False
+                or type(exit_code) is not int
+                or exit_code != 0
+                or interpretation.get("kind") != "simple_dynamic_interpretation"
+                or interpretation.get("execution_ref")
+                != execution_ref.model_dump(mode="json")
+                or not isinstance(result, dict)
+                or result.get("outcome") != "INCONCLUSIVE"
+            ):
+                continue
+            try:
+                self._store.promote_inconclusive_execution(checkpoint)
+            except ValueError as error:
+                if str(error) != "POC_INCONCLUSIVE_PROMOTION_STALE":
+                    raise
+                continue
+            promoted += 1
+        return promoted
 
     async def _propose_and_run(
         self,
@@ -215,40 +355,63 @@ class SimpleAnalysisApplication:
         identity: CheckpointIdentity,
         static: StaticBootstrapResult,
     ) -> SimpleAnalysisOutcome:
-        checkpoint = self._store.mark_running(
-            identity,
-            SimpleStage.HYPOTHESIS_DONE,
-            (static.static_bundle_ref,),
-            attempt_id=uuid4().hex,
-        )
-        try:
-            seeds = await self._hypotheses.propose(identity, static)
-            if not seeds:
-                raise ValueError("HYPOTHESIS_OUTPUT_EMPTY")
-        except Exception as error:
-            failed = self._store.mark_failure(
-                checkpoint,
-                StageFailure(
+        while True:
+            should_retry, terminal = await self._resume_bootstrap_failure(
+                identity,
+                SimpleStage.HYPOTHESIS_DONE,
+            )
+            if should_retry:
+                continue
+            if terminal is not None:
+                return self._bootstrap_outcome(run, terminal)
+            input_refs = tuple(
+                dict.fromkeys(
+                    (static.static_bundle_ref,)
+                    + self._store.input_refs_for(
+                        identity,
+                        SimpleStage.HYPOTHESIS_DONE,
+                    )
+                )
+            )
+            checkpoint = self._store.mark_running(
+                identity,
+                SimpleStage.HYPOTHESIS_DONE,
+                input_refs,
+                attempt_id=uuid4().hex,
+            )
+            try:
+                proposed = await self._hypotheses.propose(identity, static)
+                if isinstance(proposed, StageFailure):
+                    failure = proposed
+                elif not proposed:
+                    raise ValueError("HYPOTHESIS_OUTPUT_EMPTY")
+                else:
+                    self._store.complete(
+                        checkpoint,
+                        self._stage_result(*(seed.proposal_ref for seed in proposed)),
+                    )
+                    seeds = proposed
+                    break
+            except Exception as error:
+                failure = StageFailure(
                     code=self._safe_error_code(
                         error,
                         "HYPOTHESIS_BOOTSTRAP_BLOCKED",
                     ),
                     retryable=True,
                     safe_message="Hypothesis generation did not complete",
-                ),
-                StageStatus.BLOCKED,
+                )
+            failed = self._store.mark_failure(
+                checkpoint,
+                failure,
+                StageStatus.BLOCKED if failure.retryable else StageStatus.FAILED,
             )
-            return SimpleAnalysisOutcome(
-                identity=identity,
-                display_analysis_id=run.display_analysis_id,
-                status="BLOCKED",
-                current_stage=failed.stage,
-                error_code=failed.error_code,
+            if await self._prepare_bootstrap_retry(failed, failure):
+                continue
+            return self._bootstrap_outcome(
+                run,
+                self._store.require(identity, SimpleStage.HYPOTHESIS_DONE),
             )
-        self._store.complete(
-            checkpoint,
-            self._stage_result(*(seed.proposal_ref for seed in seeds)),
-        )
         for seed in seeds:
             child = identity.model_copy(update={"hypothesis_id": seed.hypothesis_id})
             inputs = (seed.proposal_ref, static.static_bundle_ref)
@@ -267,6 +430,127 @@ class SimpleAnalysisApplication:
         self._store.save_analysis_run(run)
         return await self._run_hypotheses(run, identity, static)
 
+    async def _resume_bootstrap_failure(
+        self,
+        identity: CheckpointIdentity,
+        stage: SimpleStage,
+    ) -> tuple[bool, StageCheckpoint | None]:
+        existing = self._store.get(identity, stage)
+        if (
+            stage is SimpleStage.STATIC_DONE
+            and existing is not None
+            and existing.status is StageStatus.BLOCKED
+            and not existing.retryable
+        ):
+            fingerprint_method = getattr(self._static, "coverage_fingerprint", None)
+            if fingerprint_method is None:
+                return False, existing
+            saved_fingerprint: str | None = None
+            artifacts = SimpleArtifactRepository(self._data_dir, identity)
+            for ref in existing.output_refs:
+                try:
+                    value = json.loads(artifacts.read(ref))
+                except (OSError, ValueError):
+                    continue
+                if (
+                    isinstance(value, dict)
+                    and value.get("kind") == "simple_static_coverage_v1"
+                ):
+                    raw_fingerprint = value.get("fingerprint")
+                    if isinstance(raw_fingerprint, str):
+                        saved_fingerprint = raw_fingerprint
+                    break
+            if saved_fingerprint is None:
+                return False, existing
+            run = self._store.require_analysis_run(identity.analysis_id)
+            try:
+                current = await fingerprint_method(
+                    SimpleAnalysisRequest(
+                        data_dir=self._data_dir,
+                        repository=run.repository,
+                        commit=run.commit_id,
+                    ),
+                    identity,
+                )
+            except (OSError, RuntimeError, ValueError):
+                return False, existing
+            if current == saved_fingerprint:
+                return False, existing
+            return False, None
+        if self._recovery_factory is None:
+            return False, None
+        if existing is None or existing.status in {
+            StageStatus.PENDING,
+            StageStatus.SUCCEEDED,
+        }:
+            return False, None
+        if existing.status is StageStatus.RUNNING:
+            failure = StageFailure(
+                code="STAGE_INTERRUPTED",
+                retryable=True,
+                safe_message="Bootstrap execution was interrupted",
+            )
+            failed = self._store.mark_failure(
+                existing,
+                failure,
+                StageStatus.BLOCKED,
+            )
+        else:
+            if not existing.retryable:
+                return False, existing
+            failure = StageFailure(
+                code=existing.error_code or "BOOTSTRAP_RECOVERY_REQUIRED",
+                retryable=True,
+                safe_message="Resume the recorded bootstrap failure",
+                evidence_refs=existing.output_refs,
+            )
+            failed = existing
+        if await self._prepare_bootstrap_retry(failed, failure):
+            return True, None
+        return False, self._store.require(identity, stage)
+
+    async def _prepare_bootstrap_retry(
+        self,
+        failed: StageCheckpoint,
+        failure: StageFailure,
+    ) -> bool:
+        if self._recovery_factory is None or not failure.retryable:
+            return False
+        if failed.attempt_number >= MAX_RECOVERY_ATTEMPTS:
+            self._store.mark_recovery_exhausted(failed)
+            return False
+        resolution = await self._recovery_factory(failed.identity).decide(
+            failed,
+            failure,
+        )
+        if resolution.decision.action in {
+            RecoveryAction.RETRY_STAGE,
+            RecoveryAction.REGENERATE_INPUT,
+        }:
+            self._store.prepare_recovery(failed, resolution, failed.stage)
+            return True
+        if resolution.decision.action is RecoveryAction.STOP:
+            self._store.record_recovery_stop(failed, resolution)
+        else:
+            self._store.record_recovery_decision(failed, resolution)
+        return False
+
+    @staticmethod
+    def _bootstrap_outcome(
+        run: SimpleAnalysisRun,
+        failed: StageCheckpoint,
+    ) -> SimpleAnalysisOutcome:
+        status: Literal["BLOCKED", "FAILED"] = (
+            "FAILED" if failed.status is StageStatus.FAILED else "BLOCKED"
+        )
+        return SimpleAnalysisOutcome(
+            identity=failed.identity,
+            display_analysis_id=run.display_analysis_id,
+            status=status,
+            current_stage=failed.stage,
+            error_code=failed.error_code,
+        )
+
     async def _run_hypotheses(
         self,
         run: SimpleAnalysisRun,
@@ -277,24 +561,33 @@ class SimpleAnalysisApplication:
         incomplete: RunOutcome | None = None
         index = 0
         while index < len(run.hypothesis_ids):
-            hypothesis_id = run.hypothesis_ids[index]
-            index += 1
-            child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
-            outcome = await self._runner_factory(
-                self._store,
-                child,
-                static,
-            ).resume_hypothesis(child)
-            latest_stage = outcome.current_stage
-            if outcome.status in {StageStatus.BLOCKED, StageStatus.FAILED}:
-                if (
-                    incomplete is None
-                    or outcome.status is StageStatus.FAILED
-                    and incomplete.status is StageStatus.BLOCKED
-                ):
-                    incomplete = outcome
-                continue
-            run = self._register_chain_children(run, child, static)
+            batch_ids = run.hypothesis_ids[
+                index : index + self._max_parallel_hypotheses
+            ]
+            children = tuple(
+                identity.model_copy(update={"hypothesis_id": hypothesis_id})
+                for hypothesis_id in batch_ids
+            )
+            outcomes = await asyncio.gather(
+                *(
+                    self._runner_factory(self._store, child, static).resume_hypothesis(
+                        child
+                    )
+                    for child in children
+                )
+            )
+            index += len(children)
+            for child, outcome in zip(children, outcomes, strict=True):
+                latest_stage = outcome.current_stage
+                if outcome.status in {StageStatus.BLOCKED, StageStatus.FAILED}:
+                    if (
+                        incomplete is None
+                        or outcome.status is StageStatus.FAILED
+                        and incomplete.status is StageStatus.BLOCKED
+                    ):
+                        incomplete = outcome
+                    continue
+                run = self._register_chain_children(run, child, static)
         if incomplete is not None:
             outcome_status: Literal["BLOCKED", "FAILED"] = (
                 "BLOCKED" if incomplete.status is StageStatus.BLOCKED else "FAILED"
