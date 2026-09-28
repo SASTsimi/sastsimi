@@ -6,10 +6,15 @@ import json
 import re
 import sqlite3
 from collections import defaultdict
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Literal, cast, overload
+from typing import Any, Literal, cast, overload
 
 from sastsimi.config.runtime_paths import RuntimePaths
+from sastsimi.contracts.prompt_redaction import (
+    redact_projected_json,
+    redact_untrusted_text,
+)
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.observability.agent_activity import AgentActivityEvent
 from sastsimi.progress.projector import ProgressProjector
@@ -23,6 +28,7 @@ from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.gate_guard import technical_gate_accepted
 from sastsimi.simple_runtime.models import (
+    HYPOTHESIS_STAGES,
     STAGE_VERSION,
     CheckpointIdentity,
     SimpleAnalysisRun,
@@ -36,23 +42,53 @@ from sastsimi.simple_runtime.scope_policy import (
     project_scope_review,
     safe_public_report,
 )
-from sastsimi.simple_runtime.store import SimpleCheckpointStore
+from sastsimi.simple_runtime.store import ROLE_BY_STAGE, SimpleCheckpointStore
 
 from .models import (
     AgentActivityView,
     AnalysisDetailView,
     AnalysisSummaryView,
+    ArtifactContentView,
+    ArtifactView,
     FindingReportView,
     HypothesisProgressView,
+    LLMInvocationView,
+    StageProgressView,
+    StaticToolProgressView,
 )
 
 _ANALYSIS_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _DISPLAY_ID = re.compile(r"F-[0-9]{3,}\Z")
 _RULE_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}\Z")
+_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+_MAX_ARTIFACT_BYTES = 1024 * 1024
+_MAX_ARTIFACTS = 512
+_MAX_PROJECTED_ARTIFACT_BYTES = 64 * 1024 * 1024
+_STALE_SECONDS = 30
+_STAGE_LABELS: dict[SimpleStage, str] = {
+    SimpleStage.STATIC_DONE: "저장소 준비·정적 분석",
+    SimpleStage.HYPOTHESIS_DONE: "취약점 가설 생성",
+    SimpleStage.PRO_CON_DONE: "찬성·반대 근거 수집",
+    SimpleStage.VERIFICATION_INITIAL_DONE: "초기 검증 판정",
+    SimpleStage.POC_CANDIDATE_DONE: "PoC 후보 생성",
+    SimpleStage.POC_EXECUTION_DONE: "PoC 격리 실행",
+    SimpleStage.VERIFICATION_FINAL_DONE: "최종 검증 판정",
+    SimpleStage.CWE_DONE: "CWE 분류",
+    SimpleStage.TECH_GATE_DONE: "기술 근거 Gate",
+    SimpleStage.SCOPE_GATE_DONE: "분석 범위 Gate",
+    SimpleStage.PRIMITIVE_ADMISSION_DONE: "Primitive 승인",
+    SimpleStage.CHAINING_DONE: "연계 취약점 탐색",
+    SimpleStage.FINDING_DONE: "Finding 확정",
+    SimpleStage.REPORT_DONE: "보고서 생성",
+}
 
 
 class DashboardNotFound(LookupError):
     pass
+
+
+class DashboardIncomplete(RuntimeError):
+    """A download would silently omit verified results."""
 
 
 class _CheckpointProjection:
@@ -92,13 +128,24 @@ class DashboardQuery:
             is not None
         )
 
-    def _checkpoints(self) -> tuple[StageCheckpoint, ...]:
+    def _checkpoints(
+        self, analysis_id: str | None = None
+    ) -> tuple[StageCheckpoint, ...]:
         with self._connect() as connection:
             if not self._table_exists(connection, "simple_runtime_checkpoints"):
                 return ()
-            rows = connection.execute(
-                "SELECT checkpoint_json FROM simple_runtime_checkpoints"
-            ).fetchall()
+            if analysis_id is None:
+                rows = connection.execute(
+                    "SELECT checkpoint_json FROM simple_runtime_checkpoints"
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT checkpoint_json FROM simple_runtime_checkpoints
+                    WHERE analysis_id = ?
+                    """,
+                    (analysis_id,),
+                ).fetchall()
         return tuple(StageCheckpoint.model_validate_json(row[0]) for row in rows)
 
     def list_analyses(self) -> tuple[AnalysisSummaryView, ...]:
@@ -122,11 +169,7 @@ class DashboardQuery:
         except (LookupError, OSError, sqlite3.Error, ValueError) as error:
             raise DashboardNotFound("DASHBOARD_ANALYSIS_NOT_FOUND") from error
         self._validate_analysis_id(analysis_id)
-        values = tuple(
-            checkpoint
-            for checkpoint in self._checkpoints()
-            if checkpoint.identity.analysis_id == analysis_id
-        )
+        values = self._checkpoints(analysis_id)
         if not values:
             summary = next(
                 (
@@ -155,21 +198,32 @@ class DashboardQuery:
         with self._connect() as connection:
             if not self._table_exists(connection, "agent_activity_events"):
                 return ()
-            rows = connection.execute(
-                """
-                SELECT event_json FROM agent_activity_events
-                WHERE analysis_id = ? ORDER BY started_at, rowid
-                """,
-                (analysis_id,),
-            ).fetchall()
-        events = [AgentActivityEvent.model_validate_json(row[0]) for row in rows]
-        if after_event_id is not None:
-            for index, event in enumerate(events):
-                if event.event_id == after_event_id:
-                    events = events[index + 1 :]
-                    break
+            if after_event_id is None:
+                rows = connection.execute(
+                    """
+                    SELECT event_json FROM agent_activity_events
+                    WHERE analysis_id = ? ORDER BY rowid
+                    """,
+                    (analysis_id,),
+                ).fetchall()
             else:
-                raise DashboardNotFound("DASHBOARD_EVENT_CURSOR_NOT_FOUND")
+                cursor = connection.execute(
+                    """
+                    SELECT rowid FROM agent_activity_events
+                    WHERE analysis_id = ? AND event_id = ?
+                    """,
+                    (analysis_id, after_event_id),
+                ).fetchone()
+                if cursor is None:
+                    raise DashboardNotFound("DASHBOARD_EVENT_CURSOR_NOT_FOUND")
+                rows = connection.execute(
+                    """
+                    SELECT event_json FROM agent_activity_events
+                    WHERE analysis_id = ? AND rowid > ? ORDER BY rowid
+                    """,
+                    (analysis_id, cursor[0]),
+                ).fetchall()
+        events = [AgentActivityEvent.model_validate_json(row[0]) for row in rows]
         return tuple(
             AgentActivityView(
                 event_id=event.event_id,
@@ -187,9 +241,531 @@ class DashboardQuery:
                 started_at=event.started_at,
                 finished_at=event.finished_at,
                 elapsed_ms=event.elapsed_ms,
+                provider=event.provider,
+                model=event.model,
+                prompt_digest=event.prompt_digest,
+                output_digest=event.output_digest,
             )
             for event in events
         )
+
+    def artifact_content(
+        self, analysis_id: str, artifact_id: str
+    ) -> ArtifactContentView:
+        if _DIGEST.fullmatch(artifact_id) is None:
+            raise DashboardNotFound("DASHBOARD_ARTIFACT_NOT_FOUND")
+        exact = self._resolved(analysis_id)
+        values = list(self._checkpoints(exact))
+        run = self._simple_run(exact)
+        if run is None or not values:
+            raise DashboardNotFound("DASHBOARD_ARTIFACT_NOT_FOUND")
+        _, contents, _, _, _, _ = self._artifact_projection(exact, values, run)
+        item = contents.get(artifact_id)
+        if item is None:
+            raise DashboardNotFound("DASHBOARD_ARTIFACT_NOT_FOUND")
+        kind, media_type, raw, parsed = item
+        return ArtifactContentView(
+            artifact_id=artifact_id,
+            kind=kind,
+            media_type=media_type,
+            content=parsed if parsed is not None else raw.decode("utf-8", "replace"),
+        )
+
+    def artifact_bytes(
+        self, analysis_id: str, artifact_id: str
+    ) -> tuple[str, str, bytes]:
+        if _DIGEST.fullmatch(artifact_id) is None:
+            raise DashboardNotFound("DASHBOARD_ARTIFACT_NOT_FOUND")
+        exact = self._resolved(analysis_id)
+        values = list(self._checkpoints(exact))
+        run = self._simple_run(exact)
+        if run is None or not values:
+            raise DashboardNotFound("DASHBOARD_ARTIFACT_NOT_FOUND")
+        _, contents, _, _, _, _ = self._artifact_projection(exact, values, run)
+        item = contents.get(artifact_id)
+        if item is None:
+            raise DashboardNotFound("DASHBOARD_ARTIFACT_NOT_FOUND")
+        kind, media_type, raw, _ = item
+        return kind, media_type, raw
+
+    def report_markdown(self, analysis_id: str, display_id: str) -> str:
+        exact = self._resolved(analysis_id)
+        try:
+            return self.report_content(exact, display_id).decode("utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
+
+    def logs_bytes(self, analysis_id: str) -> bytes:
+        exact = self._resolved(analysis_id)
+        path = (RuntimePaths(self._data_dir).logs / f"{exact}.log").resolve()
+        expected = RuntimePaths(self._data_dir).logs.resolve()
+        if path.parent == expected and path.is_file():
+            try:
+                raw = path.read_bytes()
+                return redact_untrusted_text(raw).data
+            except (OSError, ValueError):
+                pass
+        lines = [
+            json.dumps(item.model_dump(mode="json"), ensure_ascii=False)
+            for item in self.list_events(exact)
+        ]
+        return (("\n".join(lines) + "\n") if lines else "").encode("utf-8")
+
+    def bundle_members(
+        self,
+        analysis_id: str,
+        *,
+        artifact_ids: frozenset[str] | None = None,
+        report_ids: frozenset[str] | None = None,
+        include_logs: bool = True,
+    ) -> dict[str, bytes]:
+        exact = self._resolved(analysis_id)
+        detail = self.get_analysis(exact)
+        if artifact_ids is None and not detail.artifact_projection_complete:
+            raise DashboardIncomplete("DASHBOARD_BUNDLE_INCOMPLETE")
+        members: dict[str, bytes] = {
+            "manifest.json": json.dumps(
+                detail.model_dump(mode="json"),
+                ensure_ascii=False,
+                indent=2,
+            ).encode("utf-8"),
+        }
+        if include_logs:
+            members["logs/console.log"] = self.logs_bytes(exact)
+        known_artifacts = {item.artifact_id for item in detail.artifacts}
+        known_reports = {item.display_id for item in detail.reports}
+        if artifact_ids is not None and not artifact_ids <= known_artifacts:
+            raise DashboardNotFound("DASHBOARD_ARTIFACT_NOT_FOUND")
+        if report_ids is not None and not report_ids <= known_reports:
+            raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
+        values = list(self._checkpoints(exact))
+        run = self._simple_run(exact)
+        contents: dict[str, tuple[str, str, bytes, Any | None]] = {}
+        if run is not None and values:
+            _, contents, _, _, _, _ = self._artifact_projection(exact, values, run)
+        for artifact in detail.artifacts:
+            if artifact_ids is not None and artifact.artifact_id not in artifact_ids:
+                continue
+            item = contents.get(artifact.artifact_id)
+            if item is None:
+                continue
+            kind, media_type, raw, _ = item
+            suffix = ".json" if media_type == "application/json" else ".txt"
+            safe_kind = re.sub(r"[^A-Za-z0-9_.-]", "-", kind)[:80] or "artifact"
+            members[f"artifacts/{safe_kind}-{artifact.artifact_id[:12]}{suffix}"] = raw
+        for report in detail.reports:
+            if report_ids is not None and report.display_id not in report_ids:
+                continue
+            members[f"reports/{report.display_id}.md"] = self.report_markdown(
+                exact, report.display_id
+            ).encode("utf-8")
+            try:
+                manifest, _, artifacts = self._report_bundle(exact, report.display_id)
+            except DashboardNotFound as error:
+                finding_ref = FindingDisplayIdStore.resolve_existing(
+                    self._database, exact, report.display_id
+                )
+                if any(
+                    checkpoint.stage is SimpleStage.REPORT_DONE
+                    and finding_ref in checkpoint.input_refs
+                    and (
+                        checkpoint.bundle_manifest_ref is not None
+                        or checkpoint.bundle_archive_ref is not None
+                    )
+                    for checkpoint in values
+                ):
+                    raise DashboardIncomplete(
+                        "DASHBOARD_REPORT_BUNDLE_UNAVAILABLE"
+                    ) from error
+                # Older reports have no verified attachment manifest. Never read
+                # a loose English file or other unverified disk attachment.
+                continue
+
+            def read_verified(
+                ref: StoredDataRef,
+                repository: SimpleArtifactRepository = artifacts,
+            ) -> bytes:
+                return repository.read_bounded(ref, MAX_BUNDLE_FILE_BYTES)
+
+            for entry in manifest.files:
+                try:
+                    body, _ = read_bundle_file(manifest, entry.path, read_verified)
+                except (OSError, ValueError) as error:
+                    raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
+                if entry.path == "report_kr.md":
+                    members[f"reports/{report.display_id}.md"] = body
+                elif entry.path == "report_en.md":
+                    members[f"reports/en/{report.display_id}.md"] = body
+                else:
+                    members[f"reports/{report.display_id}/{entry.path}"] = body
+        return members
+
+    def _resolved(self, value: str) -> str:
+        try:
+            exact = self._resolve_analysis_id(value)
+            self._validate_analysis_id(exact)
+            return exact
+        except (LookupError, OSError, sqlite3.Error, ValueError) as error:
+            raise DashboardNotFound("DASHBOARD_ANALYSIS_NOT_FOUND") from error
+
+    def _event_models(self, analysis_id: str) -> tuple[AgentActivityEvent, ...]:
+        with self._connect() as connection:
+            if not self._table_exists(connection, "agent_activity_events"):
+                return ()
+            rows = connection.execute(
+                """
+                SELECT event_json FROM agent_activity_events
+                WHERE analysis_id = ? ORDER BY started_at, rowid
+                """,
+                (analysis_id,),
+            ).fetchall()
+        events: list[AgentActivityEvent] = []
+        for row in rows:
+            try:
+                events.append(AgentActivityEvent.model_validate_json(row[0]))
+            except ValueError:
+                continue
+        return tuple(events)
+
+    @staticmethod
+    def _nested_refs(value: object) -> tuple[StoredDataRef, ...]:
+        refs: list[StoredDataRef] = []
+
+        def visit(item: object) -> None:
+            if isinstance(item, dict):
+                try:
+                    refs.append(StoredDataRef.model_validate(item))
+                    return
+                except ValueError:
+                    for child in item.values():
+                        visit(child)
+            elif isinstance(item, list):
+                for child in item:
+                    visit(child)
+
+        visit(value)
+        return tuple(refs)
+
+    def _safe_ref_bytes(
+        self,
+        repository: SimpleArtifactRepository,
+        ref: StoredDataRef,
+    ) -> tuple[str, bytes, Any | None]:
+        try:
+            raw = (
+                repository.read_bounded(ref, _MAX_ARTIFACT_BYTES)
+                if ref.record_id is None
+                else repository.read(ref)
+            )
+        except (OSError, sqlite3.Error, ValueError) as error:
+            raise DashboardNotFound("DASHBOARD_ARTIFACT_NOT_FOUND") from error
+        if len(raw) > _MAX_ARTIFACT_BYTES:
+            raise DashboardNotFound("DASHBOARD_ARTIFACT_TOO_LARGE")
+        try:
+            json.loads(raw)
+            safe = redact_projected_json(raw).data
+            return "application/json", safe, json.loads(safe)
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            try:
+                safe = redact_untrusted_text(raw).data
+            except ValueError:
+                safe = b"[CONTENT_REDACTED]"
+            media = "text/markdown" if safe.lstrip().startswith(b"#") else "text/plain"
+            return media, safe, None
+
+    def _artifact_projection(
+        self,
+        analysis_id: str,
+        values: list[StageCheckpoint],
+        run: SimpleAnalysisRun,
+    ) -> tuple[
+        tuple[ArtifactView, ...],
+        dict[str, tuple[str, str, bytes, Any | None]],
+        tuple[LLMInvocationView, ...],
+        tuple[str, ...],
+        tuple[str, ...],
+        int,
+    ]:
+        identity = CheckpointIdentity(
+            analysis_id=analysis_id,
+            workspace_id=run.workspace_id,
+            commit_id=run.commit_id,
+            hypothesis_id=None,
+        )
+        repository = SimpleArtifactRepository(self._data_dir, identity)
+        sources: dict[str, dict[str, set[str]]] = defaultdict(
+            lambda: {"stages": set(), "hypotheses": set()}
+        )
+        refs: dict[str, StoredDataRef] = {}
+        expected_artifacts: set[str] = set()
+        queue: list[tuple[StoredDataRef, str, str | None]] = []
+
+        def enqueue(
+            ref: StoredDataRef | None,
+            stage: str,
+            hypothesis: str | None,
+        ) -> None:
+            if ref is None:
+                return
+            if (
+                str(ref.workspace_id) != run.workspace_id
+                or str(ref.commit_id) != run.commit_id
+            ):
+                return
+            digest = ref.content_hash
+            if ref.data_kind == "artifact":
+                expected_artifacts.add(digest)
+            sources[digest]["stages"].add(stage)
+            if hypothesis:
+                sources[digest]["hypotheses"].add(hypothesis)
+            if digest not in refs and len(refs) < _MAX_ARTIFACTS:
+                refs[digest] = ref
+                queue.append((ref, stage, hypothesis))
+
+        enqueue(run.repository_profile_ref, "REPOSITORY", None)
+        enqueue(run.static_bundle_ref, SimpleStage.STATIC_DONE.value, None)
+        for checkpoint in values:
+            stage = checkpoint.stage.value
+            hypothesis = checkpoint.identity.hypothesis_id
+            for ref in (*checkpoint.input_refs, *checkpoint.output_refs):
+                enqueue(ref, stage, hypothesis)
+            for optional_ref in (
+                checkpoint.recipe_ref,
+                checkpoint.validated_poc_ref,
+                checkpoint.report_ref,
+            ):
+                enqueue(optional_ref, stage, hypothesis)
+        events = self._event_models(analysis_id)
+        for event in events:
+            for ref in (*event.input_refs, *event.output_refs, *event.tool_result_refs):
+                enqueue(ref, event.stage, event.hypothesis_id)
+
+        contents: dict[str, tuple[str, str, bytes, Any | None]] = {}
+        projected_bytes = 0
+        index = 0
+        while index < len(queue) and len(contents) < _MAX_ARTIFACTS:
+            ref, stage, hypothesis = queue[index]
+            index += 1
+            if ref.content_hash in contents:
+                continue
+            try:
+                media_type, raw, parsed = self._safe_ref_bytes(repository, ref)
+            except DashboardNotFound:
+                continue
+            if projected_bytes + len(raw) > _MAX_PROJECTED_ARTIFACT_BYTES:
+                continue
+            kind = ref.data_kind
+            if isinstance(parsed, dict):
+                kind = str(
+                    parsed.get("kind")
+                    or (parsed.get("meta") or {}).get("record_type")
+                    or kind
+                )
+                for nested in self._nested_refs(parsed):
+                    enqueue(nested, stage, hypothesis)
+            contents[ref.content_hash] = (kind, media_type, raw, parsed)
+            projected_bytes += len(raw)
+
+        artifacts = tuple(
+            ArtifactView(
+                artifact_id=digest,
+                kind=item[0],
+                data_kind=refs[digest].data_kind,
+                media_type=item[1],
+                size_bytes=len(item[2]),
+                stages=tuple(sorted(sources[digest]["stages"])),
+                hypothesis_ids=tuple(sorted(sources[digest]["hypotheses"])),
+                view_url=f"/api/analyses/{analysis_id}/artifacts/{digest}",
+                download_url=(
+                    f"/api/analyses/{analysis_id}/artifacts/{digest}?download=1"
+                ),
+            )
+            for digest, item in sorted(
+                contents.items(), key=lambda pair: (pair[1][0], pair[0])
+            )
+        )
+        invocations = self._llm_invocations(events, contents, sources, values)
+        poc_ids = tuple(
+            item.artifact_id
+            for item in artifacts
+            if item.kind.startswith("simple_poc")
+            or item.kind in {"simple_validated_poc", "simple_dynamic_interpretation"}
+        )
+        evidence_ids = tuple(
+            item.artifact_id
+            for item in artifacts
+            if "evidence" in item.kind
+            or item.kind
+            in {
+                "simple_static_fact_bundle",
+                "simple_poc_execution",
+                "simple_dynamic_interpretation",
+            }
+        )
+        return (
+            artifacts,
+            contents,
+            invocations,
+            poc_ids,
+            evidence_ids,
+            len(expected_artifacts.difference(contents)),
+        )
+
+    @staticmethod
+    def _llm_invocations(
+        events: tuple[AgentActivityEvent, ...],
+        contents: dict[str, tuple[str, str, bytes, Any | None]],
+        sources: dict[str, dict[str, set[str]]],
+        checkpoints: list[StageCheckpoint],
+    ) -> tuple[LLMInvocationView, ...]:
+        result: list[LLMInvocationView] = []
+        seen: set[str] = set()
+
+        def attempt(stage: str, hypothesis_id: str | None) -> int:
+            return next(
+                (
+                    item.attempt_number
+                    for item in checkpoints
+                    if item.stage.value == stage
+                    and item.identity.hypothesis_id == hypothesis_id
+                ),
+                0,
+            )
+
+        for event in events:
+            if event.provider is None:
+                continue
+            request: dict[str, Any] | None = None
+            response: dict[str, Any] | None = None
+            request_id: str | None = None
+            response_id: str | None = None
+            for ref in event.tool_result_refs:
+                item = contents.get(ref.content_hash)
+                if item is None or not isinstance(item[3], dict):
+                    continue
+                payload = item[3]
+                if payload.get("kind") == "simple_llm_request":
+                    request = payload
+                    request_id = ref.content_hash
+                elif payload.get("kind") == "simple_llm_response":
+                    response = payload
+                    response_id = ref.content_hash
+            invocation_id = str(
+                (request or {}).get("invocation_id")
+                or (response or {}).get("invocation_id")
+                or event.event_id
+            )
+            if invocation_id in seen:
+                continue
+            seen.add(invocation_id)
+            usage = (response or {}).get("usage")
+            input_tokens = (
+                usage.get("input_tokens") if isinstance(usage, dict) else None
+            )
+            output_tokens = (
+                usage.get("output_tokens") if isinstance(usage, dict) else None
+            )
+            result.append(
+                LLMInvocationView(
+                    invocation_id=invocation_id,
+                    agent_role=event.agent_role,
+                    provider=event.provider,
+                    model=event.model or "미확인",
+                    template_revision=(request or {}).get("template_revision"),
+                    stage=event.stage,
+                    hypothesis_id=event.hypothesis_id,
+                    status=event.status,
+                    prompt_digest=event.prompt_digest,
+                    output_digest=event.output_digest,
+                    started_at=event.started_at,
+                    finished_at=event.finished_at,
+                    elapsed_ms=event.elapsed_ms,
+                    input_tokens=(
+                        input_tokens if isinstance(input_tokens, int) else None
+                    ),
+                    output_tokens=(
+                        output_tokens if isinstance(output_tokens, int) else None
+                    ),
+                    attempt_number=attempt(event.stage, event.hypothesis_id),
+                    retry_count=max(
+                        0,
+                        attempt(event.stage, event.hypothesis_id) - 1,
+                    ),
+                    request_artifact_id=request_id,
+                    response_artifact_id=response_id,
+                )
+            )
+        artifacts_by_invocation: dict[str, dict[str, tuple[str, dict[str, Any]]]] = (
+            defaultdict(dict)
+        )
+        for artifact_id, item in contents.items():
+            artifact_payload = item[3]
+            if not isinstance(artifact_payload, dict):
+                continue
+            kind = artifact_payload.get("kind")
+            artifact_invocation_id = artifact_payload.get("invocation_id")
+            if kind not in {
+                "simple_llm_request",
+                "simple_llm_response",
+            } or not isinstance(artifact_invocation_id, str):
+                continue
+            artifacts_by_invocation[artifact_invocation_id][str(kind)] = (
+                artifact_id,
+                artifact_payload,
+            )
+        for invocation_id, artifacts in sorted(artifacts_by_invocation.items()):
+            if invocation_id in seen:
+                continue
+            request_entry = artifacts.get("simple_llm_request")
+            response_entry = artifacts.get("simple_llm_response")
+            representative = request_entry or response_entry
+            if representative is None:
+                continue
+            artifact_id, payload = representative
+            source = sources.get(artifact_id, {"stages": set(), "hypotheses": set()})
+            stage = next(iter(sorted(source["stages"])), "UNKNOWN")
+            hypothesis_id = next(iter(sorted(source["hypotheses"])), None)
+            try:
+                role = ROLE_BY_STAGE[SimpleStage(stage)]
+            except (KeyError, ValueError):
+                role = "LLM Agent"
+            response_payload = response_entry[1] if response_entry else {}
+            usage = response_payload.get("usage")
+            input_tokens = (
+                usage.get("input_tokens") if isinstance(usage, dict) else None
+            )
+            output_tokens = (
+                usage.get("output_tokens") if isinstance(usage, dict) else None
+            )
+            result.append(
+                LLMInvocationView(
+                    invocation_id=invocation_id,
+                    agent_role=role,
+                    provider=str(payload.get("provider") or "미확인"),
+                    model=str(payload.get("model") or "미확인"),
+                    template_revision=(
+                        str(payload["template_revision"])
+                        if isinstance(payload.get("template_revision"), str)
+                        else None
+                    ),
+                    stage=stage,
+                    hypothesis_id=hypothesis_id,
+                    status="SUCCEEDED" if response_entry else "REQUEST_ONLY",
+                    input_tokens=(
+                        input_tokens if isinstance(input_tokens, int) else None
+                    ),
+                    output_tokens=(
+                        output_tokens if isinstance(output_tokens, int) else None
+                    ),
+                    attempt_number=attempt(stage, hypothesis_id),
+                    retry_count=max(0, attempt(stage, hypothesis_id) - 1),
+                    request_artifact_id=(request_entry[0] if request_entry else None),
+                    response_artifact_id=(
+                        response_entry[0] if response_entry else None
+                    ),
+                )
+            )
+        return tuple(result)
 
     def report_path(self, analysis_id: str, display_id: str) -> Path:
         self._validate_analysis_id(analysis_id)
@@ -243,7 +819,6 @@ class DashboardQuery:
         )
         if report is None or report.markdown_path is None:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
-        recorded_path = report.markdown_path
         try:
             accepted = technical_gate_accepted(
                 gate, SimpleArtifactRepository(self._data_dir, finding.identity)
@@ -262,7 +837,7 @@ class DashboardQuery:
         if (
             resolved.parent != expected_parent
             or not resolved.is_file()
-            or resolved != Path(recorded_path).resolve()
+            or resolved != Path(report.markdown_path).resolve()
         ):
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
         return resolved
@@ -416,6 +991,7 @@ class DashboardQuery:
             for hypothesis_id, checkpoints in sorted(hypothesis_groups.items())
         )
         latest = max(values, key=lambda item: item.updated_at)
+        started = min(values, key=lambda item: item.updated_at).updated_at
         completed = sum(item.status is StageStatus.SUCCEEDED for item in values)
         reports = self._reports(analysis_id)
         progress = ProgressProjector(_CheckpointProjection(tuple(values))).snapshot(
@@ -469,14 +1045,71 @@ class DashboardQuery:
             ),
             child_hypothesis_count=(len(run.parent_hypothesis_ids) if run else 0),
             updated_at=latest.updated_at,
+            repository=(run.repository if run else None),
+            profile_ref=(run.profile_ref if run else None),
+            provider=(run.provider if run else None),
+            model=(run.model if run else None),
+            started_at=started,
+            finished_at=(
+                latest.updated_at
+                if progress.status in {"COMPLETE", "BLOCKED", "FAILED"}
+                else None
+            ),
+            last_updated_at=latest.updated_at,
+            elapsed_ms=max(
+                0,
+                int(
+                    (
+                        (
+                            latest.updated_at
+                            if progress.status in {"COMPLETE", "BLOCKED", "FAILED"}
+                            else datetime.now(UTC)
+                        )
+                        - started
+                    ).total_seconds()
+                    * 1000
+                ),
+            ),
+            stale=(
+                progress.status == "RUNNING"
+                and (datetime.now(UTC) - latest.updated_at).total_seconds()
+                > _STALE_SECONDS
+            ),
         )
         if detail:
+            artifacts: tuple[ArtifactView, ...] = ()
+            invocations: tuple[LLMInvocationView, ...] = ()
+            poc_ids: tuple[str, ...] = ()
+            evidence_ids: tuple[str, ...] = ()
+            static_tools: tuple[StaticToolProgressView, ...] = ()
+            artifact_omitted_count = 0
+            coverage = self._static_coverage_projection(values)
+            if run is not None:
+                (
+                    artifacts,
+                    _,
+                    invocations,
+                    poc_ids,
+                    evidence_ids,
+                    artifact_omitted_count,
+                ) = self._artifact_projection(analysis_id, values, run)
+                static_tools = self._static_tools(run, values, coverage)
             return AnalysisDetailView.model_validate(
                 {
                     **data.model_dump(),
-                    **self._static_coverage_projection(values),
+                    **coverage,
+                    "artifact_projection_complete": artifact_omitted_count == 0,
+                    "artifact_omitted_count": artifact_omitted_count,
                     "hypotheses": hypotheses,
                     "reports": reports,
+                    "pipeline": self._pipeline(values, run),
+                    "static_tools": static_tools,
+                    "artifacts": artifacts,
+                    "llm_invocations": invocations,
+                    "poc_artifact_ids": poc_ids,
+                    "evidence_artifact_ids": evidence_ids,
+                    "logs_url": f"/api/analyses/{analysis_id}/logs/download",
+                    "bundle_url": f"/api/analyses/{analysis_id}/bundle.zip",
                 }
             )
         return data
@@ -622,6 +1255,159 @@ class DashboardQuery:
             "static_codeql_scope": codeql_scope,
         }
 
+    @staticmethod
+    def _pipeline(
+        values: list[StageCheckpoint], run: SimpleAnalysisRun | None
+    ) -> tuple[StageProgressView, ...]:
+        actual = {(item.identity.hypothesis_id, item.stage): item for item in values}
+        result: list[StageProgressView] = []
+
+        def append(stage: SimpleStage, hypothesis_id: str | None) -> None:
+            checkpoint = actual.get((hypothesis_id, stage))
+            result.append(
+                StageProgressView(
+                    stage=stage.value,
+                    label_ko=_STAGE_LABELS[stage],
+                    status=(checkpoint.status.value if checkpoint else "NOT_STARTED"),
+                    hypothesis_id=hypothesis_id,
+                    agent_role=ROLE_BY_STAGE[stage],
+                    attempt_number=(checkpoint.attempt_number if checkpoint else 0),
+                    output_count=(len(checkpoint.output_refs) if checkpoint else 0),
+                    retryable=(checkpoint.retryable if checkpoint else False),
+                    error_code=(checkpoint.error_code if checkpoint else None),
+                    updated_at=(checkpoint.updated_at if checkpoint else None),
+                )
+            )
+
+        append(SimpleStage.STATIC_DONE, None)
+        append(SimpleStage.HYPOTHESIS_DONE, None)
+        hypothesis_ids = (
+            run.hypothesis_ids
+            if run and run.hypothesis_ids
+            else tuple(
+                sorted(
+                    {
+                        item.identity.hypothesis_id
+                        for item in values
+                        if item.identity.hypothesis_id is not None
+                    }
+                )
+            )
+        )
+        for hypothesis_id in hypothesis_ids:
+            for stage in HYPOTHESIS_STAGES:
+                append(stage, hypothesis_id)
+        return tuple(result)
+
+    def _static_tools(
+        self,
+        run: SimpleAnalysisRun,
+        values: list[StageCheckpoint],
+        coverage: dict[str, object],
+    ) -> tuple[StaticToolProgressView, ...]:
+        checkpoint = next(
+            (item for item in values if item.stage is SimpleStage.STATIC_DONE), None
+        )
+        base_status = checkpoint.status.value if checkpoint else "NOT_STARTED"
+        bundle: dict[str, Any] = {}
+        if run.static_bundle_ref is not None:
+            repository = SimpleArtifactRepository(
+                self._data_dir,
+                CheckpointIdentity(
+                    analysis_id=run.analysis_id,
+                    workspace_id=run.workspace_id,
+                    commit_id=run.commit_id,
+                    hypothesis_id=None,
+                ),
+            )
+            try:
+                raw = repository.read(run.static_bundle_ref)
+                value = json.loads(raw)
+                if isinstance(value, dict):
+                    bundle = value
+            except (
+                OSError,
+                sqlite3.Error,
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                ValueError,
+            ):
+                bundle = {}
+        completed = base_status == StageStatus.SUCCEEDED.value
+        expected = coverage.get("static_coverage_expected")
+        engines = coverage.get("static_coverage_engines")
+        engine_counts = engines if isinstance(engines, dict) else {}
+        ast_partial = bool(
+            coverage.get("static_ast_parse_error_count")
+            or coverage.get("static_ast_truncated")
+        )
+        opengrep_count = engine_counts.get("opengrep")
+        semgrep_count = engine_counts.get("semgrep")
+        if not completed:
+            ast_status = opengrep_status = base_status
+        else:
+            ast_status = (
+                "PARTIAL" if ast_partial else "SUCCEEDED" if coverage else "UNKNOWN"
+            )
+            opengrep_status = (
+                "UNKNOWN"
+                if not isinstance(opengrep_count, int) or not isinstance(expected, int)
+                else "SUCCEEDED"
+                if expected > 0 and opengrep_count == expected
+                else "PARTIAL"
+                if opengrep_count > 0
+                else "SKIPPED"
+            )
+        codeql_executed = coverage.get("static_codeql_executed")
+        if codeql_executed is None:
+            codeql_executed = bundle.get("codeql_executed")
+        tools = [
+            StaticToolProgressView(
+                tool="AST",
+                status=ast_status,
+            ),
+            StaticToolProgressView(
+                tool="OpenGrep",
+                status=opengrep_status,
+                finding_count=(
+                    len(bundle.get("opengrep_findings", []))
+                    if isinstance(bundle.get("opengrep_findings"), list)
+                    else None
+                ),
+            ),
+        ]
+        if isinstance(semgrep_count, int) and semgrep_count > 0:
+            tools.append(
+                StaticToolProgressView(
+                    tool="Semgrep CE",
+                    status=(
+                        base_status
+                        if not completed
+                        else "SUCCEEDED"
+                        if isinstance(expected, int) and semgrep_count == expected
+                        else "PARTIAL"
+                    ),
+                )
+            )
+        tools.append(
+            StaticToolProgressView(
+                tool="CodeQL",
+                status=(
+                    "SUCCEEDED"
+                    if completed and codeql_executed
+                    else "SKIPPED"
+                    if completed
+                    else base_status
+                ),
+                finding_count=(
+                    len(bundle.get("codeql_findings", []))
+                    if isinstance(bundle.get("codeql_findings"), list)
+                    else None
+                ),
+            )
+        )
+        return tuple(tools)
+
     def _project_hypothesis(
         self,
         analysis_id: str,
@@ -669,14 +1455,18 @@ class DashboardQuery:
             disposition=terminal_poc_outcome(execution) or terminal_gate_outcome(gate),
             scope_status=str(review["status"]),
             scope_collection_status=str(source.get("collection_status", "UNVERIFIED")),
-            scope_source_url=source.get("source_url")
-            if isinstance(source.get("source_url"), str)
-            and review["provenance_verified"] is True
-            else None,
-            scope_source_revision=source.get("blob_sha")
-            if isinstance(source.get("blob_sha"), str)
-            and review["provenance_verified"] is True
-            else None,
+            scope_source_url=(
+                source.get("source_url")
+                if isinstance(source.get("source_url"), str)
+                and review["provenance_verified"] is True
+                else None
+            ),
+            scope_source_revision=(
+                source.get("blob_sha")
+                if isinstance(source.get("blob_sha"), str)
+                and review["provenance_verified"] is True
+                else None
+            ),
             scope_reasons=tuple(
                 str(item) for item in cast(list[object], review["checks"])
             ),
@@ -684,9 +1474,10 @@ class DashboardQuery:
                 str(item) for item in cast(list[object], review["missing_information"])
             ),
             scope_axes=cast(dict[str, dict[str, object]], review["axes"]),
-            private_reporting_policy_passed=review["private_reporting_policy_passed"]
-            is True,
-            external_disclosure_allowed=review["external_disclosure_allowed"] is True,
+            private_reporting_policy_passed=(
+                review["private_reporting_policy_passed"] is True
+            ),
+            external_disclosure_allowed=(review["external_disclosure_allowed"] is True),
             resume_available=(
                 progress.status in {"BLOCKED", "FAILED"}
                 and any(item.retryable for item in values)
@@ -773,6 +1564,10 @@ class DashboardQuery:
                     analysis_id=analysis_id,
                     display_id=display_id,
                     url=f"/reports/{analysis_id}/{display_id}.md",
+                    view_url=(f"/api/analyses/{analysis_id}/reports/{display_id}"),
+                    download_url=(
+                        f"/api/analyses/{analysis_id}/reports/{display_id}/download"
+                    ),
                     attachment_urls=self._attachment_urls(analysis_id, display_id),
                 )
             )
@@ -819,6 +1614,23 @@ class DashboardQuery:
             except (TypeError, ValueError):
                 continue
         return tuple(summaries)
+
+    @staticmethod
+    def _aggregate_status(values: list[StageCheckpoint]) -> str:
+        for status in (
+            StageStatus.RUNNING,
+            StageStatus.BLOCKED,
+            StageStatus.FAILED,
+        ):
+            if any(item.status is status for item in values):
+                return status.value
+        if any(
+            item.stage is SimpleStage.REPORT_DONE
+            and item.status is StageStatus.SUCCEEDED
+            for item in values
+        ):
+            return "COMPLETE"
+        return "SUCCEEDED"
 
     @staticmethod
     def _validate_analysis_id(analysis_id: str) -> None:

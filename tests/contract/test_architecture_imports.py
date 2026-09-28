@@ -130,7 +130,13 @@ EXACT_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
     "sastsimi.simple_runtime.github_policy": frozenset(
         {"sastsimi.policy.adapters.official_http"}
     ),
-    "sastsimi.interfaces.cli.dashboard": frozenset({"sastsimi.dashboard.server"}),
+    "sastsimi.interfaces.cli.dashboard": frozenset(
+        {
+            "sastsimi.config.runtime_paths",
+            "sastsimi.dashboard.query",
+            "sastsimi.dashboard.server",
+        }
+    ),
     "sastsimi.interfaces.cli.main": frozenset(
         {
             "sastsimi.composition.simple_runtime_composition",
