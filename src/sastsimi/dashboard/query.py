@@ -1160,10 +1160,13 @@ class DashboardQuery:
             or parse_count < 0
             or type(oversize_count) is not int
             or oversize_count < 0
-            or (codeql_error is not None and (
-                not isinstance(codeql_error, str)
-                or not _RULE_NAME.fullmatch(codeql_error)
-            ))
+            or (
+                codeql_error is not None
+                and (
+                    not isinstance(codeql_error, str)
+                    or not _RULE_NAME.fullmatch(codeql_error)
+                )
+            )
             or not isinstance(engine_errors, list)
             or len(engine_errors) > 32
             or any(

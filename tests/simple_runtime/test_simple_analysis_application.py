@@ -701,10 +701,13 @@ async def test_duplicate_proposals_in_one_batch_run_only_one_child(
     assert store.require_analysis_run("analysis-dedup").hypothesis_ids == (
         "hypothesis-one",
     )
-    assert store.get(
-        outcome.identity.model_copy(update={"hypothesis_id": "hypothesis-two"}),
-        SimpleStage.PRO_CON_DONE,
-    ) is None
+    assert (
+        store.get(
+            outcome.identity.model_copy(update={"hypothesis_id": "hypothesis-two"}),
+            SimpleStage.PRO_CON_DONE,
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio

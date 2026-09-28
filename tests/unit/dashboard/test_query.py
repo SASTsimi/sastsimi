@@ -190,11 +190,15 @@ def _attach_static_coverage(
             "expected_count": 5 if limitations_only else 110,
             "verified_count": 5,
             "gaps": [] if limitations_only else gaps,
-            "unsupported": [] if limitations_only else [
+            "unsupported": []
+            if limitations_only
+            else [
                 {"extension": ".go", "file_count": 3},
                 {"extension": "", "file_count": 1},
             ],
-            "unsupported_files": [] if limitations_only else [
+            "unsupported_files": []
+            if limitations_only
+            else [
                 {"path": "tools/launcher", "reason": "unsupported_extension"},
                 {"path": "src/driver.go", "reason": "unsupported_extension"},
             ],

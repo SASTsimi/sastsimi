@@ -93,8 +93,12 @@ def coverage_disclosure(
         errors.append("ast_oversize_files")
     if data.get("codeql_error"):
         errors.append("codeql_error")
-    if len(gaps) != expected - verified or len(errors) > 32 or any(
-        not isinstance(item, str) or not item or len(item) > 128 for item in errors
+    if (
+        len(gaps) != expected - verified
+        or len(errors) > 32
+        or any(
+            not isinstance(item, str) or not item or len(item) > 128 for item in errors
+        )
     ):
         raise ValueError("REPORT_STATIC_COVERAGE_INVALID")
     if disposition == "FULL" and (

@@ -124,7 +124,10 @@ def test_unsupported_product_paths_are_recorded_without_test_files(
         tmp_path, ("app.py", "bin/launcher", "src/worker.r", "tests/test_worker.r")
     )
     plan = plan_static_coverage(
-        tmp_path, product.selected_paths, "b" * 40, rules,
+        tmp_path,
+        product.selected_paths,
+        "b" * 40,
+        rules,
         scope_fingerprint=product.fingerprint,
     )
 
@@ -735,7 +738,10 @@ def test_later_clean_zero_hit_does_not_promote_earlier_unverified_hit(
         engine="opengrep",
     )
     clean = assess_scan(
-        plan, rules.batches[0], _raw(scanned=["app.ts"]), engine="semgrep",
+        plan,
+        rules.batches[0],
+        _raw(scanned=["app.ts"]),
+        engine="semgrep",
         targets=["app.ts"],
     )
 
@@ -748,12 +754,17 @@ def test_two_verified_engines_deduplicate_hit_with_both_origins(tmp_path: Path) 
     plan, rules = _plan(tmp_path)
     hit = {"check_id": "rule.js", "path": "app.ts", "start": {"line": 1}}
     first = assess_scan(
-        plan, rules.batches[0], _raw(scanned=["app.ts"], results=[hit]),
+        plan,
+        rules.batches[0],
+        _raw(scanned=["app.ts"], results=[hit]),
         engine="opengrep",
     )
     second = assess_scan(
-        plan, rules.batches[0], _raw(scanned=["app.ts"], results=[hit]),
-        engine="semgrep", targets=["app.ts"],
+        plan,
+        rules.batches[0],
+        _raw(scanned=["app.ts"], results=[hit]),
+        engine="semgrep",
+        targets=["app.ts"],
     )
 
     results = json.loads(merge_static_candidates(rules, [first, second]))["results"]

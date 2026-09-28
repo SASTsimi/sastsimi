@@ -715,10 +715,7 @@ class SimpleAnalysisApplication:
                         proposal_key = self._proposal_key(
                             identity, seed.proposal_ref, strict=append_existing
                         )
-                        if (
-                            seed.hypothesis_id in seen_ids
-                            or proposal_key in seen_keys
-                        ):
+                        if seed.hypothesis_id in seen_ids or proposal_key in seen_keys:
                             continue
                         seen_ids.add(seed.hypothesis_id)
                         seen_keys.add(proposal_key)
