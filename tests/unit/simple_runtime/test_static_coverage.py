@@ -159,6 +159,36 @@ def test_absolute_scanner_paths_are_normalized_on_all_platforms(tmp_path: Path) 
     assert slice_.normalized_results[0]["path"] == "app.ts"
 
 
+def test_assessed_slice_keeps_scan_metadata_without_duplicate_raw_hits(
+    tmp_path: Path,
+) -> None:
+    plan, rules = _plan(tmp_path)
+    hit = {
+        "check_id": "rule.js",
+        "path": "app.ts",
+        "start": {"line": 1},
+        "extra": {"message": "source evidence"},
+    }
+    raw = json.dumps(
+        {
+            "results": [hit],
+            "errors": [],
+            "paths": {"scanned": ["app.ts"], "skipped": []},
+            "skipped_rules": [],
+            "stats": {"duration": 1},
+        }
+    ).encode()
+
+    slice_ = assess_scan(plan, rules.batches[0], raw, engine="opengrep")
+
+    assert slice_.parsed["results"] == []
+    assert slice_.parsed["paths"] == {"scanned": ["app.ts"], "skipped": []}
+    assert slice_.parsed["errors"] == []
+    assert slice_.parsed["skipped_rules"] == []
+    assert slice_.parsed["stats"] == {"duration": 1}
+    assert slice_.normalized_results == ({**hit, "scan_incomplete": False},)
+
+
 def test_repeated_result_path_is_resolved_once_per_scan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

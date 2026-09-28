@@ -338,6 +338,9 @@ def assess_scan(
     for raw_path, relative in result_paths.items():
         if _safe_relative_from_root(plan.workspace, raw_path) != relative:
             raise ValueError("STATIC_SCAN_RESULT_PATH_INVALID")
+    # The immutable raw artifact retains every hit. Keep only normalized hits in
+    # memory; downstream coverage/merge consumers need parsed scan metadata only.
+    parsed["results"] = []
     return CoverageSlice(
         engine=engine,
         batch_key=batch.key,
