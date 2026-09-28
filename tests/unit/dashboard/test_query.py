@@ -9,7 +9,11 @@ import pytest
 
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
-from sastsimi.dashboard.query import DashboardNotFound, DashboardQuery
+from sastsimi.dashboard.query import (
+    DashboardBadRequest,
+    DashboardNotFound,
+    DashboardQuery,
+)
 from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.bundle_files import PublishedBundle, parse_bundle_manifest
@@ -133,6 +137,8 @@ def test_query_projects_current_progress_without_cross_analysis_data(tmp_path) -
     assert DashboardQuery(tmp_path).list_events("analysis-a")[0].agent_role == (
         "Pro·Con Agents"
     )
+    assert DashboardQuery(tmp_path).list_events("analysis-a")[0].substage is None
+    assert DashboardQuery(tmp_path).list_events("analysis-a")[0].metrics == {}
     assert (
         DashboardQuery(tmp_path).list_events("analysis-a", after_event_id="event-1")
         == ()
@@ -729,3 +735,102 @@ def test_terminal_gate_projects_complete_without_report_or_resume_hint(
 
 
 # mypy: disable-error-code="no-untyped-def"
+
+
+def test_dashboard_kpis_count_only_reported_verified_findings(tmp_path: Path) -> None:
+    seed(tmp_path)
+    query = DashboardQuery(tmp_path)
+    assert query.get_analysis("analysis-a").kpis.confirmed_findings == 0
+
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    poc = ref("validated-poc")
+    for stage in (
+        SimpleStage.POC_EXECUTION_DONE,
+        SimpleStage.VERIFICATION_FINAL_DONE,
+        SimpleStage.FINDING_DONE,
+        SimpleStage.REPORT_DONE,
+    ):
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=identity,
+                stage=stage,
+                status=StageStatus.SUCCEEDED,
+                input_refs=(),
+                input_hash=input_reference_hash(()),
+                output_refs=(ref(stage.value),),
+                validated_poc_ref=poc,
+                verdict="TRUE"
+                if stage is SimpleStage.VERIFICATION_FINAL_DONE
+                else None,
+            )
+        )
+    detail = query.get_analysis("analysis-a")
+    assert detail.kpis.confirmed_findings == 1
+    assert detail.kpis.verification_total == 1
+    assert detail.kpis.remaining_work == 0
+
+
+def test_dashboard_kpis_keep_unknown_discovery_total_unknown(tmp_path: Path) -> None:
+    seed(tmp_path)
+    kpis = DashboardQuery(tmp_path).get_analysis("analysis-a").kpis
+    assert kpis.discovery_total is None
+    assert kpis.discovery_done is None
+    assert kpis.verification_total == 1
+    assert kpis.verification_done == 0
+
+
+def test_status_cells_page_all_513_hypotheses_without_overlap(tmp_path: Path) -> None:
+    database = tmp_path / "db" / "sastsimi.sqlite3"
+    store = SimpleCheckpointStore(database)
+    hypothesis_ids = tuple(f"hypothesis-{number:04d}" for number in range(513))
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id="analysis-a",
+            display_analysis_id="A-001",
+            workspace_id="workspace-1",
+            commit_id="commit-1",
+            repository="https://example.invalid/repository.git",
+            hypothesis_ids=hypothesis_ids,
+        )
+    )
+    for hypothesis_id in hypothesis_ids:
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=CheckpointIdentity(
+                    analysis_id="analysis-a",
+                    workspace_id="workspace-1",
+                    commit_id="commit-1",
+                    hypothesis_id=hypothesis_id,
+                ),
+                stage=SimpleStage.PRO_CON_DONE,
+                status=StageStatus.SUCCEEDED,
+                input_refs=(),
+                input_hash=input_reference_hash(()),
+            )
+        )
+
+    query = DashboardQuery(tmp_path)
+    pages = (
+        query.list_status_cells("analysis-a", offset=0, limit=200),
+        query.list_status_cells("analysis-a", offset=200, limit=200),
+        query.list_status_cells("analysis-a", offset=400, limit=200),
+    )
+    assert [len(page.items) for page in pages] == [200, 200, 113]
+    assert all(page.total == 513 for page in pages)
+    assert {item.id for page in pages for item in page.items} == set(hypothesis_ids)
+
+
+def test_status_cells_reject_cross_analysis_and_invalid_page(tmp_path: Path) -> None:
+    seed(tmp_path)
+    query = DashboardQuery(tmp_path)
+    with pytest.raises(DashboardNotFound):
+        query.list_status_cells("analysis-other", offset=0, limit=10)
+    for offset, limit in ((-1, 10), (0, 0), (0, 201)):
+        with pytest.raises(DashboardBadRequest):
+            query.list_status_cells("analysis-a", offset=offset, limit=limit)

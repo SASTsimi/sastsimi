@@ -203,6 +203,32 @@ class AgentActivityView(ContractModel):
     model: str | None = None
     prompt_digest: str | None = None
     output_digest: str | None = None
+    substage: str | None = None
+    metrics: dict[str, int] = Field(default_factory=dict)
+
+
+class DashboardKpiView(ContractModel):
+    discovery_done: int | None = None
+    discovery_total: int | None = None
+    verification_done: int | None = None
+    verification_total: int | None = None
+    remaining_work: int | None = None
+    confirmed_findings: int = 0
+
+
+class StatusCellView(ContractModel):
+    id: str
+    kind: str
+    status: str
+    label_ko: str
+    detail_url: str
+
+
+class StatusCellPageView(ContractModel):
+    items: tuple[StatusCellView, ...]
+    total: int
+    offset: int
+    limit: int
 
 
 class FindingReportView(ContractModel):
@@ -235,6 +261,7 @@ class FindingTraceView(ContractModel):
 
 
 class AnalysisDetailView(AnalysisSummaryView):
+    kpis: DashboardKpiView = Field(default_factory=DashboardKpiView)
     static_coverage_expected: int | None = None
     static_coverage_verified: int | None = None
     static_coverage_gap_count: int | None = None
@@ -271,12 +298,15 @@ __all__ = [
     "ArtifactView",
     "AnalysisDetailView",
     "AnalysisSummaryView",
+    "DashboardKpiView",
     "FindingReportView",
     "FindingTraceView",
     "HypothesisProgressView",
     "LLMInvocationView",
     "ReadinessCheckView",
     "StageProgressView",
+    "StatusCellPageView",
+    "StatusCellView",
     "StaticToolProgressView",
     "StaticToolFindingView",
     "UsageSummaryView",

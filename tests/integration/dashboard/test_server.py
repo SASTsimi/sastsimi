@@ -599,4 +599,17 @@ def test_server_rejects_non_loopback_bind(tmp_path) -> None:
         create_server(tmp_path, host="0.0.0.0", port=8765)
 
 
+def test_status_cells_endpoint_pages_and_rejects_invalid_request(tmp_path) -> None:
+    seed(tmp_path)
+    with running_server(tmp_path) as base:
+        response = request(f"{base}/api/analyses/A-001/status-cells?offset=0&limit=1")
+        payload = json.loads(response.read())
+        assert response.status == 200
+        assert payload["total"] == 1
+        assert len(payload["items"]) == 1
+        assert payload["items"][0]["id"] == "hypothesis-1"
+        assert request(f"{base}/api/analyses/A-001/status-cells?limit=0").status == 400
+        assert request(f"{base}/api/analyses/analysis-other/status-cells").status == 404
+
+
 # mypy: disable-error-code="no-untyped-def"

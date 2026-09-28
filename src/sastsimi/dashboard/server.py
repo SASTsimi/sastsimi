@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Literal, cast
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from .query import DashboardNotFound, DashboardQuery
+from .query import DashboardBadRequest, DashboardNotFound, DashboardQuery
 
 _STATIC = Path(__file__).with_name("static")
 _CSP = (
@@ -221,6 +221,27 @@ def create_server(
                 elif (
                     len(parts) == 4
                     and parts[:2] == ("api", "analyses")
+                    and parts[3] == "status-cells"
+                ):
+                    parameters = parse_qs(parsed.query, keep_blank_values=True)
+                    if any(
+                        len(parameters.get(name, ())) != 1
+                        for name in ("offset", "limit")
+                        if name in parameters
+                    ):
+                        raise DashboardBadRequest("DASHBOARD_PAGE_INVALID")
+                    try:
+                        offset = int(parameters.get("offset", ["0"])[0])
+                        limit = int(parameters.get("limit", ["100"])[0])
+                    except ValueError as error:
+                        raise DashboardBadRequest("DASHBOARD_PAGE_INVALID") from error
+                    self._json(
+                        query.list_status_cells(parts[2], offset=offset, limit=limit),
+                        send_body,
+                    )
+                elif (
+                    len(parts) == 4
+                    and parts[:2] == ("api", "analyses")
                     and parts[3] == "events"
                 ):
                     after = parse_qs(parsed.query).get("after", [None])[0]
@@ -274,6 +295,13 @@ def create_server(
                     )
                 else:
                     raise DashboardNotFound("DASHBOARD_ROUTE_NOT_FOUND")
+            except DashboardBadRequest:
+                self._response(
+                    HTTPStatus.BAD_REQUEST,
+                    b'{"error":"bad_request"}',
+                    "application/json; charset=utf-8",
+                    send_body,
+                )
             except DashboardNotFound:
                 self._response(
                     HTTPStatus.NOT_FOUND,

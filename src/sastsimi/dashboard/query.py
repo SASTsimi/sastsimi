@@ -9,6 +9,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast, overload
+from urllib.parse import quote
 
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.prompt_redaction import (
@@ -51,6 +52,7 @@ from .models import (
     ArtifactContentView,
     ArtifactRelationView,
     ArtifactView,
+    DashboardKpiView,
     FindingReportView,
     FindingTraceView,
     HypothesisProgressView,
@@ -59,6 +61,8 @@ from .models import (
     StageProgressView,
     StaticToolFindingView,
     StaticToolProgressView,
+    StatusCellPageView,
+    StatusCellView,
     UsageSummaryView,
 )
 
@@ -88,6 +92,10 @@ _STAGE_LABELS: dict[SimpleStage, str] = {
 
 
 class DashboardNotFound(LookupError):
+    pass
+
+
+class DashboardBadRequest(ValueError):
     pass
 
 
@@ -184,6 +192,62 @@ class DashboardQuery:
             return AnalysisDetailView(**summary.model_dump())
         return self._project_analysis(analysis_id, list(values), detail=True)
 
+    def list_status_cells(
+        self, analysis_id: str, *, offset: int = 0, limit: int = 100
+    ) -> StatusCellPageView:
+        if (
+            type(offset) is not int
+            or type(limit) is not int
+            or offset < 0
+            or not 1 <= limit <= 200
+        ):
+            raise DashboardBadRequest("DASHBOARD_PAGE_INVALID")
+        try:
+            exact = self._resolve_analysis_id(analysis_id)
+        except (LookupError, OSError, sqlite3.Error, ValueError) as error:
+            raise DashboardNotFound("DASHBOARD_ANALYSIS_NOT_FOUND") from error
+        self._validate_analysis_id(exact)
+        values = self._checkpoints(exact)
+        run = self._simple_run(exact)
+        if not values and run is None:
+            raise DashboardNotFound("DASHBOARD_ANALYSIS_NOT_FOUND")
+        groups: dict[str, list[StageCheckpoint]] = defaultdict(list)
+        for checkpoint in values:
+            hypothesis_id = checkpoint.identity.hypothesis_id
+            if hypothesis_id is not None:
+                groups[hypothesis_id].append(checkpoint)
+        ids = sorted(set(groups) | set(run.hypothesis_ids if run else ()))
+        items: list[StatusCellView] = []
+        for ordinal, hypothesis_id in enumerate(
+            ids[offset : offset + limit], offset + 1
+        ):
+            checkpoints = groups.get(hypothesis_id, [])
+            if self._confirmed_hypothesis(checkpoints):
+                status = "CONFIRMED"
+            elif checkpoints:
+                status = (
+                    ProgressProjector(_CheckpointProjection(tuple(checkpoints)))
+                    .snapshot(exact)
+                    .status
+                )
+            else:
+                status = "PENDING"
+            items.append(
+                StatusCellView(
+                    id=hypothesis_id,
+                    kind="hypothesis",
+                    status=status,
+                    label_ko=f"가설 {ordinal}",
+                    detail_url=(
+                        f"/analyses/{quote(exact, safe='')}"
+                        f"#hypothesis-{quote(hypothesis_id, safe='')}"
+                    ),
+                )
+            )
+        return StatusCellPageView(
+            items=tuple(items), total=len(ids), offset=offset, limit=limit
+        )
+
     def list_events(
         self,
         analysis_id: str,
@@ -234,6 +298,8 @@ class DashboardQuery:
                 model=event.model,
                 prompt_digest=event.prompt_digest,
                 output_digest=event.output_digest,
+                substage=event.substage,
+                metrics=event.metrics,
             )
             for event in events
         )
@@ -1004,6 +1070,18 @@ class DashboardQuery:
         started = min(values, key=lambda item: item.updated_at).updated_at
         completed = sum(item.status is StageStatus.SUCCEEDED for item in values)
         reports = self._reports(analysis_id)
+        coverage = self._static_coverage_projection(values) if detail else {}
+        known_hypotheses = set(run.hypothesis_ids) if run is not None else set()
+        hypothesis_total = (
+            len(known_hypotheses | set(hypothesis_groups))
+            if run is not None or hypothesis_groups
+            else None
+        )
+        verification_done = sum(item.status == "COMPLETE" for item in hypotheses)
+        confirmed_count = sum(
+            self._confirmed_hypothesis(checkpoints)
+            for checkpoints in hypothesis_groups.values()
+        )
         progress = ProgressProjector(_CheckpointProjection(tuple(values))).snapshot(
             analysis_id
         )
@@ -1102,7 +1180,25 @@ class DashboardQuery:
             return AnalysisDetailView.model_validate(
                 {
                     **data.model_dump(),
-                    **self._static_coverage_projection(values),
+                    **coverage,
+                    "kpis": DashboardKpiView(
+                        discovery_done=cast(
+                            int | None, coverage.get("static_coverage_verified")
+                        ),
+                        discovery_total=cast(
+                            int | None, coverage.get("static_coverage_expected")
+                        ),
+                        verification_done=verification_done
+                        if hypothesis_total is not None
+                        else None,
+                        verification_total=hypothesis_total,
+                        remaining_work=(
+                            max(0, hypothesis_total - verification_done)
+                            if hypothesis_total is not None
+                            else None
+                        ),
+                        confirmed_findings=confirmed_count,
+                    ),
                     "hypotheses": hypotheses,
                     "reports": reports,
                     "pipeline": self._pipeline(values, run),
@@ -1138,6 +1234,28 @@ class DashboardQuery:
                 }
             )
         return data
+
+    @staticmethod
+    def _confirmed_hypothesis(values: list[StageCheckpoint]) -> bool:
+        return (
+            any(
+                item.stage is SimpleStage.VERIFICATION_FINAL_DONE
+                and item.status is StageStatus.SUCCEEDED
+                and item.verdict == "TRUE"
+                for item in values
+            )
+            and any(item.validated_poc_ref is not None for item in values)
+            and any(
+                item.stage is SimpleStage.FINDING_DONE
+                and item.status is StageStatus.SUCCEEDED
+                for item in values
+            )
+            and any(
+                item.stage is SimpleStage.REPORT_DONE
+                and item.status is StageStatus.SUCCEEDED
+                for item in values
+            )
+        )
 
     def _static_coverage_projection(
         self, checkpoints: list[StageCheckpoint]
