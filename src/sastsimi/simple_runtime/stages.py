@@ -670,7 +670,9 @@ class PoCExecutionStage:
                     evidence_refs=(execution_ref, stdout_ref, stderr_ref, cleanup_ref),
                 )
             )
-        if _has_python_import_traceback(outcome.stderr):
+        if _has_python_import_traceback(outcome.stderr) or _has_python_import_traceback(
+            outcome.stdout
+        ):
             raise StageBlocked(
                 StageFailure(
                     code="POC_EXECUTION_FAILED",

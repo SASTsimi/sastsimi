@@ -285,15 +285,20 @@ async def test_poc_execution_error_is_blocked_and_releases_container(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("exit_code", "error_line", "python_traceback"),
+    ("exit_code", "error_line", "python_traceback", "on_stdout"),
     [
-        (0, b"ModuleNotFoundError: No module named 'django'", True),
-        (1, b"ImportError: cannot import name 'settings' from 'app'", True),
-        (0, b"ImportError: expected diagnostic text only", False),
+        (0, b"ModuleNotFoundError: No module named 'django'", True, False),
+        (1, b"ImportError: cannot import name 'settings' from 'app'", True, False),
+        (1, b"ModuleNotFoundError: No module named 'django'", True, True),
+        (0, b"ImportError: expected diagnostic text only", False, False),
     ],
 )
 async def test_python_import_traceback_blocks_before_disproof_interpretation(
-    tmp_path: Path, exit_code: int, error_line: bytes, python_traceback: bool
+    tmp_path: Path,
+    exit_code: int,
+    error_line: bytes,
+    python_traceback: bool,
+    on_stdout: bool,
 ) -> None:
     identity = CheckpointIdentity(
         analysis_id="analysis-import-error",
@@ -340,7 +345,12 @@ async def test_python_import_traceback_blocks_before_disproof_interpretation(
 
     class _ImportErrorDocker(_Docker):
         async def execute(self, *_args: Any, **_kwargs: Any) -> DockerCommandOutcome:
-            return DockerCommandOutcome(exit_code, b"", stderr, False)
+            return DockerCommandOutcome(
+                exit_code,
+                stderr if on_stdout else b"",
+                b"" if on_stdout else stderr,
+                False,
+            )
 
     client = _DisprovingClient()
     containers = _Containers()
@@ -367,10 +377,11 @@ async def test_python_import_traceback_blocks_before_disproof_interpretation(
     assert blocked.value.failure.retryable is True
     assert client.calls == 0
     assert containers.released == ["a" * 64]
-    execution_ref, _stdout_ref, stderr_ref, _cleanup_ref = (
+    execution_ref, stdout_ref, stderr_ref, _cleanup_ref = (
         blocked.value.failure.evidence_refs
     )
-    assert artifacts.read(stderr_ref) == stderr
-    assert json.loads(artifacts.read(execution_ref))["stderr_ref"] == (
-        stderr_ref.model_dump(mode="json")
-    )
+    observation_ref = stdout_ref if on_stdout else stderr_ref
+    assert artifacts.read(observation_ref) == stderr
+    assert json.loads(artifacts.read(execution_ref))[
+        "stdout_ref" if on_stdout else "stderr_ref"
+    ] == observation_ref.model_dump(mode="json")
