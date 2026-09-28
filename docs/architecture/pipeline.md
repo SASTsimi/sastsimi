@@ -41,14 +41,11 @@
 공개 GitHub 정책 수집은 분석 시작 시 한 번 수행하고 같은 분석의 Scope Gate가 저장된
 snapshot을 공유합니다. `resume`은 외부 정책을 다시 조회하지 않습니다.
 
-새 분석의 시간 설정 기본값은 `unlimited`입니다. 유한한 숫자를 설정하면 기록된
-LLM 호출시간 누적과 OpenGrep·Semgrep 각 단계의 종료 시각에 적용되며, 하나의
-전체 분석 wall-clock 타이머는 아닙니다. 개별 LLM·정적 검사·Docker 호출은
-별도의 유한한 timeout과 재시도 한도를 유지합니다.
-정적 검사 한 회 예산 `static_scan_pass_seconds`는 기본 180초입니다. 예산에
-도달한 파일·규칙은 `not_attempted_budget`로 기록하며 같은 범위의 `resume`에서
-다시 시도합니다. 누적 LLM 시간이나 전체 분석 종료 시각과 별개입니다.
-기존 설정의 양의 정수 시간 제한도 그대로 유효합니다. 정적 검사는 저장된 원문과
+새 분석의 누적 LLM 시간 설정 기본값은 `unlimited`입니다. 정적 검사 전체에
+별도의 180초 종료 시각을 적용하지 않습니다. 기존 설정의
+`static_scan_pass_seconds`는 호환을 위해 읽되 일정에는 반영하지 않습니다.
+개별 LLM·정적 검사·Docker 호출은 별도의 유한한 timeout과 재시도 한도를 유지합니다.
+정적 검사는 Python `.py` 제품 파일만 대상으로 하며 저장된 원문과
 커밋·규칙·도구 지문을 다시 검증해 파일/규칙별 성공 증거만 재사용합니다. 선택형
 Semgrep fallback을 켜면 OpenGrep이 검증하지 못한 제품 코드 조합만 넘깁니다.
 구문 오류나 시간 초과의 전체 경로·규칙·이유는 coverage artifact에 남습니다.

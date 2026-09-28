@@ -214,7 +214,6 @@ def main(
     setup_parser.add_argument(
         "--max-elapsed-seconds", type=_elapsed_limit, default="unlimited"
     )
-    setup_parser.add_argument("--static-scan-pass-seconds", type=int, default=180)
     setup_parser.add_argument("--format", choices=["text", "json"])
     subparsers.add_parser(
         "cursor-models",
@@ -1035,6 +1034,15 @@ def main(
     except public_command.PublicCommandUnavailable:
         code = ExitCode.CONFIG_ERROR
     except Exception as error:
+        if command_name.startswith("report ") and isinstance(error, LookupError):
+            if str(error) == "CURRENT_REPORT_STALE":
+                emit_result(
+                    ExitCode.REPORT_UNAVAILABLE,
+                    output_format,
+                    sys.stderr,
+                    command=command_name,
+                )
+                return int(ExitCode.REPORT_UNAVAILABLE)
         trace_id = "trace-" + str(uuid4())
         logger = bootstrap.build_diagnostic_logger(sys.stderr, "ERROR")
         logger.error(

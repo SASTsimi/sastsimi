@@ -795,12 +795,6 @@ async def test_codeql_execution_uses_only_action_paths_and_finalizes_both_leases
             canonical_bytes(
                 [
                     {
-                        "git_path": "README.md",
-                        "git_mode": "100644",
-                        "blob_id": "blob-readme",
-                        "size_bytes": 5,
-                    },
-                    {
                         "git_path": "app.py",
                         "git_mode": "100644",
                         "blob_id": "blob-app",

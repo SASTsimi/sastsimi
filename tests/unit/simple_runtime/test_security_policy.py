@@ -158,7 +158,9 @@ async def test_static_bootstrap_persists_exact_policy_snapshot(
         bootstrap, "_verify_opengrep_workspace", no_workspace_verification
     )
     monkeypatch.setattr(bootstrap, "_tracked_files", no_files)
-    monkeypatch.setattr(bootstrap, "_repository_profile", lambda _tracked: {})
+    monkeypatch.setattr(
+        bootstrap, "_repository_profile", lambda _tracked, **_kwargs: {}
+    )
     monkeypatch.setattr(bootstrap, "_python_ast", lambda _workspace, _tracked: {})
     monkeypatch.setattr(bootstrap, "_collect_opengrep", no_scan)
     identity = CheckpointIdentity(
@@ -169,7 +171,7 @@ async def test_static_bootstrap_persists_exact_policy_snapshot(
     )
 
     with pytest.raises(
-        bootstrap_stages.StaticCoverageBlocked, match="STATIC_PRODUCT_SOURCE_EMPTY"
+        bootstrap_stages.StaticCoverageBlocked, match="NO_PYTHON_SOURCE"
     ) as caught:
         await bootstrap.run(
             SimpleAnalysisRequest(

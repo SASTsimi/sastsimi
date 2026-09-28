@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import stat
 import tomllib
@@ -45,31 +44,18 @@ from sastsimi.contracts.static import (
 )
 from sastsimi.ports.capability_registry import ProductionCapabilityResolverPort
 from sastsimi.ports.dto import RepositoryPreparation, TrackedFile
-from sastsimi.static_analysis.file_scope import build_static_file_scope
+from sastsimi.static_analysis.file_scope import _test_reason, build_static_file_scope
 
 _MAX_DETECTION_FILE_BYTES = 2 * 1024 * 1024
-_LANGUAGE_SUFFIXES: dict[str, frozenset[str]] = {
-    "PYTHON": frozenset({".py", ".pyi"}),
-    "JAVASCRIPT": frozenset({".js", ".jsx", ".mjs", ".cjs"}),
-    "TYPESCRIPT": frozenset({".ts", ".tsx", ".mts", ".cts"}),
-    "JAVA": frozenset({".java"}),
-}
-_CONFIG_NAMES: dict[str, str] = {
+_PYTHON_CONFIG_NAMES: dict[str, str] = {
     "requirements.txt": "REQUIREMENTS",
+    "requirements.in": "REQUIREMENTS",
     "pyproject.toml": "PYPROJECT",
-    "package.json": "PACKAGE_JSON",
     "dockerfile": "DOCKERFILE",
     "compose.yaml": "DOCKER_COMPOSE",
     "compose.yml": "DOCKER_COMPOSE",
     "docker-compose.yaml": "DOCKER_COMPOSE",
     "docker-compose.yml": "DOCKER_COMPOSE",
-    "pom.xml": "MAVEN_POM",
-    "build.gradle": "GRADLE",
-    "build.gradle.kts": "GRADLE",
-    "package-lock.json": "PACKAGE_LOCK",
-    "npm-shrinkwrap.json": "PACKAGE_LOCK",
-    "yarn.lock": "YARN_LOCK",
-    "pnpm-lock.yaml": "PNPM_LOCK",
     "poetry.lock": "PYTHON_LOCK",
     "uv.lock": "PYTHON_LOCK",
     "pipfile.lock": "PYTHON_LOCK",
@@ -79,10 +65,33 @@ _FRAMEWORK_DEPENDENCIES: dict[str, frozenset[str]] = {
     "DJANGO": frozenset({"django"}),
     "FASTAPI": frozenset({"fastapi"}),
     "FLASK": frozenset({"flask"}),
-    "EXPRESS": frozenset({"express"}),
-    "NEXTJS": frozenset({"next"}),
-    "NESTJS": frozenset({"@nestjs/core"}),
 }
+_TEST_REQUIREMENT_PREFIXES = (
+    "requirements-test.",
+    "requirements-tests.",
+    "requirements_test.",
+    "requirements_tests.",
+    "test-requirements.",
+    "test_requirements.",
+)
+
+
+def _python_config_kind(path: str) -> str | None:
+    name = PurePosixPath(path).name.casefold()
+    if name.startswith(_TEST_REQUIREMENT_PREFIXES):
+        return None
+    known = _PYTHON_CONFIG_NAMES.get(name)
+    if known is not None:
+        return known
+    if name.startswith(("requirements-", "requirements_")) and name.endswith(
+        (".txt", ".in")
+    ):
+        return "REQUIREMENTS"
+    if PurePosixPath(path).parent.name.casefold() == "requirements" and name.endswith(
+        (".txt", ".in")
+    ):
+        return "REQUIREMENTS"
+    return None
 
 
 def _identity(details: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
@@ -207,30 +216,6 @@ def _requirements_dependencies(raw: bytes) -> frozenset[str]:
     return frozenset(filter(None, (_dependency_name(item) for item in values)))
 
 
-def _package_json_details(raw: bytes) -> tuple[frozenset[str], tuple[str, ...]]:
-    parsed = json.loads(raw.decode("utf-8"))
-    if not isinstance(parsed, dict):
-        raise ValueError
-    names: set[str] = set()
-    for field in (
-        "dependencies",
-        "devDependencies",
-        "peerDependencies",
-        "optionalDependencies",
-    ):
-        values = parsed.get(field, {})
-        if not isinstance(values, dict):
-            raise ValueError
-        names.update(str(name).lower() for name in values)
-    scripts = parsed.get("scripts", {})
-    if not isinstance(scripts, dict) or any(
-        not isinstance(name, str) or not isinstance(value, str)
-        for name, value in scripts.items()
-    ):
-        raise ValueError
-    return frozenset(names), tuple(sorted(scripts))
-
-
 class RepositoryProfiler:
     """Produce facts only after every supplied manifest entry still matches Git."""
 
@@ -276,7 +261,7 @@ class RepositoryProfiler:
             raise ValueError("REPOSITORY_MANIFEST_MISMATCH")
 
         raw_configs: dict[str, bytes | None] = {}
-        manifest: list[RepositoryTrackedFile] = []
+        verified_manifest: list[RepositoryTrackedFile] = []
         language_paths: dict[str, list[str]] = {}
         configs: list[RepositoryConfigFile] = []
         confirmations: list[str] = []
@@ -289,9 +274,15 @@ class RepositoryProfiler:
             if item.git_mode not in {"100644", "100755"}:
                 raise ValueError("REPOSITORY_MANIFEST_MISMATCH")
             path = item.git_path
-            kind = _CONFIG_NAMES.get(PurePosixPath(path).name.lower())
-            raw, sha256 = _read_exact(root, item, capture=kind is not None)
-            manifest.append(
+            kind = (
+                _python_config_kind(path) if _test_reason(root, path) is None else None
+            )
+            # The whole checkout is still hash-verified. Only Python metadata
+            # needed for detection is captured; JS package files are inert.
+            raw, sha256 = _read_exact(
+                root, item, capture=kind in {"PYPROJECT", "REQUIREMENTS"}
+            )
+            verified_manifest.append(
                 RepositoryTrackedFile.model_validate(
                     asdict(item) | {"content_sha256": sha256}
                 )
@@ -300,27 +291,49 @@ class RepositoryProfiler:
                 raw_configs[path] = raw
 
         selected_paths = set(build_static_file_scope(root, paths).selected_paths)
-        manifest = [item for item in manifest if item.git_path in selected_paths]
+        # Static tools select Python sources independently. The repository
+        # profile also authorizes the isolated PoC build context, which needs
+        # verified templates, assets and .dockerignore as well as Python code.
+        profile_paths = {
+            item.git_path
+            for item in verified_manifest
+            if _test_reason(root, item.git_path) is None
+            and not (
+                PurePosixPath(item.git_path)
+                .name.casefold()
+                .startswith(_TEST_REQUIREMENT_PREFIXES)
+                and PurePosixPath(item.git_path).suffix.casefold() in {".txt", ".in"}
+            )
+        }
+        manifest = [
+            item for item in verified_manifest if item.git_path in profile_paths
+        ]
         for item in canonical_tracked:
             path = item.git_path
-            if path not in selected_paths:
+            if path not in profile_paths:
                 continue
-            suffix = PurePosixPath(path).suffix.lower()
-            for language, suffixes in _LANGUAGE_SUFFIXES.items():
-                if suffix in suffixes:
-                    language_paths.setdefault(language, []).append(path)
-            kind = _CONFIG_NAMES.get(PurePosixPath(path).name.lower())
+            if path in selected_paths:
+                language_paths.setdefault("PYTHON", []).append(path)
+            kind = _python_config_kind(path) if path in raw_configs else None
             if kind is not None:
                 configs.append(
                     RepositoryConfigFile.model_validate({"path": path, "kind": kind})
                 )
-                if raw_configs[path] is None:
+                if kind in {"PYPROJECT", "REQUIREMENTS"} and raw_configs[path] is None:
                     confirmations.append("CONFIG_TOO_LARGE:" + path)
 
         dependencies: dict[str, frozenset[str]] = {}
         execution_hints: list[RepositoryExecutionHint] = []
         for config in configs:
             path, kind = config.path, config.kind
+            if kind == "DOCKERFILE":
+                execution_hints.append(
+                    RepositoryExecutionHint(
+                        path=path,
+                        kind="DOCKERFILE",
+                        name="dockerfile",
+                    )
+                )
             raw = raw_configs[path]
             if raw is None:
                 continue
@@ -337,25 +350,6 @@ class RepositoryProfiler:
                     )
                 elif kind == "REQUIREMENTS":
                     dependencies[path] = _requirements_dependencies(raw)
-                elif kind == "PACKAGE_JSON":
-                    dependencies[path], scripts = _package_json_details(raw)
-                    execution_hints.extend(
-                        RepositoryExecutionHint(
-                            path=path,
-                            kind="PACKAGE_SCRIPT",
-                            name=name,
-                        )
-                        for name in scripts
-                        if name in {"build", "start"}
-                    )
-                elif kind == "DOCKERFILE":
-                    execution_hints.append(
-                        RepositoryExecutionHint(
-                            path=path,
-                            kind="DOCKERFILE",
-                            name="dockerfile",
-                        )
-                    )
             except (UnicodeError, ValueError):
                 confirmations.append("CONFIG_PARSE_FAILED:" + path)
 
@@ -382,7 +376,7 @@ class RepositoryProfiler:
             )
         )
         if not languages:
-            confirmations.append("LANGUAGE_UNCONFIRMED")
+            confirmations.append("NO_PYTHON_SOURCE")
         if not execution_hints:
             confirmations.append("BUILD_OR_START_UNCONFIRMED")
         gaps = tuple(
@@ -453,7 +447,6 @@ class RepositoryProfiler:
 
 _STATIC_ROUTES: dict[str, tuple[str, ...]] = {
     "PYTHON": ("PYTHON_AST", "CODEQL", "OPENGREP"),
-    "JAVASCRIPT": ("CODEQL", "OPENGREP"),
 }
 
 
@@ -785,13 +778,11 @@ class RepositoryExecutionSelector:
                 status="BLOCKED",
             )
 
-        supported_languages = cast(
-            tuple[Literal["PYTHON", "JAVASCRIPT"], ...], detected
-        )
+        supported_languages = cast(tuple[Literal["PYTHON"], ...], detected)
         resolved: list[
             tuple[
                 str,
-                Literal["PYTHON", "JAVASCRIPT"],
+                Literal["PYTHON"],
                 StaticToolCapabilitySelection,
             ]
         ] = []
@@ -894,32 +885,6 @@ class RepositoryExecutionSelector:
                 languages=supported_languages,
                 selected_tools=(),
                 gaps=tuple(selection_gaps),
-                errors=(),
-                status="BLOCKED",
-            )
-        if all(
-            ("CODEQL", language) in resolved_routes
-            for language in ("PYTHON", "JAVASCRIPT")
-        ):
-            return RepositoryExecutionSelection(
-                meta=meta,
-                repository_profile_ref=repository_profile_ref,
-                git_clone_profile_ref=git_clone_profile_ref,
-                git_checkout_profile_ref=git_checkout_profile_ref,
-                languages=supported_languages,
-                selected_tools=(),
-                gaps=(
-                    self._gap(
-                        repository,
-                        code="CODEQL_MULTILANGUAGE_SPLIT_REQUIRED",
-                        description=(
-                            "CodeQL requires one language per work item; this "
-                            "repository must be split before static dispatch."
-                        ),
-                        languages=("PYTHON", "JAVASCRIPT"),
-                        reason="BLOCKED",
-                    ),
-                ),
                 errors=(),
                 status="BLOCKED",
             )

@@ -828,17 +828,36 @@ class DashboardQuery:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
         if not accepted:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
+        try:
+            run = self._simple_run(analysis_id)
+            if run is not None:
+                SimpleArtifactRepository(
+                    self._data_dir, finding.identity
+                ).require_current_report_coverage(
+                    report,
+                    finding_ref,
+                    run.static_coverage_ref,
+                    run.static_disposition,
+                )
+        except (OSError, ValueError, sqlite3.Error) as error:
+            raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
         root = (self._data_dir / "reports").resolve()
         expected_parent = root / analysis_id
-        path = expected_parent / f"{display_id}.md"
+        path = Path(report.markdown_path)
+        allowed_names = {f"{display_id}.md"}
+        if report.bundle_manifest_ref is not None:
+            allowed_names.add(
+                f"{display_id}-{report.bundle_manifest_ref.content_hash}.md"
+            )
         try:
             resolved = path.resolve(strict=True)
         except OSError as error:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
         if (
-            resolved.parent != expected_parent
+            path.name not in allowed_names
+            or resolved.parent != expected_parent
             or not resolved.is_file()
-            or resolved != Path(report.markdown_path).resolve()
+            or resolved != path.absolute()
         ):
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
         return resolved

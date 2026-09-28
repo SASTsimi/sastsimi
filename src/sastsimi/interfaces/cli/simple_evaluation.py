@@ -62,7 +62,31 @@ def _report_path_for_result(
         ).resolve()
         if report_path.parent != expected_parent or report_path.suffix != ".md":
             return None
+        if report.bundle_manifest_ref is not None:
+            if not report.input_refs:
+                return None
+            display_id = artifacts.published_report_display_id(
+                report, report.input_refs[0]
+            )
+            if report_path.name not in {
+                f"{display_id}.md",
+                f"{display_id}-{report.bundle_manifest_ref.content_hash}.md",
+            }:
+                return None
         raw = artifacts.read(report.output_refs[1])
+        try:
+            run = store.require_analysis_run(identity.analysis_id)
+        except LookupError:
+            run = None
+        if run is not None:
+            if not report.input_refs:
+                return None
+            artifacts.require_current_report_coverage(
+                report,
+                report.input_refs[0],
+                run.static_coverage_ref,
+                run.static_disposition,
+            )
         review = project_scope_review(
             store.get(identity, SimpleStage.SCOPE_GATE_DONE),
             artifacts,
@@ -87,7 +111,6 @@ def _bundle_path_for_result(
 ) -> str | None:
     if report_path is None:
         return None
-    display_id = Path(report_path).stem
     try:
         prior = {
             item.stage: item
@@ -95,6 +118,12 @@ def _bundle_path_for_result(
             if item.identity == identity
         }
         finding = prior[SimpleStage.FINDING_DONE]
+        report = prior[SimpleStage.REPORT_DONE]
+        if report.bundle_manifest_ref is None:
+            return None
+        display_id = artifacts.published_report_display_id(
+            report, finding.output_refs[0]
+        )
         review = project_scope_review(
             prior.get(SimpleStage.SCOPE_GATE_DONE),
             artifacts,
@@ -109,7 +138,10 @@ def _bundle_path_for_result(
             public_projection=lambda body: safe_public_report(body, review),
         )
         return (
-            Path("reports") / identity.analysis_id / display_id / "bundle.zip"
+            Path("reports")
+            / identity.analysis_id
+            / Path(report_path).stem
+            / "bundle.zip"
         ).as_posix()
     except (KeyError, IndexError, OSError, ValueError):
         return None

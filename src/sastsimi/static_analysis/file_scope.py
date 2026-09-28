@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 
-_POLICY_VERSION = 4
+_POLICY_VERSION = 5
 _TEST_DIRECTORIES = frozenset(
     {
         "test",
@@ -271,26 +271,26 @@ def _test_reason(root: Path, path: str) -> str | None:
     return None
 
 
+def is_test_only_path(workspace: Path, path: str) -> bool:
+    """Apply the shared conservative test-file exclusion to a tracked path."""
+
+    _validate_tracked_path(path)
+    return _test_reason(workspace.resolve(), path) is not None
+
+
 def build_static_file_scope(workspace: Path, tracked: Sequence[str]) -> StaticFileScope:
-    """Return a deterministic product-only path set for one pinned checkout."""
+    """Return only tracked, non-test Python product sources for static analysis."""
 
     root = workspace.resolve()
     paths = tuple(sorted(set(tracked)))
     for path in paths:
         _validate_tracked_path(path)
-    protected, uncertain_roots = _declared_entry_paths(root, paths)
     selected_paths: list[str] = []
     for path in paths:
-        if path in protected:
-            selected_paths.append(path)
+        if not path.endswith(".py"):
             continue
-        test_reason = _test_reason(root, path)
-        if test_reason is None:
+        if _test_reason(root, path) is None:
             selected_paths.append(path)
-        elif _under_uncertain_root(path, uncertain_roots):
-            # A missing/invalid package declaration might identify this path
-            # as a deployed entry point. Do not silently mark the scope done.
-            raise StaticScopeManifestUnverified()
     selected = tuple(selected_paths)
     fingerprint = hashlib.sha256(
         canonical_bytes(
@@ -310,4 +310,5 @@ __all__ = [
     "StaticFileScope",
     "StaticScopeManifestUnverified",
     "build_static_file_scope",
+    "is_test_only_path",
 ]

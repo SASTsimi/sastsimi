@@ -54,12 +54,6 @@ def _profile_fixture(tmp_path: Path, name: str) -> RepositoryProfile:
             {"DOCKERFILE", "REQUIREMENTS"},
             ["OPENGREP", "PYTHON_AST"],
         ),
-        (
-            "javascript-generated-dockerfile",
-            "JAVASCRIPT",
-            {"PACKAGE_JSON"},
-            ["OPENGREP"],
-        ),
     ),
 )
 def test_repository_fixtures_select_only_verified_active_tool_intersection(
@@ -94,6 +88,31 @@ def test_repository_fixtures_select_only_verified_active_tool_intersection(
     assert [item.code for item in selection.gaps] == [
         f"NO_ACTIVE_STATIC_CAPABILITY:CODEQL:{language}"
     ]
+
+
+def test_javascript_only_fixture_blocks_before_static_tool_selection(
+    tmp_path: Path,
+) -> None:
+    repository = _profile_fixture(tmp_path, "javascript-generated-dockerfile")
+    resolver = _Resolver()
+    selection = RepositoryExecutionSelector(
+        cast(ProductionCapabilityResolverPort, resolver),
+        operating_system="windows",
+        architecture="x86_64",
+    ).select(
+        repository,
+        meta=_selection_meta(),
+        repository_profile_ref=cast(StoredDataRef, reference(repository)),
+        git_clone_profile_ref=resolver.git_ref,
+        git_checkout_profile_ref=resolver.git_ref,
+    )
+
+    assert repository.status == "NEEDS_CONFIRMATION"
+    assert repository.languages == ()
+    assert repository.config_files == ()
+    assert selection.status == "BLOCKED"
+    assert selection.selected_tools == ()
+    assert "NO_PYTHON_SOURCE" in {gap.code for gap in selection.gaps}
 
 
 @pytest.mark.parametrize(

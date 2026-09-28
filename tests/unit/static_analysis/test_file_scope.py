@@ -56,6 +56,24 @@ def test_test_only_paths_do_not_change_product_scope_fingerprint(
     assert with_test.fingerprint == product.fingerprint
 
 
+def test_non_python_paths_do_not_change_python_scope_fingerprint(
+    tmp_path: Path,
+) -> None:
+    product = _scope(tmp_path, {"src/app.py": "def run(): pass\n"})
+    mixed = _scope(
+        tmp_path,
+        {
+            "src/app.py": "def run(): pass\n",
+            "src/client.ts": "export const client = true;\n",
+            "src/types.pyi": "def run() -> None: ...\n",
+            "README.md": "# project\n",
+        },
+    )
+
+    assert mixed.selected_paths == ("src/app.py",)
+    assert mixed.fingerprint == product.fingerprint
+
+
 def test_exact_test_directory_components_do_not_match_product_substrings(
     tmp_path: Path,
 ) -> None:
@@ -71,11 +89,7 @@ def test_exact_test_directory_components_do_not_match_product_substrings(
         },
     )
 
-    assert scope.selected_paths == (
-        "src/contest.py",
-        "src/test_client.py",
-        "src/testimonials.ts",
-    )
+    assert scope.selected_paths == ("src/contest.py", "src/test_client.py")
 
 
 def test_common_e2e_and_specification_trees_are_test_only(tmp_path: Path) -> None:
@@ -113,12 +127,7 @@ def test_benchmark_trees_and_linter_rule_fixtures_are_test_only(
         },
     )
 
-    assert scope.selected_paths == (
-        "src/benchmarking.py",
-        "src/fixtures/default-theme.css",
-        "src/fixtures/eslint/rules.ts",
-        "src/stress_test_service.py",
-    )
+    assert scope.selected_paths == ("src/benchmarking.py", "src/stress_test_service.py")
 
 
 def test_shell_tests_and_test_runner_assets_are_test_only(tmp_path: Path) -> None:
@@ -135,10 +144,10 @@ def test_shell_tests_and_test_runner_assets_are_test_only(tmp_path: Path) -> Non
         },
     )
 
-    assert scope.selected_paths == ("src/contest.sh", "src/vitest_theme.css")
+    assert scope.selected_paths == ()
 
 
-def test_declared_product_entry_protects_test_named_shell_script(
+def test_declared_shell_entry_does_not_enter_python_scope(
     tmp_path: Path,
 ) -> None:
     scope = _scope(
@@ -150,7 +159,7 @@ def test_declared_product_entry_protects_test_named_shell_script(
         },
     )
 
-    assert scope.selected_paths == ("bin/test_health.sh", "package.json")
+    assert scope.selected_paths == ()
 
 
 def test_pytest_convention_files_are_test_only(tmp_path: Path) -> None:
@@ -192,7 +201,7 @@ def test_test_basename_requires_content_evidence_outside_test_directory(
         },
     )
 
-    assert scope.selected_paths == ("src/test_client.py", "web/specification.ts")
+    assert scope.selected_paths == ("src/test_client.py",)
 
 
 def test_large_test_named_source_uses_bounded_content_evidence(
@@ -214,7 +223,7 @@ def test_large_test_named_source_uses_bounded_content_evidence(
         },
     )
 
-    assert scope.selected_paths == ("web/product.spec.ts",)
+    assert scope.selected_paths == ()
 
 
 def test_large_test_named_source_can_find_test_calls_near_tail(
@@ -242,7 +251,7 @@ def test_large_product_named_spec_does_not_gain_a_fake_word_boundary(
         {"web/contest.spec.ts": "export function con" + tail},
     )
 
-    assert scope.selected_paths == ("web/contest.spec.ts",)
+    assert scope.selected_paths == ()
 
 
 def test_go_test_suffix_is_excluded_without_content_evidence(tmp_path: Path) -> None:
@@ -256,14 +265,12 @@ def test_go_test_suffix_is_excluded_without_content_evidence(tmp_path: Path) -> 
         },
     )
 
-    assert scope.selected_paths == (
-        "runtime/main.go",
-        "runtime/parser_TEST.go",
-        "runtime/pretest.go",
-    )
+    assert scope.selected_paths == ()
 
 
-def test_declared_product_entry_points_are_never_excluded(tmp_path: Path) -> None:
+def test_declared_test_tree_entry_points_remain_out_of_python_scope(
+    tmp_path: Path,
+) -> None:
     package = json.dumps(
         {"main": "tests/cli.js", "bin": {"my-tool": "./web/__tests__/cli.js"}}
     )
@@ -279,10 +286,7 @@ def test_declared_product_entry_points_are_never_excluded(tmp_path: Path) -> Non
         },
     )
 
-    assert {"tests/cli.py", "tests/cli.js", "web/__tests__/cli.js"}.issubset(
-        scope.selected_paths
-    )
-    assert "tests/test_cli.py" not in scope.selected_paths
+    assert scope.selected_paths == ()
 
 
 def test_invalid_test_only_manifests_do_not_block_product_scope(
@@ -314,7 +318,7 @@ def test_valid_test_only_manifest_cannot_reinclude_test_tree_file(
         },
     )
 
-    assert scope.selected_paths == ("src/app.ts",)
+    assert scope.selected_paths == ()
 
 
 def test_tracked_paths_are_validated_instead_of_silently_normalized(
@@ -324,31 +328,31 @@ def test_tracked_paths_are_validated_instead_of_silently_normalized(
         static_analysis.build_static_file_scope(tmp_path, ("tests\\test_bad.py",))
 
 
-def test_unreadable_entry_manifest_blocks_ambiguous_product_entry(
+def test_unreadable_js_entry_manifest_does_not_block_python_scope(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(ValueError, match="STATIC_SCOPE_MANIFEST_UNVERIFIED"):
-        _scope(
-            tmp_path,
-            {
-                "apps/web/package.json": "{not-json",
-                "apps/web/tests/cli.ts": "export const main = 1;\n",
-                "backend/tests/test_api.py": "def test_api(): pass\n",
-            },
-        )
+    scope = _scope(
+        tmp_path,
+        {
+            "apps/web/package.json": "{not-json",
+            "apps/web/tests/cli.ts": "export const main = 1;\n",
+            "backend/tests/test_api.py": "def test_api(): pass\n",
+        },
+    )
+    assert scope.selected_paths == ()
 
 
-def test_unexpected_manifest_structure_blocks_ambiguous_test_tree(
+def test_unexpected_manifest_structure_does_not_restore_test_tree(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(ValueError, match="STATIC_SCOPE_MANIFEST_UNVERIFIED"):
-        _scope(
-            tmp_path,
-            {
-                "pyproject.toml": '[tool]\npoetry = "not-a-table"\n',
-                "tests/product.py": "def run(): pass\n",
-            },
-        )
+    scope = _scope(
+        tmp_path,
+        {
+            "pyproject.toml": '[tool]\npoetry = "not-a-table"\n',
+            "tests/product.py": "def run(): pass\n",
+        },
+    )
+    assert scope.selected_paths == ()
 
 
 def test_oversized_root_manifest_does_not_restore_test_tree(tmp_path: Path) -> None:
@@ -360,11 +364,11 @@ def test_oversized_root_manifest_does_not_restore_test_tree(tmp_path: Path) -> N
             "tests/test_app.py": "def test_app(): pass\n",
         },
     )
-    assert "src/app.ts" in scope.selected_paths
+    assert scope.selected_paths == ()
     assert "tests/test_app.py" not in scope.selected_paths
 
 
-def test_large_valid_manifest_protects_declared_product_entry(tmp_path: Path) -> None:
+def test_large_valid_manifest_cannot_restore_non_python_entry(tmp_path: Path) -> None:
     manifest = json.dumps({"main": "./tests/cli.js", "description": "x" * 70_000})
     scope = _scope(
         tmp_path,
@@ -376,11 +380,10 @@ def test_large_valid_manifest_protects_declared_product_entry(tmp_path: Path) ->
             ),
         },
     )
-    assert "tests/cli.js" in scope.selected_paths
-    assert "tests/cli.test.js" not in scope.selected_paths
+    assert scope.selected_paths == ()
 
 
-def test_package_export_pattern_protects_deployed_test_tree_file(
+def test_package_export_pattern_does_not_restore_js_test_tree_file(
     tmp_path: Path,
 ) -> None:
     scope = _scope(
@@ -391,5 +394,4 @@ def test_package_export_pattern_protects_deployed_test_tree_file(
             "tests/test_feature.py": "def test_feature(): pass\n",
         },
     )
-    assert "tests/feature.js" in scope.selected_paths
-    assert "tests/test_feature.py" not in scope.selected_paths
+    assert scope.selected_paths == ()

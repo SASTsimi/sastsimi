@@ -24,7 +24,7 @@ def test_python_route_facts_are_deterministic(tmp_path: Path) -> None:
     assert plan_survey_feed(tmp_path, ("app.py",)).kind == "facts"
 
 
-def test_non_python_or_empty_routes_fall_back_to_source(tmp_path: Path) -> None:
+def test_non_python_source_is_not_fed_to_hypothesis_agent(tmp_path: Path) -> None:
     (tmp_path / "app.js").write_text(
         "server.get('/items', handler);\n", encoding="utf-8"
     )
@@ -32,7 +32,8 @@ def test_non_python_or_empty_routes_fall_back_to_source(tmp_path: Path) -> None:
     feed = plan_survey_feed(tmp_path, ("app.js",))
 
     assert feed.kind == "code"
-    assert "server.get" in feed.content
+    assert feed.tracked == ()
+    assert "server.get" not in feed.content
 
 
 def test_untracked_and_outside_symlink_are_not_fed(tmp_path: Path) -> None:

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Pydantic, pytest, OpenGrep, Semgrep CE, Python CodeQL, SQLite.
 
-**Spec:** `docs/superpowers/specs/2026-09-29-python-only-static-full-pass-design.md`
+**Spec:** `docs/plans/2026-09-29-python-only-static-full-pass-design.md`
 
 ## Global Constraints
 

@@ -73,7 +73,7 @@ def test_semgrep_fallback_defaults_off_and_round_trips(tmp_path: Path) -> None:
     assert store.load().semgrep_fallback is True
 
 
-def test_static_scan_pass_budget_is_independent_of_analysis_elapsed_limit(
+def test_legacy_static_scan_pass_budget_loads_but_is_not_emitted(
     tmp_path: Path,
 ) -> None:
     config = UserConfig(
@@ -95,8 +95,14 @@ def test_static_scan_pass_budget_is_independent_of_analysis_elapsed_limit(
     )
     store = UserConfigStore(tmp_path / "config.toml")
     store.save(config)
+    assert store.load().static_scan_pass_seconds == 180
+    assert "static_scan_pass_seconds" not in store.path.read_text(encoding="utf-8")
+    legacy = store.path.read_text(encoding="utf-8").replace(
+        'max_elapsed_seconds = "unlimited"',
+        'max_elapsed_seconds = "unlimited"\nstatic_scan_pass_seconds = 37',
+    )
+    store.path.write_text(legacy, encoding="utf-8")
     assert store.load().static_scan_pass_seconds == 37
-    assert "static_scan_pass_seconds = 37" in store.path.read_text(encoding="utf-8")
 
 
 def test_user_config_has_no_test_inclusion_option(tmp_path: Path) -> None:
@@ -196,7 +202,16 @@ def test_claude_subscription_profile_round_trip_and_api_key_rejected(
     )
     path = tmp_path / "profile.toml"
     profile.write(path)
+    assert "static_scan_pass_seconds" not in path.read_text(encoding="utf-8")
     assert load_simple_execution_profile(path) == profile
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "max_elapsed_seconds = 3600",
+            "max_elapsed_seconds = 3600\nstatic_scan_pass_seconds = 37",
+        ),
+        encoding="utf-8",
+    )
+    assert load_simple_execution_profile(path).static_scan_pass_seconds == 37
     assert "CLAUDE_CLI_LOGIN" in path.read_text(encoding="utf-8")
     with pytest.raises(ValueError, match="CLAUDE_SUBSCRIPTION_REQUIRED"):
         SimpleExecutionProfile.model_validate(

@@ -9,7 +9,6 @@ import os
 import re
 import shutil
 import stat
-import time
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -29,7 +28,10 @@ from sastsimi.config.user_config import (
 )
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
-from sastsimi.static_analysis.file_scope import build_static_file_scope
+from sastsimi.static_analysis.file_scope import (
+    build_static_file_scope,
+    is_test_only_path,
+)
 
 from .application import (
     HypothesisSeed,
@@ -292,7 +294,9 @@ class DirectStaticBootstrap:
         await self._verify_opengrep_workspace(workspace, request)
         tracked = await self._tracked_files(workspace)
         scope = build_static_file_scope(workspace, tracked)
-        repository_profile = self._repository_profile(scope.selected_paths)
+        repository_profile = self._repository_profile(
+            scope.selected_paths, metadata_paths=tracked, workspace=workspace
+        )
         artifacts = SimpleArtifactRepository(request.data_dir, identity)
         repository_ref = artifacts.put_json(repository_profile)
 
@@ -307,36 +311,37 @@ class DirectStaticBootstrap:
         candidate_limited = False
         rules = self._materials / "opengrep" / "rules.yml"
         try:
-            binding = self._profile.tools.get("opengrep")
-            if binding is None:
-                raise RuntimeError("OPENGREP_TOOL_NOT_CONFIGURED")
-            rule_plan = plan_rule_batches(
-                rules.read_bytes(),
-                tool_version=binding.version,
-                executable_sha256=binding.executable_sha256,
-            )
-            coverage_plan = plan_static_coverage(
-                workspace,
-                scope.selected_paths,
-                request.commit,
-                rule_plan,
-                fallback_tool_fingerprint=self._fallback_fingerprint(),
-                scope_fingerprint=scope.fingerprint,
-            )
-            await self._collect_opengrep(
-                workspace,
-                request,
-                identity,
-                rule_plan,
-                coverage_plan,
-                scope.selected_paths,
-                scope.fingerprint,
-                artifacts,
-                candidate_budget,
-                slices,
-                engine_refs,
-                scan_errors,
-            )
+            if scope.selected_paths:
+                binding = self._profile.tools.get("opengrep")
+                if binding is None:
+                    raise RuntimeError("OPENGREP_TOOL_NOT_CONFIGURED")
+                rule_plan = plan_rule_batches(
+                    rules.read_bytes(),
+                    tool_version=binding.version,
+                    executable_sha256=binding.executable_sha256,
+                )
+                coverage_plan = plan_static_coverage(
+                    workspace,
+                    scope.selected_paths,
+                    request.commit,
+                    rule_plan,
+                    fallback_tool_fingerprint=self._fallback_fingerprint(),
+                    scope_fingerprint=scope.fingerprint,
+                )
+                await self._collect_opengrep(
+                    workspace,
+                    request,
+                    identity,
+                    rule_plan,
+                    coverage_plan,
+                    scope.selected_paths,
+                    scope.fingerprint,
+                    artifacts,
+                    candidate_budget,
+                    slices,
+                    engine_refs,
+                    scan_errors,
+                )
         except StaticCandidateLimitError as error:
             scan_errors.append(str(error))
             candidate_limited = True
@@ -450,13 +455,13 @@ class DirectStaticBootstrap:
         else:
             coverage_data = {
                 "kind": "simple_static_coverage_v1",
-                "fingerprint": None,
-                "expected_count": None,
-                "verified_count": None,
+                "fingerprint": scope.fingerprint if not scope.selected_paths else None,
+                "expected_count": 0 if not scope.selected_paths else None,
+                "verified_count": 0 if not scope.selected_paths else None,
                 "gaps": [],
                 "unsupported": [],
                 "excluded_paths": [],
-                "unavailable": True,
+                "unavailable": bool(scope.selected_paths),
             }
             opengrep_raw = b'{"results": [], "errors": []}'
         coverage_data.update(
@@ -517,6 +522,10 @@ class DirectStaticBootstrap:
         source_manifest_ref = artifacts.put_json(
             {"kind": "simple_tracked_sources", "paths": list(scope.selected_paths)}
         )
+        poc_paths = [path for path in tracked if not is_test_only_path(workspace, path)]
+        poc_source_manifest_ref = artifacts.put_json(
+            {"kind": "simple_tracked_sources", "paths": poc_paths}
+        )
         bundle_ref = artifacts.put_json(
             {
                 "kind": "simple_static_fact_bundle",
@@ -525,6 +534,9 @@ class DirectStaticBootstrap:
                 "commit_id": identity.commit_id,
                 "repository_profile_ref": repository_ref.model_dump(mode="json"),
                 "source_manifest_ref": source_manifest_ref.model_dump(mode="json"),
+                "poc_source_manifest_ref": poc_source_manifest_ref.model_dump(
+                    mode="json"
+                ),
                 "static_coverage_ref": coverage_ref.model_dump(mode="json"),
                 "policy_snapshot_ref": policy_snapshot_ref.model_dump(mode="json")
                 if policy_snapshot_ref is not None
@@ -545,6 +557,13 @@ class DirectStaticBootstrap:
                 "codeql_executed": codeql_ref is not None,
             }
         )
+        if not scope.selected_paths:
+            raise StaticCoverageBlocked(
+                "NO_PYTHON_SOURCE",
+                coverage_ref,
+                bundle_ref,
+                retryable=False,
+            )
         if coverage_data.get("unavailable") is True:
             raise StaticCoverageBlocked(
                 scan_errors[0] if scan_errors else "OPENGREP_EXECUTION_FAILED",
@@ -561,7 +580,7 @@ class DirectStaticBootstrap:
             )
         if coverage_data["expected_count"] == 0:
             raise StaticCoverageBlocked(
-                "STATIC_PRODUCT_SOURCE_EMPTY",
+                "NO_PYTHON_RULES",
                 coverage_ref,
                 bundle_ref,
                 retryable=False,
@@ -870,37 +889,39 @@ class DirectStaticBootstrap:
         return values
 
     @staticmethod
-    def _repository_profile(tracked: tuple[str, ...]) -> dict[str, object]:
-        suffixes = {Path(value).suffix.lower() for value in tracked}
-        languages = tuple(
-            language
-            for language, extensions in (
-                ("PYTHON", {".py", ".pyi"}),
-                (
-                    "JAVASCRIPT_TYPESCRIPT",
-                    {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"},
-                ),
-            )
-            if suffixes & extensions
-        )
+    def _repository_profile(
+        tracked: tuple[str, ...],
+        *,
+        metadata_paths: tuple[str, ...] = (),
+        workspace: Path | None = None,
+    ) -> dict[str, object]:
+        python_paths = tuple(path for path in tracked if path.endswith(".py"))
+        languages = ("PYTHON",) if python_paths else ()
+        metadata = metadata_paths or tracked
+        config_names = {
+            "requirements.txt",
+            "pyproject.toml",
+            "pipfile",
+            "poetry.lock",
+            "uv.lock",
+            "setup.cfg",
+            "dockerfile",
+            "compose.yaml",
+            "compose.yml",
+            "docker-compose.yaml",
+            "docker-compose.yml",
+        }
         manifests = tuple(
             value
-            for value in tracked
-            if Path(value).name
-            in {
-                "requirements.txt",
-                "pyproject.toml",
-                "Pipfile",
-                "package.json",
-                "package-lock.json",
-                "Dockerfile",
-            }
+            for value in metadata
+            if Path(value).name.lower() in config_names
+            and (workspace is None or not is_test_only_path(workspace, value))
         )
         return {
             "kind": "simple_repository_profile",
             "languages": languages,
             "manifests": manifests,
-            "tracked_file_count": len(tracked),
+            "tracked_file_count": len(python_paths),
             "needs_confirmation": not languages,
         }
 
@@ -1027,10 +1048,6 @@ class DirectStaticBootstrap:
             request.data_dir / "process-output" / "simple-static" / identity.analysis_id
         )
         output_root.mkdir(parents=True, exist_ok=True)
-        deadline = time.monotonic() + finite_call_timeout(
-            self._profile.max_elapsed_seconds,
-            self._profile.static_scan_pass_seconds,
-        )
         slices: list[CoverageSlice] = (
             collected_slices if collected_slices is not None else []
         )
@@ -1044,6 +1061,7 @@ class DirectStaticBootstrap:
             scope_fingerprint=scope_fingerprint,
         )
         attempts: dict[str, StaticScanAttempt] = {}
+        replay_attempts: list[StaticScanAttempt] = []
         for fingerprint in (*sorted(compatible), coverage_plan.fingerprint):
             attempts.update(
                 (item.run_key, item)
@@ -1052,6 +1070,14 @@ class DirectStaticBootstrap:
                 )
                 if item.tool == "opengrep"
             )
+            replay_attempts.extend(
+                self._store.list_static_scan_replay_attempts(
+                    identity, request.repository, fingerprint, tool="opengrep"
+                )
+            )
+        semgrep_verified = self._replayed_semgrep_verified_pairs(
+            request, identity, rule_plan, coverage_plan, artifacts
+        )
 
         for batch in rule_plan.batches:
             expected = frozenset(
@@ -1076,13 +1102,121 @@ class DirectStaticBootstrap:
                 output_root,
                 artifacts,
                 attempts,
-                deadline,
+                replay_attempts,
                 budget,
+                semgrep_verified,
             )
             slices.extend(chunk_slices)
             refs.extend(chunk_refs)
             errors.extend(chunk_errors)
         return slices, refs, errors
+
+    def _replayed_semgrep_verified_pairs(
+        self,
+        request: SimpleAnalysisRequest,
+        identity: CheckpointIdentity,
+        rule_plan: RuleBatchPlan,
+        coverage_plan: StaticCoveragePlan,
+        artifacts: SimpleArtifactRepository,
+    ) -> frozenset[tuple[str, str]]:
+        """Read exact successful fallback proof before retrying OpenGrep gaps."""
+
+        if not self._profile.semgrep_fallback:
+            return frozenset()
+        batches = {batch.key: batch for batch in rule_plan.batches}
+        verified: set[tuple[str, str]] = set()
+        for attempt in self._store.list_static_scan_replay_attempts(
+            identity,
+            request.repository,
+            coverage_plan.fingerprint,
+            tool="semgrep",
+        ):
+            if (
+                attempt.tool != "semgrep"
+                or attempt.status != "SUCCEEDED"
+                or attempt.error_code is not None
+                or attempt.raw_ref is None
+                or attempt.request_ref is None
+            ):
+                continue
+            try:
+                descriptor = json.loads(
+                    artifacts.read_bounded(
+                        attempt.request_ref, _MAX_STATIC_SCAN_REQUEST_BYTES
+                    )
+                )
+                raw = artifacts.read_bounded(
+                    attempt.raw_ref, _MAX_STATIC_SCAN_OUTPUT_BYTES
+                )
+            except (OSError, ValueError):
+                continue
+            if not isinstance(descriptor, dict):
+                continue
+            source_key = descriptor.get("batch_key")
+            original = batches.get(source_key) if isinstance(source_key, str) else None
+            rules = descriptor.get("rule_ids")
+            targets = descriptor.get("targets")
+            timeout = descriptor.get("per_file_timeout_seconds")
+            if (
+                descriptor.get("kind") != "semgrep_scan_request_v1"
+                or descriptor.get("raw_content_hash") != attempt.raw_ref.content_hash
+                or original is None
+                or not isinstance(rules, list)
+                or not rules
+                or not all(isinstance(rule, str) for rule in rules)
+                or tuple(rules) != tuple(sorted(set(rules)))
+                or not set(rules) <= set(original.rule_ids)
+                or not isinstance(targets, list)
+                or not targets
+                or not all(isinstance(path, str) for path in targets)
+                or targets != sorted(set(targets))
+                or not all(
+                    any((path, rule) in coverage_plan.expected_pairs for rule in rules)
+                    for path in targets
+                )
+                or timeout not in (None, 30)
+            ):
+                continue
+            expected = frozenset(
+                (path, rule)
+                for path in targets
+                for rule in rules
+                if (path, rule) in coverage_plan.expected_pairs
+                and (path, rule) not in coverage_plan.unavailable_pairs
+            )
+            if not expected:
+                continue
+            key_data: dict[str, object] = {
+                "batch": original.key,
+                "rules": tuple(rules),
+                "targets": tuple(targets),
+                "adaptive": 1,
+            }
+            if timeout is not None:
+                key_data["per_file_timeout_seconds"] = timeout
+            key = hashlib.sha256(canonical_bytes(key_data)).hexdigest()
+            if key != attempt.run_key:
+                continue
+            batch = RuleBatch(
+                original.index,
+                tuple(rules),
+                tuple(rule for rule in rule_plan.rule_ids if rule not in rules),
+                key,
+            )
+            try:
+                slice_ = assess_scan(
+                    coverage_plan,
+                    batch,
+                    raw,
+                    engine="semgrep",
+                    targets=tuple(targets),
+                    candidate_budget=StaticCandidateBudget(),
+                )
+            except (OSError, RuntimeError, StaticCandidateLimitError, ValueError):
+                continue
+            if expected.issubset(slice_.verified_pairs):
+                verified.update(slice_.verified_pairs)
+        return frozenset(verified)
 
     async def _recover_opengrep_timeout_chunks(
         self,
@@ -1096,8 +1230,9 @@ class DirectStaticBootstrap:
         output_root: Path,
         artifacts: SimpleArtifactRepository,
         attempts: dict[str, StaticScanAttempt],
-        deadline: float | None,
+        replay_attempts: Sequence[StaticScanAttempt],
         candidate_budget: StaticCandidateBudget,
+        semgrep_verified: frozenset[tuple[str, str]],
     ) -> tuple[list[CoverageSlice], list[StoredDataRef], list[str]]:
         """Recover only timed-out full scans, proving each explicit target chunk."""
 
@@ -1193,8 +1328,8 @@ class DirectStaticBootstrap:
                 return None
             return tuple(targets), data
 
-        attempted: set[str] = set()
-        for attempt in attempts.values():
+        replayed_verified: set[tuple[str, str]] = set()
+        for attempt in replay_attempts:
             if attempt.raw_ref is None or attempt.error_code not in {
                 None,
                 "OPENGREP_PARTIAL_SCAN",
@@ -1226,21 +1361,16 @@ class DirectStaticBootstrap:
                 continue
             slices.append(replace(slice_, raw_ref=attempt.raw_ref))
             refs.append(attempt.raw_ref)
-            # A partial artifact is reusable evidence, not proof that every
-            # requested file was checked. Retry only files with unresolved
-            # pairs; a deterministic parser warning is left to Semgrep.
-            if self._reusable_parse_warning(
-                slice_, chunk_pairs(targets), allow_unscanned=False
-            ):
-                attempted.update(targets)
-            else:
-                attempted.update(
-                    path
-                    for path in targets
-                    if frozenset(
-                        (path, rule_id) for rule_id in rules_by_path[path]
-                    ).issubset(slice_.verified_pairs)
-                )
+            replayed_verified.update(slice_.verified_pairs)
+
+        # Complementary partial artifacts can jointly verify a file's rules.
+        # Retry only paths that still have an unproved pair after their union.
+        verified = replayed_verified | semgrep_verified
+        attempted = {
+            path
+            for path in paths
+            if all((path, rule_id) in verified for rule_id in rules_by_path[path])
+        }
 
         pending_paths = tuple(sorted(paths - attempted))
         if not pending_paths:
@@ -1365,17 +1495,7 @@ class DirectStaticBootstrap:
             data = request_data(targets)
             # Each node gets one finite call per run. A timed-out multi-file
             # node is divided into deterministic halves before fallback.
-            remaining = (
-                min(
-                    int(deadline - time.monotonic()),
-                    _OPENGREP_FALLBACK_BATCH_TIMEOUT_SECONDS,
-                )
-                if deadline is not None
-                else _OPENGREP_FALLBACK_BATCH_TIMEOUT_SECONDS
-            )
-            if remaining < 1:
-                record_gap(targets, "NOT_ATTEMPTED_BUDGET")
-                return
+            call_timeout = _OPENGREP_FALLBACK_BATCH_TIMEOUT_SECONDS
             request_ref = artifacts.put_json(data)
             raw_ref: StoredDataRef | None = None
             raw: bytes | None = None
@@ -1411,10 +1531,10 @@ class DirectStaticBootstrap:
                         "opengrep",
                         key,
                         request_ref,
-                        timeout_seconds=remaining,
+                        timeout_seconds=call_timeout,
                     )
                     result = await self._process.run(
-                        argv, cwd=workspace, timeout_seconds=remaining
+                        argv, cwd=workspace, timeout_seconds=call_timeout
                     )
                     self._require_opengrep_tool(binding)
                     if output.is_file():
@@ -1692,10 +1812,6 @@ class DirectStaticBootstrap:
             request.data_dir / "process-output" / "simple-static" / identity.analysis_id
         )
         output_dir.mkdir(parents=True, exist_ok=True)
-        deadline = time.monotonic() + finite_call_timeout(
-            self._profile.max_elapsed_seconds,
-            self._profile.static_scan_pass_seconds,
-        )
         attempts = {
             item.run_key: item
             for item in self._store.list_static_scan_attempts(
@@ -1841,7 +1957,12 @@ class DirectStaticBootstrap:
         # The request artifact binds the raw output to its exact rule selection.
         replayed_verified: set[tuple[str, str]] = set()
         batches_by_key = {batch.key: batch for batch in rule_plan.batches}
-        for attempt in attempts.values():
+        for attempt in self._store.list_static_scan_replay_attempts(
+            identity,
+            request.repository,
+            coverage_plan.fingerprint,
+            tool="semgrep",
+        ):
             if attempt.raw_ref is None or attempt.error_code not in {
                 None,
                 "SEMGREP_PARTIAL_SCAN",
@@ -2049,6 +2170,27 @@ class DirectStaticBootstrap:
                 ) -> tuple[str, ...]:
                     return (*prefix, *chunk)
 
+                def source_size(path: str) -> int:
+                    candidate = Path(path)
+                    if (
+                        not path
+                        or "\\" in path
+                        or candidate.drive
+                        or candidate.is_absolute()
+                        or ".." in candidate.parts
+                    ):
+                        return _OPENGREP_RECOVERY_MAX_SOURCE_BYTES + 1
+                    try:
+                        info = (workspace / candidate).lstat()
+                    except OSError:
+                        return _OPENGREP_RECOVERY_MAX_SOURCE_BYTES + 1
+                    if (
+                        not stat.S_ISREG(info.st_mode)
+                        or int(getattr(info, "st_file_attributes", 0)) & 0x400
+                    ):
+                        return _OPENGREP_RECOVERY_MAX_SOURCE_BYTES + 1
+                    return info.st_size
+
                 try:
                     roots = plan_semgrep_target_chunks(stable_targets, command_for)
                 except (OSError, RuntimeError, ValueError) as error:
@@ -2073,6 +2215,7 @@ class DirectStaticBootstrap:
                     except (OSError, RuntimeError, ValueError) as group_error:
                         planning_gap(tuple(feasible), group_error)
                         continue
+                roots = split_target_chunks_by_source_bytes(roots, source_size)
                 verified = set(already_verified)
                 node_budget = 3 * len(stable_targets) + len(roots)
 
@@ -2107,14 +2250,6 @@ class DirectStaticBootstrap:
                         "per_file_timeout_seconds": 30 if retry_timeout else None,
                     }
                     request_ref = artifacts.put_json(request_data)
-                    remaining = (
-                        int(deadline - time.monotonic())
-                        if deadline is not None
-                        else _SEMGREP_NODE_TIMEOUT_SECONDS
-                    )
-                    if remaining < 1:
-                        record_unproved(batch, pending, "NOT_ATTEMPTED_BUDGET")
-                        return
 
                     previous = attempts.get(batch.key)
                     if (
@@ -2146,7 +2281,16 @@ class DirectStaticBootstrap:
                     if (
                         previous is not None
                         and previous.raw_ref is not None
-                        and previous.error_code in {None, "SEMGREP_PARTIAL_SCAN"}
+                        and (
+                            (
+                                previous.status == "SUCCEEDED"
+                                and previous.error_code is None
+                            )
+                            or (
+                                previous.request_ref is None
+                                and previous.error_code == "SEMGREP_PARTIAL_SCAN"
+                            )
+                        )
                     ):
                         cached = replay(
                             batch, targets, previous.raw_ref, previous.request_ref
@@ -2160,9 +2304,8 @@ class DirectStaticBootstrap:
                         code = previous.error_code
                     else:
                         # A failed attempt is not proof about this file/rule pair.
-                        # Explicit resume may retry it; the per-run node budget
-                        # and finite call timeouts still
-                        # bound repeated failures without a global deadline.
+                        # Explicit resume retries unresolved pairs. The per-run
+                        # node budget and finite call timeouts bound failures.
                         if previous is not None and previous.raw_ref is not None:
                             refs.append(previous.raw_ref)
                         try:
@@ -2215,7 +2358,7 @@ class DirectStaticBootstrap:
                         raw_ref: StoredDataRef | None = None
                         execution_id: int | None = None
                         ledger_code: str | None = "SEMGREP_EXECUTION_INTERRUPTED"
-                        call_timeout = min(remaining, _SEMGREP_NODE_TIMEOUT_SECONDS)
+                        call_timeout = _SEMGREP_NODE_TIMEOUT_SECONDS
 
                         def mark_invoked() -> None:
                             nonlocal execution_id
@@ -2699,6 +2842,8 @@ class DirectStaticBootstrap:
         completion = root / f"r-{analysis_key[:12]}.json"
         root.mkdir(parents=True, exist_ok=True)
         codeql = self._tool("codeql")
+        # Leave headroom within the process runner's 4 GiB memory ceiling.
+        codeql_resource_limits = ("--threads=1", "--ram=2048")
         binding = self._profile.tools["codeql"]
         cache_fingerprint = hashlib.sha256(
             canonical_bytes(
@@ -2788,12 +2933,12 @@ class DirectStaticBootstrap:
                         str(database),
                         "--language=python",
                         f"--source-root={source_root}",
-                        "--threads=2",
+                        *codeql_resource_limits,
                     ),
                     cwd=source_root,
                     timeout_seconds=finite_call_timeout(
                         self._profile.max_elapsed_seconds,
-                        min(self._profile.static_scan_pass_seconds, 1800),
+                        1800,
                     ),
                 )
                 if created.returncode != 0:
@@ -2821,12 +2966,12 @@ class DirectStaticBootstrap:
                 str(self._materials / "codeql" / "python-security.qls"),
                 "--format=sarif-latest",
                 f"--output={output}",
-                "--threads=2",
+                *codeql_resource_limits,
             ),
             cwd=workspace,
             timeout_seconds=finite_call_timeout(
                 self._profile.max_elapsed_seconds,
-                min(self._profile.static_scan_pass_seconds, 1800),
+                1800,
             ),
         )
         if analyzed.returncode != 0 or not output.is_file():

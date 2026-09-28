@@ -330,6 +330,7 @@ def _selection(
         "config_kinds",
         "execution_hints",
         "adapters",
+        "profile_paths",
     ),
     (
         pytest.param(
@@ -351,28 +352,35 @@ def _selection(
             ("PYPROJECT", "REQUIREMENTS"),
             (("pyproject.toml", "PYTHON_SCRIPT", "start"),),
             ("CODEQL", "OPENGREP", "PYTHON_AST"),
+            ("src/app.py", "requirements.txt", "pyproject.toml"),
             id="python-without-dockerfile",
         ),
         pytest.param(
-            "javascript-with-dockerfile",
+            "mixed-python-with-dockerfile",
             {
+                "src/app.py": "from flask import Flask\n",
                 "src/server.js": "export const server = true;\n",
                 "package.json": (
                     '{"dependencies":{"express":"^5.0.0"},'
                     '"scripts":{"start":"node src/server.js"}}'
                 ),
+                "requirements.txt": "flask\n",
                 "Dockerfile": "FROM node:22-alpine\n",
             },
-            {"requirements.txt": "flask\n"},
-            ("JAVASCRIPT",),
-            ("EXPRESS",),
-            ("DOCKERFILE", "PACKAGE_JSON"),
+            {"README.md": "untracked"},
+            ("PYTHON",),
+            ("FLASK",),
+            ("DOCKERFILE", "REQUIREMENTS"),
+            (("Dockerfile", "DOCKERFILE", "dockerfile"),),
+            ("CODEQL", "OPENGREP", "PYTHON_AST"),
             (
-                ("Dockerfile", "DOCKERFILE", "dockerfile"),
-                ("package.json", "PACKAGE_SCRIPT", "start"),
+                "src/app.py",
+                "src/server.js",
+                "package.json",
+                "requirements.txt",
+                "Dockerfile",
             ),
-            ("CODEQL", "OPENGREP"),
-            id="javascript-with-dockerfile",
+            id="mixed-python-with-dockerfile",
         ),
     ),
 )
@@ -386,6 +394,7 @@ async def test_real_repository_reaches_expected_tool_selection(
     config_kinds: tuple[str, ...],
     execution_hints: tuple[tuple[str, str, str], ...],
     adapters: tuple[str, ...],
+    profile_paths: tuple[str, ...],
 ) -> None:
     git = shutil.which("git")
     if git is None:
@@ -412,7 +421,7 @@ async def test_real_repository_reaches_expected_tool_selection(
         tuple((item.path, item.kind, item.name) for item in profile.execution_hints)
         == execution_hints
     )
-    assert {item.git_path for item in profile.tracked_files} == set(tracked)
+    assert {item.git_path for item in profile.tracked_files} == set(profile_paths)
     assert not ({item.git_path for item in profile.tracked_files} & set(untracked))
     selection = _selection(profile, resolver, git_ref)
     assert selection.status == "READY"
@@ -495,7 +504,7 @@ async def test_unconfirmed_repository_is_blocked_without_a_false_verdict(
     assert profile.languages == ()
     assert set(profile.confirmation_reasons) == {
         "BUILD_OR_START_UNCONFIRMED",
-        "LANGUAGE_UNCONFIRMED",
+        "NO_PYTHON_SOURCE",
     }
     assert selection.status == "BLOCKED"
     assert selection.selected_tools == ()

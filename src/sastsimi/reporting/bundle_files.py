@@ -478,6 +478,7 @@ def publish_bundle(
     finding_ref: StoredDataRef,
     files: tuple[BundleFile, ...],
     put_artifact: Callable[[bytes, str], StoredDataRef],
+    allow_revision: bool = False,
 ) -> PublishedBundle:
     """Publish immutable members and ZIP; the manifest is visible last."""
 
@@ -521,36 +522,45 @@ def publish_bundle(
     manifest_ref = put_artifact(manifest_data, "application/json")
     _assert_artifact_ref(manifest_ref, _digest(manifest_data), finding_ref)
     root = root.absolute()
-    with _bundle_directories(root, analysis_id, display_id) as (
-        bundle,
-        evidence,
-    ):
-        if _exists(bundle, "manifest.json"):
-            previous_data = _read_file(
-                bundle, "manifest.json", MAX_BUNDLE_MANIFEST_BYTES
-            )
-            previous = parse_bundle_manifest(previous_data, finding_ref=finding_ref)
-            for previous_entry in previous.files:
-                directory, name = _member_directory(
-                    bundle, evidence, previous_entry.path
+    directory_names = [display_id]
+    if allow_revision:
+        directory_names.append(f"{display_id}-{manifest_ref.content_hash}")
+    for directory_name in directory_names:
+        with _bundle_directories(root, analysis_id, directory_name) as (
+            bundle,
+            evidence,
+        ):
+            if _exists(bundle, "manifest.json"):
+                previous_data = _read_file(
+                    bundle, "manifest.json", MAX_BUNDLE_MANIFEST_BYTES
                 )
-                if (
-                    _digest(_read_file(directory, name, MAX_BUNDLE_FILE_BYTES))
-                    != previous_entry.sha256
-                ):
+                previous = parse_bundle_manifest(previous_data, finding_ref=finding_ref)
+                for previous_entry in previous.files:
+                    directory, name = _member_directory(
+                        bundle, evidence, previous_entry.path
+                    )
+                    if (
+                        _digest(_read_file(directory, name, MAX_BUNDLE_FILE_BYTES))
+                        != previous_entry.sha256
+                    ):
+                        raise ValueError("BUNDLE_PUBLISHED_FILE_INVALID")
+                previous_zip = _read_file(
+                    bundle, "bundle.zip", MAX_BUNDLE_ARCHIVE_BYTES
+                )
+                _verify_zip(previous_zip, previous, None)
+                if previous_data != manifest_data:
+                    if directory_name != directory_names[-1]:
+                        continue
+                    raise ValueError("BUNDLE_ALREADY_PUBLISHED")
+                if previous_zip != archive_data:
                     raise ValueError("BUNDLE_PUBLISHED_FILE_INVALID")
-            previous_zip = _read_file(bundle, "bundle.zip", MAX_BUNDLE_ARCHIVE_BYTES)
-            _verify_zip(previous_zip, previous, None)
-            if previous_data != manifest_data:
-                raise ValueError("BUNDLE_ALREADY_PUBLISHED")
-            if previous_zip != archive_data:
-                raise ValueError("BUNDLE_PUBLISHED_FILE_INVALID")
-        else:
-            for item in ordered:
-                directory, name = _member_directory(bundle, evidence, item.path)
-                _write_file(directory, name, item.body)
-            _write_file(bundle, "bundle.zip", archive_data)
-            _write_file(bundle, "manifest.json", manifest_data)
-    return PublishedBundle(
-        manifest_ref, archive_ref, root / "reports" / analysis_id / display_id
-    )
+            else:
+                for item in ordered:
+                    directory, name = _member_directory(bundle, evidence, item.path)
+                    _write_file(directory, name, item.body)
+                _write_file(bundle, "bundle.zip", archive_data)
+                _write_file(bundle, "manifest.json", manifest_data)
+        return PublishedBundle(
+            manifest_ref, archive_ref, root / "reports" / analysis_id / directory_name
+        )
+    raise AssertionError("unreachable")

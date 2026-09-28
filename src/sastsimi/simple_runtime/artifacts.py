@@ -228,6 +228,7 @@ class SimpleArtifactRepository:
             self.read_bounded(report.bundle_manifest_ref, MAX_BUNDLE_MANIFEST_BYTES),
             finding_ref=finding_ref,
         )
+        bundle_dir = self._verified_report_directory(report, manifest)
         if (
             manifest.analysis_id != self.identity.analysis_id
             or manifest.display_id != display_id
@@ -245,6 +246,13 @@ class SimpleArtifactRepository:
         if not isinstance(provenance, dict):
             raise ValueError("BUNDLE_PROVENANCE_INVALID")
         sources = provenance.get("sources")
+        coverage = provenance.get("static_coverage")
+        if coverage is not None:
+            if not isinstance(coverage, dict):
+                raise ValueError("BUNDLE_PROVENANCE_INVALID")
+            coverage_ref = StoredDataRef.model_validate(coverage.get("ref"))
+            self._require_scope(coverage_ref)
+            expected_sources["static_coverage"] = coverage_ref
         if (
             provenance.get("scope_status") != scope_status
             or not isinstance(sources, dict)
@@ -263,13 +271,7 @@ class SimpleArtifactRepository:
             report.bundle_archive_ref,
             lambda ref: self.read_bounded(ref, MAX_BUNDLE_ARCHIVE_BYTES),
         )
-        path = (
-            self.data_dir.resolve()
-            / "reports"
-            / self.identity.analysis_id
-            / display_id
-            / "bundle.zip"
-        )
+        path = bundle_dir / "bundle.zip"
         if path.resolve(strict=True) != path:
             raise ValueError("BUNDLE_PATH_UNSAFE")
         before = path.lstat()
@@ -290,6 +292,109 @@ class SimpleArtifactRepository:
         if disk != archive:
             raise ValueError("BUNDLE_ARCHIVE_CHANGED")
         return manifest, archive
+
+    def published_report_coverage(
+        self, report: StageCheckpoint, finding_ref: StoredDataRef
+    ) -> tuple[StoredDataRef | None, str | None]:
+        """Read the coverage claimed by an existing, exact report manifest."""
+
+        if report.bundle_manifest_ref is None:
+            raise ValueError("REPORT_BUNDLE_MANIFEST_MISSING")
+        manifest = parse_bundle_manifest(
+            self.read_bounded(report.bundle_manifest_ref, MAX_BUNDLE_MANIFEST_BYTES),
+            finding_ref=finding_ref,
+        )
+        raw, _ = read_bundle_file(
+            manifest,
+            "evidence/provenance.json",
+            lambda ref: self.read_bounded(ref, MAX_BUNDLE_FILE_BYTES),
+        )
+        provenance = json.loads(raw)
+        if not isinstance(provenance, dict):
+            raise ValueError("REPORT_BUNDLE_PROVENANCE_INVALID")
+        coverage = provenance.get("static_coverage")
+        if coverage is None:
+            return None, None
+        if not isinstance(coverage, dict) or coverage.get("disposition") not in {
+            "FULL",
+            "PARTIAL",
+        }:
+            raise ValueError("REPORT_BUNDLE_COVERAGE_INVALID")
+        try:
+            ref = StoredDataRef.model_validate(coverage["ref"])
+        except (KeyError, ValueError) as error:
+            raise ValueError("REPORT_BUNDLE_COVERAGE_INVALID") from error
+        self._require_scope(ref)
+        return ref, str(coverage["disposition"])
+
+    def published_report_display_id(
+        self, report: StageCheckpoint, finding_ref: StoredDataRef
+    ) -> str:
+        """Resolve the exact display ID claimed by a report's CAS manifest."""
+
+        if report.bundle_manifest_ref is None:
+            raise ValueError("REPORT_BUNDLE_MANIFEST_MISSING")
+        manifest = parse_bundle_manifest(
+            self.read_bounded(report.bundle_manifest_ref, MAX_BUNDLE_MANIFEST_BYTES),
+            finding_ref=finding_ref,
+        )
+        return manifest.display_id
+
+    def require_current_report_coverage(
+        self,
+        report: StageCheckpoint,
+        finding_ref: StoredDataRef,
+        current_ref: StoredDataRef | None,
+        current_disposition: str,
+    ) -> None:
+        """Do not expose a completed report for superseded static coverage."""
+
+        if current_ref is None:
+            return
+        if report.bundle_manifest_ref is None:
+            raise ValueError("REPORT_STATIC_COVERAGE_STALE")
+        recorded_ref, recorded_disposition = self.published_report_coverage(
+            report, finding_ref
+        )
+        if recorded_ref != current_ref or recorded_disposition != current_disposition:
+            raise ValueError("REPORT_STATIC_COVERAGE_STALE")
+
+    def _verified_report_directory(
+        self, report: StageCheckpoint, manifest: ReportBundleManifest
+    ) -> Path:
+        if report.bundle_manifest_ref is None or report.markdown_path is None:
+            raise ValueError("BUNDLE_CURRENT_PATH_MISSING")
+        expected_parent = (
+            self.data_dir.resolve() / "reports" / self.identity.analysis_id
+        )
+        path = Path(report.markdown_path)
+        allowed_names = {
+            f"{manifest.display_id}.md",
+            f"{manifest.display_id}-{report.bundle_manifest_ref.content_hash}.md",
+        }
+        if path.parent != expected_parent or path.name not in allowed_names:
+            raise ValueError("BUNDLE_PATH_UNSAFE")
+        bundle_dir = path.with_suffix("")
+        manifest_path = bundle_dir / "manifest.json"
+        if manifest_path.resolve(strict=True) != manifest_path:
+            raise ValueError("BUNDLE_PATH_UNSAFE")
+        info = manifest_path.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or int(getattr(info, "st_file_attributes", 0)) & 0x400
+            or info.st_size > MAX_BUNDLE_MANIFEST_BYTES
+        ):
+            raise ValueError("BUNDLE_PATH_UNSAFE")
+        with manifest_path.open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                raise ValueError("BUNDLE_PATH_CHANGED")
+            disk = stream.read(MAX_BUNDLE_MANIFEST_BYTES + 1)
+        if disk != self.read_bounded(
+            report.bundle_manifest_ref, MAX_BUNDLE_MANIFEST_BYTES
+        ):
+            raise ValueError("BUNDLE_MANIFEST_CHANGED")
+        return bundle_dir
 
     def prompt_context(self, refs: tuple[StoredDataRef, ...]) -> bytes:
         items: list[dict[str, Any]] = []

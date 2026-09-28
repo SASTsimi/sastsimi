@@ -74,3 +74,12 @@ def test_source_byte_split_preserves_command_bounded_roots() -> None:
         roots, lambda _path: 1, max_bytes=5
     )
     assert chunks == roots
+
+
+def test_source_byte_split_defaults_to_512_kib_and_keeps_oversized_singleton() -> None:
+    roots = (("a.py", "b.py", "huge.py", "z.py"),)
+    sizes = {"a.py": 300_000, "b.py": 224_288, "huge.py": 600_000, "z.py": 1}
+
+    assert plan_module.split_target_chunks_by_source_bytes(
+        roots, sizes.__getitem__
+    ) == (("a.py", "b.py"), ("huge.py",), ("z.py",))
