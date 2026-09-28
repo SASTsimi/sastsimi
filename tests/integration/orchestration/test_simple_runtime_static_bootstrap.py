@@ -2026,7 +2026,7 @@ async def test_opengrep_timeout_recovers_in_bounded_chunks_and_reuses_proof(
     )
     assert coverage["verified_count"] == coverage["expected_count"] == 131
     assert process.full_calls == 1
-    assert tuple(map(len, process.chunks)) == (128, 3)
+    assert tuple(map(len, process.chunks)) == (64, 64, 3)
     assert process.fallback_calls == []
     chunk_attempts = [
         item
@@ -2035,12 +2035,12 @@ async def test_opengrep_timeout_recovers_in_bounded_chunks_and_reuses_proof(
         )
         if item.tool == "opengrep" and item.request_ref is not None
     ]
-    assert len(chunk_attempts) == 2
+    assert len(chunk_attempts) == 3
     assert all(item.status == "SUCCEEDED" and item.raw_ref for item in chunk_attempts)
 
     await bootstrap.run(request, identity)
     assert process.full_calls == 1
-    assert tuple(map(len, process.chunks)) == (128, 3)
+    assert tuple(map(len, process.chunks)) == (64, 64, 3)
 
 
 @pytest.mark.asyncio

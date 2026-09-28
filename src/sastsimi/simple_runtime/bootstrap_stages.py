@@ -70,6 +70,7 @@ _MAX_SOURCE_BYTES = 2 * 1024 * 1024
 _MAX_FACTS = 10_000
 _MAX_POLICY_BYTES = 256 * 1024
 _OPENGREP_FALLBACK_BATCH_TIMEOUT_SECONDS = 120
+_OPENGREP_RECOVERY_MAX_TARGETS = 64
 _SEMGREP_NODE_TIMEOUT_SECONDS = 120
 _WORKSPACE_INTEGRITY_ERRORS = frozenset(
     {
@@ -1415,7 +1416,11 @@ class DirectStaticBootstrap:
             return (*prefix, *targets)
 
         try:
-            roots = plan_semgrep_target_chunks(pending_paths, command_for)
+            roots = plan_semgrep_target_chunks(
+                pending_paths,
+                command_for,
+                max_targets=_OPENGREP_RECOVERY_MAX_TARGETS,
+            )
         except RuntimeError:
             self._record_gap_slice(
                 batch, available, "OPENGREP_COMMAND_TOO_LONG", slices
