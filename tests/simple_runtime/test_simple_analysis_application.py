@@ -122,6 +122,8 @@ def _runner(
     store: SimpleCheckpointStore,
     identity: CheckpointIdentity,
     _static: StaticBootstrapResult,
+    *,
+    final_verdict: Literal["FALSE", "HOLD"] = "FALSE",
 ) -> SimpleRuntimeRunner:
     del identity, _static
     handlers: dict[SimpleStage, Any] = {}
@@ -135,7 +137,7 @@ def _runner(
         ) -> StageResult:
             return StageResult(
                 output_refs=(_ref(current.value.lower()),),
-                verdict="FALSE"
+                verdict=final_verdict
                 if current is SimpleStage.VERIFICATION_FINAL_DONE
                 else None,
             )
@@ -354,10 +356,14 @@ async def test_verified_partial_static_evidence_runs_agents_but_never_completes(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stale_version", [False, True], ids=["pending", "stale"])
+@pytest.mark.parametrize(
+    "interruption",
+    ["pending", "stale", "hold_before_chaining"],
+    ids=["pending", "stale", "hold-before-chaining"],
+)
 async def test_partial_resume_advances_unfinished_agent_before_retrying_static(
     tmp_path: Path,
-    stale_version: bool,
+    interruption: Literal["pending", "stale", "hold_before_chaining"],
 ) -> None:
     class PartialStatic:
         calls = 0
@@ -431,7 +437,12 @@ async def test_partial_resume_advances_unfinished_agent_before_retrying_static(
         store=store,
         static_bootstrap=static,
         hypothesis_bootstrap=PartialHypotheses(),
-        runner_factory=_runner,
+        runner_factory=lambda current_store, child, bootstrap: _runner(
+            current_store,
+            child,
+            bootstrap,
+            final_verdict="HOLD" if interruption == "hold_before_chaining" else "FALSE",
+        ),
         id_factory=iter(("analysis-partial-pending-agent", "workspace-1")).__next__,
     )
     first = await application.analyze(
@@ -446,7 +457,7 @@ async def test_partial_resume_advances_unfinished_agent_before_retrying_static(
     assert static_checkpoint.status is StageStatus.SUCCEEDED
     assert static.calls == 1
     child = first.identity.model_copy(update={"hypothesis_id": "hypothesis-1"})
-    if stale_version:
+    if interruption == "stale":
         prior_agent = store.require(child, SimpleStage.VERIFICATION_INITIAL_DONE)
         terminal = store.require(child, SimpleStage.VERIFICATION_FINAL_DONE)
         assert prior_agent.stage_version == STAGE_VERSION[prior_agent.stage]
@@ -455,6 +466,22 @@ async def test_partial_resume_advances_unfinished_agent_before_retrying_static(
             prior_agent.model_copy(update={"stage_version": old_version})
         )
         assert store.require(child, SimpleStage.VERIFICATION_FINAL_DONE) == terminal
+    elif interruption == "hold_before_chaining":
+        final = store.require(child, SimpleStage.VERIFICATION_FINAL_DONE)
+        prior_agent = store.require(child, SimpleStage.PRIMITIVE_ADMISSION_DONE)
+        assert final.verdict == "HOLD"
+        assert (
+            store.require(child, SimpleStage.CHAINING_DONE).status
+            is StageStatus.SUCCEEDED
+        )
+        store.invalidate_from(
+            child,
+            SimpleStage.PRIMITIVE_ADMISSION_DONE,
+            new_inputs=(),
+            force=True,
+        )
+        assert store.get(child, SimpleStage.PRIMITIVE_ADMISSION_DONE) is None
+        assert store.get(child, SimpleStage.CHAINING_DONE) is None
     else:
         prior_agent = store.require(child, SimpleStage.PRO_CON_DONE)
         store.replace_from(
@@ -476,6 +503,14 @@ async def test_partial_resume_advances_unfinished_agent_before_retrying_static(
     assert replayed.stage_version == prior_agent.stage_version
     assert replayed.attempt_id != prior_agent.attempt_id
     assert store.require(first.identity, SimpleStage.STATIC_DONE) == static_checkpoint
+    if interruption == "hold_before_chaining":
+        assert store.require(child, SimpleStage.VERIFICATION_FINAL_DONE) == final
+        assert (
+            store.require(child, SimpleStage.CHAINING_DONE).status
+            is StageStatus.SUCCEEDED
+        )
+        await application.resume(first.display_analysis_id)
+        assert static.calls == 2
 
 
 @pytest.mark.asyncio

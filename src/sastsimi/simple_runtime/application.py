@@ -405,12 +405,17 @@ class SimpleAnalysisApplication:
             children[hypothesis_id][checkpoint.stage] = checkpoint
         for stages in children.values():
             final = stages.get(SimpleStage.VERIFICATION_FINAL_DONE)
+            chaining = stages.get(SimpleStage.CHAINING_DONE)
             report = stages.get(SimpleStage.REPORT_DONE)
             if (
                 terminal_poc_outcome(stages.get(SimpleStage.POC_EXECUTION_DONE))
                 is not None
                 or final is not None
-                and final.verdict in {"FALSE", "HOLD"}
+                and (
+                    final.verdict == "FALSE"
+                    or final.verdict == "HOLD"
+                    and chaining is not None
+                )
                 or terminal_gate_outcome(stages.get(SimpleStage.TECH_GATE_DONE))
                 is not None
                 or report is not None
