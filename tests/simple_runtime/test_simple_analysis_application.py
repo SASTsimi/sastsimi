@@ -354,8 +354,10 @@ async def test_verified_partial_static_evidence_runs_agents_but_never_completes(
 
 
 @pytest.mark.asyncio
-async def test_partial_resume_advances_pending_agent_before_retrying_static(
+@pytest.mark.parametrize("stale_version", [False, True], ids=["pending", "stale"])
+async def test_partial_resume_advances_unfinished_agent_before_retrying_static(
     tmp_path: Path,
+    stale_version: bool,
 ) -> None:
     class PartialStatic:
         calls = 0
@@ -444,24 +446,35 @@ async def test_partial_resume_advances_pending_agent_before_retrying_static(
     assert static_checkpoint.status is StageStatus.SUCCEEDED
     assert static.calls == 1
     child = first.identity.model_copy(update={"hypothesis_id": "hypothesis-1"})
-    prior_agent = store.require(child, SimpleStage.PRO_CON_DONE)
-    store.replace_from(
-        StageCheckpoint(
-            identity=child,
-            stage=SimpleStage.PRO_CON_DONE,
-            status=StageStatus.PENDING,
-            input_refs=prior_agent.input_refs,
-            input_hash=input_reference_hash(prior_agent.input_refs),
+    if stale_version:
+        prior_agent = store.require(child, SimpleStage.VERIFICATION_INITIAL_DONE)
+        terminal = store.require(child, SimpleStage.VERIFICATION_FINAL_DONE)
+        assert prior_agent.stage_version == STAGE_VERSION[prior_agent.stage]
+        old_version = str(int(prior_agent.stage_version) - 1)
+        store.save_checkpoint(
+            prior_agent.model_copy(update={"stage_version": old_version})
         )
-    )
+        assert store.require(child, SimpleStage.VERIFICATION_FINAL_DONE) == terminal
+    else:
+        prior_agent = store.require(child, SimpleStage.PRO_CON_DONE)
+        store.replace_from(
+            StageCheckpoint(
+                identity=child,
+                stage=SimpleStage.PRO_CON_DONE,
+                status=StageStatus.PENDING,
+                input_refs=prior_agent.input_refs,
+                input_hash=input_reference_hash(prior_agent.input_refs),
+            )
+        )
 
     resumed = await application.resume(first.display_analysis_id)
 
     assert static.calls == 1
     assert resumed.status == "PARTIAL", resumed.error_code
-    assert (
-        store.require(child, SimpleStage.PRO_CON_DONE).status is StageStatus.SUCCEEDED
-    )
+    replayed = store.require(child, prior_agent.stage)
+    assert replayed.status is StageStatus.SUCCEEDED
+    assert replayed.stage_version == prior_agent.stage_version
+    assert replayed.attempt_id != prior_agent.attempt_id
     assert store.require(first.identity, SimpleStage.STATIC_DONE) == static_checkpoint
 
 

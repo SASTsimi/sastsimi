@@ -16,7 +16,6 @@ from sastsimi.config.user_config import ElapsedLimit, TokenLimit
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
-from sastsimi.progress.projector import ProgressProjector
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 
 from .artifacts import SimpleArtifactRepository
@@ -30,6 +29,8 @@ from .models import (
     StageResult,
     StageStatus,
     input_reference_hash,
+    terminal_gate_outcome,
+    terminal_poc_outcome,
 )
 from .recovery import (
     MAX_RECOVERY_ATTEMPTS,
@@ -355,12 +356,7 @@ class SimpleAnalysisApplication:
         ):
             # Finish incomplete Agent/PoC work with its validated static input.
             # Once downstream is terminal, resume may refine static gaps.
-            retry_partial_static = (
-                ProgressProjector(self._store)
-                .snapshot(exact, static_disposition="PARTIAL")
-                .status
-                == "PARTIAL"
-            )
+            retry_partial_static = self._downstream_terminal(run)
         if (
             run.workspace_path is None
             or run.repository_profile_ref is None
@@ -391,6 +387,37 @@ class SimpleAnalysisApplication:
             except StaticEvidenceInvalid:
                 return self._invalid_hypothesis_resume(run, identity)
         return await self._run_hypotheses(run, identity, static)
+
+    def _downstream_terminal(self, run: SimpleAnalysisRun) -> bool:
+        if not run.hypothesis_ids:
+            return False
+        children: dict[str, dict[SimpleStage, StageCheckpoint]] = {
+            hypothesis_id: {} for hypothesis_id in run.hypothesis_ids
+        }
+        for checkpoint in self._store.list_checkpoints(run.analysis_id):
+            if checkpoint.status is not StageStatus.SUCCEEDED:
+                return False
+            hypothesis_id = checkpoint.identity.hypothesis_id
+            if hypothesis_id not in children:
+                continue
+            if checkpoint.stage_version != STAGE_VERSION[checkpoint.stage]:
+                return False
+            children[hypothesis_id][checkpoint.stage] = checkpoint
+        for stages in children.values():
+            final = stages.get(SimpleStage.VERIFICATION_FINAL_DONE)
+            report = stages.get(SimpleStage.REPORT_DONE)
+            if (
+                terminal_poc_outcome(stages.get(SimpleStage.POC_EXECUTION_DONE))
+                is not None
+                or final is not None
+                and final.verdict in {"FALSE", "HOLD"}
+                or terminal_gate_outcome(stages.get(SimpleStage.TECH_GATE_DONE))
+                is not None
+                or report is not None
+            ):
+                continue
+            return False
+        return True
 
     def _invalid_partial_resume(
         self, run: SimpleAnalysisRun, identity: CheckpointIdentity
