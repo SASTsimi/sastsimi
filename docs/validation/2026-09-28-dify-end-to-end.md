@@ -31,13 +31,17 @@ commit·제품 범위·규칙·도구 지문의 증거만 재사용하며, 손�
 
 기존 전체 파일 범위의 별도 정적 재시험은 97,227/97,328 조합만 검증하고 101개 시간 초과로 `BLOCKED` 종료됐다. 제품 범위 시험 `statictrial20260928product`부터 `productv3`까지는 범위 정책 변경으로 최종 coverage 없이 중단됐다. 앞선 59,310개 적용 조합과 미지원 73개는 옛 정책의 예비 선별이며 현재 결과가 아니다.
 
-실제 Dify 분석 `A-008`의 최신 관찰에서는 `STATIC_DONE`이 `SUCCEEDED`이고
-정적 disposition은 `PARTIAL`이다. coverage artifact는 파일·규칙 조합
-58,338개 중 13,608개를 검증했고 44,730개가 미검증이라고 기록했다.
-미검증 이유는 `NOT_ATTEMPTED_BUDGET` 44,697개, `parse_or_scan_error` 15개,
-`scan_timeout` 18개이며 미지원 제품 파일은 245개다. 이 수치는 실제
-coverage artifact의 결과이고, 검증되지 않은 조합은 정상 검사로 세지 않았다.
-`HYPOTHESIS_DONE`도 `SUCCEEDED`로 도달했다. 그다음 `PRO_CON_DONE`이
-`RUNNING`일 때 관찰을 위해 의도적으로 중단했으므로 PoC, Gate, Finding,
-Reporter와 분석 최종 상태는 아직 검증되지 않았다. 현재 결과를 전체 파이프라인
-`COMPLETE`, confirmed Finding 또는 제출 가능한 보고서라고 부르지 않는다.
+실제 Dify 분석 `A-008` (`statictrial20260928productv5`)은 후속 Agent와
+Docker PoC를 끝까지 실행한 뒤 최종 `PARTIAL`로 종료됐다. 정적 coverage
+artifact는 파일·규칙 조합 58,338개 중 13,710개만 검증했고 44,628개가
+미검증이라고 기록했다. 사유는 시험 실행에서 짧게 설정한 검사 패스로 인한
+`NOT_ATTEMPTED_BUDGET` 44,595개, `parse_or_scan_error` 15개,
+`scan_timeout` 18개다. 미지원 제품 파일은 245개다. CodeQL은 구성됐지만
+`CODEQL_ANALYZE_FAILED`로 실행 완료 증거가 없어 검증으로 계산하지 않았다.
+OpenGrep 13,257개와 Semgrep 453개의 성공 조합은 보존됐다.
+
+가설 3개의 `POC_EXECUTION_DONE`과 `VERIFICATION_FINAL_DONE`은 모두
+`SUCCEEDED`였지만 최종 판정은 전부 `HOLD`다. 이 실행에서 confirmed Finding은
+0개, 제출용 보고서는 0개다. 따라서 보고서 생성의 형식과 첨부파일 경로는
+합성 회귀 테스트로만 검증됐으며, 실제 Dify 취약점 제보용 보고서가 나왔다고
+주장하지 않는다. 미검증 정적 범위가 남은 동안 `COMPLETE`도 아니다.
