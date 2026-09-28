@@ -36,8 +36,10 @@ HYPOTHESIS_STAGES: tuple[SimpleStage, ...] = STAGE_ORDER[2:]
 MAX_RECOVERY_ATTEMPTS = 3
 STAGE_VERSION: dict[SimpleStage, str] = {
     stage: (
-        "3"
-        if stage in {SimpleStage.REPORT_DONE, SimpleStage.VERIFICATION_INITIAL_DONE}
+        "4"
+        if stage is SimpleStage.VERIFICATION_INITIAL_DONE
+        else "3"
+        if stage is SimpleStage.REPORT_DONE
         else "2"
         if stage
         in {

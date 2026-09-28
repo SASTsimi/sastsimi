@@ -11,6 +11,7 @@ import shlex
 import socket
 import tomllib
 from collections.abc import Mapping, Sequence
+from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 
 from sastsimi.config.user_config import SimpleExecutionProfile
@@ -111,7 +112,6 @@ class PortableDockerRuntime:
             return self._image_digest(inspected.stdout)
         args: list[str] = [
             "build",
-            "--quiet",
             "--pull=false",
             "--network",
             self._network,
@@ -812,7 +812,29 @@ class DirectEnvironmentPreparer:
                     continue
                 current = source.parent
                 while current.is_relative_to(root):
-                    for name in ("requirements.txt", "pyproject.toml"):
+                    pyproject = current / "pyproject.toml"
+                    prefer_uv = False
+                    if (
+                        (current / "requirements.txt").is_file()
+                        and pyproject.is_file()
+                        and not pyproject.is_symlink()
+                    ):
+                        try:
+                            prefer_uv = (
+                                self._uv_sync_target(
+                                    current, self._read_project(pyproject)
+                                )
+                                is not None
+                            )
+                        except ValueError as error:
+                            if str(error) != "TARGET_MANIFEST_INVALID":
+                                raise
+                    names = (
+                        ("pyproject.toml", "requirements.txt")
+                        if prefer_uv
+                        else ("requirements.txt", "pyproject.toml")
+                    )
+                    for name in names:
                         candidate = current / name
                         if (
                             candidate.is_file()
@@ -823,6 +845,92 @@ class DirectEnvironmentPreparer:
                     if current == root:
                         break
                     current = current.parent
+        return None
+
+    @staticmethod
+    def _read_project(path: Path) -> dict[str, object]:
+        try:
+            return tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+            raise ValueError("TARGET_MANIFEST_INVALID") from None
+
+    @staticmethod
+    def _uv_config(project: Mapping[str, object]) -> Mapping[str, object]:
+        tool = project.get("tool")
+        uv = tool.get("uv") if isinstance(tool, dict) else None
+        return uv if isinstance(uv, dict) else {}
+
+    @staticmethod
+    def _workspace_pattern_matches(relative: PurePosixPath, patterns: object) -> bool:
+        if not isinstance(patterns, list):
+            return False
+
+        def matches(
+            path_parts: tuple[str, ...], pattern_parts: tuple[str, ...]
+        ) -> bool:
+            if not pattern_parts:
+                return not path_parts
+            if pattern_parts[0] == "**":
+                return (
+                    matches(path_parts, pattern_parts[1:])
+                    or bool(path_parts)
+                    and matches(path_parts[1:], pattern_parts)
+                )
+            return (
+                bool(path_parts)
+                and fnmatchcase(path_parts[0], pattern_parts[0])
+                and matches(path_parts[1:], pattern_parts[1:])
+            )
+
+        for pattern in patterns:
+            if not isinstance(pattern, str) or any(
+                char in pattern for char in "\r\n\x00\\:"
+            ):
+                continue
+            parsed = PurePosixPath(pattern)
+            if parsed.is_absolute() or ".." in parsed.parts:
+                continue
+            if matches(relative.parts, parsed.parts):
+                return True
+        return False
+
+    def _uv_sync_target(
+        self, project_dir: Path, project: Mapping[str, object]
+    ) -> tuple[Path, str | None] | None:
+        uv_config = self._uv_config(project)
+        if isinstance(uv_config.get("workspace"), dict):
+            return project_dir, None
+
+        workspace = self._workspace.resolve()
+        for parent in project_dir.parents:
+            if not parent.is_relative_to(workspace):
+                break
+            manifest = parent / "pyproject.toml"
+            if not manifest.is_file():
+                continue
+            if manifest.is_symlink() or not manifest.resolve().is_relative_to(
+                workspace
+            ):
+                raise ValueError("TARGET_MANIFEST_PATH_UNSAFE")
+            parent_uv = self._uv_config(self._read_project(manifest))
+            workspace_config = parent_uv.get("workspace")
+            if not isinstance(workspace_config, dict):
+                continue
+            relative = PurePosixPath(project_dir.relative_to(parent).as_posix())
+            if self._workspace_pattern_matches(
+                relative, workspace_config.get("members")
+            ) and not self._workspace_pattern_matches(
+                relative, workspace_config.get("exclude")
+            ):
+                metadata = project.get("project")
+                name = metadata.get("name") if isinstance(metadata, dict) else None
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError("TARGET_MANIFEST_INVALID")
+                return parent, name
+
+        sources = uv_config.get("sources")
+        if isinstance(sources, dict) and sources:
+            return project_dir, None
         return None
 
     def _target_install_layer(self, manifest_path: str | None) -> bytes:
@@ -839,6 +947,11 @@ class DirectEnvironmentPreparer:
             not host_path.is_file()
             or host_path.is_symlink()
             or not host_path.resolve().is_relative_to(root)
+            or any(
+                parent.is_symlink()
+                for parent in host_path.parents
+                if parent.is_relative_to(root)
+            )
         ):
             raise ValueError("TARGET_MANIFEST_PATH_UNSAFE")
         absolute = f"/workspace/{manifest_path}"
@@ -858,14 +971,10 @@ class DirectEnvironmentPreparer:
             'ENV PYTHONPATH="/opt/sastsimi-target-source:'
             '/opt/sastsimi-target-source/src:${PYTHONPATH}"\n'
         )
-        try:
-            project = tomllib.loads(host_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, tomllib.TOMLDecodeError):
-            raise ValueError("TARGET_MANIFEST_INVALID") from None
-        tool = project.get("tool", {})
-        uv_config = tool.get("uv", {}) if isinstance(tool, dict) else {}
-        uv_sources = uv_config.get("sources") if isinstance(uv_config, dict) else None
-        if not isinstance(uv_sources, dict) or not uv_sources:
+        uv_target = self._uv_sync_target(
+            host_path.parent, self._read_project(host_path)
+        )
+        if uv_target is None:
             if manifest_path == "pyproject.toml":
                 return b""
             return (
@@ -873,15 +982,23 @@ class DirectEnvironmentPreparer:
                 f"{shlex.quote(project_dir)}\n"
                 f"{source_path}"
             ).encode()
-        lock = host_path.parent / "uv.lock"
+        uv_root, member_name = uv_target
+        lock = uv_root / "uv.lock"
         if lock.is_symlink():
             raise ValueError("TARGET_LOCK_PATH_UNSAFE")
         frozen = " --frozen" if lock.is_file() else ""
+        uv_root_path = (
+            "/workspace"
+            if uv_root == root
+            else f"/workspace/{uv_root.relative_to(root).as_posix()}"
+        )
+        member = f" --package {shlex.quote(member_name)}" if member_name else ""
         return (
             "RUN python -m pip install --no-cache-dir uv\n"
-            f"RUN cd {shlex.quote(project_dir)} && uv sync{frozen} "
+            f"RUN cd {shlex.quote(uv_root_path)} && uv sync{member}{frozen} "
             "--no-dev --no-default-groups && "
-            f"ln -s {shlex.quote(project_dir + '/.venv')} "
+            f"test -x {shlex.quote(uv_root_path + '/.venv/bin/python')} && "
+            f"ln -s {shlex.quote(uv_root_path + '/.venv')} "
             "/opt/sastsimi-target-venv\n"
             "ENV VIRTUAL_ENV=/opt/sastsimi-target-venv\n"
             'ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"\n'
@@ -897,9 +1014,15 @@ class DirectEnvironmentPreparer:
         if not include_dependencies:
             install = ""
             target_manifest = None
-        elif (self._workspace / "requirements.txt").is_file():
+        target_install = self._target_install_layer(target_manifest)
+        uses_uv = target_install.startswith(
+            b"RUN python -m pip install --no-cache-dir uv\n"
+        )
+        if include_dependencies and uses_uv:
+            install = ""
+        elif include_dependencies and (self._workspace / "requirements.txt").is_file():
             install = "RUN pip install --no-cache-dir -r requirements.txt"
-        elif (self._workspace / "pyproject.toml").is_file():
+        elif include_dependencies and (self._workspace / "pyproject.toml").is_file():
             install = (
                 ""
                 if self._target_install_layer("pyproject.toml")
@@ -907,12 +1030,19 @@ class DirectEnvironmentPreparer:
             )
         else:
             install = ""
+        git_install = (
+            "RUN apt-get update && apt-get install -y --no-install-recommends "
+            "git ca-certificates && rm -rf /var/lib/apt/lists/*\n"
+            if uses_uv
+            else ""
+        )
         return (
             "FROM python:3.12-slim\n"
             "WORKDIR /workspace\n"
             "COPY . /workspace\n"
             f"{install}\n"
-            f"{self._target_install_layer(target_manifest).decode('utf-8')}"
+            f"{git_install}"
+            f"{target_install.decode('utf-8')}"
             "RUN chmod -R a+rX /workspace && mkdir -p /tmp && chmod 1777 /tmp\n"
             'CMD ["sleep", "infinity"]\n'
         ).encode()
