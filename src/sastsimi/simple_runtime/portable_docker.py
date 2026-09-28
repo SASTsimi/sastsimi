@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import socket
+import tomllib
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 
@@ -514,8 +515,8 @@ class DirectEnvironmentPreparer:
         prior: Mapping[SimpleStage, StageCheckpoint],
         requirements: tuple[str, ...],
     ) -> ReproductionEnvironment:
-        target_requirements = self._target_requirements_path(prior)
-        target_install = self._target_install_layer(target_requirements)
+        target_manifest = self._target_manifest_path(prior)
+        target_install = self._target_install_layer(target_manifest)
         dockerfile_path = self._workspace / "Dockerfile"
         if dockerfile_path.is_file():
             dockerfile = self._portable_repository_dockerfile(
@@ -528,7 +529,7 @@ class DirectEnvironmentPreparer:
             )
             source = "REPOSITORY_DOCKERFILE"
         else:
-            dockerfile = self._generated_dockerfile(target_requirements)
+            dockerfile = self._generated_dockerfile(target_manifest)
             source = "GENERATED"
         dockerfile += self._recovery_patch(checkpoint)
         dockerfile_ref = self._artifacts.put_bytes(dockerfile, "text/x-dockerfile")
@@ -553,7 +554,11 @@ class DirectEnvironmentPreparer:
                         checkpoint, source, dockerfile_ref, "FAILED", error
                     )
                 )
-                if not degraded and self._dependency_install_failed(error, dockerfile):
+                if (
+                    not degraded
+                    and target_manifest in {None, "requirements.txt", "pyproject.toml"}
+                    and self._dependency_install_failed(error, dockerfile)
+                ):
                     dockerfile = self._generated_dockerfile(include_dependencies=False)
                     dockerfile_ref = self._artifacts.put_bytes(
                         dockerfile, "text/x-dockerfile"
@@ -566,7 +571,7 @@ class DirectEnvironmentPreparer:
                         checkpoint,
                         source,
                         dockerfile_ref,
-                        target_requirements,
+                        target_manifest,
                         requirements,
                         attempt_refs,
                         degraded,
@@ -586,7 +591,7 @@ class DirectEnvironmentPreparer:
                     checkpoint,
                     source,
                     dockerfile_ref,
-                    target_requirements,
+                    target_manifest,
                     requirements,
                     attempt_refs,
                     degraded,
@@ -659,7 +664,7 @@ class DirectEnvironmentPreparer:
         checkpoint: StageCheckpoint,
         source: str,
         dockerfile_ref: StoredDataRef,
-        target_requirements: str | None,
+        target_manifest: str | None,
         requirements: tuple[str, ...],
         attempt_refs: list[StoredDataRef],
         degraded: bool,
@@ -675,7 +680,13 @@ class DirectEnvironmentPreparer:
             "attempt_id": checkpoint.attempt_id,
             "dockerfile_source": source,
             "dockerfile_ref": dockerfile_ref.model_dump(mode="json"),
-            "target_requirements_path": target_requirements,
+            "target_requirements_path": (
+                target_manifest
+                if target_manifest is not None
+                and PurePosixPath(target_manifest).name == "requirements.txt"
+                else None
+            ),
+            "target_manifest_path": target_manifest,
             "requirements": requirements,
             "build_attempt_refs": [ref.model_dump(mode="json") for ref in attempt_refs],
             "degraded": degraded,
@@ -741,7 +752,7 @@ class DirectEnvironmentPreparer:
                 prepared.append(archive_setup)
         return b"".join(prepared)
 
-    def _target_requirements_path(
+    def _target_manifest_path(
         self,
         prior: Mapping[SimpleStage, StageCheckpoint],
     ) -> str | None:
@@ -774,42 +785,108 @@ class DirectEnvironmentPreparer:
                     or not line.isdigit()
                     or relative.is_absolute()
                     or ".." in relative.parts
+                    or "\\" in relative_text
+                ):
+                    continue
+                candidate_source = root / Path(*relative.parts)
+                if candidate_source.is_symlink() or any(
+                    parent.is_symlink()
+                    for parent in candidate_source.parents
+                    if parent.is_relative_to(root)
                 ):
                     continue
                 try:
-                    source = (root / Path(*relative.parts)).resolve(strict=True)
+                    source = candidate_source.resolve(strict=True)
                 except OSError:
                     continue
                 if not source.is_relative_to(root):
                     continue
+                if not source.is_file() or source.is_symlink():
+                    continue
                 current = source.parent
                 while current.is_relative_to(root):
-                    candidate = current / "requirements.txt"
-                    if candidate.is_file() and not candidate.is_symlink():
-                        return candidate.relative_to(root).as_posix()
+                    for name in ("requirements.txt", "pyproject.toml"):
+                        candidate = current / name
+                        if (
+                            candidate.is_file()
+                            and not candidate.is_symlink()
+                            and candidate.resolve().is_relative_to(root)
+                        ):
+                            return candidate.relative_to(root).as_posix()
                     if current == root:
                         break
                     current = current.parent
         return None
 
-    @staticmethod
-    def _target_install_layer(requirements_path: str | None) -> bytes:
-        if requirements_path in {None, "requirements.txt"}:
+    def _target_install_layer(self, manifest_path: str | None) -> bytes:
+        if manifest_path is None or manifest_path in {
+            "requirements.txt",
+            "pyproject.toml",
+        }:
             return b""
-        absolute = f"/workspace/{requirements_path}"
+        if any(char in manifest_path for char in "\r\n\x00\\"):
+            raise ValueError("TARGET_MANIFEST_PATH_UNSAFE")
+        relative = PurePosixPath(manifest_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("TARGET_MANIFEST_PATH_UNSAFE")
+        host_path = self._workspace.joinpath(*relative.parts)
+        root = self._workspace.resolve()
+        if (
+            not host_path.is_file()
+            or host_path.is_symlink()
+            or not host_path.resolve().is_relative_to(root)
+        ):
+            raise ValueError("TARGET_MANIFEST_PATH_UNSAFE")
+        absolute = f"/workspace/{manifest_path}"
+        if relative.name == "requirements.txt":
+            return (
+                f"RUN python -m pip install --no-cache-dir -r {shlex.quote(absolute)}\n"
+            ).encode()
+        if relative.name != "pyproject.toml":
+            raise ValueError("TARGET_MANIFEST_UNSUPPORTED")
+        project_dir = f"/workspace/{relative.parent.as_posix()}"
+        source_path = (
+            f"RUN ln -s {shlex.quote(project_dir)} /opt/sastsimi-target-source\n"
+            'ENV PYTHONPATH="/opt/sastsimi-target-source:'
+            '/opt/sastsimi-target-source/src:${PYTHONPATH}"\n'
+        )
+        try:
+            project = tomllib.loads(host_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+            raise ValueError("TARGET_MANIFEST_INVALID") from None
+        tool = project.get("tool", {})
+        uv_config = tool.get("uv", {}) if isinstance(tool, dict) else {}
+        uv_sources = uv_config.get("sources") if isinstance(uv_config, dict) else None
+        if not isinstance(uv_sources, dict) or not uv_sources:
+            return (
+                "RUN python -m pip install --no-cache-dir "
+                f"{shlex.quote(project_dir)}\n"
+                f"{source_path}"
+            ).encode()
+        lock = host_path.parent / "uv.lock"
+        if lock.is_symlink():
+            raise ValueError("TARGET_LOCK_PATH_UNSAFE")
+        frozen = " --frozen" if lock.is_file() else ""
         return (
-            f"RUN python -m pip install --no-cache-dir -r {shlex.quote(absolute)}\n"
+            "RUN python -m pip install --no-cache-dir uv\n"
+            f"RUN cd {shlex.quote(project_dir)} && uv sync{frozen} "
+            "--no-dev --no-default-groups && "
+            f"ln -s {shlex.quote(project_dir + '/.venv')} "
+            "/opt/sastsimi-target-venv\n"
+            "ENV VIRTUAL_ENV=/opt/sastsimi-target-venv\n"
+            'ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"\n'
+            f"{source_path}"
         ).encode()
 
     def _generated_dockerfile(
         self,
-        target_requirements: str | None = None,
+        target_manifest: str | None = None,
         *,
         include_dependencies: bool = True,
     ) -> bytes:
         if not include_dependencies:
             install = ""
-            target_requirements = None
+            target_manifest = None
         elif (self._workspace / "requirements.txt").is_file():
             install = "RUN pip install --no-cache-dir -r requirements.txt"
         elif (self._workspace / "pyproject.toml").is_file():
@@ -821,7 +898,7 @@ class DirectEnvironmentPreparer:
             "WORKDIR /workspace\n"
             "COPY . /workspace\n"
             f"{install}\n"
-            f"{self._target_install_layer(target_requirements).decode('utf-8')}"
+            f"{self._target_install_layer(target_manifest).decode('utf-8')}"
             "RUN chmod -R a+rX /workspace && mkdir -p /tmp && chmod 1777 /tmp\n"
             'CMD ["sleep", "infinity"]\n'
         ).encode()
