@@ -285,12 +285,19 @@ async def test_poc_execution_error_is_blocked_and_releases_container(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("exit_code", "error_line", "python_traceback", "on_stdout"),
+    ("exit_code", "error_line", "python_traceback", "on_stdout", "blocks"),
     [
-        (0, b"ModuleNotFoundError: No module named 'django'", True, False),
-        (1, b"ImportError: cannot import name 'settings' from 'app'", True, False),
-        (1, b"ModuleNotFoundError: No module named 'django'", True, True),
-        (0, b"ImportError: expected diagnostic text only", False, False),
+        (0, b"ModuleNotFoundError: No module named 'django'", True, False, True),
+        (
+            1,
+            b"ImportError: cannot import name 'settings' from 'app'",
+            True,
+            False,
+            True,
+        ),
+        (1, b"ModuleNotFoundError: No module named 'django'", True, True, True),
+        (1, b"/usr/local/bin/python: No module named app", False, False, True),
+        (0, b"ImportError: expected diagnostic text only", False, False, False),
     ],
 )
 async def test_python_import_traceback_blocks_before_disproof_interpretation(
@@ -299,6 +306,7 @@ async def test_python_import_traceback_blocks_before_disproof_interpretation(
     error_line: bytes,
     python_traceback: bool,
     on_stdout: bool,
+    blocks: bool,
 ) -> None:
     identity = CheckpointIdentity(
         analysis_id="analysis-import-error",
@@ -361,7 +369,7 @@ async def test_python_import_traceback_blocks_before_disproof_interpretation(
         containers=containers,
     )
 
-    if not python_traceback:
+    if not blocks:
         result = await stage(current, {SimpleStage.POC_CANDIDATE_DONE: candidate})
         assert result.validated_poc_ref is None
         assert json.loads(artifacts.read(result.output_refs[1]))["result"][

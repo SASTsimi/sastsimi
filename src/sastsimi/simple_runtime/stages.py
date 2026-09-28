@@ -69,13 +69,23 @@ _POC_SOURCE_ARTIFACT_BYTES = 96_000
 _REPORT_DRAFT_MAX_BYTES = 4 * 1024 * 1024
 
 
-def _has_python_import_traceback(stderr: bytes) -> bool:
+def _has_python_import_failure(output: bytes) -> bool:
     traceback_started = False
-    for line in stderr.splitlines():
+    for line in output.splitlines():
         if line == b"Traceback (most recent call last):":
             traceback_started = True
         elif traceback_started and line.startswith(
             (b"ModuleNotFoundError: ", b"ImportError: ")
+        ):
+            return True
+        interpreter, marker, module = (
+            line.strip().rsplit(b"/", 1)[-1].partition(b": No module named ")
+        )
+        if (
+            marker
+            and interpreter.startswith(b"python")
+            and b" " not in interpreter
+            and module
         ):
             return True
     return False
@@ -670,7 +680,7 @@ class PoCExecutionStage:
                     evidence_refs=(execution_ref, stdout_ref, stderr_ref, cleanup_ref),
                 )
             )
-        if _has_python_import_traceback(outcome.stderr) or _has_python_import_traceback(
+        if _has_python_import_failure(outcome.stderr) or _has_python_import_failure(
             outcome.stdout
         ):
             raise StageBlocked(
