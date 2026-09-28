@@ -51,6 +51,14 @@ Agent 호출은 같은 인증 파일을 동시에 갱신하는 충돌을 줄이�
 
 새 Codex `setup`에서 모델을 생략하면 기본 제안은 `gpt-6-sol`입니다. 기존 설치의 모델은 자동으로 변경하지 않습니다. 현재 로그인에서 해당 모델을 실제 사용할 수 있는지 분석 전에 확인하세요. 특정 모델을 쓰려면 언제든 `--model <확인한-ID>`로 덮어쓸 수 있습니다.
 
+추론 수준은 지정하지 않으면 기존 Provider 동작을 유지합니다. 공통 수준을 지정하고 최종 검증 Agent만 다르게 설정하는 PowerShell 한 줄 예시는 다음과 같습니다.
+
+```powershell
+sastsimi setup --non-interactive --auth subscription --provider codex --model gpt-6-sol --reasoning-effort medium --agent-reasoning-effort verification_result=high
+```
+
+`--agent-reasoning-effort 역할=수준`은 여러 번 지정할 수 있으며 Agent별 값이 공통 `--reasoning-effort`보다 우선합니다. 같은 입력을 환경변수 `SASTSIMI_REASONING_EFFORT`, `SASTSIMI_AGENT_REASONING_EFFORTS`(예: `verification_result=high,technical_gate=high`)로 setup할 수도 있습니다. setup CLI 인자가 환경변수보다 우선합니다. 값은 사용자 `config.toml`과 `profile.toml`에 저장되어 재개 시에도 비교됩니다. Codex/OpenAI의 후보 수준은 `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; Claude는 `low`, `medium`, `high`입니다. 실제 모델이 선택한 수준을 지원하지 않으면 해당 호출은 오류로 끝나며 다른 수준으로 조용히 변경하지 않습니다. Cursor CLI는 현재 확인된 추론 수준 인자가 없어 명시 수준을 거절하고, SDK도 모델 카탈로그에서 해당 수준을 확인한 경우에만 사용합니다.
+
 현재 Codex CLI adapter는 호출별 토큰·비용을 SimpleRuntime에 전달하지 않습니다. 대시보드의 미제공 값은 0이나 무료라는 뜻이 아니며, `max_tokens`와 `max_cost_minor_units`는 이 provider의 실제 사용량을 강제하지 못합니다. `max_elapsed_seconds`는 재개 간 DB에 기록된 LLM 시도의 누적 실행시간 상한입니다. 다음 LLM 요청 전에 확인하며, 분석을 중단한 시간·Docker 작업 시간은 소모하지 않습니다. 이미 실행 중인 요청이나 Docker 작업을 즉시 종료하는 타이머는 아닙니다. 한도에 도달한 분석은 기본값 그대로 `resume`해도 계속할 수 없고, 사용량을 확인한 뒤 설정 한도를 높여야 합니다. 회원 사용량은 Codex 계정에서도 확인하세요.
 
 ## Cursor 회원 로그인 또는 API key (선택형)

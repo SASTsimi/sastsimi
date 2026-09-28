@@ -215,6 +215,9 @@ def main(
     )
     dashboard_parser.add_argument("--host", default="127.0.0.1")
     dashboard_parser.add_argument("--port", type=int, default=8765)
+    dashboard_parser.add_argument(
+        "--demo", action="store_true", help="show synthetic in-memory presentation data"
+    )
     analyze_parser = subparsers.add_parser(
         "analyze", help="run a production repository analysis", allow_abbrev=False
     )
@@ -535,7 +538,7 @@ def main(
             return int(ExitCode.OK)
         if args.command == "dashboard":
             command_name = "dashboard"
-            dashboard_command.run(config.data_dir, args.host, args.port)
+            dashboard_command.run(config.data_dir, args.host, args.port, demo=args.demo)
             return int(ExitCode.OK)
         if args.command == "analyze":
             command_name = "analyze"

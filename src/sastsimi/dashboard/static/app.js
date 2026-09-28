@@ -1016,5 +1016,10 @@ document.addEventListener("keydown", (event) => {
   if (event.key.toLowerCase() === "p") setPresentationMode(!state.presentation);
   if (event.key === "Escape" && state.presentation) setPresentationMode(false);
 });
+getJson("/api/meta").then((meta) => {
+  document.getElementById("demo-banner").hidden = !meta.demo;
+}).catch(() => {
+  document.getElementById("demo-banner").hidden = true;
+});
 refresh();
 window.setInterval(refresh, 2000);

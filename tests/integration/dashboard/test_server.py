@@ -8,6 +8,7 @@ import zipfile
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 
@@ -254,8 +255,8 @@ def seed(data_dir) -> None:
 
 
 @contextmanager
-def running_server(data_dir):
-    server = create_server(data_dir, host="127.0.0.1", port=0)
+def running_server(data_dir, *, demo: bool = False):
+    server = create_server(data_dir, host="127.0.0.1", port=0, demo=demo)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -273,6 +274,47 @@ def request(url: str, *, method: str = "GET"):
         )
     except urllib.error.HTTPError as error:
         return error
+
+
+def test_demo_mode_uses_synthetic_memory_data_without_touching_database(
+    tmp_path,
+) -> None:
+    expected = json.loads(
+        (
+            Path(__file__).resolve().parents[2] / "fixtures" / "dashboard_demo.json"
+        ).read_text(encoding="utf-8")
+    )
+    with running_server(tmp_path, demo=True) as base:
+        meta = json.loads(request(f"{base}/api/meta").read())
+        analyses = json.loads(request(f"{base}/api/analyses").read())
+        detail = json.loads(request(f"{base}/api/analyses/DEMO-001").read())
+        cells = json.loads(
+            request(
+                f"{base}/api/analyses/DEMO-001/status-cells?offset=0&limit=2"
+            ).read()
+        )
+        events = json.loads(request(f"{base}/api/analyses/DEMO-001/events").read())
+        page = request(base).read().decode()
+        assert meta == {"demo": True}
+        assert 'id="demo-banner"' in page
+        assert analyses[0]["analysis_id"] == expected["analysis_id"]
+        assert analyses[0]["repository"] == expected["repository"]
+        assert detail["display_analysis_id"] == expected["display_analysis_id"]
+        assert detail["hypothesis_count"] == expected["hypothesis_count"]
+        assert detail["kpis"]["confirmed_findings"] == expected["confirmed_findings"]
+        assert cells["total"] >= 2
+        assert len(cells["items"]) == 2
+        assert events and all(
+            event["analysis_id"] == "demo-analysis" for event in events
+        )
+        assert request(f"{base}/api/analyses/DEMO-001/bundle.zip").status == 404
+        assert request(f"{base}/api/analyses", method="POST").status == 405
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_live_dashboard_metadata_is_not_demo(tmp_path) -> None:
+    with running_server(tmp_path) as base:
+        assert json.loads(request(f"{base}/api/meta").read()) == {"demo": False}
 
 
 def test_server_is_local_read_only_and_serves_current_state(tmp_path) -> None:

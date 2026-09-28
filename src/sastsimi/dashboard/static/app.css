@@ -193,3 +193,5 @@ button, .card, .tool-card, .stage { background: #30343a; border-color: #454a52; 
 @media (max-width: 1220px) { .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 620px) { .kpi-grid { grid-template-columns: 1fr; } .status-grid { grid-template-columns: repeat(auto-fill, minmax(38px, 1fr)); } .page-controls { flex-wrap: wrap; } .history-panel table { min-width: 600px; } }
 @media (prefers-reduced-motion: reduce) { .progress-bar { transition: none; } }
+.demo-banner { position: sticky; top: 0; z-index: 25; padding: .7rem 1rem; background: #a35e12; color: #fff; text-align: center; font-size: .9rem; font-weight: 800; }
+.demo-banner[hidden] { display: none; }

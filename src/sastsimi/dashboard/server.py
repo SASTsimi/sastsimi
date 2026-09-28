@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Literal, cast
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from .demo import DemoDashboardQuery
 from .markdown_view import preview_markdown
 from .query import DashboardBadRequest, DashboardNotFound, DashboardQuery
 
@@ -37,12 +38,13 @@ def create_server(
     *,
     host: str = "127.0.0.1",
     port: int = 8765,
+    demo: bool = False,
 ) -> ThreadingHTTPServer:
     if not _loopback(host):
         raise ValueError("DASHBOARD_LOOPBACK_ONLY")
     if not 0 <= port <= 65535:
         raise ValueError("DASHBOARD_PORT_INVALID")
-    query = DashboardQuery(data_dir)
+    query: DashboardQuery = DemoDashboardQuery() if demo else DashboardQuery(data_dir)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -70,6 +72,15 @@ def create_server(
             parsed = urlsplit(self.path)
             parts = tuple(unquote(part) for part in parsed.path.split("/") if part)
             try:
+                if demo and (
+                    (parts and parts[0] == "reports")
+                    or (
+                        len(parts) >= 4
+                        and parts[:2] == ("api", "analyses")
+                        and parts[3] not in {"status-cells", "events"}
+                    )
+                ):
+                    raise DashboardNotFound("DASHBOARD_DEMO_ROUTE_NOT_FOUND")
                 if not parts:
                     self._file(
                         _STATIC / "index.html",
@@ -95,6 +106,8 @@ def create_server(
                         "text/javascript; charset=utf-8",
                         send_body,
                     )
+                elif parts == ("api", "meta"):
+                    self._json({"demo": demo}, send_body)
                 elif parts == ("api", "analyses"):
                     self._json(query.list_analyses(), send_body)
                 elif (
@@ -448,8 +461,10 @@ def serve_dashboard(
     data_dir: str | Path,
     host: str = "127.0.0.1",
     port: int = 8765,
+    *,
+    demo: bool = False,
 ) -> None:
-    server = create_server(data_dir, host=host, port=port)
+    server = create_server(data_dir, host=host, port=port, demo=demo)
     try:
         server.serve_forever()
     finally:
