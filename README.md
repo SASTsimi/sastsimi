@@ -98,13 +98,15 @@ sastsimi analyze https://github.com/owner/repository.git --commit <정확한-40�
 
 큰 저장소는 정적 도구가 실행되는 동안 `STATIC_DONE` 단계에 진행률 `0%`가 표시될 수 있습니다. `RUNNING`이면 상태를 확인하며 기다리고, 기존 실행이 종료된 뒤에만 `resume`하세요. 정적 분석 시간 초과와 복구 방법은 [오류 해결](docs/troubleshooting.md#opengrep-또는-codeql-실패)을 참고하세요.
 
-OpenGrep 규칙 묶음은 원본 규칙과 동일한 저장소 범위를 순차 검사합니다. 시간 초과 후 같은 분석을 `resume`하면 완료된 묶음과 안전하게 재검증된 부분 결과를 재사용합니다. 파싱 경고가 있으면 해당 파일·규칙 조합을 미검증으로 남기며, 선택형 Semgrep이 실제 재검사한 조합만 보완합니다. 파싱 경고와 미검사 파일이 함께 있는 부분 결과도 Semgrep fallback을 켠 경우 남은 조합을 넘기되, 완료로 오인하지 않습니다. OpenGrep이 실패해도 AST와 설정된 CodeQL 결과는 보존합니다. 파일·규칙별 누락이 남으면 전체 성공 전에는 정적 단계가 `BLOCKED`이며 가설·Finding·보고서를 만들지 않습니다. 대시보드에서 미검증 경로·이유와 알려진 소스 확장자 중 현재 규칙 범위 밖인 파일을 확인할 수 있습니다. 저장소별 별도 설정은 필요 없습니다. 다만 묶음 실행으로 총 검사 시간이 늘 수 있고, 모든 저장소의 `COMPLETE`를 보장하지는 않습니다.
+OpenGrep은 규칙 묶음별로 저장소를 검사합니다. 선택형 Semgrep fallback이 켜져 있고 전체 묶음이 시간 초과되면, 적용 대상 파일을 최대 128개씩 나눠 OpenGrep으로 다시 검사합니다. 각 호출은 Windows 명령줄 길이와 유한한 시간을 지키며, `resume`에서는 원문·요청 정보를 재검증한 완료 조합을 재사용합니다. 파싱 경고·미검사·시간 초과로 남은 조합만 Semgrep에 전달하고, 실제 재검사에 성공한 파일·규칙만 완료로 인정합니다.
 
-새 분석의 누적 LLM 호출시간 기본값은 `unlimited`이며 공유 정적 검사 1시간 제한도 적용하지 않습니다. 각 OpenGrep·Semgrep 호출은 유한한 타임아웃을 유지합니다. 선택형 Semgrep fallback을 켜면 OpenGrep 묶음당 최대 120초, Semgrep 호출당 최대 120초입니다. Semgrep은 최대 128파일과 Windows 명령줄 24,000 UTF-16 단위 이내로 실행하며 실패한 묶음은 파일 단위까지 분할합니다.
+OpenGrep이 실패해도 AST와 설정된 CodeQL 결과는 보존합니다. 미검증 조합이 남으면 정적 단계는 `BLOCKED`이고 가설·Finding·보고서로 진행하지 않습니다. 대시보드에서 미검증 경로·이유와 규칙 범위 밖의 알려진 소스 확장자를 확인할 수 있습니다. 저장소별 예외는 두지 않지만 모든 저장소의 `COMPLETE`를 보장하지는 않습니다.
+
+새 분석의 누적 LLM 호출시간 기본값은 `unlimited`이며 공유 정적 검사 1시간 제한도 적용하지 않습니다. 각 OpenGrep·Semgrep 호출은 유한한 타임아웃을 유지합니다. 선택형 Semgrep fallback을 켜면 OpenGrep 묶음·분할 호출당 최대 120초, Semgrep 호출당 최대 120초입니다. 두 엔진의 분할 호출은 최대 128파일과 Windows 명령줄 24,000 UTF-16 단위 이내로 실행하며, Semgrep은 실패한 묶음을 파일 단위까지 분할합니다.
 
 완료된 검사 원문은 같은 commit·규칙·도구 지문에서 다시 검증해 재사용합니다. 재개 때 묶음 경계가 달라져도 이미 증명된 파일·규칙은 다시 세지 않습니다. 손상된 원문이나 파싱 오류는 완료로 취급하지 않습니다. 파일 하나의 시간 초과는 `--timeout 30`으로 한 번 더 시험하고, 끝내 확인할 수 없는 조합은 경로·규칙·이유를 coverage artifact에 남겨 정적 단계를 `BLOCKED`로 둡니다.
 
-[기존 Dify 정적 검사 검증](docs/validation/2026-09-27-dify-static-coverage.md)은 변경 전 관찰 기록이며 [새 Dify 재시험](docs/validation/2026-09-28-dify-static-retest.md)은 진행 상황과 확인된 엔진 한계를 기록합니다.
+[기존 Dify 정적 검사 검증](docs/validation/2026-09-27-dify-static-coverage.md)은 변경 전 관찰 기록입니다. [새 정적 재시험](docs/validation/2026-09-28-dify-static-retest.md)과 [전체 파이프라인 판정](docs/validation/2026-09-28-dify-end-to-end.md)은 실제 진행 상태와 확인된 한계를 구분해 기록합니다.
 
 ```powershell
 sastsimi status A-001
