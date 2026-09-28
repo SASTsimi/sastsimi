@@ -74,32 +74,22 @@ def require_semgrep_tool(binding: SimpleToolBinding) -> None:
         raise RuntimeError("SEMGREP_TOOL_UNAVAILABLE")
 
 
-def build_semgrep_argv(
+def build_semgrep_argv_prefix(
     binding: SimpleToolBinding,
-    workspace: Path,
     rules: Path,
-    targets: Sequence[str],
     excluded_rule_ids: Sequence[str],
     output_path: Path,
     per_file_timeout_seconds: int | None,
-    *,
-    targets_verified: bool = False,
 ) -> tuple[str, ...]:
-    """Build the exact command; only trusted coverage-plan paths may skip I/O checks."""
+    """Validate and build the immutable part of a local Semgrep command."""
+
     executable = binding.executable_path
     if not rules.is_file() or rules.suffix.lower() not in {".yml", ".yaml"}:
         raise RuntimeError("SEMGREP_RESULT_INVALID")
-    if not targets or (
-        per_file_timeout_seconds is not None and per_file_timeout_seconds < 1
-    ):
+    if per_file_timeout_seconds is not None and per_file_timeout_seconds < 1:
         raise RuntimeError("SEMGREP_RESULT_INVALID")
     if any(_RULE_ID.fullmatch(rule_id) is None for rule_id in excluded_rule_ids):
         raise RuntimeError("SEMGREP_RESULT_INVALID")
-    safe_targets = (
-        tuple(sorted(set(targets)))
-        if targets_verified
-        else tuple(sorted({_verified_target(workspace, raw) for raw in targets}))
-    )
     argv = [
         str(executable),
         "scan",
@@ -116,8 +106,38 @@ def build_semgrep_argv(
         argv.extend(("--timeout", str(per_file_timeout_seconds)))
     for rule_id in sorted(set(excluded_rule_ids)):
         argv.extend(("--exclude-rule", rule_id))
-    argv.extend(safe_targets)
     return tuple(argv)
+
+
+def build_semgrep_argv(
+    binding: SimpleToolBinding,
+    workspace: Path,
+    rules: Path,
+    targets: Sequence[str],
+    excluded_rule_ids: Sequence[str],
+    output_path: Path,
+    per_file_timeout_seconds: int | None,
+    *,
+    targets_verified: bool = False,
+) -> tuple[str, ...]:
+    """Build the exact command; only trusted coverage-plan paths may skip I/O checks."""
+    if not targets:
+        raise RuntimeError("SEMGREP_RESULT_INVALID")
+    safe_targets = (
+        tuple(sorted(set(targets)))
+        if targets_verified
+        else tuple(sorted({_verified_target(workspace, raw) for raw in targets}))
+    )
+    return (
+        *build_semgrep_argv_prefix(
+            binding,
+            rules,
+            excluded_rule_ids,
+            output_path,
+            per_file_timeout_seconds,
+        ),
+        *safe_targets,
+    )
 
 
 def _read_output(path: Path, *, started_ns: int, max_output_bytes: int) -> bytes:

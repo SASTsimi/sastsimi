@@ -6,6 +6,11 @@ from pathlib import Path
 
 import pytest
 
+from sastsimi.config.user_config import (
+    ElapsedLimit,
+    SimpleExecutionProfile,
+    SimpleToolBinding,
+)
 from sastsimi.sandbox.docker_adapter import DockerCommandOutcome, DockerOperationError
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
@@ -41,6 +46,41 @@ class _RecordingPortableDockerRuntime(PortableDockerRuntime):
             stderr=b"",
             timed_out=False,
         )
+
+
+@pytest.mark.parametrize(
+    ("elapsed_limit", "expected_timeout"),
+    [(7200, 7200), ("unlimited", 3600)],
+)
+def test_docker_call_timeout_preserves_finite_configuration(
+    elapsed_limit: ElapsedLimit, expected_timeout: int
+) -> None:
+    profile = SimpleExecutionProfile(
+        provider_profile_ref="test",
+        provider="test",
+        model="test",
+        auth_mode="API_KEY",
+        credential_ref="env:TEST_API_KEY",
+        data_dir=Path.cwd(),
+        workspace_root=Path.cwd(),
+        max_cost_minor_units=1,
+        max_tokens=1,
+        docker_network="NONE",
+        max_elapsed_seconds=elapsed_limit,
+        tools={
+            "docker": SimpleToolBinding(
+                executable_path=Path("docker"),
+                version="test",
+                executable_sha256="a" * 64,
+            )
+        },
+        max_parallel_builds=1,
+        max_parallel_containers=1,
+    )
+
+    runtime = PortableDockerRuntime(profile)
+
+    assert runtime._timeout == expected_timeout
 
 
 class _BuildDocker:

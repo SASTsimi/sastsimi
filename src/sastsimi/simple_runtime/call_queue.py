@@ -9,6 +9,8 @@ from time import monotonic
 from typing import Any
 from uuid import uuid4
 
+from sastsimi.config.user_config import ElapsedLimit
+
 from .artifacts import SimpleArtifactRepository
 from .models import StageFailure
 from .provider import SimpleLLMCallResult, SimpleLLMClient
@@ -42,7 +44,7 @@ class RunUsageBudget:
         analysis_id: str,
         max_tokens: int,
         max_cost_minor_units: int,
-        max_elapsed_seconds: int,
+        max_elapsed_seconds: ElapsedLimit,
     ) -> None:
         self._store = store
         self._analysis_id = analysis_id
@@ -66,8 +68,10 @@ class RunUsageBudget:
                 retryable=False,
                 safe_message="Analysis cost ceiling has been reached",
             )
-        if self._store.llm_elapsed_ms(self._analysis_id) >= (
-            self._max_elapsed_seconds * 1000
+        if (
+            self._max_elapsed_seconds != "unlimited"
+            and self._store.llm_elapsed_ms(self._analysis_id)
+            >= self._max_elapsed_seconds * 1000
         ):
             return StageFailure(
                 code="LLM_ELAPSED_BUDGET_EXHAUSTED",
@@ -91,7 +95,7 @@ class RunLimitedClient:
         max_retries: int,
         max_tokens: int,
         max_cost_minor_units: int,
-        max_elapsed_seconds: int,
+        max_elapsed_seconds: ElapsedLimit,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._inner = inner

@@ -5,7 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Callable
+import secrets
+import shutil
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -43,6 +46,32 @@ _HOST_PROBE_KINDS = (
     "OPENGREP",
     "DOCKER",
 )
+
+
+@contextmanager
+def _compose_stage(parent: Path) -> Iterator[Path]:
+    """Keep the atomic bundle stage short and usable with Windows ACLs."""
+
+    if os.name != "nt":
+        with TemporaryDirectory(prefix=".sc-", dir=parent) as temporary:
+            yield Path(temporary)
+        return
+
+    # Python's 0o700 TemporaryDirectory ACL can deny access under a restricted
+    # Windows token. Inherit the output parent's ACL, as the final bundle does.
+    for _ in range(10):
+        stage_dir = parent / f".sc-{secrets.token_hex(6)}"
+        try:
+            stage_dir.mkdir()
+        except FileExistsError:
+            continue
+        break
+    else:
+        raise FileExistsError("ONBOARDING_STAGE_NAME_EXHAUSTED")
+    try:
+        yield stage_dir
+    finally:
+        shutil.rmtree(stage_dir)
 
 
 @dataclass(frozen=True, slots=True)
@@ -318,10 +347,8 @@ def run_compose(
             host_id=profile.host_id,
             resolve_probe=resolve_probe,
         )
-        with TemporaryDirectory(
-            prefix=".sastsimi-onboarding-compose-", dir=parent
-        ) as temporary:
-            stage = Path(temporary) / "bundle"
+        with _compose_stage(parent) as temporary:
+            stage = temporary / "bundle"
             stage.mkdir()
             _write_file(stage / "production-onboarding.json", composed.onboarding_bytes)
             _write_file(

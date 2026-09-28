@@ -8,7 +8,7 @@ import re
 import tempfile
 import tomllib
 from pathlib import Path
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
 from platformdirs import user_config_dir
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -33,6 +33,19 @@ _AGENT_NAMES = frozenset(
         "recovery",
     }
 )
+
+ElapsedLimit = Annotated[int, Field(gt=0)] | Literal["unlimited"]
+
+
+def finite_call_timeout(limit: ElapsedLimit, cap: int) -> int:
+    """Keep each external call finite even when aggregate time is unlimited."""
+    if cap < 1:
+        raise ValueError("CALL_TIMEOUT_INVALID")
+    return cap if limit == "unlimited" else min(limit, cap)
+
+
+def _elapsed_toml(limit: ElapsedLimit) -> str:
+    return _quoted(limit) if limit == "unlimited" else str(limit)
 
 
 def _safe_model_id(value: str) -> bool:
@@ -118,7 +131,7 @@ class UserConfig(BaseModel):
     execution_profile: Literal["FULL", "LIGHTWEIGHT"]
     max_cost_minor_units: int = Field(gt=0)
     max_tokens: int = Field(gt=0)
-    max_elapsed_seconds: int = Field(gt=0)
+    max_elapsed_seconds: ElapsedLimit = "unlimited"
     docker_network: Literal["NONE", "BRIDGE"]
     enabled_tools: tuple[Literal["AST", "OPENGREP", "CODEQL", "DOCKER"], ...]
     detected_versions: dict[str, str]
@@ -222,7 +235,7 @@ class UserConfig(BaseModel):
             f"execution_profile = {_quoted(self.execution_profile)}",
             f"max_cost_minor_units = {self.max_cost_minor_units}",
             f"max_tokens = {self.max_tokens}",
-            f"max_elapsed_seconds = {self.max_elapsed_seconds}",
+            f"max_elapsed_seconds = {_elapsed_toml(self.max_elapsed_seconds)}",
             f"docker_network = {_quoted(self.docker_network)}",
             f"enabled_tools = {_string_array(tuple(self.enabled_tools))}",
             f"setup_ready = {str(self.setup_ready).lower()}",
@@ -291,7 +304,7 @@ class SimpleExecutionProfile(BaseModel):
     workspace_root: Path
     max_cost_minor_units: int = Field(gt=0)
     max_tokens: int = Field(gt=0)
-    max_elapsed_seconds: int = Field(gt=0)
+    max_elapsed_seconds: ElapsedLimit = "unlimited"
     docker_network: Literal["NONE", "BRIDGE"]
     tools: dict[str, SimpleToolBinding]
     agent_models: dict[str, str] = Field(default_factory=dict)
@@ -359,7 +372,7 @@ class SimpleExecutionProfile(BaseModel):
             f"workspace_root = {_quoted(self.workspace_root.as_posix())}",
             f"max_cost_minor_units = {self.max_cost_minor_units}",
             f"max_tokens = {self.max_tokens}",
-            f"max_elapsed_seconds = {self.max_elapsed_seconds}",
+            f"max_elapsed_seconds = {_elapsed_toml(self.max_elapsed_seconds)}",
             f"docker_network = {_quoted(self.docker_network)}",
             f"llm_timeout_seconds = {self.llm_timeout_seconds}",
             f"llm_max_retries = {self.llm_max_retries}",
@@ -426,10 +439,12 @@ def load_simple_execution_profile(path: Path) -> SimpleExecutionProfile:
 
 
 __all__ = [
+    "ElapsedLimit",
     "SimpleExecutionProfile",
     "SimpleToolBinding",
     "UserConfig",
     "UserConfigStore",
     "default_user_config_path",
+    "finite_call_timeout",
     "load_simple_execution_profile",
 ]

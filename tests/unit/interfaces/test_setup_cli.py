@@ -125,6 +125,65 @@ def test_new_codex_setup_defaults_to_gpt_6_sol(tmp_path: Path, capsys) -> None:
     assert load_simple_execution_profile(service._profile_path).model == "gpt-6-sol"
 
 
+def test_new_setup_defaults_to_unlimited_cumulative_time(
+    tmp_path: Path, capsys
+) -> None:
+    from sastsimi.config.user_config import load_simple_execution_profile
+
+    service = _service(tmp_path)
+    code = main(
+        [
+            "setup",
+            "--non-interactive",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--auth",
+            "subscription",
+            "--provider",
+            "codex",
+            "--profile",
+            "full",
+            "--format",
+            "json",
+        ],
+        setup_service=service,
+    )
+
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "READY"
+    assert service.config_store.load().max_elapsed_seconds == "unlimited"
+    profile = load_simple_execution_profile(service._profile_path)
+    assert profile.max_elapsed_seconds == "unlimited"
+    assert 'max_elapsed_seconds = "unlimited"' in service._profile_path.read_text()
+
+
+def test_explicit_positive_cumulative_time_is_preserved(tmp_path: Path, capsys) -> None:
+    service = _service(tmp_path)
+    code = main(
+        [
+            "setup",
+            "--non-interactive",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--auth",
+            "subscription",
+            "--provider",
+            "codex",
+            "--profile",
+            "full",
+            "--max-elapsed-seconds",
+            "77",
+            "--format",
+            "json",
+        ],
+        setup_service=service,
+    )
+
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "READY"
+    assert service.config_store.load().max_elapsed_seconds == 77
+
+
 def test_semgrep_setup_opt_in_records_binding(tmp_path: Path, capsys) -> None:
     from sastsimi.config.user_config import load_simple_execution_profile
 

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
 
+from sastsimi.config.user_config import ElapsedLimit
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.observability.agent_activity import (
@@ -60,6 +61,7 @@ class StaticScanAttempt:
     status: Literal["SUCCEEDED", "BLOCKED"]
     raw_ref: StoredDataRef | None
     coverage_ref: StoredDataRef | None
+    request_ref: StoredDataRef | None
     error_code: str | None
 
 
@@ -79,6 +81,8 @@ class SimpleCheckpointStore:
 
     def _initialize(self) -> None:
         with self._connect() as connection:
+            # Serialize additive schema checks and ALTERs across CLI processes.
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS simple_runtime_checkpoints (
@@ -159,6 +163,7 @@ class SimpleCheckpointStore:
                     status TEXT NOT NULL,
                     raw_ref_json TEXT,
                     coverage_ref_json TEXT,
+                    request_ref_json TEXT,
                     error_code TEXT,
                     PRIMARY KEY (
                         analysis_id, workspace_id, commit_id,
@@ -167,6 +172,17 @@ class SimpleCheckpointStore:
                 )
                 """
             )
+            columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(simple_static_scan_attempts)"
+                )
+            }
+            if "request_ref_json" not in columns:
+                connection.execute(
+                    "ALTER TABLE simple_static_scan_attempts "
+                    "ADD COLUMN request_ref_json TEXT"
+                )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS simple_report_drafts (
@@ -374,6 +390,7 @@ class SimpleCheckpointStore:
         raw_ref: StoredDataRef | None,
         coverage_ref: StoredDataRef | None,
         error_code: str | None,
+        request_ref: StoredDataRef | None = None,
     ) -> None:
         if identity.hypothesis_id is not None or not all(
             part.strip() for part in (repository, fingerprint, tool, run_key)
@@ -381,17 +398,21 @@ class SimpleCheckpointStore:
             raise ValueError("STATIC_SCAN_KEY_INVALID")
         raw_json = self._static_ref_json(identity, raw_ref)
         coverage_json = self._static_ref_json(identity, coverage_ref)
+        request_json = self._static_ref_json(identity, request_ref)
         with self._connect() as connection:
             connection.execute(
                 "INSERT INTO simple_static_scan_attempts "
                 "(analysis_id, workspace_id, commit_id, repository, fingerprint, "
-                "tool, run_key, status, raw_ref_json, coverage_ref_json, error_code) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "tool, run_key, status, raw_ref_json, coverage_ref_json, "
+                "error_code, request_ref_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (analysis_id, workspace_id, commit_id, repository, "
                 "fingerprint, tool, run_key) DO UPDATE SET "
                 "status=excluded.status, raw_ref_json=excluded.raw_ref_json, "
                 "coverage_ref_json=excluded.coverage_ref_json, "
-                "error_code=excluded.error_code",
+                "error_code=excluded.error_code, "
+                "request_ref_json=COALESCE(excluded.request_ref_json, "
+                "simple_static_scan_attempts.request_ref_json)",
                 (
                     identity.analysis_id,
                     identity.workspace_id,
@@ -404,6 +425,7 @@ class SimpleCheckpointStore:
                     raw_json,
                     coverage_json,
                     error_code,
+                    request_json,
                 ),
             )
 
@@ -415,7 +437,7 @@ class SimpleCheckpointStore:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT tool, run_key, status, raw_ref_json, coverage_ref_json, "
-                "error_code FROM simple_static_scan_attempts "
+                "error_code, request_ref_json FROM simple_static_scan_attempts "
                 "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
                 "AND repository = ? AND fingerprint = ? ORDER BY tool, run_key",
                 (
@@ -440,11 +462,18 @@ class SimpleCheckpointStore:
                 if row["coverage_ref_json"] is not None
                 else None
             )
+            request_ref = (
+                self._valid_opengrep_batch_ref(identity, row["request_ref_json"])
+                if row["request_ref_json"] is not None
+                else None
+            )
             if (
                 row["raw_ref_json"] is not None
                 and raw_ref is None
                 or row["coverage_ref_json"] is not None
                 and coverage_ref is None
+                or row["request_ref_json"] is not None
+                and request_ref is None
             ):
                 continue
             attempts.append(
@@ -455,6 +484,7 @@ class SimpleCheckpointStore:
                     status=row["status"],
                     raw_ref=raw_ref,
                     coverage_ref=coverage_ref,
+                    request_ref=request_ref,
                     error_code=row["error_code"],
                 )
             )
@@ -477,7 +507,7 @@ class SimpleCheckpointStore:
             rows = connection.execute(
                 "SELECT fingerprint, tool, run_key, status, raw_ref_json, "
                 "coverage_ref_json, "
-                "error_code FROM simple_static_scan_attempts "
+                "error_code, request_ref_json FROM simple_static_scan_attempts "
                 "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
                 "AND repository = ? AND tool = ? AND run_key = ? "
                 "ORDER BY rowid DESC",
@@ -504,11 +534,18 @@ class SimpleCheckpointStore:
                 if row["coverage_ref_json"] is not None
                 else None
             )
+            request_ref = (
+                self._valid_opengrep_batch_ref(identity, row["request_ref_json"])
+                if row["request_ref_json"] is not None
+                else None
+            )
             if (
                 row["raw_ref_json"] is not None
                 and raw_ref is None
                 or row["coverage_ref_json"] is not None
                 and coverage_ref is None
+                or row["request_ref_json"] is not None
+                and request_ref is None
             ):
                 continue
             attempts.append(
@@ -519,6 +556,7 @@ class SimpleCheckpointStore:
                     status=row["status"],
                     raw_ref=raw_ref,
                     coverage_ref=coverage_ref,
+                    request_ref=request_ref,
                     error_code=row["error_code"],
                 )
             )
@@ -730,12 +768,10 @@ class SimpleCheckpointStore:
         return int(row[0])
 
     def reopen_elapsed_budget_failures(
-        self, analysis_id: str, max_elapsed_seconds: int
+        self, analysis_id: str, max_elapsed_seconds: ElapsedLimit
     ) -> int:
         """Reopen elapsed-limit failures only on explicit resume with headroom."""
 
-        if max_elapsed_seconds < 1:
-            raise ValueError("LLM_ELAPSED_BUDGET_INVALID")
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -745,7 +781,10 @@ class SimpleCheckpointStore:
                 (analysis_id,),
             ).fetchone()
             assert elapsed is not None
-            if int(elapsed[0]) >= max_elapsed_seconds * 1000:
+            if (
+                max_elapsed_seconds != "unlimited"
+                and int(elapsed[0]) >= max_elapsed_seconds * 1000
+            ):
                 connection.commit()
                 return 0
             rows = connection.execute(

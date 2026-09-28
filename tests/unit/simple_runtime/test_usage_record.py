@@ -116,6 +116,48 @@ def test_known_usage_ceiling_blocks_next_call(tmp_path: Path) -> None:
     assert failure.code == "LLM_TOKEN_BUDGET_EXHAUSTED"
 
 
+def test_unlimited_elapsed_budget_keeps_cost_ceiling(tmp_path: Path) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-unlimited",
+        workspace_id="workspace-unlimited",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    store = SimpleCheckpointStore(artifacts.paths.database)
+    ref = artifacts.put_json({"kind": "attempt"})
+    store.record_llm_attempt(
+        attempt_id="slow",
+        analysis_id=identity.analysis_id,
+        agent="hypothesis",
+        model="test",
+        attempt_number=1,
+        status="SUCCEEDED",
+        elapsed_ms=3_700_000,
+        input_tokens=1,
+        output_tokens=1,
+        cost_cents=9.0,
+        artifact_ref=ref,
+    )
+    budget = RunUsageBudget(
+        store=store,
+        analysis_id=identity.analysis_id,
+        max_tokens=100,
+        max_cost_minor_units=10,
+        max_elapsed_seconds="unlimited",
+    )
+    assert budget.check() is None
+    limited = RunUsageBudget(
+        store=store,
+        analysis_id=identity.analysis_id,
+        max_tokens=100,
+        max_cost_minor_units=9,
+        max_elapsed_seconds="unlimited",
+    )
+    assert (failure := limited.check()) is not None
+    assert failure.code == "LLM_COST_BUDGET_EXHAUSTED"
+
+
 def test_elapsed_budget_uses_durable_llm_attempt_time_not_analysis_age(
     tmp_path: Path,
 ) -> None:

@@ -61,7 +61,10 @@ class PortableDockerRuntime:
         except KeyError:
             raise ValueError("DOCKER_NOT_CONFIGURED") from None
         self._network = "default" if profile.docker_network == "BRIDGE" else "none"
-        self._timeout = max(30, profile.max_elapsed_seconds)
+        configured_timeout = profile.max_elapsed_seconds
+        self._timeout = max(
+            30, 3600 if configured_timeout == "unlimited" else configured_timeout
+        )
         self._build_slots = asyncio.Semaphore(profile.max_parallel_builds)
         self._container_slots = asyncio.Semaphore(profile.max_parallel_containers)
         self._container_limit = profile.max_parallel_containers

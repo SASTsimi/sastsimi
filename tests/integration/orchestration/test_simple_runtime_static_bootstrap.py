@@ -681,7 +681,7 @@ async def test_opengrep_retry_rejects_stale_output(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("profile_limit", "expected_timeout"),
-    [(3600, 3600), (600, 600)],
+    [(3600, 3600), (600, 600), (7200, 3600)],
 )
 async def test_opengrep_timeout_respects_hour_cap_and_profile(
     tmp_path: Path, profile_limit: int, expected_timeout: int
@@ -946,7 +946,10 @@ class _AdaptiveSemgrepProcess:
 
 
 def _adaptive_semgrep_fixture(
-    tmp_path: Path, process: _AdaptiveSemgrepProcess, count: int = 129
+    tmp_path: Path,
+    process: _AdaptiveSemgrepProcess,
+    count: int = 129,
+    rule_ids: tuple[str, ...] = ("python.sql",),
 ) -> tuple[
     DirectStaticBootstrap,
     SimpleExecutionProfile,
@@ -969,6 +972,7 @@ def _adaptive_semgrep_fixture(
     files = [f"file-{index:03d}.py" for index in range(count)]
     for name in files:
         (workspace / name).write_text("x = 1\n", encoding="utf-8")
+    _write_rules(tmp_path, rule_ids)
     rules = tmp_path / "opengrep" / "rules.yml"
     binding = profile.tools["opengrep"]
     batches = plan_rule_batches(
@@ -1041,6 +1045,217 @@ async def test_adaptive_semgrep_uses_128_target_roots_and_replays_success(
 
 
 @pytest.mark.asyncio
+async def test_semgrep_resume_reuses_proof_after_missing_pair_changes(
+    tmp_path: Path,
+) -> None:
+    process = _AdaptiveSemgrepProcess()
+    fixture = _adaptive_semgrep_fixture(tmp_path, process)
+    first, _refs, first_errors = await _run_adaptive_semgrep(fixture)
+    assert first_errors == []
+    assert finish_coverage(fixture[4], first).verified_count == 129
+    assert len(process.calls) == 2
+
+    bootstrap, profile, identity, batches, coverage, workspace, rules = fixture
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    store = _store(profile)
+    coverage_ref = artifacts.put_json({"kind": "test_coverage_snapshot"})
+    for attempt in store.list_static_scan_attempts(
+        identity, _request(profile).repository, coverage.fingerprint
+    ):
+        store.save_static_scan_attempt(
+            identity,
+            _request(profile).repository,
+            coverage.fingerprint,
+            attempt.tool,
+            attempt.run_key,
+            attempt.status,
+            attempt.raw_ref,
+            coverage_ref,
+            attempt.error_code,
+        )
+    opengrep_proof = CoverageSlice(
+        engine="opengrep",
+        batch_key=batches.batches[0].key,
+        rule_ids=batches.batches[0].rule_ids,
+        verified_pairs=frozenset({("file-000.py", "python.sql")}),
+        gap_reasons=(),
+        parsed={"results": [], "errors": [], "paths": {}},
+        normalized_results=(),
+    )
+    resumed, _refs, errors = await bootstrap._collect_semgrep(
+        workspace,
+        _request(profile),
+        identity,
+        batches,
+        coverage,
+        [opengrep_proof],
+        rules,
+        artifacts,
+    )
+
+    assert errors == []
+    assert len(process.calls) == 2
+    assert finish_coverage(coverage, [opengrep_proof, *resumed]).verified_count == 129
+
+
+@pytest.mark.asyncio
+async def test_semgrep_resume_does_not_credit_corrupt_saved_raw(
+    tmp_path: Path,
+) -> None:
+    process = _AdaptiveSemgrepProcess()
+    fixture = _adaptive_semgrep_fixture(tmp_path, process)
+    await _run_adaptive_semgrep(fixture)
+    bootstrap, profile, identity, batches, coverage, workspace, rules = fixture
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    attempts = _store(profile).list_static_scan_attempts(
+        identity, _request(profile).repository, coverage.fingerprint
+    )
+    first_chunk = next(
+        attempt
+        for attempt in attempts
+        if attempt.raw_ref is not None
+        and len(json.loads(artifacts.read(attempt.raw_ref))["paths"]["scanned"]) == 128
+    )
+    assert first_chunk.raw_ref is not None
+    artifacts.artifacts.path_for(first_chunk.raw_ref.content_hash).write_bytes(
+        b"corrupt"
+    )
+    opengrep_proof = CoverageSlice(
+        engine="opengrep",
+        batch_key=batches.batches[0].key,
+        rule_ids=batches.batches[0].rule_ids,
+        verified_pairs=frozenset({("file-000.py", "python.sql")}),
+        gap_reasons=(),
+        parsed={"results": [], "errors": [], "paths": {}},
+        normalized_results=(),
+    )
+
+    resumed, _refs, errors = await bootstrap._collect_semgrep(
+        workspace,
+        _request(profile),
+        identity,
+        batches,
+        coverage,
+        [opengrep_proof],
+        rules,
+        artifacts,
+    )
+
+    assert errors == []
+    assert len(process.calls) == 3
+    assert process.calls[-1][0] == tuple(
+        f"file-{index:03d}.py" for index in range(1, 128)
+    )
+    assert finish_coverage(coverage, [opengrep_proof, *resumed]).verified_count == 129
+
+
+@pytest.mark.asyncio
+async def test_semgrep_resume_rejects_unbound_valid_raw_ref(tmp_path: Path) -> None:
+    process = _AdaptiveSemgrepProcess()
+    fixture = _adaptive_semgrep_fixture(tmp_path, process)
+    await _run_adaptive_semgrep(fixture)
+    bootstrap, profile, identity, batches, coverage, workspace, rules = fixture
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    store = _store(profile)
+    first_chunk = next(
+        attempt
+        for attempt in store.list_static_scan_attempts(
+            identity, _request(profile).repository, coverage.fingerprint
+        )
+        if attempt.raw_ref is not None
+        and len(json.loads(artifacts.read(attempt.raw_ref))["paths"]["scanned"]) == 128
+    )
+    assert first_chunk.raw_ref is not None
+    assert first_chunk.request_ref is not None
+    alternate_raw = json.dumps(
+        json.loads(artifacts.read(first_chunk.raw_ref)), indent=2
+    ).encode()
+    alternate_ref = artifacts.put_bytes(alternate_raw, "application/json")
+    assert alternate_ref != first_chunk.raw_ref
+    store.save_static_scan_attempt(
+        identity,
+        _request(profile).repository,
+        coverage.fingerprint,
+        first_chunk.tool,
+        first_chunk.run_key,
+        first_chunk.status,
+        alternate_ref,
+        first_chunk.coverage_ref,
+        first_chunk.error_code,
+        first_chunk.request_ref,
+    )
+    opengrep_proof = CoverageSlice(
+        engine="opengrep",
+        batch_key=batches.batches[0].key,
+        rule_ids=batches.batches[0].rule_ids,
+        verified_pairs=frozenset({("file-000.py", "python.sql")}),
+        gap_reasons=(),
+        parsed={"results": [], "errors": [], "paths": {}},
+        normalized_results=(),
+    )
+    resumed, _refs, errors = await bootstrap._collect_semgrep(
+        workspace,
+        _request(profile),
+        identity,
+        batches,
+        coverage,
+        [opengrep_proof],
+        rules,
+        artifacts,
+    )
+    assert errors == []
+    assert len(process.calls) == 3
+    assert finish_coverage(coverage, [opengrep_proof, *resumed]).verified_count == 129
+
+
+@pytest.mark.asyncio
+async def test_semgrep_resume_rejects_mismatched_request_ref(tmp_path: Path) -> None:
+    process = _AdaptiveSemgrepProcess()
+    fixture = _adaptive_semgrep_fixture(tmp_path, process)
+    await _run_adaptive_semgrep(fixture)
+    bootstrap, profile, identity, batches, coverage, workspace, rules = fixture
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    store = _store(profile)
+    first_chunk = next(
+        attempt
+        for attempt in store.list_static_scan_attempts(
+            identity, _request(profile).repository, coverage.fingerprint
+        )
+        if attempt.raw_ref is not None
+        and len(json.loads(artifacts.read(attempt.raw_ref))["paths"]["scanned"]) == 128
+    )
+    assert first_chunk.request_ref is not None
+    descriptor = json.loads(artifacts.read(first_chunk.request_ref))
+    descriptor["rule_ids"] = ["different.rule"]
+    changed_request_ref = artifacts.put_json(descriptor)
+    store.save_static_scan_attempt(
+        identity,
+        _request(profile).repository,
+        coverage.fingerprint,
+        first_chunk.tool,
+        first_chunk.run_key,
+        first_chunk.status,
+        first_chunk.raw_ref,
+        first_chunk.coverage_ref,
+        first_chunk.error_code,
+        changed_request_ref,
+    )
+    resumed, _refs, errors = await bootstrap._collect_semgrep(
+        workspace,
+        _request(profile),
+        identity,
+        batches,
+        coverage,
+        [],
+        rules,
+        artifacts,
+    )
+    assert errors == []
+    assert len(process.calls) == 3
+    assert finish_coverage(coverage, resumed).verified_count == 129
+
+
+@pytest.mark.asyncio
 async def test_adaptive_semgrep_replays_legacy_32_target_success(
     tmp_path: Path,
 ) -> None:
@@ -1074,6 +1289,169 @@ async def test_adaptive_semgrep_replays_legacy_32_target_success(
     assert errors == []
     assert tuple(len(targets) for targets, _ in process.calls) == (65,)
     assert finish_coverage(coverage, slices).verified_count == 97
+
+
+@pytest.mark.asyncio
+async def test_legacy_semgrep_proof_survives_changed_missing_boundaries(
+    tmp_path: Path,
+) -> None:
+    process = _AdaptiveSemgrepProcess()
+    fixture = _adaptive_semgrep_fixture(tmp_path, process, count=97)
+    bootstrap, profile, identity, batches, coverage, workspace, rules = fixture
+    targets = tuple(f"file-{index:03d}.py" for index in range(32))
+    original = batches.batches[0]
+    run_key = hashlib.sha256(
+        canonical_bytes(
+            {"batch": original.key, "rules": original.rule_ids, "targets": targets}
+        )
+    ).hexdigest()
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    raw = json.dumps(
+        {"results": [], "errors": [], "paths": {"scanned": targets, "skipped": []}}
+    ).encode()
+    _store(profile).save_static_scan_attempt(
+        identity,
+        _request(profile).repository,
+        coverage.fingerprint,
+        "semgrep",
+        run_key,
+        "SUCCEEDED",
+        artifacts.put_bytes(raw, "application/json"),
+        None,
+        None,
+    )
+    opengrep_proof = CoverageSlice(
+        engine="opengrep",
+        batch_key=original.key,
+        rule_ids=original.rule_ids,
+        verified_pairs=frozenset({("file-000.py", "python.sql")}),
+        gap_reasons=(),
+        parsed={"results": [], "errors": [], "paths": {}},
+        normalized_results=(),
+    )
+    resumed, _refs, errors = await bootstrap._collect_semgrep(
+        workspace,
+        _request(profile),
+        identity,
+        batches,
+        coverage,
+        [opengrep_proof],
+        rules,
+        artifacts,
+    )
+    assert errors == []
+    assert tuple(len(targets) for targets, _ in process.calls) == (65,)
+    assert finish_coverage(coverage, [opengrep_proof, *resumed]).verified_count == 97
+
+
+@pytest.mark.asyncio
+async def test_legacy_semgrep_proof_recovers_unsorted_rule_selection(
+    tmp_path: Path,
+) -> None:
+    process = _AdaptiveSemgrepProcess()
+    fixture = _adaptive_semgrep_fixture(
+        tmp_path, process, count=2, rule_ids=("z.rule", "a.rule")
+    )
+    bootstrap, profile, identity, batches, coverage, workspace, rules = fixture
+    targets = ("file-000.py", "file-001.py")
+    selected = tuple(sorted(batches.batches[0].rule_ids))
+    run_key = hashlib.sha256(
+        canonical_bytes(
+            {"batch": batches.batches[0].key, "rules": selected, "targets": targets}
+        )
+    ).hexdigest()
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    raw = json.dumps(
+        {"results": [], "errors": [], "paths": {"scanned": targets, "skipped": []}}
+    ).encode()
+    _store(profile).save_static_scan_attempt(
+        identity,
+        _request(profile).repository,
+        coverage.fingerprint,
+        "semgrep",
+        run_key,
+        "SUCCEEDED",
+        artifacts.put_bytes(raw, "application/json"),
+        None,
+        None,
+    )
+    opengrep_proof = CoverageSlice(
+        engine="opengrep",
+        batch_key=batches.batches[0].key,
+        rule_ids=batches.batches[0].rule_ids,
+        verified_pairs=frozenset(
+            {("file-000.py", "z.rule"), ("file-000.py", "a.rule")}
+        ),
+        gap_reasons=(),
+        parsed={"results": [], "errors": [], "paths": {}},
+        normalized_results=(),
+    )
+    slices, _refs, errors = await bootstrap._collect_semgrep(
+        workspace,
+        _request(profile),
+        identity,
+        batches,
+        coverage,
+        [opengrep_proof],
+        rules,
+        artifacts,
+    )
+    assert errors == []
+    assert process.calls == []
+    assert finish_coverage(coverage, [opengrep_proof, *slices]).verified_count == 4
+
+
+@pytest.mark.asyncio
+async def test_legacy_singleton_timeout_proof_survives_changed_chunk(
+    tmp_path: Path,
+) -> None:
+    process = _AdaptiveSemgrepProcess()
+    fixture = _adaptive_semgrep_fixture(tmp_path, process, count=2)
+    bootstrap, profile, identity, batches, coverage, workspace, rules = fixture
+    original = batches.batches[0]
+    run_key = hashlib.sha256(
+        canonical_bytes(
+            {
+                "batch": original.key,
+                "rules": original.rule_ids,
+                "targets": ("file-000.py",),
+                "adaptive": 1,
+                "per_file_timeout_seconds": 30,
+            }
+        )
+    ).hexdigest()
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    raw = json.dumps(
+        {
+            "results": [],
+            "errors": [],
+            "paths": {"scanned": ["file-000.py"], "skipped": []},
+        }
+    ).encode()
+    _store(profile).save_static_scan_attempt(
+        identity,
+        _request(profile).repository,
+        coverage.fingerprint,
+        "semgrep",
+        run_key,
+        "SUCCEEDED",
+        artifacts.put_bytes(raw, "application/json"),
+        None,
+        None,
+    )
+    slices, _refs, errors = await bootstrap._collect_semgrep(
+        workspace,
+        _request(profile),
+        identity,
+        batches,
+        coverage,
+        [],
+        rules,
+        artifacts,
+    )
+    assert errors == []
+    assert tuple(targets for targets, _ in process.calls) == (("file-001.py",),)
+    assert finish_coverage(coverage, slices).verified_count == 2
 
 
 @pytest.mark.asyncio
@@ -1460,6 +1838,43 @@ def _enable_semgrep_fallback(profile: SimpleExecutionProfile) -> SimpleExecution
     )
 
 
+def test_prior_fallback_fingerprints_do_not_rescan_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _enable_semgrep_fallback(_profile(tmp_path))
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=_Process(),
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("db.execute(user)\n", encoding="utf-8")
+    binding = profile.tools["opengrep"]
+    rule_plan = plan_rule_batches(
+        (tmp_path / "opengrep" / "rules.yml").read_bytes(),
+        tool_version=binding.version,
+        executable_sha256=binding.executable_sha256,
+    )
+    original_resolve = Path.resolve
+    root_resolutions = 0
+
+    def counting_resolve(self: Path, strict: bool = False) -> Path:
+        nonlocal root_resolutions
+        if self == workspace:
+            root_resolutions += 1
+        return original_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", counting_resolve)
+    old_fingerprints = bootstrap._prior_fallback_coverage_fingerprints(
+        workspace, ["app.py"], "a" * 40, rule_plan
+    )
+
+    assert len(old_fingerprints) == 2
+    assert root_resolutions == 0
+
+
 @pytest.mark.asyncio
 async def test_semgrep_opt_in_caps_each_opengrep_batch_before_fallback(
     tmp_path: Path,
@@ -1522,7 +1937,10 @@ async def test_missing_semgrep_keeps_full_opengrep_batch_deadline(
         update={"executable_path": tmp_path / "missing-semgrep"}
     )
     profile = profile.model_copy(
-        update={"tools": {**profile.tools, "semgrep": missing_semgrep}}
+        update={
+            "max_elapsed_seconds": 7200,
+            "tools": {**profile.tools, "semgrep": missing_semgrep},
+        }
     )
     bootstrap = DirectStaticBootstrap(
         profile=profile,
@@ -1533,6 +1951,7 @@ async def test_missing_semgrep_keeps_full_opengrep_batch_deadline(
     await bootstrap.run(_request(profile), _identity("missing-semgrep-deadline"))
     assert process.opengrep_timeouts
     assert process.opengrep_timeouts[0] > 120
+    assert process.opengrep_timeouts[0] <= 3600
 
 
 @pytest.mark.asyncio
@@ -2586,10 +3005,11 @@ async def test_cached_semgrep_coverage_requires_same_executable(
 
 
 @pytest.mark.asyncio
-async def test_semgrep_fallback_chunks_share_one_elapsed_deadline(
+async def test_semgrep_fallback_chunks_continue_past_aggregate_elapsed_time(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     clock = [100.0]
+    call_timeouts: list[int] = []
 
     class AdvancingFallback(_CoverageProcess):
         async def run(
@@ -2601,8 +3021,9 @@ async def test_semgrep_fallback_chunks_share_one_elapsed_deadline(
         ) -> ProcessResult:
             if argv[1] == "scan" and "--metrics=off" in argv:
                 self.fallback_calls.append(tuple(argv))
+                call_timeouts.append(timeout_seconds)
                 targets = [arg for arg in argv if arg.startswith("file-")]
-                clock[0] += 2
+                clock[0] += 3601
                 Path(argv[argv.index("--output") + 1]).write_bytes(
                     json.dumps(
                         {
@@ -2619,7 +3040,7 @@ async def test_semgrep_fallback_chunks_share_one_elapsed_deadline(
     bootstrap, profile, _ = _coverage_bootstrap(
         tmp_path, process, semgrep=True, codeql=False
     )
-    profile = profile.model_copy(update={"max_elapsed_seconds": 1})
+    profile = profile.model_copy(update={"max_elapsed_seconds": "unlimited"})
     bootstrap = DirectStaticBootstrap(
         profile=profile,
         process=process,
@@ -2653,12 +3074,11 @@ async def test_semgrep_fallback_chunks_share_one_elapsed_deadline(
         rules,
         SimpleArtifactRepository(profile.data_dir, identity),
     )
-    assert len(process.fallback_calls) == 1
+    assert len(process.fallback_calls) == 2
     assert len(slices) == 2
-    assert slices[1].gap_reasons == (
-        ("file-128.py", "python.sql", "EXTERNAL_TOOL_TIMEOUT"),
-    )
-    assert errors == ["EXTERNAL_TOOL_TIMEOUT"]
+    assert len(slices[1].verified_pairs) == 1
+    assert errors == []
+    assert call_timeouts == [120, 120]
 
 
 @pytest.mark.asyncio

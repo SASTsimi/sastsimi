@@ -112,10 +112,9 @@ class StaticCoverageReport:
         }
 
 
-def _safe_relative(workspace: Path, raw: str) -> str | None:
+def _safe_relative_from_root(root: Path, raw: str) -> str | None:
     if not raw or "\x00" in raw:
         return None
-    root = workspace.resolve()
     supplied = Path(raw)
     candidate = supplied if supplied.is_absolute() else root / supplied
     try:
@@ -128,6 +127,32 @@ def _safe_relative(workspace: Path, raw: str) -> str | None:
     except (OSError, RuntimeError, ValueError):
         return None
     return relative.as_posix()
+
+
+def static_coverage_fingerprint(
+    tracked: Sequence[str],
+    commit_id: str,
+    rules: RuleBatchPlan,
+    *,
+    fallback_tool_fingerprint: str | None = None,
+) -> str:
+    """Hash the coverage identity without rechecking the pinned checkout."""
+
+    return hashlib.sha256(
+        canonical_bytes(
+            {
+                "version": _POLICY_VERSION,
+                "commit_id": commit_id,
+                "tracked": sorted(set(tracked)),
+                "rules_fingerprint": rules.fingerprint,
+                "fallback_tool_fingerprint": fallback_tool_fingerprint,
+                "language_extensions": {
+                    key: sorted(value)
+                    for key, value in sorted(_LANGUAGE_EXTENSIONS.items())
+                },
+            }
+        )
+    ).hexdigest()
 
 
 def plan_static_coverage(
@@ -153,6 +178,7 @@ def plan_static_coverage(
     excluded: set[str] = set()
     unsupported: Counter[str] = Counter()
     known = frozenset().union(*_LANGUAGE_EXTENSIONS.values())
+    root = workspace.resolve()
     for raw in sorted(set(tracked)):
         if (
             not raw
@@ -163,7 +189,7 @@ def plan_static_coverage(
             or Path(raw).is_absolute()
         ):
             raise ValueError("STATIC_COVERAGE_TRACKED_PATH_INVALID")
-        relative = _safe_relative(workspace, raw)
+        relative = _safe_relative_from_root(root, raw)
         if relative is None:
             excluded.add(raw)
             relative = raw
@@ -185,23 +211,14 @@ def plan_static_coverage(
                 matched = True
         if not matched and extension in _KNOWN_SOURCE_EXTENSIONS | known:
             unsupported[extension] += 1
-    fingerprint = hashlib.sha256(
-        canonical_bytes(
-            {
-                "version": _POLICY_VERSION,
-                "commit_id": commit_id,
-                "tracked": sorted(set(tracked)),
-                "rules_fingerprint": rules.fingerprint,
-                "fallback_tool_fingerprint": fallback_tool_fingerprint,
-                "language_extensions": {
-                    key: sorted(value)
-                    for key, value in sorted(_LANGUAGE_EXTENSIONS.items())
-                },
-            }
-        )
-    ).hexdigest()
+    fingerprint = static_coverage_fingerprint(
+        tracked,
+        commit_id,
+        rules,
+        fallback_tool_fingerprint=fallback_tool_fingerprint,
+    )
     return StaticCoveragePlan(
-        workspace=workspace.resolve(),
+        workspace=root,
         fingerprint=fingerprint,
         expected_pairs=frozenset(pairs),
         unavailable_pairs=frozenset(unavailable_pairs),
@@ -210,7 +227,7 @@ def plan_static_coverage(
     )
 
 
-def _paths(value: object, workspace: Path) -> set[str]:
+def _paths(value: object, root: Path) -> set[str]:
     if not isinstance(value, list):
         raise ValueError("STATIC_SCAN_PATHS_INVALID")
     paths: set[str] = set()
@@ -218,7 +235,7 @@ def _paths(value: object, workspace: Path) -> set[str]:
         raw = item.get("path") if isinstance(item, dict) else item
         if not isinstance(raw, str):
             raise ValueError("STATIC_SCAN_PATHS_INVALID")
-        path = _safe_relative(workspace, raw)
+        path = _safe_relative_from_root(root, raw)
         if path is None:
             raise ValueError("STATIC_SCAN_PATHS_INVALID")
         paths.add(path)
@@ -242,13 +259,23 @@ def assess_scan(
     scanned = _paths(paths.get("scanned"), plan.workspace)
     skipped = _paths(paths.get("skipped", []), plan.workspace)
     target_set = _paths(list(targets), plan.workspace) if targets is not None else None
-    allowed = {
-        pair
-        for pair in plan.expected_pairs
-        if pair not in plan.unavailable_pairs
-        and pair[1] in batch.rule_ids
-        and (target_set is None or pair[0] in target_set)
-    }
+    if target_set is None:
+        allowed = {
+            pair
+            for pair in plan.expected_pairs
+            if pair not in plan.unavailable_pairs and pair[1] in batch.rule_ids
+        }
+    else:
+        # A fallback node names at most a small target chunk. Probe only those
+        # file/rule combinations rather than walking the entire repository plan
+        # again for every retry and replayed artifact.
+        allowed = {
+            (path, rule_id)
+            for path in target_set
+            for rule_id in batch.rule_ids
+            if (path, rule_id) in plan.expected_pairs
+            and (path, rule_id) not in plan.unavailable_pairs
+        }
     reasons: dict[Pair, str] = {}
     errors = parsed.get("errors", [])
     assert isinstance(errors, list)
@@ -256,7 +283,7 @@ def assess_scan(
         error = cast(dict[str, object], raw_error)
         path_value = error.get("path")
         path = (
-            _safe_relative(plan.workspace, path_value)
+            _safe_relative_from_root(plan.workspace, path_value)
             if isinstance(path_value, str)
             else None
         )
@@ -291,7 +318,7 @@ def assess_scan(
     for result in cast(list[dict[str, object]], parsed["results"]):
         path_value = result["path"]
         relative = (
-            _safe_relative(plan.workspace, path_value)
+            _safe_relative_from_root(plan.workspace, path_value)
             if isinstance(path_value, str)
             else None
         )

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Literal, Protocol
 from uuid import uuid4
 
+from sastsimi.config.user_config import ElapsedLimit
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
@@ -103,7 +104,7 @@ class SimpleAnalysisApplication:
         llm_provider: str | None = None,
         on_demand_possible: bool = False,
         max_parallel_hypotheses: int = 1,
-        max_elapsed_seconds: int | None = None,
+        max_elapsed_seconds: ElapsedLimit | None = None,
     ) -> None:
         if not 1 <= max_parallel_hypotheses <= 32:
             raise ValueError("PARALLEL_HYPOTHESIS_LIMIT_INVALID")

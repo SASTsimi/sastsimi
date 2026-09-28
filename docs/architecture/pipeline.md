@@ -41,6 +41,18 @@
 공개 GitHub 정책 수집은 분석 시작 시 한 번 수행하고 같은 분석의 Scope Gate가 저장된
 snapshot을 공유합니다. `resume`은 외부 정책을 다시 조회하지 않습니다.
 
+새 분석의 시간 설정 기본값은 `unlimited`입니다. 유한한 숫자를 설정하면 기록된
+LLM 호출시간 누적과 OpenGrep·Semgrep 각 단계의 종료 시각에 적용되며, 하나의
+전체 분석 wall-clock 타이머는 아닙니다. 개별 LLM·정적 검사·Docker 호출은
+별도의 유한한 timeout과 재시도 한도를 유지합니다.
+기존 설정의 양의 정수 시간 제한도 그대로 유효합니다. 정적 검사는 저장된 원문과
+커밋·규칙·도구 지문을 다시 검증해 파일/규칙별 성공 증거만 재사용합니다. 선택형
+Semgrep fallback은 빠진 조합의 파일만 재검사하지만, OpenGrep의 미완료 묶음은
+저장소 전체를 다시 스캔할 수 있습니다. 구문 오류나 시간 초과로 증거를 얻지 못한
+조합이 남으면 정확한 목록을
+기록하고 `BLOCKED`로 남깁니다. 다른 엔진의 결과를 근거 없이 대신 사용하거나
+`COMPLETE`로 올리지 않습니다.
+
 최종 `FALSE`는 `VERIFICATION_FINAL_DONE`에서 끝납니다. `HOLD`는 Primitive와
 Chaining에는 사용할 수 있지만 CWE, 두 Gate, Finding과 보고서로 진행하지 않습니다.
 `TRUE`는 실행에 성공한 validated PoC가 있어야 뒤 단계로 진행합니다.

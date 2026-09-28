@@ -60,6 +60,20 @@ def _exact_commit(value: str) -> str:
     return value
 
 
+def _elapsed_limit(value: str) -> int | str:
+    if value == "unlimited":
+        return value
+    try:
+        seconds = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "positive seconds or unlimited required"
+        ) from error
+    if seconds < 1:
+        raise argparse.ArgumentTypeError("positive seconds or unlimited required")
+    return seconds
+
+
 def _normalize_public_argv(argv: list[str] | None) -> list[str] | None:
     """Translate compact report syntax while preserving legacy subcommands."""
 
@@ -184,7 +198,9 @@ def main(
     )
     setup_parser.add_argument("--max-cost-minor-units", type=int, default=100_000)
     setup_parser.add_argument("--max-tokens", type=int, default=1_000_000)
-    setup_parser.add_argument("--max-elapsed-seconds", type=int, default=3_600)
+    setup_parser.add_argument(
+        "--max-elapsed-seconds", type=_elapsed_limit, default="unlimited"
+    )
     setup_parser.add_argument("--format", choices=["text", "json"])
     subparsers.add_parser(
         "cursor-models",

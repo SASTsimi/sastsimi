@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from sastsimi.simple_runtime import static_coverage as coverage_module
 from sastsimi.simple_runtime.opengrep_rule_batches import (
     RuleBatchPlan,
     plan_rule_batches,
@@ -91,6 +94,55 @@ def test_zero_hit_scanned_file_is_verified(tmp_path: Path) -> None:
     assert report.expected_count == 3
     assert report.verified_count == 2
     assert _gaps(report) == {("helper.py", "rule.py")}
+
+
+def test_targeted_scan_uses_pair_membership_without_walking_whole_plan(
+    tmp_path: Path,
+) -> None:
+    plan, rules = _plan(tmp_path)
+
+    class MembershipOnlyPairs(frozenset[tuple[str, str]]):
+        def __iter__(self) -> Iterator[tuple[str, str]]:
+            raise AssertionError("targeted scan iterated every expected pair")
+
+    targeted = replace(plan, expected_pairs=MembershipOnlyPairs(plan.expected_pairs))
+    slice_ = assess_scan(
+        targeted,
+        rules.batches[0],
+        _raw(scanned=["app.ts"]),
+        engine="semgrep",
+        targets=["app.ts"],
+    )
+
+    assert slice_.verified_pairs == frozenset({("app.ts", "rule.js")})
+
+
+def test_coverage_plan_resolves_workspace_root_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tracked = [f"file-{index}.ts" for index in range(4)]
+    for path in tracked:
+        (tmp_path / path).write_text("foo()\n", encoding="utf-8")
+    rules = plan_rule_batches(
+        _rules(),
+        tool_version="1.30.0",
+        executable_sha256="a" * 64,
+        batch_size=1,
+    )
+    original_resolve = Path.resolve
+    root_resolutions = 0
+
+    def counting_resolve(self: Path, strict: bool = False) -> Path:
+        nonlocal root_resolutions
+        if self == tmp_path:
+            root_resolutions += 1
+        return original_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", counting_resolve)
+    plan = plan_static_coverage(tmp_path, tracked, "b" * 40, rules)
+
+    assert len(plan.expected_pairs) == 4
+    assert root_resolutions <= 2
 
 
 def test_absolute_scanner_paths_are_normalized_on_all_platforms(tmp_path: Path) -> None:
@@ -361,3 +413,29 @@ def test_fingerprint_changes_with_tracked_files_and_rules(tmp_path: Path) -> Non
         tmp_path, ["app.ts", "other.js", "helper.py", "main.go"], "c" * 40, rules
     )
     assert len({first.fingerprint, second.fingerprint, third.fingerprint}) == 3
+
+
+def test_pure_coverage_fingerprint_preserves_saved_plan_identity(
+    tmp_path: Path,
+) -> None:
+    plan, rules = _plan(tmp_path)
+    tracked = ["app.ts", "other.js", "helper.py", "main.go"]
+    with_fallback = plan_static_coverage(
+        tmp_path,
+        tracked,
+        "b" * 40,
+        rules,
+        fallback_tool_fingerprint="tool-binding-v1",
+    )
+
+    assert (
+        coverage_module.static_coverage_fingerprint(
+            tracked,
+            "b" * 40,
+            rules,
+            fallback_tool_fingerprint="tool-binding-v1",
+        )
+        == with_fallback.fingerprint
+        == "f8c82a06fc6faa5b864c15dc867938125d6e8798e76265d2320c09e6cda9d785"
+    )
+    assert plan.fingerprint != with_fallback.fingerprint

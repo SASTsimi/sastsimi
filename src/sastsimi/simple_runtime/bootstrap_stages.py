@@ -10,10 +10,15 @@ import time
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from itertools import combinations
 from pathlib import Path
 from typing import Protocol
 
-from sastsimi.config.user_config import SimpleExecutionProfile, SimpleToolBinding
+from sastsimi.config.user_config import (
+    SimpleExecutionProfile,
+    SimpleToolBinding,
+    finite_call_timeout,
+)
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 
@@ -35,7 +40,9 @@ from .opengrep_rule_batches import (
 from .provider import SimpleLLMCallResult, SimpleLLMClient
 from .semgrep_fallback import (
     SemgrepFallbackError,
+    _verified_target,
     build_semgrep_argv,
+    build_semgrep_argv_prefix,
     require_semgrep_tool,
     run_semgrep_fallback,
 )
@@ -52,6 +59,7 @@ from .static_coverage import (
     finish_coverage,
     merge_static_candidates,
     plan_static_coverage,
+    static_coverage_fingerprint,
 )
 from .store import SimpleCheckpointStore
 from .survey import HypothesisSurvey
@@ -479,6 +487,7 @@ class DirectStaticBootstrap:
     ) -> frozenset[str]:
         """Allow only prior opt-out profiles with unchanged source/rules/tools."""
 
+        del workspace  # The active plan already checked tracked-path eligibility.
         if not self._profile.semgrep_fallback:
             return frozenset()
         codeql = self._profile.tools.get("codeql")
@@ -507,13 +516,12 @@ class DirectStaticBootstrap:
                 canonical_bytes({"semgrep_enabled": False, "bindings": bindings})
             ).hexdigest()
             fingerprints.add(
-                plan_static_coverage(
-                    workspace,
+                static_coverage_fingerprint(
                     tracked,
                     commit_id,
                     rule_plan,
                     fallback_tool_fingerprint=fallback_fingerprint,
-                ).fingerprint
+                )
             )
         return frozenset(fingerprints)
 
@@ -624,7 +632,7 @@ class DirectStaticBootstrap:
                 request.repository,
                 str(workspace),
             ),
-            timeout_seconds=min(self._profile.max_elapsed_seconds, 900),
+            timeout_seconds=finite_call_timeout(self._profile.max_elapsed_seconds, 900),
         )
         if clone.returncode != 0:
             raise RuntimeError("GIT_CLONE_FAILED")
@@ -794,7 +802,11 @@ class DirectStaticBootstrap:
         )
         output_root.mkdir(parents=True, exist_ok=True)
         artifacts = SimpleArtifactRepository(request.data_dir, identity)
-        deadline = time.monotonic() + min(self._profile.max_elapsed_seconds, 3600)
+        deadline = (
+            time.monotonic() + self._profile.max_elapsed_seconds
+            if self._profile.max_elapsed_seconds != "unlimited"
+            else None
+        )
         accepted: list[tuple[RuleBatch, StoredDataRef, dict[str, object]]] = []
         for batch in plan.batches:
             previous = self._store.opengrep_batch_ref(
@@ -809,7 +821,11 @@ class DirectStaticBootstrap:
                 else:
                     accepted.append((batch, previous, parsed))
                     continue
-            remaining = int(deadline - time.monotonic())
+            remaining = (
+                min(int(deadline - time.monotonic()), 3600)
+                if deadline is not None
+                else 3600
+            )
             if remaining < 1:
                 raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
             self._require_opengrep_tool(binding)
@@ -881,7 +897,11 @@ class DirectStaticBootstrap:
             request.data_dir / "process-output" / "simple-static" / identity.analysis_id
         )
         output_root.mkdir(parents=True, exist_ok=True)
-        deadline = time.monotonic() + min(self._profile.max_elapsed_seconds, 3600)
+        deadline = (
+            time.monotonic() + self._profile.max_elapsed_seconds
+            if self._profile.max_elapsed_seconds != "unlimited"
+            else None
+        )
         slices: list[CoverageSlice] = []
         refs: list[StoredDataRef] = []
         errors: list[str] = []
@@ -1039,7 +1059,11 @@ class DirectStaticBootstrap:
                         "OPENGREP_PARTIAL_SCAN",
                     )
                     continue
-            remaining = int(deadline - time.monotonic())
+            remaining = (
+                min(int(deadline - time.monotonic()), 3600)
+                if deadline is not None
+                else 3600
+            )
             if remaining < 1:
                 code = "EXTERNAL_TOOL_TIMEOUT"
                 errors.append(code)
@@ -1346,7 +1370,11 @@ class DirectStaticBootstrap:
             request.data_dir / "process-output" / "simple-static" / identity.analysis_id
         )
         output_dir.mkdir(parents=True, exist_ok=True)
-        deadline = time.monotonic() + min(self._profile.max_elapsed_seconds, 3600)
+        deadline = (
+            time.monotonic() + self._profile.max_elapsed_seconds
+            if self._profile.max_elapsed_seconds != "unlimited"
+            else None
+        )
         attempts = {
             item.run_key: item
             for item in self._store.list_static_scan_attempts(
@@ -1422,8 +1450,46 @@ class DirectStaticBootstrap:
             errors.append(code)
 
         def replay(
-            batch: RuleBatch, targets: tuple[str, ...], ref: StoredDataRef
+            batch: RuleBatch,
+            targets: tuple[str, ...],
+            ref: StoredDataRef,
+            request_ref: StoredDataRef | None,
         ) -> CoverageSlice | None:
+            if request_ref is not None:
+                try:
+                    request_data = json.loads(artifacts.read(request_ref))
+                except (OSError, ValueError):
+                    artifacts.quarantine_corrupt(request_ref)
+                    return None
+                if not isinstance(request_data, dict):
+                    return None
+                raw_rules = request_data.get("rule_ids")
+                raw_targets = request_data.get("targets")
+                timeout = request_data.get("per_file_timeout_seconds")
+                source_key = request_data.get("batch_key")
+                source_batch = (
+                    batches_by_key.get(source_key)
+                    if isinstance(source_key, str)
+                    else None
+                )
+                if (
+                    request_data.get("kind") != "semgrep_scan_request_v1"
+                    or request_data.get("raw_content_hash") != ref.content_hash
+                    or not isinstance(raw_rules, list)
+                    or tuple(raw_rules) != batch.rule_ids
+                    or not isinstance(raw_targets, list)
+                    or tuple(raw_targets) != targets
+                    or (timeout is not None and timeout != 30)
+                    or source_batch is None
+                    or make_batch(
+                        source_batch,
+                        batch.rule_ids,
+                        targets,
+                        per_file_timeout_seconds=timeout,
+                    ).key
+                    != batch.key
+                ):
+                    return None
             try:
                 raw = artifacts.read(ref)
             except (OSError, ValueError):
@@ -1439,10 +1505,125 @@ class DirectStaticBootstrap:
             except ValueError:
                 return None
 
+        # A saved successful chunk remains proof even when a later OpenGrep
+        # result changes the missing set and therefore the Semgrep chunk keys.
+        # The request artifact binds the raw output to its exact rule selection.
+        replayed_verified: set[tuple[str, str]] = set()
+        batches_by_key = {batch.key: batch for batch in rule_plan.batches}
+        for attempt in attempts.values():
+            if attempt.raw_ref is None or attempt.error_code not in {
+                None,
+                "SEMGREP_PARTIAL_SCAN",
+            }:
+                continue
+            if attempt.request_ref is None:
+                # Old successful rows have no request descriptor. Only an exact
+                # run-key match reconstructed from every scanned path and a
+                # complete reassessment can prove their original selection.
+                if attempt.status != "SUCCEEDED":
+                    continue
+                try:
+                    legacy_raw = json.loads(artifacts.read(attempt.raw_ref))
+                    raw_paths = legacy_raw["paths"]["scanned"]
+                    if not isinstance(raw_paths, list) or not raw_paths:
+                        continue
+                    if not all(isinstance(path, str) for path in raw_paths):
+                        continue
+                    normalized = tuple(
+                        sorted(_verified_target(workspace, path) for path in raw_paths)
+                    )
+                except (OSError, ValueError, RuntimeError, TypeError, KeyError):
+                    continue
+                if len(normalized) != len(set(normalized)):
+                    continue
+                for original in rule_plan.batches:
+                    for count in range(1, len(original.rule_ids) + 1):
+                        for combination in combinations(original.rule_ids, count):
+                            selected = tuple(sorted(combination))
+                            for legacy in (True, False):
+                                for timeout in (None, 30):
+                                    candidate = make_batch(
+                                        original,
+                                        selected,
+                                        normalized,
+                                        legacy=legacy,
+                                        per_file_timeout_seconds=timeout,
+                                    )
+                                    if candidate.key != attempt.run_key:
+                                        continue
+                                    cached = replay(
+                                        candidate, normalized, attempt.raw_ref, None
+                                    )
+                                    expected = expected_for(normalized, selected)
+                                    if cached is not None and expected.issubset(
+                                        cached.verified_pairs
+                                    ):
+                                        slices.append(cached)
+                                        refs.append(attempt.raw_ref)
+                                        replayed_verified.update(cached.verified_pairs)
+                continue
+            try:
+                descriptor = json.loads(artifacts.read(attempt.request_ref))
+            except (OSError, ValueError):
+                artifacts.quarantine_corrupt(attempt.request_ref)
+                continue
+            if (
+                not isinstance(descriptor, dict)
+                or descriptor.get("kind") != "semgrep_scan_request_v1"
+                or descriptor.get("raw_content_hash") != attempt.raw_ref.content_hash
+            ):
+                continue
+            descriptor_batch_key = descriptor.get("batch_key")
+            candidate_original = (
+                batches_by_key.get(descriptor_batch_key)
+                if isinstance(descriptor_batch_key, str)
+                else None
+            )
+            raw_rules = descriptor.get("rule_ids")
+            raw_targets = descriptor.get("targets")
+            timeout = descriptor.get("per_file_timeout_seconds")
+            if (
+                candidate_original is None
+                or not isinstance(raw_rules, list)
+                or not raw_rules
+                or not all(isinstance(rule, str) for rule in raw_rules)
+                or not isinstance(raw_targets, list)
+                or not raw_targets
+                or not all(isinstance(path, str) for path in raw_targets)
+                or (timeout is not None and timeout != 30)
+            ):
+                continue
+            selected = tuple(raw_rules)
+            targets = tuple(raw_targets)
+            if (
+                len(selected) != len(set(selected))
+                or not set(selected) <= set(candidate_original.rule_ids)
+                or targets != tuple(sorted(set(targets)))
+                or not expected_for(targets, selected)
+            ):
+                continue
+            batch = make_batch(
+                candidate_original,
+                selected,
+                targets,
+                per_file_timeout_seconds=timeout,
+            )
+            if batch.key != attempt.run_key:
+                continue
+            cached = replay(batch, targets, attempt.raw_ref, attempt.request_ref)
+            if cached is None:
+                continue
+            slices.append(cached)
+            refs.append(attempt.raw_ref)
+            replayed_verified.update(cached.verified_pairs)
+
         for original in rule_plan.batches:
             by_path: dict[str, set[str]] = defaultdict(set)
             for gap in missing:
-                if gap.rule_id in original.rule_ids:
+                if (
+                    gap.rule_id in original.rule_ids
+                    and (gap.path, gap.rule_id) not in replayed_verified
+                ):
                     by_path[gap.path].add(gap.rule_id)
             grouped: dict[tuple[str, ...], list[str]] = defaultdict(list)
             for path, rule_ids in sorted(by_path.items()):
@@ -1459,43 +1640,26 @@ class DirectStaticBootstrap:
                         or previous.raw_ref is None
                     ):
                         continue
-                    cached = replay(batch, targets, previous.raw_ref)
+                    cached = replay(
+                        batch, targets, previous.raw_ref, previous.request_ref
+                    )
                     expected = expected_for(targets, selected)
                     if cached is not None and expected.issubset(cached.verified_pairs):
                         slices.append(cached)
                         refs.append(previous.raw_ref)
                         legacy_verified.update(expected)
 
+                already_verified = replayed_verified | legacy_verified
                 stable_targets = tuple(
                     path
                     for path in all_targets
                     if any(
-                        (path, rule_id) not in legacy_verified for rule_id in selected
+                        (path, rule_id) not in already_verified for rule_id in selected
                     )
                 )
                 if not stable_targets:
                     continue
                 placeholder = output_dir / f"semgrep-{'0' * 32}.json"
-
-                def command_for(
-                    chunk: tuple[str, ...],
-                    chosen: tuple[str, ...] = selected,
-                    target_output: Path = placeholder,
-                ) -> tuple[str, ...]:
-                    return build_semgrep_argv(
-                        binding,
-                        workspace,
-                        rules,
-                        chunk,
-                        tuple(
-                            rule_id
-                            for rule_id in rule_plan.rule_ids
-                            if rule_id not in chosen
-                        ),
-                        target_output,
-                        None,
-                        targets_verified=True,
-                    )
 
                 def planning_gap(
                     failed_targets: tuple[str, ...],
@@ -1524,6 +1688,27 @@ class DirectStaticBootstrap:
                     )
 
                 try:
+                    command_prefix = build_semgrep_argv_prefix(
+                        binding,
+                        rules,
+                        tuple(
+                            rule_id
+                            for rule_id in rule_plan.rule_ids
+                            if rule_id not in selected
+                        ),
+                        placeholder,
+                        None,
+                    )
+                except (OSError, RuntimeError, ValueError) as error:
+                    planning_gap(stable_targets, error)
+                    continue
+
+                def command_for(
+                    chunk: tuple[str, ...], prefix: tuple[str, ...] = command_prefix
+                ) -> tuple[str, ...]:
+                    return (*prefix, *chunk)
+
+                try:
                     roots = plan_semgrep_target_chunks(stable_targets, command_for)
                 except (OSError, RuntimeError, ValueError) as error:
                     if (
@@ -1547,7 +1732,7 @@ class DirectStaticBootstrap:
                     except (OSError, RuntimeError, ValueError) as group_error:
                         planning_gap(tuple(feasible), group_error)
                         continue
-                verified = set(legacy_verified)
+                verified = set(already_verified)
                 node_budget = 3 * len(stable_targets) + len(roots)
 
                 async def run_node(
@@ -1573,7 +1758,19 @@ class DirectStaticBootstrap:
                         record_unproved(batch, pending, "SEMGREP_RETRY_BUDGET_EXCEEDED")
                         return
                     node_budget -= 1
-                    remaining = int(deadline - time.monotonic())
+                    request_data = {
+                        "kind": "semgrep_scan_request_v1",
+                        "batch_key": _original.key,
+                        "rule_ids": list(rule_ids),
+                        "targets": list(targets),
+                        "per_file_timeout_seconds": 30 if retry_timeout else None,
+                    }
+                    request_ref = artifacts.put_json(request_data)
+                    remaining = (
+                        int(deadline - time.monotonic())
+                        if deadline is not None
+                        else _SEMGREP_NODE_TIMEOUT_SECONDS
+                    )
                     if remaining < 1:
                         record_unproved(batch, pending, "EXTERNAL_TOOL_TIMEOUT")
                         return
@@ -1587,7 +1784,9 @@ class DirectStaticBootstrap:
                         and previous.raw_ref is not None
                         and previous.error_code in {None, "SEMGREP_PARTIAL_SCAN"}
                     ):
-                        cached = replay(batch, targets, previous.raw_ref)
+                        cached = replay(
+                            batch, targets, previous.raw_ref, previous.request_ref
+                        )
                     if cached is not None:
                         assert previous is not None and previous.raw_ref is not None
                         current_slice = cached
@@ -1597,8 +1796,9 @@ class DirectStaticBootstrap:
                         code = previous.error_code
                     else:
                         # A failed attempt is not proof about this file/rule pair.
-                        # Explicit resume may retry it; the per-run node budget and
-                        # shared deadline still bound repeated tool failures.
+                        # Explicit resume may retry it; the per-run node budget
+                        # and finite call timeouts still
+                        # bound repeated failures without a global deadline.
                         if previous is not None and previous.raw_ref is not None:
                             refs.append(previous.raw_ref)
                         try:
@@ -1645,6 +1845,7 @@ class DirectStaticBootstrap:
                                     None,
                                     None,
                                     code,
+                                    request_ref,
                                 )
                             return
                         raw_ref: StoredDataRef | None = None
@@ -1693,6 +1894,13 @@ class DirectStaticBootstrap:
                             code = self._safe_static_error(
                                 error, "SEMGREP_RESULT_INVALID"
                             )
+                        if raw_ref is not None:
+                            request_ref = artifacts.put_json(
+                                {
+                                    **request_data,
+                                    "raw_content_hash": raw_ref.content_hash,
+                                }
+                            )
                         self._store.save_static_scan_attempt(
                             identity,
                             request.repository,
@@ -1703,6 +1911,7 @@ class DirectStaticBootstrap:
                             raw_ref,
                             None,
                             code,
+                            request_ref,
                         )
 
                     pending = expected_for(targets, rule_ids) - _verified
@@ -1841,7 +2050,9 @@ class DirectStaticBootstrap:
                     "--threads=2",
                 ),
                 cwd=workspace,
-                timeout_seconds=min(self._profile.max_elapsed_seconds, 1800),
+                timeout_seconds=finite_call_timeout(
+                    self._profile.max_elapsed_seconds, 1800
+                ),
             )
             if created.returncode != 0:
                 raise RuntimeError("CODEQL_DATABASE_CREATE_FAILED")
@@ -1858,7 +2069,9 @@ class DirectStaticBootstrap:
                 "--threads=2",
             ),
             cwd=workspace,
-            timeout_seconds=min(self._profile.max_elapsed_seconds, 1800),
+            timeout_seconds=finite_call_timeout(
+                self._profile.max_elapsed_seconds, 1800
+            ),
         )
         if analyzed.returncode != 0 or not output.is_file():
             raise RuntimeError("CODEQL_ANALYZE_FAILED")

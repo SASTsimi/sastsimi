@@ -86,6 +86,32 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, SimpleToolBinding]:
     return workspace, rules, binding
 
 
+def test_precomputed_command_prefix_matches_exact_targeted_argv(
+    tmp_path: Path,
+) -> None:
+    workspace, rules, binding = _fixture(tmp_path)
+    output = tmp_path / "output.json"
+    prefix = semgrep_module.build_semgrep_argv_prefix(
+        binding,
+        rules,
+        ("skip.rule",),
+        output,
+        30,
+    )
+    command = semgrep_module.build_semgrep_argv(
+        binding,
+        workspace,
+        rules,
+        ("bad.ts", "good.ts"),
+        ("skip.rule",),
+        output,
+        30,
+        targets_verified=True,
+    )
+
+    assert (*prefix, "bad.ts", "good.ts") == command
+
+
 @pytest.mark.asyncio
 async def test_fallback_only_receives_failed_paths_and_rules(tmp_path: Path) -> None:
     workspace, rules, binding = _fixture(tmp_path)

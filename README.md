@@ -100,7 +100,11 @@ sastsimi analyze https://github.com/owner/repository.git --commit <정확한-40�
 
 OpenGrep 규칙 묶음은 원본 규칙과 동일한 저장소 범위를 순차 검사합니다. 시간 초과 후 같은 분석을 `resume`하면 완료된 묶음과 안전하게 재검증된 부분 결과를 재사용합니다. 파싱 경고가 있으면 해당 파일·규칙 조합을 미검증으로 남기며, 선택형 Semgrep이 실제 재검사한 조합만 보완합니다. 파싱 경고와 미검사 파일이 함께 있는 부분 결과도 Semgrep fallback을 켠 경우 남은 조합을 넘기되, 완료로 오인하지 않습니다. OpenGrep이 실패해도 AST와 설정된 CodeQL 결과는 보존합니다. 파일·규칙별 누락이 남으면 전체 성공 전에는 정적 단계가 `BLOCKED`이며 가설·Finding·보고서를 만들지 않습니다. 대시보드에서 미검증 경로·이유와 알려진 소스 확장자 중 현재 규칙 범위 밖인 파일을 확인할 수 있습니다. 저장소별 별도 설정은 필요 없습니다. 다만 묶음 실행으로 총 검사 시간이 늘 수 있고, 모든 저장소의 `COMPLETE`를 보장하지는 않습니다.
 
-매우 큰 저장소에서는 선택형 Semgrep fallback을 켜고 Semgrep 실행 파일까지 검증된 경우 OpenGrep 묶음 하나가 정적 단계의 1시간 한도를 독점하지 않도록 각 실행을 최대 120초로 제한합니다. Semgrep을 사용할 수 없으면 이 단축 제한을 적용하지 않고 OpenGrep의 기존 실행시간을 유지합니다. 이어지는 Semgrep 재검사는 한 번에 최대 128파일씩, Windows 명령줄 길이 24,000 UTF-16 단위 이내로 실행합니다. 한 경로만 길이 제한을 넘으면 그 경로를 미검증으로 기록하고 나머지는 검사합니다. JSON 결과는 표준출력 대신 크기 제한이 있는 임시 파일로 받아 검증합니다. 완료된 32파일 단위의 이전 결과와 새 묶음의 부분 성공은 원본 증거를 다시 확인한 뒤 재사용하고, 미검증 파일·규칙만 분할 재검사합니다. Semgrep 한 묶음의 실행도 최대 120초로 제한해 느린 묶음을 더 작게 나누며, 파일 하나의 프로세스 시간 초과 또는 Semgrep JSON `Timeout`은 `--timeout 30`으로 한 번 더 시험합니다. 그래도 누락이 남거나 실행별 최대 1시간 제한에 걸리면 경고를 숨기지 않고 `BLOCKED`로 둡니다. 대시보드는 미검증 상대 경로·규칙·이유를 최대 100개 미리 보여 주며 전체 목록은 coverage artifact에 보존합니다. 실제 고정 commit 시험과 제한사항은 [Dify 정적 검사 검증](docs/validation/2026-09-27-dify-static-coverage.md)에 기록했습니다.
+새 분석의 누적 LLM 호출시간 기본값은 `unlimited`이며 공유 정적 검사 1시간 제한도 적용하지 않습니다. 각 OpenGrep·Semgrep 호출은 유한한 타임아웃을 유지합니다. 선택형 Semgrep fallback을 켜면 OpenGrep 묶음당 최대 120초, Semgrep 호출당 최대 120초입니다. Semgrep은 최대 128파일과 Windows 명령줄 24,000 UTF-16 단위 이내로 실행하며 실패한 묶음은 파일 단위까지 분할합니다.
+
+완료된 검사 원문은 같은 commit·규칙·도구 지문에서 다시 검증해 재사용합니다. 재개 때 묶음 경계가 달라져도 이미 증명된 파일·규칙은 다시 세지 않습니다. 손상된 원문이나 파싱 오류는 완료로 취급하지 않습니다. 파일 하나의 시간 초과는 `--timeout 30`으로 한 번 더 시험하고, 끝내 확인할 수 없는 조합은 경로·규칙·이유를 coverage artifact에 남겨 정적 단계를 `BLOCKED`로 둡니다.
+
+[기존 Dify 정적 검사 검증](docs/validation/2026-09-27-dify-static-coverage.md)은 변경 전 관찰 기록이며 [새 Dify 재시험](docs/validation/2026-09-28-dify-static-retest.md)은 진행 상황과 확인된 엔진 한계를 기록합니다.
 
 ```powershell
 sastsimi status A-001
@@ -171,7 +175,7 @@ Reporter는 검증 결과, CWE, validated PoC와 Gate 결과에 없는 새로운
 - PoC 복구 시도 상한에 도달한 마지막 실행이 정상 종료(종료 코드 0)됐지만 해석 근거가 부족하면 가설을 `INCONCLUSIVE`로 종료합니다. 검증된 PoC·Finding·보고서는 만들지 않으며, Docker 실행 자체가 실패한 경우는 이 판정에 포함하지 않습니다.
 - Docker·인증·Provider·DB 등 실행 오류는 위의 미확정 판정으로 바꾸지 않으며 `BLOCKED` 또는 `FAILED`로 남습니다.
 - Codex CLI 경로의 요청별 토큰·비용은 현재 미제공입니다. 설정된 토큰·비용 상한으로 실제 사용량을 강제할 수 없으므로 계정 사용량을 별도로 확인하세요. 자세한 내용은 [Provider 설정](docs/provider-setup.md#codex-회원-로그인)을 참고하세요.
-- `max_elapsed_seconds`는 재개 간 기록된 LLM 호출시간의 누적 한도입니다. 한도를 넘기면 성공한 작업은 보존하고 중단하며, 추가 사용을 승인한 경우 설정 한도를 높인 후 `resume`할 수 있습니다.
+- 새 `setup`의 `max_elapsed_seconds` 기본값은 `unlimited`입니다. 기존 양의 정수 설정은 그대로 유한 한도로 작동하며, `--max-elapsed-seconds unlimited`로 명시적으로 바꿀 수 있습니다. `unlimited`여도 개별 OpenGrep·Semgrep·CodeQL·Docker·LLM 호출의 타임아웃, 취소, 재시도 횟수와 토큰·비용 제한은 유지됩니다. 단, Codex CLI가 토큰·비용 수치를 제공하지 않는 현재 경로에서는 해당 두 제한만으로 실제 계정 사용량을 강제할 수 없습니다.
 - 동일한 분석 ID를 두 프로세스에서 동시에 실행·재개하지 않습니다. 이미 실행 중이면 두 번째 `resume`은 작업과 LLM 호출을 중복하지 않고 현재 상태와 `ANALYSIS_ALREADY_RUNNING` 이유를 돌려줍니다.
 - 공개 GitHub 저장소는 분석 시작 시 기본 브랜치의 `.github/SECURITY.md`, 루트 `SECURITY.md`, `docs/SECURITY.md` 순서로 조회하고, 없으면 같은 소유자의 공개 `.github` 저장소를 확인합니다. 분석한 코드 commit과 정책 개정은 다를 수 있으며 각각 기록합니다. 임의의 버그바운티 사이트나 저장소 내 링크는 자동으로 따라가지 않습니다.
 - GitHub 외 저장소·로컬 경로, 정책 부재, 조회 실패 또는 불완전한 정책 근거는 Scope Gate에서 `UNCERTAIN`으로 남깁니다. 명시적 정책 제외는 `DENY`입니다. 검증된 정책의 모든 필수 항목이 근거와 함께 충족되고 명시적 제한 문구가 없을 때만 예비 판정 `ALLOW`입니다. 제한이 있으면 사람 검토 전까지 `UNCERTAIN`이며, `ALLOW`도 자동 제보·공개 승인이 아닙니다. 어느 경우든 기술 검증 결과를 내부 보고서로 남길 수 있습니다. 기존 기록의 근거 없는 `ALLOW`도 조회·내보내기·대시보드에서 제보 가능으로 표시하지 않습니다.

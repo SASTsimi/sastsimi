@@ -15,6 +15,7 @@ from typing import Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from sastsimi.config.user_config import (
+    ElapsedLimit,
     SimpleExecutionProfile,
     SimpleToolBinding,
     UserConfig,
@@ -61,7 +62,7 @@ class SetupChoices(BaseModel):
     execution_profile: Literal["FULL", "LIGHTWEIGHT"]
     max_cost_minor_units: int = Field(gt=0)
     max_tokens: int = Field(gt=0)
-    max_elapsed_seconds: int = Field(gt=0)
+    max_elapsed_seconds: ElapsedLimit = "unlimited"
     docker_network: Literal["NONE", "BRIDGE"]
     agent_models: dict[str, str] = Field(default_factory=dict)
     llm_timeout_seconds: int = Field(default=180, gt=0, le=3600)
