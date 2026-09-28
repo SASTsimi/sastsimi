@@ -46,6 +46,23 @@ class _InconclusiveClient(_InterpretationClient):
         )
 
 
+class _DisprovingClient(_InterpretationClient):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def call(self, **_kwargs: Any) -> SimpleLLMCallResult:
+        self.calls += 1
+        return SimpleLLMCallResult(
+            value={
+                "outcome": "DISPROVED",
+                "rationale": "The observation contradicts the hypothesis.",
+                "limitations": [],
+            },
+            prompt_digest="e" * 64,
+            output_digest="f" * 64,
+        )
+
+
 class _Docker:
     async def materialize_poc(self, *_args: Any) -> str:
         return "/tmp/sastsimi-poc-candidate"
@@ -264,3 +281,96 @@ async def test_poc_execution_error_is_blocked_and_releases_container(
 
     assert blocked.value.failure.code == "POC_EXECUTION_FAILED"
     assert containers.released == ["a" * 64]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exit_code", "error_line", "python_traceback"),
+    [
+        (0, b"ModuleNotFoundError: No module named 'django'", True),
+        (1, b"ImportError: cannot import name 'settings' from 'app'", True),
+        (0, b"ImportError: expected diagnostic text only", False),
+    ],
+)
+async def test_python_import_traceback_blocks_before_disproof_interpretation(
+    tmp_path: Path, exit_code: int, error_line: bytes, python_traceback: bool
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-import-error",
+        workspace_id="workspace-import-error",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-import-error",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    content_ref = artifacts.put_bytes(
+        b"#!/bin/sh\npython -m app\n", "text/x-shellscript"
+    )
+    candidate_ref = artifacts.put_json({"kind": "simple_poc_candidate"})
+    refs = (candidate_ref, content_ref)
+    candidate = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        output_refs=refs,
+        attempt_id="attempt-import-error",
+        image_digest=f"sha256:{'1' * 64}",
+    )
+    current = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_EXECUTION_DONE,
+        status=StageStatus.PENDING,
+        input_refs=refs,
+        input_hash=input_reference_hash(refs),
+        attempt_id="attempt-import-error",
+    )
+    stderr = (
+        (
+            (
+                b"Traceback (most recent call last):\n"
+                b'  File "<stdin>", line 1, in <module>\n'
+            )
+            if python_traceback
+            else b""
+        )
+        + error_line
+        + b"\n"
+    )
+
+    class _ImportErrorDocker(_Docker):
+        async def execute(self, *_args: Any, **_kwargs: Any) -> DockerCommandOutcome:
+            return DockerCommandOutcome(exit_code, b"", stderr, False)
+
+    client = _DisprovingClient()
+    containers = _Containers()
+    stage = PoCExecutionStage(
+        client=client,
+        artifacts=artifacts,
+        docker=_ImportErrorDocker(),  # type: ignore[arg-type]
+        containers=containers,
+    )
+
+    if not python_traceback:
+        result = await stage(current, {SimpleStage.POC_CANDIDATE_DONE: candidate})
+        assert result.validated_poc_ref is None
+        assert json.loads(artifacts.read(result.output_refs[1]))["result"][
+            "outcome"
+        ] == ("DISPROVED")
+        assert client.calls == 1
+        return
+
+    with pytest.raises(StageBlocked) as blocked:
+        await stage(current, {SimpleStage.POC_CANDIDATE_DONE: candidate})
+
+    assert blocked.value.failure.code == "POC_EXECUTION_FAILED"
+    assert blocked.value.failure.retryable is True
+    assert client.calls == 0
+    assert containers.released == ["a" * 64]
+    execution_ref, _stdout_ref, stderr_ref, _cleanup_ref = (
+        blocked.value.failure.evidence_refs
+    )
+    assert artifacts.read(stderr_ref) == stderr
+    assert json.loads(artifacts.read(execution_ref))["stderr_ref"] == (
+        stderr_ref.model_dump(mode="json")
+    )

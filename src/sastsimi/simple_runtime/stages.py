@@ -68,6 +68,19 @@ _POC_SOURCE_MAX_REQUESTS = 32
 _POC_SOURCE_ARTIFACT_BYTES = 96_000
 _REPORT_DRAFT_MAX_BYTES = 4 * 1024 * 1024
 
+
+def _has_python_import_traceback(stderr: bytes) -> bool:
+    traceback_started = False
+    for line in stderr.splitlines():
+        if line == b"Traceback (most recent call last):":
+            traceback_started = True
+        elif traceback_started and line.startswith(
+            (b"ModuleNotFoundError: ", b"ImportError: ")
+        ):
+            return True
+    return False
+
+
 _ROLE_BY_STAGE: dict[SimpleStage, str] = {
     SimpleStage.PRO_CON_DONE: "Pro·Con Agents",
     SimpleStage.VERIFICATION_INITIAL_DONE: "Verification Agent",
@@ -654,6 +667,15 @@ class PoCExecutionStage:
                     code="POC_EXECUTION_FAILED",
                     retryable=True,
                     safe_message="PoC script did not produce a usable observation",
+                    evidence_refs=(execution_ref, stdout_ref, stderr_ref, cleanup_ref),
+                )
+            )
+        if _has_python_import_traceback(outcome.stderr):
+            raise StageBlocked(
+                StageFailure(
+                    code="POC_EXECUTION_FAILED",
+                    retryable=True,
+                    safe_message="PoC raised a Python import error",
                     evidence_refs=(execution_ref, stdout_ref, stderr_ref, cleanup_ref),
                 )
             )
