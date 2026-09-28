@@ -98,6 +98,14 @@ class SimpleRuntimeRunner:
                 ):
                     continue
                 existing = self.store.get(identity, stage)
+                if (
+                    existing is not None
+                    and existing.stage_version != STAGE_VERSION[stage]
+                ):
+                    self.store.invalidate_from(
+                        identity, stage, new_inputs=existing.input_refs
+                    )
+                    existing = None
                 if self.recovery is not None and existing is not None:
                     recovery_outcome = await self._recover_existing(existing)
                     if recovery_outcome is False:
