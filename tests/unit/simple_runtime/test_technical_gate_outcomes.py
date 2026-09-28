@@ -20,6 +20,7 @@ from sastsimi.simple_runtime.models import (
     StageCheckpoint,
     StageStatus,
     input_reference_hash,
+    terminal_gate_outcome,
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
 from sastsimi.simple_runtime.runner import StageBlocked, StageFailed
@@ -65,7 +66,7 @@ def _checkpoint(
     outputs: tuple[StoredDataRef, ...] = (),
     verdict: Literal["TRUE", "FALSE", "HOLD"] | None = None,
     validated_poc_ref: StoredDataRef | None = None,
-    gate_decision: Literal["ACCEPT", "REVISE", "REJECT"] | None = None,
+    gate_decision: Literal["ACCEPT", "REVISE", "REJECT", "HOLD"] | None = None,
 ) -> StageCheckpoint:
     checkpoint = StageCheckpoint(
         identity=_identity(),
@@ -94,6 +95,15 @@ def test_stale_gate_version_cannot_authorize_reportable_outputs(
     ).model_copy(update={"stage_version": "1"})
 
     assert not technical_gate_accepted(gate, artifacts)
+
+
+def test_gate_hold_is_terminal_inconclusive() -> None:
+    checkpoint = _checkpoint(
+        SimpleStage.TECH_GATE_DONE,
+        gate_decision="HOLD",
+    )
+
+    assert terminal_gate_outcome(checkpoint) == "INCONCLUSIVE"
 
 
 @pytest.mark.asyncio

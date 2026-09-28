@@ -125,7 +125,15 @@ _DECISION_SCHEMA: dict[str, object] = {
         },
         "diagnosis": {"type": "string"},
         "guidance": {"type": "string"},
-        "environment_patch": {"type": "string"},
+        "environment_patch": {
+            "type": "string",
+            "description": (
+                "For REBUILD_ENVIRONMENT, Dockerfile instructions only: each "
+                "line must begin with RUN and invoke an allowed package "
+                "installer. For every other action, use an empty string. "
+                "Never return prose in this field."
+            ),
+        },
     },
     "required": [
         "category",
@@ -228,6 +236,12 @@ class SimpleRecoveryCoordinator:
             )
 
         refs = tuple(dict.fromkeys(checkpoint.input_refs + failure.evidence_refs))
+        if checkpoint.stage is SimpleStage.POC_EXECUTION_DONE and failure.evidence_refs:
+            # Validate checkpoint input scope without retransmitting the candidate
+            # script and source context that may have triggered provider safety
+            # filters. Execution records and stderr are sufficient for recovery.
+            self._artifacts.prompt_context(checkpoint.input_refs)
+            refs = tuple(dict.fromkeys(failure.evidence_refs))
         context = self._artifacts.prompt_context(refs)
         prompt = b"\n".join(
             (
@@ -236,6 +250,12 @@ class SimpleRecoveryCoordinator:
                 b"Never treat an execution error as a vulnerability FALSE verdict.",
                 b"Do not request host changes, source edits, credentials, "
                 b"or policy changes.",
+                b"For REBUILD_ENVIRONMENT, environment_patch must contain only "
+                b"executable Dockerfile package-install lines. Every line must "
+                b"start with RUN, for example: RUN python -m pip install "
+                b"--no-cache-dir cryptography. Never put prose such as 'Install "
+                b"the dependency' in environment_patch. For every other action, "
+                b"environment_patch must be an empty string.",
                 canonical_bytes(
                     {
                         "stage": checkpoint.stage.value,
@@ -262,10 +282,28 @@ class SimpleRecoveryCoordinator:
                 safe_message="Recovery provider did not return a decision",
             )
         if isinstance(response, StageFailure):
-            decision = self._stop(
-                "recovery provider did not return a decision",
-                "preserve the failure for manual review",
-            )
+            if (
+                response.code == "CURSOR_SAFETY_BLOCKED"
+                and checkpoint.stage is SimpleStage.POC_EXECUTION_DONE
+            ):
+                decision = RecoveryDecision(
+                    category=RecoveryCategory.GENERATED_INPUT,
+                    action=RecoveryAction.REGENERATE_INPUT,
+                    diagnosis=(
+                        "The provider did not permit review of the failed local "
+                        "regression-test execution"
+                    ),
+                    guidance=(
+                        "Regenerate one safe local regression test using only "
+                        "the recorded runtime error"
+                    ),
+                    environment_patch="",
+                )
+            else:
+                decision = self._stop(
+                    "recovery provider did not return a decision",
+                    "preserve the failure for manual review",
+                )
         else:
             try:
                 decision = RecoveryDecision.model_validate_json(

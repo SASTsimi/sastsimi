@@ -130,7 +130,9 @@ class OfficialCursorCLITransport:
         if not os.path.isfile(self._executable) or not os.path.isfile(self._script):
             raise ValueError("CURSOR_CLI_NOT_INSTALLED")
 
-    async def _run(self, *args: str, timeout: float) -> str:
+    async def _run(
+        self, *args: str, timeout: float, input_data: bytes | None = None
+    ) -> str:
         with tempfile.TemporaryDirectory(prefix="sastsimi-cursor-") as workspace:
             flags = (
                 int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -171,14 +173,18 @@ class OfficialCursorCLITransport:
                 *args,
                 cwd=workspace,
                 env=child_env,
+                stdin=(asyncio.subprocess.PIPE if input_data is not None else None),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 creationflags=flags,
             )
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout=timeout
+                communication = (
+                    process.communicate(input_data)
+                    if input_data is not None
+                    else process.communicate()
                 )
+                stdout, stderr = await asyncio.wait_for(communication, timeout=timeout)
             except (TimeoutError, asyncio.CancelledError):
                 if os.name == "nt" and process.pid is not None:
                     try:
@@ -201,6 +207,8 @@ class OfficialCursorCLITransport:
                 raise
             if process.returncode != 0:
                 detail = (stderr + stdout).decode("utf-8", errors="replace").lower()
+                if _is_cyber_safety_block(detail):
+                    raise CursorCLISafetyError()
                 if (
                     "rate limit" in detail
                     or "too many requests" in detail
@@ -260,13 +268,15 @@ class OfficialCursorCLITransport:
             "json",
             "--model",
             model,
-            prompt,
             timeout=timeout,
+            input_data=prompt.encode("utf-8"),
         )
         try:
             envelope = json.loads(output)
         except (json.JSONDecodeError, TypeError) as error:
             raise CursorCLIExecutionError() from error
+        if _is_cyber_safety_block(output.lower()):
+            raise CursorCLISafetyError()
         if (
             not isinstance(envelope, dict)
             or envelope.get("type") != "result"
@@ -302,6 +312,10 @@ class CursorCLIPlanLimitError(Exception):
     pass
 
 
+class CursorCLISafetyError(Exception):
+    pass
+
+
 class CursorCLITemporaryError(Exception):
     pass
 
@@ -323,8 +337,22 @@ def _unwrap_json(raw: str) -> str:
     return stripped
 
 
+def _is_cyber_safety_block(detail: str) -> bool:
+    return any(
+        marker in detail
+        for marker in (
+            "potential high-risk cybersecurity activity",
+            "safety-checks/cybersecurity",
+            '"code":"cyber_policy"',
+            '"code": "cyber_policy"',
+        )
+    )
+
+
 def _error_code(error: BaseException) -> tuple[str, bool]:
     name = type(error).__name__
+    if name == "CursorCLISafetyError":
+        return "CURSOR_SAFETY_BLOCKED", False
     if name in {
         "AuthenticationError",
         "PermissionError",
@@ -659,6 +687,7 @@ class CursorProvider:
 
 
 __all__ = [
+    "CursorCLISafetyError",
     "CursorModelCatalog",
     "CursorProvider",
     "OfficialCursorTransport",

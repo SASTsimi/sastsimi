@@ -264,6 +264,133 @@ async def test_poc_execution_retry_starts_a_new_candidate_attempt(tmp_path) -> N
     assert outcome.current_stage is SimpleStage.REPORT_DONE
 
 
+@pytest.mark.asyncio
+async def test_stale_terminal_failure_is_reopened_after_stage_upgrade(tmp_path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.VERIFICATION_INITIAL_DONE)
+    inputs = store.input_refs_for(_identity(), SimpleStage.POC_CANDIDATE_DONE)
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=_identity(),
+            stage=SimpleStage.POC_CANDIDATE_DONE,
+            stage_version="2",
+            status=StageStatus.FAILED,
+            input_refs=inputs,
+            input_hash=input_reference_hash(inputs),
+            attempt_id="old-terminal-failure",
+            attempt_number=1,
+            error_code="CURSOR_REQUEST_FAILED",
+            retryable=False,
+        )
+    )
+    calls: list[SimpleStage] = []
+
+    outcome = await SimpleRuntimeRunner(
+        store, _recording_handlers(calls)
+    ).resume_analysis(_identity())
+
+    assert calls[0] is SimpleStage.POC_CANDIDATE_DONE
+    assert (
+        store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE).stage_version
+        == STAGE_VERSION[SimpleStage.POC_CANDIDATE_DONE]
+    )
+    assert outcome.current_stage is SimpleStage.REPORT_DONE
+
+
+@pytest.mark.asyncio
+async def test_cursor_safety_failure_reopens_only_the_failed_technical_gate(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.CWE_DONE)
+    inputs = store.input_refs_for(_identity(), SimpleStage.TECH_GATE_DONE)
+    running = store.mark_running(
+        _identity(),
+        SimpleStage.TECH_GATE_DONE,
+        inputs,
+        attempt_id="blocked-technical-gate",
+    )
+    store.mark_failure(
+        running,
+        StageFailure(
+            code="CURSOR_SAFETY_BLOCKED",
+            retryable=False,
+            safe_message="Cursor safety policy blocked the request",
+        ),
+        StageStatus.FAILED,
+    )
+    calls: list[SimpleStage] = []
+    handlers = _recording_handlers(calls)
+
+    async def inconclusive_gate(
+        _checkpoint: StageCheckpoint, _prior: object
+    ) -> StageResult:
+        calls.append(SimpleStage.TECH_GATE_DONE)
+        return StageResult(
+            output_refs=(_ref("technical-gate-unavailable"),),
+            gate_decision="HOLD",
+        )
+
+    handlers[SimpleStage.TECH_GATE_DONE] = inconclusive_gate
+    runner = SimpleRuntimeRunner(store, handlers)
+
+    first = await runner.resume_analysis(_identity())
+    second = await runner.resume_analysis(_identity())
+
+    assert first.status is second.status is StageStatus.SUCCEEDED
+    assert first.current_stage is second.current_stage is SimpleStage.TECH_GATE_DONE
+    assert calls == [SimpleStage.TECH_GATE_DONE]
+
+
+@pytest.mark.asyncio
+async def test_cursor_safety_failure_reopens_initial_verification_as_inconclusive(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.PRO_CON_DONE)
+    inputs = store.input_refs_for(_identity(), SimpleStage.VERIFICATION_INITIAL_DONE)
+    running = store.mark_running(
+        _identity(),
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+        inputs,
+        attempt_id="blocked-initial-verification",
+    )
+    store.mark_failure(
+        running,
+        StageFailure(
+            code="CURSOR_SAFETY_BLOCKED",
+            retryable=False,
+            safe_message="Cursor safety policy blocked the request",
+        ),
+        StageStatus.FAILED,
+    )
+    calls: list[SimpleStage] = []
+    handlers = _recording_handlers(calls)
+
+    async def inconclusive_initial(
+        _checkpoint: StageCheckpoint, _prior: object
+    ) -> StageResult:
+        calls.append(SimpleStage.VERIFICATION_INITIAL_DONE)
+        return StageResult(
+            output_refs=(_ref("initial-verification-unavailable"),),
+            verdict="HOLD",
+        )
+
+    handlers[SimpleStage.VERIFICATION_INITIAL_DONE] = inconclusive_initial
+    runner = SimpleRuntimeRunner(store, handlers)
+
+    first = await runner.resume_analysis(_identity())
+    second = await runner.resume_analysis(_identity())
+
+    assert first.status is second.status is StageStatus.SUCCEEDED
+    assert (
+        first.current_stage
+        is second.current_stage
+        is SimpleStage.VERIFICATION_INITIAL_DONE
+    )
+    assert calls == [SimpleStage.VERIFICATION_INITIAL_DONE]
+
+
 def test_report_format_upgrade_reuses_earlier_stages_but_not_old_report(
     tmp_path,
 ) -> None:
@@ -449,7 +576,7 @@ async def test_retryable_stage_repairs_automatically_on_attempt_two(tmp_path) ->
 
 
 @pytest.mark.asyncio
-async def test_three_failures_become_non_retryable_recovery_exhausted(
+async def test_three_poc_failures_become_terminal_inconclusive(
     tmp_path,
 ) -> None:
     store = SimpleCheckpointStore(tmp_path / "exhaust" / "sastsimi.sqlite3")
@@ -473,7 +600,10 @@ async def test_three_failures_become_non_retryable_recovery_exhausted(
                 code="POC_EXECUTION_FAILED",
                 retryable=True,
                 safe_message="execution failed",
-                evidence_refs=(_ref(f"execution-error-{calls}"),),
+                evidence_refs=(
+                    _ref(f"execution-error-{calls}"),
+                    _ref(f"execution-stderr-{calls}"),
+                ),
             )
         )
 
@@ -485,14 +615,56 @@ async def test_three_failures_become_non_retryable_recovery_exhausted(
     ).resume_hypothesis(_identity())
 
     exhausted = store.require(_identity(), SimpleStage.POC_EXECUTION_DONE)
-    assert outcome.status is StageStatus.BLOCKED
-    assert outcome.error_code == "RECOVERY_EXHAUSTED"
+    assert outcome.status is StageStatus.SUCCEEDED
+    assert outcome.error_code is None
     assert calls == 3
     assert len(recovery.calls) == 2
     assert exhausted.attempt_number == 3
     assert exhausted.retryable is False
-    assert exhausted.verdict is None
+    assert exhausted.status is StageStatus.SUCCEEDED
+    assert exhausted.error_code is None
+    assert exhausted.verdict == "HOLD"
     assert store.get(_identity(), SimpleStage.VERIFICATION_FINAL_DONE) is None
+
+
+@pytest.mark.asyncio
+async def test_resume_promotes_existing_exhausted_poc_failure_to_inconclusive(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "existing-exhausted" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.POC_CANDIDATE_DONE)
+    inputs = store.input_refs_for(_identity(), SimpleStage.POC_EXECUTION_DONE)
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=_identity(),
+            stage=SimpleStage.POC_EXECUTION_DONE,
+            stage_version=STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE],
+            status=StageStatus.BLOCKED,
+            input_refs=inputs,
+            input_hash=input_reference_hash(inputs),
+            output_refs=(_ref("execution-error"), _ref("execution-stderr")),
+            attempt_id="attempt-3",
+            attempt_number=3,
+            error_code="RECOVERY_EXHAUSTED",
+            retryable=False,
+        )
+    )
+    calls: list[SimpleStage] = []
+    runner = SimpleRuntimeRunner(
+        store,
+        _recording_handlers(calls),
+        recovery=_Recovery(tmp_path),
+    )
+
+    first = await runner.resume_hypothesis(_identity())
+    second = await runner.resume_hypothesis(_identity())
+
+    completed = store.require(_identity(), SimpleStage.POC_EXECUTION_DONE)
+    assert first.status is second.status is StageStatus.SUCCEEDED
+    assert first.current_stage is second.current_stage is SimpleStage.POC_EXECUTION_DONE
+    assert completed.verdict == "HOLD"
+    assert completed.error_code is None
+    assert calls == []
 
 
 @pytest.mark.asyncio

@@ -70,6 +70,48 @@ def test_terminal_poc_requires_exhausted_attempt(attempt_number: int) -> None:
     )
 
 
+def test_terminal_poc_accepts_safe_test_unavailable_candidate() -> None:
+    checkpoint = StageCheckpoint(
+        identity=CheckpointIdentity(
+            analysis_id="analysis-1",
+            workspace_id="workspace-1",
+            commit_id="a" * 40,
+            hypothesis_id="hypothesis-1",
+        ),
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        stage_version=STAGE_VERSION[SimpleStage.POC_CANDIDATE_DONE],
+        status=StageStatus.SUCCEEDED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        output_refs=(_ref("safe-test-unavailable"),),
+        attempt_number=1,
+        verdict="HOLD",
+    )
+
+    assert terminal_poc_outcome(checkpoint) == "INCONCLUSIVE"
+
+
+def test_terminal_poc_accepts_initial_verification_safety_hold() -> None:
+    checkpoint = StageCheckpoint(
+        identity=CheckpointIdentity(
+            analysis_id="analysis-1",
+            workspace_id="workspace-1",
+            commit_id="a" * 40,
+            hypothesis_id="hypothesis-1",
+        ),
+        stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+        stage_version=STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE],
+        status=StageStatus.SUCCEEDED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        output_refs=(_ref("initial-verification-unavailable"),),
+        attempt_number=2,
+        verdict="HOLD",
+    )
+
+    assert terminal_poc_outcome(checkpoint) == "INCONCLUSIVE"
+
+
 def test_public_result_and_dashboard_agree_on_inconclusive_gate(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

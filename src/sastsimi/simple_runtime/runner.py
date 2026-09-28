@@ -300,9 +300,18 @@ class SimpleRuntimeRunner:
         self,
         checkpoint: StageCheckpoint,
     ) -> RunOutcome | None | Literal[False]:
+        if checkpoint.stage_version != STAGE_VERSION[checkpoint.stage]:
+            return False
         if checkpoint.status is StageStatus.PENDING:
             return False
         if checkpoint.status is StageStatus.SUCCEEDED:
+            return False
+        if checkpoint.error_code == "CURSOR_SAFETY_BLOCKED" and checkpoint.stage in {
+            SimpleStage.VERIFICATION_INITIAL_DONE,
+            SimpleStage.POC_CANDIDATE_DONE,
+            SimpleStage.VERIFICATION_FINAL_DONE,
+            SimpleStage.TECH_GATE_DONE,
+        }:
             return False
         if checkpoint.status is StageStatus.RUNNING:
             return await self._recover_or_stop(
@@ -313,6 +322,19 @@ class SimpleRuntimeRunner:
                     safe_message="Stage execution was interrupted before completion",
                 ),
                 StageStatus.BLOCKED,
+            )
+        if (
+            checkpoint.stage is SimpleStage.POC_EXECUTION_DONE
+            and checkpoint.status is StageStatus.BLOCKED
+            and checkpoint.error_code == "RECOVERY_EXHAUSTED"
+            and checkpoint.attempt_number >= MAX_RECOVERY_ATTEMPTS
+            and len(checkpoint.output_refs) >= 2
+            and checkpoint.validated_poc_ref is None
+        ):
+            completed = self.store.promote_inconclusive_execution(checkpoint)
+            return RunOutcome(
+                current_stage=completed.stage,
+                status=StageStatus.SUCCEEDED,
             )
         if not checkpoint.retryable:
             return RunOutcome(
@@ -353,6 +375,16 @@ class SimpleRuntimeRunner:
             )
         if failed.attempt_number >= MAX_RECOVERY_ATTEMPTS:
             exhausted = self.store.mark_recovery_exhausted(failed)
+            if (
+                exhausted.stage is SimpleStage.POC_EXECUTION_DONE
+                and len(exhausted.output_refs) >= 2
+                and exhausted.validated_poc_ref is None
+            ):
+                completed = self.store.promote_inconclusive_execution(exhausted)
+                return RunOutcome(
+                    current_stage=completed.stage,
+                    status=StageStatus.SUCCEEDED,
+                )
             return RunOutcome(
                 current_stage=checkpoint.stage,
                 status=StageStatus.BLOCKED,

@@ -12,6 +12,7 @@ from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.call_queue import RunUsageBudget
 from sastsimi.simple_runtime.cursor_provider import (
     CursorCLIRateLimitError,
+    CursorCLISafetyError,
     CursorModelCatalog,
     CursorProvider,
     OfficialCursorCLITransport,
@@ -349,11 +350,15 @@ async def test_cli_transport_parses_only_verified_catalog_and_json_envelope(
     native.write_bytes(b"test")
     (tmp_path / "index.js").write_bytes(b"test")
     calls: list[tuple[str, ...]] = []
+    inputs: list[bytes | None] = []
 
     class Process:
         returncode = 0
 
-        async def communicate(self) -> tuple[bytes, bytes]:
+        async def communicate(
+            self, input_data: bytes | None = None
+        ) -> tuple[bytes, bytes]:
+            inputs.append(input_data)
             if len(calls) == 1:
                 return b"Available models\nauto - Auto\ncomposer-2.5 - Composer\n", b""
             return (
@@ -380,6 +385,49 @@ async def test_cli_transport_parses_only_verified_catalog_and_json_envelope(
     assert calls[1][:2] == (str(native), str(tmp_path / "index.js"))
     assert "--mode" in calls[1] and "ask" in calls[1]
     assert "--trust" in calls[1]
+    assert "test prompt" not in calls[1]
+    assert inputs == [None, b"test prompt"]
+
+
+@pytest.mark.asyncio
+async def test_cli_transport_sends_large_prompt_over_stdin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    native = tmp_path / "node.exe"
+    native.write_bytes(b"test")
+    (tmp_path / "index.js").write_bytes(b"test")
+    prompt = "x" * (300 * 1024)
+    observed_args: tuple[str, ...] = ()
+    observed_input: bytes | None = None
+
+    class Process:
+        returncode = 0
+
+        async def communicate(
+            self, input_data: bytes | None = None
+        ) -> tuple[bytes, bytes]:
+            nonlocal observed_input
+            observed_input = input_data
+            return (
+                b'{"type":"result","subtype":"success","is_error":false,'
+                b'"result":"{\\"verdict\\":\\"TRUE\\"}"}',
+                b"",
+            )
+
+    async def fake_subprocess(*args: str, **kwargs: Any) -> Process:
+        nonlocal observed_args
+        observed_args = args
+        assert kwargs["stdin"] == asyncio.subprocess.PIPE
+        return Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+    raw, _usage = await OfficialCursorCLITransport(str(native)).complete(
+        api_key="", model="composer-2.5", prompt=prompt, timeout=5
+    )
+
+    assert raw == '{"verdict":"TRUE"}'
+    assert prompt not in observed_args
+    assert observed_input == prompt.encode("utf-8")
 
 
 @pytest.mark.asyncio
@@ -402,3 +450,36 @@ async def test_cli_transport_classifies_rate_limit_without_leaking_stderr(
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
     with pytest.raises(CursorCLIRateLimitError):
         await OfficialCursorCLITransport(str(native)).list_models("")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("returncode", [0, 1])
+async def test_cli_transport_classifies_cyber_safety_block(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, returncode: int
+) -> None:
+    native = tmp_path / "node.exe"
+    native.write_bytes(b"test")
+    (tmp_path / "index.js").write_bytes(b"test")
+    blocked = (
+        b'{"type":"turn_ended","status":"error","error":'
+        b'"OpenAI flagged this request for potential high-risk cybersecurity '
+        b'activity. See safety-checks/cybersecurity."}'
+    )
+
+    class Process:
+        def __init__(self) -> None:
+            self.returncode = returncode
+
+        async def communicate(
+            self, _input_data: bytes | None = None
+        ) -> tuple[bytes, bytes]:
+            return (blocked, b"")
+
+    async def fake_subprocess(*_args: str, **_kwargs: Any) -> Process:
+        return Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+    with pytest.raises(CursorCLISafetyError):
+        await OfficialCursorCLITransport(str(native)).complete(
+            api_key="", model="composer-2.5", prompt="safe local test", timeout=5
+        )

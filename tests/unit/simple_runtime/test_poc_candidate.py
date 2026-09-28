@@ -13,6 +13,7 @@ from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
+    StageFailure,
     StageStatus,
     input_reference_hash,
 )
@@ -84,6 +85,32 @@ class _SourceRecordingClient:
             value={"content": "#!/bin/sh\nprintf 'reproduced\\n'\n"},
             prompt_digest="a" * 64,
             output_digest="b" * 64,
+        )
+
+
+class _UnsupportedClient:
+    def __init__(self) -> None:
+        self.prompt = b""
+
+    async def call(self, **kwargs: Any) -> SimpleLLMCallResult:
+        self.prompt = kwargs["prompt"]
+        return SimpleLLMCallResult(
+            value={
+                "status": "UNSUPPORTED",
+                "content": "",
+                "reason": "The requested invariant needs an external boundary",
+            },
+            prompt_digest="c" * 64,
+            output_digest="d" * 64,
+        )
+
+
+class _SafetyBlockedClient:
+    async def call(self, **_kwargs: Any) -> StageFailure:
+        return StageFailure(
+            code="CURSOR_SAFETY_BLOCKED",
+            retryable=False,
+            safe_message="Cursor safety policy blocked the request",
         )
 
 
@@ -264,6 +291,67 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
         "NOT_TRACKED",
         "PATH_OUTSIDE_REPOSITORY",
     }
+
+
+@pytest.mark.asyncio
+async def test_poc_candidate_records_unsupported_safe_test_as_hold(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    client = _UnsupportedClient()
+
+    result = await PoCCandidateStage(client=client, artifacts=artifacts)(checkpoint, {})
+
+    assert result.verdict == "HOLD"
+    assert len(result.output_refs) == 1
+    unavailable = json.loads(artifacts.read(result.output_refs[0]))
+    assert unavailable["kind"] == "simple_poc_candidate_unavailable"
+    assert unavailable["reason_code"] == "SAFE_TEST_UNSUPPORTED"
+    assert b"authorized, local-only Defensive Regression Test Agent" in client.prompt
+    assert b"must not access a network" in client.prompt
+
+
+@pytest.mark.asyncio
+async def test_poc_candidate_converts_cursor_safety_block_to_hold(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+
+    result = await PoCCandidateStage(
+        client=_SafetyBlockedClient(), artifacts=artifacts
+    )(checkpoint, {})
+
+    assert result.verdict == "HOLD"
+    unavailable = json.loads(artifacts.read(result.output_refs[0]))
+    assert unavailable["reason_code"] == "PROVIDER_SAFETY_BLOCKED"
 
 
 @pytest.mark.asyncio

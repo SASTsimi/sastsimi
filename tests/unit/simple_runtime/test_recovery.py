@@ -151,6 +151,8 @@ async def test_valid_environment_rebuild_is_stored_as_exact_artifact(
     )
     assert b'"kind":"simple_recovery_decision"' in artifacts.read(result.decision_ref)
     assert client.calls == 1
+    assert b"Every line must start with RUN" in client.prompts[0]
+    assert b"Never put prose" in client.prompts[0]
 
 
 @pytest.mark.parametrize(
@@ -454,6 +456,77 @@ async def test_provider_failure_becomes_stored_stop(tmp_path: Path) -> None:
     assert result.decision.category is RecoveryCategory.TERMINAL
     assert result.decision.action is RecoveryAction.STOP
     assert b'"action":"STOP"' in artifacts.read(result.decision_ref)
+
+
+@pytest.mark.asyncio
+async def test_cursor_safety_block_regenerates_bounded_poc_input(
+    tmp_path: Path,
+) -> None:
+    checkpoint = _running_checkpoint()
+    client = DecisionClient(
+        StageFailure(
+            code="CURSOR_SAFETY_BLOCKED",
+            retryable=False,
+            safe_message="Cursor safety policy blocked the request",
+        )
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, checkpoint.identity)
+
+    result = await SimpleRecoveryCoordinator(
+        client=client,
+        artifacts=artifacts,
+    ).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_EXECUTION_FAILED",
+            retryable=True,
+            safe_message="PoC execution failed",
+        ),
+    )
+
+    assert result.decision.category is RecoveryCategory.GENERATED_INPUT
+    assert result.decision.action is RecoveryAction.REGENERATE_INPUT
+    assert result.decision.environment_patch == ""
+    assert client.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_poc_recovery_prompt_uses_execution_evidence_not_candidate_input(
+    tmp_path: Path,
+) -> None:
+    base = _running_checkpoint()
+    artifacts = SimpleArtifactRepository(tmp_path, base.identity)
+    candidate_ref = artifacts.put_bytes(b"candidate-script-marker", "text/plain")
+    stderr_ref = artifacts.put_bytes(b"runtime-stderr-marker", "text/plain")
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "stderr_ref": stderr_ref.model_dump(mode="json"),
+        }
+    )
+    checkpoint = _running_checkpoint(candidate_ref)
+    client = DecisionClient(
+        {
+            "category": "GENERATED_INPUT",
+            "action": "REGENERATE_INPUT",
+            "diagnosis": "generated test needs repair",
+            "guidance": "use the recorded runtime error",
+            "environment_patch": "",
+        }
+    )
+
+    await SimpleRecoveryCoordinator(client=client, artifacts=artifacts).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_EXECUTION_FAILED",
+            retryable=True,
+            safe_message="PoC execution failed",
+            evidence_refs=(execution_ref, stderr_ref),
+        ),
+    )
+
+    assert b"runtime-stderr-marker" in client.prompts[0]
+    assert b"candidate-script-marker" not in client.prompts[0]
 
 
 @pytest.mark.asyncio

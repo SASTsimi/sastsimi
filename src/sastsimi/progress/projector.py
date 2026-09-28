@@ -71,6 +71,22 @@ class ProgressProjector:
                 ),
                 None,
             )
+            candidate = next(
+                (
+                    item
+                    for item in values
+                    if item.stage is SimpleStage.POC_CANDIDATE_DONE
+                ),
+                None,
+            )
+            initial = next(
+                (
+                    item
+                    for item in values
+                    if item.stage is SimpleStage.VERIFICATION_INITIAL_DONE
+                ),
+                None,
+            )
             report = next(
                 (
                     item
@@ -85,10 +101,12 @@ class ProgressProjector:
                 None,
             )
             gate_outcome = terminal_gate_outcome(gate)
-            if terminal_poc_outcome(execution) is not None:
-                execution_index = HYPOTHESIS_STAGES.index(
-                    SimpleStage.POC_EXECUTION_DONE
-                )
+            terminal_poc = execution or candidate or initial
+            if (
+                terminal_poc is not None
+                and terminal_poc_outcome(terminal_poc) is not None
+            ):
+                execution_index = HYPOTHESIS_STAGES.index(terminal_poc.stage)
                 present_after = sum(
                     item.stage in HYPOTHESIS_STAGES[execution_index + 1 :]
                     and item.status is StageStatus.SUCCEEDED
@@ -108,6 +126,8 @@ class ProgressProjector:
                 )
                 skipped += len(HYPOTHESIS_STAGES[final_index + 1 :]) - present_after
                 terminal_hypotheses += 1
+                if final.verdict == "HOLD":
+                    inconclusive_hypotheses += 1
             elif gate_outcome is not None:
                 gate_index = HYPOTHESIS_STAGES.index(SimpleStage.TECH_GATE_DONE)
                 present_after = sum(

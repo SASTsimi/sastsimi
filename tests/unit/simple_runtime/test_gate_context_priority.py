@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -14,11 +15,16 @@ from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
+    StageFailure,
     StageStatus,
     input_reference_hash,
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
-from sastsimi.simple_runtime.stages import FinalVerificationStage, TechnicalGateStage
+from sastsimi.simple_runtime.stages import (
+    FinalVerificationStage,
+    InitialVerificationStage,
+    TechnicalGateStage,
+)
 
 
 class _ContextClient:
@@ -51,6 +57,20 @@ class _ContextClient:
             prompt_digest="a" * 64,
             output_digest="b" * 64,
         )
+
+
+class _SafetyBlockedClient:
+    async def call(self, **_kwargs: Any) -> StageFailure:
+        return StageFailure(
+            code="CURSOR_SAFETY_BLOCKED",
+            retryable=False,
+            safe_message="Cursor safety policy blocked the request",
+        )
+
+
+class _UnexpectedEnvironment:
+    async def prepare(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("environment preparation must not run after safety block")
 
 
 @pytest.mark.asyncio
@@ -113,3 +133,96 @@ async def test_source_and_gate_feedback_precede_bulk_in_final_and_gate_prompts(
     for prompt in client.prompts:
         assert b"source-marker" in prompt
         assert b"feedback-marker" in prompt
+    assert b"authorized, local-only Defensive Verification Agent" in client.prompts[0]
+    assert b"Do not propose, generate, or request" in client.prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_final_verification_converts_cursor_safety_block_to_hold(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.VERIFICATION_FINAL_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+
+    result = await FinalVerificationStage(_SafetyBlockedClient(), artifacts)(
+        checkpoint, {}
+    )
+
+    assert result.verdict == "HOLD"
+    assert len(result.output_refs) == 1
+    unavailable = json.loads(artifacts.read(result.output_refs[0]))
+    assert unavailable["kind"] == "simple_final_verification_unavailable"
+    assert unavailable["reason_code"] == "PROVIDER_SAFETY_BLOCKED"
+
+
+@pytest.mark.asyncio
+async def test_initial_verification_converts_cursor_safety_block_to_hold(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+
+    result = await InitialVerificationStage(
+        _SafetyBlockedClient(), artifacts, _UnexpectedEnvironment()
+    )(checkpoint, {})
+
+    assert result.verdict == "HOLD"
+    assert len(result.output_refs) == 1
+    unavailable = json.loads(artifacts.read(result.output_refs[0]))
+    assert unavailable["kind"] == "simple_initial_verification_unavailable"
+    assert unavailable["reason_code"] == "PROVIDER_SAFETY_BLOCKED"
+
+
+@pytest.mark.asyncio
+async def test_technical_gate_converts_cursor_safety_block_to_hold(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.TECH_GATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+
+    result = await TechnicalGateStage(_SafetyBlockedClient(), artifacts)(checkpoint, {})
+
+    assert result.gate_decision == "HOLD"
+    assert len(result.output_refs) == 1
+    unavailable = json.loads(artifacts.read(result.output_refs[0]))
+    assert unavailable["kind"] == "simple_technical_gate_unavailable"
+    assert unavailable["reason_code"] == "PROVIDER_SAFETY_BLOCKED"

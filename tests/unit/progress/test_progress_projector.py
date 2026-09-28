@@ -153,6 +153,54 @@ def test_false_is_terminal_without_becoming_a_failed_analysis(tmp_path: Path) ->
     assert snapshot.skipped_units > 0
 
 
+def test_final_verification_hold_is_complete_and_inconclusive(tmp_path: Path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    final_index = HYPOTHESIS_STAGES.index(SimpleStage.VERIFICATION_FINAL_DONE)
+    for stage in HYPOTHESIS_STAGES[: final_index + 1]:
+        _save(
+            store,
+            identity,
+            stage,
+            verdict="HOLD" if stage is SimpleStage.VERIFICATION_FINAL_DONE else None,
+        )
+
+    snapshot = ProgressProjector(store).snapshot("analysis-1")
+
+    assert snapshot.status == "COMPLETE"
+    assert snapshot.percent == 100
+    assert snapshot.inconclusive_hypothesis_count == 1
+
+
+def test_initial_verification_hold_is_complete_and_inconclusive(tmp_path: Path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    _save(store, identity, SimpleStage.PRO_CON_DONE)
+    _save(
+        store,
+        identity,
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+        verdict="HOLD",
+    )
+
+    snapshot = ProgressProjector(store).snapshot("analysis-1")
+
+    assert snapshot.status == "COMPLETE"
+    assert snapshot.percent == 100
+    assert snapshot.inconclusive_hypothesis_count == 1
+    assert snapshot.skipped_units == len(HYPOTHESIS_STAGES) - 2
+
+
 def test_executed_inconclusive_poc_is_complete_but_not_reportable(
     tmp_path: Path,
 ) -> None:

@@ -1902,7 +1902,7 @@ class SimpleCheckpointStore:
             or exhausted.status is not StageStatus.BLOCKED
             or exhausted.error_code != "RECOVERY_EXHAUSTED"
             or exhausted.attempt_number < MAX_RECOVERY_ATTEMPTS
-            or len(exhausted.output_refs) != 2
+            or len(exhausted.output_refs) < 2
             or exhausted.validated_poc_ref is not None
         ):
             raise ValueError("POC_INCONCLUSIVE_PROMOTION_INVALID")
@@ -1942,7 +1942,8 @@ class SimpleCheckpointStore:
                     sequence=self._stage_sequence(completed.stage, 2),
                     status=StageStatus.SUCCEEDED,
                     summary_ko=(
-                        "완료된 PoC 실행의 반복된 근거 부족을 미확정으로 기록했습니다."
+                        "반복된 PoC 실행이 결론에 도달하지 못해 미확정으로 "
+                        "기록했습니다."
                     ),
                     output_refs=completed.output_refs,
                 ),

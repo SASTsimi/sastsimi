@@ -40,12 +40,16 @@ STAGE_VERSION: dict[SimpleStage, str] = {
         if stage is SimpleStage.VERIFICATION_INITIAL_DONE
         else "4"
         if stage is SimpleStage.REPORT_DONE
+        else "3"
+        if stage
+        in {
+            SimpleStage.POC_CANDIDATE_DONE,
+            SimpleStage.VERIFICATION_FINAL_DONE,
+        }
         else "2"
         if stage
         in {
             SimpleStage.POC_EXECUTION_DONE,
-            SimpleStage.POC_CANDIDATE_DONE,
-            SimpleStage.VERIFICATION_FINAL_DONE,
             SimpleStage.TECH_GATE_DONE,
         }
         else "1"
@@ -123,7 +127,7 @@ class StageCheckpoint(ContractModel):
     bundle_manifest_ref: StoredDataRef | None = None
     bundle_archive_ref: StoredDataRef | None = None
     verdict: Literal["TRUE", "FALSE", "HOLD"] | None = None
-    gate_decision: Literal["ACCEPT", "REVISE", "REJECT"] | None = None
+    gate_decision: Literal["ACCEPT", "REVISE", "REJECT", "HOLD"] | None = None
     markdown_path: str | None = None
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -141,7 +145,7 @@ class StageResult(ContractModel):
     bundle_manifest_ref: StoredDataRef | None = None
     bundle_archive_ref: StoredDataRef | None = None
     verdict: Literal["TRUE", "FALSE", "HOLD"] | None = None
-    gate_decision: Literal["ACCEPT", "REVISE", "REJECT"] | None = None
+    gate_decision: Literal["ACCEPT", "REVISE", "REJECT", "HOLD"] | None = None
     recipe_ref: StoredDataRef | None = None
     image_digest: str | None = None
     container_id: str | None = None
@@ -160,7 +164,28 @@ class StageFailure(ContractModel):
 def terminal_poc_outcome(
     checkpoint: StageCheckpoint | None,
 ) -> Literal["INCONCLUSIVE"] | None:
-    """Return a completed, non-reportable PoC observation after bounded attempts."""
+    """Return a completed, non-reportable dynamic-analysis outcome."""
+
+    if (
+        checkpoint is not None
+        and checkpoint.stage is SimpleStage.VERIFICATION_INITIAL_DONE
+        and checkpoint.stage_version
+        == STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE]
+        and checkpoint.status is StageStatus.SUCCEEDED
+        and checkpoint.verdict == "HOLD"
+        and len(checkpoint.output_refs) == 1
+    ):
+        return "INCONCLUSIVE"
+
+    if (
+        checkpoint is not None
+        and checkpoint.stage is SimpleStage.POC_CANDIDATE_DONE
+        and checkpoint.stage_version == STAGE_VERSION[SimpleStage.POC_CANDIDATE_DONE]
+        and checkpoint.status is StageStatus.SUCCEEDED
+        and checkpoint.verdict == "HOLD"
+        and len(checkpoint.output_refs) == 1
+    ):
+        return "INCONCLUSIVE"
 
     if (
         checkpoint is not None
@@ -190,6 +215,8 @@ def terminal_gate_outcome(
         return None
     if checkpoint.gate_decision == "REJECT":
         return "REJECT"
+    if checkpoint.gate_decision == "HOLD":
+        return "INCONCLUSIVE"
     if checkpoint.gate_decision == "REVISE" and checkpoint.gate_revision_count >= 2:
         return "INCONCLUSIVE"
     return None

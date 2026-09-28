@@ -1565,6 +1565,18 @@ class DashboardQuery:
             (item for item in values if item.stage is SimpleStage.POC_EXECUTION_DONE),
             None,
         )
+        candidate = next(
+            (item for item in values if item.stage is SimpleStage.POC_CANDIDATE_DONE),
+            None,
+        )
+        initial = next(
+            (
+                item
+                for item in values
+                if item.stage is SimpleStage.VERIFICATION_INITIAL_DONE
+            ),
+            None,
+        )
         gate = next(
             (item for item in values if item.stage is SimpleStage.TECH_GATE_DONE),
             None,
@@ -1588,7 +1600,11 @@ class DashboardQuery:
             stage_count=len(values),
             error_code=progress.error_code,
             verdict=final.verdict if final else None,
-            disposition=terminal_poc_outcome(execution) or terminal_gate_outcome(gate),
+            disposition=(
+                terminal_poc_outcome(execution or candidate or initial)
+                or ("INCONCLUSIVE" if final and final.verdict == "HOLD" else None)
+                or terminal_gate_outcome(gate)
+            ),
             scope_status=str(review["status"]),
             scope_collection_status=str(source.get("collection_status", "UNVERIFIED")),
             scope_source_url=(
