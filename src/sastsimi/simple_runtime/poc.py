@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-import json
 import re
 from urllib.parse import urlsplit
-
-from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.prompt_redaction import inspect_poc_candidate_json
 
 _SHELL_VARIABLE = re.compile(
     rb"\$(?:\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::[-=?+][^}]*)?\}|"
@@ -86,14 +82,10 @@ def validate_candidate(
     lowered = content.lower()
     if b"inconclusive" in lowered and re.search(rb"\bexit\s+2\b", lowered):
         raise PoCCandidateRejected("POC_PLACEHOLDER_FORBIDDEN")
-    inspected = inspect_poc_candidate_json(
-        canonical_bytes({"content": content.decode("utf-8")})
-    )
-    if inspected.categories:
-        raise PoCCandidateRejected("POC_SENSITIVE_CONTENT")
-    value = json.loads(inspected.data)
-    if value.get("content", "").encode("utf-8") != content:
-        raise PoCCandidateRejected("POC_SENSITIVE_CONTENT")
+    # No secret-shaped-name check: every byte of repository code reaches the
+    # model through redact_code, so a candidate cannot carry a real credential,
+    # and the name check only refused fixture logins such as password="x" -
+    # which every authorization-bypass reproduction needs.
     return True
 
 

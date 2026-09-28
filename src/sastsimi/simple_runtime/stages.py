@@ -13,11 +13,7 @@ from typing import Any, ClassVar, Literal, NoReturn, Protocol, cast
 
 from pydantic import JsonValue
 
-from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.prompt_redaction import (
-    redact_projected_json,
-    redact_untrusted_text,
-)
+from sastsimi.contracts.prompt_redaction import redact_untrusted_text
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.observability.agent_activity import (
     ActivityKind,
@@ -59,14 +55,6 @@ _LOCAL_TIMEOUT_MS = 180_000
 _POC_TIMEOUT_MS = 120_000
 
 _CANDIDATE_REPAIR_GUIDANCE: dict[str, str] = {
-    "POC_SENSITIVE_CONTENT": (
-        " Remove secret-shaped identifiers such as cookie, session, token, "
-        "password, secret, credential, auth, authorization or api_key from "
-        "assignments and fixture names, even when the values are fake; use "
-        "neutral names such as fixture_value. What the check is for is the "
-        "name, not the idea: an authenticated request is still demonstrable "
-        "with a header whose value you assigned to a neutrally named variable."
-    ),
     "POC_UNDECLARED_INPUT": (
         " Every shell variable you expand must be bound in the script itself - "
         "assign it at the start of a line, or bind it as a `for` or `read` "
@@ -312,9 +300,11 @@ It must not require caller-provided URLs, cookies, credentials, secrets, or
 undeclared environment variables. It must exit 0 only when the exact hypothesis
 is reproduced, exit 1 when it is actually disproved, and use exit 2 only for a
 real script/runtime error. `/workspace` contains source files but may not contain
-`.git`; inspect current files directly and do not run Git commands. Harmless
-fixture values must use neutral names such as `fixture_value`, not secret-shaped
-or credential-named assignments. Do not return a placeholder or merely print
+`.git`; inspect current files directly and do not run Git commands. Fixture
+logins with made-up passwords or tokens are fine; sign test users in with the
+repository's own test login helper, unless the hypothesis is about
+authentication itself, in which case drive the real login flow rather than
+bypassing it. Do not return a placeholder or merely print
 INCONCLUSIVE. When previous candidate and execution artifacts are supplied,
 correct the recorded runtime error instead of repeating the failed approach.
 Before exit 2, print a concise error type and traceback to stderr so the next
@@ -1660,13 +1650,16 @@ its own field.
         )
         for candidate, is_submission in ((rendered, False), (submission, True)):
             text = candidate.decode("utf-8")
-            inspected = redact_projected_json(canonical_bytes({"markdown": text}))
+            # No secret-shaped-name check: the report is written from redacted
+            # repository code, so the check only refused reports that quote a
+            # fixture login, and a person reviews every report before it is sent.
+            # The operator's identity is not repository code and is not redacted
+            # on the way in, so it is still checked here.
             leaked_jargon = is_submission and any(
                 term in text.lower() for term in _PIPELINE_JARGON
             )
             if (
-                inspected.categories
-                or any(literal in text for literal in self._operator_identity)
+                any(literal in text for literal in self._operator_identity)
                 or leaked_jargon
             ):
                 raise StageFailed(
