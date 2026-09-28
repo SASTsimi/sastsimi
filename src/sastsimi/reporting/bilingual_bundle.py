@@ -19,6 +19,7 @@ from sastsimi.contracts.reporting import (
     validate_report_content,
 )
 from sastsimi.contracts.static import CodeLocation
+from sastsimi.reporting.coverage_disclosure import CoverageDisclosure
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -70,6 +71,7 @@ class BundleFacts:
     poc_original_sha256: str
     source_refs: tuple[tuple[str, StoredDataRef], ...]
     allowed_locations: tuple[CodeLocation, ...] = ()
+    coverage: CoverageDisclosure | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -136,6 +138,68 @@ def _source_lines(facts: BundleFacts) -> list[str]:
         f"SHA-256 `{ref.content_hash}`"
         for name, ref in facts.source_refs
     ]
+
+
+def coverage_report_lines(
+    coverage: CoverageDisclosure | None, *, korean: bool
+) -> list[str]:
+    def reason_summary(items: tuple[tuple[str, int], ...]) -> str:
+        principal = sorted(items, key=lambda item: (-item[1], item[0]))[:8]
+        remaining = sum(count for _, count in items) - sum(
+            count for _, count in principal
+        )
+        summary = [f"{reason} ({count})" for reason, count in principal]
+        if remaining:
+            summary.append(f"other ({remaining})")
+        return ", ".join(summary) or "none"
+
+    finding_limit = (
+        "- Finding 확인은 저장소 전체 검사 완료를 뜻하지 않습니다."
+        if korean
+        else "- A confirmed Finding does not prove a full repository scan."
+    )
+    if coverage is None:
+        return [
+            "- 정적 분석 범위 미확인: 이 보고서에는 전체 검사 증명이 없습니다."
+            if korean
+            else (
+                "- Static scan coverage unknown: this report has no proof "
+                "of a full scan."
+            ),
+            finding_limit,
+        ]
+    reasons = reason_summary(coverage.gap_reasons)
+    unsupported = reason_summary(coverage.unsupported_reasons)
+    lines = [
+        f"- {'정적 분석 상태' if korean else 'Static scan status'}: "
+        f"`{'PARTIAL' if coverage.partial else 'FULL'}`",
+        f"- {'검증된 파일/규칙 쌍' if korean else 'Verified file/rule pairs'}: "
+        f"{coverage.verified_count} / {coverage.expected_count}",
+        f"- {'검증되지 않은 쌍' if korean else 'Unverified pairs'}: "
+        f"{coverage.gap_count}",
+        f"- {'미지원 제품 파일' if korean else 'Unsupported product files'}: "
+        f"{coverage.unsupported_count}",
+        f"- {'미검증 이유' if korean else 'Gap reasons'}: {reasons or 'none'}",
+        f"- {'미지원 이유' if korean else 'Unsupported reasons'}: "
+        f"{unsupported or 'none'}",
+        f"- {'엔진 오류' if korean else 'Engine errors'}: "
+        f"{', '.join(coverage.engine_errors) or 'none'}",
+        f"- {'범위 증거 SHA-256' if korean else 'Coverage artifact SHA-256'}: "
+        f"`{coverage.ref.content_hash}`",
+    ]
+    if coverage.partial:
+        lines.append(
+            "- PARTIAL 경고: 정적 분석이 불완전합니다. Finding 확인은 "
+            "저장소 전체 검사 완료를 뜻하지 않습니다."
+            if korean
+            else (
+                "- PARTIAL warning: static analysis is incomplete. "
+                "A confirmed Finding does not mean the full repository scan completed."
+            )
+        )
+    else:
+        lines.append(finding_limit)
+    return lines
 
 
 def _render_report(
@@ -234,6 +298,7 @@ def _render_report(
         f"- Technical Gate: `{facts.technical_status}`",
         f"- Scope Gate: `{facts.scope_status}`",
         labeled("Report permission", "제보 허용 상태", f"`{facts.report_permission}`"),
+        *coverage_report_lines(facts.coverage, korean=korean),
         *(
             [f"- {item}" for item in prose.limitations]
             if prose.limitations
@@ -313,6 +378,22 @@ def render_bundle_files(
         "technical_status": facts.technical_status,
         "scope_status": facts.scope_status,
         "report_permission": facts.report_permission,
+        "static_coverage": (
+            {
+                "ref": facts.coverage.ref.model_dump(mode="json"),
+                "disposition": "PARTIAL" if facts.coverage.partial else "FULL",
+                "fingerprint": facts.coverage.fingerprint,
+                "expected_count": facts.coverage.expected_count,
+                "verified_count": facts.coverage.verified_count,
+                "gap_count": facts.coverage.gap_count,
+                "unsupported_count": facts.coverage.unsupported_count,
+                "gap_reasons": dict(facts.coverage.gap_reasons),
+                "unsupported_reasons": dict(facts.coverage.unsupported_reasons),
+                "engine_errors": facts.coverage.engine_errors,
+            }
+            if facts.coverage is not None
+            else None
+        ),
         "execution": {
             "command": command.decode("utf-8"),
             "command_redacted": command_redacted,

@@ -1,4 +1,4 @@
-"""Conservative, auditable test-file policy for pinned repository sources."""
+"""Conservative product-source scope for pinned repository files."""
 
 from __future__ import annotations
 
@@ -8,15 +8,40 @@ import re
 import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 
-_POLICY_VERSION = 1
-_TEST_DIRECTORIES = frozenset({"test", "tests", "__test__", "__tests__"})
+_POLICY_VERSION = 4
+_TEST_DIRECTORIES = frozenset(
+    {
+        "test",
+        "tests",
+        "__test__",
+        "__tests__",
+        "spec",
+        "specs",
+        "__specs__",
+        "e2e",
+        "testdata",
+        "unit_tests",
+        "integration_tests",
+        "functional_tests",
+        "benchmarks",
+        "stress-test",
+        "stress_tests",
+    }
+)
 _PYTHON_TEST_NAME = re.compile(r"(?:test_.+|.+_test)\.py\Z", re.IGNORECASE)
 _JS_TEST_NAME = re.compile(
-    r".+\.(?:test|spec)\.(?:js|jsx|ts|tsx|mjs|cjs)\Z", re.IGNORECASE
+    r".+\.(?:test|spec)\.(?:js|jsx|ts|tsx|mjs|cjs|mts|cts)\Z", re.IGNORECASE
+)
+_SHELL_TEST_NAME = re.compile(r"(?:test_.+|.+_test)\.(?:sh|bash)\Z", re.IGNORECASE)
+_TEST_RUNNER_ASSET_NAME = re.compile(
+    r"(?:vitest|jest)(?:[.-].+)?\."
+    r"(?:css|scss|less|js|jsx|ts|tsx|mjs|cjs|mts|cts)\Z",
+    re.IGNORECASE,
 )
 _PYTHON_TEST_CONTENT = re.compile(
     r"(?m)^\s*(?:import\s+(?:pytest|unittest)\b|"
@@ -30,23 +55,23 @@ _JS_TEST_CONTENT = re.compile(
     r"(?:describe|it|test)\s*\()"
 )
 _MAX_CONTENT_BYTES = 64 * 1024
-
-
-@dataclass(frozen=True, slots=True)
-class TestExclusion:
-    path: str
-    reason: str
-    status: str = "EXCLUDED_TEST_FILE"
+_MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
 class StaticFileScope:
-    all_tracked: tuple[str, ...]
     selected_paths: tuple[str, ...]
-    excluded_test_files: tuple[TestExclusion, ...]
     fingerprint: str
-    include_tests: bool
     policy_version: int = _POLICY_VERSION
+
+
+class StaticScopeManifestUnverified(ValueError):
+    """A package declaration might point at an otherwise test-like path."""
+
+    retryable = False
+
+    def __init__(self) -> None:
+        super().__init__("STATIC_SCOPE_MANIFEST_UNVERIFIED")
 
 
 def _validate_tracked_path(path: str) -> None:
@@ -61,16 +86,44 @@ def _validate_tracked_path(path: str) -> None:
         raise ValueError("STATIC_SCOPE_TRACKED_PATH_INVALID")
 
 
-def _safe_read(root: Path, relative: str, *, max_bytes: int) -> bytes | None:
+def _safe_regular_file(root: Path, relative: str) -> Path | None:
     candidate = root / relative
     try:
         resolved = candidate.resolve(strict=True)
         resolved.relative_to(root)
         if not candidate.is_file() or candidate.is_symlink():
             return None
+        return candidate
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _safe_read(root: Path, relative: str, *, max_bytes: int) -> bytes | None:
+    candidate = _safe_regular_file(root, relative)
+    if candidate is None:
+        return None
+    try:
         with candidate.open("rb") as stream:
             data = stream.read(max_bytes + 1)
         return data if len(data) <= max_bytes else None
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _safe_test_content_samples(root: Path, relative: str) -> tuple[bytes, ...] | None:
+    candidate = _safe_regular_file(root, relative)
+    if candidate is None:
+        return None
+    try:
+        with candidate.open("rb") as stream:
+            prefix = stream.read(_MAX_CONTENT_BYTES + 1)
+            if len(prefix) <= _MAX_CONTENT_BYTES:
+                return (prefix,)
+            # Keep the preceding byte so the tail cannot invent a word/line
+            # boundary in the middle of a production identifier.
+            stream.seek(-(_MAX_CONTENT_BYTES + 1), 2)
+            suffix = b"x" + stream.read(_MAX_CONTENT_BYTES + 1)
+        return (prefix[:_MAX_CONTENT_BYTES], suffix)
     except (OSError, RuntimeError, ValueError):
         return None
 
@@ -101,8 +154,11 @@ def _declared_entry_paths(
         name = PurePosixPath(manifest).name
         if name not in {"pyproject.toml", "package.json"}:
             continue
+        if _test_reason(root, manifest) is not None:
+            # Test fixture manifests are not deployed package declarations.
+            continue
         base = PurePosixPath(manifest).parent
-        raw = _safe_read(root, manifest, max_bytes=_MAX_CONTENT_BYTES)
+        raw = _safe_read(root, manifest, max_bytes=_MAX_MANIFEST_BYTES)
         if raw is None:
             uncertain_roots.add(base.as_posix())
             continue
@@ -151,14 +207,20 @@ def _declared_entry_paths(
                     data.get("exports"),
                 ]
             ):
-                if not value.startswith("./"):
-                    continue
-                relative = value[2:]
-                if not relative or any(
-                    part in {"", ".", ".."} for part in relative.split("/")
+                relative = value[2:] if value.startswith("./") else value
+                if (
+                    not relative
+                    or any(part in {"", ".", ".."} for part in relative.split("/"))
+                    or (relative.startswith("/") or "\\" in relative or ":" in relative)
                 ):
                     continue
-                candidates.add((base / relative).as_posix())
+                candidate = (base / relative).as_posix()
+                if any(character in relative for character in "*?["):
+                    candidates.update(
+                        path for path in tracked if fnmatchcase(path, candidate)
+                    )
+                else:
+                    candidates.add(candidate)
     return frozenset(candidates & tracked_set), frozenset(uncertain_roots)
 
 
@@ -168,10 +230,24 @@ def _under_uncertain_root(path: str, roots: frozenset[str]) -> bool:
 
 def _test_reason(root: Path, path: str) -> str | None:
     parts = PurePosixPath(path).parts
-    for component in parts[:-1]:
-        if component.casefold() in _TEST_DIRECTORIES:
-            return f"test-directory:{component.casefold()}"
+    directories = tuple(component.casefold() for component in parts[:-1])
+    for component in directories:
+        if component in _TEST_DIRECTORIES:
+            return f"test-directory:{component}"
+    if any(
+        component == "eslint" and "fixtures" in directories[index + 1 :]
+        for index, component in enumerate(directories)
+    ):
+        return "test-directory:eslint-fixtures"
     name = parts[-1]
+    if name.casefold() in {"conftest.py", "pytest.ini"}:
+        return "test-basename:pytest"
+    if _SHELL_TEST_NAME.fullmatch(name):
+        return "test-basename:shell"
+    if _TEST_RUNNER_ASSET_NAME.fullmatch(name):
+        return "test-basename:test-runner"
+    if name.endswith("_test.go"):
+        return "test-basename:go"
     if _PYTHON_TEST_NAME.fullmatch(name):
         language = "python"
         pattern = _PYTHON_TEST_CONTENT
@@ -180,60 +256,58 @@ def _test_reason(root: Path, path: str) -> str | None:
         pattern = _JS_TEST_CONTENT
     else:
         return None
-    raw = _safe_read(root, path, max_bytes=_MAX_CONTENT_BYTES)
-    if raw is None:
+    samples = _safe_test_content_samples(root, path)
+    if samples is None:
         return None
-    try:
-        contents = raw.decode("utf-8")
-    except UnicodeError:
-        return None
-    return f"test-basename+content:{language}" if pattern.search(contents) else None
+    for raw in samples:
+        try:
+            contents = raw.decode("utf-8")
+        except UnicodeError:
+            if len(samples) == 1:
+                return None
+            contents = raw.decode("utf-8", errors="ignore")
+        if pattern.search(contents):
+            return f"test-basename+content:{language}"
+    return None
 
 
-def build_static_file_scope(
-    workspace: Path, tracked: Sequence[str], *, include_tests: bool
-) -> StaticFileScope:
-    """Return deterministic selected and excluded paths for one pinned checkout."""
+def build_static_file_scope(workspace: Path, tracked: Sequence[str]) -> StaticFileScope:
+    """Return a deterministic product-only path set for one pinned checkout."""
 
     root = workspace.resolve()
     paths = tuple(sorted(set(tracked)))
     for path in paths:
         _validate_tracked_path(path)
-    protected, uncertain_roots = (
-        _declared_entry_paths(root, paths)
-        if not include_tests
-        else (frozenset(), frozenset())
-    )
-    excluded = tuple(
-        TestExclusion(path, reason)
-        for path in paths
-        if not include_tests
-        and path not in protected
-        and not _under_uncertain_root(path, uncertain_roots)
-        and (reason := _test_reason(root, path)) is not None
-    )
-    excluded_paths = {item.path for item in excluded}
-    selected = tuple(path for path in paths if path not in excluded_paths)
+    protected, uncertain_roots = _declared_entry_paths(root, paths)
+    selected_paths: list[str] = []
+    for path in paths:
+        if path in protected:
+            selected_paths.append(path)
+            continue
+        test_reason = _test_reason(root, path)
+        if test_reason is None:
+            selected_paths.append(path)
+        elif _under_uncertain_root(path, uncertain_roots):
+            # A missing/invalid package declaration might identify this path
+            # as a deployed entry point. Do not silently mark the scope done.
+            raise StaticScopeManifestUnverified()
+    selected = tuple(selected_paths)
     fingerprint = hashlib.sha256(
         canonical_bytes(
             {
                 "policy_version": _POLICY_VERSION,
-                "include_tests": include_tests,
-                "all_tracked": paths,
                 "selected_paths": selected,
-                "excluded_test_files": [
-                    {"path": item.path, "reason": item.reason} for item in excluded
-                ],
             }
         )
     ).hexdigest()
     return StaticFileScope(
-        all_tracked=paths,
         selected_paths=selected,
-        excluded_test_files=excluded,
         fingerprint=fingerprint,
-        include_tests=include_tests,
     )
 
 
-__all__ = ["StaticFileScope", "TestExclusion", "build_static_file_scope"]
+__all__ = [
+    "StaticFileScope",
+    "StaticScopeManifestUnverified",
+    "build_static_file_scope",
+]

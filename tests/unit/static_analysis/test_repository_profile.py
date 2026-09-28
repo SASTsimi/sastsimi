@@ -462,6 +462,29 @@ def test_profile_uses_only_exact_tracked_files_and_detects_known_inputs(
     assert all(len(item.content_sha256) == 64 for item in result.tracked_files)
 
 
+def test_profile_discards_test_only_sources_and_invalid_test_package(
+    tmp_path: Path,
+) -> None:
+    tracked = (
+        _write(tmp_path, "src/app.py", b"print('product')\n"),
+        _write(tmp_path, "Dockerfile", b"FROM python:3.12-slim\n"),
+        _write(tmp_path, "tests/test_app.py", b"def test_app(): pass\n"),
+        _write(tmp_path, "tests/fixture.ts", b"export const fixture = true;\n"),
+        _write(tmp_path, "tests/package.json", b"{invalid json"),
+    )
+
+    result = _build(tmp_path, tracked)
+
+    assert result.status == "READY"
+    assert [language.name for language in result.languages] == ["PYTHON"]
+    assert [item.git_path for item in result.tracked_files] == [
+        "Dockerfile",
+        "src/app.py",
+    ]
+    assert [item.path for item in result.config_files] == ["Dockerfile"]
+    assert result.confirmation_reasons == ()
+
+
 def test_profile_fails_closed_when_a_tracked_blob_changed(tmp_path: Path) -> None:
     tracked = (_write(tmp_path, "app.py", b"print('safe')\n"),)
     (tmp_path / "app.py").write_text("print('changed')\n")
@@ -473,6 +496,35 @@ def test_profile_fails_closed_when_a_tracked_blob_changed(tmp_path: Path) -> Non
             workspace_ref=_workspace_ref(),
             action_decision_ref=_decision_ref(),
         )
+
+
+def test_profile_verifies_discarded_test_blob_before_profiling(tmp_path: Path) -> None:
+    tracked = (
+        _write(tmp_path, "app.py", b"print('product')\n"),
+        _write(tmp_path, "tests/test_app.py", b"def test_app(): pass\n"),
+    )
+    (tmp_path / "tests" / "test_app.py").write_text("changed\n")
+
+    with pytest.raises(ValueError, match="REPOSITORY_MANIFEST_MISMATCH"):
+        _build(tmp_path, tracked)
+
+
+def test_profile_preserves_declared_product_entrypoint_under_test_named_directory(
+    tmp_path: Path,
+) -> None:
+    tracked = (
+        _write(tmp_path, "package.json", b'{"main":"./tests/runtime.js"}'),
+        _write(tmp_path, "tests/runtime.js", b"export const runtime = true;\n"),
+        _write(tmp_path, "tests/fixture.js", b"export const fixture = true;\n"),
+    )
+
+    result = _build(tmp_path, tracked)
+
+    assert [language.name for language in result.languages] == ["JAVASCRIPT"]
+    assert [item.git_path for item in result.tracked_files] == [
+        "package.json",
+        "tests/runtime.js",
+    ]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows path/descriptor mode semantics")

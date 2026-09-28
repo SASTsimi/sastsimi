@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol, cast
 
 from sastsimi.contracts.actions import ActionRequest, ActionType, RequesterRole
@@ -53,7 +54,9 @@ from sastsimi.ports.static_workflows import (
     ContextRetrievalServicePort,
     StaticToolServicePort,
 )
+from sastsimi.ports.workspace import WorkspaceLocatorPort
 from sastsimi.runtime.workflow_runner import WorkflowRunner
+from sastsimi.static_analysis.file_scope import build_static_file_scope
 from sastsimi.static_analysis.repository_profile import static_tool_work_inputs
 from sastsimi.storage.context_policy import resolve_context_ceiling
 
@@ -117,9 +120,15 @@ def require_current_work_context(
 def selected_static_paths(
     tracked: tuple[RepositoryTrackedFile, ...],
     tool: RepositorySelectedTool,
+    *,
+    workspace_root: Path,
 ) -> tuple[str, ...]:
-    """Return only tracked source paths for the exact selected languages."""
+    """Return product source paths for the exact selected languages."""
 
+    scope = build_static_file_scope(
+        workspace_root, tuple(str(item.git_path) for item in tracked)
+    )
+    selected = frozenset(scope.selected_paths)
     suffixes = frozenset(
         suffix for language in tool.languages for suffix in _LANGUAGE_SUFFIXES[language]
     )
@@ -127,12 +136,26 @@ def selected_static_paths(
         sorted(
             str(item.git_path)
             for item in tracked
-            if any(str(item.git_path).lower().endswith(suffix) for suffix in suffixes)
+            if str(item.git_path) in selected
+            and any(str(item.git_path).lower().endswith(suffix) for suffix in suffixes)
         )
     )
-    if not paths:
-        raise ValueError("STATIC_TOOL_PATHS_EMPTY")
     return paths
+
+
+def _static_tool_scope_key(
+    selection_ref: StoredDataRef,
+    profile_ref: HostConfigurationRef,
+    scope_fingerprint: str,
+) -> str:
+    return (
+        "static-tool:"
+        + selection_ref.content_hash
+        + ":"
+        + profile_ref.content_hash
+        + ":"
+        + scope_fingerprint
+    )
 
 
 def _require_code_scope(meta: RecordMeta, refs: tuple[StoredDataRef, ...]) -> None:
@@ -264,6 +287,7 @@ class StaticProductionGraph:
         work_query: RunWorkQueryPort,
         requester_identity_ref: BudgetScopeRef,
         routes: tuple[StaticToolRoute, ...],
+        workspace_locator: WorkspaceLocatorPort,
     ) -> None:
         if not routes or len({item.tool_profile_ref for item in routes}) != len(routes):
             raise ValueError("STATIC_TOOL_ROUTE_INVALID")
@@ -271,6 +295,7 @@ class StaticProductionGraph:
         self.work_query = work_query
         self.requester_identity_ref = requester_identity_ref
         self._routes = {item.tool_profile_ref: item for item in routes}
+        self.workspace_locator = workspace_locator
 
     def route_for(self, profile_ref: HostConfigurationRef) -> StaticToolRoute:
         try:
@@ -324,6 +349,24 @@ class StaticProductionGraph:
             or current.output_refs != (repository_ref, selection_ref)
         ):
             raise ValueError("STATIC_TOOL_FANOUT_INPUT_INVALID")
+        workspace = self.runner.runtime.unit_of_work.records.get_exact(
+            repository.workspace_ref
+        )
+        if (
+            not isinstance(workspace, CodeWorkspace)
+            or reference(workspace) != repository.workspace_ref
+        ):
+            raise ValueError("STATIC_TOOL_FANOUT_INPUT_INVALID")
+        workspace_root = self.workspace_locator.root_for(workspace)
+        file_scope = build_static_file_scope(
+            workspace_root,
+            tuple(str(item.git_path) for item in repository.tracked_files),
+        )
+        self._require_current_tool_scope(
+            selection_ref,
+            file_scope.fingerprint,
+            str(current.meta.analysis_id),
+        )
         scope = self._budget_scope(current)
         plans: list[
             tuple[
@@ -359,8 +402,13 @@ class StaticProductionGraph:
                 != (route.rule_catalog_ref is not None)
             ):
                 raise ValueError("STATIC_TOOL_ROUTE_INVALID")
-            paths = selected_static_paths(repository.tracked_files, selected)
-            plans.append((selected, route, resolved, paths))
+            paths = selected_static_paths(
+                repository.tracked_files, selected, workspace_root=workspace_root
+            )
+            if paths:
+                plans.append((selected, route, resolved, paths))
+        if not plans:
+            raise ValueError("STATIC_PRODUCT_SOURCE_EMPTY")
 
         created: list[WorkExecutionState] = []
         for selected, route, _profile, _paths in plans:
@@ -381,11 +429,10 @@ class StaticProductionGraph:
                     SubjectType.ANALYSIS,
                     str(current.meta.analysis_id),
                     self.requester_identity_ref,
-                    stable_key=(
-                        "static-tool:"
-                        + selection_ref.content_hash
-                        + ":"
-                        + selected.tool_profile_ref.content_hash
+                    stable_key=_static_tool_scope_key(
+                        selection_ref,
+                        selected.tool_profile_ref,
+                        file_scope.fingerprint,
                     ),
                     inputs=inputs,
                 )
@@ -414,13 +461,48 @@ class StaticProductionGraph:
             or selection.status != "READY"
         ):
             raise ValueError("STATIC_TOOL_JOIN_INPUT_INVALID")
+        repository = self.runner.runtime.unit_of_work.records.get_exact(
+            selection.repository_profile_ref
+        )
+        if (
+            not isinstance(repository, RepositoryProfile)
+            or reference(repository) != selection.repository_profile_ref
+            or selection.repository_profile_ref not in current.input_refs
+            or repository.workspace_ref not in current.input_refs
+        ):
+            raise ValueError("STATIC_TOOL_JOIN_INPUT_INVALID")
+        workspace = self.runner.runtime.unit_of_work.records.get_exact(
+            repository.workspace_ref
+        )
+        if (
+            not isinstance(workspace, CodeWorkspace)
+            or reference(workspace) != repository.workspace_ref
+        ):
+            raise ValueError("STATIC_TOOL_JOIN_INPUT_INVALID")
+        workspace_root = self.workspace_locator.root_for(workspace)
+        file_scope = build_static_file_scope(
+            workspace_root,
+            tuple(str(item.git_path) for item in repository.tracked_files),
+        )
+        self._require_current_tool_scope(
+            selection_ref,
+            file_scope.fingerprint,
+            str(current.meta.analysis_id),
+        )
+        active_tools = tuple(
+            item
+            for item in selection.selected_tools
+            if selected_static_paths(
+                repository.tracked_files, item, workspace_root=workspace_root
+            )
+        )
         works = tuple(
             item
             for item in self.work_query.work_for_run(str(current.meta.analysis_id))
             if item.work_type == WorkType.STATIC_TOOL
             and selection_ref in item.input_refs
         )
-        expected_profiles = {item.tool_profile_ref for item in selection.selected_tools}
+        expected_profiles = {item.tool_profile_ref for item in active_tools}
         actual: dict[HostConfigurationRef, WorkExecutionState] = {}
         for item in works:
             refs = tuple(
@@ -433,9 +515,7 @@ class StaticProductionGraph:
             return None
         if any(item.status not in TERMINAL_WORK_STATUSES for item in actual.values()):
             return None
-        ordered = tuple(
-            actual[item.tool_profile_ref] for item in selection.selected_tools
-        )
+        ordered = tuple(actual[item.tool_profile_ref] for item in active_tools)
         if any(
             len(
                 tuple(
@@ -448,9 +528,7 @@ class StaticProductionGraph:
             for item in ordered
         ):
             return None
-        routes = tuple(
-            self.route_for(item.tool_profile_ref) for item in selection.selected_tools
-        )
+        routes = tuple(self.route_for(item.tool_profile_ref) for item in active_tools)
         configs = {route.analysis_config_ref for route in routes}
         if len(configs) != 1:
             raise ValueError("STATIC_ANALYSIS_CONFIG_MISMATCH")
@@ -461,11 +539,6 @@ class StaticProductionGraph:
                 key=lambda ref: (ref.data_kind, ref.content_hash),
             )
         )
-        repository = self.runner.runtime.unit_of_work.records.get_exact(
-            selection.repository_profile_ref
-        )
-        if not isinstance(repository, RepositoryProfile):
-            raise ValueError("STATIC_TOOL_JOIN_INPUT_INVALID")
         inputs: tuple[RecordRef, ...] = (
             repository.workspace_ref,
             *tool_work_refs,
@@ -479,9 +552,35 @@ class StaticProductionGraph:
             SubjectType.ANALYSIS,
             str(current.meta.analysis_id),
             self.requester_identity_ref,
-            stable_key="static-normalize:" + selection_ref.content_hash,
+            stable_key=(
+                "static-normalize:"
+                + selection_ref.content_hash
+                + ":"
+                + file_scope.fingerprint
+            ),
             inputs=inputs,
         )
+
+    def _require_current_tool_scope(
+        self,
+        selection_ref: StoredDataRef,
+        scope_fingerprint: str,
+        analysis_id: str,
+    ) -> None:
+        for work in self.work_query.work_for_run(analysis_id):
+            if (
+                work.work_type != WorkType.STATIC_TOOL
+                or selection_ref not in work.input_refs
+            ):
+                continue
+            profiles = tuple(
+                ref for ref in work.input_refs if isinstance(ref, HostConfigurationRef)
+            )
+            if len(profiles) != 1:
+                raise ValueError("STATIC_TOOL_JOIN_INPUT_INVALID")
+            key = _static_tool_scope_key(selection_ref, profiles[0], scope_fingerprint)
+            if work.dedupe_key != content_hash([key, work.input_refs]):
+                raise ValueError("STATIC_SCOPE_CHANGED_NEW_ANALYSIS_REQUIRED")
 
     def ensure_initial_hypothesis(
         self,
@@ -825,7 +924,13 @@ class ExactStaticToolCallResolver:
             != (route.rule_catalog_ref is not None)
         ):
             raise ValueError("STATIC_TOOL_CALL_INVALID")
-        paths = selected_static_paths(repository.tracked_files, selected[0])
+        paths = selected_static_paths(
+            repository.tracked_files,
+            selected[0],
+            workspace_root=self.graph.workspace_locator.root_for(workspace),
+        )
+        if not paths:
+            raise ValueError("STATIC_TOOL_PATHS_EMPTY")
         existing_action = resolve_static_tool_recovery_action(
             self.runner,
             context,

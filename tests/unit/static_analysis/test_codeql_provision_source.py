@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 
@@ -118,3 +119,156 @@ def test_prepared_source_rejects_wrong_commit_or_modified_tracked_content(
             commit_id=commit,
             destination=modified_destination,
         )
+
+
+def test_prepared_source_omits_test_files_and_test_only_commits_do_not_change_identity(
+    tmp_path: Path,
+) -> None:
+    repository, _ = _repository(tmp_path)
+    tests = repository / "tests"
+    tests.mkdir()
+    test_file = tests / "test_app.py"
+    test_file.write_text("def test_app():\n    assert True\n", encoding="utf-8")
+
+    def commit_test_revision() -> str:
+        subprocess.run(
+            (str(_git()), "-C", str(repository), "add", "--", "tests/test_app.py"),
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            (str(_git()), "-C", str(repository), "commit", "-m", "test revision"),
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return (
+            subprocess.run(
+                (str(_git()), "-C", str(repository), "rev-parse", "HEAD"),
+                check=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            .stdout.decode("ascii")
+            .strip()
+        )
+
+    first_commit = commit_test_revision()
+    first_destination = tmp_path / "first-source"
+    first_destination.mkdir()
+    first = prepare_exact_source(
+        git_executable=_git(),
+        repository_root=repository,
+        commit_id=first_commit,
+        destination=first_destination,
+    )
+
+    test_file.write_text("def test_app():\n    assert 1 == 1\n", encoding="utf-8")
+    second_commit = commit_test_revision()
+    second_destination = tmp_path / "second-source"
+    second_destination.mkdir()
+    second = prepare_exact_source(
+        git_executable=_git(),
+        repository_root=repository,
+        commit_id=second_commit,
+        destination=second_destination,
+    )
+
+    assert first_commit != second_commit
+    assert first.tracked_manifest_sha256 == second.tracked_manifest_sha256
+    for destination in (first_destination, second_destination):
+        assert tuple(
+            path.relative_to(destination).as_posix()
+            for path in sorted(destination.rglob("*"))
+            if path.is_file()
+        ) == (".gitignore", "app.py")
+
+
+def test_pinned_codeql_cli_database_archives_only_staged_product_source(
+    tmp_path: Path,
+) -> None:
+    if os.environ.get("SASTSIMI_TEST_REAL_CODEQL") != "1":
+        pytest.skip("explicit real CodeQL CLI verification is not enabled")
+    codeql = shutil.which("codeql")
+    if codeql is None:
+        pytest.skip("CodeQL CLI is unavailable")
+    version = (
+        subprocess.run(
+            (codeql, "version", "--format=terse"),
+            check=True,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=30,
+        )
+        .stdout.decode("ascii")
+        .strip()
+    )
+    if version != "2.27.0":
+        pytest.skip("pinned CodeQL 2.27.0 CLI is unavailable")
+
+    repository, _ = _repository(tmp_path)
+    (repository / "tests").mkdir()
+    (repository / "tests" / "test_app.py").write_text(
+        "def test_app():\n    assert True\n", encoding="utf-8"
+    )
+    subprocess.run(
+        (str(_git()), "-C", str(repository), "add", "--", "tests/test_app.py"),
+        check=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        (str(_git()), "-C", str(repository), "commit", "-m", "test source"),
+        check=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    commit = (
+        subprocess.run(
+            (str(_git()), "-C", str(repository), "rev-parse", "HEAD"),
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        .stdout.decode("ascii")
+        .strip()
+    )
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    prepare_exact_source(
+        git_executable=_git(),
+        repository_root=repository,
+        commit_id=commit,
+        destination=staged,
+    )
+    database = tmp_path / "codeql-database"
+
+    created = subprocess.run(
+        (
+            codeql,
+            "database",
+            "create",
+            str(database),
+            "--language=python",
+            f"--source-root={staged}",
+            "--threads=1",
+            "--ram=1024",
+        ),
+        check=False,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=180,
+    )
+
+    assert created.returncode == 0, created.stderr.decode(errors="replace")
+    with ZipFile(database / "src.zip") as archive:
+        paths = tuple(sorted(archive.namelist()))
+    assert any(path == "app.py" or path.endswith("/app.py") for path in paths)
+    assert not any(path.endswith("/tests/test_app.py") for path in paths)

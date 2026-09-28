@@ -11,7 +11,7 @@ from tests.unit.simple_runtime.test_call_queue import _Client, _success, _wrappe
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_and_transient_server_failures_retry_at_most_three(
+async def test_rate_limit_retries_at_most_three(
     tmp_path: Path,
 ) -> None:
     sleeps: list[float] = []
@@ -22,7 +22,7 @@ async def test_rate_limit_and_transient_server_failures_retry_at_most_three(
     inner = _Client(
         [
             StageFailure(code="RATE_LIMITED", retryable=True, safe_message="retry"),
-            StageFailure(code="FAILED", retryable=True, safe_message="retry"),
+            StageFailure(code="RATE_LIMITED", retryable=True, safe_message="retry"),
             _success(),
         ]
     )
@@ -36,6 +36,25 @@ async def test_rate_limit_and_transient_server_failures_retry_at_most_three(
     assert isinstance(result, SimpleLLMCallResult)
     assert inner.calls == 3
     assert sleeps[:2] == [0.5, 1.0]
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_server_failure_without_usage_prevents_retry(
+    tmp_path: Path,
+) -> None:
+    inner = _Client(
+        [
+            StageFailure(code="FAILED", retryable=True, safe_message="retry"),
+            _success(),
+        ]
+    )
+    result = await _wrapper(tmp_path, inner, asyncio.Semaphore(1)).call(
+        prompt=b"safe", output_schema={}, timeout_ms=1000
+    )
+
+    assert isinstance(result, StageFailure)
+    assert result.code == "LLM_TOKEN_USAGE_UNAVAILABLE"
+    assert inner.calls == 1
 
 
 @pytest.mark.asyncio

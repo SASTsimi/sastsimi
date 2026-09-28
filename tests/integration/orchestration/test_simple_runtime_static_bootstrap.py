@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import sqlite3
 import subprocess
-import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,7 +17,10 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime import bootstrap_stages as static_module
 from sastsimi.simple_runtime import semgrep_fallback as semgrep_module
-from sastsimi.simple_runtime.application import SimpleAnalysisRequest
+from sastsimi.simple_runtime.application import (
+    SimpleAnalysisRequest,
+    StaticBootstrapResult,
+)
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.bootstrap_stages import (
     DirectHypothesisBootstrap,
@@ -34,12 +37,183 @@ from sastsimi.simple_runtime.provider import SimpleLLMCallResult
 from sastsimi.simple_runtime.semgrep_fallback_plan import plan_semgrep_target_chunks
 from sastsimi.simple_runtime.static_coverage import (
     CoverageSlice,
+    StaticCandidateBudget,
     StaticCoveragePlan,
     finish_coverage,
     merge_static_candidates,
     plan_static_coverage,
 )
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
+from sastsimi.static_analysis.file_scope import build_static_file_scope
+
+
+def test_bounded_static_output_rejects_oversized_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "scan.json"
+    output.write_bytes(b"1234")
+    monkeypatch.setattr(
+        static_module, "_MAX_STATIC_SCAN_OUTPUT_BYTES", 3, raising=False
+    )
+
+    with pytest.raises(RuntimeError, match="^STATIC_SCAN_OUTPUT_TOO_LARGE$"):
+        static_module._read_static_scan_output(output)
+
+
+@pytest.mark.asyncio
+async def test_truncated_git_file_list_cannot_become_complete_coverage(
+    tmp_path: Path,
+) -> None:
+    class TruncatedListProcess(_Process):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1:3] == ("ls-files", "-z"):
+                return cast(
+                    ProcessResult,
+                    SimpleNamespace(
+                        returncode=0,
+                        stdout=b"app.py\0",
+                        stderr=b"",
+                        stdout_truncated=True,
+                        stderr_truncated=False,
+                    ),
+                )
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    profile = _profile(tmp_path)
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=TruncatedListProcess(),
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="^GIT_TRACKED_FILES_FAILED$"):
+        await bootstrap._tracked_files(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_incomplete_git_file_list_without_terminator_is_rejected(
+    tmp_path: Path,
+) -> None:
+    class IncompleteListProcess(_Process):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1:3] == ("ls-files", "-z"):
+                return ProcessResult(0, b"app.py", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    profile = _profile(tmp_path)
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=IncompleteListProcess(),
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="^GIT_TRACKED_FILES_FAILED$"):
+        await bootstrap._tracked_files(tmp_path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("truncated_command", "expected_code"),
+    [
+        ("status", "GIT_STATUS_FAILED"),
+        ("ignored", "GIT_IGNORED_FILES_FAILED"),
+    ],
+)
+async def test_truncated_git_cleanliness_output_is_rejected(
+    tmp_path: Path, truncated_command: str, expected_code: str
+) -> None:
+    class TruncatedCleanlinessProcess(_Process):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            is_status = argv[1] == "status"
+            is_ignored = argv[1:4] == ("ls-files", "--others", "--ignored")
+            if (truncated_command == "status" and is_status) or (
+                truncated_command == "ignored" and is_ignored
+            ):
+                return cast(
+                    ProcessResult,
+                    SimpleNamespace(
+                        returncode=0,
+                        stdout=b"",
+                        stderr=b"",
+                        stdout_truncated=True,
+                        stderr_truncated=False,
+                    ),
+                )
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    profile = _profile(tmp_path)
+    request = _request(profile)
+    workspace = _ready_workspace(tmp_path, request)
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=TruncatedCleanlinessProcess(),
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match=f"^{expected_code}$"):
+        await bootstrap._verify_opengrep_workspace(workspace, request)
+
+
+@pytest.mark.asyncio
+async def test_completed_static_scope_fingerprint_rejects_dirty_checkout(
+    tmp_path: Path,
+) -> None:
+    class DirtyResumeProcess(_Process):
+        dirty = False
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if self.dirty and argv[1:3] == ("status", "--porcelain=v1"):
+                return ProcessResult(0, b" M app.py\0", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    profile = _profile(tmp_path).model_copy(update={"workspace_root": tmp_path})
+    request = _request(profile)
+    _ready_workspace(tmp_path, request)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-dirty-resume",
+        workspace_id="checkout",
+        commit_id=request.commit,
+        hypothesis_id=None,
+    )
+    process = DirtyResumeProcess()
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=process,
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+
+    assert await bootstrap.coverage_fingerprint(request, identity)
+    process.dirty = True
+    with pytest.raises(RuntimeError, match="^WORKSPACE_DIRTY$"):
+        await bootstrap.coverage_fingerprint(request, identity)
 
 
 class _Process:
@@ -58,6 +232,7 @@ class _Process:
                 "def query(user):\n    return db.execute(user)\n",
                 encoding="utf-8",
             )
+            (root / "requirements.txt").write_text("", encoding="utf-8")
         elif argv[1:3] == ("rev-parse", "HEAD"):
             return ProcessResult(0, ("a" * 40).encode(), b"")
         elif argv[1:3] == ("ls-files", "-z"):
@@ -135,6 +310,161 @@ class _RecordingProcess(_Process):
             cwd=cwd,
             timeout_seconds=timeout_seconds,
         )
+
+
+@pytest.mark.asyncio
+async def test_product_scope_drives_ast_scan_manifest_and_coverage(
+    tmp_path: Path,
+) -> None:
+    class ProductScopeProcess(_Process):
+        def __init__(self) -> None:
+            self.scan_commands: list[tuple[str, ...]] = []
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "clone":
+                result = await super().run(
+                    argv, cwd=cwd, timeout_seconds=timeout_seconds
+                )
+                target = Path(argv[-1]) / "tests" / "test_broken.py"
+                target.parent.mkdir()
+                target.write_text("def broken(:\n", encoding="utf-8")
+                return result
+            if argv[1:3] == ("ls-files", "-z"):
+                return ProcessResult(0, b"app.py\0tests/test_broken.py\0", b"")
+            if argv[1] == "scan":
+                self.scan_commands.append(tuple(argv))
+                output = Path(argv[argv.index("--output") + 1])
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [],
+                            "errors": [],
+                            "paths": {"scanned": ["app.py"], "skipped": []},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    profile = _without_codeql(_profile(tmp_path))
+    identity = _identity("product-scope")
+    process = ProductScopeProcess()
+    result = await DirectStaticBootstrap(
+        profile=profile,
+        process=process,
+        store=_store(profile),
+        static_material_root=tmp_path,
+    ).run(_request(profile), identity)
+
+    assert process.scan_commands
+    assert all("app.py" in command for command in process.scan_commands)
+    assert all(
+        "tests/test_broken.py" not in command for command in process.scan_commands
+    )
+    assert all(
+        str(profile.workspace_root / identity.workspace_id) not in command
+        for command in process.scan_commands
+    )
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    bundle = json.loads(artifacts.read(result.static_bundle_ref))
+    manifest = json.loads(
+        artifacts.read(StoredDataRef.model_validate(bundle["source_manifest_ref"]))
+    )
+    coverage = json.loads(
+        artifacts.read(StoredDataRef.model_validate(bundle["static_coverage_ref"]))
+    )
+    assert manifest["paths"] == ["app.py"]
+    assert bundle["ast_summary"]["parse_error_count"] == 0
+    assert coverage["expected_count"] == coverage["verified_count"] == 1
+    for saved in (bundle, manifest, coverage):
+        serialized = json.dumps(saved, sort_keys=True)
+        assert "tests/test_broken.py" not in serialized
+        assert "EXCLUDED_TEST_FILE" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_test_only_checkout_cannot_succeed_with_zero_product_pairs(
+    tmp_path: Path,
+) -> None:
+    class TestOnlyProcess(_Process):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "clone":
+                root = Path(argv[-1])
+                (root / "tests").mkdir(parents=True)
+                (root / "README.md").write_text("Test fixture\n", encoding="utf-8")
+                (root / "tests" / "test_app.py").write_text(
+                    "def test_app(): pass\n", encoding="utf-8"
+                )
+                return ProcessResult(0, b"", b"")
+            if argv[1:3] == ("ls-files", "-z"):
+                return ProcessResult(0, b"README.md\0tests/test_app.py\0", b"")
+            if argv[1] == "scan":
+                pytest.fail("test-only checkout must not launch a scanner")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    profile = _without_codeql(_profile(tmp_path))
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=TestOnlyProcess(),
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+    with pytest.raises(StaticCoverageBlocked, match="STATIC_PRODUCT_SOURCE_EMPTY"):
+        await bootstrap.run(_request(profile), _identity("test-only-checkout"))
+
+
+@pytest.mark.asyncio
+async def test_uncovered_product_language_cannot_finish_complete(
+    tmp_path: Path,
+) -> None:
+    class MixedProductProcess(_Process):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "clone":
+                result = await super().run(
+                    argv, cwd=cwd, timeout_seconds=timeout_seconds
+                )
+                (Path(argv[-1]) / "main.go").write_text(
+                    "package main\nfunc main() {}\n", encoding="utf-8"
+                )
+                return result
+            if argv[1:3] == ("ls-files", "-z"):
+                return ProcessResult(0, b"app.py\0main.go\0", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    profile = _without_codeql(_profile(tmp_path))
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=MixedProductProcess(),
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+    identity = _identity("unsupported-product")
+    result = await bootstrap.run(_request(profile), identity)
+    assert result.static_disposition == "PARTIAL"
+    coverage = _coverage_from_ref(profile, identity, result.static_coverage_ref)
+    assert coverage["verified_count"] == coverage["expected_count"] == 1
+    assert coverage["unsupported_files"] == [
+        {"path": "main.go", "reason": "no_applicable_rule"}
+    ]
 
 
 def _profile(tmp_path: Path) -> SimpleExecutionProfile:
@@ -256,7 +586,7 @@ class _BatchProcess(_Process):
                     "results": [
                         {
                             "check_id": rule_id,
-                            "path": str(Path(argv[-1]) / "app.py"),
+                            "path": str(Path(cwd or argv[-1]) / "app.py"),
                             "start": {"line": 2},
                         }
                         for rule_id in self.rule_ids
@@ -272,7 +602,9 @@ class _BatchProcess(_Process):
 
 
 @pytest.mark.asyncio
-async def test_all_batches_use_original_config_and_full_root(tmp_path: Path) -> None:
+async def test_all_batches_use_original_config_and_product_target(
+    tmp_path: Path,
+) -> None:
     profile = _without_codeql(_profile(tmp_path))
     rule_ids = tuple(f"python.rule{index}" for index in range(7))
     _write_rules(tmp_path, rule_ids)
@@ -294,7 +626,7 @@ async def test_all_batches_use_original_config_and_full_root(tmp_path: Path) -> 
         assert argv[argv.index("--config") + 1] == str(
             tmp_path / "opengrep" / "rules.yml"
         )
-        assert argv[-1] == str(profile.workspace_root / identity.workspace_id)
+        assert argv[-1] == "app.py"
         assert cwd == profile.workspace_root / identity.workspace_id
         assert "--no-rewrite-rule-ids" in argv
         excluded = {
@@ -327,32 +659,21 @@ async def test_timeout_resume_reuses_first_batch(tmp_path: Path) -> None:
         store=store,
         static_material_root=tmp_path,
     )
-    with pytest.raises(RuntimeError, match="EXTERNAL_TOOL_TIMEOUT"):
-        await bootstrap.run(_request(profile), identity)
-
-    plan = plan_rule_batches(
-        (tmp_path / "opengrep" / "rules.yml").read_bytes(),
-        tool_version=profile.tools["opengrep"].version,
-        executable_sha256=profile.tools["opengrep"].executable_sha256,
+    first = await bootstrap.run(_request(profile), identity)
+    assert first.static_disposition == "PARTIAL"
+    coverage = _coverage_from_ref(profile, identity, first.static_coverage_ref)
+    assert 0 < coverage["verified_count"] < coverage["expected_count"]
+    attempts = store.list_static_scan_attempts(
+        identity, _request(profile).repository, coverage["fingerprint"]
     )
+    assert len(attempts) == 2
     assert (
-        store.opengrep_batch_ref(
-            identity,
-            _request(profile).repository,
-            plan.fingerprint,
-            plan.batches[0].key,
+        sum(
+            item.status == "SUCCEEDED" and item.raw_ref is not None for item in attempts
         )
-        is not None
+        == 1
     )
-    assert (
-        store.opengrep_batch_ref(
-            identity,
-            _request(profile).repository,
-            plan.fingerprint,
-            plan.batches[1].key,
-        )
-        is None
-    )
+    assert sum(item.error_code == "EXTERNAL_TOOL_TIMEOUT" for item in attempts) == 1
 
     result = await bootstrap.run(_request(profile), identity)
     assert result.static_bundle_ref is not None
@@ -388,8 +709,8 @@ async def test_shared_deadline_does_not_round_up_last_batch(
         static_material_root=tmp_path,
     )
 
-    with pytest.raises(RuntimeError, match="^EXTERNAL_TOOL_TIMEOUT$"):
-        await bootstrap.run(_request(profile), _identity("analysis-deadline"))
+    result = await bootstrap.run(_request(profile), _identity("analysis-deadline"))
+    assert result.static_disposition == "PARTIAL"
     assert len(process.scans) == 1
     assert process.scans[0][2] == 1
 
@@ -499,15 +820,18 @@ async def test_corrupt_cache_reexecutes_only_that_batch(
         store=store,
         static_material_root=tmp_path,
     )
-    await bootstrap.run(_request(profile), identity)
-    plan = plan_rule_batches(
-        (tmp_path / "opengrep" / "rules.yml").read_bytes(),
-        tool_version=profile.tools["opengrep"].version,
-        executable_sha256=profile.tools["opengrep"].executable_sha256,
+    first = await bootstrap.run(_request(profile), identity)
+    first_bundle = _coverage_from_ref(profile, identity, first.static_bundle_ref)
+    first_coverage = _coverage_from_ref(
+        profile,
+        identity,
+        StoredDataRef.model_validate(first_bundle["static_coverage_ref"]),
     )
-    ref = store.opengrep_batch_ref(
-        identity, _request(profile).repository, plan.fingerprint, plan.batches[0].key
+    attempts = store.list_static_scan_attempts(
+        identity, _request(profile).repository, first_coverage["fingerprint"]
     )
+    first_attempt = next(item for item in attempts if item.tool == "opengrep")
+    ref = first_attempt.raw_ref
     assert ref is not None
     artifacts = SimpleArtifactRepository(profile.data_dir, identity)
     path = artifacts.artifacts.path_for(ref.content_hash)
@@ -519,7 +843,14 @@ async def test_corrupt_cache_reexecutes_only_that_batch(
     await bootstrap.run(_request(profile), identity)
 
     assert len(process.scans) == 3
-    assert json.loads(artifacts.read(ref))["errors"] == []
+    replayed = store.list_static_scan_attempts(
+        identity, _request(profile).repository, first_coverage["fingerprint"]
+    )
+    replayed_attempt = next(
+        item for item in replayed if item.run_key == first_attempt.run_key
+    )
+    assert replayed_attempt.raw_ref is not None
+    assert json.loads(artifacts.read(replayed_attempt.raw_ref))["errors"] == []
 
 
 @pytest.mark.asyncio
@@ -636,8 +967,13 @@ async def test_real_static_tools_feed_exact_hypothesis_input(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_opengrep_retry_rejects_stale_output(tmp_path: Path) -> None:
-    class NoOutputProcess(_Process):
+async def test_codeql_database_create_sees_only_selected_product_source(
+    tmp_path: Path,
+) -> None:
+    class ProductScopeProcess(_Process):
+        def __init__(self) -> None:
+            self.created_paths: tuple[str, ...] | None = None
+
         async def run(
             self,
             argv: Sequence[str],
@@ -645,82 +981,125 @@ async def test_opengrep_retry_rejects_stale_output(tmp_path: Path) -> None:
             cwd: Path | None = None,
             timeout_seconds: int,
         ) -> ProcessResult:
-            if argv[1] == "scan":
-                return ProcessResult(0, b"", b"")
+            if argv[1:3] == ("ls-files", "-z"):
+                return ProcessResult(0, b"app.py\0tests/test_app.py\0", b"")
+            if argv[1:3] == ("database", "create"):
+                source_arg = next(
+                    value for value in argv if value.startswith("--source-root=")
+                )
+                source = Path(source_arg.partition("=")[2])
+                self.created_paths = tuple(
+                    path.relative_to(source).as_posix()
+                    for path in sorted(source.rglob("*"))
+                    if path.is_file()
+                )
             return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
 
     profile = _profile(tmp_path)
-    request = _request(profile)
-    identity = _identity("analysis-retry")
-    workspace = _ready_workspace(tmp_path, request)
-    plan = plan_rule_batches(
-        (tmp_path / "opengrep" / "rules.yml").read_bytes(),
-        tool_version=profile.tools["opengrep"].version,
-        executable_sha256=profile.tools["opengrep"].executable_sha256,
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("print('app')\n", encoding="utf-8")
+    (workspace / "tests").mkdir()
+    (workspace / "tests" / "test_app.py").write_text(
+        "def test_app():\n    assert True\n", encoding="utf-8"
     )
-    output = (
-        profile.data_dir
-        / "process-output"
-        / "simple-static"
-        / "analysis-retry"
-        / f"opengrep-000-{plan.batches[0].key[:12]}.json"
+    (workspace / ".sastsimi-ready.json").write_text(
+        json.dumps(
+            {
+                "repository": "https://example.invalid/project.git",
+                "commit": "a" * 40,
+            }
+        ),
+        encoding="utf-8",
     )
-    output.parent.mkdir(parents=True)
-    output.write_text('{"results":[{"stale":true}]}', encoding="utf-8")
-
-    bootstrap = DirectStaticBootstrap(
-        profile=profile,
-        process=NoOutputProcess(),
-        store=_store(profile),
-        static_material_root=tmp_path,
-    )
-    with pytest.raises(RuntimeError, match="^OPENGREP_EXECUTION_FAILED$"):
-        await bootstrap._run_opengrep(workspace, request, identity)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("profile_limit", "expected_timeout"),
-    [(3600, 3600), (600, 600), (7200, 3600)],
-)
-async def test_opengrep_timeout_respects_hour_cap_and_profile(
-    tmp_path: Path, profile_limit: int, expected_timeout: int
-) -> None:
-    class RecordingProcess(_Process):
-        def __init__(self) -> None:
-            self.timeouts: list[int] = []
-
-        async def run(
-            self,
-            argv: Sequence[str],
-            *,
-            cwd: Path | None = None,
-            timeout_seconds: int,
-        ) -> ProcessResult:
-            self.timeouts.append(timeout_seconds)
-            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
-
-    profile = _profile(tmp_path).model_copy(
-        update={"max_elapsed_seconds": profile_limit}
-    )
-    process = RecordingProcess()
+    process = ProductScopeProcess()
     bootstrap = DirectStaticBootstrap(
         profile=profile,
         process=process,
         store=_store(profile),
         static_material_root=tmp_path,
     )
-    request = _request(profile)
-    workspace = _ready_workspace(tmp_path, request)
-    started = time.monotonic()
-    await bootstrap._run_opengrep(workspace, request, _identity("analysis-timeout"))
-    elapsed = time.monotonic() - started
 
-    assert (
-        max(1, expected_timeout - int(elapsed) - 1)
-        <= process.timeouts[-1]
-        <= expected_timeout
+    await bootstrap._run_codeql(
+        workspace,
+        profile.data_dir,
+        "https://example.invalid/project.git",
+        "a" * 40,
+        "product-only",
     )
+
+    assert process.created_paths == ("app.py",)
+
+
+@pytest.mark.asyncio
+async def test_codeql_rejects_sarif_finding_outside_selected_product_scope(
+    tmp_path: Path,
+) -> None:
+    class OutOfScopeProcess(_Process):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1:3] == ("ls-files", "-z"):
+                return ProcessResult(0, b"app.py\0tests/test_app.py\0", b"")
+            if argv[1:3] == ("database", "analyze"):
+                argument = next(
+                    value for value in argv if value.startswith("--output=")
+                )
+                Path(argument.partition("=")[2]).write_text(
+                    json.dumps(
+                        {
+                            "runs": [
+                                {
+                                    "results": [
+                                        {
+                                            "locations": [
+                                                {
+                                                    "physicalLocation": {
+                                                        "artifactLocation": {
+                                                            "uri": "tests/test_app.py"
+                                                        }
+                                                    }
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    profile = _profile(tmp_path)
+    repository = "https://example.invalid/project.git"
+    commit = "a" * 40
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("print('app')\n", encoding="utf-8")
+    (workspace / "tests").mkdir()
+    (workspace / "tests" / "test_app.py").write_text(
+        "def test_app():\n    assert True\n", encoding="utf-8"
+    )
+    (workspace / ".sastsimi-ready.json").write_text(
+        json.dumps({"repository": repository, "commit": commit}), encoding="utf-8"
+    )
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=OutOfScopeProcess(),
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="^CODEQL_SOURCE_SCOPE_INVALID$"):
+        await bootstrap._run_codeql(
+            workspace, profile.data_dir, repository, commit, "out-of-scope"
+        )
 
 
 @pytest.mark.asyncio
@@ -733,14 +1112,27 @@ async def test_codeql_retry_rejects_stale_sarif(tmp_path: Path) -> None:
             cwd: Path | None = None,
             timeout_seconds: int,
         ) -> ProcessResult:
-            del argv, cwd, timeout_seconds
+            del cwd, timeout_seconds
+            if argv[1:3] == ("rev-parse", "HEAD"):
+                return ProcessResult(0, ("a" * 40).encode(), b"")
+            if argv[1:3] == ("ls-files", "-z"):
+                return ProcessResult(0, b"app.py\0", b"")
             return ProcessResult(0, b"", b"")
 
     profile = _profile(tmp_path)
     repository = "https://example.invalid/project.git"
     commit = "a" * 40
     analysis_id = "analysis-retry"
-    key = hashlib.sha256(f"{repository}\0{commit}".encode()).hexdigest()[:24]
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("print('app')\n", encoding="utf-8")
+    (workspace / ".sastsimi-ready.json").write_text(
+        json.dumps({"repository": repository, "commit": commit}), encoding="utf-8"
+    )
+    scope = build_static_file_scope(workspace, ("app.py",))
+    key = hashlib.sha256(
+        f"{repository}\0{commit}\0{scope.fingerprint}".encode()
+    ).hexdigest()[:24]
     analysis_key = hashlib.sha256(analysis_id.encode()).hexdigest()[:24]
     root = profile.data_dir / "codeql" / key
     database = root / "database"
@@ -757,7 +1149,7 @@ async def test_codeql_retry_rejects_stale_sarif(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="^CODEQL_ANALYZE_FAILED$"):
         await bootstrap._run_codeql(
-            tmp_path / "checkout",
+            workspace,
             profile.data_dir,
             repository,
             commit,
@@ -765,6 +1157,42 @@ async def test_codeql_retry_rejects_stale_sarif(tmp_path: Path) -> None:
         )
 
     assert not output.exists()
+
+
+@pytest.mark.asyncio
+async def test_codeql_output_has_finite_size_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _profile(tmp_path)
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=_Process(),
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+    monkeypatch.setattr(static_module, "_MAX_STATIC_SCAN_OUTPUT_BYTES", 32)
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("print('app')\n", encoding="utf-8")
+    (workspace / "requirements.txt").write_text("", encoding="utf-8")
+    (workspace / ".sastsimi-ready.json").write_text(
+        json.dumps(
+            {
+                "repository": "https://example.invalid/project.git",
+                "commit": "a" * 40,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="^STATIC_SCAN_OUTPUT_TOO_LARGE$"):
+        await bootstrap._run_codeql(
+            workspace,
+            profile.data_dir,
+            "https://example.invalid/project.git",
+            "a" * 40,
+            "oversized-codeql",
+        )
 
 
 @pytest.mark.asyncio
@@ -781,6 +1209,10 @@ async def test_codeql_sarif_is_analysis_scoped(tmp_path: Path) -> None:
             timeout_seconds: int,
         ) -> ProcessResult:
             del cwd, timeout_seconds
+            if argv[1:3] == ("rev-parse", "HEAD"):
+                return ProcessResult(0, ("a" * 40).encode(), b"")
+            if argv[1:3] == ("ls-files", "-z"):
+                return ProcessResult(0, b"app.py\0", b"")
             if argv[1:3] == ("database", "analyze"):
                 argument = next(
                     value for value in argv if value.startswith("--output=")
@@ -793,7 +1225,16 @@ async def test_codeql_sarif_is_analysis_scoped(tmp_path: Path) -> None:
     profile = _profile(tmp_path)
     repository = "https://example.invalid/project.git"
     commit = "a" * 40
-    key = hashlib.sha256(f"{repository}\0{commit}".encode()).hexdigest()[:24]
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("print('app')\n", encoding="utf-8")
+    (workspace / ".sastsimi-ready.json").write_text(
+        json.dumps({"repository": repository, "commit": commit}), encoding="utf-8"
+    )
+    scope = build_static_file_scope(workspace, ("app.py",))
+    key = hashlib.sha256(
+        f"{repository}\0{commit}\0{scope.fingerprint}".encode()
+    ).hexdigest()[:24]
     database = profile.data_dir / "codeql" / key / "database"
     database.mkdir(parents=True)
     (database / "codeql-database.yml").write_text("ok", encoding="utf-8")
@@ -806,10 +1247,10 @@ async def test_codeql_sarif_is_analysis_scoped(tmp_path: Path) -> None:
     )
 
     await bootstrap._run_codeql(
-        tmp_path / "checkout", profile.data_dir, repository, commit, "analysis-one"
+        workspace, profile.data_dir, repository, commit, "analysis-one"
     )
     await bootstrap._run_codeql(
-        tmp_path / "checkout", profile.data_dir, repository, commit, "analysis-two"
+        workspace, profile.data_dir, repository, commit, "analysis-two"
     )
 
     assert len(process.outputs) == 2
@@ -835,10 +1276,30 @@ class _CoverageProcess(_Process):
         self.opengrep_calls = 0
         self.fallback_calls: list[tuple[str, ...]] = []
         self.codeql_calls = 0
+        self._query_root: Path | None = None
 
     async def run(
         self, argv: Sequence[str], *, cwd: Path | None = None, timeout_seconds: int
     ) -> ProcessResult:
+        if argv[1:3] == ("resolve", "queries"):
+            root = Path(argv[-1]).parent
+            self._query_root = root
+            if not (root / "qlpack.yml").is_file():
+                return ProcessResult(2, b"", b"missing qlpack")
+            return ProcessResult(
+                0, json.dumps([str(root / "security.ql")]).encode(), b""
+            )
+        if argv[1:3] == ("resolve", "packs"):
+            assert self._query_root is not None
+            root = self._query_root
+            if not (root / "qlpack.yml").is_file():
+                return ProcessResult(2, b"", b"missing qlpack")
+            import yaml  # type: ignore[import-untyped]
+
+            manifest = yaml.safe_load((root / "qlpack.yml").read_text(encoding="utf-8"))
+            pack = {"version": manifest["version"], "path": str(root / "qlpack.yml")}
+            listing = {"steps": [{"found": {manifest["name"]: pack}}]}
+            return ProcessResult(0, json.dumps(listing).encode(), b"")
         if argv[1] == "clone":
             root = Path(argv[-1])
             root.mkdir(parents=True)
@@ -878,6 +1339,8 @@ class _CoverageProcess(_Process):
             return ProcessResult(0, b"", b"")
         if argv[1] == "scan":
             self.opengrep_calls += 1
+            targets = tuple(path for path in ("app.py", "good.py") if path in argv)
+            assert targets
             output = Path(argv[argv.index("--output") + 1])
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(
@@ -886,21 +1349,17 @@ class _CoverageProcess(_Process):
                         "results": [
                             {
                                 "check_id": "python.sql",
-                                "path": "app.py",
+                                "path": path,
                                 "start": {"line": 1},
-                            },
-                            {
-                                "check_id": "python.sql",
-                                "path": "good.py",
-                                "start": {"line": 1},
-                            },
+                            }
+                            for path in targets
                         ],
                         "errors": (
                             [{"type": "PartialParsing", "path": "app.py"}]
-                            if self.parse_warning
+                            if self.parse_warning and "app.py" in targets
                             else []
                         ),
-                        "paths": {"scanned": ["app.py", "good.py"], "skipped": []},
+                        "paths": {"scanned": list(targets), "skipped": []},
                     }
                 ),
                 encoding="utf-8",
@@ -911,6 +1370,39 @@ class _CoverageProcess(_Process):
             if self.codeql_fails:
                 return ProcessResult(2, b"", b"failed")
         return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+
+@pytest.mark.asyncio
+async def test_candidate_limit_blocks_without_discarding_ast_and_codeql(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bootstrap, profile, _store = _coverage_bootstrap(
+        tmp_path, _CoverageProcess(parse_warning=False), codeql=True
+    )
+    monkeypatch.setattr(
+        static_module,
+        "StaticCandidateBudget",
+        lambda: StaticCandidateBudget(max_results=1),
+        raising=False,
+    )
+    identity = _identity("candidate-memory-cap")
+
+    with pytest.raises(
+        StaticCoverageBlocked, match="STATIC_CANDIDATES_TOO_LARGE"
+    ) as blocked:
+        await bootstrap.run(_request(profile), identity)
+
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    bundle = json.loads(artifacts.read(blocked.value.bundle_ref))
+    coverage = json.loads(
+        artifacts.read(StoredDataRef.model_validate(bundle["static_coverage_ref"]))
+    )
+    assert bundle["ast_summary"]["kind"] == "simple_python_ast"
+    assert bundle["ast_summary"]["facts"]
+    assert bundle["codeql_executed"] is True
+    assert bundle["codeql_findings"]
+    assert "STATIC_CANDIDATES_TOO_LARGE" in coverage["engine_errors"]
+    assert coverage["verified_count"] < coverage["expected_count"]
 
 
 class _AdaptiveSemgrepProcess:
@@ -1922,7 +2414,7 @@ def test_prior_fallback_fingerprints_do_not_rescan_workspace(
         workspace, ["app.py"], "a" * 40, rule_plan
     )
 
-    assert len(old_fingerprints) == 2
+    assert old_fingerprints == frozenset()
     assert root_resolutions == 0
 
 
@@ -1952,8 +2444,8 @@ async def test_semgrep_opt_in_caps_each_opengrep_batch_before_fallback(
     bootstrap, profile, _store = _coverage_bootstrap(
         tmp_path, process, semgrep=True, codeql=False
     )
-    with pytest.raises(StaticCoverageBlocked):
-        await bootstrap.run(_request(profile), _identity("bounded-opengrep"))
+    result = await bootstrap.run(_request(profile), _identity("bounded-opengrep"))
+    assert result.static_disposition in {"FULL", "PARTIAL"}
     assert process.opengrep_timeouts
     assert all(0 < seconds <= 120 for seconds in process.opengrep_timeouts)
     assert process.fallback_calls
@@ -1966,7 +2458,6 @@ async def test_opengrep_timeout_recovers_in_bounded_chunks_and_reuses_proof(
     class ChunkedOpenGrep(_CoverageProcess):
         def __init__(self) -> None:
             super().__init__(parse_warning=False)
-            self.full_calls = 0
             self.chunks: list[tuple[str, ...]] = []
 
         async def run(
@@ -1990,15 +2481,14 @@ async def test_opengrep_timeout_recovers_in_bounded_chunks_and_reuses_proof(
                 names = ("app.py", "good.py", *(f"file-{i:03d}.py" for i in range(129)))
                 return ProcessResult(0, "\0".join(names).encode() + b"\0", b"")
             if argv[1] == "scan" and "--metrics=off" not in argv:
-                if cwd is not None and argv[-1] == str(cwd):
-                    self.full_calls += 1
-                    raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
                 targets = tuple(
                     item
                     for item in argv
                     if item in {"app.py", "good.py"} or item.startswith("file-")
                 )
                 self.chunks.append(targets)
+                if len(targets) == 64:
+                    raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
                 output = Path(argv[argv.index("--output") + 1])
                 output.write_text(
                     json.dumps(
@@ -2025,8 +2515,7 @@ async def test_opengrep_timeout_recovers_in_bounded_chunks_and_reuses_proof(
         profile, identity, StoredDataRef.model_validate(bundle["static_coverage_ref"])
     )
     assert coverage["verified_count"] == coverage["expected_count"] == 131
-    assert process.full_calls == 1
-    assert tuple(map(len, process.chunks)) == (64, 64, 3)
+    assert tuple(map(len, process.chunks)) == (64, 32, 32, 64, 32, 32, 3)
     assert process.fallback_calls == []
     chunk_attempts = [
         item
@@ -2035,12 +2524,211 @@ async def test_opengrep_timeout_recovers_in_bounded_chunks_and_reuses_proof(
         )
         if item.tool == "opengrep" and item.request_ref is not None
     ]
-    assert len(chunk_attempts) == 3
-    assert all(item.status == "SUCCEEDED" and item.raw_ref for item in chunk_attempts)
+    assert len(chunk_attempts) == 7
+    assert (
+        sum(
+            item.status == "SUCCEEDED" and item.raw_ref is not None
+            for item in chunk_attempts
+        )
+        == 5
+    )
+    assert (
+        sum(item.error_code == "EXTERNAL_TOOL_TIMEOUT" for item in chunk_attempts) == 2
+    )
 
     await bootstrap.run(request, identity)
-    assert process.full_calls == 1
-    assert tuple(map(len, process.chunks)) == (64, 64, 3)
+    assert tuple(map(len, process.chunks)) == (64, 32, 32, 64, 32, 32, 3)
+
+
+@pytest.mark.asyncio
+async def test_opengrep_timeout_pre_splits_large_source_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class ByteChunkOpenGrep(_CoverageProcess):
+        def __init__(self) -> None:
+            super().__init__(parse_warning=False)
+            self.chunks: list[tuple[str, ...]] = []
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--metrics=off" not in argv:
+                if cwd is not None and argv[-1] == str(cwd):
+                    raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+                targets = tuple(path for path in ("app.py", "good.py") if path in argv)
+                self.chunks.append(targets)
+                output = Path(argv[argv.index("--output") + 1])
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [],
+                            "errors": [],
+                            "paths": {"scanned": list(targets), "skipped": []},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = ByteChunkOpenGrep()
+    bootstrap, profile, _store = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    monkeypatch.setattr(static_module, "_OPENGREP_RECOVERY_MAX_SOURCE_BYTES", 1)
+
+    await bootstrap.run(_request(profile), _identity("opengrep-source-bytes"))
+
+    assert process.chunks == [("app.py",), ("good.py",)]
+    assert process.fallback_calls == []
+
+
+@pytest.mark.asyncio
+async def test_opengrep_overlong_target_does_not_abandon_short_sibling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class TimedOutFullScan(_CoverageProcess):
+        def __init__(self) -> None:
+            super().__init__(parse_warning=False)
+            self.chunks: list[tuple[str, ...]] = []
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--metrics=off" not in argv:
+                if cwd is not None and argv[-1] == str(cwd):
+                    raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+                targets = tuple(path for path in ("app.py", "good.py") if path in argv)
+                self.chunks.append(targets)
+                output = Path(argv[argv.index("--output") + 1])
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [],
+                            "errors": [],
+                            "paths": {"scanned": list(targets), "skipped": []},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    original_planner = plan_semgrep_target_chunks
+
+    def reject_good(
+        targets: Sequence[str],
+        command_for: Callable[[tuple[str, ...]], Sequence[str]],
+        **kwargs: Any,
+    ) -> tuple[tuple[str, ...], ...]:
+        if "good.py" in targets:
+            raise RuntimeError("SEMGREP_COMMAND_TOO_LONG")
+        return original_planner(targets, command_for, **kwargs)
+
+    monkeypatch.setattr(static_module, "plan_semgrep_target_chunks", reject_good)
+    process = TimedOutFullScan()
+    bootstrap, profile, _store = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    identity = _identity("opengrep-overlong-sibling")
+
+    result = await bootstrap.run(_request(profile), identity)
+    assert result.static_disposition == "PARTIAL"
+    coverage = _coverage_from_ref(profile, identity, result.static_coverage_ref)
+    assert process.chunks == [("app.py",)]
+    assert coverage["verified_count"] == 1
+    assert any(gap["path"] == "good.py" for gap in coverage["gaps"])
+
+
+@pytest.mark.asyncio
+async def test_opengrep_timed_out_chunk_splits_and_records_child_proof(
+    tmp_path: Path,
+) -> None:
+    class SplittingOpenGrep(_CoverageProcess):
+        def __init__(self) -> None:
+            super().__init__(parse_warning=False)
+            self.chunks: list[tuple[str, ...]] = []
+            self.timeouts: list[int] = []
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--metrics=off" not in argv:
+                if cwd is not None and argv[-1] == str(cwd):
+                    raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+                targets = tuple(path for path in ("app.py", "good.py") if path in argv)
+                self.chunks.append(targets)
+                self.timeouts.append(timeout_seconds)
+                if len(targets) > 1:
+                    raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+                output = Path(argv[argv.index("--output") + 1])
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [],
+                            "errors": [],
+                            "paths": {"scanned": list(targets), "skipped": []},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = SplittingOpenGrep()
+    bootstrap, profile, store = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    identity = _identity("opengrep-adaptive-chunks")
+    request = _request(profile)
+    result = await bootstrap.run(request, identity)
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
+    coverage = _coverage_from_ref(
+        profile, identity, StoredDataRef.model_validate(bundle["static_coverage_ref"])
+    )
+    assert coverage["verified_count"] == coverage["expected_count"] == 2
+    assert process.chunks == [("app.py", "good.py"), ("app.py",), ("good.py",)]
+    assert all(0 < seconds <= 120 for seconds in process.timeouts)
+    assert process.fallback_calls == []
+
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    chunks = [
+        item
+        for item in store.list_static_scan_attempts(
+            identity, request.repository, coverage["fingerprint"]
+        )
+        if item.tool == "opengrep" and item.request_ref is not None
+    ]
+    assert len(chunks) == 3
+    by_targets = {
+        tuple(json.loads(artifacts.read(item.request_ref))["targets"]): item
+        for item in chunks
+        if item.request_ref is not None
+    }
+    parent = by_targets[("app.py", "good.py")]
+    assert parent.status == "BLOCKED"
+    assert parent.error_code == "EXTERNAL_TOOL_TIMEOUT"
+    assert parent.raw_ref is None
+    for target in ("app.py", "good.py"):
+        child = by_targets[(target,)]
+        assert child.status == "SUCCEEDED"
+        assert child.raw_ref is not None
+        assert child.coverage_ref is not None
+        assert child.request_ref is not None
+        descriptor = json.loads(artifacts.read(child.request_ref))
+        assert descriptor["raw_content_hash"] == child.raw_ref.content_hash
 
 
 @pytest.mark.asyncio
@@ -2102,13 +2790,18 @@ async def test_opengrep_chunk_partial_sends_only_unproved_file_to_semgrep(
 
 
 @pytest.mark.asyncio
-async def test_opengrep_chunk_timeout_retries_once_on_explicit_resume(
+async def test_opengrep_singleton_timeouts_stop_until_explicit_resume(
     tmp_path: Path,
 ) -> None:
     class TimedOutChunk(_CoverageProcess):
         def __init__(self) -> None:
             super().__init__(parse_warning=False, fallback_fails=True)
-            self.opengrep_attempts = 0
+            self.chunks: list[tuple[str, ...]] = []
+            self.singleton_attempts: dict[str, int] = {}
+            self.timeouts: list[int] = []
+            self.store: SimpleCheckpointStore | None = None
+            self.identity: CheckpointIdentity | None = None
+            self.repository: str | None = None
 
         async def run(
             self,
@@ -2118,8 +2811,25 @@ async def test_opengrep_chunk_timeout_retries_once_on_explicit_resume(
             timeout_seconds: int,
         ) -> ProcessResult:
             if argv[1] == "scan" and "--metrics=off" not in argv:
-                self.opengrep_attempts += 1
-                if self.opengrep_attempts <= 2:
+                if cwd is not None and argv[-1] == str(cwd):
+                    raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+                assert self.store is not None
+                assert self.identity is not None
+                assert self.repository is not None
+                history = self.store.list_static_scan_executions(
+                    self.identity, self.repository, tool="opengrep"
+                )
+                assert history[-1].status == "STARTED"
+                targets = tuple(path for path in ("app.py", "good.py") if path in argv)
+                self.chunks.append(targets)
+                self.timeouts.append(timeout_seconds)
+                if len(targets) > 1:
+                    raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+                target = targets[0]
+                self.singleton_attempts[target] = (
+                    self.singleton_attempts.get(target, 0) + 1
+                )
+                if self.singleton_attempts[target] == 1:
                     raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
                 output = Path(argv[argv.index("--output") + 1])
                 output.write_text(
@@ -2128,7 +2838,7 @@ async def test_opengrep_chunk_timeout_retries_once_on_explicit_resume(
                             "results": [],
                             "errors": [],
                             "paths": {
-                                "scanned": ["app.py", "good.py"],
+                                "scanned": [target],
                                 "skipped": [],
                             },
                         }
@@ -2139,17 +2849,32 @@ async def test_opengrep_chunk_timeout_retries_once_on_explicit_resume(
             return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
 
     process = TimedOutChunk()
-    bootstrap, profile, _store = _coverage_bootstrap(
+    bootstrap, profile, store = _coverage_bootstrap(
         tmp_path, process, semgrep=True, codeql=False
     )
     identity = _identity("opengrep-chunk-timeout")
     request = _request(profile)
+    process.store = store
+    process.identity = identity
+    process.repository = request.repository
     with pytest.raises(StaticCoverageBlocked) as first:
         await bootstrap.run(request, identity)
     initial = _coverage_from_ref(profile, identity, first.value.coverage_ref)
     assert initial["verified_count"] == 0
-    assert process.opengrep_attempts == 2
+    assert process.chunks == [("app.py", "good.py"), ("app.py",), ("good.py",)]
+    assert all(0 < seconds <= 120 for seconds in process.timeouts)
     assert process.fallback_calls
+    first_opengrep = store.list_static_scan_executions(
+        identity, request.repository, initial["fingerprint"], tool="opengrep"
+    )
+    assert len(first_opengrep) == 3
+    assert all(item.error_code == "EXTERNAL_TOOL_TIMEOUT" for item in first_opengrep)
+    for gap in initial["gaps"]:
+        target = gap["path"]
+        fallback_attempts = sum(target in argv for argv in process.fallback_calls)
+        assert gap["attempt_count"] == 2 + fallback_attempts
+        assert gap["history_complete"] is True
+        assert gap["latest_error_ref"] is not None
 
     fallback_calls = len(process.fallback_calls)
     result = await bootstrap.run(request, identity)
@@ -2158,8 +2883,243 @@ async def test_opengrep_chunk_timeout_retries_once_on_explicit_resume(
         profile, identity, StoredDataRef.model_validate(bundle["static_coverage_ref"])
     )
     assert coverage["verified_count"] == coverage["expected_count"] == 2
-    assert process.opengrep_attempts == 3
+    assert process.chunks == [
+        ("app.py", "good.py"),
+        ("app.py",),
+        ("good.py",),
+        ("app.py",),
+        ("good.py",),
+    ]
     assert len(process.fallback_calls) == fallback_calls
+    replayed = SimpleCheckpointStore(profile.data_dir / "db" / "sastsimi.sqlite3")
+    all_opengrep = replayed.list_static_scan_executions(
+        identity, request.repository, initial["fingerprint"], tool="opengrep"
+    )
+    assert len(all_opengrep) == 5
+    assert [item.error_code for item in all_opengrep[-2:]] == [None, None]
+
+
+@pytest.mark.asyncio
+async def test_opengrep_resume_reuses_successful_child_after_sibling_timeout(
+    tmp_path: Path,
+) -> None:
+    class RecoveringSibling(_CoverageProcess):
+        def __init__(self) -> None:
+            super().__init__(parse_warning=False, fallback_fails=True)
+            self.chunks: list[tuple[str, ...]] = []
+            self.good_attempts = 0
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--metrics=off" not in argv:
+                if cwd is not None and argv[-1] == str(cwd):
+                    raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+                targets = tuple(path for path in ("app.py", "good.py") if path in argv)
+                self.chunks.append(targets)
+                if len(targets) > 1:
+                    raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+                if targets == ("good.py",):
+                    self.good_attempts += 1
+                    if self.good_attempts == 1:
+                        raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+                output = Path(argv[argv.index("--output") + 1])
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [],
+                            "errors": [],
+                            "paths": {"scanned": list(targets), "skipped": []},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = RecoveringSibling()
+    bootstrap, profile, store = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    identity = _identity("opengrep-child-resume")
+    request = _request(profile)
+    partial = await bootstrap.run(request, identity)
+    assert partial.static_disposition == "PARTIAL"
+    first = _coverage_from_ref(profile, identity, partial.static_coverage_ref)
+    assert first["verified_count"] == 1
+    assert process.chunks == [("app.py", "good.py"), ("app.py",), ("good.py",)]
+    attempts = store.list_static_scan_attempts(
+        identity, request.repository, first["fingerprint"]
+    )
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    successful = next(
+        item
+        for item in attempts
+        if item.tool == "opengrep"
+        and item.request_ref is not None
+        and json.loads(artifacts.read(item.request_ref))["targets"] == ["app.py"]
+    )
+    assert successful.raw_ref is not None
+    assert successful.coverage_ref is not None
+
+    result = await bootstrap.run(request, identity)
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
+    coverage = _coverage_from_ref(
+        profile, identity, StoredDataRef.model_validate(bundle["static_coverage_ref"])
+    )
+    assert coverage["verified_count"] == coverage["expected_count"] == 2
+    assert process.chunks == [
+        ("app.py", "good.py"),
+        ("app.py",),
+        ("good.py",),
+        ("good.py",),
+    ]
+
+
+class _CorruptReplayOpenGrep(_CoverageProcess):
+    def __init__(self, *, first_success: frozenset[str]) -> None:
+        super().__init__(parse_warning=False, fallback_fails=True)
+        self.first_success = first_success
+        self.chunks: list[tuple[str, ...]] = []
+        self.singleton_attempts: dict[str, int] = {}
+
+    async def run(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        timeout_seconds: int,
+    ) -> ProcessResult:
+        if argv[1] == "scan" and "--metrics=off" not in argv:
+            if cwd is not None and argv[-1] == str(cwd):
+                raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+            targets = tuple(path for path in ("app.py", "good.py") if path in argv)
+            self.chunks.append(targets)
+            if len(targets) > 1:
+                raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+            target = targets[0]
+            self.singleton_attempts[target] = self.singleton_attempts.get(target, 0) + 1
+            if (
+                target not in self.first_success
+                and self.singleton_attempts[target] == 1
+            ):
+                raise RuntimeError("EXTERNAL_TOOL_TIMEOUT")
+            output = Path(argv[argv.index("--output") + 1])
+            output.write_text(
+                json.dumps(
+                    {
+                        "results": [],
+                        "errors": [],
+                        "paths": {"scanned": [target], "skipped": []},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return ProcessResult(0, b"", b"")
+        return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+
+@pytest.mark.asyncio
+async def test_opengrep_corrupt_timed_out_parent_request_is_recreated_on_resume(
+    tmp_path: Path,
+) -> None:
+    process = _CorruptReplayOpenGrep(first_success=frozenset())
+    bootstrap, profile, store = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    identity = _identity("opengrep-corrupt-parent-request")
+    request = _request(profile)
+    with pytest.raises(StaticCoverageBlocked) as blocked:
+        await bootstrap.run(request, identity)
+    first = _coverage_from_ref(profile, identity, blocked.value.coverage_ref)
+    assert first["verified_count"] == 0
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    parent = next(
+        item
+        for item in store.list_static_scan_attempts(
+            identity, request.repository, first["fingerprint"]
+        )
+        if item.tool == "opengrep"
+        and item.request_ref is not None
+        and json.loads(artifacts.read(item.request_ref))["targets"]
+        == ["app.py", "good.py"]
+    )
+    assert parent.request_ref is not None
+    artifacts.artifacts.path_for(parent.request_ref.content_hash).write_bytes(
+        b"corrupt"
+    )
+
+    result = await bootstrap.run(request, identity)
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
+    coverage = _coverage_from_ref(
+        profile, identity, StoredDataRef.model_validate(bundle["static_coverage_ref"])
+    )
+    assert coverage["verified_count"] == coverage["expected_count"] == 2
+    assert process.chunks == [
+        ("app.py", "good.py"),
+        ("app.py",),
+        ("good.py",),
+        ("app.py", "good.py"),
+        ("app.py",),
+        ("good.py",),
+    ]
+    assert json.loads(artifacts.read(parent.request_ref))["targets"] == [
+        "app.py",
+        "good.py",
+    ]
+    quarantined = list(artifacts.paths.quarantine.iterdir())
+    assert len(quarantined) == 1
+    assert quarantined[0].read_bytes() == b"corrupt"
+
+
+@pytest.mark.asyncio
+async def test_opengrep_corrupt_successful_child_raw_is_recreated_on_resume(
+    tmp_path: Path,
+) -> None:
+    process = _CorruptReplayOpenGrep(first_success=frozenset({"app.py"}))
+    bootstrap, profile, store = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    identity = _identity("opengrep-corrupt-child-raw")
+    request = _request(profile)
+    partial = await bootstrap.run(request, identity)
+    assert partial.static_disposition == "PARTIAL"
+    first = _coverage_from_ref(profile, identity, partial.static_coverage_ref)
+    assert first["verified_count"] == 1
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    child = next(
+        item
+        for item in store.list_static_scan_attempts(
+            identity, request.repository, first["fingerprint"]
+        )
+        if item.tool == "opengrep"
+        and item.request_ref is not None
+        and json.loads(artifacts.read(item.request_ref))["targets"] == ["app.py"]
+    )
+    assert child.raw_ref is not None
+    artifacts.artifacts.path_for(child.raw_ref.content_hash).write_bytes(b"corrupt")
+
+    result = await bootstrap.run(request, identity)
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
+    coverage = _coverage_from_ref(
+        profile, identity, StoredDataRef.model_validate(bundle["static_coverage_ref"])
+    )
+    assert coverage["verified_count"] == coverage["expected_count"] == 2
+    assert process.chunks == [
+        ("app.py", "good.py"),
+        ("app.py",),
+        ("good.py",),
+        ("app.py",),
+        ("good.py",),
+    ]
+    assert json.loads(artifacts.read(child.raw_ref))["paths"]["scanned"] == ["app.py"]
+    quarantined = list(artifacts.paths.quarantine.iterdir())
+    assert len(quarantined) == 1
+    assert quarantined[0].read_bytes() == b"corrupt"
 
 
 @pytest.mark.asyncio
@@ -2238,10 +3198,11 @@ async def test_opengrep_chunk_rejects_changed_request_descriptor(
 
     await bootstrap.run(request, identity)
     assert process.chunk_calls == 2
+    assert list(artifacts.paths.quarantine.iterdir()) == []
 
 
 @pytest.mark.asyncio
-async def test_missing_semgrep_keeps_full_opengrep_batch_deadline(
+async def test_missing_semgrep_keeps_bounded_opengrep_batch_deadline(
     tmp_path: Path,
 ) -> None:
     class RecordingOpenGrep(_CoverageProcess):
@@ -2282,20 +3243,19 @@ async def test_missing_semgrep_keeps_full_opengrep_batch_deadline(
     )
     await bootstrap.run(_request(profile), _identity("missing-semgrep-deadline"))
     assert process.opengrep_timeouts
-    assert process.opengrep_timeouts[0] > 120
-    assert process.opengrep_timeouts[0] <= 3600
+    assert process.opengrep_timeouts[0] == 120
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("error_type", "expected_retryable"),
     [
-        ("Syntax error", False),
+        ("Syntax error", True),
         ("OutOfMemory", True),
         ("Syntax error then OutOfMemory", True),
     ],
 )
-async def test_known_semgrep_parser_gaps_are_not_retryable_after_opengrep_timeout(
+async def test_no_verified_semgrep_parser_gaps_remain_retryable_after_timeout(
     tmp_path: Path,
     error_type: str,
     expected_retryable: bool,
@@ -2396,9 +3356,17 @@ async def test_parser_gap_with_later_engine_failure_remains_retryable(
     bootstrap, profile, _store = _coverage_bootstrap(
         tmp_path, process, semgrep=True, codeql=failure == "codeql"
     )
-    with pytest.raises(StaticCoverageBlocked) as blocked:
-        await bootstrap.run(_request(profile), _identity("parser-with-engine-failure"))
-    assert blocked.value.retryable
+    identity = _identity("parser-with-engine-failure")
+    if failure == "codeql":
+        partial = await bootstrap.run(_request(profile), identity)
+        assert partial.static_disposition == "PARTIAL"
+        coverage = _coverage_from_ref(profile, identity, partial.static_coverage_ref)
+        assert coverage["codeql_error"] == "CODEQL_EXECUTION_FAILED"
+        assert coverage["verified_count"] > 0
+    else:
+        with pytest.raises(StaticCoverageBlocked) as blocked:
+            await bootstrap.run(_request(profile), identity)
+        assert blocked.value.retryable
 
 
 async def _seed_old_partial(
@@ -2407,14 +3375,14 @@ async def _seed_old_partial(
     SimpleExecutionProfile,
     SimpleCheckpointStore,
     CheckpointIdentity,
-    StaticCoverageBlocked,
+    StaticBootstrapResult,
 ]:
     bootstrap, profile, store = _coverage_bootstrap(tmp_path, process, codeql=False)
     identity = _identity(analysis_id)
-    with pytest.raises(StaticCoverageBlocked) as caught:
-        await bootstrap.run(_request(profile), identity)
+    result = await bootstrap.run(_request(profile), identity)
+    assert result.static_disposition == "PARTIAL"
     assert process.opengrep_calls == 1
-    return profile, store, identity, caught.value
+    return profile, store, identity, result
 
 
 @pytest.mark.asyncio
@@ -2425,7 +3393,9 @@ async def test_fallback_opt_in_revalidates_old_partial_without_opengrep_rerun(
     old_profile, store, identity, old_blocked = await _seed_old_partial(
         tmp_path, process, "reuse-old-partial"
     )
-    old_report = _coverage_from_ref(old_profile, identity, old_blocked.coverage_ref)
+    old_report = _coverage_from_ref(
+        old_profile, identity, old_blocked.static_coverage_ref
+    )
     assert old_report["verified_count"] == 1
     profile = _enable_semgrep_fallback(old_profile)
     bootstrap = DirectStaticBootstrap(
@@ -2448,6 +3418,39 @@ async def test_fallback_opt_in_revalidates_old_partial_without_opengrep_rerun(
 
 
 @pytest.mark.asyncio
+async def test_fallback_opt_in_counts_compatible_prior_execution_history(
+    tmp_path: Path,
+) -> None:
+    process = _CoverageProcess(fallback_fails=True)
+    old_profile, store, identity, old_blocked = await _seed_old_partial(
+        tmp_path, process, "count-prior-invocations"
+    )
+    prior = _coverage_from_ref(old_profile, identity, old_blocked.static_coverage_ref)
+    assert (
+        store.count_static_scan_executions(
+            identity,
+            _request(old_profile).repository,
+            prior["fingerprint"],
+            tool="opengrep",
+        )
+        == 1
+    )
+
+    profile = _enable_semgrep_fallback(old_profile)
+    bootstrap = DirectStaticBootstrap(
+        profile=profile, process=process, store=store, static_material_root=tmp_path
+    )
+    partial = await bootstrap.run(_request(profile), identity)
+    assert partial.static_disposition == "PARTIAL"
+    report = _coverage_from_ref(profile, identity, partial.static_coverage_ref)
+    assert report["gaps"]
+    for gap in report["gaps"]:
+        assert gap["known_attempts_by_engine"] == {"opengrep": 1, "semgrep": 1}
+        assert gap["known_attempt_count"] == gap["attempt_count"] == 2
+        assert gap["history_complete"] is True
+
+
+@pytest.mark.asyncio
 async def test_cross_fingerprint_corrupt_partial_is_quarantined_and_rescanned(
     tmp_path: Path,
 ) -> None:
@@ -2455,7 +3458,9 @@ async def test_cross_fingerprint_corrupt_partial_is_quarantined_and_rescanned(
     old_profile, store, identity, old_blocked = await _seed_old_partial(
         tmp_path, process, "corrupt-old-partial"
     )
-    old_report = _coverage_from_ref(old_profile, identity, old_blocked.coverage_ref)
+    old_report = _coverage_from_ref(
+        old_profile, identity, old_blocked.static_coverage_ref
+    )
     old_attempt = next(
         item
         for item in store.list_static_scan_attempts(
@@ -2483,7 +3488,9 @@ async def test_cross_fingerprint_numeric_coverage_without_raw_never_counts(
     old_profile, store, identity, old_blocked = await _seed_old_partial(
         tmp_path, process, "count-without-proof"
     )
-    old_report = _coverage_from_ref(old_profile, identity, old_blocked.coverage_ref)
+    old_report = _coverage_from_ref(
+        old_profile, identity, old_blocked.static_coverage_ref
+    )
     old_attempt = next(
         item
         for item in store.list_static_scan_attempts(
@@ -2499,7 +3506,7 @@ async def test_cross_fingerprint_numeric_coverage_without_raw_never_counts(
         old_attempt.run_key,
         "BLOCKED",
         None,
-        old_blocked.coverage_ref,
+        old_blocked.static_coverage_ref,
         "OPENGREP_PARTIAL_SCAN",
     )
     profile = _enable_semgrep_fallback(old_profile)
@@ -2569,8 +3576,11 @@ async def test_cross_fingerprint_rejects_changed_opengrep_executable(
 
 
 def _coverage_from_ref(
-    profile: SimpleExecutionProfile, identity: CheckpointIdentity, ref: StoredDataRef
+    profile: SimpleExecutionProfile,
+    identity: CheckpointIdentity,
+    ref: StoredDataRef | None,
 ) -> dict[str, Any]:
+    assert ref is not None
     return cast(
         dict[str, Any],
         json.loads(SimpleArtifactRepository(profile.data_dir, identity).read(ref)),
@@ -2578,7 +3588,7 @@ def _coverage_from_ref(
 
 
 @pytest.mark.asyncio
-async def test_opengrep_failure_blocks_even_without_applicable_file_rules(
+async def test_product_language_without_applicable_rules_blocks_before_scan(
     tmp_path: Path,
 ) -> None:
     class NoApplicableSource(_CoverageProcess):
@@ -2597,14 +3607,21 @@ async def test_opengrep_failure_blocks_even_without_applicable_file_rules(
             if argv[1:3] == ("ls-files", "-z"):
                 return ProcessResult(0, b"main.go\0", b"")
             if argv[1] == "scan":
-                return ProcessResult(2, b"", b"scanner failed")
+                raise AssertionError("unsupported Go source must not be scanned")
             return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
 
     bootstrap, profile, _store_ = _coverage_bootstrap(
-        tmp_path, NoApplicableSource(), codeql=False
+        tmp_path, NoApplicableSource(), codeql=True
     )
-    with pytest.raises(StaticCoverageBlocked, match="OPENGREP_EXECUTION_FAILED"):
-        await bootstrap.run(_request(profile), _identity("empty-rule-failure"))
+    identity = _identity("empty-rule-failure")
+    with pytest.raises(
+        StaticCoverageBlocked, match="STATIC_PRODUCT_SOURCE_EMPTY"
+    ) as blocked:
+        await bootstrap.run(_request(profile), identity)
+    bundle = _coverage_from_ref(profile, identity, blocked.value.bundle_ref)
+    coverage = _coverage_from_ref(profile, identity, blocked.value.coverage_ref)
+    assert bundle["codeql_executed"] is False
+    assert coverage["codeql_error"] is None
 
 
 @pytest.mark.asyncio
@@ -2677,6 +3694,7 @@ async def test_nonzero_opengrep_output_is_not_reused_as_success(
         ) -> ProcessResult:
             if argv[1] == "scan" and "--output" in argv:
                 self.opengrep_calls += 1
+                targets = [path for path in ("app.py", "good.py") if path in argv]
                 output = Path(argv[argv.index("--output") + 1])
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_text(
@@ -2685,7 +3703,7 @@ async def test_nonzero_opengrep_output_is_not_reused_as_success(
                             "results": [],
                             "errors": [],
                             "paths": {
-                                "scanned": ["app.py", "good.py"],
+                                "scanned": targets,
                                 "skipped": [],
                             },
                         }
@@ -2698,7 +3716,9 @@ async def test_nonzero_opengrep_output_is_not_reused_as_success(
     process = FailedThenSuccessful(parse_warning=False)
     bootstrap, profile, _store_ = _coverage_bootstrap(tmp_path, process, codeql=False)
     identity = _identity("nonzero-cache")
-    with pytest.raises(StaticCoverageBlocked, match="OPENGREP_EXECUTION_FAILED"):
+    with pytest.raises(
+        StaticCoverageBlocked, match="STATIC_COVERAGE_NO_VERIFIED_RESULTS"
+    ):
         await bootstrap.run(_request(profile), identity)
     await bootstrap.run(_request(profile), identity)
     assert process.opengrep_calls == 2
@@ -2756,9 +3776,9 @@ async def test_opengrep_retry_failure_preserves_previous_verified_pairs(
     bootstrap, profile, store = _coverage_bootstrap(tmp_path, process, codeql=False)
     identity = _identity("partial-then-timeout")
     request = _request(profile)
-    with pytest.raises(StaticCoverageBlocked) as first:
-        await bootstrap.run(request, identity)
-    first_report = _coverage_from_ref(profile, identity, first.value.coverage_ref)
+    first = await bootstrap.run(request, identity)
+    assert first.static_disposition == "PARTIAL"
+    first_report = _coverage_from_ref(profile, identity, first.static_coverage_ref)
     assert first_report["verified_count"] == 1
     previous = next(
         item
@@ -2769,20 +3789,26 @@ async def test_opengrep_retry_failure_preserves_previous_verified_pairs(
     )
     assert previous.raw_ref is not None
 
-    with pytest.raises(StaticCoverageBlocked) as second:
-        await bootstrap.run(request, identity)
-    second_report = _coverage_from_ref(profile, identity, second.value.coverage_ref)
+    second = await bootstrap.run(request, identity)
+    assert second.static_disposition == "PARTIAL"
+    second_report = _coverage_from_ref(profile, identity, second.static_coverage_ref)
     assert process.opengrep_calls == 2
     assert second_report["verified_count"] == 1
     assert second_report["gaps"][0]["path"] == "app.py"
-    latest = next(
+    attempts = [
         item
         for item in store.list_static_scan_attempts(
             identity, request.repository, second_report["fingerprint"]
         )
         if item.tool == "opengrep"
+    ]
+    assert len(attempts) == 2
+    retained = next(item for item in attempts if item.run_key == previous.run_key)
+    assert retained.raw_ref == previous.raw_ref
+    assert any(
+        item.run_key != previous.run_key and item.status == "BLOCKED"
+        for item in attempts
     )
-    assert latest.raw_ref == previous.raw_ref
 
 
 @pytest.mark.asyncio
@@ -2823,9 +3849,9 @@ async def test_opengrep_partial_retry_preserves_previous_verified_pairs(
     bootstrap, profile, store = _coverage_bootstrap(tmp_path, process, codeql=False)
     identity = _identity("alternating-partial")
     request = _request(profile)
-    with pytest.raises(StaticCoverageBlocked) as first:
-        await bootstrap.run(request, identity)
-    first_report = _coverage_from_ref(profile, identity, first.value.coverage_ref)
+    first = await bootstrap.run(request, identity)
+    assert first.static_disposition == "PARTIAL"
+    first_report = _coverage_from_ref(profile, identity, first.static_coverage_ref)
     previous = next(
         item
         for item in store.list_static_scan_attempts(
@@ -2843,14 +3869,22 @@ async def test_opengrep_partial_retry_preserves_previous_verified_pairs(
     assert len(bundle["engine_raw_refs"]) == 2
     assert previous.raw_ref is not None
     assert previous.raw_ref.model_dump(mode="json") in bundle["engine_raw_refs"]
-    latest = next(
+    attempts = [
         item
         for item in store.list_static_scan_attempts(
             identity, request.repository, coverage["fingerprint"]
         )
         if item.tool == "opengrep"
+    ]
+    assert len(attempts) == 2
+    retained = next(item for item in attempts if item.run_key == previous.run_key)
+    assert retained.raw_ref == previous.raw_ref
+    assert any(
+        item.run_key != previous.run_key
+        and item.status == "SUCCEEDED"
+        and item.raw_ref is not None
+        for item in attempts
     )
-    assert latest.raw_ref == previous.raw_ref
     resumed = await bootstrap.run(request, identity)
     resumed_bundle = _coverage_from_ref(profile, identity, resumed.static_bundle_ref)
     resumed_coverage = _coverage_from_ref(
@@ -2903,8 +3937,8 @@ async def test_opengrep_resume_unions_timeout_and_clean_partial_proofs(
     bootstrap, profile, _store = _coverage_bootstrap(tmp_path, process, codeql=False)
     identity = _identity("timeout-then-complementary")
     request = _request(profile)
-    with pytest.raises(StaticCoverageBlocked):
-        await bootstrap.run(request, identity)
+    first = await bootstrap.run(request, identity)
+    assert first.static_disposition == "PARTIAL"
     second = await bootstrap.run(request, identity)
     second_bundle = _coverage_from_ref(profile, identity, second.static_bundle_ref)
     second_coverage = _coverage_from_ref(
@@ -2940,6 +3974,7 @@ async def test_unknown_located_opengrep_error_is_retried_on_resume(
         ) -> ProcessResult:
             if argv[1] == "scan" and "--output" in argv:
                 self.opengrep_calls += 1
+                targets = [path for path in ("app.py", "good.py") if path in argv]
                 output = Path(argv[argv.index("--output") + 1])
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_text(
@@ -2952,7 +3987,7 @@ async def test_unknown_located_opengrep_error_is_retried_on_resume(
                                 else []
                             ),
                             "paths": {
-                                "scanned": ["app.py", "good.py"],
+                                "scanned": targets,
                                 "skipped": [],
                             },
                         }
@@ -2966,8 +4001,8 @@ async def test_unknown_located_opengrep_error_is_retried_on_resume(
     bootstrap, profile, _store = _coverage_bootstrap(tmp_path, process, codeql=False)
     identity = _identity("unknown-located-error")
     request = _request(profile)
-    with pytest.raises(StaticCoverageBlocked):
-        await bootstrap.run(request, identity)
+    first = await bootstrap.run(request, identity)
+    assert first.static_disposition == "PARTIAL"
     await bootstrap.run(request, identity)
     assert process.opengrep_calls == 2
 
@@ -2988,7 +4023,7 @@ def test_reusable_parse_warning_rejects_nonstring_type_without_crashing() -> Non
 
 
 @pytest.mark.asyncio
-async def test_resume_reuses_located_list_form_partial_parsing(
+async def test_resume_reuses_located_list_form_partial_and_retries_unscanned_file(
     tmp_path: Path,
 ) -> None:
     class ListFormPartial(_CoverageProcess):
@@ -3003,9 +4038,10 @@ async def test_resume_reuses_located_list_form_partial_parsing(
             if argv[1] == "scan" and "--metrics=off" not in argv:
                 output = Path(argv[argv.index("--output") + 1])
                 parsed = json.loads(output.read_text(encoding="utf-8"))
-                parsed["errors"][0]["type"] = ["PartialParsing", [{"line": 1}]]
-                parsed["paths"]["scanned"] = ["app.py"]
-                output.write_text(json.dumps(parsed), encoding="utf-8")
+                if "app.py" in argv:
+                    parsed["errors"][0]["type"] = ["PartialParsing", [{"line": 1}]]
+                    parsed["paths"]["scanned"] = ["app.py"]
+                    output.write_text(json.dumps(parsed), encoding="utf-8")
             return result
 
     process = ListFormPartial(fallback_fails=True)
@@ -3025,7 +4061,7 @@ async def test_resume_reuses_located_list_form_partial_parsing(
     )
     with pytest.raises(StaticCoverageBlocked):
         await bootstrap.run(request, identity)
-    assert process.opengrep_calls == 1
+    assert process.opengrep_calls == 2
 
 
 @pytest.mark.asyncio
@@ -3042,6 +4078,7 @@ async def test_locked_retry_output_preserves_previous_partial_coverage(
         ) -> ProcessResult:
             if argv[1] == "scan" and "--output" in argv:
                 self.opengrep_calls += 1
+                scanned = ["good.py"] if self.opengrep_calls == 1 else ["app.py"]
                 output = Path(argv[argv.index("--output") + 1])
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_text(
@@ -3049,7 +4086,7 @@ async def test_locked_retry_output_preserves_previous_partial_coverage(
                         {
                             "results": [],
                             "errors": [],
-                            "paths": {"scanned": ["good.py"], "skipped": []},
+                            "paths": {"scanned": scanned, "skipped": []},
                         }
                     ),
                     encoding="utf-8",
@@ -3061,9 +4098,9 @@ async def test_locked_retry_output_preserves_previous_partial_coverage(
     bootstrap, profile, store = _coverage_bootstrap(tmp_path, process, codeql=False)
     identity = _identity("locked-retry-output")
     request = _request(profile)
-    with pytest.raises(StaticCoverageBlocked) as first:
-        await bootstrap.run(request, identity)
-    first_report = _coverage_from_ref(profile, identity, first.value.coverage_ref)
+    first = await bootstrap.run(request, identity)
+    assert first.static_disposition == "PARTIAL"
+    first_report = _coverage_from_ref(profile, identity, first.static_coverage_ref)
     previous = next(
         item
         for item in store.list_static_scan_attempts(
@@ -3079,19 +4116,18 @@ async def test_locked_retry_output_preserves_previous_partial_coverage(
         original_unlink(path, missing_ok=missing_ok)
 
     monkeypatch.setattr(Path, "unlink", locked_unlink)
-    with pytest.raises(StaticCoverageBlocked) as second:
-        await bootstrap.run(request, identity)
-    second_report = _coverage_from_ref(profile, identity, second.value.coverage_ref)
-    assert second_report["verified_count"] == 1
-    assert process.opengrep_calls == 1
-    latest = next(
-        item
-        for item in store.list_static_scan_attempts(
-            identity, request.repository, second_report["fingerprint"]
-        )
-        if item.tool == "opengrep"
+    result = await bootstrap.run(request, identity)
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
+    second_report = _coverage_from_ref(
+        profile, identity, StoredDataRef.model_validate(bundle["static_coverage_ref"])
     )
-    assert latest.raw_ref == previous.raw_ref
+    assert second_report["verified_count"] == second_report["expected_count"] == 2
+    assert process.opengrep_calls == 2
+    attempts = store.list_static_scan_attempts(
+        identity, request.repository, second_report["fingerprint"]
+    )
+    retained = next(item for item in attempts if item.run_key == previous.run_key)
+    assert retained.raw_ref == previous.raw_ref
 
 
 @pytest.mark.asyncio
@@ -3138,8 +4174,7 @@ async def test_nonzero_opengrep_keeps_parseable_hit_as_provisional(
     with pytest.raises(StaticCoverageBlocked) as caught:
         await bootstrap.run(_request(profile), identity)
     bundle = _coverage_from_ref(profile, identity, caught.value.bundle_ref)
-    assert bundle["opengrep_findings"][0]["path"] == "app.py"
-    assert bundle["opengrep_findings"][0]["scan_incomplete"] is True
+    assert bundle["opengrep_findings"] == []
 
 
 @pytest.mark.asyncio
@@ -3147,24 +4182,315 @@ async def test_codeql_runs_after_opengrep_partial_parse(tmp_path: Path) -> None:
     process = _CoverageProcess()
     bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process)
     identity = _identity("analysis-codeql-after-warning")
-    with pytest.raises(
-        StaticCoverageBlocked, match="STATIC_COVERAGE_INCOMPLETE"
-    ) as caught:
-        await bootstrap.run(_request(profile), identity)
+    result = await bootstrap.run(_request(profile), identity)
+    assert result.static_disposition == "PARTIAL"
+    assert result.static_coverage_ref is not None
     assert process.codeql_calls == 1
-    report = _coverage_from_ref(profile, identity, caught.value.coverage_ref)
+    report = _coverage_from_ref(profile, identity, result.static_coverage_ref)
     assert report["expected_count"] == 2
     assert report["verified_count"] == 1
     assert report["gaps"][0]["path"] == "app.py"
-    bundle = _coverage_from_ref(profile, identity, caught.value.bundle_ref)
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
     assert bundle["codeql_executed"] is True
     assert bundle["ast_summary"]["kind"] == "simple_python_ast"
+
+
+def _cacheable_codeql_materials(tmp_path: Path) -> Path:
+    root = tmp_path / "codeql"
+    root.mkdir()
+    (root / "python-security.qls").write_text("- queries: security\n", encoding="utf-8")
+    (root / "qlpack.yml").write_text(
+        "name: test/security\nversion: 1.0.0\n", encoding="utf-8"
+    )
+    (root / "security.ql").write_text("select 1\n", encoding="utf-8")
+    return root
+
+
+@pytest.mark.asyncio
+async def test_partial_resume_reuses_verified_codeql_sarif(tmp_path: Path) -> None:
+    _cacheable_codeql_materials(tmp_path)
+    process = _CoverageProcess()
+    bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process)
+    identity = _identity("analysis-codeql-cache")
+    request = _request(profile)
+
+    first = await bootstrap.run(request, identity)
+    second = await bootstrap.run(request, identity)
+
+    assert first.static_disposition == second.static_disposition == "PARTIAL"
+    assert process.codeql_calls == 1
+    first_bundle = _coverage_from_ref(profile, identity, first.static_bundle_ref)
+    second_bundle = _coverage_from_ref(profile, identity, second.static_bundle_ref)
+    assert second_bundle["tool_result_refs"][2] == first_bundle["tool_result_refs"][2]
+
+
+@pytest.mark.asyncio
+async def test_codeql_cache_rejects_changed_local_qlpack(tmp_path: Path) -> None:
+    query_root = _cacheable_codeql_materials(tmp_path)
+    qlpack = query_root / "qlpack.yml"
+    process = _CoverageProcess()
+    bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process)
+    identity = _identity("analysis-codeql-local-pack-changed")
+    request = _request(profile)
+
+    await bootstrap.run(request, identity)
+    qlpack.write_text("name: test/security\nversion: 2.0.0\n", encoding="utf-8")
+    await bootstrap.run(request, identity)
+
+    assert process.codeql_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_codeql_cache_rejects_changed_resolved_pack_content(
+    tmp_path: Path,
+) -> None:
+    query_root = _cacheable_codeql_materials(tmp_path)
+    process = _CoverageProcess()
+    bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process)
+    identity = _identity("analysis-codeql-resolved-pack-changed")
+    request = _request(profile)
+
+    await bootstrap.run(request, identity)
+    (query_root / "security.ql").write_text("select 2\n", encoding="utf-8")
+    await bootstrap.run(request, identity)
+
+    assert process.codeql_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_codeql_cache_disabled_without_resolved_pack_proof(
+    tmp_path: Path,
+) -> None:
+    _cacheable_codeql_materials(tmp_path)
+
+    class UnresolvedPack(_CoverageProcess):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1:3] == ("resolve", "packs"):
+                return ProcessResult(2, b"", b"unavailable")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = UnresolvedPack()
+    bootstrap, profile, store = _coverage_bootstrap(tmp_path, process)
+    identity = _identity("analysis-codeql-pack-unresolved")
+    request = _request(profile)
+
+    await bootstrap.run(request, identity)
+    await bootstrap.run(request, identity)
+
+    assert process.codeql_calls == 2
+    with sqlite3.connect(store.database_path) as connection:
+        cached = connection.execute(
+            "SELECT COUNT(*) FROM simple_static_scan_attempts WHERE tool = 'codeql'"
+        ).fetchone()
+    assert cached == (0,)
+
+
+@pytest.mark.asyncio
+async def test_codeql_cache_rejects_changed_query_suite_and_corrupt_sarif(
+    tmp_path: Path,
+) -> None:
+    query_suite = _cacheable_codeql_materials(tmp_path) / "python-security.qls"
+    process = _CoverageProcess()
+    bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process)
+    identity = _identity("analysis-codeql-cache-changed")
+    request = _request(profile)
+
+    first = await bootstrap.run(request, identity)
+    assert first.static_disposition == "PARTIAL"
+    query_suite.write_text("- queries: extended-security\n", encoding="utf-8")
+    second = await bootstrap.run(request, identity)
+    assert process.codeql_calls == 2
+    second_bundle = _coverage_from_ref(profile, identity, second.static_bundle_ref)
+    sarif_ref = StoredDataRef.model_validate(second_bundle["tool_result_refs"][2])
+    SimpleArtifactRepository(profile.data_dir, identity).artifacts.path_for(
+        sarif_ref.content_hash
+    ).write_bytes(b"corrupt")
+
+    third = await bootstrap.run(request, identity)
+    assert third.static_disposition == "PARTIAL"
+    assert process.codeql_calls == 3
+
+
+@pytest.mark.asyncio
+async def test_codeql_cache_rejects_corrupt_request_descriptor(tmp_path: Path) -> None:
+    _cacheable_codeql_materials(tmp_path)
+    process = _CoverageProcess()
+    bootstrap, profile, store = _coverage_bootstrap(tmp_path, process)
+    identity = _identity("analysis-codeql-request-corrupt")
+    request = _request(profile)
+    first = await bootstrap.run(request, identity)
+    assert first.static_disposition == "PARTIAL"
+    # The CodeQL result uses its own identity fingerprint, independent of the
+    # OpenGrep coverage plan, so locate its descriptor through the store.
+    with sqlite3.connect(store.database_path) as connection:
+        row = connection.execute(
+            "SELECT request_ref_json FROM simple_static_scan_attempts "
+            "WHERE analysis_id = ? AND tool = 'codeql'",
+            (identity.analysis_id,),
+        ).fetchone()
+    assert row is not None
+    descriptor_ref = StoredDataRef.model_validate_json(row[0])
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    artifacts.artifacts.path_for(descriptor_ref.content_hash).write_bytes(b"corrupt")
+
+    second = await bootstrap.run(request, identity)
+    assert second.static_disposition == "PARTIAL"
+    assert process.codeql_calls == 2
+    second_bundle = _coverage_from_ref(profile, identity, second.static_bundle_ref)
+    assert second_bundle["codeql_executed"] is True
+    await bootstrap.run(request, identity)
+    assert process.codeql_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_codeql_cache_rejects_changed_executable_digest(tmp_path: Path) -> None:
+    _cacheable_codeql_materials(tmp_path)
+    process = _CoverageProcess()
+    bootstrap, profile, store = _coverage_bootstrap(tmp_path, process)
+    identity = _identity("analysis-codeql-new-tool")
+    request = _request(profile)
+    first = await bootstrap.run(request, identity)
+    assert first.static_disposition == "PARTIAL"
+
+    replacement = tmp_path / "new-codeql-tool"
+    replacement.write_bytes(b"new-codeql-tool")
+    profile = profile.model_copy(
+        update={
+            "tools": {
+                **profile.tools,
+                "codeql": SimpleToolBinding(
+                    executable_path=replacement,
+                    version="2.0",
+                    executable_sha256=hashlib.sha256(b"new-codeql-tool").hexdigest(),
+                ),
+            },
+        }
+    )
+    bootstrap = DirectStaticBootstrap(
+        profile=profile, process=process, store=store, static_material_root=tmp_path
+    )
+    second = await bootstrap.run(_request(profile), identity)
+    assert second.static_disposition == "PARTIAL"
+    assert process.codeql_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_corrupt_execution_history_keeps_gap_artifact_on_resume(
+    tmp_path: Path,
+) -> None:
+    process = _CoverageProcess()
+    bootstrap, profile, _store = _coverage_bootstrap(
+        tmp_path, process, semgrep=False, codeql=False
+    )
+    identity = _identity("analysis-corrupt-execution-history")
+    request = _request(profile)
+    first = await bootstrap.run(request, identity)
+    assert first.static_disposition == "PARTIAL"
+
+    database = profile.data_dir / "db" / "sastsimi.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE simple_static_scan_executions SET error_ref_json = ? "
+            "WHERE analysis_id = ?",
+            ("not-json", identity.analysis_id),
+        )
+
+    with pytest.raises(StaticCoverageBlocked) as caught:
+        await bootstrap.run(request, identity)
+    report = _coverage_from_ref(profile, identity, caught.value.coverage_ref)
+    assert report["gaps"]
+    assert all(gap["attempt_count"] is None for gap in report["gaps"])
+    assert all(gap["history_complete"] is False for gap in report["gaps"])
+    assert all(gap["history_status"] == "INVALID" for gap in report["gaps"])
+    assert "STATIC_SCAN_EXECUTION_HISTORY_INVALID" in report["engine_errors"]
+
+
+@pytest.mark.asyncio
+async def test_opengrep_execution_is_durable_before_process_dispatch(
+    tmp_path: Path,
+) -> None:
+    class ObserveStarted(_CoverageProcess):
+        store: SimpleCheckpointStore
+        identity: CheckpointIdentity
+        repository: str
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--metrics=off" not in argv:
+                history = self.store.list_static_scan_executions(
+                    self.identity, self.repository, tool="opengrep"
+                )
+                assert len(history) == 1
+                assert history[0].status == "STARTED"
+                assert history[0].request_ref is not None
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = ObserveStarted()
+    bootstrap, profile, store = _coverage_bootstrap(
+        tmp_path, process, semgrep=False, codeql=False
+    )
+    identity = _identity("analysis-durable-dispatch")
+    request = _request(profile)
+    process.store = store
+    process.identity = identity
+    process.repository = request.repository
+
+    first = await bootstrap.run(request, identity)
+    assert first.static_disposition == "PARTIAL"
+    history = store.list_static_scan_executions(identity, request.repository)
+    assert len(history) == 1
+    assert history[0].status == "BLOCKED"
+
+
+@pytest.mark.asyncio
+async def test_unfinished_execution_prevents_exact_gap_count_on_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = _CoverageProcess()
+    bootstrap, profile, store = _coverage_bootstrap(
+        tmp_path, process, semgrep=False, codeql=False
+    )
+    identity = _identity("analysis-unfinished-execution")
+    request = _request(profile)
+
+    def fail_finish(*_args: object, **_kwargs: object) -> None:
+        raise OSError("simulated-ledger-finalization-failure")
+
+    monkeypatch.setattr(
+        store, "finish_static_scan_execution", fail_finish, raising=False
+    )
+    with pytest.raises(StaticCoverageBlocked):
+        await bootstrap.run(request, identity)
+    monkeypatch.undo()
+
+    history = store.list_static_scan_executions(identity, request.repository)
+    assert len(history) == 1
+    assert history[0].status == "STARTED"
+    resumed = await bootstrap.run(request, identity)
+    assert resumed.static_disposition == "PARTIAL"
+    assert resumed.static_coverage_ref is not None
+    report = _coverage_from_ref(profile, identity, resumed.static_coverage_ref)
+    assert report["gaps"]
+    assert all(gap["attempt_count"] is None for gap in report["gaps"])
+    assert all(gap["history_complete"] is False for gap in report["gaps"])
+    assert all(gap["history_status"] == "INTERRUPTED" for gap in report["gaps"])
 
 
 @pytest.mark.asyncio
 async def test_semgrep_closes_only_failed_file_rule_pairs(tmp_path: Path) -> None:
     process = _CoverageProcess()
-    bootstrap, profile, _ = _coverage_bootstrap(
+    bootstrap, profile, store = _coverage_bootstrap(
         tmp_path, process, semgrep=True, codeql=False
     )
     identity = _identity("analysis-fallback-closed")
@@ -3179,6 +4505,12 @@ async def test_semgrep_closes_only_failed_file_rule_pairs(tmp_path: Path) -> Non
     assert report["expected_count"] == report["verified_count"] == 2
     assert report["gaps"] == []
     assert report["engine_verified_counts"] == {"opengrep": 1, "semgrep": 1}
+    executions = store.list_static_scan_executions(
+        identity, _request(profile).repository, report["fingerprint"], tool="semgrep"
+    )
+    assert len(executions) == 1
+    assert executions[0].status == "SUCCEEDED"
+    assert executions[0].request_ref is not None
     assert {hit["engine"] for hit in bundle["opengrep_findings"]} == {
         "opengrep",
         "semgrep",
@@ -3186,19 +4518,59 @@ async def test_semgrep_closes_only_failed_file_rule_pairs(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_semgrep_execution_is_durable_before_process_dispatch(
+    tmp_path: Path,
+) -> None:
+    class ObserveSemgrepStarted(_CoverageProcess):
+        store: SimpleCheckpointStore
+        identity: CheckpointIdentity
+        repository: str
+
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--metrics=off" in argv:
+                history = self.store.list_static_scan_executions(
+                    self.identity, self.repository, tool="semgrep"
+                )
+                assert history
+                assert history[-1].status == "STARTED"
+                assert history[-1].request_ref is not None
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = ObserveSemgrepStarted()
+    bootstrap, profile, store = _coverage_bootstrap(
+        tmp_path, process, semgrep=True, codeql=False
+    )
+    identity = _identity("analysis-semgrep-durable-dispatch")
+    request = _request(profile)
+    process.store = store
+    process.identity = identity
+    process.repository = request.repository
+    await bootstrap.run(request, identity)
+    history = store.list_static_scan_executions(
+        identity, request.repository, tool="semgrep"
+    )
+    assert history
+    assert all(item.status == "SUCCEEDED" for item in history)
+
+
+@pytest.mark.asyncio
 async def test_codeql_survives_fallback_failure(tmp_path: Path) -> None:
     process = _CoverageProcess(fallback_fails=True)
     bootstrap, profile, store = _coverage_bootstrap(tmp_path, process, semgrep=True)
     identity = _identity("analysis-fallback-failed")
-    with pytest.raises(
-        StaticCoverageBlocked, match="SEMGREP_EXECUTION_FAILED"
-    ) as caught:
-        await bootstrap.run(_request(profile), identity)
+    result = await bootstrap.run(_request(profile), identity)
+    assert result.static_disposition == "PARTIAL"
     assert process.codeql_calls == 1
-    bundle = _coverage_from_ref(profile, identity, caught.value.bundle_ref)
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
     assert bundle["codeql_executed"] is True
     assert len(bundle["tool_result_refs"]) >= 3
-    report = _coverage_from_ref(profile, identity, caught.value.coverage_ref)
+    report = _coverage_from_ref(profile, identity, result.static_coverage_ref)
     assert report["gaps"][0]["path"] == "app.py"
     attempt = next(
         item
@@ -3209,6 +4581,13 @@ async def test_codeql_survives_fallback_failure(tmp_path: Path) -> None:
     )
     assert attempt.status == "BLOCKED"
     assert attempt.raw_ref is not None
+    executions = store.list_static_scan_executions(
+        identity, _request(profile).repository, report["fingerprint"], tool="semgrep"
+    )
+    assert len(executions) == 1
+    assert executions[0].status == "BLOCKED"
+    assert executions[0].error_code == "SEMGREP_EXECUTION_FAILED"
+    assert executions[0].error_ref == attempt.raw_ref
     assert (
         SimpleArtifactRepository(profile.data_dir, identity).read(attempt.raw_ref)
         == b"bad"
@@ -3220,9 +4599,9 @@ async def test_codeql_failure_retains_ast_and_opengrep_evidence(tmp_path: Path) 
     process = _CoverageProcess(parse_warning=False, codeql_fails=True)
     bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process)
     identity = _identity("analysis-codeql-failed")
-    with pytest.raises(StaticCoverageBlocked, match="CODEQL_ANALYZE_FAILED") as caught:
-        await bootstrap.run(_request(profile), identity)
-    bundle = _coverage_from_ref(profile, identity, caught.value.bundle_ref)
+    result = await bootstrap.run(_request(profile), identity)
+    assert result.static_disposition == "PARTIAL"
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
     assert bundle["ast_summary"]["facts"]
     assert bundle["opengrep_findings"]
     assert bundle["codeql_executed"] is False
@@ -3230,7 +4609,7 @@ async def test_codeql_failure_retains_ast_and_opengrep_evidence(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_ast_parse_errors_and_truncation_are_disclosed(
+async def test_ast_parse_errors_are_disclosed_even_when_rule_coverage_succeeds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     process = _CoverageProcess(parse_warning=False, invalid_python=True)
@@ -3238,12 +4617,133 @@ async def test_ast_parse_errors_and_truncation_are_disclosed(
     monkeypatch.setattr(static_module, "_MAX_FACTS", 1)
     identity = _identity("analysis-ast-errors")
     result = await bootstrap.run(_request(profile), identity)
+    assert result.static_disposition == "PARTIAL"
     bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
     report = _coverage_from_ref(
         profile, identity, StoredDataRef.model_validate(bundle["static_coverage_ref"])
     )
     assert report["ast_parse_error_count"] == 1
     assert report["ast_truncated"] is True
+    assert report["verified_count"] == report["expected_count"] == 2
+
+
+def test_ast_continues_parsing_files_after_fact_sample_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(static_module, "_MAX_FACTS", 1)
+    (tmp_path / "a.py").write_text("def a(): pass\n", encoding="utf-8")
+    (tmp_path / "z.py").write_text("def broken(:\n", encoding="utf-8")
+    profile = _profile(tmp_path)
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=_Process(),
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+
+    result = bootstrap._python_ast(tmp_path, ("a.py", "z.py"))
+
+    assert result["parse_error_count"] == 1
+    assert result["parse_errors"] == ["z.py"]
+    assert result["parsed_file_count"] == 1
+
+
+def test_ast_retains_every_unparsed_product_path(tmp_path: Path) -> None:
+    paths = tuple(f"file_{index:03d}.py" for index in range(105))
+    for relative in paths:
+        (tmp_path / relative).write_text("def broken(:\n", encoding="utf-8")
+    profile = _profile(tmp_path)
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=_Process(),
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+
+    result = bootstrap._python_ast(tmp_path, paths)
+
+    assert result["parse_error_count"] == len(paths)
+    assert result["parse_errors"] == list(paths)
+
+
+def test_ast_parses_selected_python_stub_source(tmp_path: Path) -> None:
+    (tmp_path / "api.pyi").write_text(
+        "def parse(value: str) -> bool: ...\n", encoding="utf-8"
+    )
+    profile = _profile(tmp_path)
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=_Process(),
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+
+    result = bootstrap._python_ast(tmp_path, ("api.pyi",))
+
+    assert result["parsed_file_count"] == 1
+    assert result["parse_error_count"] == 0
+    assert any(
+        fact["path"] == "api.pyi"
+        for fact in cast(list[dict[str, object]], result["facts"])
+    )
+
+
+def test_ast_does_not_read_symlink_outside_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "external.py"
+    external.write_text("def outside_secret(): pass\n", encoding="utf-8")
+    try:
+        (workspace / "leak.py").symlink_to(external)
+    except OSError:
+        # Standard Windows users may lack symlink privileges. Simulate the
+        # reparse-path signal while still proving the source is never parsed.
+        (workspace / "leak.py").write_bytes(external.read_bytes())
+        original_is_symlink = Path.is_symlink
+        monkeypatch.setattr(
+            Path,
+            "is_symlink",
+            lambda path: path == workspace / "leak.py" or original_is_symlink(path),
+        )
+    profile = _profile(tmp_path)
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=_Process(),
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+
+    result = bootstrap._python_ast(workspace, ("leak.py",))
+
+    assert result["parsed_file_count"] == 0
+    assert result["parse_errors"] == ["leak.py"]
+    assert result["facts"] == []
+
+
+@pytest.mark.parametrize("extension", (".mjs", ".cjs", ".mts", ".cts"))
+def test_repository_profile_recognizes_extended_js_ts_source(extension: str) -> None:
+    profile = DirectStaticBootstrap._repository_profile((f"src/main{extension}",))
+
+    assert profile["languages"] == ("JAVASCRIPT_TYPESCRIPT",)
+    assert profile["needs_confirmation"] is False
+
+
+@pytest.mark.asyncio
+async def test_ast_oversize_product_file_is_partial_with_path_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = _CoverageProcess(parse_warning=False)
+    bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process, codeql=False)
+    monkeypatch.setattr(static_module, "_MAX_SOURCE_BYTES", 1)
+    identity = _identity("analysis-ast-oversize")
+
+    result = await bootstrap.run(_request(profile), identity)
+    assert result.static_disposition == "PARTIAL"
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
+    assert bundle["ast_summary"]["oversize_count"] == 2
+    assert bundle["ast_summary"]["oversize_paths"] == ["app.py", "good.py"]
 
 
 @pytest.mark.asyncio
@@ -3261,7 +4761,8 @@ async def test_resume_reuses_verified_batches_without_duplicate_findings(
     assert len(process.fallback_calls) == 1
     bundle = _coverage_from_ref(profile, identity, second.static_bundle_ref)
     assert len(bundle["opengrep_findings"]) == 2
-    assert first.static_bundle_ref == second.static_bundle_ref
+    first_bundle = _coverage_from_ref(profile, identity, first.static_bundle_ref)
+    assert first_bundle["opengrep_findings"] == bundle["opengrep_findings"]
 
 
 @pytest.mark.asyncio
@@ -3296,8 +4797,8 @@ async def test_resume_retries_partial_batch_when_file_was_not_scanned(
     process = TemporarilyUnscanned(parse_warning=False)
     bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process, codeql=False)
     identity = _identity("resume-unscanned")
-    with pytest.raises(StaticCoverageBlocked, match="STATIC_COVERAGE_INCOMPLETE"):
-        await bootstrap.run(_request(profile), identity)
+    first = await bootstrap.run(_request(profile), identity)
+    assert first.static_disposition == "PARTIAL"
     await bootstrap.run(_request(profile), identity)
     assert process.opengrep_calls == 2
 
@@ -3331,8 +4832,8 @@ async def test_cached_semgrep_coverage_requires_same_executable(
     await bootstrap.run(_request(profile), identity)
     assert len(process.fallback_calls) == 1
     semgrep_path.write_bytes(b"changed-semgrep-tool")
-    with pytest.raises(StaticCoverageBlocked, match="SEMGREP_TOOL_UNAVAILABLE"):
-        await bootstrap.run(_request(profile), identity)
+    partial = await bootstrap.run(_request(profile), identity)
+    assert partial.static_disposition == "PARTIAL"
     assert len(process.fallback_calls) == 1
 
 
@@ -3372,7 +4873,9 @@ async def test_semgrep_fallback_chunks_continue_past_aggregate_elapsed_time(
     bootstrap, profile, _ = _coverage_bootstrap(
         tmp_path, process, semgrep=True, codeql=False
     )
-    profile = profile.model_copy(update={"max_elapsed_seconds": "unlimited"})
+    profile = profile.model_copy(
+        update={"max_elapsed_seconds": "unlimited", "static_scan_pass_seconds": 7200}
+    )
     bootstrap = DirectStaticBootstrap(
         profile=profile,
         process=process,

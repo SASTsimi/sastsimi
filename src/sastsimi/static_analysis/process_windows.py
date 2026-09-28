@@ -84,7 +84,9 @@ class Win32Api(Protocol):
         flags: int,
     ) -> tuple[object, object]: ...
     def create_job(self) -> object: ...
-    def set_kill_on_close(self, job: object) -> None: ...
+    def set_kill_on_close(
+        self, job: object, *, memory_limit_bytes: int | None = None
+    ) -> None: ...
     def assign_process(self, job: object, process: object) -> None: ...
     def resume_thread(self, thread: object) -> None: ...
     def close(self, handle: object) -> None: ...
@@ -120,8 +122,11 @@ class _ActiveProcess:
 
 
 class SuspendedJobLauncher:
-    def __init__(self, api: Win32Api) -> None:
+    def __init__(self, api: Win32Api, *, memory_limit_bytes: int | None = None) -> None:
+        if memory_limit_bytes is not None and memory_limit_bytes <= 0:
+            raise ValueError("PROCESS_MEMORY_LIMIT_INVALID")
         self.api = api
+        self.memory_limit_bytes = memory_limit_bytes
 
     def launch(self, spec: ProcessSpec) -> LaunchedProcess:
         if any("\x00" in value for value in spec.argv) or any(
@@ -155,7 +160,12 @@ class SuspendedJobLauncher:
                 CREATE_FLAGS,
             )
             job = self.api.create_job()
-            self.api.set_kill_on_close(job)
+            if self.memory_limit_bytes is None:
+                self.api.set_kill_on_close(job)
+            else:
+                self.api.set_kill_on_close(
+                    job, memory_limit_bytes=self.memory_limit_bytes
+                )
             self.api.assign_process(job, process)
             self.api.resume_thread(thread)
             keep = {id(process), id(job), id(stdout_read), id(stderr_read)}
@@ -177,6 +187,7 @@ class WindowsProcessBackend:
         self,
         api: Win32Api | None = None,
         *,
+        memory_limit_bytes: int | None = None,
         drain_timeout_seconds: float = 1.0,
         termination_timeout_seconds: float = 1.0,
     ) -> None:
@@ -185,7 +196,9 @@ class WindowsProcessBackend:
         if termination_timeout_seconds <= 0:
             raise ValueError("PROCESS_TERMINATION_TIMEOUT_INVALID")
         self.api = api or CtypesWin32Api()
-        self.launcher = SuspendedJobLauncher(self.api)
+        self.launcher = SuspendedJobLauncher(
+            self.api, memory_limit_bytes=memory_limit_bytes
+        )
         self._active: dict[str, _ActiveProcess] = {}
         self._drain_timeout_seconds = drain_timeout_seconds
         self._termination_timeout_seconds = termination_timeout_seconds
@@ -641,7 +654,12 @@ class CtypesWin32Api:
         self._checked(job, "CreateJobObjectW")
         return job
 
-    def set_kill_on_close(self, job: object) -> None:
+    def set_kill_on_close(
+        self, job: object, *, memory_limit_bytes: int | None = None
+    ) -> None:
+        if memory_limit_bytes is not None and memory_limit_bytes <= 0:
+            raise ValueError("PROCESS_MEMORY_LIMIT_INVALID")
+
         class BasicLimits(ctypes.Structure):
             _fields_ = [
                 ("PerProcessUserTimeLimit", ctypes.c_longlong),
@@ -680,6 +698,10 @@ class CtypesWin32Api:
 
         limits = ExtendedLimits()
         limits.BasicLimitInformation.LimitFlags = 0x00002000
+        if memory_limit_bytes is not None:
+            # JOB_OBJECT_LIMIT_JOB_MEMORY caps committed memory across the job.
+            limits.BasicLimitInformation.LimitFlags |= 0x00000200
+            limits.JobMemoryLimit = memory_limit_bytes
         self._checked(
             self.kernel32.SetInformationJobObject(
                 job, 9, ctypes.byref(limits), ctypes.sizeof(limits)

@@ -66,6 +66,8 @@ class CodexProcessResult:
     status: InvocationStatus
     final_message: bytes | None
     provider_session_id: str | None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 @dataclass(frozen=True)

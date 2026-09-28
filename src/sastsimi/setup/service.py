@@ -63,6 +63,7 @@ class SetupChoices(BaseModel):
     max_cost_minor_units: int = Field(gt=0)
     max_tokens: int = Field(gt=0)
     max_elapsed_seconds: ElapsedLimit = "unlimited"
+    static_scan_pass_seconds: int = Field(default=180, gt=0)
     docker_network: Literal["NONE", "BRIDGE"]
     agent_models: dict[str, str] = Field(default_factory=dict)
     llm_timeout_seconds: int = Field(default=180, gt=0, le=3600)
@@ -70,7 +71,6 @@ class SetupChoices(BaseModel):
     llm_max_concurrency: int = Field(default=2, gt=0, le=32)
     hypothesis_feed: Literal["current", "facts_survey"] = "current"
     semgrep_fallback: bool = False
-    include_tests: bool = False
     max_parallel_hypotheses: int = Field(default=1, gt=0, le=32)
     max_parallel_builds: int = Field(default=1, gt=0, le=32)
     max_parallel_containers: int = Field(default=1, gt=0, le=32)
@@ -470,6 +470,7 @@ class SetupService:
             max_cost_minor_units=choices.max_cost_minor_units,
             max_tokens=choices.max_tokens,
             max_elapsed_seconds=choices.max_elapsed_seconds,
+            static_scan_pass_seconds=choices.static_scan_pass_seconds,
             docker_network=choices.docker_network,
             enabled_tools=enabled_tools,
             detected_versions=detected_versions,
@@ -480,7 +481,6 @@ class SetupService:
             llm_max_concurrency=choices.llm_max_concurrency,
             hypothesis_feed=choices.hypothesis_feed,
             semgrep_fallback=choices.semgrep_fallback,
-            include_tests=choices.include_tests,
             max_parallel_hypotheses=choices.max_parallel_hypotheses,
             max_parallel_builds=choices.max_parallel_builds,
             max_parallel_containers=choices.max_parallel_containers,
@@ -512,6 +512,7 @@ class SetupService:
             max_cost_minor_units=choices.max_cost_minor_units,
             max_tokens=choices.max_tokens,
             max_elapsed_seconds=choices.max_elapsed_seconds,
+            static_scan_pass_seconds=choices.static_scan_pass_seconds,
             docker_network=choices.docker_network,
             tools=bindings,
             agent_models=choices.agent_models,
@@ -520,7 +521,6 @@ class SetupService:
             llm_max_concurrency=choices.llm_max_concurrency,
             hypothesis_feed=choices.hypothesis_feed,
             semgrep_fallback=choices.semgrep_fallback,
-            include_tests=choices.include_tests,
             max_parallel_hypotheses=choices.max_parallel_hypotheses,
             max_parallel_builds=choices.max_parallel_builds,
             max_parallel_containers=choices.max_parallel_containers,

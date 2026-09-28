@@ -663,6 +663,7 @@ def _build_t08_feature(
     graph = StaticProductionGraph(
         runner=context.runner,
         work_query=context.scheduler_store,
+        workspace_locator=locator,
         # Orchestration owns work registration. Static Analysis owns the
         # handlers' tool execution and result publication after dispatch.
         requester_identity_ref=context.role_identity_refs[RequesterRole.ORCHESTRATION],

@@ -111,6 +111,23 @@ def _validate_schema(value: object, schema: Mapping[str, Any], path: str = "$") 
                 _validate_schema(item, schema["items"], f"{path}[{index}]")
 
 
+def _response_tokens(response: object) -> tuple[int | None, int | None]:
+    usage = getattr(response, "usage", None)
+    input_tokens = getattr(usage, "input_tokens", None)
+    output_tokens = getattr(usage, "output_tokens", None)
+    total_tokens = getattr(usage, "total_tokens", None)
+    if (
+        type(input_tokens) is int
+        and input_tokens >= 0
+        and type(output_tokens) is int
+        and output_tokens >= 0
+        and type(total_tokens) is int
+        and total_tokens == input_tokens + output_tokens
+    ):
+        return input_tokens, output_tokens
+    return None, None
+
+
 class SimpleCodexClient:
     """One-call-at-a-time Codex boundary for the local sequential runtime."""
 
@@ -185,6 +202,8 @@ class SimpleCodexClient:
             started_at=started_at,
             finished_at=finished_at,
             elapsed_ms=elapsed_ms,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
         )
 
 
@@ -271,6 +290,7 @@ class SimpleOpenAIClient:
             )
         finished_at = datetime.now(UTC)
         elapsed_ms = max(0, int((monotonic() - started) * 1000))
+        input_tokens, output_tokens = _response_tokens(response)
         try:
             value = json.loads(raw)
             if not isinstance(value, dict):
@@ -295,6 +315,8 @@ class SimpleOpenAIClient:
             started_at=started_at,
             finished_at=finished_at,
             elapsed_ms=elapsed_ms,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
 

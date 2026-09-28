@@ -4,6 +4,7 @@ import subprocess
 
 import pytest
 
+from sastsimi.simple_runtime import semgrep_fallback_plan as plan_module
 from sastsimi.simple_runtime.semgrep_fallback_plan import plan_semgrep_target_chunks
 
 
@@ -48,3 +49,28 @@ def test_planner_rejects_single_target_that_cannot_fit() -> None:
         plan_semgrep_target_chunks(
             ["file/" + "😀" * 100], _command, max_command_utf16_units=100
         )
+
+
+def test_source_byte_split_keeps_every_target_and_large_singleton() -> None:
+    roots = (("a.py", "b.py", "c.py", "large.py", "z.py"),)
+    sizes = {"a.py": 2, "b.py": 3, "c.py": 1, "large.py": 20, "z.py": 4}
+
+    chunks = plan_module.split_target_chunks_by_source_bytes(
+        roots, sizes.__getitem__, max_bytes=5
+    )
+
+    assert chunks == (
+        ("a.py", "b.py"),
+        ("c.py",),
+        ("large.py",),
+        ("z.py",),
+    )
+    assert tuple(path for chunk in chunks for path in chunk) == roots[0]
+
+
+def test_source_byte_split_preserves_command_bounded_roots() -> None:
+    roots = (("a.py", "b.py"), ("c.py", "d.py"))
+    chunks = plan_module.split_target_chunks_by_source_bytes(
+        roots, lambda _path: 1, max_bytes=5
+    )
+    assert chunks == roots

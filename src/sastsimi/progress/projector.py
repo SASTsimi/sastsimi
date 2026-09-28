@@ -27,7 +27,12 @@ class ProgressProjector:
     def __init__(self, store: CheckpointQuery) -> None:
         self._store = store
 
-    def snapshot(self, analysis_id: str) -> ProgressSnapshot:
+    def snapshot(
+        self,
+        analysis_id: str,
+        *,
+        static_disposition: Literal["FULL", "PARTIAL"] = "FULL",
+    ) -> ProgressSnapshot:
         checkpoints = self._store.list_checkpoints(analysis_id)
         if not checkpoints:
             raise LookupError("ANALYSIS_PROGRESS_NOT_FOUND")
@@ -123,6 +128,7 @@ class ProgressProjector:
             checkpoints,
             terminal_hypotheses,
             len(by_hypothesis),
+            static_disposition=static_disposition,
         )
         credited = completed + skipped
         percent = (
@@ -153,7 +159,12 @@ class ProgressProjector:
         checkpoints: tuple[StageCheckpoint, ...],
         terminal_hypotheses: int,
         hypothesis_count: int,
-    ) -> tuple[Literal["RUNNING", "BLOCKED", "FAILED", "COMPLETE"], StageCheckpoint]:
+        *,
+        static_disposition: Literal["FULL", "PARTIAL"] = "FULL",
+    ) -> tuple[
+        Literal["RUNNING", "BLOCKED", "FAILED", "COMPLETE", "PARTIAL"],
+        StageCheckpoint,
+    ]:
         current = max(checkpoints, key=lambda item: item.updated_at)
         # An active stage is the current analysis, even when an earlier
         # hypothesis has already stopped. Once idle, failed outranks blocked.
@@ -169,7 +180,9 @@ class ProgressProjector:
                 )
                 return result_status, max(matches, key=lambda item: item.updated_at)
         if hypothesis_count > 0 and terminal_hypotheses == hypothesis_count:
-            return "COMPLETE", current
+            return (
+                "PARTIAL" if static_disposition == "PARTIAL" else "COMPLETE"
+            ), current
         return "RUNNING", current
 
 

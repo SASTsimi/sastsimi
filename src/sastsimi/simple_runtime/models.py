@@ -82,6 +82,8 @@ class SimpleAnalysisRun(ContractModel):
     workspace_path: Path | None = None
     repository_profile_ref: StoredDataRef | None = None
     static_bundle_ref: StoredDataRef | None = None
+    static_coverage_ref: StoredDataRef | None = None
+    static_disposition: Literal["FULL", "PARTIAL"] = "FULL"
     security_policy_ref: StoredDataRef | None = None
     policy_snapshot_ref: StoredDataRef | None = None
     hypothesis_ids: tuple[str, ...] = ()

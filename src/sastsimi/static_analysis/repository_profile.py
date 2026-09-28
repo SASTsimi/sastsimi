@@ -45,6 +45,7 @@ from sastsimi.contracts.static import (
 )
 from sastsimi.ports.capability_registry import ProductionCapabilityResolverPort
 from sastsimi.ports.dto import RepositoryPreparation, TrackedFile
+from sastsimi.static_analysis.file_scope import build_static_file_scope
 
 _MAX_DETECTION_FILE_BYTES = 2 * 1024 * 1024
 _LANGUAGE_SUFFIXES: dict[str, frozenset[str]] = {
@@ -282,14 +283,12 @@ class RepositoryProfiler:
         canonical_tracked = tuple(
             sorted(preparation.tracked_files, key=lambda item: item.git_path)
         )
+        # Verify every Git entry before deriving the product-only profile. A
+        # discarded test fixture must not weaken the checkout identity check.
         for item in canonical_tracked:
             if item.git_mode not in {"100644", "100755"}:
                 raise ValueError("REPOSITORY_MANIFEST_MISMATCH")
             path = item.git_path
-            suffix = PurePosixPath(path).suffix.lower()
-            for language, suffixes in _LANGUAGE_SUFFIXES.items():
-                if suffix in suffixes:
-                    language_paths.setdefault(language, []).append(path)
             kind = _CONFIG_NAMES.get(PurePosixPath(path).name.lower())
             raw, sha256 = _read_exact(root, item, capture=kind is not None)
             manifest.append(
@@ -298,11 +297,24 @@ class RepositoryProfiler:
                 )
             )
             if kind is not None:
+                raw_configs[path] = raw
+
+        selected_paths = set(build_static_file_scope(root, paths).selected_paths)
+        manifest = [item for item in manifest if item.git_path in selected_paths]
+        for item in canonical_tracked:
+            path = item.git_path
+            if path not in selected_paths:
+                continue
+            suffix = PurePosixPath(path).suffix.lower()
+            for language, suffixes in _LANGUAGE_SUFFIXES.items():
+                if suffix in suffixes:
+                    language_paths.setdefault(language, []).append(path)
+            kind = _CONFIG_NAMES.get(PurePosixPath(path).name.lower())
+            if kind is not None:
                 configs.append(
                     RepositoryConfigFile.model_validate({"path": path, "kind": kind})
                 )
-                raw_configs[path] = raw
-                if raw is None:
+                if raw_configs[path] is None:
                     confirmations.append("CONFIG_TOO_LARGE:" + path)
 
         dependencies: dict[str, frozenset[str]] = {}

@@ -8,7 +8,7 @@ import os
 import re
 import stat
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
@@ -183,6 +183,7 @@ async def run_semgrep_fallback(
     output_dir: Path,
     per_file_timeout_seconds: int | None = None,
     max_output_bytes: int = 64 * 1024 * 1024,
+    on_invocation: Callable[[], None] | None = None,
 ) -> bytes:
     """Run a bounded local-only scan; coverage validation is the caller's job."""
 
@@ -209,8 +210,11 @@ async def run_semgrep_fallback(
     started_ns = time.time_ns()
     try:
         try:
+            scan_cwd = workspace.resolve()
+            if on_invocation is not None:
+                on_invocation()
             result = await process.run(
-                argv, cwd=workspace.resolve(), timeout_seconds=timeout_seconds
+                argv, cwd=scan_cwd, timeout_seconds=timeout_seconds
             )
         except TimeoutError as error:
             raise RuntimeError("EXTERNAL_TOOL_TIMEOUT") from error
@@ -224,7 +228,10 @@ async def run_semgrep_fallback(
         if not output_path.exists() and not output_path.is_symlink():
             if result.returncode != 0:
                 raise SemgrepFallbackError(
-                    "SEMGREP_EXECUTION_FAILED", result.stdout[:max_output_bytes] or None
+                    "SEMGREP_EXECUTION_FAILED",
+                    result.stdout[:max_output_bytes]
+                    or result.stderr[:max_output_bytes]
+                    or None,
                 )
             raise SemgrepFallbackError("SEMGREP_RESULT_INVALID")
         raw = _read_output(

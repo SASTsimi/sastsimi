@@ -50,8 +50,17 @@ class StaticBootstrapResult(ContractModel):
     repository_profile_ref: StoredDataRef
     static_bundle_ref: StoredDataRef
     workspace_path: Path
+    static_coverage_ref: StoredDataRef | None = None
+    static_disposition: Literal["FULL", "PARTIAL"] = "FULL"
     security_policy_ref: StoredDataRef | None = None
     policy_snapshot_ref: StoredDataRef | None = None
+
+
+class StaticEvidenceInvalid(ValueError):
+    retryable = False
+
+    def __init__(self) -> None:
+        super().__init__("STATIC_EVIDENCE_INVALID")
 
 
 class HypothesisSeed(ContractModel):
@@ -62,7 +71,7 @@ class HypothesisSeed(ContractModel):
 class SimpleAnalysisOutcome(ContractModel):
     identity: CheckpointIdentity
     display_analysis_id: str
-    status: Literal["RUNNING", "BLOCKED", "FAILED", "COMPLETE"]
+    status: Literal["RUNNING", "BLOCKED", "FAILED", "COMPLETE", "PARTIAL"]
     current_stage: SimpleStage
     error_code: str | None = None
 
@@ -181,6 +190,22 @@ class SimpleAnalysisApplication:
                     ),
                     identity,
                 )
+                self._validate_static_evidence(static, identity)
+                refresh_hypotheses = False
+                if run.static_disposition == "PARTIAL" and run.hypothesis_ids:
+                    previous_agent_ref = self._hypothesis_static_ref(identity)
+                    if previous_agent_ref is None:
+                        raise StaticEvidenceInvalid()
+                    refresh_hypotheses = self._static_facts_changed(
+                        identity, previous_agent_ref, static.static_bundle_ref
+                    )
+                    hypothesis_checkpoint = self._store.get(
+                        identity, SimpleStage.HYPOTHESIS_DONE
+                    )
+                    refresh_hypotheses = refresh_hypotheses or (
+                        hypothesis_checkpoint is None
+                        or hypothesis_checkpoint.status is not StageStatus.SUCCEEDED
+                    )
             except Exception as error:
                 coverage_ref = getattr(error, "coverage_ref", None)
                 bundle_ref = getattr(error, "bundle_ref", None)
@@ -192,11 +217,7 @@ class SimpleAnalysisApplication:
                 has_static_evidence = bool(static_evidence)
                 failure = StageFailure(
                     code=self._safe_error_code(error, "STATIC_BOOTSTRAP_BLOCKED"),
-                    retryable=(
-                        bool(getattr(error, "retryable", True))
-                        if has_static_evidence
-                        else True
-                    ),
+                    retryable=bool(getattr(error, "retryable", True)),
                     safe_message="Repository or static analysis did not complete",
                     evidence_refs=static_evidence,
                 )
@@ -218,6 +239,8 @@ class SimpleAnalysisApplication:
                     "workspace_path": static.workspace_path,
                     "repository_profile_ref": static.repository_profile_ref,
                     "static_bundle_ref": static.static_bundle_ref,
+                    "static_coverage_ref": static.static_coverage_ref,
+                    "static_disposition": static.static_disposition,
                     "security_policy_ref": static.security_policy_ref,
                     "policy_snapshot_ref": static.policy_snapshot_ref,
                 }
@@ -236,6 +259,15 @@ class SimpleAnalysisApplication:
                 analysis_run=updated_run,
             )
             break
+        if run.static_disposition == "PARTIAL" and run.hypothesis_ids:
+            if refresh_hypotheses:
+                try:
+                    return await self._propose_and_run(
+                        updated_run, identity, static, append_existing=True
+                    )
+                except StaticEvidenceInvalid:
+                    return self._invalid_hypothesis_resume(updated_run, identity)
+            return await self._run_hypotheses(updated_run, identity, static)
         return await self._propose_and_run(updated_run, identity, static)
 
     async def resume(self, analysis_id_or_display: str) -> SimpleAnalysisOutcome:
@@ -266,31 +298,305 @@ class SimpleAnalysisApplication:
 
     async def _resume_locked(self, exact: str) -> SimpleAnalysisOutcome:
         run = self._store.require_analysis_run(exact)
-        self._promote_legacy_inconclusive_pocs(exact)
-        if self._max_elapsed_seconds is not None:
-            self._store.reopen_elapsed_budget_failures(exact, self._max_elapsed_seconds)
         identity = CheckpointIdentity(
             analysis_id=run.analysis_id,
             workspace_id=run.workspace_id,
             commit_id=run.commit_id,
             hypothesis_id=None,
         )
+        if run.static_bundle_ref is not None:
+            await self._assert_completed_static_scope(run, identity)
+            if run.static_disposition == "PARTIAL":
+                if run.repository_profile_ref is None or run.workspace_path is None:
+                    return self._invalid_partial_resume(run, identity)
+                try:
+                    self._validate_static_evidence(
+                        StaticBootstrapResult(
+                            repository_profile_ref=run.repository_profile_ref,
+                            static_bundle_ref=run.static_bundle_ref,
+                            workspace_path=run.workspace_path,
+                            static_coverage_ref=run.static_coverage_ref,
+                            static_disposition="PARTIAL",
+                            security_policy_ref=run.security_policy_ref,
+                            policy_snapshot_ref=run.policy_snapshot_ref,
+                        ),
+                        identity,
+                    )
+                except StaticEvidenceInvalid:
+                    return self._invalid_partial_resume(run, identity)
+        if run.static_coverage_ref is not None:
+            try:
+                run = self._reconcile_hypothesis_checkpoint(run, identity)
+            except StaticEvidenceInvalid:
+                return self._invalid_partial_resume(run, identity)
+        self._promote_legacy_inconclusive_pocs(exact)
+        if self._max_elapsed_seconds is not None:
+            self._store.reopen_elapsed_budget_failures(exact, self._max_elapsed_seconds)
         if (
             run.workspace_path is None
             or run.repository_profile_ref is None
             or run.static_bundle_ref is None
+            or run.static_disposition == "PARTIAL"
         ):
             return await self._run_static(run, identity)
         static = StaticBootstrapResult(
             repository_profile_ref=run.repository_profile_ref,
             static_bundle_ref=run.static_bundle_ref,
             workspace_path=run.workspace_path,
+            static_coverage_ref=run.static_coverage_ref,
+            static_disposition=run.static_disposition,
             security_policy_ref=run.security_policy_ref,
             policy_snapshot_ref=run.policy_snapshot_ref,
         )
         if not run.hypothesis_ids:
             return await self._propose_and_run(run, identity, static)
+        hypothesis_checkpoint = self._store.get(identity, SimpleStage.HYPOTHESIS_DONE)
+        if (
+            hypothesis_checkpoint is not None
+            and hypothesis_checkpoint.status is not StageStatus.SUCCEEDED
+        ):
+            try:
+                return await self._propose_and_run(
+                    run, identity, static, append_existing=True
+                )
+            except StaticEvidenceInvalid:
+                return self._invalid_hypothesis_resume(run, identity)
         return await self._run_hypotheses(run, identity, static)
+
+    def _invalid_partial_resume(
+        self, run: SimpleAnalysisRun, identity: CheckpointIdentity
+    ) -> SimpleAnalysisOutcome:
+        checkpoint = self._store.require(identity, SimpleStage.STATIC_DONE)
+        failed = self._store.mark_failure(
+            checkpoint,
+            StageFailure(
+                code="STATIC_EVIDENCE_INVALID",
+                retryable=False,
+                safe_message="Stored static evidence cannot be trusted",
+            ),
+            StageStatus.BLOCKED,
+        )
+        return self._bootstrap_outcome(run, failed)
+
+    def _invalid_hypothesis_resume(
+        self, run: SimpleAnalysisRun, identity: CheckpointIdentity
+    ) -> SimpleAnalysisOutcome:
+        checkpoint = self._store.require(identity, SimpleStage.HYPOTHESIS_DONE)
+        failed = self._store.mark_failure(
+            checkpoint,
+            StageFailure(
+                code="HYPOTHESIS_EVIDENCE_INVALID",
+                retryable=False,
+                safe_message="Stored hypothesis evidence cannot be trusted",
+            ),
+            StageStatus.BLOCKED,
+        )
+        return self._bootstrap_outcome(run, failed)
+
+    def _reconcile_hypothesis_checkpoint(
+        self, run: SimpleAnalysisRun, identity: CheckpointIdentity
+    ) -> SimpleAnalysisRun:
+        checkpoint = self._store.get(identity, SimpleStage.HYPOTHESIS_DONE)
+        if checkpoint is None or checkpoint.status is not StageStatus.SUCCEEDED:
+            return run
+        artifacts = SimpleArtifactRepository(self._data_dir, identity)
+        known = set(run.hypothesis_ids)
+        added: list[str] = []
+        for ref in checkpoint.output_refs:
+            try:
+                payload = json.loads(artifacts.read(ref))
+                if (
+                    not isinstance(payload, dict)
+                    or payload.get("kind") != "simple_hypothesis_proposal"
+                    or not isinstance(payload.get("hypothesis_id"), str)
+                ):
+                    raise StaticEvidenceInvalid()
+                hypothesis_id = payload["hypothesis_id"]
+                static_ref_data = payload.get("static_bundle_ref")
+                static_ref = (
+                    StoredDataRef.model_validate(static_ref_data)
+                    if static_ref_data is not None
+                    else checkpoint.input_refs[0]
+                )
+                if not isinstance(static_ref, StoredDataRef):
+                    raise StaticEvidenceInvalid()
+            except (OSError, ValueError, KeyError, IndexError) as error:
+                raise StaticEvidenceInvalid() from error
+            if hypothesis_id in known:
+                continue
+            child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+            inputs = (ref, static_ref)
+            existing = self._store.get(child, SimpleStage.PRO_CON_DONE)
+            if existing is not None and existing.input_refs[:2] != inputs:
+                raise StaticEvidenceInvalid()
+            if existing is None:
+                self._store.save_checkpoint(
+                    StageCheckpoint(
+                        identity=child,
+                        stage=SimpleStage.PRO_CON_DONE,
+                        status=StageStatus.PENDING,
+                        input_refs=inputs,
+                        input_hash=input_reference_hash(inputs),
+                    )
+                )
+            known.add(hypothesis_id)
+            added.append(hypothesis_id)
+        if not added:
+            return run
+        updated = run.model_copy(
+            update={"hypothesis_ids": run.hypothesis_ids + tuple(added)}
+        )
+        self._store.save_analysis_run(updated)
+        return updated
+
+    async def _assert_completed_static_scope(
+        self, run: SimpleAnalysisRun, identity: CheckpointIdentity
+    ) -> None:
+        """Do not resume completed agents against an obsolete static denominator."""
+
+        fingerprint_method = getattr(self._static, "coverage_fingerprint", None)
+        if fingerprint_method is None:
+            return
+        assert run.static_bundle_ref is not None
+        artifacts = SimpleArtifactRepository(self._data_dir, identity)
+        try:
+            bundle = json.loads(artifacts.read(run.static_bundle_ref))
+            if (
+                not isinstance(bundle, dict)
+                or bundle.get("kind") != "simple_static_fact_bundle"
+            ):
+                raise ValueError
+            coverage_ref = StoredDataRef.model_validate(bundle["static_coverage_ref"])
+            coverage = json.loads(artifacts.read(coverage_ref))
+            if (
+                not isinstance(coverage, dict)
+                or coverage.get("kind") != "simple_static_coverage_v1"
+                or not isinstance(coverage.get("fingerprint"), str)
+            ):
+                raise ValueError
+            current = await fingerprint_method(
+                SimpleAnalysisRequest(
+                    data_dir=self._data_dir,
+                    repository=run.repository,
+                    commit=run.commit_id,
+                ),
+                identity,
+            )
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            raise ValueError("STATIC_SCOPE_VALIDATION_FAILED") from None
+        if coverage["fingerprint"] != current:
+            raise ValueError("STATIC_SCOPE_CHANGED_NEW_ANALYSIS_REQUIRED")
+
+    def _validate_static_evidence(
+        self, static: StaticBootstrapResult, identity: CheckpointIdentity
+    ) -> None:
+        """Do not publish a partial or complete claim against invalid evidence."""
+
+        if static.static_coverage_ref is None:
+            if static.static_disposition == "PARTIAL":
+                raise StaticEvidenceInvalid()
+            return  # Legacy full bootstrap implementations have no coverage ref.
+        artifacts = SimpleArtifactRepository(self._data_dir, identity)
+        try:
+            bundle = json.loads(artifacts.read(static.static_bundle_ref))
+            coverage = json.loads(artifacts.read(static.static_coverage_ref))
+            if not isinstance(bundle, dict) or not isinstance(coverage, dict):
+                raise StaticEvidenceInvalid()
+            if bundle.get("kind") != "simple_static_fact_bundle":
+                raise StaticEvidenceInvalid()
+            if coverage.get("kind") != "simple_static_coverage_v1":
+                raise StaticEvidenceInvalid()
+            if any(
+                bundle.get(key) != value or coverage.get(key) != value
+                for key, value in (
+                    ("analysis_id", identity.analysis_id),
+                    ("workspace_id", identity.workspace_id),
+                    ("commit_id", identity.commit_id),
+                )
+            ):
+                raise StaticEvidenceInvalid()
+            recorded_ref = StoredDataRef.model_validate(bundle["static_coverage_ref"])
+            if recorded_ref != static.static_coverage_ref:
+                raise StaticEvidenceInvalid()
+            expected = coverage.get("expected_count")
+            verified = coverage.get("verified_count")
+            gaps = coverage.get("gaps")
+            unsupported = coverage.get("unsupported")
+            if (
+                not isinstance(coverage.get("fingerprint"), str)
+                or coverage.get("unavailable") is True
+                or type(expected) is not int
+                or type(verified) is not int
+                or expected < 1
+                or not 0 <= verified <= expected
+                or not isinstance(gaps, list)
+                or not isinstance(unsupported, list)
+                or len(gaps) != expected - verified
+            ):
+                raise StaticEvidenceInvalid()
+            if any(
+                not isinstance(gap, dict)
+                or not all(
+                    isinstance(gap.get(key), str)
+                    for key in ("path", "rule_id", "reason")
+                )
+                or gap["reason"] == "source_unavailable"
+                for gap in gaps
+            ):
+                raise StaticEvidenceInvalid()
+            has_limitations = bool(
+                gaps
+                or unsupported
+                or coverage.get("unsupported_files")
+                or coverage.get("codeql_error")
+                or coverage.get("ast_parse_error_count")
+                or coverage.get("ast_oversize_count")
+            )
+            if static.static_disposition == "PARTIAL":
+                if verified == 0 or not has_limitations:
+                    raise StaticEvidenceInvalid()
+            elif has_limitations:
+                raise StaticEvidenceInvalid()
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            if isinstance(error, StaticEvidenceInvalid):
+                raise
+            raise StaticEvidenceInvalid() from error
+
+    def _hypothesis_static_ref(
+        self, identity: CheckpointIdentity
+    ) -> StoredDataRef | None:
+        checkpoint = self._store.get(identity, SimpleStage.HYPOTHESIS_DONE)
+        if checkpoint is None or not checkpoint.input_refs:
+            return None
+        return checkpoint.input_refs[0]
+
+    def _static_facts_changed(
+        self,
+        identity: CheckpointIdentity,
+        old_ref: StoredDataRef,
+        new_ref: StoredDataRef,
+    ) -> bool:
+        if old_ref == new_ref:
+            return False
+        artifacts = SimpleArtifactRepository(self._data_dir, identity)
+        try:
+            old = json.loads(artifacts.read(old_ref))
+            new = json.loads(artifacts.read(new_ref))
+            if not isinstance(old, dict) or not isinstance(new, dict):
+                raise StaticEvidenceInvalid()
+            if (
+                old.get("kind") != "simple_static_fact_bundle"
+                or new.get("kind") != "simple_static_fact_bundle"
+            ):
+                raise StaticEvidenceInvalid()
+            keys = ("ast_summary", "opengrep_findings", "codeql_findings")
+            return canonical_bytes(
+                {key: old.get(key) for key in keys}
+            ) != canonical_bytes({key: new.get(key) for key in keys})
+        except (OSError, ValueError, TypeError) as error:
+            if isinstance(error, StaticEvidenceInvalid):
+                raise
+            raise StaticEvidenceInvalid() from error
 
     def _promote_legacy_inconclusive_pocs(self, analysis_id: str) -> int:
         """Reclassify only exact exhausted PoCs that actually ran inconclusively."""
@@ -346,7 +652,15 @@ class SimpleAnalysisApplication:
         run: SimpleAnalysisRun,
         identity: CheckpointIdentity,
         static: StaticBootstrapResult,
+        *,
+        append_existing: bool = False,
     ) -> SimpleAnalysisOutcome:
+        existing_refs = (
+            self._known_proposal_refs(run, identity) if append_existing else ()
+        )
+        existing_keys = {
+            self._proposal_key(identity, ref, strict=True) for ref in existing_refs
+        }
         while True:
             should_retry, terminal = await self._resume_bootstrap_failure(
                 identity,
@@ -356,12 +670,15 @@ class SimpleAnalysisApplication:
                 continue
             if terminal is not None:
                 return self._bootstrap_outcome(run, terminal)
-            input_refs = tuple(
-                dict.fromkeys(
-                    (static.static_bundle_ref,)
-                    + self._store.input_refs_for(
-                        identity,
-                        SimpleStage.HYPOTHESIS_DONE,
+            input_refs = (
+                (static.static_bundle_ref,)
+                if append_existing
+                else tuple(
+                    dict.fromkeys(
+                        (static.static_bundle_ref,)
+                        + self._store.input_refs_for(
+                            identity, SimpleStage.HYPOTHESIS_DONE
+                        )
                     )
                 )
             )
@@ -378,11 +695,28 @@ class SimpleAnalysisApplication:
                 elif not proposed:
                     raise ValueError("HYPOTHESIS_OUTPUT_EMPTY")
                 else:
+                    seeds_list: list[HypothesisSeed] = []
+                    seen_ids = set(run.hypothesis_ids)
+                    seen_keys = set(existing_keys)
+                    for seed in proposed:
+                        proposal_key = self._proposal_key(
+                            identity, seed.proposal_ref, strict=append_existing
+                        )
+                        if (
+                            seed.hypothesis_id in seen_ids
+                            or proposal_key in seen_keys
+                        ):
+                            continue
+                        seen_ids.add(seed.hypothesis_id)
+                        seen_keys.add(proposal_key)
+                        seeds_list.append(seed)
+                    seeds = tuple(seeds_list)
                     self._store.complete(
                         checkpoint,
-                        self._stage_result(*(seed.proposal_ref for seed in proposed)),
+                        self._stage_result(
+                            *existing_refs, *(seed.proposal_ref for seed in seeds)
+                        ),
                     )
-                    seeds = proposed
                     break
             except Exception as error:
                 failure = StageFailure(
@@ -390,7 +724,7 @@ class SimpleAnalysisApplication:
                         error,
                         "HYPOTHESIS_BOOTSTRAP_BLOCKED",
                     ),
-                    retryable=True,
+                    retryable=not isinstance(error, StaticEvidenceInvalid),
                     safe_message="Hypothesis generation did not complete",
                 )
             failed = self._store.mark_failure(
@@ -417,10 +751,43 @@ class SimpleAnalysisApplication:
                 )
             )
         run = run.model_copy(
-            update={"hypothesis_ids": tuple(seed.hypothesis_id for seed in seeds)}
+            update={
+                "hypothesis_ids": run.hypothesis_ids
+                + tuple(seed.hypothesis_id for seed in seeds)
+            }
         )
         self._store.save_analysis_run(run)
         return await self._run_hypotheses(run, identity, static)
+
+    def _known_proposal_refs(
+        self, run: SimpleAnalysisRun, identity: CheckpointIdentity
+    ) -> tuple[StoredDataRef, ...]:
+        refs: list[StoredDataRef] = []
+        for hypothesis_id in run.hypothesis_ids:
+            child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+            checkpoint = self._store.get(child, SimpleStage.PRO_CON_DONE)
+            if checkpoint is None or len(checkpoint.input_refs) < 2:
+                raise StaticEvidenceInvalid()
+            refs.append(checkpoint.input_refs[0])
+        return tuple(refs)
+
+    def _proposal_key(
+        self,
+        identity: CheckpointIdentity,
+        ref: StoredDataRef,
+        *,
+        strict: bool = False,
+    ) -> str:
+        artifacts = SimpleArtifactRepository(self._data_dir, identity)
+        try:
+            value = json.loads(artifacts.read(ref))
+        except (OSError, ValueError):
+            if strict:
+                raise StaticEvidenceInvalid() from None
+            return ref.content_hash  # Legacy test/bootstrap refs have no artifact.
+        if not isinstance(value, dict) or not isinstance(value.get("proposal"), dict):
+            raise StaticEvidenceInvalid()
+        return hashlib.sha256(canonical_bytes(value["proposal"])).hexdigest()
 
     async def _resume_bootstrap_failure(
         self,
@@ -469,6 +836,12 @@ class SimpleAnalysisApplication:
             if current == saved_fingerprint:
                 return False, existing
             return False, None
+        if (
+            existing is not None
+            and existing.status in {StageStatus.BLOCKED, StageStatus.FAILED}
+            and not existing.retryable
+        ):
+            return False, existing
         if self._recovery_factory is None:
             return False, None
         if existing is None or existing.status in {
@@ -562,9 +935,11 @@ class SimpleAnalysisApplication:
             )
             outcomes = await asyncio.gather(
                 *(
-                    self._runner_factory(self._store, child, static).resume_hypothesis(
-                        child
-                    )
+                    self._runner_factory(
+                        self._store,
+                        child,
+                        self._static_for_child(static, child),
+                    ).resume_hypothesis(child)
                     for child in children
                 )
             )
@@ -594,9 +969,17 @@ class SimpleAnalysisApplication:
         return SimpleAnalysisOutcome(
             identity=identity,
             display_analysis_id=run.display_analysis_id,
-            status="COMPLETE",
+            status="PARTIAL" if run.static_disposition == "PARTIAL" else "COMPLETE",
             current_stage=latest_stage,
         )
+
+    def _static_for_child(
+        self, static: StaticBootstrapResult, child: CheckpointIdentity
+    ) -> StaticBootstrapResult:
+        checkpoint = self._store.get(child, SimpleStage.PRO_CON_DONE)
+        if checkpoint is None or len(checkpoint.input_refs) < 2:
+            return static
+        return static.model_copy(update={"static_bundle_ref": checkpoint.input_refs[1]})
 
     def _register_chain_children(
         self,

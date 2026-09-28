@@ -132,6 +132,7 @@ class UserConfig(BaseModel):
     max_cost_minor_units: int = Field(gt=0)
     max_tokens: int = Field(gt=0)
     max_elapsed_seconds: ElapsedLimit = "unlimited"
+    static_scan_pass_seconds: int = Field(default=180, gt=0)
     docker_network: Literal["NONE", "BRIDGE"]
     enabled_tools: tuple[Literal["AST", "OPENGREP", "CODEQL", "DOCKER"], ...]
     detected_versions: dict[str, str]
@@ -142,7 +143,6 @@ class UserConfig(BaseModel):
     llm_max_concurrency: int = Field(default=2, gt=0, le=32)
     hypothesis_feed: Literal["current", "facts_survey"] = "current"
     semgrep_fallback: bool = False
-    include_tests: bool = False
     max_parallel_hypotheses: int = Field(default=1, gt=0, le=32)
     max_parallel_builds: int = Field(default=1, gt=0, le=32)
     max_parallel_containers: int = Field(default=1, gt=0, le=32)
@@ -237,6 +237,7 @@ class UserConfig(BaseModel):
             f"max_cost_minor_units = {self.max_cost_minor_units}",
             f"max_tokens = {self.max_tokens}",
             f"max_elapsed_seconds = {_elapsed_toml(self.max_elapsed_seconds)}",
+            f"static_scan_pass_seconds = {self.static_scan_pass_seconds}",
             f"docker_network = {_quoted(self.docker_network)}",
             f"enabled_tools = {_string_array(tuple(self.enabled_tools))}",
             f"setup_ready = {str(self.setup_ready).lower()}",
@@ -245,7 +246,6 @@ class UserConfig(BaseModel):
             f"llm_max_concurrency = {self.llm_max_concurrency}",
             f"hypothesis_feed = {_quoted(self.hypothesis_feed)}",
             f"semgrep_fallback = {str(self.semgrep_fallback).lower()}",
-            f"include_tests = {str(self.include_tests).lower()}",
             f"max_parallel_hypotheses = {self.max_parallel_hypotheses}",
             f"max_parallel_builds = {self.max_parallel_builds}",
             f"max_parallel_containers = {self.max_parallel_containers}",
@@ -307,6 +307,7 @@ class SimpleExecutionProfile(BaseModel):
     max_cost_minor_units: int = Field(gt=0)
     max_tokens: int = Field(gt=0)
     max_elapsed_seconds: ElapsedLimit = "unlimited"
+    static_scan_pass_seconds: int = Field(default=180, gt=0)
     docker_network: Literal["NONE", "BRIDGE"]
     tools: dict[str, SimpleToolBinding]
     agent_models: dict[str, str] = Field(default_factory=dict)
@@ -315,7 +316,6 @@ class SimpleExecutionProfile(BaseModel):
     llm_max_concurrency: int = Field(default=2, gt=0, le=32)
     hypothesis_feed: Literal["current", "facts_survey"] = "current"
     semgrep_fallback: bool = False
-    include_tests: bool = False
     max_parallel_hypotheses: int = Field(default=1, gt=0, le=32)
     max_parallel_builds: int = Field(default=1, gt=0, le=32)
     max_parallel_containers: int = Field(default=1, gt=0, le=32)
@@ -376,13 +376,13 @@ class SimpleExecutionProfile(BaseModel):
             f"max_cost_minor_units = {self.max_cost_minor_units}",
             f"max_tokens = {self.max_tokens}",
             f"max_elapsed_seconds = {_elapsed_toml(self.max_elapsed_seconds)}",
+            f"static_scan_pass_seconds = {self.static_scan_pass_seconds}",
             f"docker_network = {_quoted(self.docker_network)}",
             f"llm_timeout_seconds = {self.llm_timeout_seconds}",
             f"llm_max_retries = {self.llm_max_retries}",
             f"llm_max_concurrency = {self.llm_max_concurrency}",
             f"hypothesis_feed = {_quoted(self.hypothesis_feed)}",
             f"semgrep_fallback = {str(self.semgrep_fallback).lower()}",
-            f"include_tests = {str(self.include_tests).lower()}",
             f"max_parallel_hypotheses = {self.max_parallel_hypotheses}",
             f"max_parallel_builds = {self.max_parallel_builds}",
             f"max_parallel_containers = {self.max_parallel_containers}",

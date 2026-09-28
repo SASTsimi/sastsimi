@@ -4,20 +4,56 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
 import sastsimi.static_analysis as static_analysis
+from sastsimi.static_analysis.file_scope import StaticFileScope
 
 
-def _scope(root: Path, paths: dict[str, str], *, include_tests: bool = False):
+def _scope(root: Path, paths: dict[str, str]) -> StaticFileScope:
     for relative, contents in paths.items():
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(contents, encoding="utf-8")
-    builder = getattr(static_analysis, "build_static_file_scope", None)
-    assert callable(builder), "the shared static file scope builder is missing"
-    return builder(root, tuple(paths), include_tests=include_tests)
+    return static_analysis.build_static_file_scope(root, tuple(paths))
+
+
+def test_product_scope_cannot_opt_into_test_files(tmp_path: Path) -> None:
+    app = tmp_path / "app.py"
+    test = tmp_path / "tests" / "test_app.py"
+    test.parent.mkdir()
+    app.write_text("def run(): pass\n", encoding="utf-8")
+    test.write_text("def test_run(): pass\n", encoding="utf-8")
+
+    scope = static_analysis.build_static_file_scope(
+        tmp_path, ("app.py", "tests/test_app.py")
+    )
+
+    assert scope.selected_paths == ("app.py",)
+    assert not hasattr(scope, "excluded_test_files")
+    assert not hasattr(scope, "all_tracked")
+    with pytest.raises(TypeError):
+        cast(Any, static_analysis.build_static_file_scope)(
+            tmp_path, ("app.py", "tests/test_app.py"), include_tests=True
+        )
+
+
+def test_test_only_paths_do_not_change_product_scope_fingerprint(
+    tmp_path: Path,
+) -> None:
+    product = _scope(tmp_path, {"app.py": "def run(): pass\n"})
+    with_test = _scope(
+        tmp_path,
+        {
+            "app.py": "def run(): pass\n",
+            "tests/test_app.py": "def test_run(): pass\n",
+        },
+    )
+
+    assert with_test.selected_paths == product.selected_paths
+    assert with_test.fingerprint == product.fingerprint
 
 
 def test_exact_test_directory_components_do_not_match_product_substrings(
@@ -40,11 +76,95 @@ def test_exact_test_directory_components_do_not_match_product_substrings(
         "src/test_client.py",
         "src/testimonials.ts",
     )
-    assert [(item.path, item.reason) for item in scope.excluded_test_files] == [
-        ("backend/Test/service.py", "test-directory:test"),
-        ("frontend/__tests__/api.test.ts", "test-directory:__tests__"),
-        ("tests/test_api.py", "test-directory:tests"),
-    ]
+
+
+def test_common_e2e_and_specification_trees_are_test_only(tmp_path: Path) -> None:
+    scope = _scope(
+        tmp_path,
+        {
+            "app.py": "def run(): pass\n",
+            "e2e/features/login.feature": "Feature: Login\n  Scenario: valid user\n",
+            "e2e/fixtures/sound.wav": "fixture\n",
+            "spec/models/user_spec.rb": "describe User do\nend\n",
+            "testdata/cases.json": "{}\n",
+            "integration_tests/flows.py": "def test_flow(): pass\n",
+            "src/e2e_service.py": "def run(): pass\n",
+        },
+    )
+
+    assert scope.selected_paths == ("app.py", "src/e2e_service.py")
+
+
+def test_benchmark_trees_and_linter_rule_fixtures_are_test_only(
+    tmp_path: Path,
+) -> None:
+    scope = _scope(
+        tmp_path,
+        {
+            "src/fixtures/default-theme.css": ".app { color: black; }\n",
+            "src/fixtures/eslint/rules.ts": "export const rules = {};\n",
+            "src/benchmarking.py": "def measure_latency(): pass\n",
+            "src/stress_test_service.py": "def serve(): pass\n",
+            "web/plugins/eslint/rules/fixtures/truncation.module.css": (
+                ".truncated { overflow: hidden; }\n"
+            ),
+            "scripts/stress-test/run_load_test.sh": "#!/bin/sh\nexit 0\n",
+            "benchmarks/measure.py": "def benchmark(): pass\n",
+        },
+    )
+
+    assert scope.selected_paths == (
+        "src/benchmarking.py",
+        "src/fixtures/default-theme.css",
+        "src/fixtures/eslint/rules.ts",
+        "src/stress_test_service.py",
+    )
+
+
+def test_shell_tests_and_test_runner_assets_are_test_only(tmp_path: Path) -> None:
+    scope = _scope(
+        tmp_path,
+        {
+            "src/vitest_theme.css": ".app { color: black; }\n",
+            "src/contest.sh": "#!/bin/sh\nprintf 'ready\\n'\n",
+            "docker/proxy/test_allowlist.sh": "#!/bin/sh\nassert_contains() { :; }\n",
+            "docker/proxy/config_test.sh": "#!/bin/sh\nexit 0\n",
+            "packages/ui/vitest.css": "@import './src/styles.css';\n",
+            "packages/ui/vitest.setup.ts": "import './vitest.css'\n",
+            "cli/vitest.e2e.config.ts": "export default {}\n",
+        },
+    )
+
+    assert scope.selected_paths == ("src/contest.sh", "src/vitest_theme.css")
+
+
+def test_declared_product_entry_protects_test_named_shell_script(
+    tmp_path: Path,
+) -> None:
+    scope = _scope(
+        tmp_path,
+        {
+            "package.json": json.dumps({"bin": {"health": "./bin/test_health.sh"}}),
+            "bin/test_health.sh": "#!/bin/sh\ncurl localhost/health\n",
+            "bin/test_health_probe.sh": "#!/bin/sh\nexit 0\n",
+        },
+    )
+
+    assert scope.selected_paths == ("bin/test_health.sh", "package.json")
+
+
+def test_pytest_convention_files_are_test_only(tmp_path: Path) -> None:
+    scope = _scope(
+        tmp_path,
+        {
+            "api/conftest.py": "import pytest\n",
+            "api/pytest.ini": "[pytest]\ntestpaths = tests\n",
+            "api/configtest.py": "def run(): pass\n",
+            "api/pytest_runner.py": "def run(): pass\n",
+        },
+    )
+
+    assert scope.selected_paths == ("api/configtest.py", "api/pytest_runner.py")
 
 
 def test_test_basename_requires_content_evidence_outside_test_directory(
@@ -63,91 +183,213 @@ def test_test_basename_requires_content_evidence_outside_test_directory(
             "web/api.spec.js": (
                 "import { describe } from 'vitest';\ndescribe('api', () => {});\n"
             ),
+            "web/api.test.mts": (
+                "import { test } from 'vitest';\ntest('api', () => {});\n"
+            ),
+            "web/api.spec.cts": "test('api', () => {});\n",
             "src/test_client.py": "class TestClient: pass\n",
             "web/specification.ts": "export const specification = 'public';\n",
         },
     )
 
     assert scope.selected_paths == ("src/test_client.py", "web/specification.ts")
-    assert {item.path for item in scope.excluded_test_files} == {
-        "src/test_math.py",
-        "src/math_test.py",
-        "web/api.test.ts",
-        "web/api.spec.js",
-    }
-    assert {item.reason for item in scope.excluded_test_files} == {
-        "test-basename+content:python",
-        "test-basename+content:javascript-typescript",
-    }
+
+
+def test_large_test_named_source_uses_bounded_content_evidence(
+    tmp_path: Path,
+) -> None:
+    scope = _scope(
+        tmp_path,
+        {
+            "web/client.spec.ts": (
+                "import { describe } from 'vitest';\n"
+                + "const fixture = '"
+                + "x" * 70_000
+                + "';\n"
+            ),
+            "web/client_test.py": ("import pytest\n" + "#" + "x" * 70_000 + "\n"),
+            "web/product.spec.ts": "export const specification = '"
+            + "x" * 70_000
+            + "';\n",
+        },
+    )
+
+    assert scope.selected_paths == ("web/product.spec.ts",)
+
+
+def test_large_test_named_source_can_find_test_calls_near_tail(
+    tmp_path: Path,
+) -> None:
+    scope = _scope(
+        tmp_path,
+        {
+            "web/client.spec.ts": (
+                "export const fixture = '" + "x" * 70_000 + "';\n"
+                "describe('client', () => {});\n"
+            ),
+        },
+    )
+
+    assert scope.selected_paths == ()
+
+
+def test_large_product_named_spec_does_not_gain_a_fake_word_boundary(
+    tmp_path: Path,
+) -> None:
+    tail = "test() {};" + "x" * (64 * 1024 - len("test() {};"))
+    scope = _scope(
+        tmp_path,
+        {"web/contest.spec.ts": "export function con" + tail},
+    )
+
+    assert scope.selected_paths == ("web/contest.spec.ts",)
+
+
+def test_go_test_suffix_is_excluded_without_content_evidence(tmp_path: Path) -> None:
+    scope = _scope(
+        tmp_path,
+        {
+            "runtime/main.go": "package main\nfunc main() {}\n",
+            "runtime/parser_test.go": "package main\n",
+            "runtime/pretest.go": "package main\n",
+            "runtime/parser_TEST.go": "package main\n",
+        },
+    )
+
+    assert scope.selected_paths == (
+        "runtime/main.go",
+        "runtime/parser_TEST.go",
+        "runtime/pretest.go",
+    )
 
 
 def test_declared_product_entry_points_are_never_excluded(tmp_path: Path) -> None:
-    package = json.dumps({"bin": {"my-tool": "./web/__tests__/cli.js"}})
+    package = json.dumps(
+        {"main": "tests/cli.js", "bin": {"my-tool": "./web/__tests__/cli.js"}}
+    )
     scope = _scope(
         tmp_path,
         {
             "pyproject.toml": '[project.scripts]\nproduct = "tests.cli:main"\n',
             "package.json": package,
             "tests/cli.py": "def main(): pass\n",
+            "tests/cli.js": "export function main() {}\n",
             "web/__tests__/cli.js": "export function main() {}\n",
             "tests/test_cli.py": "def test_cli(): pass\n",
         },
     )
 
-    assert {"tests/cli.py", "web/__tests__/cli.js"}.issubset(scope.selected_paths)
-    assert [item.path for item in scope.excluded_test_files] == ["tests/test_cli.py"]
+    assert {"tests/cli.py", "tests/cli.js", "web/__tests__/cli.js"}.issubset(
+        scope.selected_paths
+    )
+    assert "tests/test_cli.py" not in scope.selected_paths
 
 
-def test_include_tests_mode_keeps_every_tracked_file_and_changes_identity(
+def test_invalid_test_only_manifests_do_not_block_product_scope(
     tmp_path: Path,
 ) -> None:
-    paths = {
-        "src/app.py": "def run(): pass\n",
-        "tests/test_app.py": "def test_app(): pass\n",
-    }
-    product = _scope(tmp_path, paths)
-    all_files = _scope(tmp_path, paths, include_tests=True)
+    scope = _scope(
+        tmp_path,
+        {
+            "src/app.py": "def run(): pass\n",
+            "tests/package.json": "{not-json",
+            "tests/cli.js": "export function main() {}\n",
+            "spec/pyproject.toml": '[tool]\npoetry = "not-a-table"\n',
+            "spec/fixture.py": "def fixture(): pass\n",
+        },
+    )
 
-    assert all_files.selected_paths == ("src/app.py", "tests/test_app.py")
-    assert all_files.excluded_test_files == ()
-    assert all_files.fingerprint != product.fingerprint
+    assert scope.selected_paths == ("src/app.py",)
+
+
+def test_valid_test_only_manifest_cannot_reinclude_test_tree_file(
+    tmp_path: Path,
+) -> None:
+    scope = _scope(
+        tmp_path,
+        {
+            "src/app.ts": "export const app = true;\n",
+            "tests/package.json": json.dumps({"main": "./fixture.js"}),
+            "tests/fixture.js": "export const fixture = true;\n",
+        },
+    )
+
+    assert scope.selected_paths == ("src/app.ts",)
 
 
 def test_tracked_paths_are_validated_instead_of_silently_normalized(
     tmp_path: Path,
 ) -> None:
-    builder = getattr(static_analysis, "build_static_file_scope", None)
-    assert callable(builder), "the shared static file scope builder is missing"
     with pytest.raises(ValueError, match="STATIC_SCOPE_TRACKED_PATH_INVALID"):
-        builder(tmp_path, ("tests\\test_bad.py",), include_tests=False)
+        static_analysis.build_static_file_scope(tmp_path, ("tests\\test_bad.py",))
 
 
-def test_unreadable_entry_manifest_keeps_ambiguous_test_directory_selected(
+def test_unreadable_entry_manifest_blocks_ambiguous_product_entry(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="STATIC_SCOPE_MANIFEST_UNVERIFIED"):
+        _scope(
+            tmp_path,
+            {
+                "apps/web/package.json": "{not-json",
+                "apps/web/tests/cli.ts": "export const main = 1;\n",
+                "backend/tests/test_api.py": "def test_api(): pass\n",
+            },
+        )
+
+
+def test_unexpected_manifest_structure_blocks_ambiguous_test_tree(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="STATIC_SCOPE_MANIFEST_UNVERIFIED"):
+        _scope(
+            tmp_path,
+            {
+                "pyproject.toml": '[tool]\npoetry = "not-a-table"\n',
+                "tests/product.py": "def run(): pass\n",
+            },
+        )
+
+
+def test_oversized_root_manifest_does_not_restore_test_tree(tmp_path: Path) -> None:
+    scope = _scope(
+        tmp_path,
+        {
+            "package.json": "{" + " " * 70_000 + "}",
+            "src/app.ts": "export const app = 1;\n",
+            "tests/test_app.py": "def test_app(): pass\n",
+        },
+    )
+    assert "src/app.ts" in scope.selected_paths
+    assert "tests/test_app.py" not in scope.selected_paths
+
+
+def test_large_valid_manifest_protects_declared_product_entry(tmp_path: Path) -> None:
+    manifest = json.dumps({"main": "./tests/cli.js", "description": "x" * 70_000})
+    scope = _scope(
+        tmp_path,
+        {
+            "package.json": manifest,
+            "tests/cli.js": "export function main() {}\n",
+            "tests/cli.test.js": (
+                "import { test } from 'vitest';\ntest('cli', () => {});\n"
+            ),
+        },
+    )
+    assert "tests/cli.js" in scope.selected_paths
+    assert "tests/cli.test.js" not in scope.selected_paths
+
+
+def test_package_export_pattern_protects_deployed_test_tree_file(
     tmp_path: Path,
 ) -> None:
     scope = _scope(
         tmp_path,
         {
-            "apps/web/package.json": "{not-json",
-            "apps/web/tests/cli.ts": "export const main = 1;\n",
-            "backend/tests/test_api.py": "def test_api(): pass\n",
+            "package.json": json.dumps({"exports": {"./feature/*": "./tests/*.js"}}),
+            "tests/feature.js": "export const feature = true;\n",
+            "tests/test_feature.py": "def test_feature(): pass\n",
         },
     )
-    assert "apps/web/tests/cli.ts" in scope.selected_paths
-    assert [item.path for item in scope.excluded_test_files] == [
-        "backend/tests/test_api.py"
-    ]
-
-
-def test_unexpected_manifest_structure_does_not_crash_or_exclude(
-    tmp_path: Path,
-) -> None:
-    scope = _scope(
-        tmp_path,
-        {
-            "pyproject.toml": '[tool]\npoetry = "not-a-table"\n',
-            "tests/product.py": "def run(): pass\n",
-        },
-    )
-    assert "tests/product.py" in scope.selected_paths
-    assert scope.excluded_test_files == ()
+    assert "tests/feature.js" in scope.selected_paths
+    assert "tests/test_feature.py" not in scope.selected_paths

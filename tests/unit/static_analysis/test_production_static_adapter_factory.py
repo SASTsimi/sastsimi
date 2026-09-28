@@ -651,9 +651,14 @@ async def test_codeql_execution_uses_only_action_paths_and_finalizes_both_leases
     workspace_root.mkdir()
     (workspace_root / "app.py").write_text("print('ok')\n", encoding="utf-8")
     (workspace_root / "README.md").write_text("docs\n", encoding="utf-8")
+    (workspace_root / "tests").mkdir()
+    (workspace_root / "tests" / "test_app.py").write_text(
+        "def test_app():\n    assert True\n", encoding="utf-8"
+    )
     tracked = (
         TrackedFile("app.py", "100644", "blob-app", 12),
         TrackedFile("README.md", "100644", "blob-readme", 5),
+        TrackedFile("tests/test_app.py", "100644", "blob-test", 32),
     )
     locator = _Locator(workspace_root, tracked)
     profile = _rule_profile(executable, "CODEQL")
@@ -784,7 +789,27 @@ async def test_codeql_execution_uses_only_action_paths_and_finalizes_both_leases
 
     assert observed.status == "SUCCEEDED"
     assert provider_calls[0]["language"] == "python"
-    assert len(cast(str, provider_calls[0]["tracked_manifest_sha256"])) == 64
+    assert (
+        provider_calls[0]["tracked_manifest_sha256"]
+        == hashlib.sha256(
+            canonical_bytes(
+                [
+                    {
+                        "git_path": "README.md",
+                        "git_mode": "100644",
+                        "blob_id": "blob-readme",
+                        "size_bytes": 5,
+                    },
+                    {
+                        "git_path": "app.py",
+                        "git_mode": "100644",
+                        "blob_id": "blob-app",
+                        "size_bytes": 12,
+                    },
+                ]
+            )
+        ).hexdigest()
+    )
     assert len(quota.finalized) == 2
 
 

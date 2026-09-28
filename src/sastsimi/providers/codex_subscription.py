@@ -379,7 +379,9 @@ class CodexCliProcessRunner:
                     return CodexProcessResult(
                         _classify_child_failure(execution), None, None
                     )
-                session_id = _validated_session_id(execution.stdout)
+                session_id, input_tokens, output_tokens = _validated_completion(
+                    execution.stdout, require_usage=True
+                )
                 try:
                     if not output_path.is_file():
                         raise ProviderInvalidOutputError
@@ -390,7 +392,13 @@ class CodexCliProcessRunner:
                     raise ProviderInvalidOutputError from error
                 if not final_message:
                     raise ProviderInvalidOutputError
-                return CodexProcessResult("SUCCEEDED", final_message, session_id)
+                return CodexProcessResult(
+                    "SUCCEEDED",
+                    final_message,
+                    session_id,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
         except asyncio.CancelledError:
             raise
         except TimeoutError:
@@ -1197,7 +1205,16 @@ def _classify_child_failure(
 
 
 def _validated_session_id(event_stream: bytes) -> str:
+    session_id, _, _ = _validated_completion(event_stream, require_usage=False)
+    return session_id
+
+
+def _validated_completion(
+    event_stream: bytes, *, require_usage: bool
+) -> tuple[str, int | None, int | None]:
     session_id: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
     state: Literal["THREAD", "TURN", "ITEMS", "DONE"] = "THREAD"
     if not event_stream or len(event_stream) >= _MAX_EVENT_STREAM_BYTES:
         raise ProviderInvalidOutputError
@@ -1228,12 +1245,27 @@ def _validated_session_id(event_stream: bytes) -> str:
             }:
                 raise ProviderInvalidOutputError
         elif state == "ITEMS" and event_type == "turn.completed":
+            if require_usage:
+                usage = event.get("usage")
+                if not isinstance(usage, dict):
+                    raise ProviderInvalidOutputError
+                observed_input = usage.get("input_tokens")
+                observed_output = usage.get("output_tokens")
+                if (
+                    type(observed_input) is not int
+                    or observed_input < 0
+                    or type(observed_output) is not int
+                    or observed_output < 0
+                ):
+                    raise ProviderInvalidOutputError
+                input_tokens = observed_input
+                output_tokens = observed_output
             state = "DONE"
         else:
             raise ProviderInvalidOutputError
     if session_id is None or state != "DONE":
         raise ProviderInvalidOutputError
-    return session_id
+    return session_id, input_tokens, output_tokens
 
 
 def _codex_output_schema(

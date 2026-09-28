@@ -3,18 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import sqlite3
 from collections.abc import Awaitable, Callable, Mapping
 from time import monotonic
 from typing import Any
 from uuid import uuid4
 
 from sastsimi.config.user_config import ElapsedLimit
+from sastsimi.contracts.refs import StoredDataRef
 
 from .artifacts import SimpleArtifactRepository
 from .models import StageFailure
-from .provider import SimpleLLMCallResult, SimpleLLMClient
+from .provider import (
+    SimpleCodexClient,
+    SimpleLLMCallResult,
+    SimpleLLMClient,
+    SimpleOpenAIClient,
+)
 from .store import SimpleCheckpointStore
+from .usage_values import canonical_cost, cost_minor_units, token_count
 
 _TERMINAL_FRAGMENTS = (
     "AUTH",
@@ -26,6 +35,19 @@ _TERMINAL_FRAGMENTS = (
     "PERMISSION",
     "CREDENTIAL",
     "INVALID_REQUEST",
+)
+_NO_MODEL_RESPONSE_STATUSES = (
+    "AUTH_REQUIRED",
+    "RATE_LIMITED",
+    "OPENAI_SDK_UNAVAILABLE",
+    "MODEL_OR_REQUEST_UNSUPPORTED",
+    "CURSOR_AUTH_REQUIRED",
+    "CURSOR_AUTH_FAILED",
+    "CURSOR_CONFIGURATION_FAILED",
+    "CURSOR_PLAN_LIMIT",
+    "CURSOR_RATE_LIMITED",
+    "CLAUDE_AUTH_REQUIRED",
+    "CLAUDE_RATE_LIMITED",
 )
 _LOG = logging.getLogger(__name__)
 
@@ -78,6 +100,22 @@ class RunUsageBudget:
                 retryable=False,
                 safe_message="Analysis elapsed-time ceiling has been reached",
             )
+        with sqlite3.connect(self._store.database_path) as connection:
+            unknown_tokens = connection.execute(
+                "SELECT 1 FROM simple_llm_attempts "
+                "WHERE analysis_id = ? "
+                "AND (input_tokens IS NULL OR output_tokens IS NULL) "
+                "AND status NOT IN ("
+                f"{','.join('?' for _ in _NO_MODEL_RESPONSE_STATUSES)}) "
+                "LIMIT 1",
+                (self._analysis_id, *_NO_MODEL_RESPONSE_STATUSES),
+            ).fetchone()
+        if unknown_tokens is not None:
+            return StageFailure(
+                code="LLM_TOKEN_USAGE_UNAVAILABLE",
+                retryable=False,
+                safe_message="A previous LLM attempt did not report token usage",
+            )
         return None
 
 
@@ -104,6 +142,13 @@ class RunLimitedClient:
         self._store = store
         self._model = model
         self._max_retries = min(max_retries, 2)
+        self._provider = (
+            "openai-api"
+            if isinstance(inner, SimpleOpenAIClient)
+            else "codex-cli"
+            if isinstance(inner, SimpleCodexClient)
+            else None
+        )
         self._budget = RunUsageBudget(
             store=store,
             analysis_id=artifacts.identity.analysis_id,
@@ -114,7 +159,40 @@ class RunLimitedClient:
         self._sleep = sleep
 
     def budget_failure(self) -> StageFailure | None:
-        return self._budget.check()
+        failure = self._budget.check()
+        if failure is not None:
+            return failure
+        if self._provider == "openai-api" and self._has_unknown_api_cost():
+            return StageFailure(
+                code="LLM_COST_USAGE_UNAVAILABLE",
+                retryable=False,
+                safe_message="A previous API attempt did not report a trusted cost",
+            )
+        return None
+
+    def _has_unknown_api_cost(self) -> bool:
+        with sqlite3.connect(self._store.database_path) as connection:
+            rows = connection.execute(
+                "SELECT status, artifact_ref_json FROM simple_llm_attempts "
+                "WHERE analysis_id = ? AND cost_cents IS NULL",
+                (self._artifacts.identity.analysis_id,),
+            ).fetchall()
+        for status, ref_json in rows:
+            if status in _NO_MODEL_RESPONSE_STATUSES:
+                continue
+            try:
+                ref = StoredDataRef.model_validate_json(ref_json)
+                metadata = json.loads(self._artifacts.read(ref))
+            except (OSError, TypeError, ValueError, sqlite3.Error):
+                return True
+            if not isinstance(metadata, dict):
+                return True
+            if metadata.get("provider") == "openai-api" or (
+                metadata.get("kind") == "simple_llm_attempt"
+                and metadata.get("provider") is None
+            ):
+                return True
+        return False
 
     async def call(
         self,
@@ -205,6 +283,11 @@ class RunLimitedClient:
         result: SimpleLLMCallResult | None,
     ) -> None:
         elapsed = max(0, int((monotonic() - started) * 1000))
+        input_tokens = token_count(result.input_tokens) if result is not None else None
+        output_tokens = (
+            token_count(result.output_tokens) if result is not None else None
+        )
+        cost = cost_minor_units(result.cost_minor_units) if result is not None else None
         _LOG.info(
             "llm_call analysis_id=%s agent=%s model=%s attempt=%d "
             "elapsed_ms=%d status=%s",
@@ -217,14 +300,15 @@ class RunLimitedClient:
         )
         metadata = {
             "kind": "simple_llm_attempt",
+            "provider": self._provider or (result.provider if result else None),
             "agent": agent,
             "model": self._model,
             "attempt": attempt,
             "status": status,
             "elapsed_ms": elapsed,
-            "input_tokens": result.input_tokens if result else None,
-            "output_tokens": result.output_tokens if result else None,
-            "cost_minor_units": result.cost_minor_units if result else None,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost_minor_units": canonical_cost(cost),
             "raw_output_ref": (
                 result.raw_output_ref.model_dump(mode="json")
                 if result and result.raw_output_ref
@@ -245,8 +329,8 @@ class RunLimitedClient:
             attempt_number=attempt,
             status=status,
             elapsed_ms=elapsed,
-            input_tokens=result.input_tokens if result else None,
-            output_tokens=result.output_tokens if result else None,
-            cost_cents=result.cost_minor_units if result else None,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_cents=cost,
             artifact_ref=ref,
         )

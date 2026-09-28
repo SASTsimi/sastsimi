@@ -37,7 +37,6 @@ from sastsimi.simple_runtime.models import (
     StageStatus,
     input_reference_hash,
 )
-from sastsimi.simple_runtime.opengrep_rule_batches import plan_rule_batches
 from sastsimi.simple_runtime.recovery import (
     RecoveryAction,
     RecoveryCategory,
@@ -252,6 +251,505 @@ async def test_new_analysis_persists_bootstrap_then_runs_hypotheses(
     assert (
         store.require(hypothesis_identity, SimpleStage.VERIFICATION_FINAL_DONE).verdict
         == "FALSE"
+    )
+
+
+@pytest.mark.asyncio
+async def test_verified_partial_static_evidence_runs_agents_but_never_completes(
+    tmp_path: Path,
+) -> None:
+    class PartialStatic:
+        async def run(
+            self,
+            request: SimpleAnalysisRequest,
+            identity: CheckpointIdentity,
+        ) -> StaticBootstrapResult:
+            artifacts = SimpleArtifactRepository(request.data_dir, identity)
+            coverage_ref = artifacts.put_json(
+                {
+                    "kind": "simple_static_coverage_v1",
+                    "analysis_id": identity.analysis_id,
+                    "workspace_id": identity.workspace_id,
+                    "commit_id": identity.commit_id,
+                    "fingerprint": "f" * 64,
+                    "expected_count": 2,
+                    "verified_count": 1,
+                    "gaps": [
+                        {
+                            "path": "src/unreadable.py",
+                            "rule_id": "python.rule",
+                            "reason": "parse_or_scan_error",
+                        }
+                    ],
+                    "unsupported": [],
+                    "unsupported_files": [],
+                    "unavailable": False,
+                }
+            )
+            bundle_ref = artifacts.put_json(
+                {
+                    "kind": "simple_static_fact_bundle",
+                    "analysis_id": identity.analysis_id,
+                    "workspace_id": identity.workspace_id,
+                    "commit_id": identity.commit_id,
+                    "static_coverage_ref": coverage_ref.model_dump(mode="json"),
+                    "opengrep_findings": [],
+                }
+            )
+            return StaticBootstrapResult(
+                repository_profile_ref=_ref("repository-profile"),
+                static_bundle_ref=bundle_ref,
+                static_coverage_ref=coverage_ref,
+                static_disposition="PARTIAL",
+                workspace_path=request.data_dir / "workspaces" / identity.workspace_id,
+            )
+
+    class PartialHypotheses:
+        async def propose(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+        ) -> tuple[HypothesisSeed, ...]:
+            assert static.static_disposition == "PARTIAL"
+            assert static.static_coverage_ref is not None
+            return (
+                HypothesisSeed(
+                    hypothesis_id="hypothesis-1", proposal_ref=_ref("hypothesis")
+                ),
+            )
+
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=PartialStatic(),
+        hypothesis_bootstrap=PartialHypotheses(),
+        runner_factory=_runner,
+        id_factory=iter(("analysis-partial", "workspace-1")).__next__,
+    )
+
+    outcome = await application.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        )
+    )
+
+    assert outcome.status == "PARTIAL"
+    run = store.require_analysis_run("analysis-partial")
+    assert run.static_disposition == "PARTIAL"
+    assert run.static_coverage_ref is not None
+    assert (
+        store.require(outcome.identity, SimpleStage.STATIC_DONE).status
+        is StageStatus.SUCCEEDED
+    )
+    assert (
+        store.require(
+            outcome.identity.model_copy(update={"hypothesis_id": "hypothesis-1"}),
+            SimpleStage.VERIFICATION_FINAL_DONE,
+        ).status
+        is StageStatus.SUCCEEDED
+    )
+
+
+@pytest.mark.asyncio
+async def test_partial_resume_retries_static_and_reuses_completed_agents(
+    tmp_path: Path,
+) -> None:
+    class ImprovingStatic:
+        calls = 0
+        bundles: list[StoredDataRef] = []
+
+        async def run(
+            self, request: SimpleAnalysisRequest, identity: CheckpointIdentity
+        ) -> StaticBootstrapResult:
+            self.calls += 1
+            artifacts = SimpleArtifactRepository(request.data_dir, identity)
+            partial = self.calls == 1
+            coverage_ref = artifacts.put_json(
+                {
+                    "kind": "simple_static_coverage_v1",
+                    "analysis_id": identity.analysis_id,
+                    "workspace_id": identity.workspace_id,
+                    "commit_id": identity.commit_id,
+                    "fingerprint": "f" * 64,
+                    "expected_count": 2,
+                    "verified_count": 1 if partial else 2,
+                    "gaps": (
+                        [
+                            {
+                                "path": "app.py",
+                                "rule_id": "rule",
+                                "reason": "scan_timeout",
+                            }
+                        ]
+                        if partial
+                        else []
+                    ),
+                    "unsupported": [],
+                    "unsupported_files": [],
+                    "unavailable": False,
+                }
+            )
+            bundle_ref = artifacts.put_json(
+                {
+                    "kind": "simple_static_fact_bundle",
+                    "analysis_id": identity.analysis_id,
+                    "workspace_id": identity.workspace_id,
+                    "commit_id": identity.commit_id,
+                    "static_coverage_ref": coverage_ref.model_dump(mode="json"),
+                    "ast_summary": {"facts": []},
+                    "opengrep_findings": (
+                        [] if partial else [{"path": "app.py", "check_id": "rule"}]
+                    ),
+                    "codeql_findings": [],
+                }
+            )
+            self.bundles.append(bundle_ref)
+            return StaticBootstrapResult(
+                repository_profile_ref=_ref("repository-profile"),
+                static_bundle_ref=bundle_ref,
+                static_coverage_ref=coverage_ref,
+                static_disposition="PARTIAL" if partial else "FULL",
+                workspace_path=request.data_dir / "workspaces" / identity.workspace_id,
+            )
+
+    class GrowingHypotheses:
+        calls = 0
+
+        async def propose(
+            self, identity: CheckpointIdentity, static: StaticBootstrapResult
+        ) -> tuple[HypothesisSeed, ...]:
+            self.calls += 1
+            artifacts = SimpleArtifactRepository(tmp_path, identity)
+            result = []
+            titles = ("one",) if self.calls == 1 else ("one", "two")
+            for title in titles:
+                proposal_ref = artifacts.put_json(
+                    {
+                        "kind": "simple_hypothesis_proposal",
+                        "hypothesis_id": f"hypothesis-{title}-{self.calls}",
+                        "proposal": {"title": title},
+                    }
+                )
+                result.append(
+                    HypothesisSeed(
+                        hypothesis_id=f"hypothesis-{title}-{self.calls}",
+                        proposal_ref=proposal_ref,
+                    )
+                )
+            return tuple(result)
+
+    static = ImprovingStatic()
+    hypotheses = GrowingHypotheses()
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    visited: list[tuple[str, StoredDataRef]] = []
+
+    def runner_factory(
+        current_store: SimpleCheckpointStore,
+        child: CheckpointIdentity,
+        bootstrap: StaticBootstrapResult,
+    ) -> SimpleRuntimeRunner:
+        assert child.hypothesis_id is not None
+        visited.append((child.hypothesis_id, bootstrap.static_bundle_ref))
+        return _runner(current_store, child, bootstrap)
+
+    app = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=static,
+        hypothesis_bootstrap=hypotheses,
+        runner_factory=runner_factory,
+        id_factory=iter(("analysis-partial-resume", "workspace-1")).__next__,
+    )
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        )
+    )
+    assert first.status == "PARTIAL"
+    old_child = store.require_analysis_run(first.identity.analysis_id).hypothesis_ids[0]
+    old_identity = first.identity.model_copy(update={"hypothesis_id": old_child})
+    old_checkpoint = store.require(old_identity, SimpleStage.PRO_CON_DONE)
+
+    resumed = await app.resume(first.identity.analysis_id)
+
+    assert resumed.status == "COMPLETE"
+    assert static.calls == 2
+    assert hypotheses.calls == 2
+    run = store.require_analysis_run(first.identity.analysis_id)
+    assert len(run.hypothesis_ids) == 2
+    assert run.static_disposition == "FULL"
+    assert store.require(old_identity, SimpleStage.PRO_CON_DONE) == old_checkpoint
+    assert visited[-2:] == [
+        (old_child, static.bundles[0]),
+        (run.hypothesis_ids[1], static.bundles[1]),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resume_reconciles_hypothesis_checkpoint_after_interruption(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-interrupted-append",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    coverage_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_coverage_v1",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "fingerprint": "f" * 64,
+            "expected_count": 1,
+            "verified_count": 1,
+            "gaps": [],
+            "unsupported": [],
+        }
+    )
+    bundle_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_fact_bundle",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "static_coverage_ref": coverage_ref.model_dump(mode="json"),
+        }
+    )
+    proposal_refs = tuple(
+        artifacts.put_json(
+            {
+                "kind": "simple_hypothesis_proposal",
+                "hypothesis_id": hypothesis_id,
+                "static_bundle_ref": bundle_ref.model_dump(mode="json"),
+                "proposal": {"title": hypothesis_id},
+            }
+        )
+        for hypothesis_id in ("hypothesis-one", "hypothesis-two")
+    )
+    display = AnalysisDisplayIdStore(store.database_path).get_or_allocate(
+        identity.analysis_id
+    )
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id=display,
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="https://example.invalid/repo.git",
+            workspace_path=tmp_path / "workspaces" / identity.workspace_id,
+            repository_profile_ref=_ref("repository-profile"),
+            static_bundle_ref=bundle_ref,
+            static_coverage_ref=coverage_ref,
+            static_disposition="FULL",
+            hypothesis_ids=("hypothesis-one",),
+        )
+    )
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.HYPOTHESIS_DONE,
+            status=StageStatus.SUCCEEDED,
+            input_refs=(bundle_ref,),
+            input_hash=input_reference_hash((bundle_ref,)),
+            output_refs=proposal_refs,
+        )
+    )
+    first_child = identity.model_copy(update={"hypothesis_id": "hypothesis-one"})
+    first_inputs = (proposal_refs[0], bundle_ref)
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=first_child,
+            stage=SimpleStage.PRO_CON_DONE,
+            status=StageStatus.PENDING,
+            input_refs=first_inputs,
+            input_hash=input_reference_hash(first_inputs),
+        )
+    )
+    app = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=_runner,
+    )
+
+    resumed = await app.resume(identity.analysis_id)
+
+    assert resumed.status == "COMPLETE"
+    assert store.require_analysis_run(identity.analysis_id).hypothesis_ids == (
+        "hypothesis-one",
+        "hypothesis-two",
+    )
+    second_child = identity.model_copy(update={"hypothesis_id": "hypothesis-two"})
+    assert (
+        store.require(second_child, SimpleStage.PRO_CON_DONE).status
+        is StageStatus.SUCCEEDED
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_hypothesis_refresh_cannot_complete_old_children(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-failed-refresh",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    display = AnalysisDisplayIdStore(store.database_path).get_or_allocate(
+        identity.analysis_id
+    )
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id=display,
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="https://example.invalid/repo.git",
+            workspace_path=tmp_path / "workspaces" / identity.workspace_id,
+            repository_profile_ref=_ref("repository-profile"),
+            static_bundle_ref=_ref("static-bundle"),
+            hypothesis_ids=("hypothesis-1",),
+        )
+    )
+    inputs = (_ref("static-bundle"),)
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.HYPOTHESIS_DONE,
+            status=StageStatus.BLOCKED,
+            input_refs=inputs,
+            input_hash=input_reference_hash(inputs),
+            error_code="HYPOTHESIS_EVIDENCE_INVALID",
+            retryable=False,
+        )
+    )
+    app = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=_runner,
+    )
+
+    resumed = await app.resume(identity.analysis_id)
+
+    assert resumed.status == "BLOCKED"
+    assert resumed.current_stage is SimpleStage.HYPOTHESIS_DONE
+    assert resumed.error_code == "HYPOTHESIS_EVIDENCE_INVALID"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_proposals_in_one_batch_run_only_one_child(
+    tmp_path: Path,
+) -> None:
+    class DuplicatingHypotheses:
+        async def propose(
+            self, identity: CheckpointIdentity, static: StaticBootstrapResult
+        ) -> tuple[HypothesisSeed, ...]:
+            artifacts = SimpleArtifactRepository(tmp_path, identity)
+            seeds = []
+            for hypothesis_id in ("hypothesis-one", "hypothesis-two"):
+                proposal_ref = artifacts.put_json(
+                    {
+                        "kind": "simple_hypothesis_proposal",
+                        "hypothesis_id": hypothesis_id,
+                        "static_bundle_ref": static.static_bundle_ref.model_dump(
+                            mode="json"
+                        ),
+                        "proposal": {"title": "same finding"},
+                    }
+                )
+                seeds.append(
+                    HypothesisSeed(
+                        hypothesis_id=hypothesis_id,
+                        proposal_ref=proposal_ref,
+                    )
+                )
+            return tuple(seeds)
+
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    app = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=DuplicatingHypotheses(),
+        runner_factory=_runner,
+        id_factory=iter(("analysis-dedup", "workspace-1")).__next__,
+    )
+
+    outcome = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        )
+    )
+
+    assert outcome.status == "COMPLETE"
+    assert store.require_analysis_run("analysis-dedup").hypothesis_ids == (
+        "hypothesis-one",
+    )
+    assert store.get(
+        outcome.identity.model_copy(update={"hypothesis_id": "hypothesis-two"}),
+        SimpleStage.PRO_CON_DONE,
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_failed_hypothesis_checkpoint_write_keeps_seed_on_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    original_complete = store.complete
+    failed_once = False
+
+    def flaky_complete(
+        checkpoint: StageCheckpoint,
+        result: StageResult,
+        *,
+        analysis_run: SimpleAnalysisRun | None = None,
+    ) -> StageCheckpoint:
+        nonlocal failed_once
+        if checkpoint.stage is SimpleStage.HYPOTHESIS_DONE and not failed_once:
+            failed_once = True
+            raise OSError("temporary checkpoint write failure")
+        return original_complete(checkpoint, result, analysis_run=analysis_run)
+
+    monkeypatch.setattr(store, "complete", flaky_complete)
+    app = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=_runner,
+        recovery_factory=_RecoveryFactory(tmp_path),
+        id_factory=iter(("analysis-retry-seed", "workspace-1")).__next__,
+    )
+
+    outcome = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        )
+    )
+
+    assert failed_once
+    assert outcome.status == "COMPLETE"
+    assert store.require_analysis_run("analysis-retry-seed").hypothesis_ids == (
+        "hypothesis-1",
     )
 
 
@@ -586,7 +1084,7 @@ class _BlockedStatic:
 
 
 @pytest.mark.asyncio
-async def test_partial_opengrep_scan_keeps_static_checkpoint_blocked(
+async def test_partial_opengrep_scan_runs_agents_without_claiming_complete(
     tmp_path: Path,
 ) -> None:
     tool = tmp_path / "tool"
@@ -655,7 +1153,7 @@ async def test_partial_opengrep_scan_keeps_static_checkpoint_blocked(
                             "results": [
                                 {
                                     "check_id": "rule.0",
-                                    "path": str(Path(argv[-1]) / "app.py"),
+                                    "path": str(Path(cwd or argv[-1]) / "app.py"),
                                     "start": {"line": 1},
                                 }
                             ],
@@ -666,6 +1164,28 @@ async def test_partial_opengrep_scan_keeps_static_checkpoint_blocked(
                     encoding="utf-8",
                 )
             return ProcessResult(0, b"", b"")
+
+    class PartialHypotheses:
+        async def propose(
+            self, identity: CheckpointIdentity, static: StaticBootstrapResult
+        ) -> tuple[HypothesisSeed, ...]:
+            assert static.static_disposition == "PARTIAL"
+            proposal_ref = SimpleArtifactRepository(tmp_path, identity).put_json(
+                {
+                    "kind": "simple_hypothesis_proposal",
+                    "hypothesis_id": "hypothesis-partial",
+                    "static_bundle_ref": static.static_bundle_ref.model_dump(
+                        mode="json"
+                    ),
+                    "proposal": {"title": "partial"},
+                }
+            )
+            return (
+                HypothesisSeed(
+                    hypothesis_id="hypothesis-partial",
+                    proposal_ref=proposal_ref,
+                ),
+            )
 
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
     process = SecondBatchTimeout()
@@ -678,9 +1198,9 @@ async def test_partial_opengrep_scan_keeps_static_checkpoint_blocked(
             store=store,
             static_material_root=tmp_path / "materials",
         ),
-        hypothesis_bootstrap=_Hypotheses(),
+        hypothesis_bootstrap=PartialHypotheses(),
         runner_factory=_runner,
-        id_factory=iter(("analysis-partial", "workspace-partial")).__next__,
+        id_factory=iter(("analysis-partial", "workspace-1")).__next__,
     )
 
     outcome = await application.analyze(
@@ -691,29 +1211,28 @@ async def test_partial_opengrep_scan_keeps_static_checkpoint_blocked(
         )
     )
 
-    assert outcome.status == "BLOCKED"
-    assert outcome.error_code == "EXTERNAL_TOOL_TIMEOUT"
+    assert (outcome.status, outcome.error_code) == ("PARTIAL", None)
     assert store.require(outcome.identity, SimpleStage.STATIC_DONE).status is (
-        StageStatus.BLOCKED
+        StageStatus.SUCCEEDED
     )
-    assert (
-        store.require_analysis_run(outcome.identity.analysis_id).static_bundle_ref
-        is None
-    )
+    run = store.require_analysis_run(outcome.identity.analysis_id)
+    assert run.static_bundle_ref is not None
+    assert run.static_coverage_ref is not None
     assert process.scans == 2
-    plan = plan_rule_batches(
-        rules.read_bytes(),
-        tool_version=binding.version,
-        executable_sha256=binding.executable_sha256,
+    artifacts = SimpleArtifactRepository(tmp_path, outcome.identity)
+    coverage = json.loads(artifacts.read(run.static_coverage_ref))
+    assert coverage["verified_count"] > 0
+    assert coverage["gaps"]
+    attempts = store.list_static_scan_attempts(
+        outcome.identity,
+        "https://example.invalid/repo.git",
+        coverage["fingerprint"],
     )
-    assert (
-        store.opengrep_batch_ref(
-            outcome.identity,
-            "https://example.invalid/repo.git",
-            plan.fingerprint,
-            plan.batches[0].key,
-        )
-        is not None
+    assert any(
+        item.tool == "opengrep"
+        and item.status == "SUCCEEDED"
+        and item.raw_ref is not None
+        for item in attempts
     )
 
 
@@ -825,6 +1344,56 @@ async def test_bootstrap_failure_recovers_automatically_and_never_false(
     assert repaired.status is StageStatus.SUCCEEDED
     assert repaired.attempt_number == 2
     assert len(recovery.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_nonretryable_scope_error_without_evidence_stays_blocked(
+    tmp_path: Path,
+) -> None:
+    class ScopeError(ValueError):
+        retryable = False
+
+    class InvalidScopeStatic:
+        calls = 0
+
+        async def run(
+            self,
+            _request: SimpleAnalysisRequest,
+            _identity: CheckpointIdentity,
+        ) -> StaticBootstrapResult:
+            self.calls += 1
+            raise ScopeError("STATIC_SCOPE_MANIFEST_UNVERIFIED")
+
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    static = InvalidScopeStatic()
+    recovery = _RecoveryFactory(tmp_path)
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=static,
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=_runner,
+        recovery_factory=recovery,
+        id_factory=iter(("analysis-1", "workspace-1")).__next__,
+    )
+
+    outcome = await application.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        )
+    )
+
+    assert outcome.status == "BLOCKED"
+    assert outcome.error_code == "STATIC_SCOPE_MANIFEST_UNVERIFIED"
+    assert static.calls == 1
+    assert not recovery.calls
+    assert store.require(outcome.identity, SimpleStage.STATIC_DONE).retryable is False
+    resumed = await application.resume(outcome.identity.analysis_id)
+    assert resumed.status == "BLOCKED"
+    assert resumed.error_code == "STATIC_SCOPE_MANIFEST_UNVERIFIED"
+    assert static.calls == 1
 
 
 @pytest.mark.asyncio
@@ -984,6 +1553,93 @@ async def test_resume_reuses_static_and_hypothesis_results(tmp_path: Path) -> No
 
     assert resumed.status == "COMPLETE"
     assert len(store.list_checkpoints("analysis-1")) >= 4
+
+
+@pytest.mark.asyncio
+async def test_resume_rejects_completed_static_evidence_from_another_scope(
+    tmp_path: Path,
+) -> None:
+    class ScopedStatic:
+        fingerprint = "product-scope-one"
+        calls = 0
+
+        async def coverage_fingerprint(
+            self, _request: SimpleAnalysisRequest, _identity: CheckpointIdentity
+        ) -> str:
+            return self.fingerprint
+
+        async def run(
+            self, request: SimpleAnalysisRequest, identity: CheckpointIdentity
+        ) -> StaticBootstrapResult:
+            self.calls += 1
+            artifacts = SimpleArtifactRepository(tmp_path, identity)
+            coverage = artifacts.put_json(
+                {
+                    "kind": "simple_static_coverage_v1",
+                    "fingerprint": self.fingerprint,
+                    "expected_count": 1,
+                    "verified_count": 1,
+                    "gaps": [],
+                }
+            )
+            bundle = artifacts.put_json(
+                {
+                    "kind": "simple_static_fact_bundle",
+                    "static_coverage_ref": coverage.model_dump(mode="json"),
+                }
+            )
+            return StaticBootstrapResult(
+                repository_profile_ref=artifacts.put_json({"kind": "profile"}),
+                static_bundle_ref=bundle,
+                workspace_path=request.data_dir / "workspaces" / identity.workspace_id,
+            )
+
+    class AcceptingHypotheses:
+        calls = 0
+
+        async def propose(
+            self, _identity: CheckpointIdentity, _static: StaticBootstrapResult
+        ) -> tuple[HypothesisSeed, ...]:
+            self.calls += 1
+            return (
+                HypothesisSeed(
+                    hypothesis_id="hypothesis-1", proposal_ref=_ref("hypothesis")
+                ),
+            )
+
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    static = ScopedStatic()
+    hypotheses = AcceptingHypotheses()
+    app = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=static,
+        hypothesis_bootstrap=hypotheses,
+        runner_factory=_runner,
+        id_factory=iter(("analysis-product-scope", "workspace-1")).__next__,
+    )
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path,
+            repository="https://example.invalid/repo.git",
+            commit="a" * 40,
+        )
+    )
+    assert first.status == "COMPLETE"
+    original_bundle = store.require_analysis_run(
+        first.identity.analysis_id
+    ).static_bundle_ref
+    static.fingerprint = "product-scope-two"
+
+    with pytest.raises(ValueError, match="STATIC_SCOPE_CHANGED_NEW_ANALYSIS_REQUIRED"):
+        await app.resume(first.identity.analysis_id)
+
+    assert static.calls == 1
+    assert hypotheses.calls == 1
+    assert (
+        store.require_analysis_run(first.identity.analysis_id).static_bundle_ref
+        == original_bundle
+    )
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -63,6 +64,21 @@ class StaticScanAttempt:
     coverage_ref: StoredDataRef | None
     request_ref: StoredDataRef | None
     error_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class StaticScanExecution:
+    execution_id: int
+    repository: str
+    fingerprint: str
+    tool: str
+    run_key: str
+    status: Literal["STARTED", "SUCCEEDED", "BLOCKED"]
+    raw_ref: StoredDataRef | None
+    error_code: str | None
+    request_ref: StoredDataRef | None
+    error_ref: StoredDataRef | None
+    timeout_seconds: float
 
 
 class SimpleCheckpointStore:
@@ -183,6 +199,71 @@ class SimpleCheckpointStore:
                     "ALTER TABLE simple_static_scan_attempts "
                     "ADD COLUMN request_ref_json TEXT"
                 )
+            legacy_marker_exists = (
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                    "AND name = 'simple_static_scan_legacy_history'"
+                ).fetchone()
+                is not None
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_static_scan_legacy_history (
+                    analysis_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    repository TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    PRIMARY KEY (
+                        analysis_id, workspace_id, commit_id,
+                        repository, fingerprint
+                    )
+                )
+                """
+            )
+            if (
+                not legacy_marker_exists
+                and {
+                    "analysis_id",
+                    "workspace_id",
+                    "commit_id",
+                    "repository",
+                    "fingerprint",
+                }
+                <= columns
+            ):
+                connection.execute(
+                    "INSERT OR IGNORE INTO simple_static_scan_legacy_history "
+                    "(analysis_id, workspace_id, commit_id, repository, fingerprint) "
+                    "SELECT DISTINCT analysis_id, workspace_id, commit_id, "
+                    "repository, fingerprint FROM simple_static_scan_attempts"
+                )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_static_scan_executions (
+                    execution_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    analysis_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    repository TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    tool TEXT NOT NULL,
+                    run_key TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    raw_ref_json TEXT,
+                    error_code TEXT,
+                    request_ref_json TEXT,
+                    error_ref_json TEXT,
+                    timeout_seconds REAL NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_static_scan_executions_scope "
+                "ON simple_static_scan_executions "
+                "(analysis_id, workspace_id, commit_id, repository, "
+                "fingerprint, tool, run_key)"
+            )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS simple_report_drafts (
@@ -428,6 +509,305 @@ class SimpleCheckpointStore:
                     request_json,
                 ),
             )
+
+    def record_static_scan_execution(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str,
+        tool: str,
+        run_key: str,
+        status: Literal["SUCCEEDED", "BLOCKED"],
+        raw_ref: StoredDataRef | None,
+        error_code: str | None,
+        request_ref: StoredDataRef | None = None,
+        error_ref: StoredDataRef | None = None,
+        *,
+        timeout_seconds: float,
+    ) -> int:
+        """Append exactly one actual scanner invocation and return its stable ID."""
+
+        if identity.hypothesis_id is not None or not all(
+            part.strip() for part in (repository, fingerprint, tool, run_key)
+        ):
+            raise ValueError("STATIC_SCAN_KEY_INVALID")
+        if status not in {"SUCCEEDED", "BLOCKED"}:
+            raise ValueError("STATIC_SCAN_EXECUTION_STATUS_INVALID")
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("STATIC_SCAN_TIMEOUT_INVALID")
+        raw_json = self._static_ref_json(identity, raw_ref)
+        request_json = self._static_ref_json(identity, request_ref)
+        error_json = self._static_ref_json(identity, error_ref)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "INSERT INTO simple_static_scan_executions "
+                "(analysis_id, workspace_id, commit_id, repository, fingerprint, "
+                "tool, run_key, status, raw_ref_json, error_code, request_ref_json, "
+                "error_ref_json, timeout_seconds) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    repository,
+                    fingerprint,
+                    tool,
+                    run_key,
+                    status,
+                    raw_json,
+                    error_code,
+                    request_json,
+                    error_json,
+                    float(timeout_seconds),
+                ),
+            )
+            execution_id = cursor.lastrowid
+            if execution_id is None:
+                raise RuntimeError("STATIC_SCAN_EXECUTION_ID_MISSING")
+            return execution_id
+
+    def begin_static_scan_execution(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str,
+        tool: str,
+        run_key: str,
+        request_ref: StoredDataRef | None,
+        *,
+        timeout_seconds: float,
+    ) -> int:
+        """Durably reserve one invocation before calling the scanner process."""
+
+        if identity.hypothesis_id is not None or not all(
+            part.strip() for part in (repository, fingerprint, tool, run_key)
+        ):
+            raise ValueError("STATIC_SCAN_KEY_INVALID")
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("STATIC_SCAN_TIMEOUT_INVALID")
+        request_json = self._static_ref_json(identity, request_ref)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "INSERT INTO simple_static_scan_executions "
+                "(analysis_id, workspace_id, commit_id, repository, fingerprint, "
+                "tool, run_key, status, request_ref_json, timeout_seconds) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'STARTED', ?, ?)",
+                (
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    repository,
+                    fingerprint,
+                    tool,
+                    run_key,
+                    request_json,
+                    float(timeout_seconds),
+                ),
+            )
+            execution_id = cursor.lastrowid
+            if execution_id is None:
+                raise RuntimeError("STATIC_SCAN_EXECUTION_ID_MISSING")
+            return execution_id
+
+    def finish_static_scan_execution(
+        self,
+        execution_id: int,
+        identity: CheckpointIdentity,
+        status: Literal["SUCCEEDED", "BLOCKED"],
+        raw_ref: StoredDataRef | None,
+        error_code: str | None,
+        request_ref: StoredDataRef | None,
+        error_ref: StoredDataRef | None,
+    ) -> None:
+        """Finalize exactly one started invocation in its original scope."""
+
+        if (
+            isinstance(execution_id, bool)
+            or not isinstance(execution_id, int)
+            or execution_id < 1
+        ):
+            raise ValueError("STATIC_SCAN_EXECUTION_ID_INVALID")
+        if identity.hypothesis_id is not None:
+            raise ValueError("STATIC_SCAN_KEY_INVALID")
+        if status not in {"SUCCEEDED", "BLOCKED"}:
+            raise ValueError("STATIC_SCAN_EXECUTION_STATUS_INVALID")
+        raw_json = self._static_ref_json(identity, raw_ref)
+        request_json = self._static_ref_json(identity, request_ref)
+        error_json = self._static_ref_json(identity, error_ref)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            updated = connection.execute(
+                "UPDATE simple_static_scan_executions SET "
+                "status = ?, raw_ref_json = ?, error_code = ?, "
+                "request_ref_json = COALESCE(?, request_ref_json), "
+                "error_ref_json = ? WHERE execution_id = ? "
+                "AND analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND status = 'STARTED'",
+                (
+                    status,
+                    raw_json,
+                    error_code,
+                    request_json,
+                    error_json,
+                    execution_id,
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("STATIC_SCAN_EXECUTION_NOT_STARTED")
+
+    @staticmethod
+    def _static_execution_filter(
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str | None,
+        tool: str | None,
+        run_key: str | None,
+    ) -> tuple[str, tuple[str, ...]]:
+        if (
+            identity.hypothesis_id is not None
+            or not repository.strip()
+            or any(
+                part is not None and not part.strip()
+                for part in (fingerprint, tool, run_key)
+            )
+        ):
+            raise ValueError("STATIC_SCAN_KEY_INVALID")
+        filters = (
+            "analysis_id = ? AND workspace_id = ? AND commit_id = ? AND repository = ?"
+        )
+        params = [
+            identity.analysis_id,
+            identity.workspace_id,
+            identity.commit_id,
+            repository,
+        ]
+        for column, value in (
+            ("fingerprint", fingerprint),
+            ("tool", tool),
+            ("run_key", run_key),
+        ):
+            if value is not None:
+                filters += f" AND {column} = ?"
+                params.append(value)
+        return filters, tuple(params)
+
+    def count_static_scan_executions(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str | None = None,
+        *,
+        tool: str | None = None,
+        run_key: str | None = None,
+    ) -> int:
+        """Count durable dispatch records, including unfinished STARTED rows."""
+
+        filters, params = self._static_execution_filter(
+            identity, repository, fingerprint, tool, run_key
+        )
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM simple_static_scan_executions WHERE " + filters,
+                params,
+            ).fetchone()
+        return int(row[0])
+
+    def static_scan_legacy_history_incomplete(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str,
+    ) -> bool:
+        """Whether this scope had summary rows before the ledger existed."""
+
+        if not fingerprint.strip():
+            raise ValueError("STATIC_SCAN_KEY_INVALID")
+        filters, params = self._static_execution_filter(
+            identity, repository, fingerprint, None, None
+        )
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM simple_static_scan_legacy_history WHERE "
+                + filters
+                + " LIMIT 1",
+                params,
+            ).fetchone()
+        return row is not None
+
+    @classmethod
+    def _static_execution_ref(
+        cls, identity: CheckpointIdentity, raw: str | None
+    ) -> StoredDataRef | None:
+        if raw is None:
+            return None
+        ref = cls._valid_opengrep_batch_ref(identity, raw)
+        if ref is None:
+            raise ValueError("STATIC_SCAN_EXECUTION_REF_INVALID")
+        return ref
+
+    def list_static_scan_executions(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str | None = None,
+        *,
+        tool: str | None = None,
+        run_key: str | None = None,
+    ) -> tuple[StaticScanExecution, ...]:
+        """Read append-only invocation history in execution order."""
+
+        filters, params = self._static_execution_filter(
+            identity, repository, fingerprint, tool, run_key
+        )
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT execution_id, repository, fingerprint, tool, run_key, "
+                "status, raw_ref_json, error_code, request_ref_json, "
+                "error_ref_json, timeout_seconds "
+                "FROM simple_static_scan_executions WHERE "
+                + filters
+                + " ORDER BY execution_id",
+                params,
+            ).fetchall()
+        executions: list[StaticScanExecution] = []
+        for row in rows:
+            if row["status"] not in {"STARTED", "SUCCEEDED", "BLOCKED"}:
+                raise ValueError("STATIC_SCAN_EXECUTION_STATUS_INVALID")
+            executions.append(
+                StaticScanExecution(
+                    execution_id=row["execution_id"],
+                    repository=row["repository"],
+                    fingerprint=row["fingerprint"],
+                    tool=row["tool"],
+                    run_key=row["run_key"],
+                    status=row["status"],
+                    raw_ref=self._static_execution_ref(identity, row["raw_ref_json"]),
+                    error_code=row["error_code"],
+                    request_ref=self._static_execution_ref(
+                        identity, row["request_ref_json"]
+                    ),
+                    error_ref=self._static_execution_ref(
+                        identity, row["error_ref_json"]
+                    ),
+                    timeout_seconds=row["timeout_seconds"],
+                )
+            )
+        return tuple(executions)
 
     def list_static_scan_attempts(
         self, identity: CheckpointIdentity, repository: str, fingerprint: str

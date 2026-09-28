@@ -31,6 +31,10 @@ sastsimi resume A-001
 실행 프로세스가 종료됐는데 checkpoint가 `RUNNING`으로 남은 경우에는
 `resume A-001`로 중단 지점의 복구를 시도할 수 있습니다.
 
+`LLM_TOKEN_BUDGET_EXHAUSTED`는 저장된 입력·출력 토큰 합계가 설정 한도에 도달해 다음 요청을 차단한 상태입니다. 요청 전 검사이므로 한 번의 호출이 한도를 넘어설 수 있습니다. `LLM_TOKEN_USAGE_UNAVAILABLE`은 이전 시도의 토큰 수치를 확인할 수 없어 후속 요청을 차단한 상태입니다. Codex CLI의 정상 완료 이벤트에 포함된 토큰은 기록하지만 누락·잘못된 사용량은 성공으로 인정하지 않습니다. Cursor CLI는 정상 응답에도 토큰 수치가 없어 첫 호출은 성공할 수 있지만 같은 분석의 다음 LLM 요청이 차단될 수 있습니다. `resume`해도 저장된 미확인 시도는 남습니다.
+
+`LLM_COST_USAGE_UNAVAILABLE`은 이전 OpenAI API 시도의 신뢰할 수 있는 금액이 없어 후속 API 요청을 차단한 상태입니다. API adapter는 실제 청구 금액을 산출하지 않습니다. Codex·Cursor CLI는 비용을 제공하지 않고 Cursor SDK의 비용 확정도 늦을 수 있습니다. `max_cost_minor_units`는 기록된 신뢰 가능한 비용에만 다음 요청 전에 적용되므로 실제 청구액의 정확한 상한은 아닙니다. Provider 계정의 사용량과 지출 설정을 확인하세요. 미확인 시도가 남아 있으면 `resume`만 반복해도 차단이 해소되지 않습니다.
+
 ## `sastsimi` 명령이 없음
 
 가상환경을 활성화하고 설치를 확인합니다.
@@ -84,7 +88,7 @@ codex login
 
 같은 저장소와 commit을 서로 다른 분석 ID에서 동시에 시작하면 현재 공유 CodeQL 데이터베이스 생성이 충돌할 수 있습니다. 해당 조합의 분석은 하나씩 실행하고, `CODEQL_DATABASE_CREATE_FAILED`나 `CODEQL_ANALYZE_FAILED`가 발생하면 다른 실행이 종료된 뒤 실패한 분석을 재개하세요. 이 제한은 정적 검사 누락을 성공으로 바꾸지 않습니다.
 
-OpenGrep의 `PartialParsing`·구문 오류는 `paths.scanned`에 파일이 보여도 파일·규칙별 검사 완료가 아닙니다. 이때 AST와 설정된 CodeQL 결과는 계속 저장합니다. 대시보드의 정적 검사 항목에서 검증 수, 미검증 상대 경로·규칙·이유를 확인하세요. 범위 밖 언어는 별도 표시하며 Python-only CodeQL을 OpenGrep 규칙의 대체 증거로 세지 않습니다. 누락이 남으면 `COMPLETE`로 바꾸지 않고 `BLOCKED`를 유지합니다.
+OpenGrep의 `PartialParsing`·구문 오류는 `paths.scanned`에 파일이 보여도 파일·규칙별 검사 완료가 아닙니다. AST와 설정된 CodeQL 결과는 계속 저장합니다. 대시보드에서 검증/예상 수, 누락·미지원 이유와 경로·규칙·이유의 페이지 조회를 확인하세요. Python-only CodeQL을 OpenGrep 규칙의 대체 증거로 세지 않습니다. 검증된 부분이 유효하면 후속 Agent는 진행할 수 있으나 남은 누락은 최종 `PARTIAL`로 표시합니다.
 
 선택형 Semgrep CE를 쓰려면 Windows PowerShell의 `.venv`에서 각 줄을 한 줄 명령으로 실행합니다. `setup`을 다시 실행할 때 기존 제한·모델 옵션도 필요하면 함께 지정하세요. 분석 중에는 Semgrep을 자동 설치하거나 원격 규칙을 받지 않습니다.
 
@@ -96,13 +100,17 @@ sastsimi setup --non-interactive --auth subscription --provider codex --model gp
 sastsimi resume A-001
 ```
 
-Semgrep 미설정은 `SEMGREP_TOOL_UNAVAILABLE`, 실행 실패는 `SEMGREP_EXECUTION_FAILED`, 잘못되거나 잘린 JSON은 `SEMGREP_RESULT_INVALID`로 남습니다. 실행 오류는 취약점 반증이 아닙니다. 같은 입력에서 위치가 확인된 결정적 파싱 경고 외 누락이 없으면 `resume`으로 OpenGrep을 반복하지 않으며, 규칙·추적 파일·도구 지문이 바뀐 뒤 다시 검사할 수 있습니다. Semgrep fallback을 켠 경우에는 OpenGrep의 검증된 부분 결과만 재사용하고 파싱 경고·미검사·시간 초과 등 모든 미검증 파일·규칙 조합을 Semgrep에 넘깁니다. Semgrep도 해당 조합을 검증하지 못하면 `BLOCKED`입니다. fallback이 꺼져 있고 결정적 파싱 경고 외 누락이 있으면 OpenGrep 재시도 대상입니다.
+Semgrep 미설정은 `SEMGREP_TOOL_UNAVAILABLE`, 실행 실패는 `SEMGREP_EXECUTION_FAILED`, 잘못되거나 잘린 JSON은 `SEMGREP_RESULT_INVALID`로 남습니다. 실행 오류는 취약점 반증이 아닙니다. Semgrep fallback을 켠 경우 OpenGrep의 검증된 부분 결과만 재사용하고 파싱 경고·미검사·시간 초과 등 미검증 파일·규칙 조합만 Semgrep에 넘깁니다. Semgrep도 확인하지 못한 조합은 누락 이유와 함께 남습니다. `PARTIAL` 분석의 `resume`은 같은 범위의 미검증 조합을 재시도하되 완료된 Agent의 원래 입력 참조는 바꾸지 않습니다.
 
-결정적 파싱 오류 외에 Semgrep 실행 오류나 설정된 CodeQL 오류가 남아 있으면 재시도 가능 상태를 유지합니다. 파싱 오류만 남아 `retryable=false`가 된 분석은 검사 구현 코드만 교체해도 동일한 입력·규칙·도구 지문에서 자동 재실행되지 않습니다. 그런 수정의 효과를 확인하려면 새 분석 ID로 다시 시작하세요. 이 제한은 아직 해결되지 않은 범위를 `COMPLETE`로 표시하지 않기 위한 것입니다.
+결정적 파싱 오류 외에 Semgrep 실행 오류나 설정된 CodeQL 오류가 남아 있으면 coverage에 제한 사항을 유지합니다. 같은 commit·제품 범위·규칙·도구 지문에서 `resume`하면 완료된 증거는 재사용하고 미검증 조합을 다시 시도합니다. 지문이 바뀌는 수정은 새 분석 ID가 필요합니다. 해결되지 않은 범위를 `COMPLETE`로 표시하지 않습니다.
 
-Semgrep fallback을 켜고 실행 파일이 검증된 경우 OpenGrep 규칙 묶음의 각 실행은 최대 120초이며, 시간 초과된 파일·규칙은 완료로 세지 않고 Semgrep에 넘깁니다. Semgrep 실행 파일이 없거나 바뀌었다면 OpenGrep의 원래 실행시간을 보존합니다. Semgrep 재검사는 한 번에 최대 128파일과 Windows 명령줄 24,000 UTF-16 단위를 지키며, JSON 결과를 크기 제한이 있는 분석별 임시 파일로 받습니다. Semgrep 한 묶음의 실행도 최대 120초로 제한하며 느리거나 실패한 묶음의 미검증 파일·규칙만 더 작게 나눕니다. 한 경로만 너무 길면 그 경로를 미검증으로 기록한 뒤 나머지를 검사합니다. 파일 하나의 프로세스 시간 초과나 JSON `Timeout`은 `--timeout 30`으로 한 번만 다시 검사합니다. `SEMGREP_COMMAND_TOO_LONG`이나 `SEMGREP_RETRY_BUDGET_EXCEEDED`도 검사 완료가 아니라 명시적인 미검증 이유입니다. `sastsimi dashboard`의 정적 검사 항목에서 검증 수와 미검증 상대 경로·규칙·이유의 첫 100개를 확인하세요. 전체 누락은 coverage artifact에 보존되고, 하나라도 남으면 `STATIC_DONE`은 `BLOCKED`입니다. 완료된 묶음과 검증된 부분 결과는 같은 입력·도구 지문에서 `resume`할 때 재사용하지만, 결정적 파싱 오류를 무한 반복하지는 않습니다.
+OpenGrep은 제품 코드만 최대 64파일·소스 합계 512 KiB의 명시적 묶음으로 검사하며, 각 호출은 최대 120초입니다. 시간 초과된 다중 파일 묶음은 단일 파일까지 나눕니다. 선택형 Semgrep에는 미검증 제품 코드 파일·규칙만 넘깁니다. Semgrep은 최대 128파일과 Windows 명령줄 24,000 UTF-16 단위를 지키고 호출당 최대 120초입니다. 파일 하나의 시간 초과나 JSON `Timeout`은 `--timeout 30`으로 한 번 더 시험합니다. 명령 길이·재시도·출력 크기 제한에 걸린 조합은 완료가 아니라 명시적인 누락입니다. 전체 경로·규칙·이유와 미지원 제품 파일 경로는 coverage artifact에 남고 대시보드에서 페이지 단위로 조회할 수 있습니다. 검증된 부분이 있으면 `STATIC_DONE`은 후속 Agent에 안전한 근거를 게시하며, 정적 범위가 불완전한 분석은 모든 Agent가 끝나도 `PARTIAL`입니다.
 
-`sastsimi setup`을 다시 실행해 현재 실행 파일을 확인합니다. Full profile의 CodeQL은 Python database를 만들고 제한된 query suite를 실행하므로 첫 분석에 시간이 걸릴 수 있습니다. 같은 저장소와 commit의 성공 결과는 재개 시 재사용합니다.
+OpenGrep·Semgrep·CodeQL 결과 파일과 재개용 스캔 원문은 건별 최대 64 MiB까지만 읽습니다. 한 정적 coverage 실행에서 정규화한 후보 결과가 500,000건 또는 평가에 채택한 스캔 원문 누적량이 4 GiB를 넘으면 `STATIC_CANDIDATES_TOO_LARGE`로 `BLOCKED`됩니다. 같은 원문을 다시 평가해도 누적량에 더합니다. 로컬 도구 호출에는 기본 4 GiB 메모리 제한이 있습니다. Windows는 하위 프로세스를 포함한 Job 전체 커밋 메모리, POSIX는 각 프로세스의 가상 주소 공간 제한이므로 POSIX 프로세스 트리의 메모리 총합을 제한하지는 않습니다. 이 자원 한도에 걸린 결과는 검사 완료 증거가 아닙니다.
+
+coverage artifact의 각 미검증 조합에서 `known_attempt_count`는 완료 기록이 남은 scanner 실행 요청 수이고, `known_attempts_by_engine`는 이를 OpenGrep·Semgrep별로 나눕니다. 실행 요청 직전 `STARTED`를, 종료 후 결과를 ledger에 영속 기록하므로 비정상 종료 흔적을 발견할 수 있습니다. 저장된 원문·요청 설명자·해시와 commit·규칙·도구 지문을 재검증한 파일·규칙 조합만 완료 증거로 인정합니다. `history_complete=false`이면 이전 summary 또는 미완료 요청의 정확한 이력을 확정할 수 없어 `attempt_count=null`이며, 참일 때만 정확한 총 요청 수를 표시합니다. `latest_error_code`와 `latest_error_ref`는 가장 최근 기록된 실패 코드와 비공개 오류 근거 참조입니다. 캐시 재사용·실행 전 검사는 호출 수에서 제외합니다.
+
+`sastsimi setup`을 다시 실행해 현재 실행 파일을 확인합니다. Full profile의 CodeQL은 Python database를 만들고 제한된 query suite를 실행하므로 첫 분석에 시간이 걸릴 수 있습니다. 같은 저장소·commit·제품 범위에서 성공한 결과라도 query suite·로컬 qlpack·실제로 해석된 쿼리 팩 내용과 실행 파일·SARIF 해시를 검증할 수 있을 때만 재개에 재사용합니다. 쿼리 팩 식별이 불가능하면 캐시를 쓰지 않고 CodeQL을 다시 실행합니다.
 
 큰 저장소에서는 `sastsimi status A-001 --format json`의 `current_stage`가
 `STATIC_DONE`, 진행률이 `0%`여도 정적 단계의 체크포인트가 아직 실행 중일 수
@@ -111,20 +119,31 @@ Semgrep fallback을 켜고 실행 파일이 검증된 경우 OpenGrep 규칙 묶
 종료됐거나 상태가 `BLOCKED`/`FAILED`로 바뀐 뒤 오류 코드를 확인해 재개하세요.
 분석용 `workspaces/<workspace-id>` checkout도 실행 중에는 직접 수정하지 마세요. 도구는 실행 전 상태를 검사하지만 중간 수정은 지원하지 않으므로, 의심되면 해당 결과를 근거로 쓰지 말고 새 분석 ID로 다시 시작해야 합니다.
 
-새 프로필의 정적 분석에는 공유 1시간 종료 시각이 없습니다. 각 OpenGrep·Semgrep
+새 프로필의 정적 분석에는 공유 1시간 종료 시각이 없습니다. 대신 한 회의 정적 검사
+예산 `static_scan_pass_seconds`는 기본 180초이며 `setup --static-scan-pass-seconds <초>`로
+설정합니다. 예산 밖 조합은 `not_attempted_budget`로 기록해 다음 `resume`에서 시도합니다.
+각 OpenGrep·Semgrep
 하위 프로세스는 유한한 타임아웃을 가지며, 실패 묶음은 유한 횟수로 분할·재시도합니다.
 기존 프로필에 양의 정수 `max_elapsed_seconds`가 남아 있으면 OpenGrep와
 Semgrep 단계에는 각각 그 값의 유한한 종료 시각이 계속 적용됩니다. 재개한
 새 시도에서는 다시 계산하며 CodeQL은 별도의 호출별 상한을 사용합니다.
 정적 도구 실행시간은 DB의 누적 LLM 호출시간에 더해지지 않습니다.
-원본 규칙과 저장소 범위는 그대로이며 저장소별 별도 설정은 필요 없습니다.
+제품 코드만 정적 검사하며 명확한 테스트 파일은 입력과 커버리지에서 빠집니다. 제외 목록을 별도로 기록하거나 테스트 포함 옵션을 제공하지 않습니다. 원본 규칙은 그대로이며 저장소별 별도 설정은 필요 없습니다.
+
+`STATIC_SCOPE_CHANGED_NEW_ANALYSIS_REQUIRED`는 이전 전체 파일 범위의 완료된 정적 근거를 새 제품 코드 범위로 `resume`하려 할 때의 안전 중단입니다. 기존 분석 데이터는 그대로 두고 같은 저장소·commit으로 새 `analyze`를 시작하세요. `resume`을 반복해도 두 범위의 근거를 섞지 않습니다.
+
+제품 파일이 규칙 언어와 명시적 비소스 허용 목록 어디에도 속하지 않으면 확장자가 없어도 미지원 경로·이유로 기록합니다. 예를 들어 `.css`, `.html`, `.mako`와 Go·PHP·shell·SQL 소스는 현재 규칙 범위에 없을 수 있습니다. 대시보드에서 개수와 전체 경로를 확인하세요. 실제 코드라면 언어·규칙 지원을 추가해야 합니다. 미지원 파일을 숨겨 `COMPLETE`로 바꾸면 안 됩니다.
+
+`STATIC_PRODUCT_SOURCE_EMPTY`는 선택된 정적 도구 모두에서 제품 소스가 없고 테스트 전용 파일만 남은 경우의 명시적 중단입니다. 작업을 `RUNNING`에 남겨두지 않으며, 저장소·commit과 실제 제품 파일을 확인한 뒤 새 분석을 시작해야 합니다. 테스트 파일을 분석에 다시 넣는 옵션은 없습니다.
+
+`STATIC_SCOPE_MANIFEST_UNVERIFIED`는 패키지 설정을 읽거나 해석하지 못해 실제 배포 진입점을 확인할 수 없다는 뜻이며 정적 단계를 차단합니다. 해당 commit의 `package.json`/`pyproject.toml` 유효성과 크기를 확인하세요. AST 파싱 오류나 입력 크기 초과는 coverage artifact의 제한 사항으로 남습니다. 다른 검증 부분이 사용 가능하면 `PARTIAL`로 진행할 수 있으며 AST 사실 목록 상한 자체는 파싱 중단을 뜻하지 않습니다.
 
 시간 초과나 취소 시 하위 프로세스 트리 정리를 시도하고 `EXTERNAL_TOOL_TIMEOUT`을
 취약점 반증으로 취급하지 않습니다. 정확한 분석·저장소·commit·도구 지문과 CAS를
-다시 확인해 완료된 묶음은 재사용하고, 실패한 묶음은 이미 검증된 부분 결과를
-보존한 채 재시도합니다. 단, 위의 위치가 확인된 파싱 경고는 선택형 Semgrep fallback에서 검증된 부분 결과를 재사용하고 남은 조합만 재검사합니다. 모든 엔진을 마친 뒤에도 미검증 파일·규칙 조합이 남거나 설정된 CodeQL이 실패하면 전체 성공 전이므로 `STATIC_DONE`이 `BLOCKED`이며 가설·Finding·보고서를
-만들지 않습니다. CodeQL SARIF도 분석별 파일로 분리하고 재시도 전 해당 파일을
-지웁니다. 기존 프로세스가 끝났고 도구 상태를 확인했다면 PowerShell에서 다음
+다시 확인해 완료된 파일·규칙 증거는 재사용하고 실패한 조합만 재시도합니다.
+증거가 손상됐거나 검증된 조합이 전혀 없으면 `BLOCKED`입니다. 검증된 부분만
+Agent 후보 근거가 될 수 있으며 불완전한 raw hit는 Finding 근거가 아닙니다.
+기존 프로세스가 끝났고 도구 상태를 확인했다면 PowerShell에서 다음
 한 줄로 이어갑니다.
 
 ```powershell
@@ -174,7 +193,8 @@ Python Playwright가 PoC 실행 중 `BrowserType.launch: Executable doesn't exis
 반증할 수 없다는 뜻입니다. 제한된 횟수 안에서 PoC 입력을 보강하고,
 복구 상한에 이른 마지막 실행이 종료 코드 0이면서 여전히 근거 부족이면
 가설을 `INCONCLUSIVE`·제보 불가로 종료합니다.
-전체 가설이 분석상 종료되고 다른 실행 오류가 없으면 분석 상태는 `COMPLETE`입니다.
+전체 가설이 분석상 종료되고 다른 실행 오류가 없으면 정적 범위에 따라
+`COMPLETE` 또는 `PARTIAL`입니다.
 반면 `POC_EXECUTION_FAILED`와 Docker/Provider 오류는 완료된 관찰이 아니므로
 계속 `BLOCKED` 또는 판정 없는 `FAILED`로 남습니다.
 
@@ -184,7 +204,7 @@ PoC Agent에는 Pro·Con Agent가 요청한 저장소 상대 경로 중 고정 c
 
 동적 실행 오류의 복구 계보가 최대 3회 시도를 소진하면 `RECOVERY_EXHAUSTED`로 남습니다. `resume`은 이미 소진된 시도를 자동으로 초기화하지 않으므로 같은 오류를 반복 호출해도 해결되지 않습니다. 도구 수정 후 새 분석을 시작하고 이전 분석·artifact는 보존하세요.
 
-Technical Gate의 `REVISE`는 Docker 오류가 아니라 검증 근거 보완 요청입니다. Runtime은 요청을 저장하고 해당 가설의 PoC 후보부터 Docker 실행·최종 Verification·Gate를 새 시도로 진행합니다. Gate 결정은 최대 세 번이며, 마지막에도 `REVISE`이면 `INCONCLUSIVE`, 명시적으로 `REJECT`이면 제보 불가로 끝납니다. 이 두 결과는 Finding 없이 분석을 `COMPLETE`로 끝낼 수 있지만 취약점 반증이나 제보 승인을 뜻하지 않습니다. `resume`으로 같은 Gate를 무한 재시도하지 않습니다. Docker·인증·Provider·DB 실행 오류는 여전히 `BLOCKED` 또는 `FAILED`이며 미확정 판정으로 바꾸지 않습니다.
+Technical Gate의 `REVISE`는 Docker 오류가 아니라 검증 근거 보완 요청입니다. Runtime은 요청을 저장하고 해당 가설의 PoC 후보부터 Docker 실행·최종 Verification·Gate를 새 시도로 진행합니다. Gate 결정은 최대 세 번이며, 마지막에도 `REVISE`이면 `INCONCLUSIVE`, 명시적으로 `REJECT`이면 제보 불가로 끝납니다. 이 두 결과는 Finding 없이 분석을 끝낼 수 있지만 정적 누락이 남으면 최종 상태는 `PARTIAL`입니다. 취약점 반증이나 제보 승인을 뜻하지 않습니다. Docker·인증·Provider·DB 실행 오류는 `BLOCKED` 또는 `FAILED`가 우선합니다.
 
 ## 대시보드에 분석이 없음
 
@@ -235,6 +255,11 @@ sastsimi resume A-001
 
 ## 영문·국문 보고서 또는 첨부파일 링크가 보이지 않음
 
+`PARTIAL` 분석에서도 실제 검증과 Gate를 통과한 Finding은 보고서가 생성될 수 있습니다.
+두 언어의 보고서는 같은 검증/예상 수, 누락·미지원 수와 이유, coverage artifact
+해시를 표시합니다. 확인된 Finding은 전체 저장소 검사가 끝났다는 뜻이 아닙니다.
+전체 누락 목록은 보고서 ZIP이 아니라 별도 coverage artifact에 남습니다.
+
 새 번들은 검증된 Finding의 Reporter가 성공하고 manifest·정확한 아티팩트
 참조·파일 해시가 모두 일치할 때만 대시보드에서 제공합니다. 이전 버전의 단일
 `F-NNN.md`에는 새 번들이 자동 생성되지 않습니다. Scope Gate 근거가 부족해
@@ -249,5 +274,7 @@ manifest가 없거나 참조·해시가 맞지 않으면 파일이 디스크에 
 해당 근거를 분석 결과만으로 확정할 수 없다는 뜻입니다.
 
 ## INTERNAL_ERROR
+
+OpenGrep 규칙 묶음의 완료 증거는 같은 제품 범위에서만 재개에 재사용합니다. 미검증 제품 코드가 남아도 신뢰할 수 있는 검증 부분은 `PARTIAL`로 진행할 수 있습니다. 무결성 실패는 계속 `BLOCKED`입니다.
 
 출력된 `trace_id`, 안전한 오류 코드, 사용한 명령과 운영체제만 전달합니다. API key, token, session 파일, 전체 prompt, 민감한 코드나 로컬 절대 경로는 공개 이슈에 첨부하지 않습니다.

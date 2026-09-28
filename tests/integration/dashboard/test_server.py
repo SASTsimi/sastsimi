@@ -276,4 +276,66 @@ def test_server_rejects_non_loopback_bind(tmp_path) -> None:
         create_server(tmp_path, host="0.0.0.0", port=8765)
 
 
+def test_server_exposes_bounded_static_coverage_pages(tmp_path) -> None:
+    seed(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    coverage = artifacts.put_json(
+        {
+            "kind": "simple_static_coverage_v1",
+            "analysis_id": "analysis-1",
+            "workspace_id": "workspace-1",
+            "commit_id": "commit-1",
+            "expected_count": 2,
+            "verified_count": 1,
+            "gaps": [
+                {"path": "src/file.ts", "rule_id": "rule.js", "reason": "scan_error"}
+            ],
+            "unsupported": [{"extension": "", "file_count": 1}],
+            "unsupported_files": [
+                {"path": "tools/launcher", "reason": "unsupported_extension"}
+            ],
+            "ast_parse_error_count": 0,
+            "ast_truncated": False,
+        }
+    )
+    bundle = artifacts.put_json(
+        {
+            "kind": "simple_static_fact_bundle",
+            "static_coverage_ref": coverage.model_dump(mode="json"),
+        }
+    )
+    SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3").save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.STATIC_DONE,
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(
+                artifacts.put_json({"kind": "simple_repository_profile"}),
+                bundle,
+            ),
+        )
+    )
+
+    with running_server(tmp_path) as base:
+        page = json.loads(
+            request(
+                f"{base}/api/analyses/analysis-1/static-coverage?kind=unsupported&limit=1"
+            ).read()
+        )
+        assert page["total"] == 1
+        assert page["items"] == [
+            {"path": "tools/launcher", "reason": "unsupported_extension"}
+        ]
+        invalid = request(f"{base}/api/analyses/analysis-1/static-coverage?limit=101")
+        assert invalid.code == 400
+
+
 # mypy: disable-error-code="no-untyped-def"

@@ -188,8 +188,8 @@ def test_elapsed_budget_uses_durable_llm_attempt_time_not_analysis_age(
         attempt_number=1,
         status="SUCCEEDED",
         elapsed_ms=499,
-        input_tokens=None,
-        output_tokens=None,
+        input_tokens=0,
+        output_tokens=0,
         cost_cents=None,
         artifact_ref=ref,
     )
@@ -210,8 +210,8 @@ def test_elapsed_budget_uses_durable_llm_attempt_time_not_analysis_age(
         attempt_number=1,
         status="SUCCEEDED",
         elapsed_ms=501,
-        input_tokens=None,
-        output_tokens=None,
+        input_tokens=0,
+        output_tokens=0,
         cost_cents=None,
         artifact_ref=ref,
     )

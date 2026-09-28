@@ -216,10 +216,8 @@ def test_semgrep_setup_opt_in_records_binding(tmp_path: Path, capsys) -> None:
     assert "semgrep" in profile.tools
 
 
-def test_setup_cli_include_tests_is_explicit_and_persisted(
-    tmp_path: Path, capsys
-) -> None:
-    from sastsimi.config.user_config import load_simple_execution_profile
+def test_setup_cli_rejects_test_inclusion_option(tmp_path: Path) -> None:
+    from sastsimi.interfaces.cli.exit_codes import ExitCode
 
     service = _service(tmp_path)
     code = main(
@@ -242,10 +240,8 @@ def test_setup_cli_include_tests_is_explicit_and_persisted(
         ],
         setup_service=service,
     )
-    assert code == 0
-    assert json.loads(capsys.readouterr().out)["data"]["status"] == "READY"
-    assert service.config_store.load().include_tests is True
-    assert load_simple_execution_profile(service._profile_path).include_tests is True
+    assert code == int(ExitCode.INPUT_ERROR)
+    assert not service.config_store.path.exists()
 
 
 def test_semgrep_missing_blocks_only_opted_in_setup(tmp_path: Path, capsys) -> None:

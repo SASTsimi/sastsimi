@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import shutil
 import subprocess
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -45,7 +46,7 @@ from sastsimi.ports.dto import (
     WorkspaceStoragePolicy,
 )
 from sastsimi.static_analysis.process import AttemptOutputBudget, SafeProcessRunner
-from sastsimi.static_analysis.repository_loader import RepositoryLoader
+from sastsimi.static_analysis.repository_loader import RepositoryLoader, WorkspaceGuard
 from sastsimi.static_analysis.repository_profile import (
     RepositoryExecutionSelector,
     RepositoryProfiler,
@@ -416,6 +417,57 @@ async def test_real_repository_reaches_expected_tool_selection(
     selection = _selection(profile, resolver, git_ref)
     assert selection.status == "READY"
     assert tuple(item.adapter_key for item in selection.selected_tools) == adapters
+
+
+@pytest.mark.asyncio
+async def test_repository_preparation_and_guard_accept_long_windows_workspace_path(
+    tmp_path: Path,
+) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows Git long-path behavior")
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("Git is not installed")
+
+    source, commit_id = _source_repository(
+        tmp_path / "source", tracked={"app.py": "value = 1\n"}
+    )
+    anticipated = tmp_path / "analysis" / "leases" / ("f" * 32)
+    padding = max(1, 210 - len(str(anticipated)))
+    analysis_root = tmp_path / ("p" * padding) / "analysis"
+    prepared = await _prepare(analysis_root, source, commit_id, Path(git))
+
+    assert prepared.status == "READY", prepared.errors
+    assert prepared.root is not None
+    assert _git(prepared.root, "rev-parse", "HEAD") == commit_id
+
+    guard_output = analysis_root / "guard-output"
+    guard_output.mkdir()
+    guard_budget = AttemptOutputBudget(
+        attempt_id="guard-attempt", limit_bytes=4 * 1024 * 1024
+    )
+    guard = WorkspaceGuard(
+        roots={str(WORKSPACE_ID): prepared.root},
+        manifests={str(WORKSPACE_ID): prepared.tracked_files},
+        process_runner_factory=lambda root, deadline, attempt_id: SafeProcessRunner(
+            action_id=deadline.action_id,
+            attempt_id=attempt_id,
+            workspace_root=root,
+            output_root=guard_output,
+            executable=Path(git),
+            output_budget=guard_budget,
+        ),
+        git_executable=Path(git),
+        output_dir=guard_output,
+    )
+    now = time.monotonic_ns()
+    receipts = await guard.assert_preparation_unchanged(
+        prepared,
+        MonotonicActionDeadline("long-path-guard", now, now + 30_000_000_000),
+        attempt_id="guard-attempt",
+        check_id="long-path",
+    )
+    assert len(receipts) == 5
 
 
 @pytest.mark.asyncio

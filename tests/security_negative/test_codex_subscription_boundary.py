@@ -491,6 +491,81 @@ async def test_execute_rejects_a_different_cli_version_before_login(
     assert calls == [(str(runner.executable.path), "--version")]
 
 
+@pytest.mark.asyncio
+async def test_execute_carries_completed_turn_token_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = approved_runner()
+    calls: list[str] = []
+
+    async def completed_turn(argv: tuple[str, ...], **_kwargs: object) -> _ChildResult:
+        calls.append(argv[1])
+        if argv[-1] == "--version":
+            return _ChildResult(0, b"codex-cli 0.152.1\n", b"")
+        if argv[1:3] == ("login", "status"):
+            return _ChildResult(0, b"Logged in using ChatGPT\n", b"")
+        output_path = Path(argv[argv.index("--output-last-message") + 1])
+        try:
+            output_path.write_bytes(b'{"ok":true}')
+        except OSError as error:
+            raise RuntimeError("test output path is unwritable") from error
+        return _ChildResult(
+            0,
+            b'{"type":"thread.started","thread_id":"thread-1"}\n'
+            b'{"type":"turn.started"}\n'
+            b'{"type":"turn.completed","usage":{"input_tokens":12,'
+            b'"cached_input_tokens":3,"output_tokens":5,'
+            b'"reasoning_output_tokens":2}}\n',
+            b"",
+        )
+
+    monkeypatch.setattr(runner, "_run_child", completed_turn)
+    result = await runner.execute(request())
+
+    assert calls == ["--version", "login", "exec"]
+    assert result.status == "SUCCEEDED"
+    assert result.input_tokens == 12
+    assert result.output_tokens == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {},
+        {"input_tokens": 12},
+        {"input_tokens": True, "output_tokens": 5},
+        {"input_tokens": -1, "output_tokens": 5},
+        {"input_tokens": 12, "output_tokens": -1},
+    ],
+)
+async def test_execute_refuses_missing_or_invalid_completed_turn_usage(
+    monkeypatch: pytest.MonkeyPatch, usage: object
+) -> None:
+    runner = approved_runner()
+
+    async def completed_turn(argv: tuple[str, ...], **_kwargs: object) -> _ChildResult:
+        if argv[-1] == "--version":
+            return _ChildResult(0, b"codex-cli 0.152.1\n", b"")
+        if argv[1:3] == ("login", "status"):
+            return _ChildResult(0, b"Logged in using ChatGPT\n", b"")
+        output_path = Path(argv[argv.index("--output-last-message") + 1])
+        output_path.write_bytes(b'{"ok":true}')
+        return _ChildResult(
+            0,
+            b'{"type":"thread.started","thread_id":"thread-1"}\n'
+            b'{"type":"turn.started"}\n'
+            + json.dumps({"type": "turn.completed", "usage": usage}).encode()
+            + b"\n",
+            b"",
+        )
+
+    monkeypatch.setattr(runner, "_run_child", completed_turn)
+    result = await runner.execute(request())
+
+    assert result.status == "INVALID_OUTPUT"
+
+
 def test_model_cannot_be_reinterpreted_as_a_cli_option() -> None:
     runner = approved_runner()
     malicious = replace(request(), model="--dangerously-bypass-approvals-and-sandbox")

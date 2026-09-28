@@ -234,6 +234,35 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
     assert client.calls == 1
     retry = current.model_copy(update={"attempt_id": "report-attempt-2"})
     resumed_store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    coverage_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_coverage_v1",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "fingerprint": "e" * 64,
+            "expected_count": 2,
+            "verified_count": 1,
+            "gaps": [
+                {"path": "other.py", "rule_id": "r1", "reason": "not_attempted_budget"}
+            ],
+            "unsupported_files": [
+                {"path": "Dockerfile", "reason": "unsupported_language"}
+            ],
+            "engine_errors": [],
+        }
+    )
+    resumed_store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="example/project",
+            static_coverage_ref=coverage_ref,
+            static_disposition="PARTIAL",
+        )
+    )
     result = await ReporterStage(client, artifacts, store=resumed_store)(retry, prior)
     assert client.calls == 1
 
@@ -252,6 +281,10 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
     assert "SUPPORTED: command executed" in markdown
     assert "입력값이 정제되지 않고 명령 실행 함수까지 전달됩니다." in markdown
     assert "Same-attempt evidence supports the finding." not in markdown
+    assert "PARTIAL" in markdown
+    assert "1 / 2" in markdown
+    assert "Finding 확인" in markdown
+    assert coverage_ref.content_hash in markdown
     assert result.bundle_manifest_ref is not None
     assert result.bundle_archive_ref is not None
     bundle = path.with_suffix("")

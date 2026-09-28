@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,11 @@ from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.call_queue import RunLimitedClient
 from sastsimi.simple_runtime.cursor_provider import CursorProvider
 from sastsimi.simple_runtime.models import CheckpointIdentity, StageFailure
-from sastsimi.simple_runtime.provider import SimpleLLMCallResult
+from sastsimi.simple_runtime.provider import (
+    SimpleLLMCallResult,
+    SimpleLLMClient,
+    SimpleOpenAIClient,
+)
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
@@ -56,7 +61,7 @@ def _success() -> SimpleLLMCallResult:
 
 def _wrapper(
     tmp_path: Path,
-    inner: _Client,
+    inner: SimpleLLMClient,
     semaphore: asyncio.Semaphore,
     *,
     max_retries: int = 2,
@@ -148,6 +153,150 @@ async def test_queued_call_rechecks_budget_after_prior_call_is_recorded(
     )
 
 
+@pytest.mark.asyncio
+async def test_missing_tokens_in_persisted_attempt_block_resumed_call(
+    tmp_path: Path,
+) -> None:
+    unmeasured = SimpleLLMCallResult(
+        value={"ok": True}, prompt_digest="a" * 64, output_digest="b" * 64
+    )
+    inner = _Client([unmeasured, _success()])
+    gate = asyncio.Semaphore(1)
+    first = await _wrapper(tmp_path, inner, gate, max_retries=0).call(
+        prompt=b"safe", output_schema={}, timeout_ms=1000
+    )
+    resumed = await _wrapper(tmp_path, inner, gate, max_retries=0).call(
+        prompt=b"safe", output_schema={}, timeout_ms=1000
+    )
+
+    assert isinstance(first, SimpleLLMCallResult)
+    assert isinstance(resumed, StageFailure)
+    assert resumed.code == "LLM_TOKEN_USAGE_UNAVAILABLE"
+    assert inner.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_reported_tokens_allow_more_subscription_calls_when_cost_is_unknown(
+    tmp_path: Path,
+) -> None:
+    inner = _Client([_success(), _success()])
+    client = _wrapper(tmp_path, inner, asyncio.Semaphore(1), max_retries=0)
+
+    first = await client.call(prompt=b"safe", output_schema={}, timeout_ms=1000)
+    second = await client.call(prompt=b"safe", output_schema={}, timeout_ms=1000)
+
+    assert isinstance(first, SimpleLLMCallResult)
+    assert isinstance(second, SimpleLLMCallResult)
+    assert inner.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_unmeasured_api_cost_blocks_next_billable_call(tmp_path: Path) -> None:
+    class FakeAPIClient(SimpleOpenAIClient):
+        def __init__(self) -> None:
+            super().__init__(credential_ref="env:NOT_USED", model="test-model")
+            self.calls = 0
+
+        async def call(
+            self,
+            *,
+            prompt: bytes,
+            output_schema: Mapping[str, Any],
+            timeout_ms: int,
+            agent_name: str = "agent",
+        ) -> SimpleLLMCallResult:
+            del prompt, output_schema, timeout_ms, agent_name
+            self.calls += 1
+            return _success()
+
+    inner = FakeAPIClient()
+    client = _wrapper(tmp_path, inner, asyncio.Semaphore(1), max_retries=0)
+
+    first = await client.call(prompt=b"safe", output_schema={}, timeout_ms=1000)
+    second = await client.call(prompt=b"safe", output_schema={}, timeout_ms=1000)
+
+    assert isinstance(first, SimpleLLMCallResult)
+    assert isinstance(second, StageFailure)
+    assert second.code == "LLM_COST_USAGE_UNAVAILABLE"
+    assert inner.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_api_cost_guard_survives_resume_without_blocking_first_fallback(
+    tmp_path: Path,
+) -> None:
+    subscription_result = _success().model_copy(update={"provider": "codex-cli"})
+    subscription = _wrapper(
+        tmp_path, _Client([subscription_result]), asyncio.Semaphore(1), max_retries=0
+    )
+    assert isinstance(
+        await subscription.call(prompt=b"safe", output_schema={}, timeout_ms=1000),
+        SimpleLLMCallResult,
+    )
+
+    class FakeAPIClient(SimpleOpenAIClient):
+        def __init__(self) -> None:
+            super().__init__(credential_ref="env:NOT_USED", model="test-model")
+            self.calls = 0
+
+        async def call(
+            self,
+            *,
+            prompt: bytes,
+            output_schema: Mapping[str, Any],
+            timeout_ms: int,
+            agent_name: str = "agent",
+        ) -> SimpleLLMCallResult:
+            del prompt, output_schema, timeout_ms, agent_name
+            self.calls += 1
+            return _success()
+
+    inner = FakeAPIClient()
+    first_fallback = await _wrapper(
+        tmp_path, inner, asyncio.Semaphore(1), max_retries=0
+    ).call(prompt=b"safe", output_schema={}, timeout_ms=1000)
+    resumed_fallback = await _wrapper(
+        tmp_path, inner, asyncio.Semaphore(1), max_retries=0
+    ).call(prompt=b"safe", output_schema={}, timeout_ms=1000)
+
+    assert isinstance(first_fallback, SimpleLLMCallResult)
+    assert isinstance(resumed_fallback, StageFailure)
+    assert resumed_fallback.code == "LLM_COST_USAGE_UNAVAILABLE"
+    assert inner.calls == 1
+
+
+def test_legacy_attempt_with_unknown_provider_blocks_api_even_if_model_changed(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-queue",
+        workspace_id="workspace-queue",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    store = SimpleCheckpointStore(artifacts.paths.database)
+    ref = artifacts.put_json({"kind": "simple_llm_attempt"})
+    store.record_llm_attempt(
+        attempt_id="legacy-attempt",
+        analysis_id=identity.analysis_id,
+        agent="agent",
+        model="legacy-other-model",
+        attempt_number=1,
+        status="SUCCEEDED",
+        elapsed_ms=1,
+        input_tokens=5,
+        output_tokens=2,
+        cost_cents=None,
+        artifact_ref=ref,
+    )
+    api = SimpleOpenAIClient(credential_ref="env:NOT_USED", model="test-model")
+    failure = _wrapper(tmp_path, api, asyncio.Semaphore(1)).budget_failure()
+
+    assert isinstance(failure, StageFailure)
+    assert failure.code == "LLM_COST_USAGE_UNAVAILABLE"
+
+
 def test_openai_factory_uses_the_run_limited_adapter(tmp_path: Path) -> None:
     profile = SimpleExecutionProfile(
         provider_profile_ref="local-openai",
@@ -225,3 +374,36 @@ async def test_operational_log_has_metadata_but_no_prompt(
     assert "hypothesis" in caplog.text
     assert "SUCCEEDED" in caplog.text
     assert "sensitive repository source" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_fractional_provider_cost_is_recorded_without_invalid_artifact(
+    tmp_path: Path,
+) -> None:
+    priced = _success().model_copy(update={"cost_minor_units": 1.5})
+    result = await _wrapper(tmp_path, _Client([priced]), asyncio.Semaphore(1)).call(
+        prompt=b"safe", output_schema={}, timeout_ms=1000
+    )
+
+    assert isinstance(result, SimpleLLMCallResult)
+    with sqlite3.connect(tmp_path / "db" / "sastsimi.sqlite3") as connection:
+        stored = connection.execute(
+            "SELECT cost_cents FROM simple_llm_attempts WHERE analysis_id = ?",
+            ("analysis-queue",),
+        ).fetchone()
+    assert stored == (1.5,)
+
+
+@pytest.mark.asyncio
+async def test_negative_wrapped_usage_cannot_reduce_run_budget(tmp_path: Path) -> None:
+    invalid = _success().model_copy(
+        update={"input_tokens": -100, "cost_minor_units": -4}
+    )
+    wrapper = _wrapper(tmp_path, _Client([invalid]), asyncio.Semaphore(1))
+
+    result = await wrapper.call(prompt=b"safe", output_schema={}, timeout_ms=1000)
+
+    assert isinstance(result, SimpleLLMCallResult)
+    failure = wrapper.budget_failure()
+    assert isinstance(failure, StageFailure)
+    assert failure.code == "LLM_TOKEN_USAGE_UNAVAILABLE"

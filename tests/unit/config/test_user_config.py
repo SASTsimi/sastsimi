@@ -73,7 +73,33 @@ def test_semgrep_fallback_defaults_off_and_round_trips(tmp_path: Path) -> None:
     assert store.load().semgrep_fallback is True
 
 
-def test_include_tests_defaults_off_and_round_trips(tmp_path: Path) -> None:
+def test_static_scan_pass_budget_is_independent_of_analysis_elapsed_limit(
+    tmp_path: Path,
+) -> None:
+    config = UserConfig(
+        data_dir=tmp_path / "data",
+        profile_path=tmp_path / "profile.toml",
+        auth_mode="API_KEY",
+        provider="openai",
+        model="configured-model",
+        credential_ref="env:OPENAI_API_KEY",
+        execution_profile="FULL",
+        max_cost_minor_units=10_000,
+        max_tokens=500_000,
+        max_elapsed_seconds="unlimited",
+        docker_network="NONE",
+        enabled_tools=("AST", "OPENGREP", "CODEQL", "DOCKER"),
+        detected_versions={},
+        setup_ready=True,
+        static_scan_pass_seconds=37,
+    )
+    store = UserConfigStore(tmp_path / "config.toml")
+    store.save(config)
+    assert store.load().static_scan_pass_seconds == 37
+    assert "static_scan_pass_seconds = 37" in store.path.read_text(encoding="utf-8")
+
+
+def test_user_config_has_no_test_inclusion_option(tmp_path: Path) -> None:
     config = UserConfig(
         data_dir=tmp_path / "data",
         profile_path=tmp_path / "profile.toml",
@@ -89,10 +115,34 @@ def test_include_tests_defaults_off_and_round_trips(tmp_path: Path) -> None:
         detected_versions={},
         setup_ready=True,
     )
-    assert config.include_tests is False
     store = UserConfigStore(tmp_path / "config.toml")
-    store.save(config.model_copy(update={"include_tests": True}))
-    assert store.load().include_tests is True
+    store.save(config)
+    assert "include_tests" not in store.path.read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="include_tests"):
+        UserConfig.model_validate({**config.model_dump(), "include_tests": True})
+
+
+def test_simple_execution_profile_has_no_test_inclusion_option(tmp_path: Path) -> None:
+    profile = SimpleExecutionProfile(
+        provider_profile_ref="local-openai",
+        provider="openai",
+        model="configured-model",
+        auth_mode="API_KEY",
+        credential_ref="env:OPENAI_API_KEY",
+        data_dir=tmp_path / "data",
+        workspace_root=tmp_path / "workspaces",
+        max_cost_minor_units=10_000,
+        max_tokens=500_000,
+        docker_network="NONE",
+        tools={},
+    )
+    path = tmp_path / "profile.toml"
+    profile.write(path)
+    assert "include_tests" not in path.read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="include_tests"):
+        SimpleExecutionProfile.model_validate(
+            {**profile.model_dump(), "include_tests": True}
+        )
 
 
 def test_user_config_rejects_literal_credentials(tmp_path: Path) -> None:

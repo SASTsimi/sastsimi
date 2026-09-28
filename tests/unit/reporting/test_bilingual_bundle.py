@@ -15,6 +15,7 @@ from sastsimi.reporting.bilingual_bundle import (
     BundleFile,
     render_bundle_files,
 )
+from sastsimi.reporting.coverage_disclosure import coverage_disclosure
 
 
 def _ref(kind: str, digest: str) -> StoredDataRef:
@@ -141,6 +142,108 @@ def test_bilingual_reports_share_section_order_and_exact_facts() -> None:
     assert provenance["poc"]["redacted"] is False
     assert provenance["sources"]["finding"]["content_hash"] == "b" * 64
     assert provenance["sources"]["poc"]["content_hash"] == "c" * 64
+
+
+def test_partial_coverage_is_disclosed_equally_without_embedding_ledger() -> None:
+    coverage_ref = _ref("coverage", "d" * 64)
+    coverage = coverage_disclosure(
+        {
+            "kind": "simple_static_coverage_v1",
+            "fingerprint": "e" * 64,
+            "analysis_id": "A-004",
+            "workspace_id": "ws-1",
+            "commit_id": "a" * 40,
+            "expected_count": 100000,
+            "verified_count": 12,
+            "gaps": [
+                {
+                    "path": f"secret-{index}.py",
+                    "rule_id": "r1",
+                    "reason": "not_attempted_budget",
+                }
+                for index in range(99988)
+            ],
+            "unsupported_files": [
+                {"path": "Dockerfile", "reason": "unsupported_language"}
+            ],
+            "engine_errors": ["opengrep_timeout"],
+        },
+        coverage_ref,
+        analysis_id="A-004",
+        workspace_id="ws-1",
+        commit_id="a" * 40,
+    )
+    files = _render(facts=_facts(coverage=coverage))
+    for name in ("report_en.md", "report_kr.md"):
+        body = files[name].body.decode()
+        assert "PARTIAL" in body
+        assert "12 / 100000" in body
+        assert "99988" in body
+        assert "unsupported_language" in body
+        assert "not_attempted_budget" in body
+        assert "d" * 64 in body
+        assert "secret-99987.py" not in body
+        assert len(body) < 20000
+    assert "confirmed Finding" in files["report_en.md"].body.decode()
+    assert "Finding 확인" in files["report_kr.md"].body.decode()
+    provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["static_coverage"]["verified_count"] == 12
+    assert provenance["static_coverage"]["ref"]["content_hash"] == "d" * 64
+
+
+def test_legacy_bundle_does_not_claim_full_static_coverage() -> None:
+    files = _render()
+    assert "coverage unknown" in files["report_en.md"].body.decode()
+    assert "분석 범위 미확인" in files["report_kr.md"].body.decode()
+    assert "confirmed Finding" in files["report_en.md"].body.decode()
+    assert "Finding 확인" in files["report_kr.md"].body.decode()
+
+
+def test_coverage_rejects_wrong_analysis_scope() -> None:
+    with pytest.raises(ValueError, match="REPORT_STATIC_COVERAGE_SCOPE_INVALID"):
+        coverage_disclosure(
+            {
+                "kind": "simple_static_coverage_v1",
+                "analysis_id": "different-analysis",
+                "workspace_id": "ws-1",
+                "commit_id": "a" * 40,
+                "fingerprint": "e" * 64,
+                "expected_count": 1,
+                "verified_count": 1,
+                "gaps": [],
+                "unsupported_files": [],
+                "engine_errors": [],
+            },
+            _ref("coverage", "d" * 64),
+            analysis_id="A-004",
+            workspace_id="ws-1",
+            commit_id="a" * 40,
+        )
+
+
+def test_localized_ast_failure_keeps_coverage_partial() -> None:
+    coverage = coverage_disclosure(
+        {
+            "kind": "simple_static_coverage_v1",
+            "analysis_id": "A-004",
+            "workspace_id": "ws-1",
+            "commit_id": "a" * 40,
+            "fingerprint": "e" * 64,
+            "expected_count": 2,
+            "verified_count": 2,
+            "gaps": [],
+            "unsupported_files": [],
+            "engine_errors": [],
+            "ast_parse_error_count": 1,
+        },
+        _ref("coverage", "d" * 64),
+        analysis_id="A-004",
+        workspace_id="ws-1",
+        commit_id="a" * 40,
+    )
+    files = _render(facts=_facts(coverage=coverage))
+    assert "PARTIAL" in files["report_en.md"].body.decode()
+    assert "ast_parse_errors" in files["report_kr.md"].body.decode()
 
 
 def test_unverified_metadata_cannot_be_filled_by_reporter_prose() -> None:

@@ -111,7 +111,14 @@ async def test_synthetic_static_gap_then_poc_error_resumes_to_restricted_bundle(
                 HypothesisSeed(
                     hypothesis_id="hypothesis-1",
                     proposal_ref=artifacts.put_json(
-                        {"kind": "simple_hypothesis_proposal"}
+                        {
+                            "kind": "simple_hypothesis_proposal",
+                            "hypothesis_id": "hypothesis-1",
+                            "static_bundle_ref": static.static_bundle_ref.model_dump(
+                                mode="json"
+                            ),
+                            "proposal": {"title": "Synthetic validation fixture"},
+                        }
                     ),
                 ),
             )

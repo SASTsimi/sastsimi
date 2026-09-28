@@ -273,7 +273,14 @@ def _repository_command_argv(
         "manifest": ("-C", str(root), "ls-files", "--stage", "-z"),
     }
     try:
-        return (str(git_executable), *commands[command_kind])
+        # Git for Windows otherwise fails inside deep workspace roots while
+        # writing its own object and pack files, even before checkout.
+        return (
+            str(git_executable),
+            "-c",
+            "core.longpaths=true",
+            *commands[command_kind],
+        )
     except KeyError as error:
         raise ValueError("GIT_COMMAND_INVALID") from error
 
@@ -590,7 +597,14 @@ class WorkspaceGuard:
                     ),
                     command_kind=f"guard-{name}",
                     attempt_id=attempt_id,
-                    argv=(str(git_executable), "-C", str(root), *argv),
+                    argv=(
+                        str(git_executable),
+                        "-c",
+                        "core.longpaths=true",
+                        "-C",
+                        str(root),
+                        *argv,
+                    ),
                     cwd=root,
                     env=(
                         ("GIT_CONFIG_GLOBAL", os.devnull),

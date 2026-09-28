@@ -35,6 +35,8 @@ sastsimi setup --auth api-key --provider openai --model <model>
 
 설정 파일에는 `env:OPENAI_API_KEY`라는 환경변수 참조만 저장됩니다. 분석을 실행하는 각 터미널이나 서비스에도 해당 환경변수가 있어야 합니다.
 
+Responses API가 제공한 유효한 입력·출력 토큰은 호출 기록에 저장하고, 기록된 누적 토큰이 `max_tokens`에 도달하면 다음 요청을 차단합니다. 이 검사는 요청 전에 수행하므로 요청 하나가 토큰 한도를 넘길 수 있습니다. 토큰 수치를 확인할 수 없었던 시도가 있으면 후속 LLM 요청은 `LLM_TOKEN_USAGE_UNAVAILABLE`로 차단됩니다. 현재 API adapter는 신뢰할 수 있는 요청별 청구 금액을 산출하지 않습니다. 첫 비용 미확인 API 시도 뒤의 후속 API 요청은 `LLM_COST_USAGE_UNAVAILABLE`로 차단하지만, 이미 수행된 요청의 금액이나 정확한 `max_cost_minor_units` 상한을 보장하지는 않습니다. 실제 청구액은 계정 사용량에서 확인하세요.
+
 ## Codex 회원 로그인
 
 공식 Codex CLI에서 로그인합니다.
@@ -51,7 +53,9 @@ Agent 호출은 같은 인증 파일을 동시에 갱신하는 충돌을 줄이�
 
 새 Codex `setup`에서 모델을 생략하면 기본 제안은 `gpt-6-sol`입니다. 기존 설치의 모델은 자동으로 변경하지 않습니다. 현재 로그인에서 해당 모델을 실제 사용할 수 있는지 분석 전에 확인하세요. 특정 모델을 쓰려면 언제든 `--model <확인한-ID>`로 덮어쓸 수 있습니다.
 
-현재 Codex CLI adapter는 호출별 토큰·비용을 SimpleRuntime에 전달하지 않습니다. 대시보드의 미제공 값은 0이나 무료라는 뜻이 아니며, `max_tokens`와 `max_cost_minor_units`는 이 provider의 실제 사용량을 강제하지 못합니다. 새 `setup`의 `max_elapsed_seconds` 기본값은 `unlimited`입니다. 기존 숫자 설정은 재개 간 DB에 기록된 LLM 시도의 누적 실행시간 상한으로 계속 적용되며, 다음 LLM 요청 전에 확인합니다. 분석을 중단한 시간·Docker 작업 시간은 소모하지 않습니다. 이 값은 이미 실행 중인 요청이나 Docker 작업을 즉시 종료하는 타이머가 아니며, 개별 호출 타임아웃과 취소는 별도로 유지됩니다. 기존 숫자 한도에 도달한 분석은 계정 사용량을 확인하고 설정을 높이거나 `unlimited`로 바꾼 후 `resume`하세요. 회원 사용량은 Codex 계정에서도 확인하세요.
+Codex CLI의 완료 이벤트에 유효한 입력·출력 토큰이 있으면 SimpleRuntime가 이를 호출 기록에 저장합니다. 성공한 CLI 응답에는 이 수치가 필요하며, 없거나 잘못된 완료 이벤트는 `INVALID_OUTPUT`입니다. 저장된 누적 토큰이 `max_tokens`에 도달하면 다음 LLM 요청을 차단하지만 요청 하나가 한도를 넘길 수 있습니다. 토큰 사용량을 확인할 수 없었던 시도가 남아 있으면 후속 요청은 `LLM_TOKEN_USAGE_UNAVAILABLE`로 차단됩니다. Codex CLI는 이 경로에서 금액 정보를 제공하지 않아 `max_cost_minor_units`로 실제 청구액을 강제할 수 없습니다. 대시보드의 미제공 비용은 0이나 무료라는 뜻이 아니며 회원 사용량은 Codex 계정에서 확인하세요.
+
+새 `setup`의 `max_elapsed_seconds` 기본값은 `unlimited`입니다. 기존 숫자 설정은 재개 간 DB에 기록된 LLM 시도의 누적 실행시간 상한으로 계속 적용되며, 다음 LLM 요청 전에 확인합니다. 분석을 중단한 시간·Docker 작업 시간은 소모하지 않습니다. 이 값은 이미 실행 중인 요청이나 Docker 작업을 즉시 종료하는 타이머가 아니며, 개별 호출 타임아웃과 취소는 별도로 유지됩니다. 기존 숫자 한도에 도달한 분석은 계정 사용량을 확인하고 설정을 높이거나 `unlimited`로 바꾼 후 `resume`하세요.
 
 ## Cursor 회원 로그인 또는 API key (선택형)
 
@@ -71,7 +75,7 @@ sastsimi setup --non-interactive --auth subscription --provider cursor --model '
 
 `provider`, `model`, `[agent_models]`, `llm_timeout_seconds`, `llm_max_retries`, `llm_max_concurrency`, `cursor_allow_on_demand`, `fallback_provider`, `fallback_model`은 사용자 `config.toml`과 `profile.toml`에 저장됩니다. 선택적으로 `--fallback-provider openai --fallback-model '<확인한 OpenAI 모델 ID>'` 또는 `codex`를 설정할 수 있습니다. OpenAI fallback은 별도의 `OPENAI_API_KEY`가 필요합니다.
 
-Cursor CLI/SDK는 일반 completion API가 아니며 서버 측 JSON Schema 강제를 보장하지 않습니다. SASTSIMI가 응답을 검증하고 제한된 횟수만 재요청합니다. CLI는 읽기 전용 Ask 모드로 빈 임시 작업 디렉터리에서 실행됩니다. 현재 검증된 `id - 이름` 모델 목록 형식이 바뀌면 모델 검증은 실패 처리됩니다. CLI JSON 결과에는 토큰·비용이 없고, SDK의 비용 정보는 늦게 확정될 수 있습니다. 요청별 on-demand 차단 옵션이 공식 문서에 없어 `--cursor-allow-on-demand` 없이 호출하지 않습니다. 이 옵션은 과금 가능성 인지 확인입니다. 사용 전에 [Cursor 추가 사용량 설정](https://cursor.com/help/account-and-billing/overages)에서 지출 한도를 확인하세요.
+Cursor CLI/SDK는 일반 completion API가 아니며 서버 측 JSON Schema 강제를 보장하지 않습니다. SASTSIMI가 응답을 검증하고 제한된 횟수만 재요청합니다. CLI는 읽기 전용 Ask 모드로 빈 임시 작업 디렉터리에서 실행됩니다. 현재 검증된 `id - 이름` 모델 목록 형식이 바뀌면 모델 검증은 실패 처리됩니다. CLI JSON 결과에는 토큰·비용이 없습니다. 성공한 첫 CLI 호출도 토큰 사용량을 기록할 수 없어, 같은 분석의 다음 LLM 요청은 `LLM_TOKEN_USAGE_UNAVAILABLE`로 차단될 수 있습니다. `resume`해도 기록된 미확인 시도가 남아 있으면 차단은 계속됩니다. SDK는 토큰 사용량을 제공할 수 있지만 비용 정보는 늦게 확정될 수 있습니다. 요청별 on-demand 차단 옵션이 공식 문서에 없어 `--cursor-allow-on-demand` 없이 호출하지 않습니다. 이 옵션은 과금 가능성 인지 확인입니다. 사용 전에 [Cursor 추가 사용량 설정](https://cursor.com/help/account-and-billing/overages)에서 지출 한도를 확인하세요.
 
 Cursor 설정은 기본 `analyze`/`resume` SimpleRuntime에 적용됩니다. 별도의 레거시 `analyze --profile`/`evaluate`에는 적용되지 않습니다.
 
@@ -97,7 +101,7 @@ Claude CLI에서 직접 `/model` 명령으로 계정에 보이는 모델을 확�
 
 Claude 구독에서도 사용량 제한이나 추가 사용량 과금이 가능하므로 대시보드에는 잠재 추가 사용량으로 표시됩니다. 실제 비용 정보가 CLI에서 제공되지 않으면 0으로 추정하지 않고 미확인으로 남깁니다.
 
-분석별 대시보드는 Provider와 무관하게 호출 수, 확인된 입력·출력 토큰, 확인된 비용과 비용 미제공 호출 수를 분리해 보여 줍니다. 비용 미제공은 무료나 0원이 아닙니다. `max_cost_minor_units`는 확인된 비용에만 적용되며, Provider가 비용을 보내지 않으면 실제 청구액을 보장할 수 없습니다.
+분석별 대시보드는 Provider와 무관하게 호출 수, 확인된 입력·출력 토큰, 확인된 비용과 비용 미제공 호출 수를 분리해 보여 줍니다. 비용 미제공은 무료나 0원이 아닙니다. `max_cost_minor_units`는 기록된 신뢰 가능한 비용에만 다음 요청 전에 적용됩니다. OpenAI API는 요청별 청구 금액을 확인할 수 없고, Codex·Cursor CLI도 비용을 제공하지 않습니다. SDK의 비용 역시 늦게 확정될 수 있으므로 이 설정을 실제 청구액의 정확한 상한으로 간주하지 마세요.
 
 운영 제한: 공식 문서에 따르면 `--safe-mode`에서도 조직의 managed policy hook은 적용될 수 있습니다. 현재 격리 검사는 도구·MCP·플러그인 이벤트를 검증하지만, 그 hook의 실행 부재까지 증명하지는 못합니다. 조직 관리형 Claude 환경에서는 관리자의 hook 정책을 확인하기 전까지 이 경로를 안전한 무도구 실행으로 간주하지 마세요. 실제 구독 계정의 최소 호출 검증도 아직 수행하지 않았습니다.
 

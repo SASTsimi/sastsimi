@@ -14,8 +14,8 @@
 
 - All new analyses default to explicit `unlimited`; existing positive integer limits remain valid.
 - Each external tool and LLM call retains a finite timeout, bounded retry count, cancellation, and output-size limit.
-- Token and cost ceilings remain finite and enforceable.
-- No source class (test, generated, vendor) is silently excluded to manufacture coverage.
+- Token ceilings stay finite and block later calls from measured totals; unknown usage blocks subsequent calls. Actual monetary cost cannot be enforced for Codex subscriptions or unpriced API responses, and must be disclosed rather than represented as zero.
+- Test-only files are removed from the static input before coverage is calculated; they are never counted as verified product code. Generated and vendor product files are not silently excluded to manufacture coverage.
 - A file/rule pair is verified only from a valid raw scan explicitly listing the scanned path with no error, skip, or skipped rule.
 - AST and current Python-only CodeQL do not prove JavaScript OpenGrep rules.
 - A static execution error remains `BLOCKED`; `COMPLETE` never implies a confirmed vulnerability.
