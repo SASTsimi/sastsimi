@@ -348,20 +348,10 @@ class SimpleAnalysisApplication:
         if self._max_tokens == "unlimited":
             self._store.reopen_token_budget_failures(exact)
         static_checkpoint = self._store.get(identity, SimpleStage.STATIC_DONE)
-        retry_partial_static = run.static_disposition == "PARTIAL"
-        if (
-            retry_partial_static
-            and static_checkpoint is not None
-            and static_checkpoint.status is StageStatus.SUCCEEDED
-        ):
-            # Finish incomplete Agent/PoC work with its validated static input.
-            # Once downstream is terminal, resume may refine static gaps.
-            retry_partial_static = self._downstream_terminal(run)
         if (
             run.workspace_path is None
             or run.repository_profile_ref is None
             or run.static_bundle_ref is None
-            or retry_partial_static
         ):
             return await self._run_static(run, identity)
         static = StaticBootstrapResult(
@@ -373,6 +363,26 @@ class SimpleAnalysisApplication:
             security_policy_ref=run.security_policy_ref,
             policy_snapshot_ref=run.policy_snapshot_ref,
         )
+        retry_partial_static = run.static_disposition == "PARTIAL"
+        if (
+            retry_partial_static
+            and static_checkpoint is not None
+            and static_checkpoint.status is StageStatus.SUCCEEDED
+        ):
+            # Finish incomplete Agent/PoC work with its validated static input.
+            # Once downstream is terminal, resume may refine static gaps.
+            retry_partial_static = self._downstream_terminal(run)
+            if retry_partial_static:
+                # Chaining may have completed just before the process stopped,
+                # leaving its children outside the durable hypothesis queue.
+                for hypothesis_id in run.hypothesis_ids:
+                    child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+                    run = self._register_chain_children(
+                        run, child, self._static_for_child(static, child)
+                    )
+                retry_partial_static = self._downstream_terminal(run)
+        if retry_partial_static:
+            return await self._run_static(run, identity)
         if not run.hypothesis_ids:
             return await self._propose_and_run(run, identity, static)
         hypothesis_checkpoint = self._store.get(identity, SimpleStage.HYPOTHESIS_DONE)

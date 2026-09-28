@@ -358,12 +358,14 @@ async def test_verified_partial_static_evidence_runs_agents_but_never_completes(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "interruption",
-    ["pending", "stale", "hold_before_chaining"],
-    ids=["pending", "stale", "hold-before-chaining"],
+    ["pending", "stale", "hold_before_chaining", "unregistered_chain_child"],
+    ids=["pending", "stale", "hold-before-chaining", "unregistered-chain-child"],
 )
 async def test_partial_resume_advances_unfinished_agent_before_retrying_static(
     tmp_path: Path,
-    interruption: Literal["pending", "stale", "hold_before_chaining"],
+    interruption: Literal[
+        "pending", "stale", "hold_before_chaining", "unregistered_chain_child"
+    ],
 ) -> None:
     class PartialStatic:
         calls = 0
@@ -372,6 +374,8 @@ async def test_partial_resume_advances_unfinished_agent_before_retrying_static(
             self, request: SimpleAnalysisRequest, identity: CheckpointIdentity
         ) -> StaticBootstrapResult:
             self.calls += 1
+            if interruption == "unregistered_chain_child" and self.calls > 1:
+                raise RuntimeError("STATIC_RETRY_BEFORE_CHAIN_CHILD")
             artifacts = SimpleArtifactRepository(request.data_dir, identity)
             coverage_ref = artifacts.put_json(
                 {
@@ -416,7 +420,8 @@ async def test_partial_resume_advances_unfinished_agent_before_retrying_static(
             self, identity: CheckpointIdentity, static: StaticBootstrapResult
         ) -> tuple[HypothesisSeed, ...]:
             assert static.static_disposition == "PARTIAL"
-            proposal_ref = SimpleArtifactRepository(tmp_path, identity).put_json(
+            artifacts = SimpleArtifactRepository(tmp_path, identity)
+            proposal_ref = artifacts.put_json(
                 {
                     "kind": "simple_hypothesis_proposal",
                     "hypothesis_id": "hypothesis-1",
@@ -426,9 +431,26 @@ async def test_partial_resume_advances_unfinished_agent_before_retrying_static(
                     "proposal": {"title": "partial resume"},
                 }
             )
-            return (
-                HypothesisSeed(hypothesis_id="hypothesis-1", proposal_ref=proposal_ref),
-            )
+            seeds = [
+                HypothesisSeed(hypothesis_id="hypothesis-1", proposal_ref=proposal_ref)
+            ]
+            if interruption == "unregistered_chain_child":
+                second_ref = artifacts.put_json(
+                    {
+                        "kind": "simple_hypothesis_proposal",
+                        "hypothesis_id": "hypothesis-2",
+                        "static_bundle_ref": static.static_bundle_ref.model_dump(
+                            mode="json"
+                        ),
+                        "proposal": {"title": "second chain parent"},
+                    }
+                )
+                seeds.append(
+                    HypothesisSeed(
+                        hypothesis_id="hypothesis-2", proposal_ref=second_ref
+                    )
+                )
+            return tuple(seeds)
 
     static = PartialStatic()
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
@@ -441,7 +463,9 @@ async def test_partial_resume_advances_unfinished_agent_before_retrying_static(
             current_store,
             child,
             bootstrap,
-            final_verdict="HOLD" if interruption == "hold_before_chaining" else "FALSE",
+            final_verdict="HOLD"
+            if interruption in {"hold_before_chaining", "unregistered_chain_child"}
+            else "FALSE",
         ),
         id_factory=iter(("analysis-partial-pending-agent", "workspace-1")).__next__,
     )
@@ -482,6 +506,39 @@ async def test_partial_resume_advances_unfinished_agent_before_retrying_static(
         )
         assert store.get(child, SimpleStage.PRIMITIVE_ADMISSION_DONE) is None
         assert store.get(child, SimpleStage.CHAINING_DONE) is None
+    elif interruption == "unregistered_chain_child":
+        prior_agent = store.require(child, SimpleStage.CHAINING_DONE)
+        chained_ref = SimpleArtifactRepository(tmp_path, child).put_json(
+            {
+                "kind": "simple_chaining_result",
+                "analysis_id": child.analysis_id,
+                "source_hypothesis_id": child.hypothesis_id,
+                "status": "MATERIAL_CHILD",
+                "considered_primitive_refs": [],
+                "children": [
+                    {
+                        "upstream_primitive_hash": "a" * 64,
+                        "downstream_primitive_hash": "b" * 64,
+                        "title": "compound finding",
+                        "vulnerability_type": "compound",
+                        "summary": "A second primitive extends the first",
+                        "rationale": "Matching capabilities",
+                        "code_locations": ["app.py:1"],
+                        "parent_hypothesis_ids": ["hypothesis-1", "hypothesis-2"],
+                        "parent_primitive_refs": [],
+                    }
+                ],
+            }
+        )
+        store.save_checkpoint(
+            prior_agent.model_copy(update={"output_refs": (chained_ref,)})
+        )
+        assert store.require_analysis_run(
+            first.identity.analysis_id
+        ).hypothesis_ids == (
+            "hypothesis-1",
+            "hypothesis-2",
+        )
     else:
         prior_agent = store.require(child, SimpleStage.PRO_CON_DONE)
         store.replace_from(
@@ -498,10 +555,21 @@ async def test_partial_resume_advances_unfinished_agent_before_retrying_static(
 
     assert static.calls == 1
     assert resumed.status == "PARTIAL", resumed.error_code
-    replayed = store.require(child, prior_agent.stage)
-    assert replayed.status is StageStatus.SUCCEEDED
-    assert replayed.stage_version == prior_agent.stage_version
-    assert replayed.attempt_id != prior_agent.attempt_id
+    if interruption == "unregistered_chain_child":
+        run = store.require_analysis_run(first.identity.analysis_id)
+        assert len(run.hypothesis_ids) == 3
+        chained_child = child.model_copy(
+            update={"hypothesis_id": run.hypothesis_ids[2]}
+        )
+        assert (
+            store.require(chained_child, SimpleStage.VERIFICATION_FINAL_DONE).status
+            is StageStatus.SUCCEEDED
+        )
+    else:
+        replayed = store.require(child, prior_agent.stage)
+        assert replayed.status is StageStatus.SUCCEEDED
+        assert replayed.stage_version == prior_agent.stage_version
+        assert replayed.attempt_id != prior_agent.attempt_id
     assert store.require(first.identity, SimpleStage.STATIC_DONE) == static_checkpoint
     if interruption == "hold_before_chaining":
         assert store.require(child, SimpleStage.VERIFICATION_FINAL_DONE) == final
