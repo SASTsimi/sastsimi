@@ -2718,13 +2718,13 @@ class DirectStaticBootstrap:
                 recorded_raw = completion.read_bytes()
                 if len(recorded_raw) <= 4096:
                     recorded = json.loads(recorded_raw)
-                    if isinstance(recorded, dict) and recorded.get(
-                        "fingerprint"
-                    ) == cache_fingerprint:
+                    if (
+                        isinstance(recorded, dict)
+                        and recorded.get("fingerprint") == cache_fingerprint
+                    ):
                         name = recorded.get("database")
                         if isinstance(name, str) and (
-                            name == "database"
-                            or re.fullmatch(r"db-[0-9a-f]{12}", name)
+                            name == "database" or re.fullmatch(r"db-[0-9a-f]{12}", name)
                         ):
                             candidate = root / name
                             if not candidate.is_symlink():

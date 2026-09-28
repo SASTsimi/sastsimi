@@ -2312,7 +2312,8 @@ async def test_blocked_hypothesis_does_not_stop_independent_sibling(
 
 @pytest.mark.parametrize("invalid_tail", [False, True])
 def test_chaining_child_is_added_once_to_durable_analysis_queue(
-    tmp_path: Path, invalid_tail: bool,
+    tmp_path: Path,
+    invalid_tail: bool,
 ) -> None:
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
     application = SimpleAnalysisApplication(
