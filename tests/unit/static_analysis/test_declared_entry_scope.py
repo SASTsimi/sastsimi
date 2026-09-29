@@ -1,9 +1,12 @@
 from pathlib import Path
 
-from sastsimi.static_analysis.file_scope import build_static_file_scope
+from sastsimi.static_analysis.file_scope import (
+    StaticFileScope,
+    build_static_file_scope,
+)
 
 
-def _scope(root: Path, files: dict[str, str]):
+def _scope(root: Path, files: dict[str, str]) -> StaticFileScope:
     for name, contents in files.items():
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)

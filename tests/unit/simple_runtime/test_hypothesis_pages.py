@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict, cast
 
 import pytest
+from pydantic import JsonValue
 
 from sastsimi.simple_runtime.application import StaticBootstrapResult
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
@@ -16,7 +17,7 @@ from sastsimi.simple_runtime.provider import SimpleLLMCallResult
 
 class _Client:
     def __init__(self, hypotheses: list[dict[str, Any]] | None = None) -> None:
-        self.hypotheses = hypotheses or []
+        self.hypotheses = cast(list[JsonValue], hypotheses or [])
         self.prompts: list[bytes] = []
         self.agent_names: list[str] = []
 
@@ -36,6 +37,17 @@ class _Client:
             prompt_digest="a" * 64,
             output_digest="b" * 64,
         )
+
+
+class _PageSegment(TypedDict):
+    path: str
+    code: str
+    start_line: int
+    end_line: int
+
+
+class _Page(TypedDict):
+    segments: list[_PageSegment]
 
 
 def _setup(
@@ -79,11 +91,11 @@ def _setup(
     return bootstrap, identity, static, artifacts
 
 
-def _page(prompt: bytes) -> dict[str, Any]:
+def _page(prompt: bytes) -> _Page:
     raw = prompt.split(b"<UNTRUSTED_EXACT_INPUTS>\n", 1)[1].split(
         b"\n</UNTRUSTED_EXACT_INPUTS>", 1
     )[0]
-    return json.loads(raw)
+    return cast(_Page, json.loads(raw))
 
 
 @pytest.mark.asyncio

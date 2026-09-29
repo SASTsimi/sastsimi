@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -62,9 +63,15 @@ def test_raw_pages_cover_every_result_without_aggregate_limit(tmp_path: Path) ->
     assert sum(len(page.rows) for page in pages) == 600
     assert pages[0].start_offset == 0
     assert pages[-1].end_offset == 600
-    assert [row["start"]["line"] for page in pages for row in page.rows] == list(
-        range(1, 601)
-    )
+    lines = []
+    for page in pages:
+        for row in page.rows:
+            start = row["start"]
+            assert isinstance(start, dict)
+            line = start["line"]
+            assert isinstance(line, int)
+            lines.append(line)
+    assert lines == list(range(1, 601))
 
     resumed = list(
         iter_raw_candidate_pages(
@@ -428,7 +435,9 @@ def test_budget_failure_reopens_only_with_usage_headroom(tmp_path: Path) -> None
         )
         == 0
     )
-    assert store.get(checkpoint.identity, checkpoint.stage).status is StageStatus.FAILED
+    failed = store.get(checkpoint.identity, checkpoint.stage)
+    assert failed is not None
+    assert failed.status is StageStatus.FAILED
     assert (
         store.reopen_budget_failures(
             identity.analysis_id,
@@ -438,9 +447,9 @@ def test_budget_failure_reopens_only_with_usage_headroom(tmp_path: Path) -> None
         )
         == 1
     )
-    assert (
-        store.get(checkpoint.identity, checkpoint.stage).status is StageStatus.PENDING
-    )
+    pending = store.get(checkpoint.identity, checkpoint.stage)
+    assert pending is not None
+    assert pending.status is StageStatus.PENDING
 
 
 def test_hypothesis_chain_metadata_survives_reopen(tmp_path: Path) -> None:
@@ -607,7 +616,13 @@ def test_incomplete_hypothesis_page_uses_terminal_checkpoint_evidence(
     for hypothesis_id in ("H-001", "H-002", "H-003", "H-004"):
         store.upsert_hypothesis(identity, hypothesis_id)
 
-    def save_terminal(hypothesis_id: str, stage: SimpleStage, **fields: object) -> None:
+    def save_terminal(
+        hypothesis_id: str,
+        stage: SimpleStage,
+        *,
+        verdict: Literal["TRUE", "FALSE", "HOLD"] | None = None,
+        gate_decision: Literal["ACCEPT", "REVISE", "REJECT"] | None = None,
+    ) -> None:
         store.save_checkpoint(
             StageCheckpoint(
                 identity=identity.model_copy(update={"hypothesis_id": hypothesis_id}),
@@ -616,7 +631,8 @@ def test_incomplete_hypothesis_page_uses_terminal_checkpoint_evidence(
                 status=StageStatus.SUCCEEDED,
                 input_refs=(),
                 input_hash=input_reference_hash(()),
-                **fields,
+                verdict=verdict,
+                gate_decision=gate_decision,
             )
         )
 
@@ -672,13 +688,14 @@ def test_codeql_percent_encoded_uri_is_decoded_and_scoped(tmp_path: Path) -> Non
     identity = _identity()
     artifacts = _artifacts(tmp_path, identity)
     ref = artifacts.put_json({"runs": [{"results": []}]})
+    artifact_location = {"uri": "pkg/space%20name.py"}
     row = {
         "ruleId": "py/insecure",
         "message": {"text": "unsafe input"},
         "locations": [
             {
                 "physicalLocation": {
-                    "artifactLocation": {"uri": "pkg/space%20name.py"},
+                    "artifactLocation": artifact_location,
                     "region": {"startLine": 3},
                 }
             }
@@ -693,15 +710,13 @@ def test_codeql_percent_encoded_uri_is_decoded_and_scoped(tmp_path: Path) -> Non
     target = workspace / "pkg" / "space name.py"
     target.parent.mkdir(parents=True)
     target.write_text("pass", encoding="utf-8")
-    row["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] = target.as_uri()
+    artifact_location["uri"] = target.as_uri()
     scoped = normalize_candidate_page(
         identity, "scope-1", "codeql", ref, (row,), 0, workspace=workspace
     )[0]
     assert scoped.path == "pkg/space name.py"
 
-    row["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] = (
-        "pkg/%2e%2e/secrets.py"
-    )
+    artifact_location["uri"] = "pkg/%2e%2e/secrets.py"
     with pytest.raises(ValueError, match="CANDIDATE_PATH_UNSAFE"):
         normalize_candidate_page(identity, "scope-1", "codeql", ref, (row,), 0)
 
@@ -816,7 +831,9 @@ def test_opengrep_hint_keeps_distinct_match_evidence(
     identity = _identity()
     artifacts = _artifacts(tmp_path, identity)
     first = _hit(0, semantic_key="same-call")
-    first["extra"][match_field] = first_value
+    extra = first["extra"]
+    assert isinstance(extra, dict)
+    extra[match_field] = first_value
     second = json.loads(json.dumps(first))
     second["extra"][match_field] = second_value
     duplicate = json.loads(json.dumps(first))
@@ -850,7 +867,9 @@ def test_entry_point_keeps_distinct_match_evidence_and_merges_exact_duplicates(
     identity = _identity()
     artifacts = _artifacts(tmp_path, identity)
     first = _hit(0, semantic_key="same-source")
-    first["extra"].update(
+    extra = first["extra"]
+    assert isinstance(extra, dict)
+    extra.update(
         {
             "metadata": {"candidate_kind": "ENTRY_POINT"},
             "metavars": {"$VALUE": {"abstract_content": "request.args['a']"}},
@@ -1282,10 +1301,17 @@ def test_codeql_sarif_splits_each_thread_flow_and_deduplicates_exact_trace(
     assert all(item.kind == "FLOW" for item in candidates)
     assert all(item.origins[0].artifact_ref == ref for item in candidates)
     assert all(item.origins[0].result_index == 0 for item in candidates)
-    assert all(len(item.flow_trace["codeFlows"]) == 1 for item in candidates)
-    assert all(
-        len(item.flow_trace["codeFlows"][0]["threadFlows"]) == 1 for item in candidates
-    )
+    for item in candidates:
+        trace = item.flow_trace
+        assert trace is not None
+        code_flows = trace["codeFlows"]
+        assert isinstance(code_flows, list)
+        assert len(code_flows) == 1
+        code_flow = code_flows[0]
+        assert isinstance(code_flow, dict)
+        thread_flows = code_flow["threadFlows"]
+        assert isinstance(thread_flows, list)
+        assert len(thread_flows) == 1
 
 
 def test_candidate_page_commits_two_flows_from_one_raw_sarif_row(

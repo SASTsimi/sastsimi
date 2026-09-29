@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,7 +28,7 @@ class _Candidate:
     end_line: int = 1
     summary: str = "untrusted input"
     evidence_excerpt: str = "request.args"
-    flow_trace: tuple[str, ...] = ()
+    flow_trace: tuple[str, ...] | dict[str, str | int] = ()
     origins: tuple[_Origin, ...] = (_Origin(),)
     evidence_ref: Any = None
     decision: str = "PENDING"
@@ -130,7 +131,12 @@ class _Client:
         return None
 
     async def call(
-        self, *, prompt: bytes, output_schema: object, timeout_ms: int, agent_name: str
+        self,
+        *,
+        prompt: bytes,
+        output_schema: Mapping[str, Any],
+        timeout_ms: int,
+        agent_name: str = "agent",
     ) -> SimpleLLMCallResult | StageFailure:
         del output_schema, timeout_ms
         assert agent_name == "discovery"

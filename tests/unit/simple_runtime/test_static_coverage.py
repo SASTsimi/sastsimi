@@ -703,7 +703,7 @@ def test_bounded_candidate_preview_keeps_rules_and_cross_engine_origin(
         "path": "app.ts",
         "start": {"line": 1, "col": 1},
     }
-    js_hits = [
+    js_hits: list[object] = [
         {
             "check_id": "rule.js",
             "path": "app.ts",

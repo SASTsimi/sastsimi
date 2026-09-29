@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.application import (
     HypothesisSeed,
     SimpleAnalysisApplication,
@@ -23,7 +26,7 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
-from sastsimi.simple_runtime.runner import RunOutcome
+from sastsimi.simple_runtime.runner import RunOutcome, SimpleRuntimeRunner
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
@@ -61,6 +64,11 @@ class _PagedHypotheses:
     def __init__(self) -> None:
         self.cursors: list[str | None] = []
 
+    async def propose(
+        self, _identity: CheckpointIdentity, _static: StaticBootstrapResult
+    ) -> tuple[HypothesisSeed, ...]:
+        raise AssertionError("paged exploration must use propose_page")
+
     async def propose_page(
         self,
         _identity: CheckpointIdentity,
@@ -93,9 +101,9 @@ class _Client:
         self,
         *,
         prompt: bytes,
-        output_schema: object,
+        output_schema: Mapping[str, Any],
         timeout_ms: int,
-        agent_name: str,
+        agent_name: str = "agent",
     ) -> SimpleLLMCallResult:
         del output_schema, timeout_ms
         assert agent_name == "discovery"
@@ -274,7 +282,7 @@ async def test_corrupt_free_exploration_completion_blocks_resume(
     )
     original = store.survey_progress
 
-    def corrupted(analysis_id: str, bundle_hash: str):
+    def corrupted(analysis_id: str, bundle_hash: str) -> dict[str, StoredDataRef]:
         progress = original(analysis_id, bundle_hash)
         progress["__candidate_free_done__"] = wrong_ref
         return progress
@@ -314,7 +322,7 @@ async def test_corrupt_middle_free_page_blocks_completed_resume(
     artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
     original = store.survey_progress
 
-    def corrupted(analysis_id: str, bundle_hash: str):
+    def corrupted(analysis_id: str, bundle_hash: str) -> dict[str, StoredDataRef]:
         progress = original(analysis_id, bundle_hash)
         key = "__candidate_free_page_00000001__"
         original_ref = progress[key]
@@ -442,9 +450,9 @@ class _ManyHypotheses:
         )
 
 
-class _SuccessRunner:
+class _SuccessRunner(SimpleRuntimeRunner):
     def __init__(self, store: SimpleCheckpointStore) -> None:
-        self.store = store
+        super().__init__(store, {})
 
     async def resume_hypothesis(self, identity: CheckpointIdentity) -> RunOutcome:
         self.store.save_checkpoint(
@@ -482,6 +490,7 @@ async def test_new_pipeline_persists_excluded_candidate_and_finishes_without_fin
     run = store.require_analysis_run("analysis-1")
     assert run.candidate_pipeline_version == 1
     assert run.candidate_terminal is not None
+    assert run.static_bundle_ref is not None
     assert run.candidate_terminal.status == "COMPLETE"
     assert run.candidate_terminal.bundle_hash == run.static_bundle_ref.content_hash
     assert run.candidate_terminal.scope_fingerprint == "scope-1"
@@ -569,6 +578,11 @@ async def test_unmeasured_usage_pauses_each_candidate_stage_on_resume(
     elif stage == "free":
 
         class BlockedFreeHypotheses:
+            async def propose(
+                self, _identity: CheckpointIdentity, _static: StaticBootstrapResult
+            ) -> StageFailure:
+                return failure
+
             async def propose_page(
                 self, *_args: object, **_kwargs: object
             ) -> StageFailure:
@@ -577,7 +591,7 @@ async def test_unmeasured_usage_pauses_each_candidate_stage_on_resume(
         app._hypotheses = BlockedFreeHypotheses()
     else:
 
-        class BlockedRunner:
+        class BlockedRunner(SimpleRuntimeRunner):
             async def resume_hypothesis(
                 self, _identity: CheckpointIdentity
             ) -> RunOutcome:
@@ -588,7 +602,7 @@ async def test_unmeasured_usage_pauses_each_candidate_stage_on_resume(
                 )
 
         app._candidate_hypotheses = _ManyHypotheses(tmp_path / "data")
-        app._runner_factory = lambda *_: BlockedRunner()
+        app._runner_factory = lambda *_: BlockedRunner(store, {})
 
     request = SimpleAnalysisRequest(
         data_dir=tmp_path / "data",
@@ -721,7 +735,9 @@ async def test_partial_resume_retries_static_gaps_after_deep_work_is_terminal(
     second = await app.resume("analysis-1")
 
     assert first.status == second.status == "PARTIAL"
-    assert app._static.calls == 2
+    static = app._static
+    assert isinstance(static, _Static)
+    assert static.calls == 2
     assert store.require_analysis_run("analysis-1").candidate_pipeline_version == 1
 
 
@@ -740,7 +756,9 @@ async def test_static_retry_failure_clears_previous_partial_terminal_marker(
     assert store.require_analysis_run("analysis-1").candidate_terminal is not None
 
     class FailedStaticRetry:
-        async def run(self, _request: object, _identity: object) -> None:
+        async def run(
+            self, _request: SimpleAnalysisRequest, _identity: CheckpointIdentity
+        ) -> StaticBootstrapResult:
             raise RuntimeError("STATIC_RECHECK_FAILED")
 
     app._static = FailedStaticRetry()

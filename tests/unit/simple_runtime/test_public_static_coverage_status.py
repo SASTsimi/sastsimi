@@ -182,21 +182,29 @@ def test_status_projects_bounded_distinct_static_coverage_categories(
         25,
     )
     assert status["static_coverage_gap_count"] == 23
-    assert status["static_coverage_gap_preview"][0] == {
+    gap_preview = status["static_coverage_gap_preview"]
+    assert isinstance(gap_preview, list)
+    assert gap_preview[0] == {
         "path": "pkg/file_0.py",
         "rule_id": "rule.eval",
         "reason": "scan_gap",
     }
-    assert len(status["static_coverage_gap_preview"]) == 20
+    assert len(gap_preview) == 20
     assert status["static_coverage_gap_truncated_count"] == 3
     assert status["static_coverage_unavailable_path_count"] == 21
-    assert len(status["static_coverage_unavailable_path_preview"]) == 20
+    unavailable_preview = status["static_coverage_unavailable_path_preview"]
+    assert isinstance(unavailable_preview, list)
+    assert len(unavailable_preview) == 20
     assert status["static_coverage_unavailable_path_truncated_count"] == 1
     assert status["static_coverage_unsupported_count"] == 22
-    assert len(status["static_coverage_unsupported_preview"]) == 20
+    unsupported_preview = status["static_coverage_unsupported_preview"]
+    assert isinstance(unsupported_preview, list)
+    assert len(unsupported_preview) == 20
     assert status["static_coverage_unsupported_truncated_count"] == 2
     assert status["static_excluded_test_file_count"] == 24
-    assert status["static_excluded_test_file_preview"][0] == {
+    excluded_preview = status["static_excluded_test_file_preview"]
+    assert isinstance(excluded_preview, list)
+    assert excluded_preview[0] == {
         "path": "tests/test_0.py",
         "reason": "test-directory:tests",
     }

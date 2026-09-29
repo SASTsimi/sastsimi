@@ -5789,6 +5789,7 @@ async def test_opengrep_total_failure_requires_an_independent_verified_engine(
     else:
         result = await bootstrap.run(_request(profile), identity)
         assert result.static_disposition == "PARTIAL"
+        assert result.static_coverage_ref is not None
         coverage_ref = result.static_coverage_ref
         bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
         assert bundle["codeql_executed"] is True

@@ -355,8 +355,8 @@ def test_opengrep_unavailable_static_evidence_requires_independent_proof(
     application = SimpleAnalysisApplication(
         data_dir=tmp_path,
         store=store,
-        static_bootstrap=None,
-        hypothesis_bootstrap=None,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
         runner_factory=_runner,
     )
     static = StaticBootstrapResult(
@@ -425,8 +425,8 @@ def test_opengrep_unavailable_accepts_only_durable_codeql_proof(
     application = SimpleAnalysisApplication(
         data_dir=tmp_path,
         store=store,
-        static_bootstrap=None,
-        hypothesis_bootstrap=None,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
         runner_factory=_runner,
     )
     static = StaticBootstrapResult(

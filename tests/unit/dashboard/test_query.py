@@ -180,7 +180,9 @@ def test_dashboard_marks_unleased_candidate_run_interrupted_without_rewriting_it
     assert query.list_analyses()[0].status == "PAUSED"
     with analysis_run_lease(tmp_path, "analysis-a"):
         assert query.get_analysis("A-001").status == "RUNNING"
-    assert store.get(identity, SimpleStage.STATIC_DONE).status is StageStatus.RUNNING
+    checkpoint = store.get(identity, SimpleStage.STATIC_DONE)
+    assert checkpoint is not None
+    assert checkpoint.status is StageStatus.RUNNING
 
 
 def test_dashboard_complete_requires_matching_candidate_terminal_marker(
