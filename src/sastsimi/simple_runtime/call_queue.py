@@ -284,6 +284,12 @@ class RunLimitedClient:
                     else result
                 )
                 self._record_attempt(agent_name, attempt, started, failure.code, None)
+                if failure.retryable and attempt <= self._max_retries:
+                    # A billable failure without usage must block a retry even when
+                    # the call deadline expires before the backoff can begin.
+                    budget_failure = self.budget_failure()
+                    if budget_failure is not None:
+                        return budget_failure
             last_failure = failure
             if not failure.retryable or attempt > self._max_retries:
                 return failure
