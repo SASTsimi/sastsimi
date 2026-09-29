@@ -729,7 +729,16 @@ artifact. Do not reinterpret an execution error as DISPROVED.
         if isinstance(interpreted, StageFailure):
             _raise_provider_failure(
                 interpreted.model_copy(
-                    update={"evidence_refs": (execution_ref, stdout_ref, stderr_ref)}
+                    update={
+                        "evidence_refs": _unique_refs(
+                            (
+                                execution_ref,
+                                stdout_ref,
+                                stderr_ref,
+                                *interpreted.evidence_refs,
+                            )
+                        )
+                    }
                 )
             )
         interpretation_ref = self._artifacts.put_json(

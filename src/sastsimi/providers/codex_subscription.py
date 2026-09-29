@@ -78,6 +78,21 @@ _AUTH_FAILURE_MARKERS = (
 )
 
 
+def _invalid_process_output(
+    category: str,
+    source: bytes,
+    source_name: Literal["event_stream", "final_message"],
+) -> CodexProcessResult:
+    return CodexProcessResult(
+        "INVALID_OUTPUT",
+        None,
+        None,
+        invalid_output_category=category,
+        invalid_output_sha256=hashlib.sha256(source).hexdigest(),
+        invalid_output_source=source_name,
+    )
+
+
 @asynccontextmanager
 async def _codex_process_lock() -> AsyncIterator[None]:
     """Serialize subscription processes across every worker event loop."""
@@ -379,19 +394,34 @@ class CodexCliProcessRunner:
                     return CodexProcessResult(
                         _classify_child_failure(execution), None, None
                     )
-                session_id, input_tokens, output_tokens = _validated_completion(
-                    execution.stdout, require_usage=True
-                )
+                try:
+                    session_id, input_tokens, output_tokens = _validated_completion(
+                        execution.stdout, require_usage=True
+                    )
+                except ProviderInvalidOutputError:
+                    return _invalid_process_output(
+                        "event_stream_invalid",
+                        execution.stdout,
+                        "event_stream",
+                    )
                 try:
                     if not output_path.is_file():
-                        raise ProviderInvalidOutputError
+                        return _invalid_process_output(
+                            "final_message_missing", execution.stdout, "event_stream"
+                        )
                     if output_path.stat().st_size > _MAX_FINAL_MESSAGE_BYTES:
-                        raise ProviderInvalidOutputError
+                        return _invalid_process_output(
+                            "final_message_oversized", execution.stdout, "event_stream"
+                        )
                     final_message = output_path.read_bytes()
-                except OSError as error:
-                    raise ProviderInvalidOutputError from error
+                except OSError:
+                    return _invalid_process_output(
+                        "final_message_unreadable", execution.stdout, "event_stream"
+                    )
                 if not final_message:
-                    raise ProviderInvalidOutputError
+                    return _invalid_process_output(
+                        "final_message_empty", final_message, "final_message"
+                    )
                 return CodexProcessResult(
                     "SUCCEEDED",
                     final_message,

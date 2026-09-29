@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sqlite3
 from collections.abc import Awaitable, Callable, Mapping
@@ -11,11 +12,14 @@ import pytest
 
 from sastsimi.composition.simple_runtime_composition import SimpleClientFactory
 from sastsimi.config.user_config import SimpleExecutionProfile
+from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.providers.base import CodexProcessRequest, CodexProcessResult
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.call_queue import RunLimitedClient
 from sastsimi.simple_runtime.cursor_provider import CursorProvider
 from sastsimi.simple_runtime.models import CheckpointIdentity, StageFailure
 from sastsimi.simple_runtime.provider import (
+    SimpleCodexClient,
     SimpleLLMCallResult,
     SimpleLLMClient,
     SimpleOpenAIClient,
@@ -47,6 +51,16 @@ class _Client:
             return self.outcomes.pop(0)
         finally:
             self.active -= 1
+
+
+class _CodexRunner:
+    def __init__(self, outcomes: list[CodexProcessResult]) -> None:
+        self.outcomes = outcomes
+        self.calls = 0
+
+    async def execute(self, _request: CodexProcessRequest) -> CodexProcessResult:
+        self.calls += 1
+        return self.outcomes.pop(0)
 
 
 def _success() -> SimpleLLMCallResult:
@@ -87,6 +101,252 @@ def _wrapper(
         max_elapsed_seconds=3600,
         sleep=sleep,
     )
+
+
+@pytest.mark.asyncio
+async def test_codex_invalid_output_retries_and_attempts_link_diagnostics(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-queue",
+        workspace_id="workspace-queue",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    runner = _CodexRunner(
+        [
+            CodexProcessResult("SUCCEEDED", b'{"answer":"api_key=secret-one"', None),
+            CodexProcessResult("INVALID_OUTPUT", None, None),
+            CodexProcessResult("SUCCEEDED", b'{"ok":true}', None, 5, 2),
+        ]
+    )
+    inner = SimpleCodexClient(
+        runner=runner,
+        provider_profile_ref=artifacts.put_json({"kind": "provider_profile"}),
+        model="test-model",
+        artifacts=artifacts,
+    )
+
+    async def no_wait(_delay: float) -> None:
+        return None
+
+    client = _wrapper(
+        tmp_path,
+        inner,
+        asyncio.Semaphore(1),
+        max_tokens="unlimited",
+        sleep=no_wait,
+    )
+    with caplog.at_level(logging.INFO):
+        result = await client.call(
+            prompt=b"repo code and api_key=prompt-secret",
+            output_schema={},
+            timeout_ms=5000,
+        )
+
+    assert isinstance(result, SimpleLLMCallResult)
+    assert runner.calls == 3
+    with sqlite3.connect(artifacts.paths.database) as connection:
+        attempts = connection.execute(
+            "SELECT status, artifact_ref_json FROM simple_llm_attempts "
+            "WHERE analysis_id = ? ORDER BY attempt_number",
+            (identity.analysis_id,),
+        ).fetchall()
+    assert [status for status, _ in attempts] == [
+        "INVALID_OUTPUT",
+        "INVALID_OUTPUT",
+        "SUCCEEDED",
+    ]
+    for index, (_status, ref_json) in enumerate(attempts[:2]):
+        metadata = json.loads(
+            artifacts.read(StoredDataRef.model_validate_json(ref_json))
+        )
+        assert len(metadata["evidence_refs"]) == 2
+        diagnostic_ref = StoredDataRef.model_validate(metadata["evidence_refs"][-1])
+        diagnostic = json.loads(artifacts.read(diagnostic_ref))
+        assert diagnostic["kind"] == "simple_llm_invalid_output"
+        assert diagnostic["category"] == (
+            "json_malformed" if index == 0 else "process_invalid_output"
+        )
+    assert "secret-one" not in caplog.text
+    assert "prompt-secret" not in caplog.text
+    assert "repo code" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_retries", [0, 2, 5])
+async def test_codex_invalid_output_exhausts_configured_retry_limit(
+    tmp_path: Path,
+    max_retries: int,
+) -> None:
+    artifacts = SimpleArtifactRepository(
+        tmp_path,
+        CheckpointIdentity(
+            analysis_id="analysis-queue",
+            workspace_id="workspace-queue",
+            commit_id="a" * 40,
+            hypothesis_id=None,
+        ),
+    )
+    runner = _CodexRunner(
+        [
+            CodexProcessResult("SUCCEEDED", b"{", None)
+            for _ in range(min(max_retries, 2) + 1)
+        ]
+    )
+    inner = SimpleCodexClient(
+        runner=runner,
+        provider_profile_ref=artifacts.put_json({"kind": "provider_profile"}),
+        model="test-model",
+        artifacts=artifacts,
+    )
+
+    async def no_wait(_delay: float) -> None:
+        return None
+
+    result = await _wrapper(
+        tmp_path,
+        inner,
+        asyncio.Semaphore(1),
+        sleep=no_wait,
+        max_tokens="unlimited",
+        max_retries=max_retries,
+    ).call(prompt=b"safe", output_schema={}, timeout_ms=5000)
+
+    assert isinstance(result, StageFailure)
+    assert result.code == "INVALID_OUTPUT"
+    assert not result.retryable
+    assert runner.calls == min(max_retries, 2) + 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout_ms,oversleep", [(300, False), (600, True)])
+async def test_invalid_output_is_terminal_when_deadline_prevents_retry(
+    tmp_path: Path,
+    timeout_ms: int,
+    oversleep: bool,
+) -> None:
+    artifacts = SimpleArtifactRepository(
+        tmp_path,
+        CheckpointIdentity(
+            analysis_id="analysis-queue",
+            workspace_id="workspace-queue",
+            commit_id="a" * 40,
+            hypothesis_id=None,
+        ),
+    )
+    diagnostic_ref = artifacts.put_json({"kind": "invalid_output_diagnostic"})
+    inner = _Client(
+        [
+            StageFailure(
+                code="INVALID_OUTPUT",
+                retryable=True,
+                safe_message="Invalid model output",
+                evidence_refs=(diagnostic_ref,),
+            )
+        ]
+    )
+
+    async def controlled_sleep(_delay: float) -> None:
+        if oversleep:
+            await asyncio.sleep(0.7)
+        else:
+            raise AssertionError("No backoff should fit before the deadline")
+
+    result = await _wrapper(
+        tmp_path,
+        inner,
+        asyncio.Semaphore(1),
+        sleep=controlled_sleep,
+        max_tokens="unlimited",
+    ).call(prompt=b"safe", output_schema={}, timeout_ms=timeout_ms)
+
+    assert isinstance(result, StageFailure)
+    assert result.code == "INVALID_OUTPUT"
+    assert result.retryable is False
+    assert result.evidence_refs == (diagnostic_ref,)
+    assert inner.calls == 1
+    with sqlite3.connect(artifacts.paths.database) as connection:
+        attempt = connection.execute(
+            "SELECT status, artifact_ref_json FROM simple_llm_attempts "
+            "WHERE analysis_id = ?",
+            (artifacts.identity.analysis_id,),
+        ).fetchone()
+    assert attempt is not None
+    status, ref_json = attempt
+    assert status == "INVALID_OUTPUT"
+    metadata = json.loads(artifacts.read(StoredDataRef.model_validate_json(ref_json)))
+    assert metadata["evidence_refs"] == [diagnostic_ref.model_dump(mode="json")]
+
+
+@pytest.mark.asyncio
+async def test_numeric_token_cap_stops_retry_when_invalid_usage_is_unknown(
+    tmp_path: Path,
+) -> None:
+    artifacts = SimpleArtifactRepository(
+        tmp_path,
+        CheckpointIdentity(
+            analysis_id="analysis-queue",
+            workspace_id="workspace-queue",
+            commit_id="a" * 40,
+            hypothesis_id=None,
+        ),
+    )
+    runner = _CodexRunner(
+        [
+            CodexProcessResult("SUCCEEDED", b"{", None),
+            CodexProcessResult("SUCCEEDED", b'{"ok":true}', None),
+        ]
+    )
+    inner = SimpleCodexClient(
+        runner=runner,
+        provider_profile_ref=artifacts.put_json({"kind": "provider_profile"}),
+        model="test-model",
+        artifacts=artifacts,
+    )
+
+    async def no_wait(_delay: float) -> None:
+        return None
+
+    result = await _wrapper(
+        tmp_path, inner, asyncio.Semaphore(1), sleep=no_wait, max_tokens=1000
+    ).call(prompt=b"safe", output_schema={}, timeout_ms=5000)
+
+    assert isinstance(result, StageFailure)
+    assert result.code == "LLM_TOKEN_USAGE_UNAVAILABLE"
+    assert runner.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["AUTH_REQUIRED", "CANCELLED"])
+async def test_codex_terminal_failure_is_not_retried(
+    tmp_path: Path, status: Literal["AUTH_REQUIRED", "CANCELLED"]
+) -> None:
+    artifacts = SimpleArtifactRepository(
+        tmp_path,
+        CheckpointIdentity(
+            analysis_id="analysis-queue",
+            workspace_id="workspace-queue",
+            commit_id="a" * 40,
+            hypothesis_id=None,
+        ),
+    )
+    runner = _CodexRunner([CodexProcessResult(status, None, None)])
+    inner = SimpleCodexClient(
+        runner=runner,
+        provider_profile_ref=artifacts.put_json({"kind": "provider_profile"}),
+        model="test-model",
+        artifacts=artifacts,
+    )
+
+    result = await _wrapper(
+        tmp_path, inner, asyncio.Semaphore(1), max_tokens="unlimited"
+    ).call(prompt=b"safe", output_schema={}, timeout_ms=5000)
+
+    assert isinstance(result, StageFailure)
+    assert not result.retryable
+    assert runner.calls == 1
 
 
 @pytest.mark.asyncio

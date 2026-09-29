@@ -543,6 +543,14 @@ async def test_execute_refuses_missing_or_invalid_completed_turn_usage(
     monkeypatch: pytest.MonkeyPatch, usage: object
 ) -> None:
     runner = approved_runner()
+    read_bytes = Path.read_bytes
+
+    def read_without_final_message(path: Path) -> bytes:
+        if path.name == "last-message.json":
+            raise AssertionError("invalid event stream read final message")
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_without_final_message)
 
     async def completed_turn(argv: tuple[str, ...], **_kwargs: object) -> _ChildResult:
         if argv[-1] == "--version":
@@ -550,7 +558,7 @@ async def test_execute_refuses_missing_or_invalid_completed_turn_usage(
         if argv[1:3] == ("login", "status"):
             return _ChildResult(0, b"Logged in using ChatGPT\n", b"")
         output_path = Path(argv[argv.index("--output-last-message") + 1])
-        output_path.write_bytes(b'{"ok":true}')
+        output_path.write_bytes(b'{"api_key":"do-not-store","ok":true}')
         return _ChildResult(
             0,
             b'{"type":"thread.started","thread_id":"thread-1"}\n'
@@ -564,6 +572,48 @@ async def test_execute_refuses_missing_or_invalid_completed_turn_usage(
     result = await runner.execute(request())
 
     assert result.status == "INVALID_OUTPUT"
+    assert result.invalid_output_category == "event_stream_invalid"
+    assert result.invalid_output_sha256 is not None
+    assert len(result.invalid_output_sha256) == 64
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("final_message", "category"),
+    [(None, "final_message_missing"), (b"", "final_message_empty")],
+)
+async def test_execute_explains_missing_or_empty_final_message(
+    monkeypatch: pytest.MonkeyPatch,
+    final_message: bytes | None,
+    category: str,
+) -> None:
+    runner = approved_runner()
+
+    async def completed_turn(argv: tuple[str, ...], **_kwargs: object) -> _ChildResult:
+        if argv[-1] == "--version":
+            return _ChildResult(0, b"codex-cli 0.152.1\n", b"")
+        if argv[1:3] == ("login", "status"):
+            return _ChildResult(0, b"Logged in using ChatGPT\n", b"")
+        output_path = Path(argv[argv.index("--output-last-message") + 1])
+        if final_message is not None:
+            output_path.write_bytes(final_message)
+        return _ChildResult(
+            0,
+            b'{"type":"thread.started","thread_id":"thread-1"}\n'
+            b'{"type":"turn.started"}\n'
+            b'{"type":"turn.completed","usage":{"input_tokens":12,'
+            b'"output_tokens":5}}\n',
+            b"",
+        )
+
+    monkeypatch.setattr(runner, "_run_child", completed_turn)
+    result = await runner.execute(request())
+
+    assert result.status == "INVALID_OUTPUT"
+    assert result.invalid_output_category == category
+    assert result.invalid_output_sha256 is not None
+    assert len(result.invalid_output_sha256) == 64
+    assert result.final_message is None
 
 
 def test_model_cannot_be_reinterpreted_as_a_cli_option() -> None:

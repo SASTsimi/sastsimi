@@ -250,17 +250,18 @@ async def resume(
     provider_ref = reference(binding.provider)
     if not isinstance(provider_ref, StoredDataRef):
         raise ValueError("SIMPLE_RUNTIME_PROVIDER_REFERENCE_INVALID")
-    client = SimpleCodexClient(
-        runner=CodexCliProcessRunner(binding=binding.binding),
-        provider_profile_ref=provider_ref,
-        model=profile.codex.model,
-    )
     docker = build_simple_docker_adapter(profile, first)
     containers = SimpleLocalContainerFactory(docker=docker, profile=profile)
 
     results: list[dict[str, object]] = []
     for identity in runnable:
         artifacts = SimpleArtifactRepository(data_dir, identity)
+        client = SimpleCodexClient(
+            runner=CodexCliProcessRunner(binding=binding.binding),
+            provider_profile_ref=provider_ref,
+            model=profile.codex.model,
+            artifacts=artifacts,
+        )
         runner = SimpleRuntimeRunner(
             store,
             build_stage_handlers(
@@ -274,6 +275,7 @@ async def resume(
                 repository_url=repository_url,
             ),
             policy_snapshot_ref=policy_snapshot_ref,
+            codex_invalid_output_resume=True,
         )
         outcome = await runner.resume_hypothesis(identity)
         final = store.get(identity, outcome.current_stage)

@@ -68,6 +68,9 @@ class CodexProcessResult:
     provider_session_id: str | None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    invalid_output_category: str | None = None
+    invalid_output_sha256: str | None = None
+    invalid_output_source: str | None = None
 
 
 @dataclass(frozen=True)
