@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -10,12 +11,14 @@ import pytest
 
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.interfaces.cli import simple_evaluation
+from sastsimi.providers.base import CodexProcessResult
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleAnalysisRun,
     SimpleStage,
     StageCheckpoint,
+    StageFailure,
     StageStatus,
     input_reference_hash,
 )
@@ -188,7 +191,7 @@ async def test_simple_resume_passes_saved_policy_context_to_runner(
         lambda **_kwargs: object(),
     )
 
-    received: list[tuple[object, object, object]] = []
+    received: list[tuple[object, object, object, bool]] = []
 
     class _Runner:
         def __init__(
@@ -197,6 +200,7 @@ async def test_simple_resume_passes_saved_policy_context_to_runner(
             handlers: dict[SimpleStage, Any],
             *,
             policy_snapshot_ref: StoredDataRef | None = None,
+            codex_invalid_output_resume: bool = False,
         ) -> None:
             scope = handlers[SimpleStage.SCOPE_GATE_DONE]
             received.append(
@@ -204,6 +208,7 @@ async def test_simple_resume_passes_saved_policy_context_to_runner(
                     policy_snapshot_ref,
                     scope._policy_snapshot_ref,
                     scope._repository_url,
+                    codex_invalid_output_resume,
                 )
             )
 
@@ -221,4 +226,121 @@ async def test_simple_resume_passes_saved_policy_context_to_runner(
         profile_path=tmp_path / "profile.toml",
     )
 
-    assert received == [(policy_ref, policy_ref, "https://github.com/acme/app")]
+    assert received == [(policy_ref, policy_ref, "https://github.com/acme/app", True)]
+
+
+@pytest.mark.asyncio
+async def test_simple_resume_writes_invalid_output_diagnostics_per_hypothesis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identities = tuple(
+        CheckpointIdentity(
+            analysis_id="analysis-1",
+            workspace_id=f"workspace-{number}",
+            commit_id=str(number) * 40,
+            hypothesis_id=f"hypothesis-{number}",
+        )
+        for number in (1, 2)
+    )
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    for identity in identities:
+        artifacts = SimpleArtifactRepository(tmp_path, identity)
+        store.save_checkpoint(
+            _checkpoint(
+                identity,
+                SimpleStage.POC_CANDIDATE_DONE,
+                recipe_ref=artifacts.put_json({"kind": "recipe"}),
+                image_digest="sha256:test",
+            )
+        )
+    provider_ref = SimpleArtifactRepository(tmp_path, identities[0]).put_json(
+        {"kind": "provider"}
+    )
+    monkeypatch.setattr(
+        simple_evaluation, "import_existing_analysis", lambda *_args: identities
+    )
+    monkeypatch.setattr(
+        simple_evaluation,
+        "load_local_evaluation_profile",
+        lambda _path: SimpleNamespace(codex=SimpleNamespace(model="test-model")),
+    )
+    monkeypatch.setattr(
+        simple_evaluation,
+        "build_local_codex_binding",
+        lambda **_kwargs: SimpleNamespace(provider=object(), binding=object()),
+    )
+    monkeypatch.setattr(simple_evaluation, "reference", lambda _provider: provider_ref)
+
+    class _CodexRunner:
+        async def execute(self, _request: object) -> CodexProcessResult:
+            return CodexProcessResult(
+                status="SUCCEEDED",
+                final_message=b"{invalid-json",
+                provider_session_id=None,
+            )
+
+    monkeypatch.setattr(
+        simple_evaluation, "CodexCliProcessRunner", lambda **_kwargs: _CodexRunner()
+    )
+    monkeypatch.setattr(
+        simple_evaluation, "build_simple_docker_adapter", lambda *_args: object()
+    )
+    monkeypatch.setattr(
+        simple_evaluation,
+        "SimpleLocalContainerFactory",
+        lambda **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        simple_evaluation,
+        "build_stage_handlers",
+        lambda **kwargs: {"client": kwargs["client"]},
+    )
+    failures: dict[str, StageFailure] = {}
+
+    class _Runner:
+        def __init__(
+            self,
+            _store: SimpleCheckpointStore,
+            handlers: dict[str, Any],
+            *,
+            policy_snapshot_ref: StoredDataRef | None = None,
+            codex_invalid_output_resume: bool = False,
+        ) -> None:
+            assert codex_invalid_output_resume
+            self.client = handlers["client"]
+
+        async def resume_hypothesis(self, identity: CheckpointIdentity) -> RunOutcome:
+            failure = await self.client.call(
+                prompt=b"safe request",
+                output_schema={"type": "object"},
+                timeout_ms=1_000,
+            )
+            assert isinstance(failure, StageFailure)
+            failures[identity.hypothesis_id or ""] = failure
+            return RunOutcome(
+                current_stage=SimpleStage.POC_CANDIDATE_DONE,
+                status=StageStatus.BLOCKED,
+                error_code=failure.code,
+            )
+
+    monkeypatch.setattr(simple_evaluation, "SimpleRuntimeRunner", _Runner)
+
+    result = await simple_evaluation.resume(
+        data_dir=tmp_path,
+        analysis_id="analysis-1",
+        profile_path=tmp_path / "profile.toml",
+    )
+
+    assert result["status"] == "BLOCKED"
+    assert len(failures) == 2
+    for identity in identities:
+        failure = failures[identity.hypothesis_id or ""]
+        assert failure.code == "INVALID_OUTPUT"
+        assert len(failure.evidence_refs) == 2
+        artifacts = SimpleArtifactRepository(tmp_path, identity)
+        for ref in failure.evidence_refs:
+            assert str(ref.workspace_id) == identity.workspace_id
+            assert str(ref.commit_id) == identity.commit_id
+            artifacts.read(ref)
+        diagnostic = json.loads(artifacts.read(failure.evidence_refs[1]))
+        assert diagnostic["kind"] == "simple_llm_invalid_output"

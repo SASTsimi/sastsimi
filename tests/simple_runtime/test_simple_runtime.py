@@ -29,6 +29,7 @@ from sastsimi.simple_runtime.recovery import (
 from sastsimi.simple_runtime.runner import (
     SimpleRuntimeRunner,
     StageBlocked,
+    StageFailed,
 )
 from sastsimi.simple_runtime.stages import internal_report_status
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
@@ -262,6 +263,284 @@ async def test_poc_execution_retry_starts_a_new_candidate_attempt(tmp_path) -> N
     assert _ref("candidate-old") in retried_candidate.input_refs
     assert _ref("execution-failure") in retried_candidate.input_refs
     assert outcome.current_stage is SimpleStage.REPORT_DONE
+
+
+@pytest.mark.asyncio
+async def test_resume_legacy_invalid_output_retries_only_failed_stage(tmp_path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "legacy-invalid" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.POC_CANDIDATE_DONE)
+    candidate = store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE)
+    store.save_checkpoint(
+        candidate.model_copy(
+            update={"attempt_id": "legacy-attempt-1", "attempt_number": 1}
+        )
+    )
+    prior = store.prior(_identity(), SimpleStage.POC_EXECUTION_DONE)
+    execution = store.mark_running(
+        _identity(),
+        SimpleStage.POC_EXECUTION_DONE,
+        store.input_refs_for(_identity(), SimpleStage.POC_EXECUTION_DONE),
+        attempt_id="legacy-attempt-1",
+    )
+    store.mark_failure(
+        execution,
+        StageFailure(
+            code="INVALID_OUTPUT",
+            retryable=False,
+            safe_message="invalid structured output",
+        ),
+        StageStatus.FAILED,
+    )
+    calls: list[SimpleStage] = []
+
+    outcome = await SimpleRuntimeRunner(
+        store, _recording_handlers(calls), codex_invalid_output_resume=True
+    ).resume_hypothesis(_identity())
+
+    retried = store.require(_identity(), SimpleStage.POC_EXECUTION_DONE)
+    assert outcome.status is StageStatus.SUCCEEDED
+    assert calls[0] is SimpleStage.POC_EXECUTION_DONE
+    assert calls.count(SimpleStage.POC_EXECUTION_DONE) == 1
+    assert all(stage not in prior for stage in calls)
+    assert store.prior(_identity(), SimpleStage.POC_EXECUTION_DONE) == prior
+    assert retried.status is StageStatus.SUCCEEDED
+    assert retried.attempt_number == 2
+    assert retried.attempt_id != "legacy-attempt-1"
+
+
+@pytest.mark.asyncio
+async def test_resume_pending_legacy_retry_keeps_succeeded_candidate(tmp_path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "legacy-pending" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.POC_CANDIDATE_DONE)
+    candidate = store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE).model_copy(
+        update={"attempt_id": "legacy-attempt-1", "attempt_number": 1}
+    )
+    store.save_checkpoint(candidate)
+    execution = store.mark_running(
+        _identity(),
+        SimpleStage.POC_EXECUTION_DONE,
+        store.input_refs_for(_identity(), SimpleStage.POC_EXECUTION_DONE),
+        attempt_id="legacy-attempt-1",
+    )
+    failed = store.mark_failure(
+        execution,
+        StageFailure(
+            code="INVALID_OUTPUT",
+            retryable=False,
+            safe_message="invalid structured output",
+        ),
+        StageStatus.FAILED,
+    )
+    store.replace_from(
+        failed.model_copy(
+            update={
+                "status": StageStatus.PENDING,
+                "output_refs": (),
+                "attempt_id": None,
+                "error_code": None,
+            }
+        )
+    )
+    calls: list[SimpleStage] = []
+
+    outcome = await SimpleRuntimeRunner(
+        store, _recording_handlers(calls)
+    ).resume_hypothesis(_identity())
+
+    assert outcome.status is StageStatus.SUCCEEDED
+    assert calls[0] is SimpleStage.POC_EXECUTION_DONE
+    assert store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE) == candidate
+    assert (
+        store.require(_identity(), SimpleStage.POC_EXECUTION_DONE).attempt_number == 2
+    )
+
+
+@pytest.mark.asyncio
+async def test_resume_legacy_invalid_output_stops_after_three_failed_attempts(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "legacy-exhaust" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.POC_CANDIDATE_DONE)
+    candidate = store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE).model_copy(
+        update={"attempt_id": "legacy-attempt-1", "attempt_number": 1}
+    )
+    store.save_checkpoint(candidate)
+    execution = store.mark_running(
+        _identity(),
+        SimpleStage.POC_EXECUTION_DONE,
+        store.input_refs_for(_identity(), SimpleStage.POC_EXECUTION_DONE),
+        attempt_id="legacy-attempt-1",
+    )
+    store.mark_failure(
+        execution,
+        StageFailure(
+            code="INVALID_OUTPUT",
+            retryable=False,
+            safe_message="invalid structured output",
+        ),
+        StageStatus.FAILED,
+    )
+    calls: list[SimpleStage] = []
+    handlers = _recording_handlers(calls)
+
+    async def invalid_output(
+        _checkpoint: StageCheckpoint,
+        _prior: object,
+    ) -> StageResult:
+        calls.append(SimpleStage.POC_EXECUTION_DONE)
+        raise StageFailed(
+            StageFailure(
+                code="INVALID_OUTPUT",
+                retryable=False,
+                safe_message="still invalid structured output",
+            )
+        )
+
+    handlers[SimpleStage.POC_EXECUTION_DONE] = invalid_output
+    runner = SimpleRuntimeRunner(store, handlers, codex_invalid_output_resume=True)
+    outcomes = [await runner.resume_hypothesis(_identity()) for _ in range(3)]
+
+    exhausted = store.require(_identity(), SimpleStage.POC_EXECUTION_DONE)
+    assert [outcome.error_code for outcome in outcomes] == [
+        "INVALID_OUTPUT",
+        "INVALID_OUTPUT",
+        "INVALID_OUTPUT",
+    ]
+    assert calls == [SimpleStage.POC_EXECUTION_DONE] * 2
+    assert exhausted.status is StageStatus.FAILED
+    assert exhausted.attempt_number == 3
+    assert exhausted.retryable is False
+    assert store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE) == candidate
+
+
+@pytest.mark.asyncio
+async def test_retryable_codex_invalid_output_resume_keeps_candidate_and_stops_at_three(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "codex-invalid" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.POC_CANDIDATE_DONE)
+    candidate = store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE)
+    execution = store.mark_running(
+        _identity(),
+        SimpleStage.POC_EXECUTION_DONE,
+        store.input_refs_for(_identity(), SimpleStage.POC_EXECUTION_DONE),
+        attempt_id="codex-invalid-1",
+    )
+    store.mark_failure(
+        execution,
+        StageFailure(
+            code="INVALID_OUTPUT",
+            retryable=True,
+            safe_message="Codex returned invalid structured output",
+        ),
+        StageStatus.BLOCKED,
+    )
+    calls: list[SimpleStage] = []
+    handlers = _recording_handlers(calls)
+
+    async def invalid_output(
+        _checkpoint: StageCheckpoint,
+        _prior: object,
+    ) -> StageResult:
+        calls.append(SimpleStage.POC_EXECUTION_DONE)
+        raise StageBlocked(
+            StageFailure(
+                code="INVALID_OUTPUT",
+                retryable=True,
+                safe_message="Codex returned invalid structured output",
+            )
+        )
+
+    handlers[SimpleStage.POC_EXECUTION_DONE] = invalid_output
+    runner = SimpleRuntimeRunner(store, handlers, codex_invalid_output_resume=True)
+    outcomes = [await runner.resume_hypothesis(_identity()) for _ in range(3)]
+
+    failed = store.require(_identity(), SimpleStage.POC_EXECUTION_DONE)
+    assert [outcome.error_code for outcome in outcomes] == ["INVALID_OUTPUT"] * 3
+    assert calls == [SimpleStage.POC_EXECUTION_DONE] * 2
+    assert failed.status is StageStatus.BLOCKED
+    assert failed.attempt_number == 3
+    assert failed.retryable is False
+    assert store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE) == candidate
+
+
+@pytest.mark.asyncio
+async def test_non_codex_terminal_invalid_output_is_not_retried(tmp_path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "other-invalid" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.POC_CANDIDATE_DONE)
+    execution = store.mark_running(
+        _identity(),
+        SimpleStage.POC_EXECUTION_DONE,
+        store.input_refs_for(_identity(), SimpleStage.POC_EXECUTION_DONE),
+        attempt_id="other-invalid-1",
+    )
+    store.mark_failure(
+        execution,
+        StageFailure(
+            code="INVALID_OUTPUT",
+            retryable=False,
+            safe_message="Other provider returned invalid output",
+        ),
+        StageStatus.FAILED,
+    )
+    calls: list[SimpleStage] = []
+
+    outcome = await SimpleRuntimeRunner(
+        store, _recording_handlers(calls)
+    ).resume_hypothesis(_identity())
+
+    assert outcome.status is StageStatus.FAILED
+    assert outcome.error_code == "INVALID_OUTPUT"
+    assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_code",
+    [
+        "AUTH_REQUIRED",
+        "MODEL_OR_REQUEST_UNSUPPORTED",
+        "SIMPLE_RUNTIME_REFERENCE_SCOPE_MISMATCH",
+        "RECOVERY_EXHAUSTED",
+    ],
+)
+async def test_resume_preserves_other_terminal_poc_failures(
+    tmp_path, error_code: str
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / error_code / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.POC_CANDIDATE_DONE)
+    candidate = store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE)
+    execution = store.mark_running(
+        _identity(),
+        SimpleStage.POC_EXECUTION_DONE,
+        store.input_refs_for(_identity(), SimpleStage.POC_EXECUTION_DONE),
+        attempt_id="terminal-attempt-1",
+    )
+    status = (
+        StageStatus.BLOCKED
+        if error_code == "RECOVERY_EXHAUSTED"
+        else StageStatus.FAILED
+    )
+    failed = store.mark_failure(
+        execution,
+        StageFailure(
+            code=error_code,
+            retryable=False,
+            safe_message="terminal failure",
+        ),
+        status,
+    )
+    calls: list[SimpleStage] = []
+
+    outcome = await SimpleRuntimeRunner(
+        store, _recording_handlers(calls)
+    ).resume_hypothesis(_identity())
+
+    assert outcome.status is status
+    assert outcome.error_code == error_code
+    assert calls == []
+    assert store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE) == candidate
+    assert store.require(_identity(), SimpleStage.POC_EXECUTION_DONE) == failed
 
 
 def test_report_format_upgrade_reuses_earlier_stages_but_not_old_report(

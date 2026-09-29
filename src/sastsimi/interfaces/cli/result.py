@@ -11,6 +11,10 @@ class ResultIncomplete(RuntimeError):
     """The requested run has no exact terminal result yet."""
 
 
+class ResultNotFound(RuntimeError):
+    """The requested ID has no production run state."""
+
+
 class ResultIntegrityError(RuntimeError):
     """The stored result does not match its exact run reference."""
 
@@ -29,6 +33,8 @@ def run(
         result = application.result(analysis_id)
     except ValueError as error:
         reason = str(error)
+        if reason == "BUDGET run state is unavailable":
+            raise ResultNotFound from None
         if reason == "RESULT_NOT_TERMINAL":
             raise ResultIncomplete from None
         if reason == "ANALYSIS_RESULT_EXACT_REF_MISMATCH":
@@ -70,4 +76,10 @@ def project(
     return base
 
 
-__all__ = ["ResultIncomplete", "ResultIntegrityError", "project", "run"]
+__all__ = [
+    "ResultIncomplete",
+    "ResultIntegrityError",
+    "ResultNotFound",
+    "project",
+    "run",
+]

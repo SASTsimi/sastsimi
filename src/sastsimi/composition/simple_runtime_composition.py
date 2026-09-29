@@ -331,6 +331,7 @@ def build_analysis_application(
                     else "git"
                 ),
             ),
+            codex_invalid_output_resume=profile.provider == "codex",
             recovery=recovery_factory(identity),
             policy_snapshot_ref=static.policy_snapshot_ref,
         )

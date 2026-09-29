@@ -1027,6 +1027,15 @@ def main(
         return int(ExitCode.CAPABILITY_UNSUPPORTED)
     except report_command.ReportCommandError:
         code = ExitCode.REPORT_UNAVAILABLE
+    except result_command.ResultNotFound:
+        emit_result(
+            ExitCode.INPUT_ERROR,
+            output_format,
+            sys.stderr,
+            command=command_name,
+            reason_code="PRODUCTION_RESULT_NOT_FOUND",
+        )
+        return int(ExitCode.INPUT_ERROR)
     except result_command.ResultIncomplete:
         code = ExitCode.RESULT_INCOMPLETE
     except result_command.ResultIntegrityError:

@@ -44,6 +44,15 @@ def emit_result(
         ),
     }
     data: dict[str, object] = {"message": messages[code]}
+    if (
+        command == "results"
+        and code == ExitCode.INPUT_ERROR
+        and reason_code == "PRODUCTION_RESULT_NOT_FOUND"
+    ):
+        data["message"] = (
+            "No production result exists for this ID. For A-### SimpleRuntime "
+            "IDs, use 'sastsimi result <analysis-id>'."
+        )
     if command.startswith("db "):
         data["message"] = (
             "Database command completed."
