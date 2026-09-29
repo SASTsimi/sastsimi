@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from time import monotonic
@@ -120,6 +121,62 @@ def _response_artifact(
     )
 
 
+_CODEX_INVALID_CATEGORIES = frozenset(
+    {
+        "event_stream_invalid",
+        "final_message_missing",
+        "final_message_empty",
+        "final_message_oversized",
+        "final_message_unreadable",
+        "encoding_invalid",
+        "json_malformed",
+        "schema_mismatch",
+        "canonicalization_invalid",
+    }
+)
+
+
+def _codex_invalid_output_artifact(
+    artifacts: InvocationArtifactWriter | None,
+    *,
+    invocation_id: str,
+    model: str,
+    request_ref: StoredDataRef | None,
+    category: str,
+    source: str | None,
+    sha256: str | None,
+    raw: bytes | None = None,
+    invalid_field: str | None = None,
+) -> StoredDataRef | None:
+    if artifacts is None:
+        return None
+    safe_category = (
+        category if category in _CODEX_INVALID_CATEGORIES else "process_invalid_output"
+    )
+    safe_source = source if source in {"event_stream", "final_message"} else None
+    digest = hashlib.sha256(raw).hexdigest() if raw is not None else sha256
+    if digest is not None and (
+        len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        digest = None
+    return artifacts.put_json(
+        {
+            "kind": "simple_llm_invalid_output",
+            "invocation_id": invocation_id,
+            "provider": "codex-cli",
+            "model": model,
+            "request_ref": (
+                request_ref.model_dump(mode="json") if request_ref is not None else None
+            ),
+            "category": safe_category,
+            "diagnostic_source": safe_source,
+            "diagnostic_sha256": digest,
+            "invalid_field": invalid_field,
+        }
+    )
+
+
 def _matches_type(value: object, expected: str) -> bool:
     return {
         "object": isinstance(value, dict),
@@ -165,7 +222,7 @@ def _validate_schema(value: object, schema: Mapping[str, Any], path: str = "$") 
         if schema.get("additionalProperties") is False:
             extras = set(value) - set(properties)
             if extras:
-                raise ValueError(f"{path}.{sorted(extras)[0]}")
+                raise ValueError("additional property")
         for key, item in value.items():
             child = properties.get(key)
             if isinstance(child, dict):
@@ -248,6 +305,31 @@ class SimpleCodexClient:
             result = await self._runner.execute(request)
         finished_at = datetime.now(UTC)
         elapsed_ms = max(0, int((monotonic() - started) * 1000))
+        if result.status == "INVALID_OUTPUT" or (
+            result.status == "SUCCEEDED" and result.final_message is None
+        ):
+            diagnostic_ref = _codex_invalid_output_artifact(
+                self._artifacts,
+                invocation_id=invocation_id,
+                model=self._model,
+                request_ref=request_ref,
+                category=result.invalid_output_category
+                or (
+                    "final_message_missing"
+                    if result.status == "SUCCEEDED"
+                    else "process_invalid_output"
+                ),
+                source=result.invalid_output_source,
+                sha256=result.invalid_output_sha256,
+            )
+            return StageFailure(
+                code="INVALID_OUTPUT",
+                retryable=True,
+                safe_message="Codex returned invalid structured output",
+                evidence_refs=tuple(
+                    ref for ref in (request_ref, diagnostic_ref) if ref is not None
+                ),
+            )
         if result.status != "SUCCEEDED" or result.final_message is None:
             return StageFailure(
                 code=result.status,
@@ -255,11 +337,16 @@ class SimpleCodexClient:
                 safe_message=f"Codex call did not succeed: {result.status}",
                 evidence_refs=((request_ref,) if request_ref is not None else ()),
             )
+        category = "encoding_invalid"
         try:
-            value = json.loads(result.final_message.decode("utf-8"))
+            decoded = result.final_message.decode("utf-8")
+            category = "json_malformed"
+            value = json.loads(decoded)
+            category = "schema_mismatch"
             if not isinstance(value, dict):
                 raise ValueError("$")
             _validate_schema(value, output_schema)
+            category = "canonicalization_invalid"
             canonical = canonical_bytes(value)
         except (
             UnicodeDecodeError,
@@ -267,12 +354,36 @@ class SimpleCodexClient:
             TypeError,
             ValueError,
         ) as error:
-            field = str(error) if str(error).startswith("$") else None
+            field = (
+                str(error)
+                if category == "schema_mismatch" and str(error).startswith("$")
+                else None
+            )
+            if field is not None and (
+                len(field) > 128
+                or re.fullmatch(r"\$(?:\.[A-Za-z_][A-Za-z0-9_]*|\[\d+\])*", field)
+                is None
+            ):
+                field = None
+            diagnostic_ref = _codex_invalid_output_artifact(
+                self._artifacts,
+                invocation_id=invocation_id,
+                model=self._model,
+                request_ref=request_ref,
+                category=category,
+                source="final_message",
+                sha256=None,
+                raw=result.final_message,
+                invalid_field=field,
+            )
             return StageFailure(
                 code="INVALID_OUTPUT",
-                retryable=False,
+                retryable=True,
                 safe_message="Codex returned invalid structured output",
                 invalid_field=field,
+                evidence_refs=tuple(
+                    ref for ref in (request_ref, diagnostic_ref) if ref is not None
+                ),
             )
         return SimpleLLMCallResult(
             value=value,

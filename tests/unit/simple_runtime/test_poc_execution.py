@@ -12,6 +12,7 @@ from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
+    StageFailure,
     StageStatus,
     input_reference_hash,
 )
@@ -149,6 +150,67 @@ async def test_runtime_pins_interpretation_to_exact_execution_ref(
     assert "execution_ref" not in interpretation["result"]
     assert json.loads(artifacts.read(cleanup_ref))["status"] == "REMOVED"
     assert containers.released == ["a" * 64]
+
+
+@pytest.mark.asyncio
+async def test_interpretation_failure_preserves_provider_diagnostic_ref(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-invalid-output",
+        workspace_id="workspace-invalid-output",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-invalid-output",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    diagnostic_ref = artifacts.put_json({"kind": "simple_llm_invalid_output"})
+    content_ref = artifacts.put_bytes(
+        b"#!/bin/sh\nprintf observed\n", "text/x-shellscript"
+    )
+    candidate_ref = artifacts.put_json({"kind": "simple_poc_candidate"})
+    refs = (candidate_ref, content_ref)
+    candidate = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        output_refs=refs,
+        attempt_id="attempt-invalid-output",
+        image_digest=f"sha256:{'1' * 64}",
+    )
+    current = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_EXECUTION_DONE,
+        status=StageStatus.PENDING,
+        input_refs=refs,
+        input_hash=input_reference_hash(refs),
+        attempt_id="attempt-invalid-output",
+    )
+
+    class _InvalidInterpretationClient:
+        async def call(self, **_kwargs: Any) -> StageFailure:
+            return StageFailure(
+                code="INVALID_OUTPUT",
+                retryable=True,
+                safe_message="Codex returned invalid structured output",
+                evidence_refs=(diagnostic_ref,),
+            )
+
+    stage = PoCExecutionStage(
+        client=_InvalidInterpretationClient(),
+        artifacts=artifacts,
+        docker=_Docker(),  # type: ignore[arg-type]
+        containers=_Containers(),
+    )
+
+    with pytest.raises(StageBlocked) as blocked:
+        await stage(current, {SimpleStage.POC_CANDIDATE_DONE: candidate})
+
+    failure_refs = blocked.value.failure.evidence_refs
+    assert diagnostic_ref in failure_refs
+    assert len(failure_refs) == 4
+    assert json.loads(artifacts.read(failure_refs[0]))["kind"] == "simple_poc_execution"
 
 
 @pytest.mark.asyncio

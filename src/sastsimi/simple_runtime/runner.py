@@ -64,11 +64,13 @@ class SimpleRuntimeRunner:
         *,
         recovery: RecoveryCoordinator | None = None,
         policy_snapshot_ref: StoredDataRef | None = None,
+        codex_invalid_output_resume: bool = False,
     ) -> None:
         self.store = store
         self.handlers = handlers
         self.recovery = recovery
         self.policy_snapshot_ref = policy_snapshot_ref
+        self.codex_invalid_output_resume = codex_invalid_output_resume
 
     async def resume_analysis(self, identity: CheckpointIdentity) -> RunOutcome:
         return await self.resume_hypothesis(identity)
@@ -106,7 +108,15 @@ class SimpleRuntimeRunner:
                         identity, stage, new_inputs=existing.input_refs
                     )
                     existing = None
-                if self.recovery is not None and existing is not None:
+                if existing is not None and (
+                    self.recovery is not None
+                    or existing.status in {StageStatus.BLOCKED, StageStatus.FAILED}
+                    and (
+                        not existing.retryable
+                        or self.codex_invalid_output_resume
+                        and existing.error_code == "INVALID_OUTPUT"
+                    )
+                ):
                     recovery_outcome = await self._recover_existing(existing)
                     if recovery_outcome is False:
                         pass
@@ -162,6 +172,7 @@ class SimpleRuntimeRunner:
                     and preceding is not None
                     and preceding.stage is SimpleStage.POC_CANDIDATE_DONE
                     and preceding.attempt_id is not None
+                    and existing is None
                     else uuid4().hex
                 )
                 retry_seed = (
@@ -314,6 +325,33 @@ class SimpleRuntimeRunner:
                 ),
                 StageStatus.BLOCKED,
             )
+        if (
+            checkpoint.status in {StageStatus.BLOCKED, StageStatus.FAILED}
+            and checkpoint.error_code == "INVALID_OUTPUT"
+            and self.codex_invalid_output_resume
+        ):
+            if checkpoint.attempt_number >= MAX_RECOVERY_ATTEMPTS:
+                if checkpoint.retryable:
+                    self.store.save_checkpoint(
+                        checkpoint.model_copy(update={"retryable": False})
+                    )
+                return RunOutcome(
+                    current_stage=checkpoint.stage,
+                    status=checkpoint.status,
+                    error_code=checkpoint.error_code,
+                )
+            self.store.replace_from(
+                checkpoint.model_copy(
+                    update={
+                        "status": StageStatus.PENDING,
+                        "output_refs": (),
+                        "attempt_id": None,
+                        "error_code": None,
+                        "retryable": False,
+                    }
+                )
+            )
+            return False
         if not checkpoint.retryable:
             return RunOutcome(
                 current_stage=checkpoint.stage,
@@ -401,6 +439,13 @@ class SimpleRuntimeRunner:
         if candidate is None:
             return
         if candidate.status is not StageStatus.SUCCEEDED:
+            return
+        if execution is not None and (
+            execution.error_code == "INVALID_OUTPUT"
+            or execution.status is StageStatus.PENDING
+            or execution.status in {StageStatus.BLOCKED, StageStatus.FAILED}
+            and not execution.retryable
+        ):
             return
         execution_inputs = self.store.input_refs_for(
             identity,

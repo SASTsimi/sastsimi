@@ -372,6 +372,33 @@ def test_production_results_nonterminal_uses_incomplete_exit_code(
     assert json.loads(output.err)["code"] == "RESULT_INCOMPLETE"
 
 
+@pytest.mark.parametrize("analysis_id", ["A-001", "missing-production-id"])
+def test_production_results_missing_id_is_input_error_with_simple_runtime_hint(
+    capsys: pytest.CaptureFixture[str], analysis_id: str
+) -> None:
+    class _MissingProductionRun(_Application):
+        def result(self, analysis_id: str) -> AnalysisRunResult:
+            del analysis_id
+            raise ValueError("BUDGET run state is unavailable")
+
+    assert (
+        main(
+            ["results", analysis_id, "--format", "json"],
+            production_query=_MissingProductionRun(),
+        )
+        == 2
+    )
+
+    output = capsys.readouterr()
+    assert output.out == ""
+    wire = json.loads(output.err)
+    assert wire["code"] == "INPUT_ERROR"
+    assert wire["command"] == "results"
+    assert wire["data"]["reason_code"] == "PRODUCTION_RESULT_NOT_FOUND"
+    assert "sastsimi result" in wire["data"]["message"]
+    assert "trace_id" not in wire["data"]
+
+
 def test_production_results_reference_mismatch_uses_integrity_exit_code(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

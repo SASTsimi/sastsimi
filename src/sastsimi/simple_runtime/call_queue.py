@@ -73,6 +73,12 @@ def _terminal(failure: StageFailure) -> bool:
     return any(fragment in failure.code.upper() for fragment in _TERMINAL_FRAGMENTS)
 
 
+def _final_failure(failure: StageFailure) -> StageFailure:
+    if failure.code == "INVALID_OUTPUT":
+        return failure.model_copy(update={"retryable": False})
+    return failure
+
+
 class RunUsageBudget:
     """Read the persisted attempt ledger before a potentially billable request."""
 
@@ -235,7 +241,7 @@ class RunLimitedClient:
                     return budget_failure
                 remaining = deadline - loop.time()
                 if remaining <= 0:
-                    return last_failure
+                    return _final_failure(last_failure)
                 started = monotonic()
                 try:
                     result = await asyncio.wait_for(
@@ -283,7 +289,11 @@ class RunLimitedClient:
                     if terminal
                     else result
                 )
-                self._record_attempt(agent_name, attempt, started, failure.code, None)
+                if failure.code == "INVALID_OUTPUT" and attempt > self._max_retries:
+                    failure = failure.model_copy(update={"retryable": False})
+                self._record_attempt(
+                    agent_name, attempt, started, failure.code, None, failure
+                )
                 if failure.retryable and attempt <= self._max_retries:
                     # A billable failure without usage must block a retry even when
                     # the call deadline expires before the backoff can begin.
@@ -295,9 +305,9 @@ class RunLimitedClient:
                 return failure
             delay = min(8.0, 0.5 * 2 ** (attempt - 1))
             if loop.time() + delay >= deadline:
-                return failure
+                return _final_failure(failure)
             await self._sleep(delay)
-        return last_failure
+        return _final_failure(last_failure)
 
     def _record_attempt(
         self,
@@ -306,6 +316,7 @@ class RunLimitedClient:
         started: float,
         status: str,
         result: SimpleLLMCallResult | None,
+        failure: StageFailure | None = None,
     ) -> None:
         elapsed = max(0, int((monotonic() - started) * 1000))
         input_tokens = token_count(result.input_tokens) if result is not None else None
@@ -344,6 +355,12 @@ class RunLimitedClient:
                 if result and result.parsed_output_ref
                 else None
             ),
+            "evidence_refs": (
+                [ref.model_dump(mode="json") for ref in failure.evidence_refs]
+                if failure is not None
+                else []
+            ),
+            "retryable": failure.retryable if failure is not None else None,
         }
         ref = self._artifacts.put_json(metadata)
         self._store.record_llm_attempt(
