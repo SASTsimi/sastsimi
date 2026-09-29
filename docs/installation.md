@@ -113,7 +113,7 @@ sastsimi setup
 sastsimi setup --non-interactive --auth subscription --provider codex --model gpt-6-sol --profile full --docker-network none
 ```
 
-새 Codex `setup`은 모델을 생략해도 `gpt-6-sol`을 기본으로 제안하지만, 기존 설정을 자동 변경하지는 않습니다. 실행 전 본인 계정에서 모델 사용 가능 여부를 확인하세요. Codex CLI의 호출별 토큰·비용은 현재 측정되지 않아 설정한 토큰·비용 상한이 실제 사용량을 제한하지 못합니다. [Provider 설정](provider-setup.md#codex-회원-로그인)에 제한을 설명했습니다.
+새 Codex `setup`은 모델을 생략해도 `gpt-6-sol`을 기본으로 제안하지만, 기존 설정을 자동 변경하지는 않습니다. 실행 전 본인 계정에서 모델 사용 가능 여부를 확인하세요. Codex CLI 완료 이벤트의 입력·출력 토큰은 기록하며, `--max-tokens`에 양의 정수를 지정하면 누적 사용량이 한도에 도달하거나 이전 시도의 사용량을 확인할 수 없을 때 후속 요청을 차단합니다. 요청 하나가 한도를 넘을 수 있고, CLI 금액은 제공되지 않아 비용 상한으로 실제 청구액을 강제할 수 없습니다. [Provider 설정](provider-setup.md#codex-회원-로그인)에 제한을 설명했습니다.
 
 API 방식은 다음과 같습니다.
 

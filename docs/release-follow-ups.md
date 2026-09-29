@@ -5,7 +5,7 @@
 
 - HTML·PDF 보고서 출력: Markdown 출력이 첫 버전의 필수 형식이므로 후속입니다.
 - 추가 Provider와 model: exact capability·평가·사람 승인 없이 활성화하지 않습니다.
-- Python·JavaScript 밖의 언어와 framework: RepositoryProfile과 실제 도구 probe를 함께 추가해야 합니다.
+- Python 밖의 언어(JS/TS 포함)와 framework: 현재 정적 검사는 Python 전용입니다. 지원을 넓히려면 RepositoryProfile과 실제 도구 probe를 함께 추가해야 합니다.
 - 대시보드 쓰기 기능: 로컬 읽기 전용 진행·가설·Chaining·보고서 화면은
   구현됐습니다. 취소·재시도·판정 변경·공개 승인 UI는 권한 설계 전까지
   추가하지 않습니다.
@@ -35,9 +35,10 @@
   현재 OpenAI API 경로의 신뢰할 수 있는 요청별 금액은 미제공입니다. API의 비용
   미확인 시도 뒤 후속 API 요청을 차단해도 이미 발생한 청구액이나 정확한
   `max_cost_minor_units` 상한은 보장할 수 없습니다. 계측·예산 경계를 보강해야 합니다.
-- Dify 고정 commit 전체 파이프라인 검증: [정적 재시험](validation/2026-09-28-dify-static-retest.md)의
-  진행 기록은 최종 coverage나 Agent·Docker PoC·보고서 성공 증거가 아닙니다.
-  파일·규칙별 완료 증거와 이후 단계의 실제 결과를 확인해야 합니다.
+- Dify 고정 commit 전체 파이프라인 검증: [실제 분석 `A-008`](validation/2026-09-28-dify-end-to-end.md)은
+  후속 Agent와 Docker PoC까지 실행했으나 최종 `PARTIAL`입니다. confirmed Finding과
+  제출용 보고서는 각각 0개입니다. 미검증 파일·규칙 조합의 coverage와 실제
+  Finding에 기반한 보고서 생성·첨부파일 경로는 추가 검증이 필요합니다.
 - 배포 전 보안 검토: 권한 우회, 다른 분석의 reference 혼합, secret 노출과 Docker 경계를
   실제 배포 환경에서 다시 확인해야 합니다.
 
