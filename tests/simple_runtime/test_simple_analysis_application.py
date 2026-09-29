@@ -24,6 +24,7 @@ from sastsimi.simple_runtime.application import (
     StaticEvidenceInvalid,
 )
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.ast_facts import collect_python_ast
 from sastsimi.simple_runtime.bootstrap_stages import (
     DirectStaticBootstrap,
     ProcessResult,
@@ -348,7 +349,7 @@ def test_opengrep_unavailable_static_evidence_requires_independent_proof(
             "workspace_id": identity.workspace_id,
             "commit_id": identity.commit_id,
             "static_coverage_ref": coverage_ref.model_dump(mode="json"),
-            "ast_summary": {"parsed_file_count": parsed_files},
+            "ast_summary": {"parsed_file_count": parsed_files, "facts": []},
             "codeql_executed": False,
         }
     )
@@ -371,6 +372,80 @@ def test_opengrep_unavailable_static_evidence_requires_independent_proof(
     else:
         with pytest.raises(StaticEvidenceInvalid):
             application._validate_static_evidence(static, identity)
+
+
+@pytest.mark.parametrize(
+    "damage", ["missing_file", "missing_format", "missing_manifest"]
+)
+def test_full_static_evidence_rejects_damaged_ast_manifest(
+    tmp_path: Path, damage: str
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-ast-missing",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("f()\n", encoding="utf-8")
+    ast_summary = collect_python_ast(
+        workspace, ("app.py",), artifacts, max_source_bytes=100
+    )
+    if damage == "missing_file":
+        manifest = json.loads(
+            artifacts.read(StoredDataRef.model_validate(ast_summary["manifest_ref"]))
+        )
+        manifest["entries"][0]["ref"]["content_hash"] = "0" * 64
+        ast_summary["manifest_ref"] = artifacts.put_json(manifest).model_dump(
+            mode="json"
+        )
+    elif damage == "missing_format":
+        ast_summary.pop("format_version")
+    else:
+        ast_summary.pop("manifest_ref")
+    coverage_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_coverage_v1",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "fingerprint": "f" * 64,
+            "expected_count": 1,
+            "verified_count": 1,
+            "gaps": [],
+            "unsupported": [],
+            "ast_parsed_file_count": 1,
+        }
+    )
+    bundle_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_fact_bundle",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "static_coverage_ref": coverage_ref.model_dump(mode="json"),
+            "ast_summary": ast_summary,
+        }
+    )
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3"),
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=_runner,
+    )
+    static = StaticBootstrapResult(
+        repository_profile_ref=_ref("repository-profile"),
+        static_bundle_ref=bundle_ref,
+        static_coverage_ref=coverage_ref,
+        static_disposition="FULL",
+        workspace_path=workspace,
+    )
+
+    with pytest.raises(StaticEvidenceInvalid):
+        application._validate_static_evidence(static, identity)
 
 
 @pytest.mark.parametrize("with_sarif_ref", [False, True])
@@ -417,7 +492,7 @@ def test_opengrep_unavailable_accepts_only_durable_codeql_proof(
             "workspace_id": identity.workspace_id,
             "commit_id": identity.commit_id,
             "static_coverage_ref": coverage_ref.model_dump(mode="json"),
-            "ast_summary": {"parsed_file_count": 0},
+            "ast_summary": {"parsed_file_count": 0, "facts": []},
             "codeql_executed": True,
             "tool_result_refs": tool_refs,
         }

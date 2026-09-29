@@ -19,6 +19,7 @@ from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 
 from .artifacts import SimpleArtifactRepository
+from .ast_facts import focus_ast_facts, validate_ast_manifest
 from .candidates import ingest_static_candidates
 from .discovery import BUDGET_PAUSE_CODES, CandidateDiscovery
 from .models import (
@@ -366,6 +367,17 @@ class SimpleAnalysisApplication:
                     )
                 except StaticEvidenceInvalid:
                     return self._invalid_partial_resume(run, identity)
+            elif run.static_bundle_ref.data_kind == "artifact":
+                try:
+                    artifacts = SimpleArtifactRepository(self._data_dir, identity)
+                    bundle = json.loads(artifacts.read(run.static_bundle_ref))
+                    ast_summary = (
+                        bundle.get("ast_summary") if isinstance(bundle, dict) else None
+                    )
+                    if isinstance(ast_summary, dict):
+                        validate_ast_manifest(artifacts, ast_summary)
+                except (OSError, ValueError, KeyError, TypeError):
+                    return self._invalid_partial_resume(run, identity)
         if run.static_coverage_ref is not None and run.candidate_pipeline_version != 1:
             try:
                 run = self._reconcile_hypothesis_checkpoint(run, identity)
@@ -696,6 +708,8 @@ class SimpleAnalysisApplication:
             recorded_parsed = coverage.get("ast_parsed_file_count")
             if recorded_parsed is not None and recorded_parsed != parsed:
                 raise StaticEvidenceInvalid()
+            if isinstance(ast_summary, dict):
+                validate_ast_manifest(artifacts, ast_summary)
             codeql_proof = False
             if (
                 bundle.get("codeql_executed") is True
@@ -912,6 +926,8 @@ class SimpleAnalysisApplication:
             return self._candidate_bootstrap_failure(
                 run, identity, static, "DISCOVERY_CLIENT_UNAVAILABLE"
             )
+        bundle = json.loads(artifacts.read(static.static_bundle_ref))
+        ast_summary = bundle.get("ast_summary") if isinstance(bundle, dict) else None
         prior = self._store.get(identity, SimpleStage.HYPOTHESIS_DONE)
         if (
             prior is None
@@ -967,18 +983,29 @@ class SimpleAnalysisApplication:
                         identity, scope, candidate.candidate_id, "RUNNING"
                     )
                     continue
-                focused = artifacts.put_json(
-                    {
-                        "kind": "simple_static_fact_bundle",
-                        "analysis_id": identity.analysis_id,
-                        "workspace_id": identity.workspace_id,
-                        "commit_id": identity.commit_id,
-                        "static_coverage_ref": static.static_coverage_ref.model_dump(
-                            mode="json"
-                        ),
-                        "candidate_focus": CandidateDiscovery._projection(candidate),
-                    }
-                )
+                focused_data: dict[str, object] = {
+                    "kind": "simple_static_fact_bundle",
+                    "analysis_id": identity.analysis_id,
+                    "workspace_id": identity.workspace_id,
+                    "commit_id": identity.commit_id,
+                    "static_coverage_ref": static.static_coverage_ref.model_dump(
+                        mode="json"
+                    ),
+                    "candidate_focus": CandidateDiscovery._projection(candidate),
+                }
+                if isinstance(ast_summary, dict) and "format_version" in ast_summary:
+                    try:
+                        focused_data["ast_focus"] = focus_ast_facts(
+                            artifacts,
+                            ast_summary,
+                            path=candidate.path,
+                            line=candidate.line,
+                        )
+                    except (OSError, ValueError, KeyError, TypeError):
+                        return self._candidate_bootstrap_failure(
+                            run, identity, static, "AST_FOCUS_EVIDENCE_INVALID"
+                        )
+                focused = artifacts.put_json(focused_data)
                 candidate_static = static.model_copy(
                     update={"static_bundle_ref": focused}
                 )

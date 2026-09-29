@@ -15,6 +15,7 @@ from sastsimi.simple_runtime.application import (
     StaticBootstrapResult,
 )
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.ast_facts import collect_python_ast
 from sastsimi.simple_runtime.models import (
     STAGE_VERSION,
     CheckpointIdentity,
@@ -133,6 +134,7 @@ def _setup(
     result_count: int = 1,
     decision: str = "EXCLUDE",
     partial: bool = False,
+    with_ast_summary: bool = False,
 ) -> tuple[SimpleAnalysisApplication, SimpleCheckpointStore, _Client, _Hypotheses]:
     data_dir = tmp_path / "data"
     workspace = tmp_path / "checkout"
@@ -164,7 +166,16 @@ def _setup(
         ).encode(),
         "application/json",
     )
-    ast_ref = artifacts.put_json({"kind": "simple_python_ast", "facts": []})
+    ast_summary = (
+        collect_python_ast(workspace, ("app.py",), artifacts, max_source_bytes=32_768)
+        if with_ast_summary
+        else None
+    )
+    ast_ref = artifacts.put_json(
+        ast_summary
+        if ast_summary is not None
+        else {"kind": "simple_python_ast", "facts": []}
+    )
     coverage_ref = artifacts.put_json(
         {
             "kind": "simple_static_coverage_v1",
@@ -202,6 +213,7 @@ def _setup(
                 ast_ref.model_dump(mode="json"),
                 raw_ref.model_dump(mode="json"),
             ],
+            **({"ast_summary": ast_summary} if ast_summary is not None else {}),
         }
     )
     static = _Static(
@@ -448,6 +460,104 @@ class _ManyHypotheses:
                 proposal_ref=proposal_ref,
             ),
         )
+
+
+@pytest.mark.asyncio
+async def test_candidate_hypothesis_bundle_contains_bounded_ast_focus(
+    tmp_path: Path,
+) -> None:
+    app, _store, _client, _hypotheses = _setup(
+        tmp_path, result_count=200, decision="INCLUDE", with_ast_summary=True
+    )
+    captured: list[dict[str, Any]] = []
+
+    class CaptureHypotheses:
+        async def propose(
+            self, identity: CheckpointIdentity, static: StaticBootstrapResult
+        ) -> tuple[HypothesisSeed, ...]:
+            if not captured:
+                captured.append(
+                    json.loads(
+                        SimpleArtifactRepository(tmp_path / "data", identity).read(
+                            static.static_bundle_ref
+                        )
+                    )
+                )
+            return ()
+
+    app._candidate_hypotheses = CaptureHypotheses()
+    outcome = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+
+    assert outcome.status == "COMPLETE"
+    assert len(captured) == 1
+    focused_bundle = captured[0]
+    ast_focus = focused_bundle["ast_focus"]
+    assert ast_focus["total_count"] > len(ast_focus["facts"])
+    assert any(
+        fact["path"] == "app.py"
+        and fact["line"] == focused_bundle["candidate_focus"]["line"]
+        for fact in ast_focus["facts"]
+    )
+    assert len(json.dumps(ast_focus, separators=(",", ":")).encode()) <= 8192
+    assert "manifest_ref" not in ast_focus
+    assert len(ast_focus["facts"]) < 201
+    assert "ast_summary" not in focused_bundle
+
+
+@pytest.mark.asyncio
+async def test_legacy_candidate_setup_without_ast_summary_still_resumes(
+    tmp_path: Path,
+) -> None:
+    app, _store, _client, _hypotheses = _setup(tmp_path)
+    outcome = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+
+    resumed = await app.resume("analysis-1")
+
+    assert outcome.status == resumed.status == "COMPLETE"
+
+
+@pytest.mark.asyncio
+async def test_completed_candidate_resume_rejects_missing_ast_artifact(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _hypotheses = _setup(tmp_path, with_ast_summary=True)
+    outcome = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    assert outcome.status == "COMPLETE"
+    identity = outcome.identity
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    run = store.require_analysis_run("analysis-1")
+    assert run.static_bundle_ref is not None
+    bundle = json.loads(artifacts.read(run.static_bundle_ref))
+    manifest = json.loads(
+        artifacts.read(
+            StoredDataRef.model_validate(bundle["ast_summary"]["manifest_ref"])
+        )
+    )
+    file_ref = StoredDataRef.model_validate(manifest["entries"][0]["ref"])
+    artifacts.artifacts.path_for(file_ref.content_hash).unlink()
+
+    resumed = await app.resume("analysis-1")
+
+    assert resumed.status == "BLOCKED"
+    assert resumed.error_code == "STATIC_EVIDENCE_INVALID"
 
 
 class _SuccessRunner(SimpleRuntimeRunner):
