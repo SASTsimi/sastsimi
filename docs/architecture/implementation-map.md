@@ -21,6 +21,8 @@ CLI
 
 - 조립: `src/sastsimi/composition/simple_runtime_composition.py`
 - 분석 단위: `src/sastsimi/simple_runtime/application.py`
+- 정적 부트스트랩과 파일별 AST 사실·manifest: `src/sastsimi/simple_runtime/bootstrap_stages.py`,
+  `src/sastsimi/simple_runtime/ast_facts.py`
 - 재개 실행기: `src/sastsimi/simple_runtime/runner.py`
 - stage 구현: `src/sastsimi/simple_runtime/stages.py`
 - 상태·계약: `src/sastsimi/simple_runtime/models.py`

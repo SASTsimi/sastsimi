@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, pytest, Pydantic `StoredDataRef`, existing `SimpleArtifactRepository`.
 
-**Spec:** `docs/superpowers/specs/2026-09-30-ast-fact-shards-design.md`
+**Spec:** `docs/plans/2026-09-30-ast-fact-shards-design.md`
 
 ## Global Constraints
 

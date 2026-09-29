@@ -529,6 +529,65 @@ async def test_legacy_candidate_setup_without_ast_summary_still_resumes(
 
 
 @pytest.mark.asyncio
+async def test_legacy_partial_candidate_resume_does_not_mix_new_ast_evidence(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _hypotheses = _setup(tmp_path, partial=True)
+    static = app._static
+    assert isinstance(static, _Static)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    old_bundle = json.loads(artifacts.read(static.result.static_bundle_ref))
+    old_bundle["ast_summary"] = {
+        "kind": "simple_python_ast",
+        "facts": [],
+        "parsed_file_count": 1,
+        "fact_count": 0,
+        "truncated": False,
+    }
+    old_ref = artifacts.put_json(old_bundle)
+    static.result = static.result.model_copy(update={"static_bundle_ref": old_ref})
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    assert first.status == "PARTIAL"
+
+    new_summary = collect_python_ast(
+        tmp_path / "checkout", ("app.py",), artifacts, max_source_bytes=32_768
+    )
+    old_coverage = json.loads(artifacts.read(static.result.static_coverage_ref))
+    new_coverage = old_coverage | {"out_of_scope_product_files": []}
+    new_coverage_ref = artifacts.put_json(new_coverage)
+    new_bundle = old_bundle | {
+        "ast_summary": new_summary,
+        "static_coverage_ref": new_coverage_ref.model_dump(mode="json"),
+    }
+    static.result = static.result.model_copy(
+        update={
+            "static_bundle_ref": artifacts.put_json(new_bundle),
+            "static_coverage_ref": new_coverage_ref,
+            "static_disposition": "FULL",
+        }
+    )
+
+    resumed = await app.resume("analysis-1")
+
+    assert resumed.status == "PARTIAL"
+    assert resumed.error_code == "AST_FORMAT_UPGRADE_NEW_ANALYSIS_REQUIRED"
+    assert static.calls == 1
+    assert store.require_analysis_run("analysis-1").static_bundle_ref == old_ref
+
+
+@pytest.mark.asyncio
 async def test_completed_candidate_resume_rejects_missing_ast_artifact(
     tmp_path: Path,
 ) -> None:

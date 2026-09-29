@@ -181,3 +181,33 @@ def test_ast_focus_unavailable_result_remains_bounded(tmp_path: Path) -> None:
         ast_facts.focus_ast_facts(
             artifacts, summary, path=summary["parse_errors"][0], line=1, max_bytes=512
         )
+
+
+def test_ast_focus_reuses_one_validated_manifest_for_many_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("f()\n" * 100, encoding="utf-8")
+    artifacts = _artifacts(tmp_path)
+    summary = collect_python_ast(
+        workspace, ("app.py",), artifacts, max_source_bytes=1000
+    )
+    calls = 0
+    original = ast_facts._new_manifest
+
+    def counted(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(ast_facts, "_new_manifest", counted)
+
+    index = ast_facts.index_ast_manifest(artifacts, summary)
+    for line in range(1, 101):
+        focused = ast_facts.focus_ast_facts(
+            artifacts, summary, path="app.py", line=line, manifest_index=index
+        )
+        assert any(fact["line"] == line for fact in focused["facts"])
+
+    assert calls == 1

@@ -38,6 +38,8 @@
 ```
 
 정적 분석은 취약점을 확정하지 않고 Agent가 검토할 코드 사실을 만듭니다. 새 분석은 검증된 원본 결과를 근거 수준별 후보로 저장하고 Discovery가 후보별 판정과 이유를 남깁니다.
+AST 수집은 파싱에 성공한 Python 제품 파일마다 사실 전체를 별도 content-addressed 아티팩트에 저장합니다. 정렬된 manifest에는 파일 경로·사실 건수·아티팩트 참조가, 정적 번들의 소형 AST 요약에는 manifest 참조·총건수·파싱 실패/초과 크기 경로가 들어갑니다. 10,000건 같은 분석 전체 사실 상한은 없으며, 파일당 2 MiB 입력 제한은 유지합니다. 파싱 실패나 초과 크기의 제품 파일은 빈 결과가 아니라 미검증 범위입니다.
+후보 가설에는 후보 파일·줄 주변의 AST 사실만 최대 8 KiB로 골라 붙이고 전체 건수·생략 건수·원본 파일 참조를 명시합니다. 큰 manifest나 파일 전체 사실을 프롬프트에 넣거나 256 KiB 문맥 절단에 맡기지 않습니다. 분석 단계에서 검증된 manifest 경로 인덱스는 후보 간 재사용합니다. 새 manifest의 파일별 참조와 경로·건수를 검증하고 근거가 누락·손상되면 성공이나 `PARTIAL`로 덮지 않고 근거 오류로 멈춥니다. 기존 인라인 AST 형식의 분석은 해당 형식대로 재개하며 새 근거와 혼합하지 않습니다. 이미 후보 처리를 끝낸 구형 `PARTIAL` 분석은 정적 재검사가 새 AST 형식을 도입하려 할 때 기존 상태를 보존하고 새 분석 시작을 요구합니다.
 Python 요청 입력 규칙처럼 `candidate_kind=ENTRY_POINT`가 명시된 결과만 입력 지점으로 분류합니다. CodeQL SARIF 결과 하나에 여러 `codeFlows`·`threadFlows`가 있으면 개별 trace마다 다른 후보 ID를 만들고 동일 위치·trace의 중복만 합칩니다. 각 후보의 출처는 원본 아티팩트 참조와 결과 행 인덱스로 추적합니다. 원본 결과나 별도 source·sink 힌트를 임의로 연결해 흐름을 만들지 않습니다.
 `INCLUDE`·`UNDECIDED` 후보와 보조 자유 탐색의 가설은 기존 Pro·Con·PoC 흐름에 연결됩니다.
 Discovery 판정은 취약점 확정이 아니며, 이전 분석은 저장된 옛 경로로 재개합니다. 각 가설은
@@ -72,6 +74,7 @@ Technical Gate의 `ACCEPT`만 Scope Gate와 Finding으로 이어집니다. `REJE
 
 - CLI: `src/sastsimi/interfaces/cli/main.py`
 - 분석 시작과 가설 등록: `src/sastsimi/simple_runtime/application.py`
+- 파일별 AST 수집·manifest 검증·후보 문맥 선택: `src/sastsimi/simple_runtime/ast_facts.py`
 - 후보 정규화·Discovery: `src/sastsimi/simple_runtime/candidates.py`,
   `src/sastsimi/simple_runtime/discovery.py`
 - stage 순서와 상태: `src/sastsimi/simple_runtime/models.py`

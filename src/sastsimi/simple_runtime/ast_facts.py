@@ -246,6 +246,14 @@ def validate_ast_manifest(
         _read_file(artifacts, entry)
 
 
+def index_ast_manifest(
+    artifacts: SimpleArtifactRepository, summary: Mapping[str, object]
+) -> dict[str, dict[str, Any]]:
+    """Build one validated path lookup for a candidate pipeline pass."""
+
+    return {str(entry["path"]): entry for entry in _new_manifest(artifacts, summary)}
+
+
 def focus_ast_facts(
     artifacts: SimpleArtifactRepository,
     summary: Mapping[str, object],
@@ -253,13 +261,24 @@ def focus_ast_facts(
     path: str,
     line: int,
     max_bytes: int = 8192,
+    manifest_index: Mapping[str, Mapping[str, object]] | None = None,
 ) -> dict[str, object]:
     """Return one file's nearest facts without passing its manifest to the Agent."""
 
     if max_bytes < 512 or type(line) is not int:
         raise ValueError("AST_FOCUS_BUDGET_INVALID")
-    entries = _new_manifest(artifacts, summary)
-    entry = next((item for item in entries if item["path"] == path), None)
+    entry = (
+        manifest_index.get(path)
+        if manifest_index is not None
+        else next(
+            (
+                item
+                for item in _new_manifest(artifacts, summary)
+                if item["path"] == path
+            ),
+            None,
+        )
+    )
     if entry is None:
         errors = summary.get("parse_errors")
         oversize = summary.get("oversize_paths")

@@ -19,7 +19,7 @@ from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 
 from .artifacts import SimpleArtifactRepository
-from .ast_facts import focus_ast_facts, validate_ast_manifest
+from .ast_facts import focus_ast_facts, index_ast_manifest, validate_ast_manifest
 from .candidates import ingest_static_candidates
 from .discovery import BUDGET_PAUSE_CODES, CandidateDiscovery
 from .models import (
@@ -424,6 +424,30 @@ class SimpleAnalysisApplication:
                     failed = self._block_invalid_chaining(error.checkpoint)
                     return self._bootstrap_outcome(run, failed)
                 if downstream_terminal:
+                    try:
+                        artifacts = SimpleArtifactRepository(self._data_dir, identity)
+                        bundle = json.loads(artifacts.read(run.static_bundle_ref))
+                        ast_summary = (
+                            bundle.get("ast_summary")
+                            if isinstance(bundle, dict)
+                            else None
+                        )
+                    except (OSError, ValueError, TypeError):
+                        return self._invalid_partial_resume(run, identity)
+                    if (
+                        isinstance(ast_summary, dict)
+                        and "format_version" not in ast_summary
+                        and isinstance(ast_summary.get("facts"), list)
+                    ):
+                        # Old candidate decisions must not be relabeled as
+                        # reviewed against a newly sharded AST bundle.
+                        return SimpleAnalysisOutcome(
+                            identity=identity,
+                            display_analysis_id=run.display_analysis_id,
+                            status="PARTIAL",
+                            current_stage=SimpleStage.HYPOTHESIS_DONE,
+                            error_code="AST_FORMAT_UPGRADE_NEW_ANALYSIS_REQUIRED",
+                        )
                     return await self._run_static(run, identity)
             return await self._run_candidate_pipeline(run, identity, static)
         retry_partial_static = run.static_disposition == "PARTIAL"
@@ -928,6 +952,11 @@ class SimpleAnalysisApplication:
             )
         bundle = json.loads(artifacts.read(static.static_bundle_ref))
         ast_summary = bundle.get("ast_summary") if isinstance(bundle, dict) else None
+        ast_index = (
+            index_ast_manifest(artifacts, ast_summary)
+            if isinstance(ast_summary, dict) and "format_version" in ast_summary
+            else None
+        )
         prior = self._store.get(identity, SimpleStage.HYPOTHESIS_DONE)
         if (
             prior is None
@@ -1000,6 +1029,7 @@ class SimpleAnalysisApplication:
                             ast_summary,
                             path=candidate.path,
                             line=candidate.line,
+                            manifest_index=ast_index,
                         )
                     except (OSError, ValueError, KeyError, TypeError):
                         return self._candidate_bootstrap_failure(

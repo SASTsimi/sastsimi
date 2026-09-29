@@ -161,7 +161,9 @@ async def test_static_bootstrap_persists_exact_policy_snapshot(
     monkeypatch.setattr(
         bootstrap, "_repository_profile", lambda _tracked, **_kwargs: {}
     )
-    monkeypatch.setattr(bootstrap, "_python_ast", lambda _workspace, _tracked: {})
+    monkeypatch.setattr(
+        bootstrap, "_python_ast", lambda _workspace, _tracked, _artifacts: {}
+    )
     monkeypatch.setattr(bootstrap, "_collect_opengrep", no_scan)
     identity = CheckpointIdentity(
         analysis_id="analysis-1",
