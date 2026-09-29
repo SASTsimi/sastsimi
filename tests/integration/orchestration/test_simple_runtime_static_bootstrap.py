@@ -2044,7 +2044,8 @@ async def test_candidate_limit_blocks_without_discarding_ast_and_codeql(
         artifacts.read(StoredDataRef.model_validate(bundle["static_coverage_ref"]))
     )
     assert bundle["ast_summary"]["kind"] == "simple_python_ast"
-    assert bundle["ast_summary"]["facts"]
+    assert bundle["ast_summary"]["fact_count"] > 0
+    assert bundle["ast_summary"]["manifest_ref"]
     assert bundle["codeql_executed"] is True
     assert bundle["codeql_findings"]
     assert "STATIC_CANDIDATES_TOO_LARGE" in coverage["engine_errors"]
@@ -5347,19 +5348,71 @@ async def test_codeql_failure_retains_ast_and_opengrep_evidence(tmp_path: Path) 
     result = await bootstrap.run(_request(profile), identity)
     assert result.static_disposition == "PARTIAL"
     bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
-    assert bundle["ast_summary"]["facts"]
+    assert bundle["ast_summary"]["fact_count"] > 0
+    assert bundle["ast_summary"]["manifest_ref"]
     assert bundle["opengrep_findings"]
     assert bundle["codeql_executed"] is False
     assert len(bundle["tool_result_refs"]) >= 2
 
 
+@pytest.mark.parametrize("call_count", (10_000, 10_001))
+def test_ast_saves_all_facts_by_file_without_total_cap(
+    tmp_path: Path, call_count: int
+) -> None:
+    (tmp_path / "a.py").write_text("f()\n" * 10_000, encoding="utf-8")
+    (tmp_path / "empty.py").write_text("# no AST facts\n", encoding="utf-8")
+    if call_count > 10_000:
+        (tmp_path / "z.py").write_text("g()\n", encoding="utf-8")
+    profile = _profile(tmp_path)
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=_Process(),
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+    artifacts = SimpleArtifactRepository(
+        profile.data_dir, _identity(f"analysis-ast-{call_count}")
+    )
+    paths = (
+        ("a.py", "empty.py", "z.py")
+        if call_count > 10_000
+        else (
+            "a.py",
+            "empty.py",
+        )
+    )
+
+    summary = bootstrap._python_ast(tmp_path, paths, artifacts)
+
+    assert summary["fact_count"] == call_count
+    assert summary["truncated"] is False
+    assert "facts" not in summary
+    manifest = json.loads(
+        artifacts.read(StoredDataRef.model_validate(summary["manifest_ref"]))
+    )
+    assert manifest["fact_count"] == call_count
+    assert [item["path"] for item in manifest["entries"]] == list(paths)
+    assert [item["fact_count"] for item in manifest["entries"]] == (
+        [10_000, 0, 1] if call_count > 10_000 else [10_000, 0]
+    )
+    first = json.loads(
+        artifacts.read(StoredDataRef.model_validate(manifest["entries"][0]["ref"]))
+    )
+    assert len(first["facts"]) == 10_000
+    assert first["facts"][-1] == {
+        "kind": "Call",
+        "path": "a.py",
+        "line": 10_000,
+        "name": "f",
+    }
+
+
 @pytest.mark.asyncio
 async def test_ast_parse_errors_are_disclosed_even_when_rule_coverage_succeeds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     process = _CoverageProcess(parse_warning=False, invalid_python=True)
     bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process, codeql=False)
-    monkeypatch.setattr(static_module, "_MAX_FACTS", 1)
     identity = _identity("analysis-ast-errors")
     result = await bootstrap.run(_request(profile), identity)
     assert result.static_disposition == "PARTIAL"
@@ -5368,34 +5421,32 @@ async def test_ast_parse_errors_are_disclosed_even_when_rule_coverage_succeeds(
         profile, identity, StoredDataRef.model_validate(bundle["static_coverage_ref"])
     )
     assert report["ast_parse_error_count"] == 1
-    assert report["ast_truncated"] is True
+    assert report["ast_truncated"] is False
     assert report["verified_count"] == report["expected_count"] == 2
 
 
 @pytest.mark.asyncio
-async def test_ast_fact_limit_keeps_valid_scan_partial(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_ast_facts_are_not_truncated_for_valid_scan(
+    tmp_path: Path,
 ) -> None:
     process = _CoverageProcess(parse_warning=False)
     bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process, codeql=False)
-    monkeypatch.setattr(static_module, "_MAX_FACTS", 1)
-    identity = _identity("analysis-ast-valid-truncated")
+    identity = _identity("analysis-ast-valid")
 
     result = await bootstrap.run(_request(profile), identity)
 
-    assert result.static_disposition == "PARTIAL"
+    assert result.static_disposition == "FULL"
     bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
     report = _coverage_from_ref(
         profile, identity, StoredDataRef.model_validate(bundle["static_coverage_ref"])
     )
-    assert report["ast_truncated"] is True
+    assert report["ast_truncated"] is False
     assert report["ast_parse_error_count"] == 0
 
 
-def test_ast_continues_parsing_files_after_fact_sample_cap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_ast_continues_parsing_files_after_first_parse_error(
+    tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(static_module, "_MAX_FACTS", 1)
     (tmp_path / "a.py").write_text("def a(): pass\n", encoding="utf-8")
     (tmp_path / "z.py").write_text("def broken(:\n", encoding="utf-8")
     profile = _profile(tmp_path)
@@ -5406,7 +5457,9 @@ def test_ast_continues_parsing_files_after_fact_sample_cap(
         static_material_root=tmp_path,
     )
 
-    result = bootstrap._python_ast(tmp_path, ("a.py", "z.py"))
+    identity = _identity("ast-parse-after-error")
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    result = bootstrap._python_ast(tmp_path, ("a.py", "z.py"), artifacts)
 
     assert result["parse_error_count"] == 1
     assert result["parse_errors"] == ["z.py"]
@@ -5425,7 +5478,9 @@ def test_ast_retains_every_unparsed_product_path(tmp_path: Path) -> None:
         static_material_root=tmp_path,
     )
 
-    result = bootstrap._python_ast(tmp_path, paths)
+    identity = _identity("ast-all-unparsed")
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    result = bootstrap._python_ast(tmp_path, paths, artifacts)
 
     assert result["parse_error_count"] == len(paths)
     assert result["parse_errors"] == list(paths)
@@ -5443,14 +5498,17 @@ def test_ast_parses_selected_python_stub_source(tmp_path: Path) -> None:
         static_material_root=tmp_path,
     )
 
-    result = bootstrap._python_ast(tmp_path, ("api.pyi",))
+    identity = _identity("ast-stub-source")
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    result = bootstrap._python_ast(tmp_path, ("api.pyi",), artifacts)
 
     assert result["parsed_file_count"] == 1
     assert result["parse_error_count"] == 0
-    assert any(
-        fact["path"] == "api.pyi"
-        for fact in cast(list[dict[str, object]], result["facts"])
+    manifest = json.loads(
+        artifacts.read(StoredDataRef.model_validate(result["manifest_ref"]))
     )
+    assert manifest["entries"][0]["path"] == "api.pyi"
+    assert manifest["entries"][0]["fact_count"] > 0
 
 
 def test_ast_does_not_read_symlink_outside_workspace(
@@ -5480,11 +5538,13 @@ def test_ast_does_not_read_symlink_outside_workspace(
         static_material_root=tmp_path,
     )
 
-    result = bootstrap._python_ast(workspace, ("leak.py",))
+    identity = _identity("ast-symlink")
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    result = bootstrap._python_ast(workspace, ("leak.py",), artifacts)
 
     assert result["parsed_file_count"] == 0
     assert result["parse_errors"] == ["leak.py"]
-    assert result["facts"] == []
+    assert result["fact_count"] == 0
 
 
 @pytest.mark.parametrize("extension", (".mjs", ".cjs", ".mts", ".cts"))
