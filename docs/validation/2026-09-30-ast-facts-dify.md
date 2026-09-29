@@ -1,0 +1,25 @@
+# 파일별 AST 사실 보존과 Dify 실분석 (2026-09-30 KST)
+
+## 고정 조건
+
+- 도구 코드: `codex/ast-fact-pages`의 `834eb56e11b727dcea5fadaf695f5fd41276b070`.
+- 대상: `https://github.com/langgenius/dify.git`, commit `bfd5636bf080cea83515d649e70f36dfa6c0f0d8`.
+- 별도 비추적 데이터 디렉터리에 새 분석 1회를 시작했다. 기존 사용자 설정·DB·아티팩트는 변경하지 않았다. 이 디렉터리의 표시 ID `A-001`은 기존 사용자 DB의 ID와 별개이며, 정확한 분석 ID는 `af7fc85c6b184f419c919210edb3c282`다.
+- 사용자 로그인에서 읽어 온 Codex `gpt-6-sol`을 사용한다. 시험 실행의 누적 토큰·시간 한도는 `unlimited`이고 개별 호출 timeout·재시도·취소 기능은 유지한다. 가상환경의 Semgrep CE를 별도 시험 프로필에 등록해 OpenGrep 부분 스캔을 보완한다. 기존 사용자 프로필은 수정하지 않았다.
+
+## 실행 전 검증
+
+- 집중 회귀: 239개 통과.
+- 전체 회귀: **4,228개 통과, 28개 건너뜀, 실패 0개**. 보고서 fixture의 Pydantic 직렬화 경고 42개가 있었다.
+- Ruff 검사·서식, mypy(466개 소스 파일), 현재 문서 검증 모두 통과.
+- 실제 도구 확인: Docker Server 29.5.3, OpenGrep 1.30.0, Semgrep CE 1.178.0, CodeQL 2.27.0, Codex는 ChatGPT 로그인 상태.
+
+## 진행 상태와 판정 기준
+
+9월 30일 02:20 KST에는 정적 검사 중이었다. 상태 조회의 `STATIC_DONE`은 단계 시작 시 붙는 체크포인트 이름으로, 그때는 완료 증거가 아니었다. OpenGrep의 184개 검사 묶음 중 82개는 성공, 102개는 부분 스캔으로 기록됐다. CodeQL Python 데이터베이스 생성과 보안 쿼리가 끝난 뒤 Semgrep 재검사 11개도 성공했다.
+
+이후 저장된 정적 커버리지는 Python 제품 코드의 파일×규칙 **23,240/23,240 조합 검증, 미검증 0건**이다. 이 중 OpenGrep 검증은 22,446건, Semgrep 보완 검증은 794건이다. 정적 검사에서 수집한 후보는 **1,392건**이며 DB에서 서로 다른 후보 ID 1,392개를 확인했다. Discovery로 넘어간 직후 INCLUDE 4, EXCLUDE 3, UNDECIDED 1, PENDING 1,384, ERROR 0이었다. 이는 취약점 판정이나 최종 Finding 수가 아니다. 테스트 파일 4,781개와 Python 범위 밖 제품 파일 4,450개는 별도 범위로 표시됐다.
+
+AST manifest `884b9650106b697fc0ecd6e9ad0251e139cb1226171b3ddd5df7d153d902d6fc`의 파일별 합계를 검증한 결과, **파싱된 Python 파일 2,324개, 보존한 AST 사실 132,138건**이었다. 집계 1만 건 절단은 없고, 이 실행의 AST 파싱 오류·파일 크기 초과는 모두 0건이다. 최종 후보 판정·가설·Finding 수는 분석이 진행되며 계속 대조한다.
+
+`COMPLETE`나 `confirmed`는 시험 목표일 뿐 관측 결과가 아니다. 부분 스캔 또는 미지원 제품 코드가 남으면 전체 상태를 `PARTIAL`로 보존하고, Agent·PoC 근거가 없으면 Finding을 확정하지 않는다.
