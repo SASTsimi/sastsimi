@@ -1569,10 +1569,13 @@ clean, standalone text a maintainer who has never seen this pipeline would
 read in a vulnerability report. Never carry pipeline jargon - stage names,
 verdict labels, agent names - into either version; write what a reader outside
 this project needs, not what this system called it internally. Preserve
-limitations and uncertainty in both. The technical details must explain why
-the final verification verdict follows from the supplied Pro, Con, and PoC
-evidence. `review_items` is Korean-only - it is for the human here, not the
-maintainer.
+limitations and uncertainty in both. The technical details must explain the
+causal chain from the cited source to the reproduced result. In the `_en`
+fields call the evidence what a maintainer would - "source review", "the
+reproduction test" - and never by the names of the steps that produced it:
+no "Pro", "Con", "Pro/Con", "technical gate", "scope gate", "final
+verification", or "verdict". `review_items` is Korean-only - it is for the
+human here, not the maintainer.
 
 `impact` and `impact_en` state only what the supplied evidence chain directly
 confirmed, not a further consequence you infer from it - if the PoC confirmed
