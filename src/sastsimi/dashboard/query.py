@@ -38,6 +38,7 @@ from sastsimi.simple_runtime.models import (
     terminal_gate_outcome,
     terminal_poc_outcome,
 )
+from sastsimi.simple_runtime.run_lease import analysis_run_lease_active
 from sastsimi.simple_runtime.scope_policy import (
     project_scope_review,
     safe_public_report,
@@ -1000,6 +1001,9 @@ class DashboardQuery:
             if checkpoint.identity.hypothesis_id is not None:
                 hypothesis_groups[checkpoint.identity.hypothesis_id].append(checkpoint)
         run = self._simple_run(analysis_id)
+        candidate_counts, candidate_deep_counts, registered_hypotheses = (
+            self._candidate_metrics(run)
+        )
         usage = self._usage_summary(analysis_id)
         hypotheses = tuple(
             self._project_hypothesis(
@@ -1015,8 +1019,37 @@ class DashboardQuery:
         completed = sum(item.status is StageStatus.SUCCEEDED for item in values)
         reports = self._reports(analysis_id)
         progress = ProgressProjector(_CheckpointProjection(tuple(values))).snapshot(
-            analysis_id
+            analysis_id,
+            static_disposition=run.static_disposition if run else "FULL",
+            candidate_pipeline_version=(run.candidate_pipeline_version or 0)
+            if run
+            else 0,
+            candidate_counts=candidate_counts,
+            candidate_deep_counts=candidate_deep_counts,
+            registered_hypothesis_count=registered_hypotheses,
+            candidate_terminal=run.candidate_terminal if run else None,
+            candidate_bundle_hash=(
+                run.static_bundle_ref.content_hash
+                if run is not None and run.static_bundle_ref is not None
+                else None
+            ),
+            candidate_scope_fingerprint=(
+                run.candidate_scope_fingerprint if run else None
+            ),
         )
+        if (
+            run is not None
+            and run.candidate_pipeline_version == 1
+            and progress.status == "RUNNING"
+            and analysis_run_lease_active(self._data_dir, analysis_id) is False
+        ):
+            progress = progress.model_copy(
+                update={
+                    "status": "PAUSED",
+                    "error_code": "INTERRUPTED_RESUME_REQUIRED",
+                    "resume_action": "RESUME_INTERRUPTED",
+                }
+            )
         admissions = [
             item
             for item in values
@@ -1029,20 +1062,22 @@ class DashboardQuery:
             workspace_id=latest.identity.workspace_id,
             commit_id=latest.identity.commit_id,
             current_stage=progress.current_stage or latest.stage.value,
-            status=(
-                "PARTIAL"
-                if progress.status == "COMPLETE"
-                and run is not None
-                and getattr(run, "static_disposition", "FULL") == "PARTIAL"
-                else progress.status
-            ),
+            status=progress.status,
+            error_code=progress.error_code,
             static_disposition=(
                 getattr(run, "static_disposition", "FULL") if run else None
             ),
             completed_count=completed,
             stage_count=len(values),
-            hypothesis_count=len(hypotheses),
-            finding_count=len(reports),
+            hypothesis_count=progress.hypothesis_count,
+            finding_count=progress.finding_count,
+            candidate_total_count=progress.candidate_total_count,
+            candidate_decision_counts=progress.candidate_decision_counts,
+            deep_analysis_running_count=progress.deep_analysis_running_count,
+            deep_analysis_completed_count=progress.deep_analysis_completed_count,
+            deep_analysis_pending_count=progress.deep_analysis_pending_count,
+            deep_analysis_error_count=(candidate_deep_counts or {}).get("ERROR", 0),
+            resume_action=progress.resume_action,
             inconclusive_hypothesis_count=progress.inconclusive_hypothesis_count,
             rejected_hypothesis_count=progress.rejected_hypothesis_count,
             llm_provider=(run.llm_provider if run else None),
@@ -1081,7 +1116,7 @@ class DashboardQuery:
             started_at=started,
             finished_at=(
                 latest.updated_at
-                if progress.status in {"COMPLETE", "BLOCKED", "FAILED"}
+                if progress.status in {"COMPLETE", "PARTIAL", "BLOCKED", "FAILED"}
                 else None
             ),
             last_updated_at=latest.updated_at,
@@ -1091,7 +1126,8 @@ class DashboardQuery:
                     (
                         (
                             latest.updated_at
-                            if progress.status in {"COMPLETE", "BLOCKED", "FAILED"}
+                            if progress.status
+                            in {"COMPLETE", "PARTIAL", "BLOCKED", "FAILED"}
                             else datetime.now(UTC)
                         )
                         - started
@@ -1154,6 +1190,9 @@ class DashboardQuery:
         verified = coverage["verified_count"]
         gaps = coverage["gaps"]
         unsupported_files = coverage.get("unsupported_files", [])
+        excluded_test_files = coverage.get("excluded_test_files")
+        out_of_scope_files = coverage.get("out_of_scope_product_files")
+        unavailable_files = coverage.get("unavailable_paths")
         assert isinstance(expected, int)
         assert isinstance(verified, int)
         assert isinstance(gaps, list)
@@ -1217,6 +1256,61 @@ class DashboardQuery:
             "static_coverage_verified": verified,
             "static_coverage_gap_count": len(gaps),
             "static_coverage_gap_preview": tuple(gaps[:100]),
+            "static_unavailable_file_count": (
+                len(unavailable_files) if isinstance(unavailable_files, list) else None
+            ),
+            "static_unavailable_file_preview": (
+                tuple(unavailable_files[:100])
+                if isinstance(unavailable_files, list)
+                else ()
+            ),
+            "static_unavailable_reason_counts": (
+                dict(
+                    sorted(
+                        Counter(item["reason"] for item in unavailable_files).items()
+                    )
+                )
+                if isinstance(unavailable_files, list)
+                else {}
+            ),
+            "static_excluded_test_file_count": (
+                len(excluded_test_files)
+                if isinstance(excluded_test_files, list)
+                else None
+            ),
+            "static_excluded_test_file_preview": (
+                tuple(excluded_test_files[:100])
+                if isinstance(excluded_test_files, list)
+                else ()
+            ),
+            "static_excluded_test_reason_counts": (
+                dict(
+                    sorted(
+                        Counter(item["reason"] for item in excluded_test_files).items()
+                    )
+                )
+                if isinstance(excluded_test_files, list)
+                else {}
+            ),
+            "static_out_of_scope_product_count": (
+                len(out_of_scope_files)
+                if isinstance(out_of_scope_files, list)
+                else None
+            ),
+            "static_out_of_scope_product_preview": (
+                tuple(out_of_scope_files[:100])
+                if isinstance(out_of_scope_files, list)
+                else ()
+            ),
+            "static_out_of_scope_reason_counts": (
+                dict(
+                    sorted(
+                        Counter(item["reason"] for item in out_of_scope_files).items()
+                    )
+                )
+                if isinstance(out_of_scope_files, list)
+                else {}
+            ),
             "static_coverage_unsupported": unsupported,
             "static_coverage_unsupported_count": (
                 len(unsupported_files)
@@ -1236,7 +1330,14 @@ class DashboardQuery:
     def get_static_coverage_page(
         self, analysis_id: str, *, kind: str, offset: int, limit: int
     ) -> StaticCoveragePageView:
-        if kind not in {"gaps", "unsupported"} or offset < 0 or not 1 <= limit <= 100:
+        kinds = {
+            "gaps": "gaps",
+            "unavailable": "unavailable_paths",
+            "unsupported": "unsupported_files",
+            "excluded_tests": "excluded_test_files",
+            "out_of_scope": "out_of_scope_product_files",
+        }
+        if kind not in kinds or offset < 0 or not 1 <= limit <= 100:
             raise ValueError("DASHBOARD_COVERAGE_PAGE_INVALID")
         analysis_id = self._resolve_analysis_id(analysis_id)
         self._validate_analysis_id(analysis_id)
@@ -1249,7 +1350,7 @@ class DashboardQuery:
         if loaded is None:
             raise DashboardNotFound("DASHBOARD_COVERAGE_NOT_FOUND")
         coverage, digest = loaded
-        items = coverage.get("gaps" if kind == "gaps" else "unsupported_files", [])
+        items = coverage.get(kinds[kind], [])
         assert isinstance(items, list)
         return StaticCoveragePageView(
             kind=kind,
@@ -1371,6 +1472,31 @@ class DashboardQuery:
                 or not _RULE_NAME.fullmatch(reason)
             ):
                 return None
+        for scope_key in (
+            "excluded_test_files",
+            "out_of_scope_product_files",
+            "unavailable_paths",
+        ):
+            rows = coverage.get(scope_key, [])
+            if not isinstance(rows, list):
+                return None
+            for item in rows:
+                if not isinstance(item, dict) or set(item) != {"path", "reason"}:
+                    return None
+                path, reason = item["path"], item["reason"]
+                if (
+                    not isinstance(path, str)
+                    or not path
+                    or len(path) > 512
+                    or path.startswith("/")
+                    or ".." in PurePosixPath(path).parts
+                    or "\\" in path
+                    or ":" in path
+                    or any(ord(character) < 32 for character in path)
+                    or not isinstance(reason, str)
+                    or re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", reason) is None
+                ):
+                    return None
         raw_unsupported = coverage.get("unsupported", [])
         if not isinstance(raw_unsupported, list):
             return None
@@ -1655,6 +1781,58 @@ class DashboardQuery:
             return SimpleAnalysisRun.model_validate_json(row[0])
         except ValueError:
             return None
+
+    def _candidate_metrics(
+        self, run: SimpleAnalysisRun | None
+    ) -> tuple[dict[str, int] | None, dict[str, int] | None, int | None]:
+        if (
+            run is None
+            or run.candidate_pipeline_version != 1
+            or not run.candidate_scope_fingerprint
+        ):
+            return None, None, None
+        decisions = {
+            status: 0
+            for status in ("PENDING", "INCLUDE", "EXCLUDE", "UNDECIDED", "ERROR")
+        }
+        deep: dict[str, int] = {}
+        registered = 0
+        key = (
+            run.analysis_id,
+            run.workspace_id,
+            run.commit_id,
+            run.candidate_scope_fingerprint,
+        )
+        with self._connect() as connection:
+            if self._table_exists(connection, "simple_static_candidates"):
+                rows = connection.execute(
+                    "SELECT decision, COUNT(*) AS count "
+                    "FROM simple_static_candidates WHERE analysis_id = ? "
+                    "AND workspace_id = ? AND commit_id = ? "
+                    "AND scope_fingerprint = ? GROUP BY decision",
+                    key,
+                ).fetchall()
+                for row in rows:
+                    if row["decision"] in decisions:
+                        decisions[str(row["decision"])] = int(row["count"])
+                rows = connection.execute(
+                    "SELECT deep_status, COUNT(*) AS count "
+                    "FROM simple_static_candidates WHERE analysis_id = ? "
+                    "AND workspace_id = ? AND commit_id = ? "
+                    "AND scope_fingerprint = ? "
+                    "AND decision IN ('INCLUDE', 'UNDECIDED') "
+                    "GROUP BY deep_status",
+                    key,
+                ).fetchall()
+                deep = {str(row["deep_status"]): int(row["count"]) for row in rows}
+            if self._table_exists(connection, "simple_candidate_hypotheses"):
+                row = connection.execute(
+                    "SELECT COUNT(*) FROM simple_candidate_hypotheses "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ?",
+                    key[:3],
+                ).fetchone()
+                registered = int(row[0]) if row is not None else 0
+        return decisions, deep, registered
 
     def _usage_summary(self, analysis_id: str) -> dict[str, int | float | None]:
         with self._connect() as connection:

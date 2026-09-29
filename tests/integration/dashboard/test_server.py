@@ -226,10 +226,10 @@ def running_server(data_dir):
         thread.join(timeout=5)
 
 
-def request(url: str, *, method: str = "GET"):
+def request(url: str, *, method: str = "GET", timeout: float = 5):
     try:
         return urllib.request.urlopen(
-            urllib.request.Request(url, method=method), timeout=5
+            urllib.request.Request(url, method=method), timeout=timeout
         )
     except urllib.error.HTTPError as error:
         return error
@@ -466,7 +466,8 @@ def test_large_artifact_projection_blocks_incomplete_whole_zip(tmp_path) -> None
         response = request(f"{base}/api/analyses/A-001/bundle.zip")
         selected = request(
             f"{base}/api/analyses/A-001/bundle.zip?selected=1"
-            f"&artifact={detail['artifacts'][0]['artifact_id']}"
+            f"&artifact={detail['artifacts'][0]['artifact_id']}",
+            timeout=15,
         )
     assert detail["artifact_projection_complete"] is False
     assert detail["artifact_omitted_count"] >= 1

@@ -535,6 +535,28 @@ def test_python_static_scope_preserves_verified_docker_build_context(
     assert [item.path for item in result.config_files] == ["Dockerfile"]
 
 
+def test_declared_python_entry_in_test_tree_remains_available_to_poc(
+    tmp_path: Path,
+) -> None:
+    tracked = (
+        _write(
+            tmp_path,
+            "pyproject.toml",
+            b'[project.scripts]\napp = "tests.app:main"\n',
+        ),
+        _write(tmp_path, "tests/app.py", b"def main(): pass\n"),
+        _write(tmp_path, "tests/test_app.py", b"def test_app(): pass\n"),
+        _write(tmp_path, "src/core.py", b"def core(): pass\n"),
+    )
+
+    result = _build(tmp_path, tracked)
+
+    paths = {item.git_path for item in result.tracked_files}
+    assert "tests/app.py" in paths
+    assert "tests/test_app.py" not in paths
+    assert "tests/app.py" in result.languages[0].evidence_paths
+
+
 def test_no_python_source_blocks_even_if_javascript_has_a_build_hint(
     tmp_path: Path,
 ) -> None:
@@ -635,7 +657,10 @@ def test_javascript_package_entrypoint_does_not_override_python_only_scope(
 
     assert result.status == "NEEDS_CONFIRMATION"
     assert result.languages == ()
-    assert [item.git_path for item in result.tracked_files] == ["package.json"]
+    assert [item.git_path for item in result.tracked_files] == [
+        "package.json",
+        "tests/runtime.js",
+    ]
     assert "NO_PYTHON_SOURCE" in result.confirmation_reasons
 
 

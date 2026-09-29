@@ -290,14 +290,16 @@ class RepositoryProfiler:
             if kind is not None:
                 raw_configs[path] = raw
 
-        selected_paths = set(build_static_file_scope(root, paths).selected_paths)
+        file_scope = build_static_file_scope(root, paths)
+        selected_paths = set(file_scope.selected_paths)
+        excluded_test_paths = {path for path, _reason in file_scope.excluded_test_files}
         # Static tools select Python sources independently. The repository
         # profile also authorizes the isolated PoC build context, which needs
         # verified templates, assets and .dockerignore as well as Python code.
         profile_paths = {
             item.git_path
             for item in verified_manifest
-            if _test_reason(root, item.git_path) is None
+            if item.git_path not in excluded_test_paths
             and not (
                 PurePosixPath(item.git_path)
                 .name.casefold()

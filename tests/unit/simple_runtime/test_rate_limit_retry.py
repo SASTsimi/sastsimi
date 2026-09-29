@@ -58,6 +58,45 @@ async def test_ambiguous_server_failure_without_usage_prevents_retry(
 
 
 @pytest.mark.asyncio
+async def test_unknown_usage_wins_even_when_retry_deadline_expires(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inner = _Client(
+        [StageFailure(code="FAILED", retryable=True, safe_message="retry"), _success()]
+    )
+    wrapper = _wrapper(tmp_path, inner, asyncio.Semaphore(1))
+    loop = asyncio.get_running_loop()
+    real_time = loop.time
+    offset = 0.0
+    original_record = wrapper._record_attempt
+
+    def shifted_time() -> float:
+        return real_time() + offset
+
+    def record_then_expire(
+        agent: str,
+        attempt: int,
+        started: float,
+        status: str,
+        result: SimpleLLMCallResult | None,
+        failure: StageFailure | None = None,
+    ) -> None:
+        nonlocal offset
+        original_record(agent, attempt, started, status, result, failure)
+        offset = 10.0
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(loop, "time", shifted_time)
+        patcher.setattr(wrapper, "_record_attempt", record_then_expire)
+        result = await wrapper.call(prompt=b"safe", output_schema={}, timeout_ms=5000)
+
+    assert isinstance(result, StageFailure)
+    assert result.code == "LLM_TOKEN_USAGE_UNAVAILABLE"
+    assert inner.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_auth_and_model_failures_are_terminal_even_if_marked_retryable(
     tmp_path: Path,
 ) -> None:

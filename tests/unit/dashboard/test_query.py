@@ -16,9 +16,11 @@ from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.bundle_files import PublishedBundle, parse_bundle_manifest
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.candidates import normalize_candidate_page
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
     STAGE_VERSION,
+    CandidateTerminal,
     CheckpointIdentity,
     SimpleAnalysisRun,
     SimpleStage,
@@ -26,6 +28,7 @@ from sastsimi.simple_runtime.models import (
     StageStatus,
     input_reference_hash,
 )
+from sastsimi.simple_runtime.run_lease import analysis_run_lease
 from sastsimi.simple_runtime.scope_policy import validate_scope_decision
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from sastsimi.storage.agent_activity import AgentActivityStore
@@ -154,6 +157,93 @@ def test_query_projects_current_progress_without_cross_analysis_data(tmp_path) -
     )
 
 
+def test_dashboard_marks_unleased_candidate_run_interrupted_without_rewriting_it(
+    tmp_path: Path,
+) -> None:
+    seed(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = store.require_analysis_run("analysis-a")
+    store.save_analysis_run(run.model_copy(update={"candidate_pipeline_version": 1}))
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    store.mark_running(identity, SimpleStage.STATIC_DONE, (), attempt_id="static-1")
+    query = DashboardQuery(tmp_path)
+
+    idle = query.get_analysis("A-001")
+    assert idle.status == "PAUSED"
+    assert idle.error_code == "INTERRUPTED_RESUME_REQUIRED"
+    assert idle.resume_action == "RESUME_INTERRUPTED"
+    assert query.list_analyses()[0].status == "PAUSED"
+    with analysis_run_lease(tmp_path, "analysis-a"):
+        assert query.get_analysis("A-001").status == "RUNNING"
+    checkpoint = store.get(identity, SimpleStage.STATIC_DONE)
+    assert checkpoint is not None
+    assert checkpoint.status is StageStatus.RUNNING
+
+
+def test_dashboard_complete_requires_matching_candidate_terminal_marker(
+    tmp_path: Path,
+) -> None:
+    seed(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = store.require_analysis_run("analysis-a")
+    root = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    bundle_ref = SimpleArtifactRepository(tmp_path, root).put_json(
+        {"kind": "simple_static_fact_bundle"}
+    )
+    for stage in (SimpleStage.STATIC_DONE, SimpleStage.HYPOTHESIS_DONE):
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=root,
+                stage=stage,
+                status=StageStatus.SUCCEEDED,
+                input_refs=(),
+                input_hash=input_reference_hash(()),
+            )
+        )
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=root.model_copy(update={"hypothesis_id": "hypothesis-1"}),
+            stage=SimpleStage.VERIFICATION_FINAL_DONE,
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            verdict="FALSE",
+        )
+    )
+    terminal = CandidateTerminal(
+        status="COMPLETE",
+        bundle_hash=bundle_ref.content_hash,
+        scope_fingerprint="scope-1",
+        decision_counts={},
+        deep_counts={},
+        hypothesis_count=1,
+    )
+    store.save_analysis_run(
+        run.model_copy(
+            update={
+                "candidate_pipeline_version": 1,
+                "candidate_scope_fingerprint": "scope-1",
+                "static_bundle_ref": bundle_ref,
+                "candidate_terminal": terminal,
+            }
+        )
+    )
+
+    query = DashboardQuery(tmp_path)
+    assert query.get_analysis("A-001").status == "COMPLETE"
+    assert query.list_analyses()[0].status == "COMPLETE"
+
+
 def _static_identity() -> CheckpointIdentity:
     return CheckpointIdentity(
         analysis_id="analysis-a",
@@ -169,6 +259,7 @@ def _attach_static_coverage(
     blocked: bool,
     corrupt: bool = False,
     limitations_only: bool = False,
+    scope_metadata: dict[str, object] | None = None,
 ):
     identity = _static_identity()
     artifacts = SimpleArtifactRepository(tmp_path, identity)
@@ -210,6 +301,7 @@ def _attach_static_coverage(
             "codeql_scope": "python_only",
             "codeql_error": "CODEQL_ANALYZE_FAILED" if limitations_only else None,
             "engine_errors": ["SEMGREP_EXECUTION_FAILED"] if limitations_only else [],
+            **(scope_metadata or {}),
         }
     )
     bundle_ref = artifacts.put_json(
@@ -301,6 +393,51 @@ def test_partial_without_gaps_exposes_engine_limitation_reasons(tmp_path: Path) 
     }
 
 
+def test_unavailable_python_paths_are_separate_from_pair_gaps_and_pageable(
+    tmp_path: Path,
+) -> None:
+    seed(tmp_path)
+    coverage_ref = _attach_static_coverage(
+        tmp_path,
+        blocked=False,
+        limitations_only=True,
+        scope_metadata={
+            "unavailable_paths": [
+                {"path": "src/a.py", "reason": "OPENGREP_EXECUTION_FAILED"},
+                {"path": "src/b.py", "reason": "OPENGREP_EXECUTION_FAILED"},
+            ]
+        },
+    )
+    query = DashboardQuery(tmp_path)
+    run = query._simple_run("analysis-a")
+    assert run is not None
+    SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3").save_analysis_run(
+        run.model_copy(
+            update={
+                "static_disposition": "PARTIAL",
+                "static_coverage_ref": coverage_ref,
+            }
+        )
+    )
+
+    detail = query.get_analysis("A-001")
+    assert detail.static_disposition == "PARTIAL"
+    assert detail.static_coverage_gap_count == 0
+    assert detail.static_coverage_unsupported_count == 0
+    assert detail.static_unavailable_file_count == 2
+    assert detail.static_unavailable_reason_counts == {"OPENGREP_EXECUTION_FAILED": 2}
+    assert detail.static_unavailable_file_preview[0] == {
+        "path": "src/a.py",
+        "reason": "OPENGREP_EXECUTION_FAILED",
+    }
+    page = query.get_static_coverage_page(
+        "A-001", kind="unavailable", offset=1, limit=1
+    )
+    assert page.total == 2
+    assert page.items == ({"path": "src/b.py", "reason": "OPENGREP_EXECUTION_FAILED"},)
+    assert page.coverage_digest == coverage_ref.content_hash
+
+
 def test_static_coverage_pages_include_full_ledger_and_bounded_limits(
     tmp_path: Path,
 ) -> None:
@@ -327,6 +464,135 @@ def test_static_coverage_pages_include_full_ledger_and_bounded_limits(
     )
     with pytest.raises(ValueError):
         query.get_static_coverage_page("analysis-a", kind="gaps", offset=0, limit=101)
+
+
+def test_dashboard_candidate_counts_are_scope_bound_and_not_duplicated(
+    tmp_path: Path,
+) -> None:
+    seed(tmp_path)
+    query = DashboardQuery(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = store.require_analysis_run("analysis-a")
+    store.save_analysis_run(
+        run.model_copy(
+            update={
+                "candidate_pipeline_version": 1,
+                "candidate_scope_fingerprint": "scope-1",
+            }
+        )
+    )
+    identity = _static_identity()
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    hits = [
+        {
+            "check_id": "python.eval",
+            "path": "pkg/item.py",
+            "start": {"line": index + 1},
+            "end": {"line": index + 1},
+            "extra": {"message": f"candidate {index}"},
+        }
+        for index in range(3)
+    ]
+    ref = artifacts.put_json({"results": hits})
+    candidates = normalize_candidate_page(
+        identity, "scope-1", "opengrep", ref, tuple(hits), 0
+    )
+    store.upsert_candidate_page(identity, "scope-1", ref, 0, 3, candidates)
+    store.save_candidate_decision(
+        identity, "scope-1", candidates[0].candidate_id, "INCLUDE", "input reachable"
+    )
+    store.save_candidate_deep_status(
+        identity, "scope-1", candidates[0].candidate_id, "RUNNING"
+    )
+    store.save_candidate_decision(
+        identity, "scope-1", candidates[1].candidate_id, "EXCLUDE", "test-only call"
+    )
+
+    detail = query.get_analysis("analysis-a")
+    summary = query.list_analyses()[0]
+    assert detail.candidate_total_count == summary.candidate_total_count == 3
+    assert detail.candidate_decision_counts == {
+        "PENDING": 1,
+        "INCLUDE": 1,
+        "EXCLUDE": 1,
+        "UNDECIDED": 0,
+        "ERROR": 0,
+    }
+    assert detail.deep_analysis_running_count == 1
+    assert query.get_analysis("analysis-a").candidate_total_count == 3
+
+    store.save_analysis_run(
+        run.model_copy(
+            update={
+                "candidate_pipeline_version": 1,
+                "candidate_scope_fingerprint": "different-scope",
+            }
+        )
+    )
+    assert query.get_analysis("analysis-a").candidate_total_count == 0
+
+
+def test_dashboard_shows_test_exclusions_and_python_only_scope(
+    tmp_path: Path,
+) -> None:
+    seed(tmp_path)
+    _attach_static_coverage(
+        tmp_path,
+        blocked=False,
+        scope_metadata={
+            "excluded_test_files": [
+                {"path": "tests/test_api.py", "reason": "test-directory:tests"}
+            ],
+            "out_of_scope_product_files": [
+                {"path": "web/app.ts", "reason": "non_python_product_source"}
+            ],
+        },
+    )
+    query = DashboardQuery(tmp_path)
+    detail = query.get_analysis("analysis-a")
+
+    assert detail.static_excluded_test_file_count == 1
+    assert detail.static_excluded_test_file_preview == (
+        {"path": "tests/test_api.py", "reason": "test-directory:tests"},
+    )
+    assert detail.static_out_of_scope_product_count == 1
+    assert detail.static_out_of_scope_product_preview == (
+        {"path": "web/app.ts", "reason": "non_python_product_source"},
+    )
+    assert (
+        query.get_static_coverage_page(
+            "A-001", kind="excluded_tests", offset=0, limit=10
+        ).items[0]["path"]
+        == "tests/test_api.py"
+    )
+    assert (
+        query.get_static_coverage_page(
+            "A-001", kind="out_of_scope", offset=0, limit=10
+        ).items[0]["path"]
+        == "web/app.ts"
+    )
+
+
+@pytest.mark.parametrize("unsafe_path", [r"C:\secret.py", r"tests\test_api.py"])
+def test_dashboard_rejects_unsafe_exclusion_path(
+    tmp_path: Path, unsafe_path: str
+) -> None:
+    seed(tmp_path)
+    _attach_static_coverage(
+        tmp_path,
+        blocked=False,
+        scope_metadata={
+            "excluded_test_files": [
+                {"path": unsafe_path, "reason": "test-directory:tests"}
+            ]
+        },
+    )
+    query = DashboardQuery(tmp_path)
+    assert query.get_analysis("analysis-a").static_coverage_expected is None
+    with pytest.raises(DashboardNotFound):
+        query.get_static_coverage_page(
+            "analysis-a", kind="excluded_tests", offset=0, limit=10
+        )
 
 
 def test_corrupt_static_coverage_has_no_paginated_ledger(tmp_path: Path) -> None:
@@ -370,6 +636,51 @@ def test_partial_run_disposition_and_coverage_ref_are_projected(tmp_path: Path) 
     assert query.get_analysis("analysis-a").static_coverage_expected is None
     with pytest.raises(DashboardNotFound):
         query.get_static_coverage_page("analysis-a", kind="gaps", offset=0, limit=10)
+
+
+def test_terminal_partial_analysis_has_a_finished_at(tmp_path: Path) -> None:
+    seed(tmp_path)
+    coverage_ref = _attach_static_coverage(tmp_path, blocked=False)
+    database = tmp_path / "db" / "sastsimi.sqlite3"
+    store = SimpleCheckpointStore(database)
+    run = DashboardQuery(tmp_path)._simple_run("analysis-a")
+    assert run is not None
+    store.save_analysis_run(
+        run.model_copy(
+            update={
+                "static_disposition": "PARTIAL",
+                "static_coverage_ref": coverage_ref,
+            }
+        )
+    )
+    root = _static_identity()
+    hypothesis = root.model_copy(update={"hypothesis_id": "hypothesis-1"})
+    for index, stage in enumerate(
+        (SimpleStage.HYPOTHESIS_DONE, *HYPOTHESIS_STAGES), start=1
+    ):
+        identity = root if stage is SimpleStage.HYPOTHESIS_DONE else hypothesis
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=identity,
+                stage=stage,
+                status=StageStatus.SUCCEEDED,
+                input_refs=(),
+                input_hash=input_reference_hash(()),
+                output_refs=(ref(f"terminal-{index}"),),
+                attempt_number=100 + index,
+                attempt_id=f"terminal-{index}",
+                updated_at=datetime(2026, 1, 2, tzinfo=UTC) + timedelta(seconds=index),
+            )
+        )
+
+    detail = DashboardQuery(tmp_path).get_analysis("analysis-a")
+    assert detail.status == "PARTIAL"
+    assert detail.finished_at == detail.last_updated_at
+    assert detail.started_at is not None
+    assert detail.finished_at is not None
+    assert detail.elapsed_ms == int(
+        (detail.finished_at - detail.started_at).total_seconds() * 1000
+    )
 
 
 def test_corrupt_static_coverage_is_unavailable_not_complete(tmp_path: Path) -> None:

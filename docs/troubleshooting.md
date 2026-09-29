@@ -9,7 +9,7 @@ sastsimi status A-001
 sastsimi resume A-001
 ```
 
-`resume`은 성공한 앞 단계를 재사용하고 실패한 단계부터 이어갑니다.
+`resume`은 같은 범위의 검증된 정적 검사, 완료된 후보 선별과 Agent 단계를 재사용하고 미완료 단계부터 이어갑니다. 후보 파이프라인 도입 전 분석은 저장된 이전 재개 경로를 유지합니다.
 정책 snapshot은 최초 분석 시 고정되므로 `resume`으로 최신 GitHub 정책을 다시
 받지는 않습니다. 정책이 새로 게시되거나 바뀌었다면 새 분석을 시작하세요.
 
@@ -28,10 +28,9 @@ sastsimi resume A-001
 실행하면, 구버전 코드가 새 체크포인트 필드를 읽지 못해 `ValidationError`가
 날 수 있습니다. 설치된 실행 파일이 어느 checkout을 import하는지 확인하고
 분석·조회·재개에 같은 버전의 코드를 사용하세요. DB를 초기화하는 해결책은 아닙니다.
-실행 프로세스가 종료됐는데 checkpoint가 `RUNNING`으로 남은 경우에는
-`resume A-001`로 중단 지점의 복구를 시도할 수 있습니다.
+후보 파이프라인 v1에서 마지막 기록이 `RUNNING`이지만 활성 실행 잠금(lease)이 없으면 `status`는 DB 체크포인트를 변경하지 않고 `PAUSED`·`INTERRUPTED_RESUME_REQUIRED`로 표시합니다. 이전 프로세스가 종료된 것을 확인한 뒤 `sastsimi resume A-001`로 저장된 단계부터 재개하세요.
 
-`LLM_TOKEN_BUDGET_EXHAUSTED`는 숫자로 설정한 누적 토큰 한도에 도달해 다음 요청을 차단한 상태입니다. 요청 전 검사이므로 한 번의 호출이 한도를 넘어설 수 있습니다. `LLM_TOKEN_USAGE_UNAVAILABLE`은 숫자 한도가 설정됐지만 이전 시도의 토큰 수치를 확인할 수 없어 후속 요청을 차단한 상태입니다. 새 `setup`의 기본값 `max_tokens = "unlimited"`에서는 이 두 차단을 적용하지 않습니다. 기존 설치의 `config.toml`과 `profile.toml` 모두 `max_tokens`를 `"unlimited"`로 바꾼 뒤 `resume`하면 해당 실패 단계를 다시 시도할 수 있습니다. 사용량 미확인 기록은 지우지 않으며 Codex CLI의 누락·잘못된 정상 완료 이벤트도 성공으로 인정하지 않습니다. Cursor CLI에서 토큰 수치가 없는 정상 응답은 무제한 설정에서 다음 요청을 차단하지 않지만 사용량은 미확인으로 남습니다.
+`LLM_TOKEN_BUDGET_EXHAUSTED`는 숫자로 설정한 누적 토큰 한도에 도달해 다음 요청을 차단한 상태입니다. 새 후보 분석에서 토큰·비용·누적 시간 한도 소진은 `PAUSED`로 표시하고 남은 후보를 `PENDING`으로 보존합니다. 한도를 바꾸지 않은 `resume`은 같은 유료 요청을 무한히 제출하지 않습니다. Provider 계정 사용량을 확인하고 필요한 설정 한도를 높인 뒤 재개하세요. 요청 전 검사이므로 한 번의 호출이 한도를 넘어설 수 있습니다. `LLM_TOKEN_USAGE_UNAVAILABLE`은 숫자 한도가 설정됐지만 이전 시도의 토큰 수치를 확인할 수 없어 후속 요청을 차단한 상태입니다. 새 `setup`의 기본값 `max_tokens = "unlimited"`에서는 이 두 차단을 적용하지 않습니다. 기존 설치의 `config.toml`과 `profile.toml` 모두 `max_tokens`를 `"unlimited"`로 바꾼 뒤 `resume`하면 해당 실패 단계를 다시 시도할 수 있습니다. 사용량 미확인 기록은 지우지 않으며 Codex CLI의 누락·잘못된 정상 완료 이벤트도 성공으로 인정하지 않습니다. Cursor CLI에서 토큰 수치가 없는 정상 응답은 무제한 설정에서 다음 요청을 차단하지 않지만 사용량은 미확인으로 남습니다.
 
 `LLM_COST_USAGE_UNAVAILABLE`은 이전 OpenAI API 시도의 신뢰할 수 있는 금액이 없어 후속 API 요청을 차단한 상태입니다. API adapter는 실제 청구 금액을 산출하지 않습니다. Codex·Cursor CLI는 비용을 제공하지 않고 Cursor SDK의 비용 확정도 늦을 수 있습니다. `max_cost_minor_units`는 기록된 신뢰 가능한 비용에만 다음 요청 전에 적용되므로 실제 청구액의 정확한 상한은 아닙니다. Provider 계정의 사용량과 지출 설정을 확인하세요. 미확인 시도가 남아 있으면 `resume`만 반복해도 차단이 해소되지 않습니다.
 
@@ -83,12 +82,14 @@ codex login
 - branch·tag·짧은 SHA가 아니라 정확한 40자리 또는 64자리 commit을 사용합니다.
 - 로컬 경로는 실제 Git 저장소여야 합니다.
 - 이전 workspace와 다른 저장소·commit이 섞였다는 오류가 나면 새 분석을 시작합니다.
+- Windows에서 사용하는 저장소 로더는 clone·checkout·검증 Git 명령에 `core.longpaths=true`를 호출별로 적용합니다. 전역 Git 설정을 바꾸지 않으므로 긴 경로 오류가 계속 나면 `sastsimi status A-001`의 오류 코드와 실제 Git 실패 기록을 확인하세요. 기존 분석 폴더를 지우지 마세요.
 
 ## OpenGrep 또는 CodeQL 실패
 
 같은 저장소와 commit을 서로 다른 분석 ID에서 동시에 시작하면 현재 공유 CodeQL 데이터베이스 생성이 충돌할 수 있습니다. 해당 조합의 분석은 하나씩 실행하고, `CODEQL_DATABASE_CREATE_FAILED`나 `CODEQL_ANALYZE_FAILED`가 발생하면 다른 실행이 종료된 뒤 실패한 분석을 재개하세요. 이 제한은 정적 검사 누락을 성공으로 바꾸지 않습니다.
 
-OpenGrep의 `PartialParsing`·구문 오류는 `paths.scanned`에 파일이 보여도 파일·규칙별 검사 완료가 아닙니다. AST와 설정된 CodeQL 결과는 계속 저장합니다. 정적 범위는 테스트 파일을 제외한 Python `.py` 제품 코드뿐이며, JS/TS·`.pyi` 등은 미검증 제품 코드가 아니라 분석 대상 밖입니다. 대시보드에서 Python 검증/예상 수와 누락 경로·규칙·이유를 확인하세요. CodeQL을 OpenGrep 규칙의 대체 증거로 세지 않습니다. 검증된 부분이 유효하면 후속 Agent는 진행할 수 있으나 남은 누락은 최종 `PARTIAL`로 표시합니다.
+OpenGrep의 `PartialParsing`·구문 오류는 `paths.scanned`에 파일이 보여도 파일·규칙별 검사 완료가 아닙니다. AST와 설정된 CodeQL 결과는 계속 저장합니다. 정적 범위는 테스트 파일을 제외한 Python `.py` 제품 코드뿐입니다. 제외 테스트는 경로·이유를 별도 기록하며 검사 성공으로 세지 않습니다. JS/TS·`.pyi`에는 Python 규칙을 적용하지 않고, JS/TS 제품 코드가 있는 혼합 저장소는 대상 밖 코드로 표시하며 전체 결과를 `PARTIAL`로 제한합니다. 대시보드에서 Python 검증/예상 수와 누락 경로·규칙·이유를 확인하세요. CodeQL을 OpenGrep 규칙의 대체 증거로 세지 않습니다. 검증된 부분이 유효하면 후속 Agent는 진행할 수 있으나 남은 누락은 최종 `PARTIAL`로 표시합니다.
+`status`와 대시보드는 미검증 파일×규칙 조합, 스캔 불가 Python 제품 파일, 지원되지 않는 파일을 서로 다른 항목으로 보여 줍니다. 스캔 불가 경로의 이유가 `NO_PYTHON_RULES`나 OpenGrep 실행 오류이면 해당 파일에 완료 증거가 없다는 뜻입니다. 화면의 경로 미리보기만으로 전체 범위를 판단하지 말고 대시보드 원장 또는 coverage artifact를 확인하세요. 영·한 보고서에도 스캔 불가 파일의 수·이유·경로 예시가 별도로 표시됩니다.
 
 선택형 Semgrep CE를 쓰려면 Windows PowerShell의 `.venv`에서 각 줄을 한 줄 명령으로 실행합니다. `setup`을 다시 실행할 때 기존 제한·모델 옵션도 필요하면 함께 지정하세요. 분석 중에는 Semgrep을 자동 설치하거나 원격 규칙을 받지 않습니다.
 
@@ -106,7 +107,7 @@ Semgrep 미설정은 `SEMGREP_TOOL_UNAVAILABLE`, 실행 실패는 `SEMGREP_EXECU
 
 OpenGrep은 Python 제품 코드만 최대 64파일·소스 합계 512 KiB의 명시적 묶음으로 검사하며, 각 호출은 최대 120초입니다. 시간 초과된 다중 파일 묶음은 단일 파일까지 나눕니다. 선택형 Semgrep에는 미검증 Python 파일·규칙만 넘깁니다. Semgrep은 최대 128파일·512 KiB, Windows 명령줄 24,000 UTF-16 단위를 지키고 호출당 최대 120초입니다. 파일 하나의 시간 초과나 JSON `Timeout`은 `--timeout 30`으로 한 번 더 시험합니다. 명령 길이·재시도·출력 크기 제한에 걸린 조합은 완료가 아니라 명시적인 누락입니다. 전체 미검증 경로·규칙·이유는 coverage artifact에 남고 대시보드에서 페이지 단위로 조회할 수 있습니다. 검증된 부분이 있으면 `STATIC_DONE`은 후속 Agent에 안전한 근거를 게시하며, 정적 범위가 불완전한 분석은 모든 Agent가 끝나도 `PARTIAL`입니다.
 
-OpenGrep·Semgrep·CodeQL 결과 파일과 재개용 스캔 원문은 건별 최대 64 MiB까지만 읽습니다. 한 정적 coverage 실행에서 정규화한 후보 결과가 500,000건 또는 평가에 채택한 스캔 원문 누적량이 4 GiB를 넘으면 `STATIC_CANDIDATES_TOO_LARGE`로 `BLOCKED`됩니다. 같은 원문을 다시 평가해도 누적량에 더합니다. 로컬 도구 호출에는 기본 4 GiB 메모리 제한이 있습니다. Windows는 하위 프로세스를 포함한 Job 전체 커밋 메모리, POSIX는 각 프로세스의 가상 주소 공간 제한이므로 POSIX 프로세스 트리의 메모리 총합을 제한하지는 않습니다. 이 자원 한도에 걸린 결과는 검사 완료 증거가 아닙니다.
+OpenGrep·Semgrep·CodeQL 결과 파일과 재개용 스캔 원문은 건별 최대 64 MiB까지만 읽습니다. 새 후보 경로는 결과 건수에 고정된 전체 상한을 적용해 나머지를 버리지 않고, 원본을 보존한 채 페이지로 처리합니다. 스캔 원문 누적 4 GiB, 개별 출력 크기·메모리 등 자원 경계는 유지하며 이를 넘기면 완료로 속이지 않고 명시적인 오류나 미검증 상태로 남깁니다. 로컬 도구 호출에는 기본 4 GiB 메모리 제한이 있습니다. Windows는 하위 프로세스를 포함한 Job 전체 커밋 메모리, POSIX는 각 프로세스의 가상 주소 공간 제한이므로 POSIX 프로세스 트리의 메모리 총합을 제한하지는 않습니다. 이 자원 한도에 걸린 결과는 검사 완료 증거가 아닙니다.
 
 coverage artifact의 각 미검증 조합에서 `known_attempt_count`는 완료 기록이 남은 scanner 실행 요청 수이고, `known_attempts_by_engine`는 이를 OpenGrep·Semgrep별로 나눕니다. 실행 요청 직전 `STARTED`를, 종료 후 결과를 ledger에 영속 기록하므로 비정상 종료 흔적을 발견할 수 있습니다. 저장된 원문·요청 설명자·해시와 commit·규칙·도구 지문을 재검증한 파일·규칙 조합만 완료 증거로 인정합니다. `history_complete=false`이면 이전 summary 또는 미완료 요청의 정확한 이력을 확정할 수 없어 `attempt_count=null`이며, 참일 때만 정확한 총 요청 수를 표시합니다. `latest_error_code`와 `latest_error_ref`는 가장 최근 기록된 실패 코드와 비공개 오류 근거 참조입니다. 캐시 재사용·실행 전 검사는 호출 수에서 제외합니다.
 
@@ -127,15 +128,15 @@ coverage artifact의 각 미검증 조합에서 `known_attempt_count`는 완료 
 DB의 누적 LLM 호출시간에 더해지지 않습니다. Python 소스가 없으면
 `NO_PYTHON_SOURCE`, Python 소스는 있지만 적용 가능한 규칙이 없으면
 `NO_PYTHON_RULES`로 중단하며 검사 완료로 표시하지 않습니다.
-제품 코드만 정적 검사하며 명확한 테스트 파일은 입력과 커버리지에서 빠집니다. 제외 목록을 별도로 기록하거나 테스트 포함 옵션을 제공하지 않습니다. 원본 규칙은 그대로이며 저장소별 별도 설정은 필요 없습니다.
+제품 코드만 정적 검사하며 명확한 테스트 파일은 입력과 커버리지에서 빠집니다. 제외된 테스트 파일은 경로·이유를 별도 기록하지만 검사 성공으로 세지 않으며, 테스트 포함 옵션은 제공하지 않습니다. 원본 규칙은 그대로이며 저장소별 별도 설정은 필요 없습니다.
 
 `STATIC_SCOPE_CHANGED_NEW_ANALYSIS_REQUIRED`는 이전 전체 파일 범위의 완료된 정적 근거를 새 제품 코드 범위로 `resume`하려 할 때의 안전 중단입니다. 기존 분석 데이터는 그대로 두고 같은 저장소·commit으로 새 `analyze`를 시작하세요. `resume`을 반복해도 두 범위의 근거를 섞지 않습니다.
 
-정적 분석은 Python `.py` 제품 파일만 지원합니다. `.css`, `.html`, Go·PHP·shell·SQL·JS/TS 소스 등은 정적 커버리지에 포함하지 않습니다. Python 범위 안에서 미검증 파일·규칙이 남으면 대시보드에서 이유를 확인하세요. 그 누락을 숨겨 `COMPLETE`로 바꾸면 안 됩니다.
+정적 분석은 Python `.py` 제품 파일만 지원합니다. `.css`, `.html`, Go·PHP·shell·SQL·JS/TS 소스 등은 Python 파일×규칙 커버리지에 포함하지 않습니다. JS/TS 제품 코드가 있으면 대상 밖 경로로 별도 표시되고 전체 결과는 `PARTIAL`입니다. Python 범위 안에서 미검증 파일·규칙이 남으면 대시보드에서 이유를 확인하세요. 그 누락을 숨겨 `COMPLETE`로 바꾸면 안 됩니다.
 
 `NO_PYTHON_SOURCE`는 선택된 비테스트 `.py` 제품 소스가 없는 경우의 명시적 중단입니다. `NO_PYTHON_RULES`는 `.py` 소스는 있지만 적용 가능한 Python 규칙이 없는 설정 오류입니다. 둘 다 `COMPLETE`가 아니며, 저장소·commit·규칙 설정을 확인해야 합니다. 테스트 파일을 정적 검사에 다시 넣는 옵션은 없습니다.
 
-정적 Python 범위 선정에 JS `package.json` 파싱은 필요하지 않습니다. Python AST 파싱 오류나 입력 크기 초과는 coverage artifact의 제한 사항으로 남습니다. 다른 검증 부분이 사용 가능하면 `PARTIAL`로 진행할 수 있으며 AST 사실 목록 상한 자체는 파싱 중단을 뜻하지 않습니다.
+정적 Python 범위 선정에 JS `package.json` 파싱은 필요하지 않습니다. Python AST 파싱 오류나 입력 크기 초과는 coverage artifact의 제한 사항으로 남습니다. 다른 검증 부분이 사용 가능하면 `PARTIAL`로 진행할 수 있으며 AST 사실 목록이 잘리면 누락을 기록하고 전체 완료로 계산하지 않습니다.
 
 시간 초과나 취소 시 하위 프로세스 트리 정리를 시도하고 `EXTERNAL_TOOL_TIMEOUT`을
 취약점 반증으로 취급하지 않습니다. 정확한 분석·저장소·commit·도구 지문과 CAS를
@@ -255,7 +256,7 @@ sastsimi resume A-001
 ## 영문·국문 보고서 또는 첨부파일 링크가 보이지 않음
 
 `PARTIAL` 분석에서도 실제 검증과 Gate를 통과한 Finding은 보고서가 생성될 수 있습니다.
-두 언어의 보고서는 같은 검증/예상 수, 누락·미지원 수와 이유, coverage artifact
+두 언어의 보고서는 같은 검증/예상 수, 미검증 파일×규칙 조합·스캔 불가 Python 파일·미지원 파일의 별도 수와 이유·경로 예시, coverage artifact
 해시를 표시합니다. 확인된 Finding은 전체 저장소 검사가 끝났다는 뜻이 아닙니다.
 전체 누락 목록은 보고서 ZIP이 아니라 별도 coverage artifact에 남습니다.
 

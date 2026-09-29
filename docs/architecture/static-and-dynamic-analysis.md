@@ -4,19 +4,18 @@
 
 Repository Loader는 URL 또는 로컬 경로의 저장소를 고정 commit으로 준비하고 추적 파일을
 기준으로 Python 제품 파일과 실행에 필요한 package manifest를 식별합니다. 정적 코드 범위는
-비테스트 `.py` 파일뿐이며 제외 내역이나 테스트 포함 옵션은 제공하지 않습니다. AST, OpenGrep과 활성화 조건을 충족한
+제품용 `.py` 파일뿐입니다. 테스트 전용 파일은 제외 경로·이유를 별도 기록하며 검사 성공으로 세지 않고, 테스트 포함 옵션은 제공하지 않습니다. 배포 manifest가 제품 진입점으로 선언한 `tests/` 경로는 제품 코드로 검사하고 PoC 소스 범위에도 포함합니다. manifest가 손상되어 구분할 수 없는 파일은 미지원 제품 범위로 보존해 전체 완료를 주장하지 않습니다. AST, OpenGrep과 활성화 조건을 충족한
 CodeQL 결과를 `StaticFactBundle`로 정규화합니다.
 SimpleRuntime의 OpenGrep은 로컬 규칙을 제품 파일 묶음별로 실행하며 고정 commit의 선택된 제품 파일과
 규칙 언어를 결합한 `파일 × 규칙` 커버리지 artifact를 남깁니다. 도구가 0건을 찾았더라도
 파일을 실제 검사하고 해당 규칙을 건너뛰지 않았으며 파싱 오류가 없을 때만 검증된
 조합으로 셉니다. OpenGrep 실패 뒤에도 AST와 설정된 CodeQL 결과를 독립 수집합니다.
 선택형 Semgrep CE는 미검증 조합만 동일한 로컬 규칙으로 재검사합니다. 정적 검사
-전체 종료 시각은 없고, 호출별 제한과 유한한 묶음 분할·재시도만 적용합니다. 검증된 조합의
-후보만 Agent 입력에 넣습니다. 유효한 검증 부분과 정확한 coverage artifact가
+전체 종료 시각은 없고, 호출별 제한과 유한한 묶음 분할·재시도만 적용합니다. 검증된 조합의 원본 결과만 후보로 등록합니다. 후보는 입력 지점, 확인된 source→sink 흐름, 단순 도구 힌트로 나누고 Discovery가 작은 배치로 선별한 뒤 기존 가설 흐름에 연결합니다. 서로 다른 힌트를 임의의 흐름으로 합치지 않으며, 미검증 조합의 raw hit는 검증된 후보가 아닙니다. 유효한 검증 부분과 정확한 coverage artifact가
 있으면 누락된 Python 파일·규칙을 남긴 `PARTIAL` 결과로 진행하며, 증거 무결성이
 깨졌거나 검증된 조합이 전혀 없으면 `BLOCKED`입니다. 현재 CodeQL 질의는
 Python만 대상으로 하며 OpenGrep 규칙의 커버리지 대체 증거가 아닙니다.
-비Python 파일은 커버리지 분모와 미지원 제품 코드 목록에 넣지 않습니다.
+비Python 파일은 Python 파일×규칙 커버리지 분모에 넣지 않습니다. JS/TS 제품 코드는 대상 밖 코드로 경로·이유를 별도 표시하며, 혼합 저장소의 전체 결과는 `PARTIAL`로 제한합니다.
 검증/예상 수와 전체 누락은 별도 coverage artifact가 보유하며 대시보드는 이를
 페이지 단위로 보여 줍니다. 영문·국문 Finding 보고서는 같은 간략한 coverage
 수치·이유·해시와 `PARTIAL` 경고를 표시하고 큰 목록은 복제하지 않습니다.
@@ -42,6 +41,8 @@ Pro·Con·초기 Verification 근거도 앞쪽에 배치합니다.
   `src/sastsimi/simple_runtime/static_coverage.py`,
   `src/sastsimi/simple_runtime/semgrep_fallback.py`
 - 정적 실행 구성: `src/sastsimi/composition/simple_runtime_composition.py`
+- 후보 정규화·선별: `src/sastsimi/simple_runtime/candidates.py`,
+  `src/sastsimi/simple_runtime/discovery.py`
 - PoC 검사: `src/sastsimi/simple_runtime/poc.py`
 - 요청 소스 경계: `src/sastsimi/simple_runtime/retrieval.py`,
   `src/sastsimi/simple_runtime/facts.py`

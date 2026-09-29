@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import os
+import stat
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -14,6 +15,11 @@ from typing import BinaryIO
 
 class AnalysisRunBusy(RuntimeError):
     code = "ANALYSIS_ALREADY_RUNNING"
+
+
+def _lease_path(data_dir: Path, analysis_id: str) -> Path:
+    digest = hashlib.sha256(analysis_id.encode("utf-8")).hexdigest()
+    return data_dir / "db" / "analysis-leases" / f"{digest}.lock"
 
 
 def _try_lock(handle: BinaryIO) -> bool:
@@ -48,6 +54,40 @@ def _unlock(handle: BinaryIO) -> None:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+def analysis_run_lease_active(data_dir: Path, analysis_id: str) -> bool | None:
+    """Probe an existing OS lock without creating or writing the lease file.
+
+    None means the lock cannot be checked safely, not that the run is idle.
+    """
+
+    path = _lease_path(data_dir, analysis_id)
+    try:
+        parent = path.parent.resolve(strict=True)
+        if not parent.is_relative_to(data_dir.resolve(strict=True)):
+            return None
+        before = path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    if not stat.S_ISREG(before.st_mode) or before.st_size < 1:
+        return None
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+        with os.fdopen(descriptor, "rb", buffering=0) as handle:
+            opened = os.fstat(handle.fileno())
+            if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                return None
+            if not _try_lock(handle):
+                return True
+            try:
+                return False
+            finally:
+                _unlock(handle)
+    except OSError:
+        return None
+
+
 @contextmanager
 def analysis_run_lease(data_dir: Path, analysis_id: str) -> Iterator[None]:
     """Prevent another process from repeating work on this analysis.
@@ -57,8 +97,7 @@ def analysis_run_lease(data_dir: Path, analysis_id: str) -> Iterator[None]:
     so an external analysis ID cannot select a filesystem path.
     """
 
-    digest = hashlib.sha256(analysis_id.encode("utf-8")).hexdigest()
-    path = data_dir / "db" / "analysis-leases" / f"{digest}.lock"
+    path = _lease_path(data_dir, analysis_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     with os.fdopen(descriptor, "r+b", buffering=0) as handle:

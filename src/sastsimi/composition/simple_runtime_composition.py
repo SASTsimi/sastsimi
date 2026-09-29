@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import re
+import sqlite3
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import cast
 
 from sastsimi.composition.local_codex_binding import build_local_codex_binding
@@ -57,7 +60,12 @@ from sastsimi.simple_runtime.cursor_provider import (
 )
 from sastsimi.simple_runtime.gate_guard import technical_gate_accepted
 from sastsimi.simple_runtime.github_policy import GitHubPolicyDiscovery
-from sastsimi.simple_runtime.models import CheckpointIdentity, SimpleStage
+from sastsimi.simple_runtime.models import (
+    CheckpointIdentity,
+    SimpleAnalysisRun,
+    SimpleStage,
+    StageStatus,
+)
 from sastsimi.simple_runtime.portable_docker import (
     DirectEnvironmentPreparer,
     PortableContainerFactory,
@@ -69,6 +77,7 @@ from sastsimi.simple_runtime.provider import (
     SimpleOpenAIClient,
 )
 from sastsimi.simple_runtime.recovery import SimpleRecoveryCoordinator
+from sastsimi.simple_runtime.run_lease import analysis_run_lease_active
 from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
 from sastsimi.simple_runtime.scope_policy import (
     project_scope_review,
@@ -369,6 +378,15 @@ def build_analysis_application(
         max_parallel_hypotheses=profile.max_parallel_hypotheses,
         max_elapsed_seconds=profile.max_elapsed_seconds,
         max_tokens=profile.max_tokens,
+        max_cost_minor_units=profile.max_cost_minor_units,
+        candidate_pipeline_enabled=True,
+        candidate_client_factory=client_factory,
+        candidate_hypothesis_bootstrap=DirectHypothesisBootstrap(
+            data_dir=data_dir,
+            client_factory=client_factory,
+            feed="current",
+            store=store,
+        ),
     )
 
 
@@ -465,9 +483,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             if started:
                 try:
                     run = self._store.require_analysis_run(started[0])
-                    current = ProgressProjector(self._store).snapshot(
-                        started[0], static_disposition=run.static_disposition
-                    )
+                    current = self._progress_snapshot(run)
                 except LookupError:
                     current = None
                 if current is not None and current != last:
@@ -477,19 +493,62 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         outcome = await task
         if started:
             run = self._store.require_analysis_run(started[0])
-            current = ProgressProjector(self._store).snapshot(
-                started[0], static_disposition=run.static_disposition
-            )
+            current = self._progress_snapshot(run)
             if current != last:
                 callback(current)
         return outcome
 
+    def _progress_snapshot(self, run: SimpleAnalysisRun) -> ProgressSnapshot:
+        identity = CheckpointIdentity(
+            analysis_id=run.analysis_id,
+            workspace_id=run.workspace_id,
+            commit_id=run.commit_id,
+            hypothesis_id=None,
+        )
+        scope = run.candidate_scope_fingerprint
+        candidate_mode = run.candidate_pipeline_version == 1
+        return ProgressProjector(self._store).snapshot(
+            run.analysis_id,
+            static_disposition=run.static_disposition,
+            candidate_pipeline_version=run.candidate_pipeline_version or 0,
+            candidate_counts=(
+                self._store.candidate_counts(identity, scope)
+                if candidate_mode and scope is not None
+                else None
+            ),
+            candidate_deep_counts=(
+                self._store.candidate_deep_counts(identity, scope)
+                if candidate_mode and scope is not None
+                else None
+            ),
+            registered_hypothesis_count=(
+                self._store.hypothesis_count(identity) if candidate_mode else None
+            ),
+            candidate_terminal=run.candidate_terminal if candidate_mode else None,
+            candidate_bundle_hash=(
+                run.static_bundle_ref.content_hash
+                if candidate_mode and run.static_bundle_ref is not None
+                else None
+            ),
+            candidate_scope_fingerprint=scope if candidate_mode else None,
+        )
+
     def status(self, analysis_id: str) -> dict[str, object]:
         exact = self._display.resolve(analysis_id)
         run = self._store.require_analysis_run(exact)
-        snapshot = ProgressProjector(self._store).snapshot(
-            exact, static_disposition=run.static_disposition
-        )
+        snapshot = self._progress_snapshot(run)
+        if (
+            run.candidate_pipeline_version == 1
+            and snapshot.status == "RUNNING"
+            and analysis_run_lease_active(self._config.data_dir, exact) is False
+        ):
+            snapshot = snapshot.model_copy(
+                update={
+                    "status": "PAUSED",
+                    "error_code": "INTERRUPTED_RESUME_REQUIRED",
+                    "resume_action": "RESUME_INTERRUPTED",
+                }
+            )
         return {
             "analysis_id": run.display_analysis_id,
             "exact_analysis_id": exact,
@@ -504,7 +563,182 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             "error_code": snapshot.error_code,
             "inconclusive_hypothesis_count": snapshot.inconclusive_hypothesis_count,
             "rejected_hypothesis_count": snapshot.rejected_hypothesis_count,
+            "candidate_total_count": snapshot.candidate_total_count,
+            "candidate_decision_counts": snapshot.candidate_decision_counts,
+            "deep_analysis_running_count": snapshot.deep_analysis_running_count,
+            "deep_analysis_completed_count": snapshot.deep_analysis_completed_count,
+            "deep_analysis_pending_count": snapshot.deep_analysis_pending_count,
+            "hypothesis_count": snapshot.hypothesis_count,
+            "finding_count": snapshot.finding_count,
+            "resume_action": snapshot.resume_action,
+            **self._static_coverage_status(run),
         }
+
+    def _static_coverage_status(self, run: SimpleAnalysisRun) -> dict[str, object]:
+        """Expose only bounded, exact-verified static scope facts."""
+
+        empty: dict[str, object] = {
+            "static_coverage_status": "UNAVAILABLE",
+            "static_coverage_digest": None,
+            "static_coverage_expected": None,
+            "static_coverage_verified": None,
+        }
+        categories = (
+            ("gaps", "static_coverage_gap", ("path", "rule_id", "reason")),
+            (
+                "unavailable_paths",
+                "static_coverage_unavailable_path",
+                ("path", "reason"),
+            ),
+            (
+                "unsupported_files",
+                "static_coverage_unsupported",
+                ("path", "reason"),
+            ),
+            (
+                "excluded_test_files",
+                "static_excluded_test_file",
+                ("path", "reason"),
+            ),
+            (
+                "out_of_scope_product_files",
+                "static_out_of_scope_product",
+                ("path", "reason"),
+            ),
+        )
+        for _, prefix, _ in categories:
+            empty[f"{prefix}_count"] = None
+            empty[f"{prefix}_preview"] = []
+            empty[f"{prefix}_truncated_count"] = None
+        identity = CheckpointIdentity(
+            analysis_id=run.analysis_id,
+            workspace_id=run.workspace_id,
+            commit_id=run.commit_id,
+            hypothesis_id=None,
+        )
+        checkpoint = self._store.get(identity, SimpleStage.STATIC_DONE)
+        if checkpoint is None or checkpoint.status in {
+            StageStatus.PENDING,
+            StageStatus.RUNNING,
+        }:
+            return {**empty, "static_coverage_status": "PENDING"}
+        try:
+            if len(checkpoint.output_refs) < 2:
+                raise ValueError("PUBLIC_STATIC_BUNDLE_MISSING")
+            bundle_ref = checkpoint.output_refs[1]
+            if (
+                checkpoint.status is StageStatus.SUCCEEDED
+                and run.static_bundle_ref is not None
+                and run.static_bundle_ref != bundle_ref
+            ):
+                raise ValueError("PUBLIC_STATIC_BUNDLE_STALE")
+            artifacts = SimpleArtifactRepository(self._config.data_dir, identity)
+            bundle = json.loads(artifacts.read(bundle_ref))
+            if not isinstance(bundle, dict) or any(
+                bundle.get(key) != value
+                for key, value in (
+                    ("kind", "simple_static_fact_bundle"),
+                    ("analysis_id", run.analysis_id),
+                    ("workspace_id", run.workspace_id),
+                    ("commit_id", run.commit_id),
+                )
+            ):
+                raise ValueError("PUBLIC_STATIC_BUNDLE_INVALID")
+            coverage_ref = StoredDataRef.model_validate(bundle["static_coverage_ref"])
+            if checkpoint.status is StageStatus.SUCCEEDED:
+                if (
+                    run.static_coverage_ref is not None
+                    and run.static_coverage_ref != coverage_ref
+                ):
+                    raise ValueError("PUBLIC_STATIC_COVERAGE_STALE")
+            elif checkpoint.output_refs[0] != coverage_ref:
+                raise ValueError("PUBLIC_STATIC_COVERAGE_EVIDENCE_MISMATCH")
+            coverage = json.loads(artifacts.read(coverage_ref))
+            if not isinstance(coverage, dict) or any(
+                coverage.get(key) != value
+                for key, value in (
+                    ("kind", "simple_static_coverage_v1"),
+                    ("analysis_id", run.analysis_id),
+                    ("workspace_id", run.workspace_id),
+                    ("commit_id", run.commit_id),
+                )
+            ):
+                raise ValueError("PUBLIC_STATIC_COVERAGE_SCOPE_INVALID")
+            fingerprint = coverage.get("fingerprint")
+            if (
+                not isinstance(fingerprint, str)
+                or re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None
+                or (
+                    run.candidate_scope_fingerprint is not None
+                    and fingerprint != run.candidate_scope_fingerprint
+                )
+            ):
+                raise ValueError("PUBLIC_STATIC_COVERAGE_FINGERPRINT_INVALID")
+            expected = coverage.get("expected_count")
+            verified = coverage.get("verified_count")
+            if (
+                type(expected) is not int
+                or type(verified) is not int
+                or not 0 <= verified <= expected
+            ):
+                raise ValueError("PUBLIC_STATIC_COVERAGE_COUNT_INVALID")
+            projected = dict(empty)
+            for source_key, prefix, fields in categories:
+                value = coverage.get(source_key)
+                if value is None:
+                    continue
+                if not isinstance(value, list):
+                    raise ValueError("PUBLIC_STATIC_COVERAGE_ROWS_INVALID")
+                preview: list[dict[str, str]] = []
+                for item in value:
+                    if not isinstance(item, dict):
+                        raise ValueError("PUBLIC_STATIC_COVERAGE_ROWS_INVALID")
+                    row: dict[str, str] = {}
+                    for field in fields:
+                        cell = item.get(field)
+                        if not isinstance(cell, str) or not cell:
+                            raise ValueError("PUBLIC_STATIC_COVERAGE_ROWS_INVALID")
+                        if field == "path":
+                            if (
+                                len(cell) > 512
+                                or cell.startswith("/")
+                                or ".." in PurePosixPath(cell).parts
+                                or "\\" in cell
+                                or ":" in cell
+                                or any(
+                                    ord(char) < 32 or ord(char) == 127 for char in cell
+                                )
+                            ):
+                                raise ValueError("PUBLIC_STATIC_COVERAGE_PATH_INVALID")
+                        elif (
+                            re.fullmatch(
+                                r"[A-Za-z0-9_.:+-]{1,128}"
+                                if field == "reason"
+                                else r"[A-Za-z0-9_.:-]{1,128}",
+                                cell,
+                            )
+                            is None
+                        ):
+                            raise ValueError("PUBLIC_STATIC_COVERAGE_LABEL_INVALID")
+                        row[field] = cell
+                    if len(preview) < 20:
+                        preview.append(row)
+                projected[f"{prefix}_count"] = len(value)
+                projected[f"{prefix}_preview"] = preview
+                projected[f"{prefix}_truncated_count"] = max(0, len(value) - 20)
+            if projected["static_coverage_gap_count"] != expected - verified:
+                raise ValueError("PUBLIC_STATIC_COVERAGE_COUNT_INVALID")
+            projected.update(
+                {
+                    "static_coverage_status": "AVAILABLE",
+                    "static_coverage_digest": coverage_ref.content_hash,
+                    "static_coverage_expected": expected,
+                    "static_coverage_verified": verified,
+                }
+            )
+            return projected
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+            return empty
 
     def result(self, analysis_id: str) -> dict[str, object]:
         exact = self._display.resolve(analysis_id)
@@ -522,7 +756,18 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         ]
         return {
             **self.status(run.display_analysis_id),
-            "hypothesis_count": len(run.hypothesis_ids),
+            "hypothesis_count": (
+                self._store.hypothesis_count(
+                    CheckpointIdentity(
+                        analysis_id=run.analysis_id,
+                        workspace_id=run.workspace_id,
+                        commit_id=run.commit_id,
+                        hypothesis_id=None,
+                    )
+                )
+                if run.candidate_pipeline_version == 1
+                else len(run.hypothesis_ids)
+            ),
             "finding_count": len(findings),
             "findings": [
                 FindingDisplayIdStore(self._store.database_path).get_or_allocate(

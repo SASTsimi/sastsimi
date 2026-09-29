@@ -28,6 +28,7 @@ from sastsimi.simple_runtime.bootstrap_stages import (
     ProcessResult,
     StaticCoverageBlocked,
 )
+from sastsimi.simple_runtime.candidates import ingest_static_candidates
 from sastsimi.simple_runtime.models import CheckpointIdentity, StageFailure
 from sastsimi.simple_runtime.opengrep_rule_batches import (
     RuleBatchPlan,
@@ -556,6 +557,99 @@ class _RecordingProcess(_Process):
         )
 
 
+def test_engine_raw_sources_union_verified_pairs_without_merging_engines(
+    tmp_path: Path,
+) -> None:
+    identity = _identity("raw-source-pair-union")
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    raw_ref = artifacts.put_bytes(b'{"results":[]}', "application/json")
+    slices = (
+        CoverageSlice(
+            engine="opengrep",
+            batch_key="a",
+            rule_ids=("python.sql",),
+            verified_pairs=frozenset({("app.py", "python.sql")}),
+            gap_reasons=(),
+            parsed={},
+            normalized_results=(),
+            raw_ref=raw_ref,
+        ),
+        CoverageSlice(
+            engine="opengrep",
+            batch_key="b",
+            rule_ids=("python.sql",),
+            verified_pairs=frozenset({("good.py", "python.sql")}),
+            gap_reasons=(),
+            parsed={},
+            normalized_results=(),
+            raw_ref=raw_ref,
+        ),
+        CoverageSlice(
+            engine="semgrep",
+            batch_key="c",
+            rule_ids=("python.sql",),
+            verified_pairs=frozenset({("good.py", "python.sql")}),
+            gap_reasons=(),
+            parsed={},
+            normalized_results=(),
+            raw_ref=raw_ref,
+        ),
+    )
+
+    assert static_module._engine_raw_sources(slices) == [
+        {
+            "ref": raw_ref.model_dump(mode="json"),
+            "engine": "opengrep",
+            "verified_pairs": [
+                {"path": "app.py", "rule_id": "python.sql"},
+                {"path": "good.py", "rule_id": "python.sql"},
+            ],
+        },
+        {
+            "ref": raw_ref.model_dump(mode="json"),
+            "engine": "semgrep",
+            "verified_pairs": [{"path": "good.py", "rule_id": "python.sql"}],
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unverified_scan_hit_stays_out_of_candidates_and_in_coverage_gaps(
+    tmp_path: Path,
+) -> None:
+    bootstrap, profile, store = _coverage_bootstrap(
+        tmp_path, _CoverageProcess(parse_warning=True), codeql=False
+    )
+    identity = _identity("unverified-raw-hit")
+
+    result = await bootstrap.run(_request(profile), identity)
+
+    assert result.static_disposition == "PARTIAL"
+    assert result.static_bundle_ref is not None
+    coverage = _coverage_from_ref(profile, identity, result.static_coverage_ref)
+    assert any(
+        gap["path"] == "app.py" and gap["rule_id"] == "python.sql"
+        for gap in coverage["gaps"]
+    )
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
+    source = bundle["engine_raw_sources"][0]
+    raw = json.loads(artifacts.read(StoredDataRef.model_validate(source["ref"])))
+    assert {hit["path"] for hit in raw["results"]} == {"app.py", "good.py"}
+    assert source["verified_pairs"] == [{"path": "good.py", "rule_id": "python.sql"}]
+
+    ingest_static_candidates(
+        identity,
+        coverage["fingerprint"],
+        result.static_bundle_ref,
+        artifacts,
+        store,
+        workspace=result.workspace_path,
+    )
+    candidates = store.list_candidates(identity, coverage["fingerprint"])
+    assert {candidate.path for candidate in candidates} == {"good.py"}
+
+
 @pytest.mark.asyncio
 async def test_product_scope_drives_ast_scan_manifest_and_coverage(
     tmp_path: Path,
@@ -631,10 +725,94 @@ async def test_product_scope_drives_ast_scan_manifest_and_coverage(
     assert poc_manifest["paths"] == ["app.py"]
     assert bundle["ast_summary"]["parse_error_count"] == 0
     assert coverage["expected_count"] == coverage["verified_count"] == 1
-    for saved in (bundle, manifest, coverage):
-        serialized = json.dumps(saved, sort_keys=True)
-        assert "tests/test_broken.py" not in serialized
-        assert "EXCLUDED_TEST_FILE" not in serialized
+    assert coverage["excluded_test_files"] == [
+        {"path": "tests/test_broken.py", "reason": "test-directory:tests"}
+    ]
+    assert coverage["out_of_scope_product_files"] == []
+    assert bundle["engine_raw_sources"] == [
+        {
+            "ref": ref,
+            "engine": "opengrep",
+            "verified_pairs": [{"path": "app.py", "rule_id": "python.sql"}],
+        }
+        for ref in bundle["engine_raw_refs"]
+    ]
+    assert bundle["engine_raw_sources"]
+    for saved in (bundle, manifest, poc_manifest):
+        assert "tests/test_broken.py" not in json.dumps(saved, sort_keys=True)
+
+
+@pytest.mark.asyncio
+async def test_declared_product_entry_in_test_tree_stays_in_scan_and_poc_manifests(
+    tmp_path: Path,
+) -> None:
+    class DeclaredProductProcess(_Process):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "clone":
+                result = await super().run(
+                    argv, cwd=cwd, timeout_seconds=timeout_seconds
+                )
+                root = Path(argv[-1])
+                (root / "pyproject.toml").write_text(
+                    '[project.scripts]\napp = "tests.app:main"\n', encoding="utf-8"
+                )
+                (root / "tests").mkdir()
+                (root / "tests" / "app.py").write_text(
+                    "def main(): pass\n", encoding="utf-8"
+                )
+                (root / "tests" / "test_app.py").write_text(
+                    "def test_app(): pass\n", encoding="utf-8"
+                )
+                return result
+            if argv[1:3] == ("ls-files", "-z"):
+                return ProcessResult(
+                    0,
+                    b"app.py\0requirements.txt\0pyproject.toml\0"
+                    b"tests/app.py\0tests/test_app.py\0",
+                    b"",
+                )
+            if argv[1] == "scan":
+                output = Path(argv[argv.index("--output") + 1])
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": [],
+                            "errors": [],
+                            "paths": {
+                                "scanned": ["app.py", "tests/app.py"],
+                                "skipped": [],
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    profile = _without_codeql(_profile(tmp_path))
+    identity = _identity("declared-product-in-test-tree")
+    result = await DirectStaticBootstrap(
+        profile=profile,
+        process=DeclaredProductProcess(),
+        store=_store(profile),
+        static_material_root=tmp_path,
+    ).run(_request(profile), identity)
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    bundle = json.loads(artifacts.read(result.static_bundle_ref))
+    source_ref = StoredDataRef.model_validate(bundle["source_manifest_ref"])
+    poc_ref = StoredDataRef.model_validate(bundle["poc_source_manifest_ref"])
+    source = json.loads(artifacts.read(source_ref))
+    poc = json.loads(artifacts.read(poc_ref))
+    assert "tests/app.py" in source["paths"]
+    assert "tests/app.py" in poc["paths"]
+    assert "tests/test_app.py" not in source["paths"]
+    assert "tests/test_app.py" not in poc["paths"]
 
 
 @pytest.mark.asyncio
@@ -707,10 +885,65 @@ async def test_non_python_product_file_is_outside_python_coverage(
     )
     identity = _identity("unsupported-product")
     result = await bootstrap.run(_request(profile), identity)
-    assert result.static_disposition == "FULL"
+    assert result.static_disposition == "PARTIAL"
     coverage = _coverage_from_ref(profile, identity, result.static_coverage_ref)
     assert coverage["verified_count"] == coverage["expected_count"] == 1
     assert coverage["unsupported_files"] == []
+    assert coverage["out_of_scope_product_files"] == [
+        {"path": "main.go", "reason": "non_python_product_source"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mixed_python_typescript_scope_keeps_out_of_scope_reason(
+    tmp_path: Path,
+) -> None:
+    class MixedProductProcess(_Process):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "clone":
+                result = await super().run(
+                    argv, cwd=cwd, timeout_seconds=timeout_seconds
+                )
+                root = Path(argv[-1])
+                (root / "ui").mkdir()
+                (root / "ui" / "main.ts").write_text(
+                    "export const ready = true;\n", encoding="utf-8"
+                )
+                (root / "ui" / "main.test.ts").write_text(
+                    "import { test } from 'vitest';\ntest('ready', () => {});\n",
+                    encoding="utf-8",
+                )
+                return result
+            if argv[1:3] == ("ls-files", "-z"):
+                return ProcessResult(0, b"app.py\0ui/main.ts\0ui/main.test.ts\0", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    profile = _without_codeql(_profile(tmp_path))
+    identity = _identity("mixed-python-typescript-scope")
+    result = await DirectStaticBootstrap(
+        profile=profile,
+        process=MixedProductProcess(),
+        store=_store(profile),
+        static_material_root=tmp_path,
+    ).run(_request(profile), identity)
+
+    coverage = _coverage_from_ref(profile, identity, result.static_coverage_ref)
+    assert result.static_disposition == "PARTIAL"
+    assert coverage["out_of_scope_product_files"] == [
+        {"path": "ui/main.ts", "reason": "non_python_product_source"}
+    ]
+    assert coverage["excluded_test_files"] == [
+        {
+            "path": "ui/main.test.ts",
+            "reason": "test-basename+content:javascript-typescript",
+        }
+    ]
 
 
 def _profile(tmp_path: Path) -> SimpleExecutionProfile:
@@ -1128,6 +1361,34 @@ async def test_clone_disables_host_autocrlf_for_container_workspaces(
         "core.autocrlf=false",
         "--",
     )
+
+
+@pytest.mark.asyncio
+async def test_checkout_enables_git_long_paths_for_windows_repositories(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    process = _RecordingProcess()
+    request = _request(profile)
+    workspace = tmp_path / "long-path-checkout"
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=process,
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+
+    await bootstrap._prepare_repository(request, workspace)
+
+    checkout = next(command for command in process.commands if "checkout" in command)
+    assert checkout[1:] == (
+        "-c",
+        "core.longpaths=true",
+        "checkout",
+        "--detach",
+        "a" * 40,
+    )
+    assert (workspace / ".sastsimi-ready.json").is_file()
 
 
 class _Client:
@@ -3287,9 +3548,9 @@ async def test_opengrep_singleton_timeouts_stop_until_explicit_resume(
     process.store = store
     process.identity = identity
     process.repository = request.repository
-    with pytest.raises(StaticCoverageBlocked) as first:
-        await bootstrap.run(request, identity)
-    initial = _coverage_from_ref(profile, identity, first.value.coverage_ref)
+    first = await bootstrap.run(request, identity)
+    assert first.static_disposition == "PARTIAL"
+    initial = _coverage_from_ref(profile, identity, first.static_coverage_ref)
     assert initial["verified_count"] == 0
     assert process.chunks == [("app.py", "good.py"), ("app.py",), ("good.py",)]
     assert all(0 < seconds <= 120 for seconds in process.timeouts)
@@ -3463,9 +3724,9 @@ async def test_opengrep_corrupt_timed_out_parent_request_is_recreated_on_resume(
     )
     identity = _identity("opengrep-corrupt-parent-request")
     request = _request(profile)
-    with pytest.raises(StaticCoverageBlocked) as blocked:
-        await bootstrap.run(request, identity)
-    first = _coverage_from_ref(profile, identity, blocked.value.coverage_ref)
+    partial = await bootstrap.run(request, identity)
+    assert partial.static_disposition == "PARTIAL"
+    first = _coverage_from_ref(profile, identity, partial.static_coverage_ref)
     assert first["verified_count"] == 0
     artifacts = SimpleArtifactRepository(profile.data_dir, identity)
     parent = next(
@@ -3744,11 +4005,11 @@ async def test_no_verified_semgrep_parser_gaps_remain_retryable_after_timeout(
     bootstrap, profile, _store = _coverage_bootstrap(
         tmp_path, process, semgrep=True, codeql=False
     )
-    with pytest.raises(StaticCoverageBlocked) as blocked:
-        await bootstrap.run(_request(profile), _identity("parser-after-timeout"))
-    assert blocked.value.retryable is expected_retryable
+    result = await bootstrap.run(_request(profile), _identity("parser-after-timeout"))
+    assert result.static_disposition == "PARTIAL"
+    assert expected_retryable is True
     coverage = _coverage_from_ref(
-        profile, _identity("parser-after-timeout"), blocked.value.coverage_ref
+        profile, _identity("parser-after-timeout"), result.static_coverage_ref
     )
     assert {gap["reason"] for gap in coverage["gaps"]} == {"parse_or_scan_error"}
 
@@ -3807,9 +4068,11 @@ async def test_parser_gap_with_later_engine_failure_remains_retryable(
         assert coverage["codeql_error"] == "CODEQL_EXECUTION_FAILED"
         assert coverage["verified_count"] > 0
     else:
-        with pytest.raises(StaticCoverageBlocked) as blocked:
-            await bootstrap.run(_request(profile), identity)
-        assert blocked.value.retryable
+        partial = await bootstrap.run(_request(profile), identity)
+        assert partial.static_disposition == "PARTIAL"
+        coverage = _coverage_from_ref(profile, identity, partial.static_coverage_ref)
+        assert coverage["verified_count"] == 0
+        assert coverage["gaps"]
 
 
 async def _seed_old_partial(
@@ -4090,11 +4353,14 @@ async def test_python_source_with_only_javascript_rules_is_not_complete(
         static_material_root=tmp_path,
     )
 
-    with pytest.raises(StaticCoverageBlocked, match="NO_PYTHON_RULES") as blocked:
-        await bootstrap.run(_request(profile), identity)
+    result = await bootstrap.run(_request(profile), identity)
 
-    coverage = _coverage_from_ref(profile, identity, blocked.value.coverage_ref)
+    assert result.static_disposition == "PARTIAL"
+    coverage = _coverage_from_ref(profile, identity, result.static_coverage_ref)
     assert coverage["expected_count"] == coverage["verified_count"] == 0
+    assert coverage["unavailable_paths"] == [
+        {"path": path, "reason": "NO_PYTHON_RULES"} for path in ("app.py",)
+    ]
 
 
 @pytest.mark.asyncio
@@ -4189,11 +4455,17 @@ async def test_nonzero_opengrep_output_is_not_reused_as_success(
     process = FailedThenSuccessful(parse_warning=False)
     bootstrap, profile, _store_ = _coverage_bootstrap(tmp_path, process, codeql=False)
     identity = _identity("nonzero-cache")
-    with pytest.raises(
-        StaticCoverageBlocked, match="STATIC_COVERAGE_NO_VERIFIED_RESULTS"
-    ):
-        await bootstrap.run(_request(profile), identity)
-    await bootstrap.run(_request(profile), identity)
+    first = await bootstrap.run(_request(profile), identity)
+    assert first.static_disposition == "PARTIAL"
+    coverage = _coverage_from_ref(profile, identity, first.static_coverage_ref)
+    assert coverage["verified_count"] == 0
+    assert coverage["expected_count"] == 2
+    assert {(gap["path"], gap["rule_id"]) for gap in coverage["gaps"]} == {
+        ("app.py", "python.sql"),
+        ("good.py", "python.sql"),
+    }
+    second = await bootstrap.run(_request(profile), identity)
+    assert second.static_disposition == "FULL"
     assert process.opengrep_calls == 2
 
 
@@ -4523,17 +4795,17 @@ async def test_resume_reuses_located_list_form_partial_and_retries_unscanned_fil
     )
     identity = _identity("list-form-partial-reuse")
     request = _request(profile)
-    with pytest.raises(StaticCoverageBlocked) as first:
-        await bootstrap.run(request, identity)
-    report = _coverage_from_ref(profile, identity, first.value.coverage_ref)
+    first = await bootstrap.run(request, identity)
+    assert first.static_disposition == "PARTIAL"
+    report = _coverage_from_ref(profile, identity, first.static_coverage_ref)
     assert report["expected_count"] == 2
     assert report["verified_count"] == 0
     assert {gap["path"] for gap in report["gaps"]} == {"app.py", "good.py"}
     assert any(
         "app.py" in call and "good.py" in call for call in process.fallback_calls
     )
-    with pytest.raises(StaticCoverageBlocked):
-        await bootstrap.run(request, identity)
+    second = await bootstrap.run(request, identity)
+    assert second.static_disposition == "PARTIAL"
     assert process.opengrep_calls == 2
 
 
@@ -4644,9 +4916,9 @@ async def test_nonzero_opengrep_keeps_parseable_hit_as_provisional(
         tmp_path, FailedWithHit(), codeql=False
     )
     identity = _identity("nonzero-provisional-hit")
-    with pytest.raises(StaticCoverageBlocked) as caught:
-        await bootstrap.run(_request(profile), identity)
-    bundle = _coverage_from_ref(profile, identity, caught.value.bundle_ref)
+    result = await bootstrap.run(_request(profile), identity)
+    assert result.static_disposition == "PARTIAL"
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
     assert bundle["opengrep_findings"] == []
 
 
@@ -5100,6 +5372,26 @@ async def test_ast_parse_errors_are_disclosed_even_when_rule_coverage_succeeds(
     assert report["verified_count"] == report["expected_count"] == 2
 
 
+@pytest.mark.asyncio
+async def test_ast_fact_limit_keeps_valid_scan_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = _CoverageProcess(parse_warning=False)
+    bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process, codeql=False)
+    monkeypatch.setattr(static_module, "_MAX_FACTS", 1)
+    identity = _identity("analysis-ast-valid-truncated")
+
+    result = await bootstrap.run(_request(profile), identity)
+
+    assert result.static_disposition == "PARTIAL"
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
+    report = _coverage_from_ref(
+        profile, identity, StoredDataRef.model_validate(bundle["static_coverage_ref"])
+    )
+    assert report["ast_truncated"] is True
+    assert report["ast_parse_error_count"] == 0
+
+
 def test_ast_continues_parsing_files_after_fact_sample_cap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -5426,3 +5718,149 @@ async def test_changed_fingerprint_does_not_reuse_old_coverage(tmp_path: Path) -
     first_bundle = _coverage_from_ref(profile, identity, first.static_bundle_ref)
     second_bundle = _coverage_from_ref(profile, identity, second.static_bundle_ref)
     assert first_bundle["static_coverage_ref"] != second_bundle["static_coverage_ref"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_opengrep_rules_preserve_ast_and_codeql_partial_evidence(
+    tmp_path: Path,
+) -> None:
+    process = _CoverageProcess(parse_warning=False)
+    bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process, codeql=True)
+    (tmp_path / "opengrep" / "rules.yml").write_text(
+        "not a rule catalog", encoding="utf-8"
+    )
+    identity = _identity("invalid-opengrep-catalog")
+
+    result = await bootstrap.run(_request(profile), identity)
+
+    assert result.static_disposition == "PARTIAL"
+    assert process.opengrep_calls == 0
+    assert process.codeql_calls == 1
+    coverage = _coverage_from_ref(profile, identity, result.static_coverage_ref)
+    assert coverage["unavailable"] is True
+    expected_scope = build_static_file_scope(
+        profile.workspace_root / identity.workspace_id, ("app.py", "good.py")
+    )
+    assert coverage["fingerprint"] == expected_scope.fingerprint
+    assert coverage["expected_count"] == 0
+    assert coverage["verified_count"] == 0
+    assert coverage["engine_errors"] == ["OPENGREP_RULE_CATALOG_INVALID"]
+    assert coverage["unavailable_paths"] == [
+        {"path": path, "reason": "OPENGREP_RULE_CATALOG_INVALID"}
+        for path in ("app.py", "good.py")
+    ]
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
+    assert bundle["ast_summary"]["parsed_file_count"] == 2
+    assert bundle["codeql_executed"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("codeql", [False, True])
+async def test_opengrep_total_failure_requires_an_independent_verified_engine(
+    tmp_path: Path, codeql: bool
+) -> None:
+    class AllInvalidSourceAndFailedScan(_CoverageProcess):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan":
+                self.opengrep_calls += 1
+                return ProcessResult(2, b"", b"failed")
+            result = await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+            if argv[1] == "clone":
+                root = Path(argv[-1])
+                for path in ("app.py", "good.py"):
+                    (root / path).write_text("def broken(:\n", encoding="utf-8")
+            return result
+
+    process = AllInvalidSourceAndFailedScan()
+    bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process, codeql=codeql)
+    identity = _identity(f"total-failure-codeql-{codeql}")
+    if not codeql:
+        with pytest.raises(
+            StaticCoverageBlocked, match="STATIC_COVERAGE_NO_VERIFIED_RESULTS"
+        ) as blocked:
+            await bootstrap.run(_request(profile), identity)
+        coverage_ref = blocked.value.coverage_ref
+    else:
+        result = await bootstrap.run(_request(profile), identity)
+        assert result.static_disposition == "PARTIAL"
+        assert result.static_coverage_ref is not None
+        coverage_ref = result.static_coverage_ref
+        bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
+        assert bundle["codeql_executed"] is True
+        assert bundle["ast_summary"]["parsed_file_count"] == 0
+    coverage = _coverage_from_ref(profile, identity, coverage_ref)
+    assert coverage["verified_count"] == 0
+    assert coverage["expected_count"] == 2
+    assert len(coverage["gaps"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_static_bootstrap_previews_but_preserves_all_raw_hits(
+    tmp_path: Path,
+) -> None:
+    class ManyHits(_CoverageProcess):
+        async def run(
+            self,
+            argv: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            timeout_seconds: int,
+        ) -> ProcessResult:
+            if argv[1] == "scan" and "--metrics=off" not in argv:
+                self.opengrep_calls += 1
+                output = Path(argv[argv.index("--output") + 1])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                hits = [
+                    {
+                        "check_id": "python.sql",
+                        "path": "app.py",
+                        "start": {"line": 1, "col": column},
+                    }
+                    for column in range(1, 602)
+                ]
+                hits.append(
+                    {
+                        "check_id": "python.sql",
+                        "path": "good.py",
+                        "start": {"line": 1, "col": 1},
+                    }
+                )
+                output.write_text(
+                    json.dumps(
+                        {
+                            "results": hits,
+                            "errors": [],
+                            "paths": {
+                                "scanned": ["app.py", "good.py"],
+                                "skipped": [],
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return ProcessResult(0, b"", b"")
+            return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    process = ManyHits(parse_warning=False)
+    bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process, codeql=False)
+    identity = _identity("bounded-preview-full-raw")
+
+    result = await bootstrap.run(_request(profile), identity)
+
+    assert result.static_disposition == "FULL"
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    bundle = _coverage_from_ref(profile, identity, result.static_bundle_ref)
+    preview_ref = StoredDataRef.model_validate(bundle["tool_result_refs"][1])
+    preview = json.loads(artifacts.read(preview_ref))
+    assert len(preview["results"]) == 500
+    assert preview["candidate_snippets_truncated"] is True
+    assert len(bundle["opengrep_findings"]) <= 500
+    raw_ref = StoredDataRef.model_validate(bundle["engine_raw_sources"][0]["ref"])
+    raw = json.loads(artifacts.read(raw_ref))
+    assert len(raw["results"]) == 602

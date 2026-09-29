@@ -14,13 +14,16 @@ from sastsimi.config.user_config import (
 )
 from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.simple_runtime.application import StaticBootstrapResult
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleAnalysisRun,
     SimpleStage,
+    StageStatus,
 )
+from sastsimi.simple_runtime.run_lease import analysis_run_lease
 from sastsimi.simple_runtime.stages import PoCCandidateStage, RuleScopeGateStage
 
 
@@ -128,6 +131,9 @@ def test_composition_injects_identity_scoped_recovery_into_app_and_runner(
             )
         )
 
+    assert application._candidate_pipeline_enabled is True
+    assert application._candidate_client_factory is not None
+    assert application._max_cost_minor_units == 10_000
     assert application._recovery_factory is not None
     app_recovery = cast(Coordinator, application._recovery_factory(identity))
     runner = application._runner_factory(application._store, identity, static)
@@ -143,3 +149,84 @@ def test_composition_injects_identity_scoped_recovery_into_app_and_runner(
     assert isinstance(scope_gate, RuleScopeGateStage)
     assert scope_gate._repository_url == saved_repository
     assert created == [identity, identity]
+
+
+def test_public_candidate_status_marks_unleased_running_stage_interrupted(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    app = composition.PublicSimpleRuntimeApplication(config, _profile(tmp_path))
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    AnalysisDisplayIdStore(app._store.database_path).get_or_allocate(
+        identity.analysis_id
+    )
+    app._store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="https://github.com/example/repo",
+            candidate_pipeline_version=1,
+        )
+    )
+    app._store.mark_running(
+        identity, SimpleStage.STATIC_DONE, (), attempt_id="static-1"
+    )
+    lease_directory = config.data_dir / "db" / "analysis-leases"
+    assert not lease_directory.exists()
+
+    idle = app.status("A-001")
+    assert idle["status"] == "PAUSED"
+    assert idle["error_code"] == "INTERRUPTED_RESUME_REQUIRED"
+    assert idle["resume_action"] == "RESUME_INTERRUPTED"
+    assert not lease_directory.exists()
+    assert app.result("A-001")["status"] == "PAUSED"
+
+    with analysis_run_lease(config.data_dir, identity.analysis_id):
+        live = app.status("A-001")
+        assert live["status"] == "RUNNING"
+        assert live["error_code"] is None
+
+    assert app.status("A-001")["status"] == "PAUSED"
+    checkpoint = app._store.get(identity, SimpleStage.STATIC_DONE)
+    assert checkpoint is not None and checkpoint.status is StageStatus.RUNNING
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(composition, "analysis_run_lease_active", lambda *_: None)
+        assert app.status("A-001")["status"] == "RUNNING"
+
+
+def test_public_legacy_running_status_is_not_reclassified_without_lease(
+    tmp_path: Path,
+) -> None:
+    app = composition.PublicSimpleRuntimeApplication(
+        _config(tmp_path), _profile(tmp_path)
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    AnalysisDisplayIdStore(app._store.database_path).get_or_allocate(
+        identity.analysis_id
+    )
+    app._store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="https://github.com/example/repo",
+        )
+    )
+    app._store.mark_running(
+        identity, SimpleStage.STATIC_DONE, (), attempt_id="static-1"
+    )
+
+    assert app.status("A-001")["status"] == "RUNNING"

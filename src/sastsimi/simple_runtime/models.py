@@ -69,6 +69,19 @@ class CheckpointIdentity(ContractModel):
     hypothesis_id: str | None
 
 
+class CandidateTerminal(ContractModel):
+    """Durable proof that candidate v1 finished all known downstream work."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: Literal["COMPLETE", "PARTIAL"]
+    bundle_hash: str
+    scope_fingerprint: str
+    decision_counts: dict[str, int]
+    deep_counts: dict[str, int]
+    hypothesis_count: int = Field(ge=0)
+
+
 class SimpleAnalysisRun(ContractModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -90,6 +103,9 @@ class SimpleAnalysisRun(ContractModel):
     static_disposition: Literal["FULL", "PARTIAL"] = "FULL"
     security_policy_ref: StoredDataRef | None = None
     policy_snapshot_ref: StoredDataRef | None = None
+    candidate_pipeline_version: int | None = None
+    candidate_scope_fingerprint: str | None = None
+    candidate_terminal: CandidateTerminal | None = None
     hypothesis_ids: tuple[str, ...] = ()
     parent_hypothesis_ids: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     chain_depths: dict[str, int] = Field(default_factory=dict)
