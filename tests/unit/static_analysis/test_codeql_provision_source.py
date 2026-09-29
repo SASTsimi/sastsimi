@@ -8,7 +8,10 @@ from zipfile import ZipFile
 
 import pytest
 
+from sastsimi.ports.dto import TrackedFile
+from sastsimi.static_analysis import codeql_provision_source
 from sastsimi.static_analysis.codeql_provision_source import prepare_exact_source
+from sastsimi.static_analysis.file_scope import StaticFileScope
 
 
 def _git() -> Path:
@@ -87,7 +90,7 @@ def test_prepared_source_contains_only_safe_files_from_the_exact_commit(
         path.relative_to(destination).as_posix()
         for path in sorted(destination.rglob("*"))
         if path.is_file()
-    ) == (".gitignore", "app.py")
+    ) == ("app.py",)
     assert not (destination / ".git").exists()
     assert (destination / "app.py").read_text(encoding="utf-8") == "print('exact')\n"
     if os.name == "posix":
@@ -185,7 +188,29 @@ def test_prepared_source_omits_test_files_and_test_only_commits_do_not_change_id
             path.relative_to(destination).as_posix()
             for path in sorted(destination.rglob("*"))
             if path.is_file()
-        ) == (".gitignore", "app.py")
+        ) == ("app.py",)
+
+
+def test_codeql_source_selector_rejects_non_python_even_if_scope_is_broad(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tracked = (
+        TrackedFile("app.py", "100644", "python-blob", 12),
+        TrackedFile("app.js", "100644", "javascript-blob", 18),
+        TrackedFile("pyproject.toml", "100644", "metadata-blob", 36),
+    )
+    monkeypatch.setattr(
+        codeql_provision_source,
+        "build_static_file_scope",
+        lambda _root, _tracked: StaticFileScope(
+            selected_paths=("app.py", "app.js", "pyproject.toml"),
+            fingerprint="f" * 64,
+        ),
+    )
+
+    assert codeql_provision_source.selected_codeql_tracked_files(tmp_path, tracked) == (
+        tracked[0],
+    )
 
 
 def test_pinned_codeql_cli_database_archives_only_staged_product_source(

@@ -698,6 +698,16 @@ def _atomic_write_report(
     )
 
 
+def write_report_markdown(
+    path: Path, analysis_id: str, data: bytes, *, data_dir: Path
+) -> None:
+    """Publish a runtime report with the same guarded write as other exports."""
+
+    _atomic_write_report(
+        path, analysis_id, data, _capture_directory_identity(data_dir), lambda: None
+    )
+
+
 def _atomic_write_report_posix(
     path: Path,
     analysis_id: str,

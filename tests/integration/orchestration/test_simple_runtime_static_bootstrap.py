@@ -47,6 +47,250 @@ from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from sastsimi.static_analysis.file_scope import build_static_file_scope
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("engine", ("opengrep", "semgrep"))
+async def test_resume_replays_each_partial_execution_after_same_key_timeout(
+    tmp_path: Path, engine: str
+) -> None:
+    process = _AdaptiveSemgrepProcess(lambda _targets, _command: TimeoutError())
+    fixture = _adaptive_semgrep_fixture(tmp_path, process, count=3)
+    bootstrap, profile, identity, batches, coverage, workspace, rules = fixture
+    batch = batches.batches[0]
+    targets = ("file-000.py", "file-001.py", "file-002.py")
+    if engine == "opengrep":
+        kind = "opengrep_scan_request_v1"
+        key_data: dict[str, object] = {
+            "kind": kind,
+            "batch_key": batch.key,
+            "rule_ids": batch.rule_ids,
+            "targets": targets,
+        }
+    else:
+        kind = "semgrep_scan_request_v1"
+        key_data = {
+            "adaptive": 1,
+            "batch": batch.key,
+            "rules": batch.rule_ids,
+            "targets": targets,
+        }
+    run_key = hashlib.sha256(canonical_bytes(key_data)).hexdigest()
+    request_data: dict[str, object] = {
+        "kind": kind,
+        "batch_key": batch.key,
+        "rule_ids": list(batch.rule_ids),
+        "targets": list(targets),
+    }
+    if engine == "semgrep":
+        request_data["per_file_timeout_seconds"] = None
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    store = _store(profile)
+    repository = _request(profile).repository
+
+    for path in targets[:2]:
+        raw_ref = artifacts.put_bytes(
+            json.dumps(
+                {
+                    "results": [],
+                    "errors": [],
+                    "paths": {"scanned": [path], "skipped": []},
+                }
+            ).encode(),
+            "application/json",
+        )
+        request_ref = artifacts.put_json(
+            {**request_data, "raw_content_hash": raw_ref.content_hash}
+        )
+        store.record_static_scan_execution(
+            identity,
+            repository,
+            coverage.fingerprint,
+            engine,
+            run_key,
+            "BLOCKED",
+            raw_ref,
+            f"{engine.upper()}_PARTIAL_SCAN",
+            request_ref,
+            timeout_seconds=120,
+        )
+        store.save_static_scan_attempt(
+            identity,
+            repository,
+            coverage.fingerprint,
+            engine,
+            run_key,
+            "BLOCKED",
+            raw_ref,
+            None,
+            f"{engine.upper()}_PARTIAL_SCAN",
+            request_ref,
+        )
+
+    timeout_request = artifacts.put_json(request_data)
+    store.record_static_scan_execution(
+        identity,
+        repository,
+        coverage.fingerprint,
+        engine,
+        run_key,
+        "BLOCKED",
+        None,
+        "EXTERNAL_TOOL_TIMEOUT",
+        timeout_request,
+        timeout_seconds=120,
+    )
+    store.save_static_scan_attempt(
+        identity,
+        repository,
+        coverage.fingerprint,
+        engine,
+        run_key,
+        "BLOCKED",
+        None,
+        None,
+        "EXTERNAL_TOOL_TIMEOUT",
+        timeout_request,
+    )
+    assert (
+        store.list_static_scan_attempts(identity, repository, coverage.fingerprint)[
+            0
+        ].raw_ref
+        is None
+    )
+
+    if engine == "opengrep":
+        output_root = tmp_path / "opengrep-output"
+        output_root.mkdir()
+        slices, _, _ = await bootstrap._recover_opengrep_timeout_chunks(
+            workspace,
+            _request(profile),
+            identity,
+            coverage,
+            batch,
+            coverage.expected_pairs,
+            rules,
+            output_root,
+            artifacts,
+            {
+                run_key: store.list_static_scan_attempts(
+                    identity, repository, coverage.fingerprint
+                )[0]
+            },
+            store.list_static_scan_replay_attempts(
+                identity, repository, coverage.fingerprint, tool="opengrep"
+            ),
+            StaticCandidateBudget(),
+            frozenset(),
+        )
+    else:
+        slices, _, _ = await _run_adaptive_semgrep(fixture)
+
+    report = finish_coverage(coverage, slices)
+    assert report.verified_count == 2
+    assert {(gap.path, gap.rule_id) for gap in report.gaps} == {
+        ("file-002.py", "python.sql")
+    }
+    assert process.calls
+    assert all(targets == ("file-002.py",) for targets, _ in process.calls)
+
+
+@pytest.mark.asyncio
+async def test_opengrep_resume_unions_complementary_partial_rule_proofs(
+    tmp_path: Path,
+) -> None:
+    process = _AdaptiveSemgrepProcess(lambda _targets, _command: TimeoutError())
+    fixture = _adaptive_semgrep_fixture(
+        tmp_path, process, count=1, rule_ids=("python.a", "python.b")
+    )
+    bootstrap, profile, identity, batches, coverage, workspace, rules = fixture
+    batch = batches.batches[0]
+    targets = ("file-000.py",)
+    run_key = hashlib.sha256(
+        canonical_bytes(
+            {
+                "kind": "opengrep_scan_request_v1",
+                "batch_key": batch.key,
+                "rule_ids": batch.rule_ids,
+                "targets": targets,
+            }
+        )
+    ).hexdigest()
+    descriptor: dict[str, object] = {
+        "kind": "opengrep_scan_request_v1",
+        "batch_key": batch.key,
+        "rule_ids": list(batch.rule_ids),
+        "targets": list(targets),
+    }
+    artifacts = SimpleArtifactRepository(profile.data_dir, identity)
+    store = _store(profile)
+    repository = _request(profile).repository
+    for skipped_rule in batch.rule_ids:
+        raw_ref = artifacts.put_bytes(
+            json.dumps(
+                {
+                    "results": [],
+                    "errors": [],
+                    "paths": {"scanned": list(targets), "skipped": []},
+                    "skipped_rules": [skipped_rule],
+                }
+            ).encode(),
+            "application/json",
+        )
+        request_ref = artifacts.put_json(
+            {**descriptor, "raw_content_hash": raw_ref.content_hash}
+        )
+        store.record_static_scan_execution(
+            identity,
+            repository,
+            coverage.fingerprint,
+            "opengrep",
+            run_key,
+            "BLOCKED",
+            raw_ref,
+            "OPENGREP_PARTIAL_SCAN",
+            request_ref,
+            timeout_seconds=120,
+        )
+        store.save_static_scan_attempt(
+            identity,
+            repository,
+            coverage.fingerprint,
+            "opengrep",
+            run_key,
+            "BLOCKED",
+            raw_ref,
+            None,
+            "OPENGREP_PARTIAL_SCAN",
+            request_ref,
+        )
+
+    attempts = store.list_static_scan_attempts(
+        identity, repository, coverage.fingerprint
+    )
+    output_root = tmp_path / "opengrep-output"
+    output_root.mkdir()
+    slices, _, errors = await bootstrap._recover_opengrep_timeout_chunks(
+        workspace,
+        _request(profile),
+        identity,
+        coverage,
+        batch,
+        coverage.expected_pairs,
+        rules,
+        output_root,
+        artifacts,
+        {item.run_key: item for item in attempts},
+        store.list_static_scan_replay_attempts(
+            identity, repository, coverage.fingerprint, tool="opengrep"
+        ),
+        StaticCandidateBudget(),
+        frozenset(),
+    )
+
+    assert finish_coverage(coverage, slices).verified_count == 2
+    assert errors == []
+    assert process.calls == []
+
+
 def test_bounded_static_output_rejects_oversized_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -377,10 +621,14 @@ async def test_product_scope_drives_ast_scan_manifest_and_coverage(
     manifest = json.loads(
         artifacts.read(StoredDataRef.model_validate(bundle["source_manifest_ref"]))
     )
+    poc_manifest = json.loads(
+        artifacts.read(StoredDataRef.model_validate(bundle["poc_source_manifest_ref"]))
+    )
     coverage = json.loads(
         artifacts.read(StoredDataRef.model_validate(bundle["static_coverage_ref"]))
     )
     assert manifest["paths"] == ["app.py"]
+    assert poc_manifest["paths"] == ["app.py"]
     assert bundle["ast_summary"]["parse_error_count"] == 0
     assert coverage["expected_count"] == coverage["verified_count"] == 1
     for saved in (bundle, manifest, coverage):
@@ -422,12 +670,12 @@ async def test_test_only_checkout_cannot_succeed_with_zero_product_pairs(
         store=_store(profile),
         static_material_root=tmp_path,
     )
-    with pytest.raises(StaticCoverageBlocked, match="STATIC_PRODUCT_SOURCE_EMPTY"):
+    with pytest.raises(StaticCoverageBlocked, match="NO_PYTHON_SOURCE"):
         await bootstrap.run(_request(profile), _identity("test-only-checkout"))
 
 
 @pytest.mark.asyncio
-async def test_uncovered_product_language_cannot_finish_complete(
+async def test_non_python_product_file_is_outside_python_coverage(
     tmp_path: Path,
 ) -> None:
     class MixedProductProcess(_Process):
@@ -459,12 +707,10 @@ async def test_uncovered_product_language_cannot_finish_complete(
     )
     identity = _identity("unsupported-product")
     result = await bootstrap.run(_request(profile), identity)
-    assert result.static_disposition == "PARTIAL"
+    assert result.static_disposition == "FULL"
     coverage = _coverage_from_ref(profile, identity, result.static_coverage_ref)
     assert coverage["verified_count"] == coverage["expected_count"] == 1
-    assert coverage["unsupported_files"] == [
-        {"path": "main.go", "reason": "no_applicable_rule"}
-    ]
+    assert coverage["unsupported_files"] == []
 
 
 def _profile(tmp_path: Path) -> SimpleExecutionProfile:
@@ -689,19 +935,13 @@ async def test_timeout_resume_reuses_first_batch(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_shared_deadline_does_not_round_up_last_batch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_legacy_pass_deadline_does_not_stop_later_batches(tmp_path: Path) -> None:
     profile = _without_codeql(_profile(tmp_path)).model_copy(
-        update={"max_elapsed_seconds": 2}
+        update={"max_elapsed_seconds": "unlimited", "static_scan_pass_seconds": 1}
     )
     rule_ids = tuple(f"python.rule{index}" for index in range(4))
     _write_rules(tmp_path, rule_ids)
     process = _BatchProcess(rule_ids)
-    times = iter((100.0, 100.1, 101.9))
-    monkeypatch.setattr(
-        static_module, "time", SimpleNamespace(monotonic=lambda: next(times))
-    )
     bootstrap = DirectStaticBootstrap(
         profile=profile,
         process=process,
@@ -710,9 +950,9 @@ async def test_shared_deadline_does_not_round_up_last_batch(
     )
 
     result = await bootstrap.run(_request(profile), _identity("analysis-deadline"))
-    assert result.static_disposition == "PARTIAL"
-    assert len(process.scans) == 1
-    assert process.scans[0][2] == 1
+    assert result.static_disposition == "FULL"
+    assert len(process.scans) == 2
+    assert [timeout for _argv, _cwd, timeout in process.scans] == [120, 120]
 
 
 @pytest.mark.asyncio
@@ -954,7 +1194,13 @@ async def test_real_static_tools_feed_exact_hypothesis_input(tmp_path: Path) -> 
             StoredDataRef.model_validate(bundle["source_manifest_ref"])
         )
     )
-    assert manifest["paths"] == ["app.py", "requirements.txt"]
+    assert manifest["paths"] == ["app.py"]
+    poc_manifest = json.loads(
+        SimpleArtifactRepository(profile.data_dir, identity).read(
+            StoredDataRef.model_validate(bundle["poc_source_manifest_ref"])
+        )
+    )
+    assert poc_manifest["paths"] == ["app.py", "requirements.txt"]
 
     seeds = await DirectHypothesisBootstrap(
         data_dir=profile.data_dir,
@@ -973,6 +1219,7 @@ async def test_codeql_database_create_sees_only_selected_product_source(
     class ProductScopeProcess(_Process):
         def __init__(self) -> None:
             self.created_paths: tuple[str, ...] | None = None
+            self.codeql_timeouts: list[int] = []
 
         async def run(
             self,
@@ -984,6 +1231,7 @@ async def test_codeql_database_create_sees_only_selected_product_source(
             if argv[1:3] == ("ls-files", "-z"):
                 return ProcessResult(0, b"app.py\0tests/test_app.py\0", b"")
             if argv[1:3] == ("database", "create"):
+                self.codeql_timeouts.append(timeout_seconds)
                 source_arg = next(
                     value for value in argv if value.startswith("--source-root=")
                 )
@@ -993,9 +1241,13 @@ async def test_codeql_database_create_sees_only_selected_product_source(
                     for path in sorted(source.rglob("*"))
                     if path.is_file()
                 )
+            if argv[1:3] == ("database", "analyze"):
+                self.codeql_timeouts.append(timeout_seconds)
             return await super().run(argv, cwd=cwd, timeout_seconds=timeout_seconds)
 
-    profile = _profile(tmp_path)
+    profile = _profile(tmp_path).model_copy(
+        update={"max_elapsed_seconds": "unlimited", "static_scan_pass_seconds": 1}
+    )
     workspace = tmp_path / "checkout"
     workspace.mkdir()
     (workspace / "app.py").write_text("print('app')\n", encoding="utf-8")
@@ -1029,6 +1281,47 @@ async def test_codeql_database_create_sees_only_selected_product_source(
     )
 
     assert process.created_paths == ("app.py",)
+    assert process.codeql_timeouts == [1800, 1800]
+
+
+@pytest.mark.asyncio
+async def test_codeql_create_and_analyze_bound_memory_with_one_thread(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    request = _request(profile)
+    workspace = _ready_workspace(tmp_path, request)
+    process = _RecordingProcess()
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=process,
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+
+    await bootstrap._run_codeql(
+        workspace,
+        profile.data_dir,
+        request.repository,
+        request.commit,
+        "bounded-codeql",
+    )
+
+    codeql_commands = [
+        command
+        for command in process.commands
+        if command[1:3] in {("database", "create"), ("database", "analyze")}
+    ]
+    assert [command[1:3] for command in codeql_commands] == [
+        ("database", "create"),
+        ("database", "analyze"),
+    ]
+    for command in codeql_commands:
+        assert [
+            argument
+            for argument in command
+            if argument.startswith(("--threads=", "--ram="))
+        ] == ["--threads=1", "--ram=2048"]
 
 
 @pytest.mark.asyncio
@@ -1785,7 +2078,9 @@ async def test_semgrep_resume_does_not_credit_corrupt_saved_raw(
 
 
 @pytest.mark.asyncio
-async def test_semgrep_resume_rejects_unbound_valid_raw_ref(tmp_path: Path) -> None:
+async def test_semgrep_resume_ignores_unbound_summary_when_execution_is_valid(
+    tmp_path: Path,
+) -> None:
     process = _AdaptiveSemgrepProcess()
     fixture = _adaptive_semgrep_fixture(tmp_path, process)
     await _run_adaptive_semgrep(fixture)
@@ -1828,7 +2123,7 @@ async def test_semgrep_resume_rejects_unbound_valid_raw_ref(tmp_path: Path) -> N
         parsed={"results": [], "errors": [], "paths": {}},
         normalized_results=(),
     )
-    resumed, _refs, errors = await bootstrap._collect_semgrep(
+    resumed, refs, errors = await bootstrap._collect_semgrep(
         workspace,
         _request(profile),
         identity,
@@ -1839,7 +2134,9 @@ async def test_semgrep_resume_rejects_unbound_valid_raw_ref(tmp_path: Path) -> N
         artifacts,
     )
     assert errors == []
-    assert len(process.calls) == 3
+    assert len(process.calls) == 2
+    assert first_chunk.raw_ref in refs
+    assert alternate_ref not in refs
     assert finish_coverage(coverage, [opengrep_proof, *resumed]).verified_count == 129
 
 
@@ -1875,6 +2172,19 @@ async def test_semgrep_resume_rejects_mismatched_request_ref(tmp_path: Path) -> 
         first_chunk.error_code,
         changed_request_ref,
     )
+    execution = store.list_static_scan_executions(
+        identity,
+        _request(profile).repository,
+        coverage.fingerprint,
+        tool="semgrep",
+        run_key=first_chunk.run_key,
+    )[0]
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "UPDATE simple_static_scan_executions SET request_ref_json = ? "
+            "WHERE execution_id = ?",
+            (changed_request_ref.model_dump_json(), execution.execution_id),
+        )
     resumed, _refs, errors = await bootstrap._collect_semgrep(
         workspace,
         _request(profile),
@@ -2177,7 +2487,7 @@ async def test_cached_partial_is_revalidated_without_parent_rerun_or_ref_loss(
         )
         if attempt.tool == "semgrep" and attempt.run_key == key
     )
-    assert len(process.calls) == count
+    assert len(process.calls) == count + 1
     assert after.raw_ref == before.raw_ref
     assert finish_coverage(coverage, second).verified_count == 128
     assert finish_coverage(coverage, second).gaps[0].path == "file-000.py"
@@ -2359,8 +2669,30 @@ async def test_repeated_json_timeout_stays_a_gap_without_retry_loop(
     assert finish_coverage(fixture[4], slices).gaps[0].reason == "scan_timeout"
     resumed, _refs, resumed_errors = await _run_adaptive_semgrep(fixture)
     assert resumed_errors == ["SEMGREP_PARTIAL_SCAN"]
-    assert len(process.calls) == 2
+    assert len(process.calls) == 4
     assert finish_coverage(fixture[4], resumed).gaps[0].reason == "scan_timeout"
+
+
+@pytest.mark.asyncio
+async def test_semgrep_source_chunks_respect_512_kib_and_attempt_large_file(
+    tmp_path: Path,
+) -> None:
+    process = _AdaptiveSemgrepProcess()
+    fixture = _adaptive_semgrep_fixture(tmp_path, process, count=3)
+    workspace = fixture[5]
+    (workspace / "file-000.py").write_bytes(b"x" * 300_000)
+    (workspace / "file-001.py").write_bytes(b"x" * 300_000)
+    (workspace / "file-002.py").write_bytes(b"x" * 600_000)
+
+    slices, _refs, errors = await _run_adaptive_semgrep(fixture)
+
+    assert errors == []
+    assert tuple(targets for targets, _ in process.calls) == (
+        ("file-000.py",),
+        ("file-001.py",),
+        ("file-002.py",),
+    )
+    assert finish_coverage(fixture[4], slices).verified_count == 3
 
 
 @pytest.mark.asyncio
@@ -2598,6 +2930,12 @@ async def test_opengrep_timeout_recovers_in_bounded_chunks_and_reuses_proof(
     process = ChunkedOpenGrep()
     bootstrap, profile, store = _coverage_bootstrap(
         tmp_path, process, semgrep=True, codeql=False
+    )
+    profile = profile.model_copy(
+        update={"max_elapsed_seconds": "unlimited", "static_scan_pass_seconds": 1}
+    )
+    bootstrap = DirectStaticBootstrap(
+        profile=profile, process=process, store=store, static_material_root=tmp_path
     )
     identity = _identity("opengrep-chunk-resume")
     request = _request(profile)
@@ -3287,6 +3625,19 @@ async def test_opengrep_chunk_rejects_changed_request_descriptor(
         None,
         forged,
     )
+    execution = store.list_static_scan_executions(
+        identity,
+        request.repository,
+        coverage["fingerprint"],
+        tool="opengrep",
+        run_key=chunk.run_key,
+    )[0]
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "UPDATE simple_static_scan_executions SET request_ref_json = ? "
+            "WHERE execution_id = ?",
+            (forged.model_dump_json(), execution.execution_id),
+        )
 
     await bootstrap.run(request, identity)
     assert process.chunk_calls == 2
@@ -3494,7 +3845,7 @@ async def test_fallback_opt_in_revalidates_old_partial_without_opengrep_rerun(
         profile=profile, process=process, store=store, static_material_root=tmp_path
     )
     completed = await bootstrap.run(_request(profile), identity)
-    assert process.opengrep_calls == 1
+    assert process.opengrep_calls == 2
     assert len(process.fallback_calls) == 1
     report = _coverage_from_ref(
         profile,
@@ -3537,8 +3888,8 @@ async def test_fallback_opt_in_counts_compatible_prior_execution_history(
     report = _coverage_from_ref(profile, identity, partial.static_coverage_ref)
     assert report["gaps"]
     for gap in report["gaps"]:
-        assert gap["known_attempts_by_engine"] == {"opengrep": 1, "semgrep": 1}
-        assert gap["known_attempt_count"] == gap["attempt_count"] == 2
+        assert gap["known_attempts_by_engine"] == {"opengrep": 2, "semgrep": 1}
+        assert gap["known_attempt_count"] == gap["attempt_count"] == 3
         assert gap["history_complete"] is True
 
 
@@ -3705,15 +4056,45 @@ async def test_product_language_without_applicable_rules_blocks_before_scan(
     bootstrap, profile, _store_ = _coverage_bootstrap(
         tmp_path, NoApplicableSource(), codeql=True
     )
+    (tmp_path / "opengrep" / "rules.yml").write_text(
+        "not a rule catalog", encoding="utf-8"
+    )
     identity = _identity("empty-rule-failure")
-    with pytest.raises(
-        StaticCoverageBlocked, match="STATIC_PRODUCT_SOURCE_EMPTY"
-    ) as blocked:
+    with pytest.raises(StaticCoverageBlocked, match="NO_PYTHON_SOURCE") as blocked:
         await bootstrap.run(_request(profile), identity)
     bundle = _coverage_from_ref(profile, identity, blocked.value.bundle_ref)
     coverage = _coverage_from_ref(profile, identity, blocked.value.coverage_ref)
     assert bundle["codeql_executed"] is False
     assert coverage["codeql_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_python_source_with_only_javascript_rules_is_not_complete(
+    tmp_path: Path,
+) -> None:
+    profile = _without_codeql(_profile(tmp_path))
+    (tmp_path / "opengrep" / "rules.yml").write_text(
+        "rules:\n"
+        "  - id: javascript.only\n"
+        "    languages: [javascript]\n"
+        "    message: test\n"
+        "    severity: INFO\n"
+        "    pattern: $APP.use($AUTH)\n",
+        encoding="utf-8",
+    )
+    identity = _identity("python-no-rules")
+    bootstrap = DirectStaticBootstrap(
+        profile=profile,
+        process=_Process(),
+        store=_store(profile),
+        static_material_root=tmp_path,
+    )
+
+    with pytest.raises(StaticCoverageBlocked, match="NO_PYTHON_RULES") as blocked:
+        await bootstrap.run(_request(profile), identity)
+
+    coverage = _coverage_from_ref(profile, identity, blocked.value.coverage_ref)
+    assert coverage["expected_count"] == coverage["verified_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -4815,11 +5196,11 @@ def test_ast_does_not_read_symlink_outside_workspace(
 
 
 @pytest.mark.parametrize("extension", (".mjs", ".cjs", ".mts", ".cts"))
-def test_repository_profile_recognizes_extended_js_ts_source(extension: str) -> None:
+def test_repository_profile_discards_extended_js_ts_source(extension: str) -> None:
     profile = DirectStaticBootstrap._repository_profile((f"src/main{extension}",))
 
-    assert profile["languages"] == ("JAVASCRIPT_TYPESCRIPT",)
-    assert profile["needs_confirmation"] is False
+    assert profile["languages"] == ()
+    assert profile["needs_confirmation"] is True
 
 
 @pytest.mark.asyncio
@@ -4896,6 +5277,19 @@ async def test_resume_retries_partial_batch_when_file_was_not_scanned(
 
 
 @pytest.mark.asyncio
+async def test_resume_retries_opengrep_parser_gap(tmp_path: Path) -> None:
+    process = _CoverageProcess(parse_warning=True)
+    bootstrap, profile, _ = _coverage_bootstrap(tmp_path, process, codeql=False)
+    identity = _identity("resume-parser-gap")
+
+    first = await bootstrap.run(_request(profile), identity)
+    assert first.static_disposition == "PARTIAL"
+    await bootstrap.run(_request(profile), identity)
+
+    assert process.opengrep_calls == 2
+
+
+@pytest.mark.asyncio
 async def test_cached_semgrep_coverage_requires_same_executable(
     tmp_path: Path,
 ) -> None:
@@ -4966,7 +5360,7 @@ async def test_semgrep_fallback_chunks_continue_past_aggregate_elapsed_time(
         tmp_path, process, semgrep=True, codeql=False
     )
     profile = profile.model_copy(
-        update={"max_elapsed_seconds": "unlimited", "static_scan_pass_seconds": 7200}
+        update={"max_elapsed_seconds": "unlimited", "static_scan_pass_seconds": 1}
     )
     bootstrap = DirectStaticBootstrap(
         profile=profile,
@@ -4989,7 +5383,10 @@ async def test_semgrep_fallback_chunks_continue_past_aggregate_elapsed_time(
     )
     coverage = plan_static_coverage(workspace, files, identity.commit_id, batches)
     monkeypatch.setattr(
-        static_module, "time", SimpleNamespace(monotonic=lambda: clock[0])
+        static_module,
+        "time",
+        SimpleNamespace(monotonic=lambda: clock[0]),
+        raising=False,
     )
     slices, _refs, errors = await bootstrap._collect_semgrep(
         workspace,

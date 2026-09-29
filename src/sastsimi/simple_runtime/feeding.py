@@ -10,7 +10,7 @@ from pathlib import Path
 from .code_redaction import redact_code
 from .facts import extract_flows, safe_tracked_file
 
-_SOURCE_SUFFIXES = (".py", ".pyi", ".js", ".jsx", ".ts", ".tsx")
+_SOURCE_SUFFIXES = (".py",)
 _MAX_SOURCE_BYTES = 256_000
 
 

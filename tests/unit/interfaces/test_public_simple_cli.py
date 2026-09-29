@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from sastsimi.config.user_config import UserConfig, UserConfigStore
+from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.main import main
 from sastsimi.progress.models import ProgressSnapshot
 
@@ -90,6 +91,26 @@ class _BusyPublicApplication(_PublicApplication):
             "percent": 60,
             "resume_skipped_reason": "ANALYSIS_ALREADY_RUNNING",
         }
+
+
+class _StaleReportApplication(_PublicApplication):
+    def report(self, finding_id: str) -> str:
+        raise LookupError("CURRENT_REPORT_STALE")
+
+
+def test_public_stale_report_is_unavailable_not_internal_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(
+        ["report", "show", "F-001"],
+        public_application=_StaleReportApplication(),
+        user_config_store=_config(tmp_path),
+    )
+
+    assert code == int(ExitCode.REPORT_UNAVAILABLE)
+    error = capsys.readouterr().err
+    assert "stale" in error
+    assert "internal error" not in error
 
 
 def test_public_report_export_includes_additive_bundle_path(

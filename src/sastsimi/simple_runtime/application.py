@@ -1002,6 +1002,7 @@ class SimpleAnalysisApplication:
         identity: CheckpointIdentity,
         static: StaticBootstrapResult,
     ) -> SimpleAnalysisOutcome:
+        self._invalidate_stale_report_coverage(run, identity)
         latest_stage = SimpleStage.HYPOTHESIS_DONE
         incomplete: RunOutcome | None = None
         index = 0
@@ -1061,6 +1062,39 @@ class SimpleAnalysisApplication:
             status="PARTIAL" if run.static_disposition == "PARTIAL" else "COMPLETE",
             current_stage=latest_stage,
         )
+
+    def _invalidate_stale_report_coverage(
+        self, run: SimpleAnalysisRun, identity: CheckpointIdentity
+    ) -> None:
+        """A completed Finding can keep its agents while its report is refreshed."""
+
+        for hypothesis_id in run.hypothesis_ids:
+            child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+            report = self._store.get(child, SimpleStage.REPORT_DONE)
+            if (
+                report is None
+                or report.status is not StageStatus.SUCCEEDED
+                or report.bundle_manifest_ref is None
+            ):
+                continue
+            finding = self._store.get(child, SimpleStage.FINDING_DONE)
+            if finding is None or not finding.output_refs:
+                continue
+            artifacts = SimpleArtifactRepository(self._data_dir, child)
+            recorded_ref, recorded_disposition = artifacts.published_report_coverage(
+                report, finding.output_refs[0]
+            )
+            if (
+                recorded_ref != run.static_coverage_ref
+                or recorded_disposition is not None
+                and recorded_disposition != run.static_disposition
+            ):
+                self._store.invalidate_from(
+                    child,
+                    SimpleStage.REPORT_DONE,
+                    new_inputs=report.input_refs,
+                    force=True,
+                )
 
     def _static_for_child(
         self, static: StaticBootstrapResult, child: CheckpointIdentity

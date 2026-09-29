@@ -38,7 +38,7 @@ STAGE_VERSION: dict[SimpleStage, str] = {
     stage: (
         "5"
         if stage is SimpleStage.VERIFICATION_INITIAL_DONE
-        else "3"
+        else "4"
         if stage is SimpleStage.REPORT_DONE
         else "2"
         if stage

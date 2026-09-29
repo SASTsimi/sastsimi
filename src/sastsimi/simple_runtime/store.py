@@ -870,6 +870,72 @@ class SimpleCheckpointStore:
             )
         return tuple(attempts)
 
+    def list_static_scan_replay_attempts(
+        self,
+        identity: CheckpointIdentity,
+        repository: str,
+        fingerprint: str,
+        *,
+        tool: str,
+    ) -> tuple[StaticScanAttempt, ...]:
+        """Read legacy summaries and every raw-bearing invocation for replay."""
+
+        filters, params = self._static_execution_filter(
+            identity, repository, fingerprint, tool, None
+        )
+        attempts = [
+            attempt
+            for attempt in self.list_static_scan_attempts(
+                identity, repository, fingerprint
+            )
+            if attempt.tool == tool
+        ]
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT tool, run_key, status, raw_ref_json, error_code, "
+                "request_ref_json FROM simple_static_scan_executions WHERE "
+                + filters
+                + " AND status IN ('SUCCEEDED', 'BLOCKED') "
+                "AND raw_ref_json IS NOT NULL ORDER BY execution_id",
+                params,
+            ).fetchall()
+        for row in rows:
+            raw_ref = self._valid_opengrep_batch_ref(identity, row["raw_ref_json"])
+            request_json = row["request_ref_json"]
+            request_ref = (
+                self._valid_opengrep_batch_ref(identity, request_json)
+                if request_json is not None
+                else None
+            )
+            if raw_ref is None or request_json is not None and request_ref is None:
+                continue
+            attempts.append(
+                StaticScanAttempt(
+                    fingerprint=fingerprint,
+                    tool=row["tool"],
+                    run_key=row["run_key"],
+                    status=row["status"],
+                    raw_ref=raw_ref,
+                    coverage_ref=None,
+                    request_ref=request_ref,
+                    error_code=row["error_code"],
+                )
+            )
+        unique: dict[
+            tuple[str, str, str, str, str | None, str | None], StaticScanAttempt
+        ] = {}
+        for attempt in attempts:
+            key = (
+                attempt.tool,
+                attempt.run_key,
+                attempt.status,
+                attempt.raw_ref.model_dump_json() if attempt.raw_ref else "",
+                attempt.request_ref.model_dump_json() if attempt.request_ref else None,
+                attempt.error_code,
+            )
+            unique.setdefault(key, attempt)
+        return tuple(unique.values())
+
     def list_static_scan_attempts_for_run_key(
         self,
         identity: CheckpointIdentity,

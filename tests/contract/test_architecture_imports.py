@@ -328,6 +328,7 @@ SYMBOL_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
         {
             "sastsimi.static_analysis.file_scope",
             "sastsimi.static_analysis.file_scope.build_static_file_scope",
+            "sastsimi.static_analysis.file_scope.is_test_only_path",
         }
     ),
 }

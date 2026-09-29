@@ -625,6 +625,42 @@ async def test_stale_exhausted_stage_restarts_at_new_version(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_old_exhausted_reporter_restarts_without_rerunning_prior_agents(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "reporter-version" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.FINDING_DONE)
+    finding = store.require(_identity(), SimpleStage.FINDING_DONE)
+    inputs = finding.output_refs
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=_identity(),
+            stage=SimpleStage.REPORT_DONE,
+            stage_version="3",
+            status=StageStatus.BLOCKED,
+            input_refs=inputs,
+            input_hash=input_reference_hash(inputs),
+            attempt_id="old-report-attempt",
+            attempt_number=3,
+            error_code="RECOVERY_EXHAUSTED",
+            retryable=False,
+        )
+    )
+    calls: list[SimpleStage] = []
+
+    outcome = await SimpleRuntimeRunner(
+        store, _recording_handlers(calls)
+    ).resume_hypothesis(_identity())
+
+    assert outcome.status is StageStatus.SUCCEEDED
+    assert calls == [SimpleStage.REPORT_DONE]
+    assert store.require(_identity(), SimpleStage.FINDING_DONE) == finding
+    report = store.require(_identity(), SimpleStage.REPORT_DONE)
+    assert report.stage_version == "4"
+    assert report.attempt_number == 1
+
+
+@pytest.mark.asyncio
 async def test_current_version_exhausted_stage_stays_blocked(tmp_path) -> None:
     store = SimpleCheckpointStore(tmp_path / "current-version" / "sastsimi.sqlite3")
     _seeded_through(store, SimpleStage.PRO_CON_DONE)

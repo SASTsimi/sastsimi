@@ -71,11 +71,6 @@ from .static_publication import (
     StaticNormalizationSource,
 )
 
-_LANGUAGE_SUFFIXES = {
-    "PYTHON": frozenset({".py", ".pyi"}),
-    "JAVASCRIPT": frozenset({".js", ".jsx", ".mjs", ".cjs"}),
-}
-
 
 def require_current_work_context(
     context: WorkContext,
@@ -123,21 +118,19 @@ def selected_static_paths(
     *,
     workspace_root: Path,
 ) -> tuple[str, ...]:
-    """Return product source paths for the exact selected languages."""
+    """Return only Python product sources for selected Python-capable tools."""
 
     scope = build_static_file_scope(
         workspace_root, tuple(str(item.git_path) for item in tracked)
     )
     selected = frozenset(scope.selected_paths)
-    suffixes = frozenset(
-        suffix for language in tool.languages for suffix in _LANGUAGE_SUFFIXES[language]
-    )
+    if "PYTHON" not in tool.languages:
+        return ()
     paths = tuple(
         sorted(
             str(item.git_path)
             for item in tracked
-            if str(item.git_path) in selected
-            and any(str(item.git_path).lower().endswith(suffix) for suffix in suffixes)
+            if str(item.git_path) in selected and str(item.git_path).endswith(".py")
         )
     )
     return paths

@@ -545,7 +545,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         )
 
     def report(self, finding_id: str) -> str:
-        identity, _finding_ref = self._finding_identity(finding_id)
+        identity, finding_ref = self._finding_identity(finding_id)
         checkpoint = self._store.require(identity, SimpleStage.REPORT_DONE)
         if not technical_gate_accepted(
             self._store.get(identity, SimpleStage.TECH_GATE_DONE),
@@ -567,6 +567,16 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             run = self._store.require_analysis_run(identity.analysis_id)
         except LookupError:
             run = None
+        if run is not None:
+            try:
+                artifacts.require_current_report_coverage(
+                    checkpoint,
+                    finding_ref,
+                    run.static_coverage_ref,
+                    run.static_disposition,
+                )
+            except (OSError, ValueError) as error:
+                raise LookupError("CURRENT_REPORT_STALE") from error
         review = project_scope_review(
             self._store.get(identity, SimpleStage.SCOPE_GATE_DONE),
             artifacts,
@@ -630,8 +640,14 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                 scope_status=str(review["status"]),
                 public_projection=lambda body: safe_public_report(body, review),
             )
+            report = prior[SimpleStage.REPORT_DONE]
+            if report.markdown_path is None:
+                return None
             return (
-                Path("reports") / identity.analysis_id / finding_id / "bundle.zip"
+                Path("reports")
+                / identity.analysis_id
+                / Path(report.markdown_path).stem
+                / "bundle.zip"
             ).as_posix()
         except (KeyError, OSError, ValueError):
             return None

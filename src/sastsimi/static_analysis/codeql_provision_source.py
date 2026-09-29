@@ -110,7 +110,11 @@ def selected_codeql_tracked_files(
         repository, tuple(item.git_path for item in tracked)
     )
     selected = frozenset(scope.selected_paths)
-    return tuple(item for item in tracked if item.git_path in selected)
+    return tuple(
+        item
+        for item in tracked
+        if item.git_path in selected and item.git_path.endswith(".py")
+    )
 
 
 def codeql_manifest_sha256(tracked: tuple[TrackedFile, ...]) -> str:

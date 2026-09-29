@@ -100,21 +100,21 @@ sastsimi analyze https://github.com/owner/repository.git --commit <정확한-40�
 
 큰 저장소는 정적 도구가 실행되는 동안 `STATIC_DONE` 단계에 진행률 `0%`가 표시될 수 있습니다. `RUNNING`이면 상태를 확인하며 기다리고, 기존 실행이 종료된 뒤에만 `resume`하세요. 정적 분석 시간 초과와 복구 방법은 [오류 해결](docs/troubleshooting.md#opengrep-또는-codeql-실패)을 참고하세요.
 
-정적 검사의 범위는 배포되는 제품 코드입니다. `tests`, `specs`, `e2e`, `testdata`, `unit_tests` 등 이름이 정확히 일치하는 테스트 전용 디렉터리와 언어별 확실한 테스트 파일명은 AST·OpenGrep·Semgrep·CodeQL 입력과 파일×규칙 커버리지에서 제외합니다. 제외 파일의 목록·개수·사유는 저장하거나 보고하지 않으며, 테스트 파일을 다시 포함하는 설정도 없습니다. 디렉터리 이름 일부가 우연히 일치하는 파일이나 제품 실행 진입점은 안전하게 제품 범위에 남깁니다. OpenGrep은 대상 파일을 최대 64개·소스 합계 512 KiB의 명시적 묶음으로 검사하고 시간 초과 묶음은 단일 파일까지 나눕니다. 각 호출은 Windows 명령줄 길이와 유한한 시간을 지키며, `resume`에서는 동일한 범위·규칙·도구·원문 요청을 검증한 완료 증거만 재사용합니다. 기존 전체 파일 범위의 완료 근거를 새 제품 범위에 옮길 수 없으므로 범위가 바뀐 분석은 새 분석 ID로 시작해야 합니다. 파싱 경고·미검사·시간 초과로 남은 제품 코드 조합만 선택형 Semgrep에 전달합니다.
+정적 검사의 범위는 Git에 추적된 배포용 Python `.py` 파일뿐입니다. `.pyi`, JS/TS, 문서·설정 파일 등은 정적 검사와 가설 Agent의 코드 입력에서 제외합니다. Dockerfile·의존성 설정은 검증된 저장소 메타데이터 및 PoC 환경 준비에만 사용합니다. `tests`, `specs`, `e2e`, `testdata`, `unit_tests` 등 테스트 전용 디렉터리와 확실한 Python 테스트 파일명은 제외하며, 제외 목록을 검사 성공으로 세거나 별도 보고하지 않습니다. 테스트 파일 포함 옵션은 없습니다. OpenGrep은 최대 64파일·소스 합계 512 KiB, 선택형 Semgrep은 최대 128파일·512 KiB씩 묶습니다. 시간 초과 묶음은 단일 파일까지 나누며 각 호출은 최대 120초입니다. `resume`에서는 동일 commit·범위·규칙·도구의 검증된 파일×규칙 증거만 재사용하고 미검증 조합은 다시 시도합니다. 기존 언어 혼합 범위의 완료 근거는 Python 전용 완료로 재사용하지 않습니다.
 
-OpenGrep이 실패해도 AST와 설정된 CodeQL 결과는 보존합니다. 제품 범위의 미지원 파일은 확장자가 없어도 경로와 이유를 기록합니다. 일부 파일·규칙 조합이 검증되고 정적 bundle·coverage artifact가 온전하면 `STATIC_DONE`은 검증된 근거를 게시하고 후속 Agent로 진행할 수 있습니다. 미검증 조합의 raw hit는 Agent 후보나 Finding 근거에 넣지 않습니다. 검증 근거가 전혀 없거나 무결성이 깨지면 `BLOCKED`입니다. 대시보드는 검증/예상 수, 누락·미지원 이유와 전체 목록의 페이지 조회를 제공합니다.
+OpenGrep이 실패해도 AST와 설정된 CodeQL 결과는 보존합니다. 일부 Python 파일·규칙 조합이 검증되고 정적 bundle·coverage artifact가 온전하면 `STATIC_DONE`은 검증된 근거만 게시하고 후속 Agent로 진행합니다. 미검증 조합의 raw hit는 Agent 후보나 Finding 근거에 넣지 않습니다. Python 제품 파일이 없으면 `NO_PYTHON_SOURCE`, 적용 가능한 Python 규칙이 없으면 `NO_PYTHON_RULES`로 차단합니다. 검증 근거가 전혀 없거나 무결성이 깨져도 `BLOCKED`입니다. 대시보드는 검증/예상 수와 미검증 경로·규칙·이유를 표시합니다.
 
-같은 commit·제품 범위·규칙·도구 지문에서 해시를 재검증한 파일·규칙 증거만 재개에 재사용합니다. `PARTIAL` 분석에 미완료 Agent·PoC가 있으면 `resume`은 검증된 정적 근거를 재사용해 그 작업을 먼저 마칩니다. 후속 작업이 끝난 뒤 다시 `resume`하면 남은 정적 조합을 시도하며, 완료된 Agent는 원래 입력 참조에 묶어 유지하고 새 근거에서 나온 가설만 추가합니다. 미지원 제품 언어를 완료로 간주하지 않습니다.
+같은 commit·Python 제품 범위·규칙·도구 지문에서 해시를 재검증한 파일·규칙 증거만 재개에 재사용합니다. `PARTIAL` 분석에 미완료 Agent·PoC가 있으면 `resume`은 검증된 정적 근거를 재사용해 그 작업을 먼저 마칩니다. 후속 작업이 끝난 뒤 다시 `resume`하면 남은 정적 조합을 시도하며, 완료된 Agent는 원래 입력 참조에 묶어 유지하고 새 근거에서 나온 가설만 추가합니다. 검사되지 않은 조합을 완료로 간주하지 않습니다.
 
-Python AST는 사실(facts) 저장 상한에 도달해도 선택된 제품 Python 파일을 계속 파싱합니다. 파싱 실패·용량 초과 파일은 불완전한 범위로 기록하며 사용 가능한 검증 부분이 있으면 `PARTIAL`로 진행할 수 있습니다. 패키지 설정을 읽지 못해 실제 배포 진입점을 확인할 수 없는 경우는 `STATIC_SCOPE_MANIFEST_UNVERIFIED`로 차단합니다.
+Python AST는 사실(facts) 저장 상한에 도달해도 선택된 제품 `.py` 파일을 계속 파싱합니다. 파싱 실패·용량 초과 파일은 불완전한 범위로 기록하며 사용 가능한 검증 부분이 있으면 `PARTIAL`로 진행할 수 있습니다. 정적 소스 선정 때문에 JS 패키지 설정을 파싱하지 않습니다.
 
-새 분석의 누적 LLM 호출시간 기본값은 `unlimited`이며 공유 정적 검사 1시간 제한도 적용하지 않습니다. 개별 외부 호출의 시간 제한과 유한한 재시도는 유지됩니다. 선택형 Semgrep fallback을 켜면 OpenGrep 묶음·분할 호출당 최대 120초, Semgrep 호출당 최대 120초입니다. OpenGrep 분할은 최대 64파일·소스 합계 512 KiB(초과 단일 파일은 단독 호출), Semgrep 분할은 최대 128파일이며 둘 다 Windows 명령줄 24,000 UTF-16 단위 이내로 실행합니다. OpenGrep·Semgrep·CodeQL 결과 파일과 재개용 정적 검사 원문은 각각 최대 64 MiB까지만 읽습니다. 한 정적 coverage 실행에서 정규화한 후보 결과는 최대 500,000건, 평가에 채택된 스캔 원문 누적량은 최대 4 GiB이며 같은 원문을 다시 평가해도 합산합니다. 초과 시 `STATIC_CANDIDATES_TOO_LARGE`로 `BLOCKED`됩니다. 로컬 도구 호출의 기본 메모리 제한은 4 GiB입니다. Windows에서는 하위 프로세스를 포함한 Job 전체의 커밋 메모리, POSIX에서는 각 프로세스의 가상 주소 공간에 적용되며 POSIX 하위 프로세스 전체의 메모리 합계 제한은 아닙니다. Semgrep은 실패한 묶음을 파일 단위까지 분할합니다.
+새 분석의 누적 LLM 호출시간 기본값은 `unlimited`이며 정적 검사 전체에 대한 180초 또는 1시간 종료 시각도 없습니다. 사용자는 실행을 취소할 수 있고 개별 외부 호출의 시간 제한과 유한한 재시도는 유지됩니다. OpenGrep·선택형 Semgrep은 호출당 최대 120초, CodeQL은 단계별 최대 1800초입니다. OpenGrep 분할은 최대 64파일·소스 합계 512 KiB(초과 단일 파일은 단독 호출), Semgrep 분할은 최대 128파일·512 KiB이며 둘 다 Windows 명령줄 24,000 UTF-16 단위 이내로 실행합니다. OpenGrep·Semgrep·CodeQL 결과 파일과 재개용 정적 검사 원문은 각각 최대 64 MiB까지만 읽습니다. 한 정적 coverage 실행에서 정규화한 후보 결과는 최대 500,000건, 평가에 채택된 스캔 원문 누적량은 최대 4 GiB이며 같은 원문을 다시 평가해도 합산합니다. 초과 시 `STATIC_CANDIDATES_TOO_LARGE`로 `BLOCKED`됩니다. 로컬 도구 호출의 기본 메모리 제한은 4 GiB입니다. Windows에서는 하위 프로세스를 포함한 Job 전체의 커밋 메모리, POSIX에서는 각 프로세스의 가상 주소 공간에 적용되며 POSIX 하위 프로세스 전체의 메모리 합계 제한은 아닙니다. Semgrep은 실패한 묶음을 파일 단위까지 분할합니다.
 
 완료된 검사 원문은 같은 commit·규칙·도구 지문에서 다시 검증해 재사용합니다. 재개 때 묶음 경계가 달라져도 이미 증명된 파일·규칙은 다시 세지 않습니다. 손상된 원문이나 파싱 오류는 완료로 취급하지 않습니다. 파일 하나의 시간 초과는 `--timeout 30`으로 한 번 더 시험하고, 끝내 확인할 수 없는 조합은 경로·규칙·이유를 coverage artifact에 남깁니다.
 
 scanner 실행 요청은 시작 전 `STARTED`와 종료 결과를 실행 ledger에 남깁니다. 완료 증거는 같은 commit·규칙·도구·요청 설명자와 원문 해시를 재검증한 파일·규칙 조합에만 부여합니다. coverage artifact의 각 미검증 조합에서 `known_attempt_count`는 완료 기록이 남은 scanner 실행 요청 수, `known_attempts_by_engine`는 그 OpenGrep·Semgrep별 수입니다. `history_complete`는 전체 실행 요청 이력을 정확히 셀 수 있는지 나타내며, 이전 summary나 미완료 `STARTED` 기록이 남아 있다면 `attempt_count`는 `null`입니다(완전하면 정확한 총 요청 수). `latest_error_code`·`latest_error_ref`는 가장 최근 기록된 실패 코드와 비공개 오류 근거 참조입니다. 캐시 재사용과 실행 전 검사는 호출로 세지 않습니다.
 
-정적 검사 한 회 예산 `static_scan_pass_seconds`의 기본값은 180초이며 `setup --static-scan-pass-seconds <초>`로 바꿀 수 있습니다. 예산이 끝난 조합은 `not_attempted_budget`로 남으며, 미완료 Agent·PoC를 마친 뒤 같은 범위의 `resume`에서 다시 시도합니다. 이는 분석 전체의 누적 시간 제한과 별개입니다.
+이전 프로필의 `static_scan_pass_seconds` 값은 호환을 위해 읽을 수 있지만 더는 전체 정적 검사 종료 시각으로 사용하지 않습니다. 한 번의 도구 호출이 시간 초과되면 묶음을 나눠 재시도하고, 단일 파일도 끝내 검증되지 않으면 해당 조합을 미검증으로 남깁니다.
 
 [기존 Dify 정적 검사 검증](docs/validation/2026-09-27-dify-static-coverage.md)은 변경 전 관찰 기록입니다. [새 정적 재시험](docs/validation/2026-09-28-dify-static-retest.md)과 [전체 파이프라인 판정](docs/validation/2026-09-28-dify-end-to-end.md)은 실제 진행 상태와 확인된 한계를 구분해 기록합니다.
 
@@ -123,6 +123,8 @@ sastsimi status A-001
 sastsimi resume A-001
 sastsimi result A-001
 ```
+
+CodeQL은 기본 4 GiB 로컬 작업 메모리 한도 안에서 데이터베이스 생성·쿼리를 실행하도록 1 스레드와 2 GiB RAM 요청으로 제한합니다.
 
 ### 5. 결과 확인
 
@@ -181,8 +183,8 @@ Reporter는 검증 결과, CWE, validated PoC와 Gate 결과에 없는 새로운
 
 ## 지원 범위와 한계
 
-- 현재 첫 통합 검증 대상은 Python 저장소이며 Python 3.12가 필요합니다.
-- 현재 CodeQL은 Python query suite만 실행합니다. JavaScript/TypeScript는 OpenGrep 규칙의 적용 범위이며, AST·CodeQL 결과를 해당 규칙의 대체 검사 증거로 간주하지 않습니다.
+- 정적 분석 대상은 Python `.py` 제품 파일이며 도구 실행에는 Python 3.12가 필요합니다.
+- CodeQL은 Python query suite만 실행합니다. JS/TS와 기타 비Python 파일은 AST·OpenGrep·Semgrep·CodeQL의 정적 커버리지에 포함하지 않습니다.
 - Windows clean wheel 환경과 WSL/Linux Docker 흐름을 확인했지만, 설치한 컴퓨터에서 `sastsimi setup`으로 외부 도구와 인증 상태를 다시 확인해야 합니다.
 - CodeQL은 query pack이 포함된 공식 platform bundle이 필요합니다. 준비되지 않으면 `full` 프로필을 활성화하지 않습니다.
 - 인증 실패, 도구 미설치, timeout, Docker build 실패와 LLM 출력 오류는 취약점 `FALSE`로 바꾸지 않고 `BLOCKED` 또는 판정 없는 `FAILED`로 기록합니다.

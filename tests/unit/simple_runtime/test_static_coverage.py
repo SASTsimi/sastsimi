@@ -110,7 +110,7 @@ def test_unknown_product_source_extension_blocks_without_flagging_docs(
     assert plan.unsupported == ((".customlang", 1), (".r", 1))
 
 
-def test_unsupported_product_paths_are_recorded_without_test_files(
+def test_non_python_product_paths_are_ignored_without_test_files(
     tmp_path: Path,
 ) -> None:
     for name in ("app.py", "bin/launcher", "src/worker.r", "tests/test_worker.r"):
@@ -123,6 +123,7 @@ def test_unsupported_product_paths_are_recorded_without_test_files(
     product = build_static_file_scope(
         tmp_path, ("app.py", "bin/launcher", "src/worker.r", "tests/test_worker.r")
     )
+    assert product.selected_paths == ("app.py",)
     plan = plan_static_coverage(
         tmp_path,
         product.selected_paths,
@@ -132,14 +133,8 @@ def test_unsupported_product_paths_are_recorded_without_test_files(
     )
 
     report = finish_coverage(plan, [])
-    assert report.to_json()["unsupported"] == [
-        {"extension": "", "file_count": 1},
-        {"extension": ".r", "file_count": 1},
-    ]
-    assert report.to_json()["unsupported_files"] == [
-        {"path": "bin/launcher", "reason": "no_applicable_rule"},
-        {"path": "src/worker.r", "reason": "no_applicable_rule"},
-    ]
+    assert report.to_json()["unsupported"] == []
+    assert report.to_json()["unsupported_files"] == []
 
 
 def test_product_scope_excludes_tests_from_rule_pairs_and_cache_identity(

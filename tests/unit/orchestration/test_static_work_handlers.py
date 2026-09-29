@@ -42,6 +42,7 @@ from sastsimi.orchestration.static_work_handlers import (
 )
 from sastsimi.ports.dto import WorkContext
 from sastsimi.runtime.workflow_runner import WorkflowRunner
+from sastsimi.static_analysis.file_scope import StaticFileScope
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import meta, ref
 
@@ -156,8 +157,11 @@ def _recovery_runner(
     return cast(WorkflowRunner, SimpleNamespace(runtime=runtime)), blocked
 
 
-def test_selected_static_paths_follow_only_the_selected_language(
+@pytest.mark.parametrize("scope_is_broad", [False, True])
+def test_selected_static_paths_follow_only_python_product_sources(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scope_is_broad: bool,
 ) -> None:
     source = tmp_path / "src"
     source.mkdir()
@@ -200,8 +204,16 @@ def test_selected_static_paths_follow_only_the_selected_language(
         )
     )
 
+    if scope_is_broad:
+        monkeypatch.setattr(
+            "sastsimi.orchestration.static_work_handlers.build_static_file_scope",
+            lambda _root, _tracked: StaticFileScope(
+                selected_paths=("src/app.js", "src/app.py", "README.md"),
+                fingerprint="f" * 64,
+            ),
+        )
+
     assert selected_static_paths(tracked, tool, workspace_root=tmp_path) == (
-        "src/app.js",
         "src/app.py",
     )
 
@@ -252,17 +264,21 @@ def test_selected_static_paths_excludes_tests_before_creating_tool_actions(
     )
 
 
-@pytest.mark.parametrize("javascript_is_product", [True, False])
-def test_product_scope_skips_test_only_tools_without_stalling_fanout(
+@pytest.mark.parametrize("python_is_product", [True, False])
+def test_python_product_scope_skips_non_python_paths_without_stalling_fanout(
     tmp_path: Path,
-    javascript_is_product: bool,
+    python_is_product: bool,
 ) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "tests").mkdir()
-    javascript_path = "src/app.js" if javascript_is_product else "tests/test_only.js"
+    javascript_path = "src/app.js"
+    python_path = "src/app.py" if python_is_product else "tests/test_only.py"
     (tmp_path / javascript_path).write_text("console.log('app')\n", encoding="utf-8")
-    (tmp_path / "tests" / "test_only.py").write_text(
-        "def test_only():\n    assert True\n", encoding="utf-8"
+    (tmp_path / python_path).write_text(
+        "print('app')\n"
+        if python_is_product
+        else "def test_only():\n    assert True\n",
+        encoding="utf-8",
     )
     tracked = tuple(
         RepositoryTrackedFile.model_validate(
@@ -274,7 +290,7 @@ def test_product_scope_skips_test_only_tools_without_stalling_fanout(
                 "size_bytes": 1,
             }
         )
-        for path, key in ((javascript_path, "a"), ("tests/test_only.py", "b"))
+        for path, key in sorted(((javascript_path, "a"), (python_path, "b")))
     )
     workspace_data = make("CodeWorkspace")
     workspace_data.update(status="READY", commit_id="c1")
@@ -288,7 +304,7 @@ def test_product_scope_skips_test_only_tools_without_stalling_fanout(
             tuple(item.model_dump(mode="json") for item in tracked)
         ),
         languages=(
-            {"name": "PYTHON", "evidence_paths": ("tests/test_only.py",)},
+            {"name": "PYTHON", "evidence_paths": (python_path,)},
             {"name": "JAVASCRIPT", "evidence_paths": (javascript_path,)},
         ),
     )
@@ -452,11 +468,13 @@ def test_product_scope_skips_test_only_tools_without_stalling_fanout(
         ),
     )
 
-    assert selected_static_paths(tracked, selected[0], workspace_root=tmp_path) == ()
-    assert selected_static_paths(tracked, selected[1], workspace_root=tmp_path) == (
-        (javascript_path,) if javascript_is_product else ()
+    assert selected_static_paths(tracked, selected[0], workspace_root=tmp_path) == (
+        (python_path,) if python_is_product else ()
     )
-    if not javascript_is_product:
+    assert selected_static_paths(tracked, selected[1], workspace_root=tmp_path) == (
+        (python_path,) if python_is_product else ()
+    )
+    if not python_is_product:
         with pytest.raises(ValueError, match="STATIC_PRODUCT_SOURCE_EMPTY"):
             graph.ensure_static_tools(
                 profile_work=profile_work,
@@ -474,30 +492,34 @@ def test_product_scope_skips_test_only_tools_without_stalling_fanout(
         selection=selection,
         selection_ref=selection_ref,
     )
-    assert len(children) == 1
-    assert js_ref in children[0].input_refs
-    assert python_ref not in children[0].input_refs
-    completed = children[0].model_copy(
-        update={
-            "status": WorkStatus.SUCCEEDED,
-            "output_refs": (StoredDataRef.model_validate(ref("tool_run_result")),),
-        }
+    assert len(children) == 2
+    assert python_ref in children[0].input_refs
+    assert js_ref in children[1].input_refs
+    completed = tuple(
+        child.model_copy(
+            update={
+                "status": WorkStatus.SUCCEEDED,
+                "output_refs": (StoredDataRef.model_validate(ref("tool_run_result")),),
+            }
+        )
+        for child in children
     )
-    works[str(completed.work_id)] = completed
-    normalized = graph.ensure_normalization(completed)
+    for item in completed:
+        works[str(item.work_id)] = item
+    normalized = graph.ensure_normalization(completed[1])
     assert normalized is not None
     assert normalized.work_type == WorkType.STATIC_NORMALIZE
     legacy_normalization_key = "static-normalize:" + selection_ref.content_hash
     assert str(normalized.work_id) != (
         "stable-" + content_hash(legacy_normalization_key)[:32]
     )
-    assert all(item.work_type != WorkType.STATIC_TOOL for item in enqueued[1:])
+    assert all(item.work_type != WorkType.STATIC_TOOL for item in enqueued[2:])
 
     legacy_key = f"static-tool:{selection_ref.content_hash}:{js_ref.content_hash}"
-    legacy = completed.model_copy(
+    legacy = completed[1].model_copy(
         update={
             "work_id": "stable-" + content_hash(legacy_key)[:32],
-            "dedupe_key": content_hash([legacy_key, completed.input_refs]),
+            "dedupe_key": content_hash([legacy_key, completed[1].input_refs]),
         }
     )
     works[str(legacy.work_id)] = legacy

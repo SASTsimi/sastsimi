@@ -462,6 +462,117 @@ def test_profile_uses_only_exact_tracked_files_and_detects_known_inputs(
     assert all(len(item.content_sha256) == 64 for item in result.tracked_files)
 
 
+def test_mixed_repository_keeps_build_context_but_not_javascript_static_language(
+    tmp_path: Path,
+) -> None:
+    tracked = (
+        _write(tmp_path, "src/app.py", b"from fastapi import FastAPI\n"),
+        _write(tmp_path, "src/app.pyi", b"class App: ...\n"),
+        _write(tmp_path, "web/index.tsx", b"export const UI = 1;\n"),
+        _write(tmp_path, "pyproject.toml", b'[project]\ndependencies=["fastapi"]\n'),
+        _write(tmp_path, "requirements-dev.txt", b"django>=5\n"),
+        _write(tmp_path, "requirements-test.txt", b"pytest\n"),
+        _write(tmp_path, "Pipfile", b"[packages]\nfastapi='*'\n"),
+        _write(tmp_path, "uv.lock", b"lock data"),
+        _write(tmp_path, "Dockerfile", b"FROM python:3.12\n"),
+        _write(tmp_path, "compose.yaml", b"services: {}\n"),
+        _write(tmp_path, "package.json", b"{invalid json"),
+    )
+
+    result = _build(tmp_path, tracked)
+
+    assert result.status == "READY"
+    assert [item.name for item in result.languages] == ["PYTHON"]
+    assert [item.name for item in result.frameworks] == ["DJANGO", "FASTAPI"]
+    assert {item.git_path for item in result.tracked_files} == {
+        "src/app.py",
+        "pyproject.toml",
+        "requirements-dev.txt",
+        "Pipfile",
+        "uv.lock",
+        "Dockerfile",
+        "compose.yaml",
+        "src/app.pyi",
+        "web/index.tsx",
+        "package.json",
+    }
+    assert "CONFIG_PARSE_FAILED:package.json" not in result.confirmation_reasons
+    assert "requirements-test.txt" not in {
+        item.git_path for item in result.tracked_files
+    }
+    assert {item.kind for item in result.config_files} == {
+        "PYPROJECT",
+        "REQUIREMENTS",
+        "PIPFILE",
+        "PYTHON_LOCK",
+        "DOCKERFILE",
+        "DOCKER_COMPOSE",
+    }
+
+
+def test_python_static_scope_preserves_verified_docker_build_context(
+    tmp_path: Path,
+) -> None:
+    tracked = (
+        _write(tmp_path, "app.py", b"print('product')\n"),
+        _write(tmp_path, "Dockerfile", b"COPY templates /app/templates\n"),
+        _write(tmp_path, ".dockerignore", b"docs/\n"),
+        _write(tmp_path, "templates/index.html", b"<h1>product</h1>\n"),
+        _write(tmp_path, "assets/app.js", b"console.log('product')\n"),
+        _write(tmp_path, "tests/test_app.py", b"def test_app(): pass\n"),
+    )
+
+    result = _build(tmp_path, tracked)
+
+    assert [item.name for item in result.languages] == ["PYTHON"]
+    assert {item.git_path for item in result.tracked_files} == {
+        "app.py",
+        "Dockerfile",
+        ".dockerignore",
+        "templates/index.html",
+        "assets/app.js",
+    }
+    assert [item.path for item in result.config_files] == ["Dockerfile"]
+
+
+def test_no_python_source_blocks_even_if_javascript_has_a_build_hint(
+    tmp_path: Path,
+) -> None:
+    repository = _build(
+        tmp_path,
+        (
+            _write(tmp_path, "web/index.tsx", b"export const UI = 1;\n"),
+            _write(tmp_path, "package.json", b'{"scripts":{"start":"node index.js"}}'),
+        ),
+    )
+
+    assert repository.status == "NEEDS_CONFIRMATION"
+    assert repository.languages == ()
+    assert {item.git_path for item in repository.tracked_files} == {
+        "web/index.tsx",
+        "package.json",
+    }
+    assert "NO_PYTHON_SOURCE" in repository.confirmation_reasons
+
+    resolver = _Resolver()
+    selection = RepositoryExecutionSelector(
+        cast(ProductionCapabilityResolverPort, resolver),
+        operating_system="windows",
+        architecture="x86_64",
+    ).select(
+        repository,
+        meta=_selection_meta(),
+        repository_profile_ref=cast(StoredDataRef, reference(repository)),
+        git_clone_profile_ref=resolver.git_ref,
+        git_checkout_profile_ref=resolver.git_ref,
+    )
+    assert selection.status == "BLOCKED"
+    assert {gap.code for gap in selection.gaps} == {
+        "NO_PYTHON_SOURCE",
+        "BUILD_OR_START_UNCONFIRMED",
+    }
+
+
 def test_profile_discards_test_only_sources_and_invalid_test_package(
     tmp_path: Path,
 ) -> None:
@@ -470,6 +581,8 @@ def test_profile_discards_test_only_sources_and_invalid_test_package(
         _write(tmp_path, "Dockerfile", b"FROM python:3.12-slim\n"),
         _write(tmp_path, "tests/test_app.py", b"def test_app(): pass\n"),
         _write(tmp_path, "tests/fixture.ts", b"export const fixture = true;\n"),
+        _write(tmp_path, "tests/pyproject.toml", b"invalid = ["),
+        _write(tmp_path, "tests/Dockerfile", b"FROM invalid\n"),
         _write(tmp_path, "tests/package.json", b"{invalid json"),
     )
 
@@ -509,7 +622,7 @@ def test_profile_verifies_discarded_test_blob_before_profiling(tmp_path: Path) -
         _build(tmp_path, tracked)
 
 
-def test_profile_preserves_declared_product_entrypoint_under_test_named_directory(
+def test_javascript_package_entrypoint_does_not_override_python_only_scope(
     tmp_path: Path,
 ) -> None:
     tracked = (
@@ -520,15 +633,14 @@ def test_profile_preserves_declared_product_entrypoint_under_test_named_director
 
     result = _build(tmp_path, tracked)
 
-    assert [language.name for language in result.languages] == ["JAVASCRIPT"]
-    assert [item.git_path for item in result.tracked_files] == [
-        "package.json",
-        "tests/runtime.js",
-    ]
+    assert result.status == "NEEDS_CONFIRMATION"
+    assert result.languages == ()
+    assert [item.git_path for item in result.tracked_files] == ["package.json"]
+    assert "NO_PYTHON_SOURCE" in result.confirmation_reasons
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows path/descriptor mode semantics")
-def test_profile_accepts_exact_windows_batch_file_when_fd_mode_bits_differ(
+def test_profile_verifies_windows_batch_file_before_excluding_it(
     tmp_path: Path,
 ) -> None:
     tracked = (_write(tmp_path, "docs/make.bat", b"@echo off\r\n"),)
@@ -549,7 +661,8 @@ def test_profile_accepts_exact_windows_batch_file_when_fd_mode_bits_differ(
 
     result = _build(tmp_path, tracked)
 
-    assert tuple(item.git_path for item in result.tracked_files) == ("docs/make.bat",)
+    assert [item.git_path for item in result.tracked_files] == ["docs/make.bat"]
+    assert "NO_PYTHON_SOURCE" in result.confirmation_reasons
 
 
 def test_unknown_or_ambiguous_build_is_not_guessed(tmp_path: Path) -> None:
@@ -559,11 +672,11 @@ def test_unknown_or_ambiguous_build_is_not_guessed(tmp_path: Path) -> None:
 
     assert result.status == "NEEDS_CONFIRMATION"
     assert result.languages == ()
-    assert "LANGUAGE_UNCONFIRMED" in result.confirmation_reasons
+    assert "NO_PYTHON_SOURCE" in result.confirmation_reasons
     assert "BUILD_OR_START_UNCONFIRMED" in result.confirmation_reasons
 
 
-def test_javascript_framework_uses_source_and_tracked_package_evidence(
+def test_javascript_framework_and_package_do_not_influence_python_profile(
     tmp_path: Path,
 ) -> None:
     tracked = (
@@ -578,9 +691,11 @@ def test_javascript_framework_uses_source_and_tracked_package_evidence(
 
     result = _build(tmp_path, tracked)
 
-    assert result.status == "READY"
-    assert [item.name for item in result.languages] == ["JAVASCRIPT"]
-    assert [item.name for item in result.frameworks] == ["EXPRESS"]
+    assert result.status == "NEEDS_CONFIRMATION"
+    assert result.languages == ()
+    assert result.frameworks == ()
+    assert result.config_files == ()
+    assert "NO_PYTHON_SOURCE" in result.confirmation_reasons
 
 
 def test_package_declaration_alone_does_not_guess_a_language(tmp_path: Path) -> None:
@@ -592,7 +707,7 @@ def test_package_declaration_alone_does_not_guess_a_language(tmp_path: Path) -> 
     assert result.languages == ()
     assert result.confirmation_reasons == (
         "BUILD_OR_START_UNCONFIRMED",
-        "LANGUAGE_UNCONFIRMED",
+        "NO_PYTHON_SOURCE",
     )
 
 
@@ -609,10 +724,14 @@ def test_large_unrelated_tracked_file_is_hashed_without_becoming_config(
 
     assert result.status == "READY"
     large = next(
-        item for item in result.tracked_files if item.git_path.endswith(".bin")
+        item for item in result.tracked_files if item.git_path == "assets/video.bin"
     )
     assert large.size_bytes > 2 * 1024 * 1024
     assert len(large.content_sha256) == 64
+    assert "assets/video.bin" not in {item.path for item in result.config_files}
+    (tmp_path / "assets/video.bin").write_bytes(b"changed")
+    with pytest.raises(ValueError, match="REPOSITORY_MANIFEST_MISMATCH"):
+        _build(tmp_path, tracked)
 
 
 def test_profile_contract_rejects_manifest_or_evidence_tampering(
@@ -936,19 +1055,10 @@ def test_python_only_codeql_routes_mixed_repository_without_blocking_opengrep(
     assert selection.status == "READY"
     assert {item.adapter_key: item.languages for item in selection.selected_tools} == {
         "CODEQL": ("PYTHON",),
-        "OPENGREP": ("JAVASCRIPT", "PYTHON"),
+        "OPENGREP": ("PYTHON",),
         "PYTHON_AST": ("PYTHON",),
     }
-    observed_gaps = [
-        (gap.code, gap.reason, gap.affected_languages) for gap in selection.gaps
-    ]
-    assert observed_gaps == [
-        (
-            "NO_ACTIVE_STATIC_CAPABILITY:CODEQL:JAVASCRIPT",
-            "UNSUPPORTED",
-            ("JAVASCRIPT",),
-        )
-    ]
+    assert selection.gaps == ()
 
 
 def test_missing_approved_python_codeql_still_blocks_mixed_repository(
@@ -982,23 +1092,22 @@ def test_missing_approved_python_codeql_still_blocks_mixed_repository(
     assert selection.status == "BLOCKED"
     assert selection.selected_tools == ()
     assert {(gap.code, gap.reason) for gap in selection.gaps} == {
-        ("NO_ACTIVE_STATIC_CAPABILITY:CODEQL:JAVASCRIPT", "UNSUPPORTED"),
         ("NO_ACTIVE_STATIC_CAPABILITY:CODEQL:PYTHON", "MISSING"),
     }
 
 
 def test_registry_mismatch_fails_without_selecting_any_tool(tmp_path: Path) -> None:
     tracked = (
-        _write(tmp_path, "app.js", b"console.log('ok')\n"),
+        _write(tmp_path, "app.py", b"print('ok')\n"),
         _write(
             tmp_path,
-            "package.json",
-            b'{"scripts":{"start":"node app.js"}}',
+            "pyproject.toml",
+            b'[project.scripts]\nstart="app:main"\n',
         ),
     )
     repository = _build(tmp_path, tracked)
     fake_resolver = _Resolver()
-    stale = fake_resolver.selections[("CODEQL", "JAVASCRIPT")]
+    stale = fake_resolver.selections[("CODEQL", "PYTHON")]
     del fake_resolver.pinned[stale.profile_ref]
 
     selection = RepositoryExecutionSelector(
@@ -1044,38 +1153,25 @@ def test_uncertain_profile_blocks_for_input_without_resolver_calls(
     assert selection.selected_tools == ()
     assert {gap.code for gap in selection.gaps} == {
         "BUILD_OR_START_UNCONFIRMED",
-        "LANGUAGE_UNCONFIRMED",
+        "NO_PYTHON_SOURCE",
     }
 
 
 @pytest.mark.parametrize(
-    ("language_path", "config_path", "config", "dockerfile"),
+    ("config_path", "config", "dockerfile"),
     [
-        ("app.py", "pyproject.toml", b'[project.scripts]\nserve="app:main"\n', False),
-        ("app.py", "requirements.txt", b"fastapi\n", True),
-        (
-            "app.js",
-            "package.json",
-            b'{"scripts":{"start":"node app.js"}}',
-            False,
-        ),
-        (
-            "app.js",
-            "package.json",
-            b'{"scripts":{"start":"node app.js"}}',
-            True,
-        ),
+        ("pyproject.toml", b'[project.scripts]\nserve="app:main"\n', False),
+        ("requirements.txt", b"fastapi\n", True),
     ],
 )
-def test_python_and_javascript_profiles_support_dockerfile_yes_or_no(
+def test_python_profiles_support_dockerfile_yes_or_no(
     tmp_path: Path,
-    language_path: str,
     config_path: str,
     config: bytes,
     dockerfile: bool,
 ) -> None:
     tracked = [
-        _write(tmp_path, language_path, b"print('ok')\n"),
+        _write(tmp_path, "app.py", b"print('ok')\n"),
         _write(tmp_path, config_path, config),
     ]
     if dockerfile:

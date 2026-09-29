@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -11,10 +12,17 @@ from sastsimi.composition.simple_runtime_composition import (
     PublicSimpleRuntimeApplication,
 )
 from sastsimi.config.user_config import SimpleExecutionProfile, UserConfig
+from sastsimi.dashboard.query import DashboardNotFound, DashboardQuery
+from sastsimi.interfaces.cli.simple_evaluation import _report_path_for_result
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
+from sastsimi.simple_runtime.application import (
+    SimpleAnalysisApplication,
+    StaticBootstrapResult,
+)
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
+    HYPOTHESIS_STAGES,
     STAGE_VERSION,
     CheckpointIdentity,
     SimpleAnalysisRun,
@@ -24,6 +32,7 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
+from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
 from sastsimi.simple_runtime.scope_policy import validate_scope_decision
 from sastsimi.simple_runtime.stages import ReporterStage
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
@@ -32,9 +41,11 @@ from sastsimi.simple_runtime.store import SimpleCheckpointStore
 class _ReporterClient:
     def __init__(self) -> None:
         self.calls = 0
+        self.last_schema: dict[str, Any] | None = None
 
     async def call(self, **_kwargs: Any) -> SimpleLLMCallResult:
         self.calls += 1
+        self.last_schema = _kwargs["output_schema"]
         ko = {
             "title": "검증된 명령어 삽입 취약점",
             "summary": "검증되지 않은 입력으로 운영체제 명령을 실행할 수 있습니다.",
@@ -169,6 +180,16 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
         }
     )
     finding_ref = artifacts.put_json({"kind": "simple_finding"})
+    chain_ref = artifacts.put_json(
+        {
+            "kind": "simple_chaining_result",
+            "analysis_id": identity.analysis_id,
+            "source_hypothesis_id": identity.hypothesis_id,
+            "considered_primitive_refs": [],
+            "status": "NO_MATERIAL_CHILD",
+            "children": [],
+        }
+    )
     prior = {
         SimpleStage.POC_CANDIDATE_DONE: _checkpoint(
             identity,
@@ -202,6 +223,9 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
         SimpleStage.SCOPE_GATE_DONE: _checkpoint(
             identity, SimpleStage.SCOPE_GATE_DONE, outputs=(scope_ref,)
         ),
+        SimpleStage.CHAINING_DONE: _checkpoint(
+            identity, SimpleStage.CHAINING_DONE, outputs=(chain_ref,)
+        ),
         SimpleStage.FINDING_DONE: _checkpoint(
             identity,
             SimpleStage.FINDING_DONE,
@@ -213,6 +237,7 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
     current = StageCheckpoint(
         identity=identity,
         stage=SimpleStage.REPORT_DONE,
+        stage_version=STAGE_VERSION[SimpleStage.REPORT_DONE],
         status=StageStatus.RUNNING,
         input_refs=(finding_ref,),
         input_hash=input_reference_hash((finding_ref,)),
@@ -232,6 +257,12 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
         with pytest.raises(ValueError, match="BUNDLE_PUBLICATION_FAILED"):
             await ReporterStage(client, artifacts, store=store)(current, prior)
     assert client.calls == 1
+    assert client.last_schema is not None
+    assert client.last_schema["properties"]["citations"] == {
+        "type": "array",
+        "items": {"type": "string"},
+    }
+    assert STAGE_VERSION[SimpleStage.REPORT_DONE] == "4"
     retry = current.model_copy(update={"attempt_id": "report-attempt-2"})
     resumed_store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
     coverage_ref = artifacts.put_json(
@@ -263,8 +294,14 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
             static_disposition="PARTIAL",
         )
     )
+    predictable_temporary = (
+        tmp_path / "reports" / identity.analysis_id / "F-001.md.next"
+    )
+    predictable_temporary.parent.mkdir(parents=True, exist_ok=True)
+    predictable_temporary.write_bytes(b"must remain untouched")
     result = await ReporterStage(client, artifacts, store=resumed_store)(retry, prior)
     assert client.calls == 1
+    assert predictable_temporary.read_bytes() == b"must remain untouched"
 
     assert result.markdown_path is not None
     path = Path(result.markdown_path)
@@ -298,6 +335,185 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
         in (bundle / "report_en.md").read_bytes()
     )
     original_legacy = path.read_bytes()
+
+    # A completed report must be re-rendered when a later static retry fills
+    # the remaining coverage gap, even if that FULL state predates this resume.
+    for stage in HYPOTHESIS_STAGES:
+        if stage is SimpleStage.REPORT_DONE:
+            continue
+        checkpoint = prior.get(stage) or _checkpoint(identity, stage)
+        resumed_store.save_checkpoint(checkpoint)
+    resumed_store.complete(retry, result)
+    profile_ref = artifacts.put_json({"kind": "simple_repository_profile"})
+    bundle_ref = artifacts.put_json({"kind": "simple_static_fact_bundle"})
+    full_coverage_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_coverage_v1",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "fingerprint": "e" * 64,
+            "expected_count": 2,
+            "verified_count": 2,
+            "gaps": [],
+            "unsupported_files": [],
+            "engine_errors": [],
+        }
+    )
+    resumed_store.save_analysis_run(
+        resumed_store.require_analysis_run(identity.analysis_id).model_copy(
+            update={
+                "workspace_path": tmp_path / "workspaces" / identity.workspace_id,
+                "repository_profile_ref": profile_ref,
+                "static_bundle_ref": bundle_ref,
+                "static_coverage_ref": full_coverage_ref,
+                "static_disposition": "FULL",
+                "hypothesis_ids": (identity.hypothesis_id,),
+            }
+        )
+    )
+    AnalysisDisplayIdStore(resumed_store.database_path).get_or_allocate(
+        identity.analysis_id
+    )
+    with pytest.raises(DashboardNotFound, match="DASHBOARD_REPORT_NOT_FOUND"):
+        DashboardQuery(tmp_path).report_path(identity.analysis_id, "F-001")
+
+    class _UnusedBootstrap:
+        async def run(self, *_args: Any) -> StaticBootstrapResult:
+            raise AssertionError("completed static scan must not run again")
+
+        async def propose(self, *_args: Any) -> None:
+            raise AssertionError("completed hypothesis agents must not run again")
+
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=resumed_store,
+        static_bootstrap=_UnusedBootstrap(),
+        hypothesis_bootstrap=_UnusedBootstrap(),
+        runner_factory=lambda current_store, child, _static: SimpleRuntimeRunner(
+            current_store,
+            {
+                SimpleStage.REPORT_DONE: ReporterStage(
+                    client,
+                    SimpleArtifactRepository(tmp_path, child),
+                    store=current_store,
+                )
+            },
+        ),
+    )
+    resumed = await application.resume("A-001")
+    assert resumed.status == "COMPLETE", (resumed.current_stage, resumed.error_code)
+    refreshed_report = resumed_store.require(identity, SimpleStage.REPORT_DONE)
+    assert refreshed_report.report_ref == result.report_ref
+    assert refreshed_report.bundle_manifest_ref != result.bundle_manifest_ref
+    assert refreshed_report.markdown_path is not None
+    refreshed_bundle = Path(refreshed_report.markdown_path).with_suffix("")
+    assert refreshed_bundle != bundle
+    assert "Static scan status: `FULL`" in (
+        refreshed_bundle / "report_en.md"
+    ).read_text(encoding="utf-8")
+    assert "PARTIAL warning" not in (refreshed_bundle / "report_en.md").read_text(
+        encoding="utf-8"
+    )
+    assert "정적 분석 상태: `FULL`" in (refreshed_bundle / "report_kr.md").read_text(
+        encoding="utf-8"
+    )
+    assert "2 / 2" in Path(refreshed_report.markdown_path).read_text(encoding="utf-8")
+    assert "PARTIAL" in (bundle / "report_en.md").read_text(encoding="utf-8")
+    assert client.calls == 1
+    assert DashboardQuery(tmp_path).report_path(identity.analysis_id, "F-001") == Path(
+        refreshed_report.markdown_path
+    )
+    verified, _ = artifacts.verified_report_bundle(
+        checkpoints={
+            stage: resumed_store.require(identity, stage) for stage in HYPOTHESIS_STAGES
+        },
+        finding_ref=finding_ref,
+        display_id="F-001",
+        scope_status=json.loads(
+            (refreshed_bundle / "evidence" / "provenance.json").read_bytes()
+        )["scope_status"],
+        public_projection=lambda body: body,
+    )
+    assert verified.display_id == "F-001"
+    public_config = UserConfig(
+        data_dir=tmp_path,
+        profile_path=tmp_path / "profile.toml",
+        auth_mode="API_KEY",
+        provider="openai",
+        model="test-model",
+        credential_ref="env:OPENAI_API_KEY",
+        execution_profile="LIGHTWEIGHT",
+        max_cost_minor_units=100,
+        max_tokens=1000,
+        max_elapsed_seconds=3600,
+        docker_network="NONE",
+        enabled_tools=(),
+        detected_versions={},
+        setup_ready=True,
+    )
+    public_profile = SimpleExecutionProfile(
+        provider_profile_ref="test",
+        provider="openai",
+        model="test-model",
+        auth_mode="API_KEY",
+        credential_ref="env:OPENAI_API_KEY",
+        data_dir=tmp_path,
+        workspace_root=tmp_path / "workspaces",
+        max_cost_minor_units=100,
+        max_tokens=1000,
+        max_elapsed_seconds=3600,
+        docker_network="NONE",
+        tools={},
+    )
+    public_app = PublicSimpleRuntimeApplication(public_config, public_profile)
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            "sastsimi.composition.simple_runtime_composition.safe_public_report",
+            lambda body, _review: body,
+        )
+        exported = public_app.export_report_bundle("F-001")
+    assert exported == (
+        f"reports/{identity.analysis_id}/{refreshed_bundle.name}/bundle.zip"
+    )
+    current_run = resumed_store.require_analysis_run(identity.analysis_id)
+    resumed_store.save_analysis_run(
+        current_run.model_copy(
+            update={
+                "static_coverage_ref": coverage_ref,
+                "static_disposition": "PARTIAL",
+            }
+        )
+    )
+    with pytest.raises(LookupError, match="CURRENT_REPORT_STALE"):
+        public_app.report("F-001")
+    assert (
+        _report_path_for_result(
+            resumed_store,
+            artifacts,
+            identity,
+            refreshed_report,
+            policy_snapshot_ref=None,
+            repository_url="example/project",
+        )
+        is None
+    )
+    resumed_store.save_analysis_run(current_run)
+    assert (await application.resume("A-001")).status == "COMPLETE"
+    assert client.calls == 1
+    (refreshed_bundle / "manifest.json").write_bytes(b"tampered")
+    assert (await application.resume("A-001")).status == "COMPLETE"
+    with pytest.raises(ValueError, match="BUNDLE_MANIFEST_CHANGED"):
+        artifacts.verified_report_bundle(
+            checkpoints={
+                stage: resumed_store.require(identity, stage)
+                for stage in HYPOTHESIS_STAGES
+            },
+            finding_ref=finding_ref,
+            display_id="F-001",
+            scope_status="UNCERTAIN",
+            public_projection=lambda body: body,
+        )
 
     monkeypatch.setattr(
         "sastsimi.simple_runtime.stages.publish_bundle", fail_publication

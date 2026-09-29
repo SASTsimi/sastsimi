@@ -99,10 +99,19 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
         encoding="utf-8",
     )
     (workspace / "pkg" / "oversize.py").write_text("x" * 140_000, encoding="utf-8")
+    (workspace / "Dockerfile").write_text("FROM python:3.12-slim\n", encoding="utf-8")
     (workspace / "private.txt").write_text("private-marker", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(workspace)], check=True)
     subprocess.run(
-        ["git", "-C", str(workspace), "add", "pkg/watch.py", "pkg/oversize.py"],
+        [
+            "git",
+            "-C",
+            str(workspace),
+            "add",
+            "pkg/watch.py",
+            "pkg/oversize.py",
+            "Dockerfile",
+        ],
         check=True,
     )
     subprocess.run(
@@ -146,6 +155,12 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
         {
             "kind": "simple_static_fact_bundle",
             "source_manifest_ref": manifest_ref.model_dump(mode="json"),
+            "poc_source_manifest_ref": artifacts.put_json(
+                {
+                    "kind": "simple_tracked_sources",
+                    "paths": ["pkg/watch.py", "pkg/oversize.py", "Dockerfile"],
+                }
+            ).model_dump(mode="json"),
         }
     )
     oversized_prior_ref = artifacts.put_json(
@@ -157,6 +172,7 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
             "result": {
                 "requested_paths": [
                     "pkg/watch.py",
+                    "Dockerfile",
                     "pkg/oversize.py",
                     "private.txt",
                     "../outside",
@@ -215,6 +231,7 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
     result = await stage(checkpoint, prior)
 
     assert b"def __init__(self, **kwargs)" in client.prompt
+    assert b"FROM python:3.12-slim" in client.prompt
     assert b"dirty-workspace-marker" not in client.prompt
     assert b"core-verification-marker" in client.prompt
     assert b"simple_pro_evidence" in client.prompt
@@ -238,7 +255,10 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
         == "simple_requested_sources"
     )
     assert source_ref in result.output_refs[2:]
-    assert [item["path"] for item in retrieved["served"]] == ["pkg/watch.py"]
+    assert [item["path"] for item in retrieved["served"]] == [
+        "pkg/watch.py",
+        "Dockerfile",
+    ]
     assert {item["reason"] for item in retrieved["refused"]} == {
         "TOTAL_BUDGET_EXHAUSTED",
         "NOT_TRACKED",

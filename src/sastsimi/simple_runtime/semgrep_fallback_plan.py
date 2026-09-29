@@ -57,7 +57,7 @@ def split_target_chunks_by_source_bytes(
     roots: Sequence[Sequence[str]],
     size_for: Callable[[str], int],
     *,
-    max_bytes: int,
+    max_bytes: int = 512 * 1024,
 ) -> tuple[tuple[str, ...], ...]:
     """Further split command-safe roots without omitting oversized singletons."""
 
