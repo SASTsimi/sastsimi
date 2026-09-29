@@ -2213,6 +2213,42 @@ class SimpleCheckpointStore:
         finally:
             connection.close()
 
+    def reopen_for_manual_retry(self, blocked: StageCheckpoint) -> StageCheckpoint:
+        """Re-arm one explicitly selected blocked stage for an operator retry."""
+
+        current = self.get(blocked.identity, blocked.stage)
+        if current != blocked:
+            raise ValueError("MANUAL_RETRY_CHECKPOINT_STALE")
+        exhausted = blocked.error_code == "RECOVERY_EXHAUSTED"
+        if blocked.status is not StageStatus.BLOCKED or not (
+            blocked.retryable or exhausted
+        ):
+            raise ValueError("MANUAL_RETRY_REQUIRES_RETRYABLE_BLOCKED_CHECKPOINT")
+        attempt_number = (
+            MAX_RECOVERY_ATTEMPTS - 1
+            if exhausted and blocked.attempt_number >= MAX_RECOVERY_ATTEMPTS
+            else blocked.attempt_number
+        )
+        pending = blocked.model_copy(
+            update={
+                "status": StageStatus.PENDING,
+                "output_refs": (),
+                "attempt_id": None,
+                "attempt_number": attempt_number,
+                "error_code": None,
+                "retryable": False,
+                "container_id": None,
+                "validated_poc_ref": None,
+                "report_ref": None,
+                "verdict": None,
+                "gate_decision": None,
+                "markdown_path": None,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        self.replace_from(pending)
+        return pending
+
     def _first_value(
         self,
         identity: CheckpointIdentity,

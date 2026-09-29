@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -452,6 +454,54 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         if outcome.error_code == "ANALYSIS_ALREADY_RUNNING":
             data["resume_skipped_reason"] = outcome.error_code
         return data
+
+    def retry(self, analysis_id: str) -> dict[str, object]:
+        exact = self._display.resolve(analysis_id)
+        run = self._store.require_analysis_run(exact)
+        current = self.status(run.display_analysis_id)
+        current_hypothesis = current.get("current_hypothesis_id")
+        current_stage = current.get("current_stage")
+        blocked = next(
+            (
+                checkpoint
+                for checkpoint in self._store.list_checkpoints(exact)
+                if checkpoint.status.value == "BLOCKED"
+                and checkpoint.identity.hypothesis_id == current_hypothesis
+                and checkpoint.stage.value == current_stage
+                and (
+                    checkpoint.retryable
+                    or checkpoint.error_code == "RECOVERY_EXHAUSTED"
+                )
+            ),
+            None,
+        )
+        if blocked is None:
+            return {
+                **current,
+                "retry_skipped_reason": "ANALYSIS_NOT_MANUALLY_RETRYABLE",
+            }
+
+        backup_dir = self._store.database_path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        backup_name = f"sastsimi-before-retry-{run.display_analysis_id}-{stamp}.sqlite3"
+        backup_path = backup_dir / backup_name
+        with sqlite3.connect(self._store.database_path) as source:
+            with sqlite3.connect(backup_path) as destination:
+                source.backup(destination)
+
+        pending = self._store.reopen_for_manual_retry(blocked)
+        return {
+            "analysis_id": run.display_analysis_id,
+            "exact_analysis_id": exact,
+            "status": "READY_TO_RESUME",
+            "current_stage": pending.stage.value,
+            "hypothesis_id": pending.identity.hypothesis_id,
+            "attempt_number": pending.attempt_number,
+            "attempt_limit": pending.attempt_number + 1,
+            "retry_source_error": blocked.error_code,
+            "backup_path": backup_path.relative_to(self._config.data_dir).as_posix(),
+        }
 
     async def _track(
         self,

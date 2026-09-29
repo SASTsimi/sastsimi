@@ -32,6 +32,26 @@ def emit_public(
             f"대시보드: {data.get('dashboard_url', '-')}\n"
         )
         return
+    if command == "retry":
+        if data.get("retry_skipped_reason") == "ANALYSIS_NOT_MANUALLY_RETRYABLE":
+            stream.write(
+                f"분석 ID: {data.get('analysis_id', '-')}\n"
+                "재시도하지 않았습니다. 현재 단계는 "
+                "수동 재시도 가능한 BLOCKED 상태가 아닙니다.\n"
+                f"현재 상태: {data.get('status', '-')}\n"
+                f"진행률: {data.get('percent', '-')}%\n"
+            )
+            return
+        stream.write(
+            f"분석 ID: {data.get('analysis_id', '-')}\n"
+            "수동 재시도 1회가 준비되었습니다.\n"
+            f"대상 가설: {data.get('hypothesis_id', '-')}\n"
+            f"재시작 단계: {data.get('current_stage', '-')}\n"
+            f"DB 백업: {data.get('backup_path', '-')}\n"
+            "계속하려면:\n\n"
+            f"sastsimi resume {data.get('analysis_id', '')}\n"
+        )
+        return
     stream.write(f"분석 ID: {data.get('analysis_id', '-')}\n")
     if "status" in data:
         stream.write(f"상태: {data['status']}\n")

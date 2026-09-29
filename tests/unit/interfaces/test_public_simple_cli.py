@@ -37,6 +37,15 @@ class _PublicApplication:
     def resume(self, analysis_id: str) -> dict[str, object]:
         return {"analysis_id": analysis_id, "status": "COMPLETE", "percent": 100}
 
+    def retry(self, analysis_id: str) -> dict[str, object]:
+        return {
+            "analysis_id": analysis_id,
+            "status": "READY_TO_RESUME",
+            "current_stage": "POC_CANDIDATE_DONE",
+            "hypothesis_id": "hypothesis-1",
+            "backup_path": "db/backups/before-retry.sqlite3",
+        }
+
     def result(self, analysis_id: str) -> dict[str, object]:
         return {"analysis_id": analysis_id, "finding_count": 1}
 
@@ -111,6 +120,16 @@ def test_public_stale_report_is_unavailable_not_internal_error(
     error = capsys.readouterr().err
     assert "stale" in error
     assert "internal error" not in error
+
+
+class _CompletedPublicApplication(_PublicApplication):
+    def retry(self, analysis_id: str) -> dict[str, object]:
+        return {
+            "analysis_id": analysis_id,
+            "status": "COMPLETE",
+            "percent": 100,
+            "retry_skipped_reason": "ANALYSIS_NOT_MANUALLY_RETRYABLE",
+        }
 
 
 def test_public_report_export_includes_additive_bundle_path(
@@ -278,6 +297,44 @@ def test_public_status_shows_recovery_attempt_and_terminal_error(
     assert "오류: RECOVERY_EXHAUSTED" in output
     assert "수동 검토가 필요합니다" in output
     assert "sastsimi resume" not in output
+
+
+def test_public_retry_prints_backup_and_resume_command(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert (
+        main(
+            ["retry", "A-001"],
+            public_application=_PublicApplication(),
+            user_config_store=_config(tmp_path),
+        )
+        == 0
+    )
+
+    output = capsys.readouterr().out
+    assert "수동 재시도 1회" in output
+    assert "db/backups/before-retry.sqlite3" in output
+    assert "sastsimi resume A-001" in output
+
+
+def test_public_retry_explains_completed_analysis_without_internal_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert (
+        main(
+            ["retry", "A-001"],
+            public_application=_CompletedPublicApplication(),
+            user_config_store=_config(tmp_path),
+        )
+        == 0
+    )
+
+    output = capsys.readouterr()
+    assert "수동 재시도 가능한 BLOCKED 상태가 아닙니다" in output.out
+    assert "현재 상태: COMPLETE" in output.out
+    assert "INTERNAL_ERROR" not in output.err
 
 
 def test_public_poc_and_report_aliases_keep_legacy_report_commands(

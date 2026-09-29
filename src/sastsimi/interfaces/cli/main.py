@@ -294,6 +294,13 @@ def main(
     resume_parser.add_argument("analysis_id")
     resume_parser.add_argument("--no-progress", action="store_true")
     resume_parser.add_argument("--format", choices=["text", "json"])
+    retry_parser = subparsers.add_parser(
+        "retry",
+        help="grant one operator retry to the current retryable blocked stage",
+        allow_abbrev=False,
+    )
+    retry_parser.add_argument("analysis_id")
+    retry_parser.add_argument("--format", choices=["text", "json"])
     results_parser = subparsers.add_parser(
         "results", help="read one terminal production result", allow_abbrev=False
     )
@@ -708,6 +715,17 @@ def main(
                 )
                 return int(ExitCode.OK)
             bootstrap.inspect_production_resume(config.data_dir, args.analysis_id)
+        if args.command == "retry":
+            command_name = "retry"
+            application = resolve_public_application()
+            data = application.retry(args.analysis_id)
+            public_command.emit_public(
+                output_format,
+                sys.stdout,
+                command=command_name,
+                data=data,
+            )
+            return int(ExitCode.OK)
         if args.command == "cancel":
             command_name = "cancel"
             try:
