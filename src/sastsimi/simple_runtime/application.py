@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Protocol
@@ -19,8 +19,11 @@ from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 
 from .artifacts import SimpleArtifactRepository
+from .candidates import ingest_static_candidates
+from .discovery import BUDGET_PAUSE_CODES, CandidateDiscovery
 from .models import (
     STAGE_VERSION,
+    CandidateTerminal,
     CheckpointIdentity,
     SimpleAnalysisRun,
     SimpleStage,
@@ -32,6 +35,7 @@ from .models import (
     terminal_gate_outcome,
     terminal_poc_outcome,
 )
+from .provider import SimpleLLMClient
 from .recovery import (
     MAX_RECOVERY_ATTEMPTS,
     RecoveryAction,
@@ -79,7 +83,7 @@ class HypothesisSeed(ContractModel):
 class SimpleAnalysisOutcome(ContractModel):
     identity: CheckpointIdentity
     display_analysis_id: str
-    status: Literal["RUNNING", "BLOCKED", "FAILED", "COMPLETE", "PARTIAL"]
+    status: Literal["RUNNING", "BLOCKED", "FAILED", "COMPLETE", "PARTIAL", "PAUSED"]
     current_stage: SimpleStage
     error_code: str | None = None
 
@@ -126,6 +130,13 @@ class SimpleAnalysisApplication:
         max_parallel_hypotheses: int = 1,
         max_elapsed_seconds: ElapsedLimit | None = None,
         max_tokens: TokenLimit | None = None,
+        max_cost_minor_units: int | None = None,
+        candidate_pipeline_enabled: bool = False,
+        candidate_client_factory: Callable[
+            [CheckpointIdentity, SimpleArtifactRepository], SimpleLLMClient
+        ]
+        | None = None,
+        candidate_hypothesis_bootstrap: HypothesisBootstrap | None = None,
     ) -> None:
         if not 1 <= max_parallel_hypotheses <= 32:
             raise ValueError("PARALLEL_HYPOTHESIS_LIMIT_INVALID")
@@ -145,6 +156,12 @@ class SimpleAnalysisApplication:
         self._max_parallel_hypotheses = max_parallel_hypotheses
         self._max_elapsed_seconds = max_elapsed_seconds
         self._max_tokens = max_tokens
+        self._max_cost_minor_units = max_cost_minor_units
+        self._candidate_pipeline_enabled = candidate_pipeline_enabled
+        self._candidate_client_factory = candidate_client_factory
+        self._candidate_hypotheses = (
+            candidate_hypothesis_bootstrap or hypothesis_bootstrap
+        )
 
     async def analyze(
         self,
@@ -173,6 +190,7 @@ class SimpleAnalysisApplication:
             started_at=datetime.now(UTC),
             llm_provider=self._llm_provider,
             on_demand_possible=self._on_demand_possible,
+            candidate_pipeline_version=1 if self._candidate_pipeline_enabled else None,
         )
         with analysis_run_lease(self._data_dir, analysis_id):
             self._store.save_analysis_run(run)
@@ -185,6 +203,9 @@ class SimpleAnalysisApplication:
         run: SimpleAnalysisRun,
         identity: CheckpointIdentity,
     ) -> SimpleAnalysisOutcome:
+        if run.candidate_pipeline_version == 1 and run.candidate_terminal is not None:
+            run = run.model_copy(update={"candidate_terminal": None})
+            self._store.save_analysis_run(run)
         while True:
             should_retry, terminal = await self._resume_bootstrap_failure(
                 identity,
@@ -278,6 +299,8 @@ class SimpleAnalysisApplication:
                 analysis_run=updated_run,
             )
             break
+        if updated_run.candidate_pipeline_version == 1:
+            return await self._run_candidate_pipeline(updated_run, identity, static)
         if run.static_disposition == "PARTIAL" and run.hypothesis_ids:
             if refresh_hypotheses:
                 try:
@@ -343,12 +366,22 @@ class SimpleAnalysisApplication:
                     )
                 except StaticEvidenceInvalid:
                     return self._invalid_partial_resume(run, identity)
-        if run.static_coverage_ref is not None:
+        if run.static_coverage_ref is not None and run.candidate_pipeline_version != 1:
             try:
                 run = self._reconcile_hypothesis_checkpoint(run, identity)
             except StaticEvidenceInvalid:
                 return self._invalid_partial_resume(run, identity)
         self._promote_legacy_inconclusive_pocs(exact)
+        if (
+            run.candidate_pipeline_version == 1
+            and self._max_cost_minor_units is not None
+        ):
+            self._store.reopen_budget_failures(
+                exact,
+                max_tokens=self._max_tokens or "unlimited",
+                max_cost_minor_units=self._max_cost_minor_units,
+                max_elapsed_seconds=self._max_elapsed_seconds or "unlimited",
+            )
         if self._max_elapsed_seconds is not None:
             self._store.reopen_elapsed_budget_failures(exact, self._max_elapsed_seconds)
         if self._max_tokens == "unlimited":
@@ -369,6 +402,18 @@ class SimpleAnalysisApplication:
             security_policy_ref=run.security_policy_ref,
             policy_snapshot_ref=run.policy_snapshot_ref,
         )
+        if run.candidate_pipeline_version == 1:
+            if run.static_disposition == "PARTIAL":
+                try:
+                    downstream_terminal = self._candidate_downstream_terminal(
+                        run, identity, static
+                    )
+                except ChainingEvidenceInvalid as error:
+                    failed = self._block_invalid_chaining(error.checkpoint)
+                    return self._bootstrap_outcome(run, failed)
+                if downstream_terminal:
+                    return await self._run_static(run, identity)
+            return await self._run_candidate_pipeline(run, identity, static)
         retry_partial_static = run.static_disposition == "PARTIAL"
         if (
             retry_partial_static
@@ -605,15 +650,16 @@ class SimpleAnalysisApplication:
             verified = coverage.get("verified_count")
             gaps = coverage.get("gaps")
             unsupported = coverage.get("unsupported")
+            unavailable_paths = coverage.get("unavailable_paths", [])
             if (
                 not isinstance(coverage.get("fingerprint"), str)
-                or coverage.get("unavailable") is True
                 or type(expected) is not int
                 or type(verified) is not int
-                or expected < 1
+                or expected < 0
                 or not 0 <= verified <= expected
                 or not isinstance(gaps, list)
                 or not isinstance(unsupported, list)
+                or not isinstance(unavailable_paths, list)
                 or len(gaps) != expected - verified
             ):
                 raise StaticEvidenceInvalid()
@@ -627,16 +673,56 @@ class SimpleAnalysisApplication:
                 for gap in gaps
             ):
                 raise StaticEvidenceInvalid()
+            if any(
+                not isinstance(item, dict)
+                or not all(
+                    isinstance(item.get(key), str) and item[key]
+                    for key in ("path", "reason")
+                )
+                for item in unavailable_paths
+            ):
+                raise StaticEvidenceInvalid()
+            unavailable = coverage.get("unavailable") is True
+            if unavailable and not unavailable_paths:
+                raise StaticEvidenceInvalid()
+            ast_summary = bundle.get("ast_summary")
+            parsed = (
+                ast_summary.get("parsed_file_count", 0)
+                if isinstance(ast_summary, dict)
+                else 0
+            )
+            if type(parsed) is not int or parsed < 0:
+                raise StaticEvidenceInvalid()
+            recorded_parsed = coverage.get("ast_parsed_file_count")
+            if recorded_parsed is not None and recorded_parsed != parsed:
+                raise StaticEvidenceInvalid()
+            codeql_proof = False
+            if (
+                bundle.get("codeql_executed") is True
+                and coverage.get("codeql_executed") is True
+            ):
+                tool_refs = bundle.get("tool_result_refs")
+                if isinstance(tool_refs, list) and len(tool_refs) >= 3:
+                    codeql_ref = StoredDataRef.model_validate(tool_refs[2])
+                    artifacts.read(codeql_ref)
+                    codeql_proof = True
+            independent_verified = parsed > 0 or codeql_proof
             has_limitations = bool(
                 gaps
                 or unsupported
+                or unavailable
+                or unavailable_paths
+                or expected == 0
+                or verified == 0
                 or coverage.get("unsupported_files")
                 or coverage.get("codeql_error")
                 or coverage.get("ast_parse_error_count")
                 or coverage.get("ast_oversize_count")
+                or coverage.get("ast_truncated")
+                or coverage.get("out_of_scope_product_files")
             )
             if static.static_disposition == "PARTIAL":
-                if verified == 0 or not has_limitations:
+                if (verified == 0 and not independent_verified) or not has_limitations:
                     raise StaticEvidenceInvalid()
             elif has_limitations:
                 raise StaticEvidenceInvalid()
@@ -729,6 +815,686 @@ class SimpleAnalysisApplication:
                 continue
             promoted += 1
         return promoted
+
+    def _candidate_downstream_terminal(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+    ) -> bool:
+        scope = run.candidate_scope_fingerprint
+        if scope is None:
+            return False
+        checkpoint = self._store.get(identity, SimpleStage.HYPOTHESIS_DONE)
+        if checkpoint is None or checkpoint.status is not StageStatus.SUCCEEDED:
+            return False
+        counts = self._store.candidate_counts(identity, scope)
+        deep = self._store.candidate_deep_counts(identity, scope)
+        if (
+            counts.get("PENDING", 0)
+            or counts.get("ERROR", 0)
+            or any(deep.get(status, 0) for status in ("PENDING", "RUNNING", "ERROR"))
+        ):
+            return False
+        progress = self._store.survey_progress(
+            identity.analysis_id, static.static_bundle_ref.content_hash
+        )
+        try:
+            free_done = self._candidate_free_done_valid(identity, static, progress)
+        except (OSError, ValueError, TypeError, sqlite3.Error):
+            return False
+        if not free_done:
+            return False
+        self._recover_candidate_chains(run, identity, static)
+        return not self._store.list_incomplete_hypotheses(identity, limit=1)
+
+    async def _run_candidate_pipeline(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+    ) -> SimpleAnalysisOutcome:
+        try:
+            if run.candidate_terminal is not None:
+                run = run.model_copy(update={"candidate_terminal": None})
+                self._store.save_analysis_run(run)
+            return await self._run_candidate_pipeline_inner(run, identity, static)
+        except ChainingEvidenceInvalid as error:
+            failed = self._block_invalid_chaining(error.checkpoint)
+            return self._bootstrap_outcome(run, failed)
+        except Exception as error:
+            return self._candidate_bootstrap_failure(
+                run,
+                identity,
+                static,
+                self._safe_error_code(error, "CANDIDATE_PIPELINE_ERROR"),
+            )
+
+    async def _run_candidate_pipeline_inner(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+    ) -> SimpleAnalysisOutcome:
+        """New-run path: retain every static hit and checkpoint Discovery separately."""
+
+        artifacts = SimpleArtifactRepository(self._data_dir, identity)
+        try:
+            if static.static_coverage_ref is None:
+                raise ValueError("CANDIDATE_COVERAGE_MISSING")
+            coverage = json.loads(artifacts.read(static.static_coverage_ref))
+            if not isinstance(coverage, dict):
+                raise ValueError("CANDIDATE_COVERAGE_INVALID")
+            scope = coverage.get("fingerprint")
+            if not isinstance(scope, str) or not scope:
+                raise ValueError("CANDIDATE_COVERAGE_INVALID")
+            if run.candidate_scope_fingerprint not in (None, scope):
+                raise ValueError("CANDIDATE_SCOPE_CHANGED")
+            if run.candidate_scope_fingerprint is None:
+                run = run.model_copy(update={"candidate_scope_fingerprint": scope})
+                self._store.save_analysis_run(run)
+            ingest_static_candidates(
+                identity,
+                scope,
+                static.static_bundle_ref,
+                artifacts,
+                self._store,
+                workspace=static.workspace_path,
+            )
+        except (OSError, ValueError, sqlite3.Error) as error:
+            return self._candidate_bootstrap_failure(
+                run,
+                identity,
+                static,
+                self._safe_error_code(error, "CANDIDATE_EVIDENCE_INVALID"),
+            )
+        if self._candidate_client_factory is None:
+            return self._candidate_bootstrap_failure(
+                run, identity, static, "DISCOVERY_CLIENT_UNAVAILABLE"
+            )
+        prior = self._store.get(identity, SimpleStage.HYPOTHESIS_DONE)
+        if (
+            prior is None
+            or prior.status is not StageStatus.SUCCEEDED
+            or prior.input_refs != (static.static_bundle_ref,)
+        ):
+            checkpoint = self._store.mark_running(
+                identity,
+                SimpleStage.HYPOTHESIS_DONE,
+                (static.static_bundle_ref,),
+                attempt_id=uuid4().hex,
+            )
+        else:
+            checkpoint = prior
+        client = self._candidate_client_factory(identity, artifacts)
+        discovery = await CandidateDiscovery(
+            store=self._store, artifacts=artifacts, client=client
+        ).run(
+            identity,
+            scope,
+            retry_errors=prior is not None
+            and prior.status in {StageStatus.BLOCKED, StageStatus.FAILED},
+        )
+        if discovery.status != "COMPLETE":
+            code = discovery.error_code or "DISCOVERY_INCOMPLETE"
+            return self._candidate_bootstrap_failure(
+                run,
+                identity,
+                static,
+                code,
+                paused=discovery.status == "PAUSED",
+            )
+        after_id: str | None = None
+        while True:
+            page = self._store.list_candidates(
+                identity,
+                scope,
+                status=("INCLUDE", "UNDECIDED"),
+                after_id=after_id,
+                limit=32,
+            )
+            if not page:
+                break
+            for candidate in page:
+                after_id = candidate.candidate_id
+                if candidate.deep_status in {"COMPLETE", "NO_HYPOTHESIS"}:
+                    continue
+                links = self._store.list_candidate_hypothesis_ids(
+                    identity, scope, candidate.candidate_id, limit=1
+                )
+                if links:
+                    self._store.save_candidate_deep_status(
+                        identity, scope, candidate.candidate_id, "RUNNING"
+                    )
+                    continue
+                focused = artifacts.put_json(
+                    {
+                        "kind": "simple_static_fact_bundle",
+                        "analysis_id": identity.analysis_id,
+                        "workspace_id": identity.workspace_id,
+                        "commit_id": identity.commit_id,
+                        "static_coverage_ref": static.static_coverage_ref.model_dump(
+                            mode="json"
+                        ),
+                        "candidate_focus": CandidateDiscovery._projection(candidate),
+                    }
+                )
+                candidate_static = static.model_copy(
+                    update={"static_bundle_ref": focused}
+                )
+                artifacts.prompt_context_strict((focused,))
+                proposed = await self._candidate_hypotheses.propose(
+                    identity, candidate_static
+                )
+                if isinstance(proposed, StageFailure):
+                    budget_paused = proposed.code in BUDGET_PAUSE_CODES
+                    if not budget_paused:
+                        self._store.save_candidate_deep_status(
+                            identity, scope, candidate.candidate_id, "ERROR"
+                        )
+                    return self._candidate_bootstrap_failure(
+                        run,
+                        identity,
+                        static,
+                        proposed.code,
+                        paused=budget_paused,
+                    )
+                if not proposed:
+                    self._store.save_candidate_deep_status(
+                        identity, scope, candidate.candidate_id, "NO_HYPOTHESIS"
+                    )
+                    continue
+                registrations: list[tuple[str, StoredDataRef, StageCheckpoint]] = []
+                for seed in proposed:
+                    artifacts.prompt_context_strict((seed.proposal_ref, focused))
+                    inputs = (seed.proposal_ref, focused)
+                    pending = StageCheckpoint(
+                        identity=identity.model_copy(
+                            update={"hypothesis_id": seed.hypothesis_id}
+                        ),
+                        stage=SimpleStage.PRO_CON_DONE,
+                        status=StageStatus.PENDING,
+                        input_refs=inputs,
+                        input_hash=input_reference_hash(inputs),
+                    )
+                    registrations.append(
+                        (seed.hypothesis_id, seed.proposal_ref, pending)
+                    )
+                self._store.register_candidate_hypotheses_batch(
+                    identity, scope, candidate.candidate_id, registrations
+                )
+                self._store.save_candidate_deep_status(
+                    identity, scope, candidate.candidate_id, "RUNNING"
+                )
+        free_failure = await self._run_free_candidate_exploration(
+            identity, static, artifacts
+        )
+        if free_failure is not None:
+            return self._candidate_bootstrap_failure(
+                run,
+                identity,
+                static,
+                free_failure.code,
+                paused=free_failure.code in BUDGET_PAUSE_CODES,
+            )
+        if checkpoint.status is not StageStatus.SUCCEEDED:
+            completed = artifacts.put_json(
+                {
+                    "kind": "simple_candidate_discovery_complete",
+                    "scope_fingerprint": scope,
+                    "decision_counts": self._store.candidate_counts(identity, scope),
+                }
+            )
+            self._store.complete(checkpoint, self._stage_result(completed))
+        return await self._run_candidate_hypotheses(run, identity, static, scope)
+
+    async def _run_free_candidate_exploration(
+        self,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+        artifacts: SimpleArtifactRepository,
+    ) -> StageFailure | None:
+        """Replay finished source pages before requesting only new pages."""
+
+        propose_page = getattr(self._hypotheses, "propose_page", None)
+        if not callable(propose_page):
+            return StageFailure(
+                code="HYPOTHESIS_PAGE_UNAVAILABLE",
+                retryable=False,
+                safe_message="The configured hypothesis Agent cannot page source code",
+            )
+        bundle_hash = static.static_bundle_ref.content_hash
+        progress = self._store.survey_progress(identity.analysis_id, bundle_hash)
+        done_key = "__candidate_free_done__"
+        if done_key in progress:
+            try:
+                self._candidate_free_done_valid(identity, static, progress)
+            except (OSError, ValueError, TypeError, sqlite3.Error):
+                return StageFailure(
+                    code="HYPOTHESIS_PAGE_CHECKPOINT_INVALID",
+                    retryable=False,
+                    safe_message="Stored free exploration completion is invalid",
+                    evidence_refs=(progress[done_key],),
+                )
+            return None
+        cursor: str | None = None
+        page_index = 0
+        while True:
+            key = f"__candidate_free_page_{page_index:08d}__"
+            existing = progress.get(key)
+            if existing is not None:
+                try:
+                    page_record = json.loads(artifacts.read(existing))
+                    if (
+                        not isinstance(page_record, dict)
+                        or page_record.get("kind")
+                        != "simple_candidate_free_exploration_page"
+                        or page_record.get("analysis_id") != identity.analysis_id
+                        or page_record.get("static_bundle_hash") != bundle_hash
+                        or page_record.get("cursor") != cursor
+                        or not isinstance(page_record.get("seeds"), list)
+                    ):
+                        raise ValueError("HYPOTHESIS_PAGE_CHECKPOINT_INVALID")
+                    next_cursor = page_record.get("next_cursor")
+                    seeds = tuple(
+                        HypothesisSeed.model_validate(item)
+                        for item in page_record["seeds"]
+                    )
+                except (OSError, ValueError, TypeError, KeyError):
+                    return StageFailure(
+                        code="HYPOTHESIS_PAGE_CHECKPOINT_INVALID",
+                        retryable=False,
+                        safe_message="Stored free exploration page is invalid",
+                        evidence_refs=(existing,),
+                    )
+            else:
+                page_result = await propose_page(identity, static, after_cursor=cursor)
+                if isinstance(page_result, StageFailure):
+                    return page_result
+                seeds, next_cursor = page_result
+                page_record = {
+                    "kind": "simple_candidate_free_exploration_page",
+                    "analysis_id": identity.analysis_id,
+                    "static_bundle_hash": bundle_hash,
+                    "cursor": cursor,
+                    "next_cursor": next_cursor,
+                    "seeds": [seed.model_dump(mode="json") for seed in seeds],
+                }
+                marker = artifacts.put_json(page_record)
+                self._store.save_survey_progress(
+                    identity.analysis_id, bundle_hash, key, marker
+                )
+                progress[key] = marker
+            if next_cursor is not None and (
+                not isinstance(next_cursor, str)
+                or not next_cursor
+                or next_cursor == cursor
+            ):
+                return StageFailure(
+                    code="HYPOTHESIS_PAGE_CURSOR_INVALID",
+                    retryable=False,
+                    safe_message="Free exploration page did not advance",
+                )
+            for seed in seeds:
+                try:
+                    proposal = json.loads(artifacts.read(seed.proposal_ref))
+                    if (
+                        not isinstance(proposal, dict)
+                        or proposal.get("kind") != "simple_hypothesis_proposal"
+                        or proposal.get("hypothesis_id") != seed.hypothesis_id
+                    ):
+                        raise ValueError("HYPOTHESIS_PAGE_PROPOSAL_INVALID")
+                    page_ref = StoredDataRef.model_validate(proposal["page_input_ref"])
+                    page_input = json.loads(artifacts.read(page_ref))
+                    if (
+                        not isinstance(page_input, dict)
+                        or page_input.get("kind") != "simple_hypothesis_source_page"
+                        or page_input.get("analysis_id") != identity.analysis_id
+                        or page_input.get("cursor") != cursor
+                    ):
+                        raise ValueError("HYPOTHESIS_PAGE_PROPOSAL_INVALID")
+                    artifacts.prompt_context_strict((seed.proposal_ref, page_ref))
+                except (OSError, ValueError, TypeError, KeyError):
+                    return StageFailure(
+                        code="HYPOTHESIS_PAGE_PROPOSAL_INVALID",
+                        retryable=False,
+                        safe_message="Stored free exploration proposal is invalid",
+                        evidence_refs=(seed.proposal_ref,),
+                    )
+                page_static = static.model_copy(update={"static_bundle_ref": page_ref})
+                self._register_candidate_seed(identity, page_static, seed)
+            if next_cursor is None:
+                done = artifacts.put_json(
+                    {
+                        "kind": "simple_candidate_free_exploration_complete",
+                        "analysis_id": identity.analysis_id,
+                        "static_bundle_hash": bundle_hash,
+                        "page_count": page_index + 1,
+                    }
+                )
+                self._store.save_survey_progress(
+                    identity.analysis_id, bundle_hash, done_key, done
+                )
+                return None
+            cursor = next_cursor
+            page_index += 1
+
+    def _candidate_free_done_valid(
+        self,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+        progress: Mapping[str, StoredDataRef],
+    ) -> bool:
+        """Verify a durable completion marker before skipping source pages."""
+
+        marker_ref = progress.get("__candidate_free_done__")
+        if marker_ref is None:
+            return False
+        artifacts = SimpleArtifactRepository(self._data_dir, identity)
+        marker = json.loads(artifacts.read(marker_ref))
+        page_keys = sorted(
+            key for key in progress if key.startswith("__candidate_free_page_")
+        )
+        page_count = marker.get("page_count") if isinstance(marker, dict) else None
+        if (
+            not isinstance(marker, dict)
+            or marker.get("kind") != "simple_candidate_free_exploration_complete"
+            or marker.get("analysis_id") != identity.analysis_id
+            or marker.get("static_bundle_hash") != static.static_bundle_ref.content_hash
+            or type(page_count) is not int
+            or page_count < 1
+            or len(page_keys) != page_count
+            or any(
+                key != f"__candidate_free_page_{index:08d}__"
+                for index, key in enumerate(page_keys)
+            )
+        ):
+            raise ValueError("HYPOTHESIS_PAGE_CHECKPOINT_INVALID")
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        for index, key in enumerate(page_keys):
+            page = json.loads(artifacts.read(progress[key]))
+            if (
+                not isinstance(page, dict)
+                or page.get("kind") != "simple_candidate_free_exploration_page"
+                or page.get("analysis_id") != identity.analysis_id
+                or page.get("static_bundle_hash")
+                != static.static_bundle_ref.content_hash
+                or page.get("cursor") != cursor
+                or not isinstance(page.get("seeds"), list)
+            ):
+                raise ValueError("HYPOTHESIS_PAGE_CHECKPOINT_INVALID")
+            for seed in page["seeds"]:
+                HypothesisSeed.model_validate(seed)
+            next_cursor = page.get("next_cursor")
+            if index == page_count - 1:
+                if next_cursor is not None:
+                    raise ValueError("HYPOTHESIS_PAGE_CHECKPOINT_INVALID")
+            elif (
+                not isinstance(next_cursor, str)
+                or not next_cursor
+                or next_cursor == cursor
+                or next_cursor in seen_cursors
+            ):
+                raise ValueError("HYPOTHESIS_PAGE_CHECKPOINT_INVALID")
+            if next_cursor is not None:
+                seen_cursors.add(next_cursor)
+            cursor = next_cursor
+        return True
+
+    def _register_candidate_seed(
+        self,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+        seed: HypothesisSeed,
+        *,
+        scope: str | None = None,
+        candidate_id: str | None = None,
+    ) -> None:
+        child = identity.model_copy(update={"hypothesis_id": seed.hypothesis_id})
+        inputs = (seed.proposal_ref, static.static_bundle_ref)
+        pending = StageCheckpoint(
+            identity=child,
+            stage=SimpleStage.PRO_CON_DONE,
+            status=StageStatus.PENDING,
+            input_refs=inputs,
+            input_hash=input_reference_hash(inputs),
+        )
+        if scope is not None and candidate_id is not None:
+            self._store.register_candidate_hypothesis(
+                identity,
+                scope,
+                candidate_id,
+                seed.hypothesis_id,
+                seed.proposal_ref,
+                checkpoint=pending,
+            )
+        else:
+            self._store.register_free_hypothesis(
+                identity, seed.hypothesis_id, seed.proposal_ref, pending
+            )
+
+    def _candidate_hypothesis_terminal(
+        self, identity: CheckpointIdentity, hypothesis_id: str
+    ) -> bool:
+        child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+        final = self._store.get(child, SimpleStage.VERIFICATION_FINAL_DONE)
+        poc = self._store.get(child, SimpleStage.POC_EXECUTION_DONE)
+        chain = self._store.get(child, SimpleStage.CHAINING_DONE)
+        gate = self._store.get(child, SimpleStage.TECH_GATE_DONE)
+        report = self._store.get(child, SimpleStage.REPORT_DONE)
+        return bool(
+            terminal_poc_outcome(poc) is not None
+            or final is not None
+            and final.status is StageStatus.SUCCEEDED
+            and (
+                final.verdict == "FALSE"
+                or final.verdict == "HOLD"
+                and chain is not None
+                and chain.status is StageStatus.SUCCEEDED
+            )
+            or terminal_gate_outcome(gate) is not None
+            or report is not None
+            and report.status is StageStatus.SUCCEEDED
+        )
+
+    def _recover_candidate_chains(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+    ) -> None:
+        # A process can stop after CHAINING_DONE succeeds but before its child
+        # is registered. Rebuild the durable queue from successful evidence.
+        while True:
+            before = self._store.hypothesis_count(identity)
+            after_id: str | None = None
+            while True:
+                ids = self._store.list_hypotheses(identity, after_id=after_id, limit=64)
+                if not ids:
+                    break
+                for hypothesis_id in ids:
+                    after_id = hypothesis_id
+                    child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+                    chain = self._store.get(child, SimpleStage.CHAINING_DONE)
+                    if chain is not None and chain.status is StageStatus.SUCCEEDED:
+                        self._register_chain_children(run, child, static)
+            if self._store.hypothesis_count(identity) == before:
+                return
+
+    async def _run_candidate_hypotheses(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+        scope: str,
+    ) -> SimpleAnalysisOutcome:
+        latest_stage = SimpleStage.HYPOTHESIS_DONE
+        incomplete: RunOutcome | None = None
+        self._recover_candidate_chains(run, identity, static)
+        self._invalidate_stale_report_coverage(run, identity)
+        attempted: set[str] = set()
+        while True:
+            after_id: str | None = None
+            made_progress = False
+            while True:
+                ids = self._store.list_incomplete_hypotheses(
+                    identity, after_id=after_id, limit=32
+                )
+                if not ids:
+                    break
+                for hypothesis_id in ids:
+                    after_id = hypothesis_id
+                    if hypothesis_id in attempted:
+                        continue
+                    attempted.add(hypothesis_id)
+                    made_progress = True
+                    child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+                    outcome = await self._runner_factory(
+                        self._store,
+                        child,
+                        static,
+                    ).resume_hypothesis(child)
+                    latest_stage = outcome.current_stage
+                    if outcome.status in {StageStatus.BLOCKED, StageStatus.FAILED}:
+                        if outcome.error_code in BUDGET_PAUSE_CODES:
+                            return SimpleAnalysisOutcome(
+                                identity=identity,
+                                display_analysis_id=run.display_analysis_id,
+                                status="PAUSED",
+                                current_stage=latest_stage,
+                                error_code=outcome.error_code,
+                            )
+                        if (
+                            incomplete is None
+                            or outcome.status is StageStatus.FAILED
+                            and incomplete.status is StageStatus.BLOCKED
+                        ):
+                            incomplete = outcome
+                        continue
+                    self._register_chain_children(run, child, static)
+            if not made_progress:
+                break
+
+        candidate_after: str | None = None
+        while True:
+            candidates = self._store.list_candidates(
+                identity,
+                scope,
+                status=("INCLUDE", "UNDECIDED"),
+                after_id=candidate_after,
+                limit=32,
+            )
+            if not candidates:
+                break
+            for candidate in candidates:
+                candidate_after = candidate.candidate_id
+                if candidate.deep_status == "NO_HYPOTHESIS":
+                    continue
+                linked_after: str | None = None
+                terminal = True
+                any_link = False
+                while True:
+                    links = self._store.list_candidate_hypothesis_ids(
+                        identity,
+                        scope,
+                        candidate.candidate_id,
+                        after_id=linked_after,
+                        limit=32,
+                    )
+                    if not links:
+                        break
+                    any_link = True
+                    linked_after = links[-1]
+                    if any(
+                        not self._candidate_hypothesis_terminal(identity, linked)
+                        for linked in links
+                    ):
+                        terminal = False
+                if any_link and terminal:
+                    self._store.save_candidate_deep_status(
+                        identity, scope, candidate.candidate_id, "COMPLETE"
+                    )
+        if incomplete is not None:
+            return SimpleAnalysisOutcome(
+                identity=identity,
+                display_analysis_id=run.display_analysis_id,
+                status="FAILED"
+                if incomplete.status is StageStatus.FAILED
+                else "BLOCKED",
+                current_stage=incomplete.current_stage,
+                error_code=incomplete.error_code,
+            )
+        counts = self._store.candidate_counts(identity, scope)
+        deep = self._store.candidate_deep_counts(identity, scope)
+        if (
+            counts.get("PENDING", 0)
+            or counts.get("ERROR", 0)
+            or self._store.list_incomplete_hypotheses(identity, limit=1)
+            or any(deep.get(status, 0) for status in ("PENDING", "RUNNING", "ERROR"))
+        ):
+            return SimpleAnalysisOutcome(
+                identity=identity,
+                display_analysis_id=run.display_analysis_id,
+                status="BLOCKED",
+                current_stage=latest_stage,
+                error_code="CANDIDATE_WORK_INCOMPLETE",
+            )
+        terminal_status: Literal["COMPLETE", "PARTIAL"] = (
+            "PARTIAL" if run.static_disposition == "PARTIAL" else "COMPLETE"
+        )
+        self._store.save_analysis_run(
+            run.model_copy(
+                update={
+                    "candidate_terminal": CandidateTerminal(
+                        status=terminal_status,
+                        bundle_hash=static.static_bundle_ref.content_hash,
+                        scope_fingerprint=scope,
+                        decision_counts=counts,
+                        deep_counts=deep,
+                        hypothesis_count=self._store.hypothesis_count(identity),
+                    )
+                }
+            )
+        )
+        return SimpleAnalysisOutcome(
+            identity=identity,
+            display_analysis_id=run.display_analysis_id,
+            status=terminal_status,
+            current_stage=latest_stage,
+        )
+
+    def _candidate_bootstrap_failure(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+        code: str,
+        *,
+        paused: bool = False,
+    ) -> SimpleAnalysisOutcome:
+        checkpoint = self._store.mark_running(
+            identity,
+            SimpleStage.HYPOTHESIS_DONE,
+            (static.static_bundle_ref,),
+            attempt_id=uuid4().hex,
+        )
+        self._store.mark_failure(
+            checkpoint,
+            StageFailure(
+                code=code,
+                retryable=False,
+                safe_message="Candidate analysis did not complete",
+            ),
+            StageStatus.BLOCKED,
+        )
+        return SimpleAnalysisOutcome(
+            identity=identity,
+            display_analysis_id=run.display_analysis_id,
+            status="PAUSED" if paused else "BLOCKED",
+            current_stage=SimpleStage.HYPOTHESIS_DONE,
+            error_code=code,
+        )
 
     async def _propose_and_run(
         self,
@@ -940,6 +1706,10 @@ class SimpleAnalysisApplication:
                 failure,
                 StageStatus.BLOCKED,
             )
+            if stage is SimpleStage.STATIC_DONE:
+                # The exclusive run lease proves the interrupted scanner stopped.
+                # Recheck durable scan evidence directly instead of spending LLM.
+                return False, None
         else:
             if not existing.retryable:
                 return False, existing
@@ -1063,12 +1833,26 @@ class SimpleAnalysisApplication:
             current_stage=latest_stage,
         )
 
+    def _durable_hypothesis_ids(
+        self, run: SimpleAnalysisRun, identity: CheckpointIdentity
+    ) -> Iterator[str]:
+        if run.candidate_pipeline_version != 1:
+            yield from run.hypothesis_ids
+            return
+        after_id: str | None = None
+        while True:
+            ids = self._store.list_hypotheses(identity, after_id=after_id, limit=64)
+            if not ids:
+                return
+            yield from ids
+            after_id = ids[-1]
+
     def _invalidate_stale_report_coverage(
         self, run: SimpleAnalysisRun, identity: CheckpointIdentity
     ) -> None:
         """A completed Finding can keep its agents while its report is refreshed."""
 
-        for hypothesis_id in run.hypothesis_ids:
+        for hypothesis_id in self._durable_hypothesis_ids(run, identity):
             child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
             report = self._store.get(child, SimpleStage.REPORT_DONE)
             if (
@@ -1175,7 +1959,15 @@ class SimpleAnalysisApplication:
                     and item.identity.analysis_id == parent.analysis_id
                     and item.identity.workspace_id == parent.workspace_id
                     and item.identity.commit_id == parent.commit_id
-                    and item.identity.hypothesis_id in run.hypothesis_ids
+                    and item.identity.hypothesis_id is not None
+                    and (
+                        self._store.has_hypothesis(
+                            parent.model_copy(update={"hypothesis_id": None}),
+                            item.identity.hypothesis_id,
+                        )
+                        if run.candidate_pipeline_version == 1
+                        else item.identity.hypothesis_id in run.hypothesis_ids
+                    )
                     for ref in item.output_refs
                 }
                 primitives: dict[str, tuple[StoredDataRef, str]] = {}
@@ -1223,19 +2015,35 @@ class SimpleAnalysisApplication:
         depths = dict(run.chain_depths)
         changed = False
         for child_value in children:
-            if not isinstance(child_value, dict) or len(hypothesis_ids) >= 32:
+            if not isinstance(child_value, dict) or (
+                run.candidate_pipeline_version != 1 and len(hypothesis_ids) >= 32
+            ):
                 continue
             parent_ids = tuple(
                 str(item) for item in child_value.get("parent_hypothesis_ids", [])
             )
-            depth = 1 + max((depths.get(item, 0) for item in parent_ids), default=0)
+            root_identity = parent.model_copy(update={"hypothesis_id": None})
+            if run.candidate_pipeline_version == 1:
+                parent_depths = []
+                for item in parent_ids:
+                    metadata = self._store.hypothesis_metadata(root_identity, item)
+                    if metadata is None:
+                        raise ChainingEvidenceInvalid(checkpoint)
+                    parent_depths.append(metadata[0])
+            else:
+                parent_depths = [depths.get(item, 0) for item in parent_ids]
+            depth = 1 + max(parent_depths, default=0)
             if not parent_ids or depth > 4:
                 continue
             hypothesis_id = (
                 "hypothesis-chain-"
                 + hashlib.sha256(canonical_bytes(child_value)).hexdigest()[:32]
             )
-            if hypothesis_id in hypothesis_ids:
+            if (
+                self._store.has_hypothesis(root_identity, hypothesis_id)
+                if run.candidate_pipeline_version == 1
+                else hypothesis_id in hypothesis_ids
+            ):
                 continue
             proposal_ref = artifacts.put_json(
                 {
@@ -1263,11 +2071,20 @@ class SimpleAnalysisApplication:
                     input_hash=input_reference_hash(inputs),
                 )
             )
-            hypothesis_ids.append(hypothesis_id)
-            parents[hypothesis_id] = parent_ids
-            depths[hypothesis_id] = depth
+            if run.candidate_pipeline_version == 1:
+                self._store.upsert_hypothesis(
+                    root_identity,
+                    hypothesis_id,
+                    proposal_ref,
+                    chain_depth=depth,
+                    parent_hypothesis_ids=parent_ids,
+                )
+            else:
+                hypothesis_ids.append(hypothesis_id)
+                parents[hypothesis_id] = parent_ids
+                depths[hypothesis_id] = depth
             changed = True
-        if not changed:
+        if not changed or run.candidate_pipeline_version == 1:
             return run
         updated = run.model_copy(
             update={

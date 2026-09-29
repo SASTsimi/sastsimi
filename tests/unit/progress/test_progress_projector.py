@@ -12,6 +12,7 @@ from sastsimi.progress.projector import ProgressProjector
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
     STAGE_VERSION,
+    CandidateTerminal,
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
@@ -84,6 +85,7 @@ def test_progress_counts_known_work_and_only_complete_reaches_100(
     assert running.known_units == 2 + len(HYPOTHESIS_STAGES)
     assert running.percent < 100
     assert running.status == "RUNNING"
+    assert running.candidate_total_count is None
     assert running.attempt_number == 1
     assert running.attempt_limit == 3
 
@@ -98,6 +100,245 @@ def test_progress_counts_known_work_and_only_complete_reaches_100(
     complete = ProgressProjector(store).snapshot("analysis-1")
     assert complete.status == "COMPLETE"
     assert complete.percent == 100
+
+
+def test_candidate_progress_counts_decisions_and_deep_work_separately(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="candidate-analysis",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(store, identity, SimpleStage.HYPOTHESIS_DONE)
+
+    snapshot = ProgressProjector(store).snapshot(
+        "candidate-analysis",
+        candidate_pipeline_version=1,
+        candidate_counts={
+            "INCLUDE": 2,
+            "EXCLUDE": 1,
+            "UNDECIDED": 1,
+            "PENDING": 1,
+            "ERROR": 0,
+        },
+        candidate_deep_counts={"RUNNING": 1, "COMPLETE": 1, "PENDING": 1},
+    )
+
+    assert snapshot.candidate_total_count == 5
+    assert snapshot.candidate_decision_counts["UNDECIDED"] == 1
+    assert snapshot.deep_analysis_running_count == 1
+    assert snapshot.deep_analysis_completed_count == 1
+    assert snapshot.deep_analysis_pending_count == 1
+    assert snapshot.status == "RUNNING"
+    assert snapshot.completed_units == 7
+    assert snapshot.known_units == 10
+    assert snapshot.percent == 70
+
+
+def test_registered_hypotheses_without_checkpoints_expand_progress_denominator(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="registered-analysis",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(store, identity, SimpleStage.HYPOTHESIS_DONE)
+
+    snapshot = ProgressProjector(store).snapshot(
+        "registered-analysis",
+        candidate_pipeline_version=1,
+        candidate_counts={},
+        candidate_deep_counts={},
+        registered_hypothesis_count=2,
+    )
+
+    assert snapshot.hypothesis_count == 2
+    assert snapshot.known_units == 2 + 2 * len(HYPOTHESIS_STAGES)
+    assert snapshot.completed_units == 2
+    assert snapshot.status == "RUNNING"
+
+
+def test_candidate_error_blocks_but_is_not_undecided(tmp_path: Path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="candidate-error",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(store, identity, SimpleStage.HYPOTHESIS_DONE)
+
+    snapshot = ProgressProjector(store).snapshot(
+        "candidate-error",
+        candidate_pipeline_version=1,
+        candidate_counts={
+            "INCLUDE": 0,
+            "EXCLUDE": 0,
+            "UNDECIDED": 0,
+            "PENDING": 0,
+            "ERROR": 1,
+        },
+        candidate_deep_counts={},
+    )
+
+    assert snapshot.status == "BLOCKED"
+    assert snapshot.candidate_decision_counts["ERROR"] == 1
+    assert snapshot.candidate_decision_counts["UNDECIDED"] == 0
+    assert snapshot.percent < 100
+
+
+def test_candidate_pipeline_can_complete_with_zero_candidates(tmp_path: Path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="candidate-empty",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(store, identity, SimpleStage.HYPOTHESIS_DONE)
+
+    unfinalized = ProgressProjector(store).snapshot(
+        "candidate-empty",
+        candidate_pipeline_version=1,
+        candidate_counts={},
+        candidate_deep_counts={},
+    )
+    assert unfinalized.status == "RUNNING"
+
+    snapshot = ProgressProjector(store).snapshot(
+        "candidate-empty",
+        candidate_pipeline_version=1,
+        candidate_counts={},
+        candidate_deep_counts={},
+        candidate_terminal=CandidateTerminal(
+            status="COMPLETE",
+            bundle_hash="a" * 64,
+            scope_fingerprint="scope-1",
+            decision_counts={},
+            deep_counts={},
+            hypothesis_count=0,
+        ),
+        candidate_bundle_hash="a" * 64,
+        candidate_scope_fingerprint="scope-1",
+    )
+
+    assert snapshot.status == "COMPLETE"
+    assert snapshot.percent == 100
+
+
+def test_candidate_free_hypothesis_hold_waits_for_chaining(tmp_path: Path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    analysis = CheckpointIdentity(
+        analysis_id="candidate-hold",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    hypothesis = analysis.model_copy(update={"hypothesis_id": "free-hypothesis"})
+    _save(store, analysis, SimpleStage.STATIC_DONE)
+    _save(store, analysis, SimpleStage.HYPOTHESIS_DONE)
+    final_index = HYPOTHESIS_STAGES.index(SimpleStage.VERIFICATION_FINAL_DONE)
+    for stage in HYPOTHESIS_STAGES[: final_index + 1]:
+        _save(
+            store,
+            hypothesis,
+            stage,
+            verdict="HOLD" if stage is SimpleStage.VERIFICATION_FINAL_DONE else None,
+        )
+
+    unfinished = ProgressProjector(store).snapshot(
+        "candidate-hold",
+        candidate_pipeline_version=1,
+        candidate_counts={},
+        candidate_deep_counts={},
+    )
+    assert unfinished.status == "RUNNING"
+    assert unfinished.percent < 100
+
+    _save(store, hypothesis, SimpleStage.CHAINING_DONE)
+    unfinalized = ProgressProjector(store).snapshot(
+        "candidate-hold",
+        candidate_pipeline_version=1,
+        candidate_counts={},
+        candidate_deep_counts={},
+    )
+    assert unfinalized.status == "RUNNING"
+    assert unfinalized.percent < 100
+
+    finished = ProgressProjector(store).snapshot(
+        "candidate-hold",
+        candidate_pipeline_version=1,
+        candidate_counts={},
+        candidate_deep_counts={},
+        candidate_terminal=CandidateTerminal(
+            status="COMPLETE",
+            bundle_hash="a" * 64,
+            scope_fingerprint="scope-1",
+            decision_counts={},
+            deep_counts={},
+            hypothesis_count=1,
+        ),
+        candidate_bundle_hash="a" * 64,
+        candidate_scope_fingerprint="scope-1",
+    )
+    assert finished.status == "COMPLETE"
+    assert finished.percent == 100
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    [
+        "LLM_TOKEN_BUDGET_EXHAUSTED",
+        "LLM_COST_BUDGET_EXHAUSTED",
+        "LLM_ELAPSED_BUDGET_EXHAUSTED",
+        "LLM_TOKEN_USAGE_UNAVAILABLE",
+        "LLM_COST_USAGE_UNAVAILABLE",
+    ],
+)
+@pytest.mark.parametrize("failure_status", [StageStatus.BLOCKED, StageStatus.FAILED])
+def test_budget_exhaustion_is_paused_not_blocked(
+    tmp_path: Path, error_code: str, failure_status: StageStatus
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="budget-analysis",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(
+        store,
+        identity,
+        SimpleStage.HYPOTHESIS_DONE,
+        status=failure_status,
+        error_code=error_code,
+    )
+
+    snapshot = ProgressProjector(store).snapshot(
+        "budget-analysis",
+        candidate_pipeline_version=1,
+        candidate_counts={},
+        candidate_deep_counts={},
+    )
+
+    assert snapshot.status == "PAUSED"
+    assert snapshot.error_code == error_code
+    assert snapshot.resume_action == (
+        "CHECK_USAGE_TELEMETRY"
+        if error_code.endswith("USAGE_UNAVAILABLE")
+        else "INCREASE_BUDGET_AND_RESUME"
+    )
 
 
 def test_partial_static_scope_never_projects_complete_or_full_coverage(

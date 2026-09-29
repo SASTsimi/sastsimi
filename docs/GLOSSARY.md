@@ -27,6 +27,7 @@
 |---|---|
 | `PENDING` | 실행을 기다리는 상태 |
 | `RUNNING` | 현재 실행 중인 상태 |
+| `PAUSED` | 누적 LLM 사용량 한도에 도달해 남은 작업을 보존하고 일시 중단한 상태 |
 | `SUCCEEDED` | 단계가 정상적으로 끝난 상태 |
 | `BLOCKED` | 인증·환경·외부 조건을 해결한 뒤 재시도할 수 있는 상태 |
 | `FAILED` | 해당 입력과 시도에서는 복구할 수 없이 끝난 상태 |
@@ -45,7 +46,8 @@
 
 | 공식 이름 | 종류 | 역할 |
 |---|---|---|
-| `Hypothesis Agent` | LLM | 정적 사실에서 취약점 가설 생성 |
+| `Discovery Agent` | LLM | 정적 후보를 작은 배치로 선별하고 후보마다 이유를 기록. 취약점 확정은 아님 |
+| `Hypothesis Agent` | LLM | 정적 후보와 보조 자유 탐색에서 취약점 가설 생성 |
 | `Pro Agent` | LLM | 가설이 성립하는 근거 수집 |
 | `Con Agent` | LLM | 가설을 반박하는 근거 수집 |
 | `Verification Agent` | LLM | Pro·Con과 동적 결과를 종합해 판정 |
@@ -67,6 +69,10 @@ Agent 이름과 역할은 특정 Provider나 model에 고정되지 않습니다.
 |---|---|
 | `RepositoryProfile` | 저장소 언어, package 파일과 실행 관련 설정을 정리한 자료 |
 | `StaticFactBundle` | AST·OpenGrep·CodeQL 결과를 코드 위치와 흐름 중심으로 묶은 정적 사실 |
+| 정적 후보 | 검증된 원본 결과의 안정적 ID를 가진 입력 지점·실제 흐름·단순 힌트. 취약점 판정이 아님 |
+| Discovery 판정 | 후보별 `INCLUDE`·`EXCLUDE`·`UNDECIDED`, 미처리 `PENDING` 또는 실행 오류 `ERROR`와 이유 |
+| 파일×규칙 커버리지 | 특정 제품 파일에 특정 규칙을 정상 적용했는지의 증거. 후보 개수와 별도 |
+| `INCONCLUSIVE` | 가설 검토는 끝났으나 근거 부족으로 성립·반증을 확정하지 못한 종결 상태 |
 | `source` | 외부 입력이 들어오는 위치 |
 | `propagation` | 입력이 함수와 객체 사이를 이동하는 경로 |
 | `sink` | 위험한 동작이 실행될 수 있는 위치 |

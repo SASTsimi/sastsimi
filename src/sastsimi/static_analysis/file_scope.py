@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 
-_POLICY_VERSION = 5
+_POLICY_VERSION = 6
 _TEST_DIRECTORIES = frozenset(
     {
         "test",
@@ -56,6 +56,63 @@ _JS_TEST_CONTENT = re.compile(
 )
 _MAX_CONTENT_BYTES = 64 * 1024
 _MAX_MANIFEST_BYTES = 4 * 1024 * 1024
+_DOCUMENTATION_DIRECTORIES = frozenset(
+    {"doc", "docs", "documentation", "example", "examples", "sample", "samples"}
+)
+_NON_PYTHON_PRODUCT_EXTENSIONS = frozenset(
+    {
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".cjs",
+        ".ts",
+        ".tsx",
+        ".mts",
+        ".cts",
+        ".vue",
+        ".svelte",
+        ".astro",
+        ".go",
+        ".rs",
+        ".java",
+        ".kt",
+        ".kts",
+        ".scala",
+        ".sc",
+        ".cs",
+        ".c",
+        ".h",
+        ".cc",
+        ".cpp",
+        ".cxx",
+        ".hh",
+        ".hpp",
+        ".hxx",
+        ".swift",
+        ".dart",
+        ".rb",
+        ".php",
+        ".ex",
+        ".exs",
+        ".erl",
+        ".hrl",
+        ".hs",
+        ".ml",
+        ".mli",
+        ".lua",
+        ".pl",
+        ".pm",
+        ".r",
+        ".jl",
+        ".sh",
+        ".bash",
+        ".zsh",
+        ".ps1",
+        ".sql",
+        ".graphql",
+        ".proto",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +120,8 @@ class StaticFileScope:
     selected_paths: tuple[str, ...]
     fingerprint: str
     policy_version: int = _POLICY_VERSION
+    excluded_test_files: tuple[tuple[str, str], ...] = ()
+    out_of_scope_product_files: tuple[tuple[str, str], ...] = ()
 
 
 class StaticScopeManifestUnverified(ValueError):
@@ -278,6 +337,13 @@ def is_test_only_path(workspace: Path, path: str) -> bool:
     return _test_reason(workspace.resolve(), path) is not None
 
 
+def _is_documentation_path(path: str) -> bool:
+    return any(
+        component.casefold() in _DOCUMENTATION_DIRECTORIES
+        for component in PurePosixPath(path).parts[:-1]
+    )
+
+
 def build_static_file_scope(workspace: Path, tracked: Sequence[str]) -> StaticFileScope:
     """Return only tracked, non-test Python product sources for static analysis."""
 
@@ -286,23 +352,56 @@ def build_static_file_scope(workspace: Path, tracked: Sequence[str]) -> StaticFi
     for path in paths:
         _validate_tracked_path(path)
     selected_paths: list[str] = []
+    excluded_test_files: list[tuple[str, str]] = []
+    out_of_scope_product_files: list[tuple[str, str]] = []
+    declared_entries, uncertain_roots = _declared_entry_paths(root, paths)
+    scope_exceptions: list[tuple[str, str]] = []
     for path in paths:
-        if not path.endswith(".py"):
+        extension = Path(path).suffix.lower()
+        test_reason = _test_reason(root, path)
+        if path in declared_entries and (
+            test_reason is not None or _is_documentation_path(path)
+        ):
+            if extension == ".py":
+                selected_paths.append(path)
+                scope_exceptions.append((path, "declared_python_entry"))
+            elif extension == ".pyi" or extension in _NON_PYTHON_PRODUCT_EXTENSIONS:
+                out_of_scope_product_files.append((path, "declared_non_python_entry"))
+                scope_exceptions.append((path, "declared_non_python_entry"))
             continue
-        if _test_reason(root, path) is None:
+        if test_reason is not None:
+            if _under_uncertain_root(path, uncertain_roots) and (
+                extension in {".py", ".pyi"}
+                or extension in _NON_PYTHON_PRODUCT_EXTENSIONS
+            ):
+                out_of_scope_product_files.append(
+                    (path, "manifest_unverified_possible_product")
+                )
+                scope_exceptions.append((path, "manifest_unverified_possible_product"))
+            else:
+                excluded_test_files.append((path, test_reason))
+            continue
+        if _is_documentation_path(path):
+            continue
+        if extension == ".py":
             selected_paths.append(path)
+        elif extension == ".pyi":
+            out_of_scope_product_files.append((path, "python_stub_not_scanned"))
+        elif extension in _NON_PYTHON_PRODUCT_EXTENSIONS:
+            out_of_scope_product_files.append((path, "non_python_product_source"))
     selected = tuple(selected_paths)
-    fingerprint = hashlib.sha256(
-        canonical_bytes(
-            {
-                "policy_version": _POLICY_VERSION,
-                "selected_paths": selected,
-            }
-        )
-    ).hexdigest()
+    scope_identity: dict[str, object] = {
+        "policy_version": _POLICY_VERSION,
+        "selected_paths": selected,
+    }
+    if scope_exceptions:
+        scope_identity["manifest_scope_exceptions"] = scope_exceptions
+    fingerprint = hashlib.sha256(canonical_bytes(scope_identity)).hexdigest()
     return StaticFileScope(
         selected_paths=selected,
         fingerprint=fingerprint,
+        excluded_test_files=tuple(excluded_test_files),
+        out_of_scope_product_files=tuple(out_of_scope_product_files),
     )
 
 

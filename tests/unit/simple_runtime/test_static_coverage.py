@@ -285,6 +285,15 @@ def test_assessed_slice_keeps_scan_metadata_without_duplicate_raw_hits(
     assert slice_.normalized_results == ({**hit, "scan_incomplete": False},)
 
 
+def test_default_candidate_budget_has_no_cumulative_result_ceiling() -> None:
+    budget = coverage_module.StaticCandidateBudget()
+
+    budget.claim_results(500_000)
+    budget.claim_results(1)
+
+    assert budget.used_results == 500_001
+
+
 def test_shared_candidate_budget_rejects_cumulative_hits_without_dropping_them(
     tmp_path: Path,
 ) -> None:
@@ -635,7 +644,36 @@ def test_same_line_distinct_columns_keep_both_candidates(tmp_path: Path) -> None
     assert len(merged["results"]) == 2
 
 
-def test_merge_rejects_more_normalized_hits_than_its_defensive_limit(
+def test_same_location_distinct_dataflow_paths_remain_separate(tmp_path: Path) -> None:
+    plan, rules = _plan(tmp_path)
+    raw = _raw(
+        scanned=["app.ts"],
+        results=[
+            {
+                "check_id": "rule.js",
+                "path": "app.ts",
+                "start": {"line": 3, "col": 1},
+                "end": {"line": 3, "col": 8},
+                "extra": {
+                    "source": "request",
+                    "sink": "exec",
+                    "dataflow_trace": {"path": path},
+                },
+            }
+            for path in (["route_a", "helper"], ["route_b", "helper"])
+        ],
+    )
+    slice_ = assess_scan(plan, rules.batches[0], raw, engine="opengrep")
+
+    results = json.loads(merge_static_candidates(rules, [slice_]))["results"]
+    assert len(results) == 2
+    assert {tuple(hit["extra"]["dataflow_trace"]["path"]) for hit in results} == {
+        ("route_a", "helper"),
+        ("route_b", "helper"),
+    }
+
+
+def test_merge_does_not_apply_an_arbitrary_global_candidate_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     plan, rules = _plan(tmp_path)
@@ -653,11 +691,104 @@ def test_merge_rejects_more_normalized_hits_than_its_defensive_limit(
     )
     monkeypatch.setattr(coverage_module, "_MAX_STATIC_CANDIDATES", 2)
 
-    with pytest.raises(
-        coverage_module.StaticCandidateLimitError,
-        match="STATIC_CANDIDATES_TOO_LARGE",
-    ):
-        merge_static_candidates(rules, [slice_])
+    assert len(json.loads(merge_static_candidates(rules, [slice_]))["results"]) == 3
+
+
+def test_bounded_candidate_preview_keeps_rules_and_cross_engine_origin(
+    tmp_path: Path,
+) -> None:
+    plan, rules = _plan(tmp_path)
+    first_hit = {
+        "check_id": "rule.js",
+        "path": "app.ts",
+        "start": {"line": 1, "col": 1},
+    }
+    js_hits = [
+        {
+            "check_id": "rule.js",
+            "path": "app.ts",
+            "start": {"line": 1, "col": column},
+        }
+        for column in range(1, 602)
+    ]
+    js = assess_scan(
+        plan,
+        rules.batches[0],
+        _raw(scanned=["app.ts"], results=js_hits),
+        engine="opengrep",
+    )
+    py = assess_scan(
+        plan,
+        rules.batches[1],
+        _raw(
+            scanned=["helper.py"],
+            results=[
+                {
+                    "check_id": "rule.py",
+                    "path": "helper.py",
+                    "start": {"line": 1, "col": 1},
+                }
+            ],
+        ),
+        engine="opengrep",
+    )
+    fallback = assess_scan(
+        plan,
+        rules.batches[0],
+        _raw(scanned=["app.ts"], results=[first_hit]),
+        engine="semgrep",
+        targets=["app.ts"],
+    )
+
+    preview = json.loads(
+        coverage_module.merge_static_candidates_preview(rules, [js, py, fallback])
+    )
+    results = preview["results"]
+    assert len(results) == 500
+    assert preview["candidate_snippet_limit"] == 500
+    assert preview["candidate_snippets_truncated"] is True
+    assert {item["check_id"] for item in results} == {"rule.js", "rule.py"}
+    same_hit = next(
+        item
+        for item in results
+        if item["check_id"] == "rule.js" and item["start"]["col"] == 1
+    )
+    assert same_hit["engines"] == ["opengrep", "semgrep"]
+    assert len(preview["batches"]) == 3
+
+
+def test_preview_bounds_large_hit_details_and_rule_metadata(tmp_path: Path) -> None:
+    plan, rules = _plan(tmp_path)
+    hit = {
+        "check_id": "rule.js",
+        "path": "app.ts",
+        "start": {"line": 1},
+        "extra": {"large_trace": "x" * 100_000},
+    }
+    slice_ = assess_scan(
+        plan,
+        rules.batches[0],
+        _raw(scanned=["app.ts"], results=[hit]),
+        engine="opengrep",
+    )
+    preview_bytes = coverage_module.merge_static_candidates_preview(rules, [slice_])
+    assert len(preview_bytes) < 10_000
+    preview = json.loads(preview_bytes)
+    assert preview["results"][0]["candidate_digest"]
+    assert "extra" not in preview["results"][0]
+
+    large_catalog = RuleBatchPlan(
+        fingerprint="a" * 64,
+        rule_ids=tuple(f"rule.{index}" for index in range(501)),
+        rule_languages=(("python",),) * 501,
+        batches=(),
+    )
+    capped = json.loads(
+        coverage_module.merge_static_candidates_preview(large_catalog, [])
+    )
+    assert len(capped["rule_ids"]) == 500
+    assert capped["rule_ids_truncated"] is True
+    assert capped["results"] == []
 
 
 def test_partial_parse_hit_is_not_an_agent_candidate(tmp_path: Path) -> None:

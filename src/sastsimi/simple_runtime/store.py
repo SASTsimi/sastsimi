@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
 
-from sastsimi.config.user_config import ElapsedLimit
+from sastsimi.config.user_config import ElapsedLimit, TokenLimit
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.observability.agent_activity import (
@@ -18,6 +19,7 @@ from sastsimi.observability.agent_activity import (
 )
 from sastsimi.storage.agent_activity import AgentActivityStore
 
+from .candidates import StaticCandidate
 from .models import (
     STAGE_ORDER,
     STAGE_VERSION,
@@ -29,6 +31,8 @@ from .models import (
     StageResult,
     StageStatus,
     input_reference_hash,
+    terminal_gate_outcome,
+    terminal_poc_outcome,
 )
 from .recovery import (
     MAX_RECOVERY_ATTEMPTS,
@@ -52,6 +56,22 @@ ROLE_BY_STAGE: dict[SimpleStage, str] = {
     SimpleStage.FINDING_DONE: "Finding Runtime",
     SimpleStage.REPORT_DONE: "Reporter Agent",
 }
+
+# Match the non-response statuses ignored by RunUsageBudget's token check.
+_NO_MODEL_RESPONSE_STATUSES = (
+    "AUTH_REQUIRED",
+    "RATE_LIMITED",
+    "OPENAI_SDK_UNAVAILABLE",
+    "MODEL_OR_REQUEST_UNSUPPORTED",
+    "CONTEXT_LIMIT_EXCEEDED",
+    "CURSOR_AUTH_REQUIRED",
+    "CURSOR_AUTH_FAILED",
+    "CURSOR_CONFIGURATION_FAILED",
+    "CURSOR_PLAN_LIMIT",
+    "CURSOR_RATE_LIMITED",
+    "CLAUDE_AUTH_REQUIRED",
+    "CLAUDE_RATE_LIMITED",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,9 +297,902 @@ class SimpleCheckpointStore:
                 """
             )
 
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_static_candidates (
+                    analysis_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    scope_fingerprint TEXT NOT NULL,
+                    candidate_id TEXT NOT NULL,
+                    candidate_json TEXT NOT NULL,
+                    decision TEXT NOT NULL DEFAULT 'PENDING',
+                    decision_reason TEXT NOT NULL DEFAULT '',
+                    decision_evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+                    decision_attempt_ref_json TEXT,
+                    deep_status TEXT NOT NULL DEFAULT 'PENDING',
+                    PRIMARY KEY (
+                        analysis_id, workspace_id, commit_id,
+                        scope_fingerprint, candidate_id
+                    )
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_static_candidates_decision "
+                "ON simple_static_candidates "
+                "(analysis_id, workspace_id, commit_id, scope_fingerprint, "
+                "decision, candidate_id)"
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_candidate_artifact_cursors (
+                    analysis_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    scope_fingerprint TEXT NOT NULL,
+                    artifact_hash TEXT NOT NULL,
+                    artifact_ref_json TEXT NOT NULL,
+                    result_offset INTEGER NOT NULL,
+                    PRIMARY KEY (
+                        analysis_id, workspace_id, commit_id,
+                        scope_fingerprint, artifact_hash
+                    )
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_candidate_hypotheses (
+                    analysis_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    hypothesis_id TEXT NOT NULL,
+                    hypothesis_ref_json TEXT,
+                    chain_depth INTEGER NOT NULL DEFAULT 0,
+                    parent_hypothesis_ids_json TEXT NOT NULL DEFAULT '[]',
+                    PRIMARY KEY (
+                        analysis_id, workspace_id, commit_id, hypothesis_id
+                    )
+                )
+                """
+            )
+            hypothesis_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(simple_candidate_hypotheses)"
+                )
+            }
+            if "chain_depth" not in hypothesis_columns:
+                connection.execute(
+                    "ALTER TABLE simple_candidate_hypotheses "
+                    "ADD COLUMN chain_depth INTEGER NOT NULL DEFAULT 0"
+                )
+            if "parent_hypothesis_ids_json" not in hypothesis_columns:
+                connection.execute(
+                    "ALTER TABLE simple_candidate_hypotheses "
+                    "ADD COLUMN parent_hypothesis_ids_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_candidate_hypothesis_links (
+                    analysis_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    scope_fingerprint TEXT NOT NULL,
+                    candidate_id TEXT NOT NULL,
+                    hypothesis_id TEXT NOT NULL,
+                    PRIMARY KEY (
+                        analysis_id, workspace_id, commit_id,
+                        scope_fingerprint, candidate_id, hypothesis_id
+                    )
+                )
+                """
+            )
+
     @property
     def database_path(self) -> Path:
         return self._database_path
+
+    @staticmethod
+    def _candidate_scope_key(
+        identity: CheckpointIdentity, scope_fingerprint: str
+    ) -> tuple[str, str, str, str]:
+        if identity.hypothesis_id is not None or not scope_fingerprint.strip():
+            raise ValueError("CANDIDATE_SCOPE_INVALID")
+        return (
+            identity.analysis_id,
+            identity.workspace_id,
+            identity.commit_id,
+            scope_fingerprint,
+        )
+
+    @staticmethod
+    def _candidate_ref_json(
+        identity: CheckpointIdentity, ref: StoredDataRef | None
+    ) -> str | None:
+        if ref is None:
+            return None
+        if (
+            str(ref.workspace_id) != identity.workspace_id
+            or str(ref.commit_id) != identity.commit_id
+            or ref.record_id is not None
+            or ref.data_kind != "artifact"
+            or str(ref.stored_data_id) != ref.content_hash
+        ):
+            raise ValueError("CANDIDATE_REF_SCOPE_MISMATCH")
+        return ref.model_dump_json()
+
+    def candidate_cursor(
+        self,
+        identity: CheckpointIdentity,
+        scope_fingerprint: str,
+        artifact_ref: StoredDataRef,
+    ) -> int:
+        key = self._candidate_scope_key(identity, scope_fingerprint)
+        encoded = self._candidate_ref_json(identity, artifact_ref)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT artifact_ref_json, result_offset "
+                "FROM simple_candidate_artifact_cursors "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? AND artifact_hash = ?",
+                (*key, artifact_ref.content_hash),
+            ).fetchone()
+        if row is None:
+            return 0
+        if row["artifact_ref_json"] != encoded:
+            raise ValueError("CANDIDATE_CURSOR_CONFLICT")
+        return int(row["result_offset"])
+
+    def upsert_candidate_page(
+        self,
+        identity: CheckpointIdentity,
+        scope_fingerprint: str,
+        artifact_ref: StoredDataRef,
+        start_offset: int,
+        end_offset: int,
+        candidates: tuple[StaticCandidate, ...],
+    ) -> None:
+        """Persist a bounded candidate page and its raw cursor atomically."""
+
+        key = self._candidate_scope_key(identity, scope_fingerprint)
+        encoded_ref = self._candidate_ref_json(identity, artifact_ref)
+        if start_offset < 0 or end_offset <= start_offset:
+            raise ValueError("CANDIDATE_PAGE_INVALID")
+        for candidate in candidates:
+            if (
+                candidate.decision != "PENDING"
+                or candidate.deep_status != "PENDING"
+                or not candidate.origins
+                or any(
+                    self._candidate_ref_json(identity, origin.artifact_ref)
+                    != encoded_ref
+                    or origin.result_index < start_offset
+                    or origin.result_index >= end_offset
+                    for origin in candidate.origins
+                )
+            ):
+                raise ValueError("CANDIDATE_PAGE_INVALID")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT artifact_ref_json, result_offset "
+                "FROM simple_candidate_artifact_cursors "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? AND artifact_hash = ?",
+                (*key, artifact_ref.content_hash),
+            ).fetchone()
+            current = int(row["result_offset"]) if row is not None else 0
+            if row is not None and row["artifact_ref_json"] != encoded_ref:
+                raise ValueError("CANDIDATE_CURSOR_CONFLICT")
+            if current == end_offset and start_offset < current:
+                # A page committed before an interruption is safe to replay.
+                return
+            if current != start_offset:
+                raise ValueError("CANDIDATE_CURSOR_CONFLICT")
+            for candidate in candidates:
+                saved = connection.execute(
+                    "SELECT candidate_json FROM simple_static_candidates "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND scope_fingerprint = ? AND candidate_id = ?",
+                    (*key, candidate.candidate_id),
+                ).fetchone()
+                if saved is None:
+                    connection.execute(
+                        "INSERT INTO simple_static_candidates "
+                        "(analysis_id, workspace_id, commit_id, scope_fingerprint, "
+                        "candidate_id, candidate_json) VALUES (?, ?, ?, ?, ?, ?)",
+                        (*key, candidate.candidate_id, candidate.model_dump_json()),
+                    )
+                    continue
+                previous = StaticCandidate.model_validate_json(saved["candidate_json"])
+                if (
+                    previous.kind != candidate.kind
+                    or previous.path != candidate.path
+                    or previous.line != candidate.line
+                    or previous.end_line != candidate.end_line
+                    or previous.flow_identity != candidate.flow_identity
+                    or previous.evidence_key != candidate.evidence_key
+                ):
+                    raise ValueError("CANDIDATE_ID_CONFLICT")
+                origins = {
+                    (
+                        origin.engine,
+                        origin.rule_id,
+                        origin.artifact_ref.content_hash,
+                        origin.result_index,
+                    ): origin
+                    for origin in (*previous.origins, *candidate.origins)
+                }
+                merged = previous.model_copy(
+                    update={"origins": tuple(origins[key] for key in sorted(origins))}
+                )
+                connection.execute(
+                    "UPDATE simple_static_candidates SET candidate_json = ? "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND scope_fingerprint = ? AND candidate_id = ?",
+                    (merged.model_dump_json(), *key, candidate.candidate_id),
+                )
+            connection.execute(
+                "INSERT INTO simple_candidate_artifact_cursors "
+                "(analysis_id, workspace_id, commit_id, scope_fingerprint, "
+                "artifact_hash, artifact_ref_json, result_offset) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (analysis_id, workspace_id, commit_id, "
+                "scope_fingerprint, artifact_hash) DO UPDATE SET "
+                "result_offset = excluded.result_offset",
+                (*key, artifact_ref.content_hash, encoded_ref, end_offset),
+            )
+
+    def list_candidates(
+        self,
+        identity: CheckpointIdentity,
+        scope_fingerprint: str,
+        *,
+        status: str | tuple[str, ...] | None = None,
+        after_id: str | None = None,
+        limit: int = 100,
+    ) -> tuple[StaticCandidate, ...]:
+        key = self._candidate_scope_key(identity, scope_fingerprint)
+        if limit <= 0:
+            raise ValueError("CANDIDATE_PAGE_ARGUMENT_INVALID")
+        statuses = (status,) if isinstance(status, str) else status
+        query = (
+            "SELECT candidate_json, decision, decision_reason, "
+            "decision_evidence_refs_json, decision_attempt_ref_json, deep_status "
+            "FROM simple_static_candidates "
+            "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+            "AND scope_fingerprint = ?"
+        )
+        args: list[object] = list(key)
+        if statuses is not None:
+            if not statuses:
+                return ()
+            query += " AND decision IN (" + ",".join("?" for _ in statuses) + ")"
+            args.extend(statuses)
+        if after_id is not None:
+            query += " AND candidate_id > ?"
+            args.append(after_id)
+        query += " ORDER BY candidate_id LIMIT ?"
+        args.append(limit)
+        with self._connect() as connection:
+            rows = connection.execute(query, args).fetchall()
+        result: list[StaticCandidate] = []
+        for row in rows:
+            candidate = StaticCandidate.model_validate_json(row["candidate_json"])
+            refs = tuple(
+                StoredDataRef.model_validate(ref)
+                for ref in json.loads(row["decision_evidence_refs_json"])
+            )
+            attempt = (
+                StoredDataRef.model_validate_json(row["decision_attempt_ref_json"])
+                if row["decision_attempt_ref_json"] is not None
+                else None
+            )
+            result.append(
+                candidate.model_copy(
+                    update={
+                        "decision": row["decision"],
+                        "decision_reason": row["decision_reason"],
+                        "decision_evidence_refs": refs,
+                        "decision_attempt_ref": attempt,
+                        "deep_status": row["deep_status"],
+                    }
+                )
+            )
+        return tuple(result)
+
+    def candidate_counts(
+        self, identity: CheckpointIdentity, scope_fingerprint: str
+    ) -> dict[str, int]:
+        key = self._candidate_scope_key(identity, scope_fingerprint)
+        result = {
+            status: 0
+            for status in ("PENDING", "INCLUDE", "EXCLUDE", "UNDECIDED", "ERROR")
+        }
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT decision, COUNT(*) AS count FROM simple_static_candidates "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? GROUP BY decision",
+                key,
+            ).fetchall()
+        for row in rows:
+            result[str(row["decision"])] = int(row["count"])
+        return result
+
+    def candidate_deep_counts(
+        self, identity: CheckpointIdentity, scope_fingerprint: str
+    ) -> dict[str, int]:
+        key = self._candidate_scope_key(identity, scope_fingerprint)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT deep_status, COUNT(*) AS count "
+                "FROM simple_static_candidates "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? AND decision IN ('INCLUDE', 'UNDECIDED') "
+                "GROUP BY deep_status",
+                key,
+            ).fetchall()
+        return {str(row["deep_status"]): int(row["count"]) for row in rows}
+
+    def save_candidate_decision(
+        self,
+        identity: CheckpointIdentity,
+        scope_fingerprint: str,
+        candidate_id: str,
+        decision: str,
+        reason: str,
+        *,
+        evidence_refs: tuple[StoredDataRef, ...] = (),
+        attempt_ref: StoredDataRef | None = None,
+    ) -> None:
+        key = self._candidate_scope_key(identity, scope_fingerprint)
+        if decision not in {"PENDING", "INCLUDE", "EXCLUDE", "UNDECIDED", "ERROR"}:
+            raise ValueError("CANDIDATE_DECISION_INVALID")
+        if decision != "PENDING" and not reason.strip():
+            raise ValueError("CANDIDATE_DECISION_REASON_REQUIRED")
+        for ref in evidence_refs:
+            self._candidate_ref_json(identity, ref)
+        attempt_json = self._candidate_ref_json(identity, attempt_ref)
+        refs_json = json.dumps(
+            [ref.model_dump(mode="json") for ref in evidence_refs],
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT decision, decision_reason, decision_evidence_refs_json, "
+                "decision_attempt_ref_json FROM simple_static_candidates "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? AND candidate_id = ?",
+                (*key, candidate_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError("CANDIDATE_NOT_FOUND")
+            if row["decision"] not in {"PENDING", "ERROR"}:
+                if (
+                    row["decision"] == decision
+                    and row["decision_reason"] == reason
+                    and row["decision_evidence_refs_json"] == refs_json
+                    and row["decision_attempt_ref_json"] == attempt_json
+                ):
+                    return
+                raise ValueError("CANDIDATE_DECISION_CONFLICT")
+            connection.execute(
+                "UPDATE simple_static_candidates SET decision = ?, "
+                "decision_reason = ?, decision_evidence_refs_json = ?, "
+                "decision_attempt_ref_json = ? "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? AND candidate_id = ?",
+                (decision, reason, refs_json, attempt_json, *key, candidate_id),
+            )
+
+    def save_candidate_deep_status(
+        self,
+        identity: CheckpointIdentity,
+        scope_fingerprint: str,
+        candidate_id: str,
+        deep_status: str,
+    ) -> None:
+        key = self._candidate_scope_key(identity, scope_fingerprint)
+        if deep_status not in {
+            "PENDING",
+            "RUNNING",
+            "COMPLETE",
+            "NO_HYPOTHESIS",
+            "ERROR",
+        }:
+            raise ValueError("CANDIDATE_DEEP_STATUS_INVALID")
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT decision FROM simple_static_candidates "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? AND candidate_id = ?",
+                (*key, candidate_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError("CANDIDATE_NOT_FOUND")
+            if row["decision"] not in {"INCLUDE", "UNDECIDED"}:
+                raise ValueError("CANDIDATE_DEEP_STATUS_CONFLICT")
+            connection.execute(
+                "UPDATE simple_static_candidates SET deep_status = ? "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? AND candidate_id = ?",
+                (deep_status, *key, candidate_id),
+            )
+
+    @staticmethod
+    def _hypothesis_scope_key(
+        identity: CheckpointIdentity,
+    ) -> tuple[str, str, str]:
+        if identity.hypothesis_id is not None:
+            raise ValueError("CANDIDATE_HYPOTHESIS_SCOPE_INVALID")
+        return identity.analysis_id, identity.workspace_id, identity.commit_id
+
+    def upsert_hypothesis(
+        self,
+        identity: CheckpointIdentity,
+        hypothesis_id: str,
+        hypothesis_ref: StoredDataRef | None = None,
+        *,
+        chain_depth: int = 0,
+        parent_hypothesis_ids: tuple[str, ...] = (),
+    ) -> None:
+        key = self._hypothesis_scope_key(identity)
+        if (
+            not hypothesis_id.strip()
+            or chain_depth < 0
+            or hypothesis_id in parent_hypothesis_ids
+            or len(set(parent_hypothesis_ids)) != len(parent_hypothesis_ids)
+        ):
+            raise ValueError("CANDIDATE_HYPOTHESIS_ID_INVALID")
+        ref_json = self._candidate_ref_json(identity, hypothesis_ref)
+        parents_json = json.dumps(
+            parent_hypothesis_ids, ensure_ascii=False, separators=(",", ":")
+        )
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT hypothesis_ref_json, chain_depth, "
+                "parent_hypothesis_ids_json "
+                "FROM simple_candidate_hypotheses "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND hypothesis_id = ?",
+                (*key, hypothesis_id),
+            ).fetchone()
+            if row is None:
+                connection.execute(
+                    "INSERT INTO simple_candidate_hypotheses "
+                    "(analysis_id, workspace_id, commit_id, hypothesis_id, "
+                    "hypothesis_ref_json, chain_depth, parent_hypothesis_ids_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (*key, hypothesis_id, ref_json, chain_depth, parents_json),
+                )
+                return
+            if row["hypothesis_ref_json"] not in {None, ref_json}:
+                raise ValueError("CANDIDATE_HYPOTHESIS_REF_CONFLICT")
+            previous_depth = int(row["chain_depth"])
+            previous_parents = str(row["parent_hypothesis_ids_json"])
+            if (previous_depth, previous_parents) != (chain_depth, parents_json):
+                if previous_depth != 0 or previous_parents != "[]":
+                    raise ValueError("CANDIDATE_HYPOTHESIS_METADATA_CONFLICT")
+            connection.execute(
+                "UPDATE simple_candidate_hypotheses "
+                "SET hypothesis_ref_json = COALESCE(hypothesis_ref_json, ?), "
+                "chain_depth = ?, parent_hypothesis_ids_json = ? "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND hypothesis_id = ?",
+                (ref_json, chain_depth, parents_json, *key, hypothesis_id),
+            )
+
+    def hypothesis_metadata(
+        self, identity: CheckpointIdentity, hypothesis_id: str
+    ) -> tuple[int, tuple[str, ...]] | None:
+        key = self._hypothesis_scope_key(identity)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT chain_depth, parent_hypothesis_ids_json "
+                "FROM simple_candidate_hypotheses "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND hypothesis_id = ?",
+                (*key, hypothesis_id),
+            ).fetchone()
+        if row is None:
+            return None
+        parents = json.loads(row["parent_hypothesis_ids_json"])
+        if not isinstance(parents, list) or not all(
+            isinstance(value, str) for value in parents
+        ):
+            raise ValueError("CANDIDATE_HYPOTHESIS_METADATA_CORRUPT")
+        return int(row["chain_depth"]), tuple(parents)
+
+    def has_hypothesis(self, identity: CheckpointIdentity, hypothesis_id: str) -> bool:
+        return self.hypothesis_metadata(identity, hypothesis_id) is not None
+
+    def register_candidate_hypothesis(
+        self,
+        identity: CheckpointIdentity,
+        scope_fingerprint: str,
+        candidate_id: str,
+        hypothesis_id: str,
+        hypothesis_ref: StoredDataRef,
+        *,
+        checkpoint: StageCheckpoint | None = None,
+        chain_depth: int = 0,
+        parent_hypothesis_ids: tuple[str, ...] = (),
+    ) -> None:
+        """Commit a focused hypothesis, link, and pending checkpoint together."""
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._register_candidate_hypothesis_connection(
+                connection,
+                identity,
+                scope_fingerprint,
+                candidate_id,
+                hypothesis_id,
+                hypothesis_ref,
+                checkpoint=checkpoint,
+                chain_depth=chain_depth,
+                parent_hypothesis_ids=parent_hypothesis_ids,
+            )
+
+    def register_candidate_hypotheses_batch(
+        self,
+        identity: CheckpointIdentity,
+        scope_fingerprint: str,
+        candidate_id: str,
+        registrations: Sequence[tuple[str, StoredDataRef, StageCheckpoint]],
+    ) -> None:
+        """Commit every seed from one candidate proposal or none of them."""
+
+        if not registrations:
+            raise ValueError("CANDIDATE_HYPOTHESIS_BATCH_EMPTY")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for hypothesis_id, hypothesis_ref, checkpoint in registrations:
+                self._register_candidate_hypothesis_connection(
+                    connection,
+                    identity,
+                    scope_fingerprint,
+                    candidate_id,
+                    hypothesis_id,
+                    hypothesis_ref,
+                    checkpoint=checkpoint,
+                )
+
+    def _register_candidate_hypothesis_connection(
+        self,
+        connection: sqlite3.Connection,
+        identity: CheckpointIdentity,
+        scope_fingerprint: str,
+        candidate_id: str,
+        hypothesis_id: str,
+        hypothesis_ref: StoredDataRef,
+        *,
+        checkpoint: StageCheckpoint | None,
+        chain_depth: int = 0,
+        parent_hypothesis_ids: tuple[str, ...] = (),
+    ) -> None:
+        key = self._candidate_scope_key(identity, scope_fingerprint)
+        ref_json = self._candidate_ref_json(identity, hypothesis_ref)
+        if (
+            not hypothesis_id.strip()
+            or chain_depth < 0
+            or hypothesis_id in parent_hypothesis_ids
+            or len(set(parent_hypothesis_ids)) != len(parent_hypothesis_ids)
+        ):
+            raise ValueError("CANDIDATE_HYPOTHESIS_ID_INVALID")
+        parents_json = json.dumps(
+            parent_hypothesis_ids, ensure_ascii=False, separators=(",", ":")
+        )
+        candidate = connection.execute(
+            "SELECT decision FROM simple_static_candidates "
+            "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+            "AND scope_fingerprint = ? AND candidate_id = ?",
+            (*key, candidate_id),
+        ).fetchone()
+        if candidate is None or candidate["decision"] not in {
+            "INCLUDE",
+            "UNDECIDED",
+        }:
+            raise ValueError("CANDIDATE_HYPOTHESIS_LINK_INVALID")
+        row = connection.execute(
+            "SELECT hypothesis_ref_json, chain_depth, "
+            "parent_hypothesis_ids_json "
+            "FROM simple_candidate_hypotheses "
+            "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+            "AND hypothesis_id = ?",
+            (*key[:3], hypothesis_id),
+        ).fetchone()
+        if row is None:
+            connection.execute(
+                "INSERT INTO simple_candidate_hypotheses "
+                "(analysis_id, workspace_id, commit_id, hypothesis_id, "
+                "hypothesis_ref_json, chain_depth, parent_hypothesis_ids_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (*key[:3], hypothesis_id, ref_json, chain_depth, parents_json),
+            )
+        elif row["hypothesis_ref_json"] not in {None, ref_json} or (
+            int(row["chain_depth"]),
+            str(row["parent_hypothesis_ids_json"]),
+        ) != (chain_depth, parents_json):
+            raise ValueError("CANDIDATE_HYPOTHESIS_REF_CONFLICT")
+        elif row["hypothesis_ref_json"] is None:
+            connection.execute(
+                "UPDATE simple_candidate_hypotheses "
+                "SET hypothesis_ref_json = ? "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND hypothesis_id = ?",
+                (ref_json, *key[:3], hypothesis_id),
+            )
+        connection.execute(
+            "INSERT OR IGNORE INTO simple_candidate_hypothesis_links "
+            "(analysis_id, workspace_id, commit_id, scope_fingerprint, "
+            "candidate_id, hypothesis_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (*key, candidate_id, hypothesis_id),
+        )
+        if checkpoint is not None:
+            self._insert_pending_pro_con_connection(
+                connection, identity, hypothesis_id, hypothesis_ref, checkpoint
+            )
+
+    def register_free_hypothesis(
+        self,
+        identity: CheckpointIdentity,
+        hypothesis_id: str,
+        hypothesis_ref: StoredDataRef,
+        checkpoint: StageCheckpoint,
+        *,
+        chain_depth: int = 0,
+        parent_hypothesis_ids: tuple[str, ...] = (),
+    ) -> None:
+        """Commit a free-exploration hypothesis and its pending stage atomically."""
+
+        key = self._hypothesis_scope_key(identity)
+        ref_json = self._candidate_ref_json(identity, hypothesis_ref)
+        if (
+            not hypothesis_id.strip()
+            or chain_depth < 0
+            or hypothesis_id in parent_hypothesis_ids
+            or len(set(parent_hypothesis_ids)) != len(parent_hypothesis_ids)
+        ):
+            raise ValueError("CANDIDATE_HYPOTHESIS_ID_INVALID")
+        parents_json = json.dumps(
+            parent_hypothesis_ids, ensure_ascii=False, separators=(",", ":")
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT hypothesis_ref_json, chain_depth, "
+                "parent_hypothesis_ids_json FROM simple_candidate_hypotheses "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND hypothesis_id = ?",
+                (*key, hypothesis_id),
+            ).fetchone()
+            if row is None:
+                connection.execute(
+                    "INSERT INTO simple_candidate_hypotheses "
+                    "(analysis_id, workspace_id, commit_id, hypothesis_id, "
+                    "hypothesis_ref_json, chain_depth, parent_hypothesis_ids_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (*key, hypothesis_id, ref_json, chain_depth, parents_json),
+                )
+            elif row["hypothesis_ref_json"] not in {None, ref_json} or (
+                int(row["chain_depth"]),
+                str(row["parent_hypothesis_ids_json"]),
+            ) != (chain_depth, parents_json):
+                raise ValueError("CANDIDATE_HYPOTHESIS_REF_CONFLICT")
+            elif row["hypothesis_ref_json"] is None:
+                connection.execute(
+                    "UPDATE simple_candidate_hypotheses "
+                    "SET hypothesis_ref_json = ? "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND hypothesis_id = ?",
+                    (ref_json, *key, hypothesis_id),
+                )
+            self._insert_pending_pro_con_connection(
+                connection, identity, hypothesis_id, hypothesis_ref, checkpoint
+            )
+
+    def _insert_pending_pro_con_connection(
+        self,
+        connection: sqlite3.Connection,
+        identity: CheckpointIdentity,
+        hypothesis_id: str,
+        hypothesis_ref: StoredDataRef,
+        checkpoint: StageCheckpoint,
+    ) -> None:
+        child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+        if (
+            checkpoint.identity != child
+            or checkpoint.stage is not SimpleStage.PRO_CON_DONE
+            or checkpoint.stage_version != STAGE_VERSION[SimpleStage.PRO_CON_DONE]
+            or checkpoint.status is not StageStatus.PENDING
+            or not checkpoint.input_refs
+            or checkpoint.input_refs[0] != hypothesis_ref
+            or checkpoint.input_hash != input_reference_hash(checkpoint.input_refs)
+        ):
+            raise ValueError("CANDIDATE_HYPOTHESIS_CHECKPOINT_INVALID")
+        row = connection.execute(
+            "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+            "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+            (identity.analysis_id, hypothesis_id, SimpleStage.PRO_CON_DONE.value),
+        ).fetchone()
+        if row is not None:
+            existing = StageCheckpoint.model_validate_json(row["checkpoint_json"])
+            if (
+                existing.identity != child
+                or existing.input_refs != checkpoint.input_refs
+                or existing.input_hash != checkpoint.input_hash
+            ):
+                raise ValueError("CANDIDATE_HYPOTHESIS_CHECKPOINT_CONFLICT")
+            return
+        self._upsert_checkpoint_connection(connection, checkpoint)
+
+    def list_incomplete_hypotheses(
+        self,
+        identity: CheckpointIdentity,
+        *,
+        after_id: str | None = None,
+        limit: int = 100,
+    ) -> tuple[str, ...]:
+        """Page nonterminal hypotheses using current checkpoint evidence."""
+
+        key = self._hypothesis_scope_key(identity)
+        if limit <= 0:
+            raise ValueError("CANDIDATE_PAGE_ARGUMENT_INVALID")
+        selected: list[str] = []
+        scanned_after = after_id or ""
+        with self._connect() as connection:
+            while len(selected) < limit:
+                rows = connection.execute(
+                    "SELECT hypothesis_id FROM simple_candidate_hypotheses "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND hypothesis_id > ? ORDER BY hypothesis_id LIMIT ?",
+                    (*key, scanned_after, max(32, limit)),
+                ).fetchall()
+                if not rows:
+                    break
+                for row in rows:
+                    hypothesis_id = str(row["hypothesis_id"])
+                    scanned_after = hypothesis_id
+                    checkpoints = connection.execute(
+                        "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                        "WHERE analysis_id = ? AND hypothesis_key = ?",
+                        (identity.analysis_id, hypothesis_id),
+                    ).fetchall()
+                    stages: dict[SimpleStage, StageCheckpoint] = {}
+                    for item in checkpoints:
+                        checkpoint = StageCheckpoint.model_validate_json(
+                            item["checkpoint_json"]
+                        )
+                        if checkpoint.identity != identity.model_copy(
+                            update={"hypothesis_id": hypothesis_id}
+                        ):
+                            raise ValueError("CANDIDATE_HYPOTHESIS_CHECKPOINT_CORRUPT")
+                        if (
+                            checkpoint.status is StageStatus.SUCCEEDED
+                            and checkpoint.stage_version
+                            == STAGE_VERSION[checkpoint.stage]
+                        ):
+                            stages[checkpoint.stage] = checkpoint
+                    final = stages.get(SimpleStage.VERIFICATION_FINAL_DONE)
+                    chain = stages.get(SimpleStage.CHAINING_DONE)
+                    terminal = (
+                        terminal_poc_outcome(stages.get(SimpleStage.POC_EXECUTION_DONE))
+                        is not None
+                        or final is not None
+                        and (
+                            final.verdict == "FALSE"
+                            or final.verdict == "HOLD"
+                            and chain is not None
+                        )
+                        or terminal_gate_outcome(stages.get(SimpleStage.TECH_GATE_DONE))
+                        is not None
+                        or SimpleStage.REPORT_DONE in stages
+                    )
+                    if not terminal:
+                        selected.append(hypothesis_id)
+                        if len(selected) >= limit:
+                            break
+                if len(rows) < max(32, limit):
+                    break
+        return tuple(selected)
+
+    def list_hypotheses(
+        self,
+        identity: CheckpointIdentity,
+        *,
+        after_id: str | None = None,
+        limit: int = 100,
+    ) -> tuple[str, ...]:
+        key = self._hypothesis_scope_key(identity)
+        if limit <= 0:
+            raise ValueError("CANDIDATE_PAGE_ARGUMENT_INVALID")
+        query = (
+            "SELECT hypothesis_id FROM simple_candidate_hypotheses "
+            "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ?"
+        )
+        args: list[object] = list(key)
+        if after_id is not None:
+            query += " AND hypothesis_id > ?"
+            args.append(after_id)
+        query += " ORDER BY hypothesis_id LIMIT ?"
+        args.append(limit)
+        with self._connect() as connection:
+            rows = connection.execute(query, args).fetchall()
+        return tuple(str(row["hypothesis_id"]) for row in rows)
+
+    def hypothesis_count(self, identity: CheckpointIdentity) -> int:
+        key = self._hypothesis_scope_key(identity)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM simple_candidate_hypotheses "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ?",
+                key,
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def link_candidate_hypothesis(
+        self,
+        identity: CheckpointIdentity,
+        scope_fingerprint: str,
+        candidate_id: str,
+        hypothesis_id: str,
+    ) -> None:
+        key = self._candidate_scope_key(identity, scope_fingerprint)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            candidate = connection.execute(
+                "SELECT 1 FROM simple_static_candidates "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? AND candidate_id = ?",
+                (*key, candidate_id),
+            ).fetchone()
+            hypothesis = connection.execute(
+                "SELECT 1 FROM simple_candidate_hypotheses "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND hypothesis_id = ?",
+                (*key[:3], hypothesis_id),
+            ).fetchone()
+            if candidate is None or hypothesis is None:
+                raise ValueError("CANDIDATE_HYPOTHESIS_LINK_INVALID")
+            connection.execute(
+                "INSERT OR IGNORE INTO simple_candidate_hypothesis_links "
+                "(analysis_id, workspace_id, commit_id, scope_fingerprint, "
+                "candidate_id, hypothesis_id) VALUES (?, ?, ?, ?, ?, ?)",
+                (*key, candidate_id, hypothesis_id),
+            )
+
+    def list_candidate_hypothesis_ids(
+        self,
+        identity: CheckpointIdentity,
+        scope_fingerprint: str,
+        candidate_id: str,
+        *,
+        after_id: str | None = None,
+        limit: int = 100,
+    ) -> tuple[str, ...]:
+        key = self._candidate_scope_key(identity, scope_fingerprint)
+        if limit <= 0:
+            raise ValueError("CANDIDATE_PAGE_ARGUMENT_INVALID")
+        query = (
+            "SELECT hypothesis_id FROM simple_candidate_hypothesis_links "
+            "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+            "AND scope_fingerprint = ? AND candidate_id = ?"
+        )
+        args: list[object] = [*key, candidate_id]
+        if after_id is not None:
+            query += " AND hypothesis_id > ?"
+            args.append(after_id)
+        query += " ORDER BY hypothesis_id LIMIT ?"
+        args.append(limit)
+        with self._connect() as connection:
+            rows = connection.execute(query, args).fetchall()
+        return tuple(str(row["hypothesis_id"]) for row in rows)
 
     @staticmethod
     def _opengrep_batch_key(
@@ -1286,6 +2199,93 @@ class SimpleCheckpointStore:
                     not in {
                         "LLM_TOKEN_BUDGET_EXHAUSTED",
                         "LLM_TOKEN_USAGE_UNAVAILABLE",
+                    }
+                ):
+                    continue
+                pending = checkpoint.model_copy(
+                    update={
+                        "status": StageStatus.PENDING,
+                        "attempt_id": None,
+                        "output_refs": (),
+                        "error_code": None,
+                        "retryable": False,
+                        "updated_at": datetime.now(UTC),
+                    }
+                )
+                self._upsert_checkpoint_connection(connection, pending)
+                reopened += 1
+            connection.commit()
+            return reopened
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def reopen_budget_failures(
+        self,
+        analysis_id: str,
+        *,
+        max_tokens: TokenLimit,
+        max_cost_minor_units: int,
+        max_elapsed_seconds: ElapsedLimit,
+    ) -> int:
+        """Reopen only exhausted-budget checkpoints when all ceilings have headroom."""
+
+        if max_cost_minor_units <= 0:
+            raise ValueError("LLM_COST_BUDGET_INVALID")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            summary = self.usage_summary_from_connection(connection, analysis_id)
+            tokens = int(summary["input_tokens"] or 0) + int(
+                summary["output_tokens"] or 0
+            )
+            cost = summary["cost_minor_units"]
+            elapsed = connection.execute(
+                "SELECT COALESCE(SUM(elapsed_ms), 0) "
+                "FROM simple_llm_attempts WHERE analysis_id = ?",
+                (analysis_id,),
+            ).fetchone()
+            assert elapsed is not None
+            unknown_tokens = connection.execute(
+                "SELECT 1 FROM simple_llm_attempts "
+                "WHERE analysis_id = ? "
+                "AND (input_tokens IS NULL OR output_tokens IS NULL) "
+                "AND status NOT IN ("
+                f"{','.join('?' for _ in _NO_MODEL_RESPONSE_STATUSES)}) "
+                "LIMIT 1",
+                (analysis_id, *_NO_MODEL_RESPONSE_STATUSES),
+            ).fetchone()
+            if (
+                (
+                    max_tokens != "unlimited"
+                    and (tokens >= max_tokens or unknown_tokens is not None)
+                )
+                or (cost is not None and float(cost) >= max_cost_minor_units)
+                or (
+                    max_elapsed_seconds != "unlimited"
+                    and int(elapsed[0]) >= max_elapsed_seconds * 1000
+                )
+            ):
+                connection.commit()
+                return 0
+            rows = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ?",
+                (analysis_id,),
+            ).fetchall()
+            reopened = 0
+            for row in rows:
+                checkpoint = StageCheckpoint.model_validate_json(row[0])
+                if (
+                    checkpoint.status is not StageStatus.FAILED
+                    or checkpoint.error_code
+                    not in {
+                        "LLM_TOKEN_BUDGET_EXHAUSTED",
+                        "LLM_TOKEN_USAGE_UNAVAILABLE",
+                        "LLM_COST_BUDGET_EXHAUSTED",
+                        "LLM_ELAPSED_BUDGET_EXHAUSTED",
                     }
                 ):
                     continue

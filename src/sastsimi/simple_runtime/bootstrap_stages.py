@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from itertools import combinations
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 from urllib.parse import unquote, urlsplit
 from uuid import uuid4
 
@@ -40,12 +40,20 @@ from .application import (
 )
 from .artifacts import SimpleArtifactRepository
 from .github_policy import DiscoveredPolicy
+from .hypothesis_pages import (
+    MIN_PAGE_BUDGET_BYTES,
+    PAGE_HYPOTHESIS_LIMIT,
+    PAGE_OUTPUT_SCHEMA,
+    SourcePageError,
+    build_source_page,
+)
 from .models import CheckpointIdentity, StageFailure
 from .opengrep_rule_batches import (
     RuleBatch,
     RuleBatchPlan,
     plan_rule_batches,
 )
+from .proposals import validate_proposal
 from .provider import SimpleLLMCallResult, SimpleLLMClient
 from .semgrep_fallback import (
     SemgrepFallbackError,
@@ -69,7 +77,7 @@ from .static_coverage import (
     StaticCoverageReport,
     assess_scan,
     finish_coverage,
-    merge_static_candidates,
+    merge_static_candidates_preview,
     plan_static_coverage,
     static_coverage_fingerprint,
 )
@@ -83,6 +91,29 @@ _MAX_FACTS = 10_000
 _MAX_POLICY_BYTES = 256 * 1024
 _MAX_STATIC_SCAN_OUTPUT_BYTES = 64 * 1024 * 1024
 _MAX_STATIC_SCAN_REQUEST_BYTES = 1024 * 1024
+
+
+def _engine_raw_sources(slices: Sequence[CoverageSlice]) -> list[dict[str, object]]:
+    """Bind each raw scan to only its proven file/rule pairs, per engine."""
+    grouped: dict[tuple[str, str], tuple[StoredDataRef, set[tuple[str, str]]]] = {}
+    for item in slices:
+        ref = item.raw_ref
+        if ref is None:
+            continue
+        key = (ref.content_hash, item.engine)
+        if key not in grouped:
+            grouped[key] = (ref, set())
+        grouped[key][1].update(item.verified_pairs)
+    return [
+        {
+            "ref": ref.model_dump(mode="json"),
+            "engine": engine,
+            "verified_pairs": [
+                {"path": path, "rule_id": rule_id} for path, rule_id in sorted(pairs)
+            ],
+        }
+        for (_, engine), (ref, pairs) in grouped.items()
+    ]
 
 
 def _codeql_pack_tree_digest(root: Path) -> str | None:
@@ -398,6 +429,14 @@ class DirectStaticBootstrap:
                 scan_errors.extend(fallback_errors)
             coverage_report = finish_coverage(coverage_plan, slices)
             coverage_data = coverage_report.to_json()
+            coverage_data["unavailable_paths"] = (
+                [
+                    {"path": path, "reason": "NO_PYTHON_RULES"}
+                    for path in scope.selected_paths
+                ]
+                if coverage_report.expected_count == 0
+                else []
+            )
             if coverage_report.gaps:
                 prior_fingerprints = self._prior_fallback_coverage_fingerprints(
                     workspace,
@@ -447,7 +486,7 @@ class DirectStaticBootstrap:
                     legacy_history_incomplete=legacy_history_incomplete,
                 )
             try:
-                opengrep_raw = merge_static_candidates(rule_plan, slices)
+                opengrep_raw = merge_static_candidates_preview(rule_plan, slices)
             except StaticCandidateLimitError as error:
                 scan_errors.append(str(error))
                 candidate_limited = True
@@ -455,13 +494,24 @@ class DirectStaticBootstrap:
         else:
             coverage_data = {
                 "kind": "simple_static_coverage_v1",
-                "fingerprint": scope.fingerprint if not scope.selected_paths else None,
-                "expected_count": 0 if not scope.selected_paths else None,
-                "verified_count": 0 if not scope.selected_paths else None,
+                "fingerprint": scope.fingerprint,
+                "expected_count": 0,
+                "verified_count": 0,
                 "gaps": [],
                 "unsupported": [],
                 "excluded_paths": [],
                 "unavailable": bool(scope.selected_paths),
+                "unavailable_paths": [
+                    {
+                        "path": path,
+                        "reason": (
+                            scan_errors[0]
+                            if scan_errors
+                            else "OPENGREP_EXECUTION_FAILED"
+                        ),
+                    }
+                    for path in scope.selected_paths
+                ],
             }
             opengrep_raw = b'{"results": [], "errors": []}'
         coverage_data.update(
@@ -482,6 +532,14 @@ class DirectStaticBootstrap:
                 else None,
                 "codeql_error": codeql_error,
                 "engine_errors": sorted(set(scan_errors)),
+                "excluded_test_files": [
+                    {"path": path, "reason": reason}
+                    for path, reason in scope.excluded_test_files
+                ],
+                "out_of_scope_product_files": [
+                    {"path": path, "reason": reason}
+                    for path, reason in scope.out_of_scope_product_files
+                ],
                 "engine_verified_counts": {
                     engine: len(
                         set().union(
@@ -522,7 +580,8 @@ class DirectStaticBootstrap:
         source_manifest_ref = artifacts.put_json(
             {"kind": "simple_tracked_sources", "paths": list(scope.selected_paths)}
         )
-        poc_paths = [path for path in tracked if not is_test_only_path(workspace, path)]
+        excluded_tests = {path for path, _reason in scope.excluded_test_files}
+        poc_paths = [path for path in tracked if path not in excluded_tests]
         poc_source_manifest_ref = artifacts.put_json(
             {"kind": "simple_tracked_sources", "paths": poc_paths}
         )
@@ -552,6 +611,7 @@ class DirectStaticBootstrap:
                 ],
                 "ast_summary": ast_result,
                 "engine_raw_refs": [ref.model_dump(mode="json") for ref in engine_refs],
+                "engine_raw_sources": _engine_raw_sources(slices),
                 "opengrep_findings": snippets,
                 "codeql_findings": codeql_findings,
                 "codeql_executed": codeql_ref is not None,
@@ -564,33 +624,12 @@ class DirectStaticBootstrap:
                 bundle_ref,
                 retryable=False,
             )
-        if coverage_data.get("unavailable") is True:
-            raise StaticCoverageBlocked(
-                scan_errors[0] if scan_errors else "OPENGREP_EXECUTION_FAILED",
-                coverage_ref,
-                bundle_ref,
-                retryable=True,
-            )
         if candidate_limited:
             raise StaticCoverageBlocked(
                 "STATIC_CANDIDATES_TOO_LARGE",
                 coverage_ref,
                 bundle_ref,
                 retryable=False,
-            )
-        if coverage_data["expected_count"] == 0:
-            raise StaticCoverageBlocked(
-                "NO_PYTHON_RULES",
-                coverage_ref,
-                bundle_ref,
-                retryable=False,
-            )
-        if coverage_data["verified_count"] == 0:
-            raise StaticCoverageBlocked(
-                "STATIC_COVERAGE_NO_VERIFIED_RESULTS",
-                coverage_ref,
-                bundle_ref,
-                retryable=True,
             )
         if (
             any(
@@ -599,6 +638,7 @@ class DirectStaticBootstrap:
                 for gap in cast(list[dict[str, object]], coverage_data["gaps"])
             )
             or "STATIC_SCAN_EXECUTION_HISTORY_INVALID" in scan_errors
+            or "STATIC_SCAN_LEDGER_FINALIZATION_FAILED" in scan_errors
         ):
             raise StaticCoverageBlocked(
                 "STATIC_EVIDENCE_INTEGRITY_FAILED",
@@ -606,12 +646,42 @@ class DirectStaticBootstrap:
                 bundle_ref,
                 retryable=False,
             )
+        independent_verified = bool(
+            ast_result.get("parsed_file_count", 0) or codeql_ref is not None
+        )
+        if coverage_data.get("unavailable") is True and not independent_verified:
+            raise StaticCoverageBlocked(
+                scan_errors[0] if scan_errors else "OPENGREP_EXECUTION_FAILED",
+                coverage_ref,
+                bundle_ref,
+                retryable=True,
+            )
+        if coverage_data["expected_count"] == 0 and not independent_verified:
+            raise StaticCoverageBlocked(
+                "NO_PYTHON_RULES",
+                coverage_ref,
+                bundle_ref,
+                retryable=False,
+            )
+        if coverage_data["verified_count"] == 0 and not independent_verified:
+            raise StaticCoverageBlocked(
+                "STATIC_COVERAGE_NO_VERIFIED_RESULTS",
+                coverage_ref,
+                bundle_ref,
+                retryable=True,
+            )
         partial = bool(
             coverage_data["gaps"]
             or coverage_data["unsupported"]
+            or coverage_data.get("unavailable")
+            or coverage_data["unavailable_paths"]
+            or coverage_data["expected_count"] == 0
+            or coverage_data["verified_count"] == 0
             or codeql_error is not None
             or ast_result.get("parse_error_count", 0)
             or ast_result.get("oversize_count", 0)
+            or ast_result.get("truncated", False)
+            or scope.out_of_scope_product_files
         )
         return StaticBootstrapResult(
             repository_profile_ref=repository_ref,
@@ -838,7 +908,14 @@ class DirectStaticBootstrap:
         if clone.returncode != 0:
             raise RuntimeError("GIT_CLONE_FAILED")
         checkout = await self._process.run(
-            (git, "checkout", "--detach", request.commit.lower()),
+            (
+                git,
+                "-c",
+                "core.longpaths=true",
+                "checkout",
+                "--detach",
+                request.commit.lower(),
+            ),
             cwd=workspace,
             timeout_seconds=300,
         )
@@ -1635,15 +1712,20 @@ class DirectStaticBootstrap:
                         if ledger_code is not None
                         else None
                     )
-                    self._store.finish_static_scan_execution(
-                        execution_id,
-                        identity,
-                        "SUCCEEDED" if ledger_code is None else "BLOCKED",
-                        raw_ref,
-                        ledger_code,
-                        request_ref,
-                        error_ref,
-                    )
+                    try:
+                        self._store.finish_static_scan_execution(
+                            execution_id,
+                            identity,
+                            "SUCCEEDED" if ledger_code is None else "BLOCKED",
+                            raw_ref,
+                            ledger_code,
+                            request_ref,
+                            error_ref,
+                        )
+                    except (OSError, ValueError) as error:
+                        raise RuntimeError(
+                            "STATIC_SCAN_LEDGER_FINALIZATION_FAILED"
+                        ) from error
             if (
                 code == "EXTERNAL_TOOL_TIMEOUT"
                 and len(targets) > 1
@@ -3164,6 +3246,218 @@ class DirectHypothesisBootstrap:
         self._feed = feed
         self._store = store
 
+    async def propose_page(
+        self,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+        *,
+        after_cursor: str | None,
+        page_budget_bytes: int = 32_768,
+    ) -> tuple[tuple[HypothesisSeed, ...], str | None] | StageFailure:
+        """Survey one bounded Python source page without the legacy global cap."""
+
+        artifacts = SimpleArtifactRepository(self._data_dir, identity)
+        try:
+            bundle = json.loads(artifacts.read(static.static_bundle_ref))
+            if (
+                not isinstance(bundle, dict)
+                or bundle.get("kind") != "simple_static_fact_bundle"
+            ):
+                raise ValueError("bundle kind")
+            manifest_ref = StoredDataRef.model_validate(bundle["source_manifest_ref"])
+            manifest = json.loads(artifacts.read(manifest_ref))
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("kind") != "simple_tracked_sources"
+            ):
+                raise ValueError("manifest kind")
+            paths = manifest.get("paths")
+            if not isinstance(paths, list):
+                raise ValueError("manifest paths")
+        except (OSError, ValueError, TypeError, KeyError):
+            return StageFailure(
+                code="HYPOTHESIS_PAGE_STATIC_INVALID",
+                retryable=False,
+                safe_message="Source manifest or static bundle is unavailable",
+            )
+
+        client = self._client_factory(identity, artifacts)
+        budget = page_budget_bytes
+        attempt_refs: list[StoredDataRef] = []
+        while True:
+            try:
+                page = build_source_page(
+                    workspace=static.workspace_path,
+                    paths=paths,
+                    bundle_hash=static.static_bundle_ref.content_hash,
+                    manifest_hash=manifest_ref.content_hash,
+                    after_cursor=after_cursor,
+                    page_budget_bytes=budget,
+                )
+            except SourcePageError as exc:
+                return StageFailure(
+                    code=exc.code,
+                    retryable=False,
+                    safe_message="Source page cannot be built without omitting code",
+                    evidence_refs=tuple(attempt_refs),
+                )
+            except OSError:
+                return StageFailure(
+                    code="HYPOTHESIS_PAGE_SOURCE_UNAVAILABLE",
+                    retryable=False,
+                    safe_message="Source file is unavailable",
+                    evidence_refs=tuple(attempt_refs),
+                )
+            if page is None:
+                return (), None
+            input_ref = artifacts.put_json(
+                {
+                    "kind": "simple_hypothesis_source_page",
+                    "analysis_id": identity.analysis_id,
+                    "cursor": after_cursor,
+                    "next_cursor": page.next_cursor,
+                    "static_bundle_ref": static.static_bundle_ref.model_dump(
+                        mode="json"
+                    ),
+                    "source_manifest_ref": manifest_ref.model_dump(mode="json"),
+                    "page": page.payload,
+                    "prompt": page.prompt.decode("utf-8"),
+                }
+            )
+            attempt_refs.append(input_ref)
+            result = await client.call(
+                prompt=page.prompt,
+                output_schema=PAGE_OUTPUT_SCHEMA,
+                timeout_ms=180_000,
+                agent_name="hypothesis_page",
+            )
+            if isinstance(result, StageFailure):
+                if (
+                    result.code == "CONTEXT_LIMIT_EXCEEDED"
+                    and budget > MIN_PAGE_BUDGET_BYTES
+                ):
+                    budget = max(MIN_PAGE_BUDGET_BYTES, budget // 2)
+                    continue
+                return result.model_copy(
+                    update={"evidence_refs": (*result.evidence_refs, *attempt_refs)}
+                )
+            assert isinstance(result, SimpleLLMCallResult)
+            raw = result.value.get("hypotheses")
+            ranges = page.ranges
+            valid = False
+            if isinstance(raw, list) and len(raw) <= PAGE_HYPOTHESIS_LIMIT:
+                valid = True
+                for item in raw:
+                    proposal, errors = validate_proposal(
+                        item, lines={path: end for path, (_, end) in ranges.items()}
+                    )
+                    if (
+                        proposal is None
+                        or errors
+                        or set(proposal)
+                        != {
+                            "title",
+                            "vulnerability_type",
+                            "summary",
+                            "code_locations",
+                            "source",
+                            "sink",
+                            "rationale",
+                        }
+                    ):
+                        valid = False
+                        break
+                    for location in proposal["code_locations"]:
+                        path, line_text = location.rsplit(":", 1)
+                        start, end = ranges[path]
+                        if not start <= int(line_text) <= end:
+                            valid = False
+                            break
+                    if not valid:
+                        break
+            page_result_ref = artifacts.put_json(
+                {
+                    "kind": "simple_hypothesis_page_result",
+                    "analysis_id": identity.analysis_id,
+                    "cursor": after_cursor,
+                    "next_cursor": page.next_cursor,
+                    "page_input_ref": input_ref.model_dump(mode="json"),
+                    "attempt_input_refs": [
+                        ref.model_dump(mode="json") for ref in attempt_refs
+                    ],
+                    "hypotheses": raw,
+                    "validation_status": "VALID" if valid else "INVALID",
+                    "llm_request_ref": (
+                        result.request_ref.model_dump(mode="json")
+                        if result.request_ref is not None
+                        else None
+                    ),
+                    "llm_response_ref": (
+                        result.response_ref.model_dump(mode="json")
+                        if result.response_ref is not None
+                        else None
+                    ),
+                    "llm_raw_output_ref": (
+                        result.raw_output_ref.model_dump(mode="json")
+                        if result.raw_output_ref is not None
+                        else None
+                    ),
+                }
+            )
+            if not valid:
+                return StageFailure(
+                    code="HYPOTHESIS_PAGE_OUTPUT_INVALID",
+                    retryable=True,
+                    safe_message="Hypothesis output is invalid or outside the source",
+                    evidence_refs=(input_ref, page_result_ref),
+                )
+            assert isinstance(raw, list)
+            seeds: list[HypothesisSeed] = []
+            seen: set[str] = set()
+            for value in raw:
+                assert isinstance(value, dict)
+                hypothesis_id = (
+                    "hypothesis-"
+                    + hashlib.sha256(
+                        static.static_bundle_ref.content_hash.encode()
+                        + canonical_bytes(value)
+                    ).hexdigest()[:32]
+                )
+                if hypothesis_id in seen:
+                    continue
+                seen.add(hypothesis_id)
+                proposal_ref = artifacts.put_json(
+                    {
+                        "kind": "simple_hypothesis_proposal",
+                        "analysis_id": identity.analysis_id,
+                        "hypothesis_id": hypothesis_id,
+                        "static_bundle_ref": static.static_bundle_ref.model_dump(
+                            mode="json"
+                        ),
+                        "proposal": value,
+                        "page_input_ref": input_ref.model_dump(mode="json"),
+                        "page_result_ref": page_result_ref.model_dump(mode="json"),
+                        "prompt_digest": result.prompt_digest,
+                        "output_digest": result.output_digest,
+                        "llm_request_ref": (
+                            result.request_ref.model_dump(mode="json")
+                            if result.request_ref is not None
+                            else None
+                        ),
+                        "llm_response_ref": (
+                            result.response_ref.model_dump(mode="json")
+                            if result.response_ref is not None
+                            else None
+                        ),
+                    }
+                )
+                seeds.append(
+                    HypothesisSeed(
+                        hypothesis_id=hypothesis_id, proposal_ref=proposal_ref
+                    )
+                )
+            return tuple(seeds), page.next_cursor
+
     async def propose(
         self,
         identity: CheckpointIdentity,
@@ -3180,7 +3474,11 @@ class DirectHypothesisBootstrap:
                 client=client,
                 max_hypotheses=self._max_hypotheses,
             ).run(identity, static)
-        schema = {
+        bundle = json.loads(artifacts.read(static.static_bundle_ref))
+        candidate_focused = isinstance(bundle, dict) and isinstance(
+            bundle.get("candidate_focus"), dict
+        )
+        schema: dict[str, Any] = {
             "type": "object",
             "properties": {
                 "hypotheses": {
@@ -3215,6 +3513,8 @@ class DirectHypothesisBootstrap:
             "required": ["hypotheses"],
             "additionalProperties": False,
         }
+        if candidate_focused:
+            schema["properties"]["hypotheses"]["maxItems"] = self._max_hypotheses
         context = artifacts.prompt_context((static.static_bundle_ref,))
         prompt = (
             b"You are the Hypothesis Agent. Use only the supplied static facts and "
@@ -3238,12 +3538,33 @@ class DirectHypothesisBootstrap:
         raw = result.value.get("hypotheses", [])
         if not isinstance(raw, list):
             raise RuntimeError("HYPOTHESIS_OUTPUT_INVALID")
+        if candidate_focused and len(raw) > self._max_hypotheses:
+            overflow_ref = artifacts.put_json(
+                {
+                    "kind": "simple_candidate_hypothesis_overflow",
+                    "analysis_id": identity.analysis_id,
+                    "static_bundle_ref": static.static_bundle_ref.model_dump(
+                        mode="json"
+                    ),
+                    "limit": self._max_hypotheses,
+                    "returned_hypotheses": raw,
+                }
+            )
+            return StageFailure(
+                code="CANDIDATE_HYPOTHESIS_BATCH_OVERFLOW",
+                retryable=True,
+                safe_message="Candidate hypothesis response exceeded one-call limit",
+                evidence_refs=(overflow_ref,),
+            )
         seeds: list[HypothesisSeed] = []
-        seen: set[str] = set()
+        seen: set[bytes] = set()
         for index, value in enumerate(raw[: self._max_hypotheses]):
             if not isinstance(value, dict):
                 continue
             canonical = canonical_bytes(value)
+            if canonical in seen:
+                continue
+            seen.add(canonical)
             hypothesis_id = (
                 "hypothesis-"
                 + hashlib.sha256(
@@ -3252,9 +3573,6 @@ class DirectHypothesisBootstrap:
                     + canonical
                 ).hexdigest()[:32]
             )
-            if hypothesis_id in seen:
-                continue
-            seen.add(hypothesis_id)
             proposal_ref = artifacts.put_json(
                 {
                     "kind": "simple_hypothesis_proposal",

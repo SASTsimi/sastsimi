@@ -382,11 +382,17 @@ class SimpleOpenAIClient:
         except Exception as error:
             name = type(error).__name__.lower()
             status = getattr(error, "status_code", None)
+            context_overflow = (
+                status == 400
+                and getattr(error, "code", None) == "context_length_exceeded"
+            )
             code = (
                 "AUTH_REQUIRED"
                 if status in {401, 403} or "authentication" in name
                 else "RATE_LIMITED"
                 if status == 429 or "ratelimit" in name
+                else "CONTEXT_LIMIT_EXCEEDED"
+                if context_overflow
                 else "MODEL_OR_REQUEST_UNSUPPORTED"
                 if status in {400, 404}
                 else "FAILED"
@@ -394,7 +400,11 @@ class SimpleOpenAIClient:
             return StageFailure(
                 code=code,
                 retryable=code in {"RATE_LIMITED", "FAILED"},
-                safe_message="OpenAI request did not complete",
+                safe_message=(
+                    "OpenAI request exceeds model context window"
+                    if context_overflow
+                    else "OpenAI request did not complete"
+                ),
                 evidence_refs=((request_ref,) if request_ref is not None else ()),
             )
         finished_at = datetime.now(UTC)

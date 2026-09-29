@@ -21,6 +21,7 @@ from sastsimi.simple_runtime.application import (
     SimpleAnalysisRequest,
     SimpleAnalysisRun,
     StaticBootstrapResult,
+    StaticEvidenceInvalid,
 )
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.bootstrap_stages import (
@@ -308,6 +309,138 @@ async def test_new_analysis_persists_bootstrap_then_runs_hypotheses(
         store.require(hypothesis_identity, SimpleStage.VERIFICATION_FINAL_DONE).verdict
         == "FALSE"
     )
+
+
+@pytest.mark.parametrize("parsed_files", [0, 1])
+def test_opengrep_unavailable_static_evidence_requires_independent_proof(
+    tmp_path: Path, parsed_files: int
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-opengrep-unavailable",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    coverage_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_coverage_v1",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "fingerprint": "f" * 64,
+            "expected_count": 0,
+            "verified_count": 0,
+            "gaps": [],
+            "unsupported": [],
+            "unavailable": True,
+            "unavailable_paths": [
+                {"path": "app.py", "reason": "OPENGREP_EXECUTION_FAILED"}
+            ],
+            "ast_parsed_file_count": parsed_files,
+        }
+    )
+    bundle_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_fact_bundle",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "static_coverage_ref": coverage_ref.model_dump(mode="json"),
+            "ast_summary": {"parsed_file_count": parsed_files},
+            "codeql_executed": False,
+        }
+    )
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=None,
+        hypothesis_bootstrap=None,
+        runner_factory=_runner,
+    )
+    static = StaticBootstrapResult(
+        repository_profile_ref=_ref("repository-profile"),
+        static_bundle_ref=bundle_ref,
+        static_coverage_ref=coverage_ref,
+        static_disposition="PARTIAL",
+        workspace_path=tmp_path / "workspaces" / identity.workspace_id,
+    )
+    if parsed_files:
+        application._validate_static_evidence(static, identity)
+    else:
+        with pytest.raises(StaticEvidenceInvalid):
+            application._validate_static_evidence(static, identity)
+
+
+@pytest.mark.parametrize("with_sarif_ref", [False, True])
+def test_opengrep_unavailable_accepts_only_durable_codeql_proof(
+    tmp_path: Path, with_sarif_ref: bool
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-codeql-proof",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    coverage_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_coverage_v1",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "fingerprint": "f" * 64,
+            "expected_count": 0,
+            "verified_count": 0,
+            "gaps": [],
+            "unsupported": [],
+            "unavailable": True,
+            "unavailable_paths": [
+                {"path": "app.py", "reason": "OPENGREP_EXECUTION_FAILED"}
+            ],
+            "ast_parsed_file_count": 0,
+            "codeql_executed": True,
+        }
+    )
+    tool_refs = [
+        artifacts.put_json({"kind": "ast"}).model_dump(mode="json"),
+        artifacts.put_json({"results": []}).model_dump(mode="json"),
+    ]
+    if with_sarif_ref:
+        tool_refs.append(artifacts.put_json({"runs": []}).model_dump(mode="json"))
+    bundle_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_fact_bundle",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "static_coverage_ref": coverage_ref.model_dump(mode="json"),
+            "ast_summary": {"parsed_file_count": 0},
+            "codeql_executed": True,
+            "tool_result_refs": tool_refs,
+        }
+    )
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=None,
+        hypothesis_bootstrap=None,
+        runner_factory=_runner,
+    )
+    static = StaticBootstrapResult(
+        repository_profile_ref=_ref("repository-profile"),
+        static_bundle_ref=bundle_ref,
+        static_coverage_ref=coverage_ref,
+        static_disposition="PARTIAL",
+        workspace_path=tmp_path / "workspaces" / identity.workspace_id,
+    )
+    if with_sarif_ref:
+        application._validate_static_evidence(static, identity)
+    else:
+        with pytest.raises(StaticEvidenceInvalid):
+            application._validate_static_evidence(static, identity)
 
 
 @pytest.mark.asyncio
@@ -2311,9 +2444,11 @@ async def test_blocked_hypothesis_does_not_stop_independent_sibling(
 
 
 @pytest.mark.parametrize("invalid_tail", [False, True])
+@pytest.mark.parametrize("candidate_pipeline", [False, True])
 def test_chaining_child_is_added_once_to_durable_analysis_queue(
     tmp_path: Path,
     invalid_tail: bool,
+    candidate_pipeline: bool,
 ) -> None:
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
     application = SimpleAnalysisApplication(
@@ -2383,13 +2518,22 @@ def test_chaining_child_is_added_once_to_durable_analysis_queue(
             output_refs=(chaining_ref,),
         )
     )
+    root_identity = identity.model_copy(update={"hypothesis_id": None})
+    if candidate_pipeline:
+        for hypothesis_id in (
+            "hypothesis-1",
+            "hypothesis-2",
+            *(f"hypothesis-existing-{index}" for index in range(31)),
+        ):
+            store.upsert_hypothesis(root_identity, hypothesis_id)
     run = SimpleAnalysisRun(
         analysis_id="analysis-1",
         display_analysis_id="A-001",
         workspace_id="workspace-1",
         commit_id="a" * 40,
         repository="repo",
-        hypothesis_ids=("hypothesis-1", "hypothesis-2"),
+        candidate_pipeline_version=1 if candidate_pipeline else None,
+        hypothesis_ids=() if candidate_pipeline else ("hypothesis-1", "hypothesis-2"),
     )
     static = StaticBootstrapResult(
         repository_profile_ref=_ref("repository-profile"),
@@ -2414,10 +2558,23 @@ def test_chaining_child_is_added_once_to_durable_analysis_queue(
         static,
     )
 
-    assert len(updated.hypothesis_ids) == 3
-    assert repeated.hypothesis_ids == updated.hypothesis_ids
-    child_id = updated.hypothesis_ids[-1]
-    assert updated.chain_depths[child_id] == 1
+    if candidate_pipeline:
+        assert updated.hypothesis_ids == repeated.hypothesis_ids == ()
+        assert store.hypothesis_count(root_identity) == 34
+        child_id = next(
+            hypothesis_id
+            for hypothesis_id in store.list_hypotheses(root_identity, limit=40)
+            if hypothesis_id.startswith("hypothesis-chain-")
+        )
+        assert store.hypothesis_metadata(root_identity, child_id) == (
+            1,
+            ("hypothesis-1", "hypothesis-2"),
+        )
+    else:
+        assert len(updated.hypothesis_ids) == 3
+        assert repeated.hypothesis_ids == updated.hypothesis_ids
+        child_id = updated.hypothesis_ids[-1]
+        assert updated.chain_depths[child_id] == 1
 
 
 @pytest.mark.asyncio
@@ -2639,3 +2796,43 @@ def test_resume_promotes_only_verified_legacy_poc_inconclusive_exhaustion(
     assert checkpoint.verdict == ("HOLD" if expected_promotions else None)
     assert checkpoint.validated_poc_ref is None
     assert checkpoint.output_refs == (execution_ref, interpretation_ref)
+
+
+@pytest.mark.asyncio
+async def test_interrupted_static_resume_retries_without_llm_recovery(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    display = AnalysisDisplayIdStore(store.database_path).get_or_allocate("analysis-1")
+    run = SimpleAnalysisRun(
+        analysis_id="analysis-1",
+        display_analysis_id=display,
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        repository="https://example.invalid/repo.git",
+    )
+    store.save_analysis_run(run)
+    identity = CheckpointIdentity(
+        analysis_id=run.analysis_id,
+        workspace_id=run.workspace_id,
+        commit_id=run.commit_id,
+        hypothesis_id=None,
+    )
+    store.mark_running(identity, SimpleStage.STATIC_DONE, (), attempt_id="attempt-1")
+    recovery = _RecoveryFactory(tmp_path)
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=_runner,
+        recovery_factory=recovery,
+    )
+
+    outcome = await application.resume("analysis-1")
+
+    assert outcome.status == "COMPLETE"
+    checkpoint = store.require(identity, SimpleStage.STATIC_DONE)
+    assert checkpoint.status is StageStatus.SUCCEEDED
+    assert checkpoint.attempt_number == 2
+    assert recovery.calls == []

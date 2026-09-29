@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter, deque
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
@@ -130,13 +130,15 @@ class StaticCandidateLimitError(Exception):
 class StaticCandidateBudget:
     """Charge each retained scan, including repeated evaluation of one raw result."""
 
-    max_results: int = _MAX_STATIC_CANDIDATES
+    max_results: int | None = None
     max_raw_bytes: int = _MAX_STATIC_CANDIDATE_RAW_BYTES
     used_results: int = field(default=0, init=False)
     used_raw_bytes: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
-        if self.max_results < 0 or self.max_raw_bytes < 0:
+        if (
+            self.max_results is not None and self.max_results < 0
+        ) or self.max_raw_bytes < 0:
             raise ValueError("STATIC_CANDIDATE_BUDGET_INVALID")
 
     def reserve_raw(self, size: int) -> None:
@@ -148,7 +150,10 @@ class StaticCandidateBudget:
         self.used_raw_bytes -= size
 
     def require_results(self, additional: int) -> None:
-        if additional > self.max_results - self.used_results:
+        if (
+            self.max_results is not None
+            and additional > self.max_results - self.used_results
+        ):
             raise StaticCandidateLimitError()
 
     def claim_results(self, count: int) -> None:
@@ -543,16 +548,10 @@ def merge_static_candidates(
 ) -> bytes:
     """Deduplicate verified hits while preserving fair per-rule visibility."""
 
-    remaining = _MAX_STATIC_CANDIDATES
-    for slice_ in slices:
-        remaining -= len(slice_.normalized_results)
-        if remaining < 0:
-            raise StaticCandidateLimitError()
-
     buckets: dict[str, deque[dict[str, object]]] = {
         rule_id: deque() for rule_id in plan.rule_ids
     }
-    seen: dict[tuple[str, str, str, str], dict[str, object]] = {}
+    seen: dict[str, dict[str, object]] = {}
     batches: list[dict[str, object]] = []
     for slice_ in slices:
         for item in sorted(slice_.normalized_results, key=_candidate_hit_key):
@@ -569,11 +568,13 @@ def merge_static_candidates(
                 raise ValueError("STATIC_CANDIDATE_INVALID")
             if (path, rule_id) not in slice_.verified_pairs:
                 continue
-            key = (
-                rule_id,
-                path,
-                json.dumps(start, ensure_ascii=False, sort_keys=True),
-                json.dumps(item.get("end"), ensure_ascii=False, sort_keys=True),
+            # A location can hold multiple independent source-to-sink paths.
+            # Only identical normalized evidence may merge across engines.
+            key = json.dumps(
+                {k: v for k, v in item.items() if k != "scan_incomplete"},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
             )
             candidate = {**item, "engine": slice_.engine, "engines": [slice_.engine]}
             previous = seen.get(key)
@@ -623,6 +624,147 @@ def merge_static_candidates(
             "batches": batches,
             "candidate_snippet_limit": _SNIPPET_LIMIT,
             "candidate_snippets_truncated": len(merged) > _SNIPPET_LIMIT,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def merge_static_candidates_preview(
+    plan: RuleBatchPlan,
+    slices: Sequence[CoverageSlice],
+    *,
+    limit: int = _SNIPPET_LIMIT,
+) -> bytes:
+    """Bound only the UI/agent preview; exact per-engine raw refs remain separate."""
+
+    if limit < 1:
+        raise ValueError("STATIC_CANDIDATE_PREVIEW_LIMIT_INVALID")
+    known_rules = frozenset(plan.rule_ids)
+
+    def verified_hits() -> Iterator[
+        tuple[CoverageSlice, dict[str, object], str, str, int]
+    ]:
+        for slice_ in slices:
+            for item in slice_.normalized_results:
+                rule_id = item.get("check_id")
+                path = item.get("path")
+                start = item.get("start")
+                line = start.get("line") if isinstance(start, dict) else None
+                if (
+                    not isinstance(rule_id, str)
+                    or rule_id not in known_rules
+                    or not isinstance(path, str)
+                    or type(line) is not int
+                ):
+                    raise ValueError("STATIC_CANDIDATE_INVALID")
+                if (path, rule_id) in slice_.verified_pairs:
+                    yield slice_, item, rule_id, path, line
+
+    active = {rule_id for _, _, rule_id, _, _ in verified_hits()}
+    visible_rules = [rule_id for rule_id in plan.rule_ids if rule_id in active][:limit]
+    visible_set = frozenset(visible_rules)
+    per_rule_limit = max(1, limit // len(visible_rules)) if visible_rules else 0
+    buckets: dict[str, list[dict[str, object]]] = {
+        rule_id: [] for rule_id in visible_rules
+    }
+    selected: dict[str, dict[str, object]] = {}
+
+    def collect(*, per_rule_cap: int | None) -> bool:
+        omitted = False
+        for slice_, item, rule_id, path, line in verified_hits():
+            if rule_id not in visible_set:
+                omitted = True
+                continue
+            try:
+                canonical = json.dumps(
+                    {
+                        key: value
+                        for key, value in item.items()
+                        if key != "scan_incomplete"
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            except (TypeError, ValueError) as error:
+                raise ValueError("STATIC_CANDIDATE_INVALID") from error
+            digest = hashlib.sha256(canonical).hexdigest()
+            previous = selected.get(digest)
+            if previous is not None:
+                engines = cast(list[str], previous["engines"])
+                if slice_.engine not in engines:
+                    engines.append(slice_.engine)
+                if previous.get("scan_incomplete") and not item.get("scan_incomplete"):
+                    previous["engine"] = slice_.engine
+                    previous["scan_incomplete"] = False
+                continue
+            if (
+                len(selected) >= limit
+                or per_rule_cap is not None
+                and len(buckets[rule_id]) >= per_rule_cap
+            ):
+                omitted = True
+                continue
+            start = item["start"]
+            assert isinstance(start, dict)
+            position: dict[str, int] = {"line": line}
+            column = start.get("col")
+            if type(column) is int:
+                position["col"] = column
+            candidate: dict[str, object] = {
+                "check_id": rule_id,
+                "path": path,
+                "start": position,
+                "engine": slice_.engine,
+                "engines": [slice_.engine],
+                "scan_incomplete": bool(item.get("scan_incomplete", False)),
+                "candidate_digest": digest,
+            }
+            selected[digest] = candidate
+            buckets[rule_id].append(candidate)
+        return omitted
+
+    omitted = collect(per_rule_cap=per_rule_limit)
+    if omitted and len(selected) < limit:
+        omitted = collect(per_rule_cap=None)
+
+    merged: list[dict[str, object]] = []
+    offsets = {rule_id: 0 for rule_id in visible_rules}
+    while len(merged) < len(selected):
+        for rule_id in visible_rules:
+            index = offsets[rule_id]
+            if index < len(buckets[rule_id]):
+                merged.append(buckets[rule_id][index])
+                offsets[rule_id] += 1
+
+    batches = [
+        {
+            "key": slice_.batch_key,
+            "rule_ids": slice_.rule_ids,
+            "engine": slice_.engine,
+            "raw_ref": (
+                slice_.raw_ref.model_dump(mode="json")
+                if slice_.raw_ref is not None
+                else None
+            ),
+        }
+        for slice_ in slices[:limit]
+    ]
+    return json.dumps(
+        {
+            "kind": "simple_static_merged_candidates_v1",
+            "preview_only": True,
+            "plan_fingerprint": plan.fingerprint,
+            "rule_ids": plan.rule_ids[:limit],
+            "rule_ids_truncated": len(plan.rule_ids) > limit,
+            "results": merged,
+            "errors": [],
+            "batches": batches,
+            "batches_truncated": len(slices) > limit,
+            "candidate_snippet_limit": limit,
+            "candidate_snippets_truncated": omitted,
         },
         ensure_ascii=False,
         sort_keys=True,

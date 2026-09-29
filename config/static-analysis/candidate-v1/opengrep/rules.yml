@@ -147,6 +147,8 @@ rules:
     languages: [python]
     message: Candidate web-request source; not a vulnerability verdict.
     severity: INFO
+    metadata:
+      candidate_kind: ENTRY_POINT
     pattern-either:
       - pattern: request.args.get(...)
       - pattern: request.form.get(...)

@@ -8,6 +8,7 @@
 ```text
 저장소 준비 + AST/OpenGrep/CodeQL 정적 분석 + 공식 정책 snapshot 수집
 → STATIC_DONE
+→ 정적 후보 등록·Discovery 선별 + 보조 자유 탐색
 → Hypothesis Agent
 → HYPOTHESIS_DONE
 → Pro·Con Agents
@@ -36,7 +37,10 @@
 → REPORT_DONE
 ```
 
-정적 분석은 취약점을 확정하지 않고 Agent가 검토할 코드 사실을 만듭니다. 각 가설은
+정적 분석은 취약점을 확정하지 않고 Agent가 검토할 코드 사실을 만듭니다. 새 분석은 검증된 원본 결과를 근거 수준별 후보로 저장하고 Discovery가 후보별 판정과 이유를 남깁니다.
+Python 요청 입력 규칙처럼 `candidate_kind=ENTRY_POINT`가 명시된 결과만 입력 지점으로 분류합니다. CodeQL SARIF 결과 하나에 여러 `codeFlows`·`threadFlows`가 있으면 개별 trace마다 다른 후보 ID를 만들고 동일 위치·trace의 중복만 합칩니다. 각 후보의 출처는 원본 아티팩트 참조와 결과 행 인덱스로 추적합니다. 원본 결과나 별도 source·sink 힌트를 임의로 연결해 흐름을 만들지 않습니다.
+`INCLUDE`·`UNDECIDED` 후보와 보조 자유 탐색의 가설은 기존 Pro·Con·PoC 흐름에 연결됩니다.
+Discovery 판정은 취약점 확정이 아니며, 이전 분석은 저장된 옛 경로로 재개합니다. 각 가설은
 자기 checkpoint를 가지며, Chaining이 만든 자식 가설도 같은 전체 검증을 다시 거칩니다.
 공개 GitHub 정책 수집은 분석 시작 시 한 번 수행하고 같은 분석의 Scope Gate가 저장된
 snapshot을 공유합니다. `resume`은 외부 정책을 다시 조회하지 않습니다.
@@ -49,6 +53,7 @@ snapshot을 공유합니다. `resume`은 외부 정책을 다시 조회하지 �
 커밋·규칙·도구 지문을 다시 검증해 파일/규칙별 성공 증거만 재사용합니다. 선택형
 Semgrep fallback을 켜면 OpenGrep이 검증하지 못한 제품 코드 조합만 넘깁니다.
 구문 오류나 시간 초과의 전체 경로·규칙·이유는 coverage artifact에 남습니다.
+미검증 파일×규칙 조합과 스캔 불가 Python 제품 파일(`unavailable_paths`)은 별도 범위 항목입니다. CLI·대시보드는 각각의 개수와 경로·이유를 표시하고, 대시보드 원장은 전체 목록을 페이지로 읽습니다. 영문·국문 보고서는 같은 개수·이유·경로 예시와 coverage artifact 해시를 담으며, 미리보기만으로 전체 커버리지를 주장하지 않습니다.
 검증된 조합의 후보만 Agent에 전달하고, 유효한 증거가 일부 있으면 후속 단계로
 진행합니다. 무결성 실패나 검증 근거 부재는 `BLOCKED`입니다. 완료된 Agent는
 원래 정적 입력 참조에 묶어 유지하고 새 근거에서 나온 가설만 추가합니다.
@@ -60,13 +65,15 @@ Technical Gate의 `ACCEPT`만 Scope Gate와 Finding으로 이어집니다. `REJE
 제보 불가로 종료하고, `REVISE`는 해당 가설의 PoC 후보부터 다시 검증합니다.
 세 번째 Gate 결정까지도 `REVISE`이면 `INCONCLUSIVE`로 종료합니다. 이 두 종료는
 보고서를 만들지 않지만, 다른 가설에도 실행 오류가 없고 모두 종료됐다면 분석 상태는
-정적 범위가 완전할 때 `COMPLETE`, 누락이 남으면 `PARTIAL`입니다. Agent 오류가
+후보 `PENDING`·`ERROR`가 없고 정적 범위가 완전할 때 `COMPLETE`, 검증 가능한 정적 누락·JS/TS 제품 코드가 남으면 `PARTIAL`입니다. Agent 오류가
 남으면 `BLOCKED`/`FAILED`가 우선합니다. 어느 상태도 취약점 확정이 아닙니다.
 
 ## 코드 위치
 
 - CLI: `src/sastsimi/interfaces/cli/main.py`
 - 분석 시작과 가설 등록: `src/sastsimi/simple_runtime/application.py`
+- 후보 정규화·Discovery: `src/sastsimi/simple_runtime/candidates.py`,
+  `src/sastsimi/simple_runtime/discovery.py`
 - stage 순서와 상태: `src/sastsimi/simple_runtime/models.py`
 - stage 실행: `src/sastsimi/simple_runtime/runner.py`
 - stage별 구현: `src/sastsimi/simple_runtime/stages.py`
@@ -81,5 +88,5 @@ Technical Gate의 `ACCEPT`만 Scope Gate와 Finding으로 이어집니다. `REJE
 
 ## 현재 제한
 
-가설은 안정성을 위해 기본적으로 순차 처리합니다. 진행률은 실제 생성된 checkpoint 수를
+가설은 안정성을 위해 기본적으로 순차 처리합니다. 전체 후보·가설 수의 고정 상한 대신 개별 호출·페이지 크기, Chaining 깊이와 중복·순환 방지를 적용합니다. 진행률은 실제 생성된 checkpoint 수를
 기준으로 계산하며, 앞으로 생길 가설 수를 추정한 가짜 퍼센트는 사용하지 않습니다.

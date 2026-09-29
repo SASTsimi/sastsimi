@@ -14,7 +14,14 @@ from sastsimi.config.user_config import SimpleExecutionProfile
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.call_queue import RunLimitedClient
 from sastsimi.simple_runtime.cursor_provider import CursorProvider
-from sastsimi.simple_runtime.models import CheckpointIdentity, StageFailure
+from sastsimi.simple_runtime.models import (
+    CheckpointIdentity,
+    SimpleStage,
+    StageCheckpoint,
+    StageFailure,
+    StageStatus,
+    input_reference_hash,
+)
 from sastsimi.simple_runtime.provider import (
     SimpleLLMCallResult,
     SimpleLLMClient,
@@ -67,6 +74,7 @@ def _wrapper(
     max_retries: int = 2,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     max_tokens: int | Literal["unlimited"] = 1000,
+    max_cost_minor_units: int = 1000,
 ) -> RunLimitedClient:
     identity = CheckpointIdentity(
         analysis_id="analysis-queue",
@@ -83,7 +91,7 @@ def _wrapper(
         model="test-model",
         max_retries=max_retries,
         max_tokens=max_tokens,
-        max_cost_minor_units=1000,
+        max_cost_minor_units=max_cost_minor_units,
         max_elapsed_seconds=3600,
         sleep=sleep,
     )
@@ -428,3 +436,172 @@ async def test_negative_wrapped_usage_cannot_reduce_run_budget(tmp_path: Path) -
     failure = wrapper.budget_failure()
     assert isinstance(failure, StageFailure)
     assert failure.code == "LLM_TOKEN_USAGE_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_context_limit_rejection_allows_smaller_resumed_api_call(
+    tmp_path: Path,
+) -> None:
+    class FakeAPIClient(SimpleOpenAIClient):
+        def __init__(self) -> None:
+            super().__init__(credential_ref="env:NOT_USED", model="test-model")
+            self.calls = 0
+
+        async def call(
+            self,
+            *,
+            prompt: bytes,
+            output_schema: Mapping[str, Any],
+            timeout_ms: int,
+            agent_name: str = "agent",
+        ) -> SimpleLLMCallResult | StageFailure:
+            del prompt, output_schema, timeout_ms, agent_name
+            self.calls += 1
+            if self.calls == 1:
+                return StageFailure(
+                    code="CONTEXT_LIMIT_EXCEEDED",
+                    retryable=False,
+                    safe_message="Split the batch",
+                )
+            return _success().model_copy(update={"cost_minor_units": 1})
+
+    inner = FakeAPIClient()
+    client = _wrapper(tmp_path, inner, asyncio.Semaphore(1), max_retries=0)
+
+    oversized = await client.call(prompt=b"large", output_schema={}, timeout_ms=1000)
+    smaller = await client.call(prompt=b"small", output_schema={}, timeout_ms=1000)
+
+    assert isinstance(oversized, StageFailure)
+    assert oversized.code == "CONTEXT_LIMIT_EXCEEDED"
+    assert isinstance(smaller, SimpleLLMCallResult)
+    assert inner.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_same_cost_limit_resume_stops_before_llm_request(tmp_path: Path) -> None:
+    priced = _success().model_copy(update={"cost_minor_units": 7})
+    inner = _Client([priced, _success()])
+    gate = asyncio.Semaphore(1)
+    first = await _wrapper(
+        tmp_path,
+        inner,
+        gate,
+        max_retries=0,
+        max_cost_minor_units=7,
+    ).call(prompt=b"safe", output_schema={}, timeout_ms=1000)
+    resumed = await _wrapper(
+        tmp_path,
+        inner,
+        gate,
+        max_retries=0,
+        max_cost_minor_units=7,
+    ).call(prompt=b"safe", output_schema={}, timeout_ms=1000)
+
+    assert isinstance(first, SimpleLLMCallResult)
+    assert isinstance(resumed, StageFailure)
+    assert resumed.code == "LLM_COST_BUDGET_EXHAUSTED"
+    assert inner.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_context_rejection_does_not_trap_raised_cost_budget_resume(
+    tmp_path: Path,
+) -> None:
+    context_failure = StageFailure(
+        code="CONTEXT_LIMIT_EXCEEDED",
+        retryable=False,
+        safe_message="Split the batch",
+    )
+    priced = _success().model_copy(update={"cost_minor_units": 7})
+    inner = _Client([context_failure, priced, priced])
+    gate = asyncio.Semaphore(1)
+    client = _wrapper(tmp_path, inner, gate, max_retries=0, max_cost_minor_units=7)
+
+    oversized = await client.call(prompt=b"large", output_schema={}, timeout_ms=1000)
+    smaller = await client.call(prompt=b"small", output_schema={}, timeout_ms=1000)
+    paused = await client.call(prompt=b"next", output_schema={}, timeout_ms=1000)
+
+    assert isinstance(oversized, StageFailure)
+    assert oversized.code == "CONTEXT_LIMIT_EXCEEDED"
+    assert isinstance(smaller, SimpleLLMCallResult)
+    assert isinstance(paused, StageFailure)
+    assert paused.code == "LLM_COST_BUDGET_EXHAUSTED"
+    assert inner.calls == 2
+
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-queue",
+        workspace_id="workspace-queue",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.FAILED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        error_code=paused.code,
+        retryable=False,
+    )
+    store.save_checkpoint(checkpoint)
+
+    reopened = store.reopen_budget_failures(
+        identity.analysis_id,
+        max_tokens=1000,
+        max_cost_minor_units=8,
+        max_elapsed_seconds=3600,
+    )
+
+    assert reopened == 1
+    assert (
+        store.require(identity, SimpleStage.PRO_CON_DONE).status is StageStatus.PENDING
+    )
+    resumed = await _wrapper(
+        tmp_path, inner, gate, max_retries=0, max_cost_minor_units=8
+    ).call(prompt=b"resume", output_schema={}, timeout_ms=1000)
+    assert isinstance(resumed, SimpleLLMCallResult)
+    assert inner.calls == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit_kind", ["tokens", "cost"])
+async def test_concurrent_calls_cannot_both_spend_same_remaining_budget(
+    tmp_path: Path, limit_kind: str
+) -> None:
+    priced = _success().model_copy(update={"cost_minor_units": 7})
+    inner = _Client([priced, priced])
+    gate = asyncio.Semaphore(2)
+    clients = [
+        _wrapper(
+            tmp_path,
+            inner,
+            gate,
+            max_retries=0,
+            max_tokens=7 if limit_kind == "tokens" else "unlimited",
+            max_cost_minor_units=7 if limit_kind == "cost" else 1000,
+        )
+        for _ in range(2)
+    ]
+
+    results = await asyncio.gather(
+        *[
+            client.call(prompt=b"safe", output_schema={}, timeout_ms=1000)
+            for client in clients
+        ]
+    )
+
+    expected = (
+        "LLM_TOKEN_BUDGET_EXHAUSTED"
+        if limit_kind == "tokens"
+        else "LLM_COST_BUDGET_EXHAUSTED"
+    )
+    assert inner.calls == 1
+    assert sum(isinstance(result, SimpleLLMCallResult) for result in results) == 1
+    assert (
+        sum(
+            isinstance(result, StageFailure) and result.code == expected
+            for result in results
+        )
+        == 1
+    )

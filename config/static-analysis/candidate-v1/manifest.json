@@ -47,12 +47,12 @@
     },
     {
       "path": "opengrep/rules.yml",
-      "sha256": "75395fb823356b65effd80f560c32dc00a638fabf12c00dc1ed37b500ea8a6a9",
-      "size_bytes": 6225
+      "sha256": "4dbd4f00803c6cd196b1831606cb185edb0ce960524db32e92943639905ac7cf",
+      "size_bytes": 6273
     }
   ],
   "material_set": "sastsimi-static-candidate-v1",
-  "material_set_sha256": "90fda208d7846cf6e35b4bd6a9c7805c326e1ee5bf44154396e990e3383ec15f",
+  "material_set_sha256": "8de46b9a682e4d8f53fa30e96fa609a55373af7e5a799ff4f8b3f086dd8d948c",
   "production_ready": false,
   "schema_version": 1,
   "status": "CANDIDATE"

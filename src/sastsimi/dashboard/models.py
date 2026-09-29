@@ -18,11 +18,19 @@ class AnalysisSummaryView(ContractModel):
     commit_id: str | None = None
     current_stage: str
     status: str
+    error_code: str | None = None
     static_disposition: str | None = None
     completed_count: int
     stage_count: int
     hypothesis_count: int
     finding_count: int
+    candidate_total_count: int | None = None
+    candidate_decision_counts: dict[str, int] = Field(default_factory=dict)
+    deep_analysis_running_count: int = 0
+    deep_analysis_completed_count: int = 0
+    deep_analysis_pending_count: int = 0
+    deep_analysis_error_count: int = 0
+    resume_action: str | None = None
     inconclusive_hypothesis_count: int = 0
     rejected_hypothesis_count: int = 0
     llm_provider: str | None = None
@@ -179,6 +187,15 @@ class AnalysisDetailView(AnalysisSummaryView):
     static_coverage_verified: int | None = None
     static_coverage_gap_count: int | None = None
     static_coverage_gap_preview: tuple[dict[str, str], ...] = ()
+    static_unavailable_file_count: int | None = None
+    static_unavailable_file_preview: tuple[dict[str, str], ...] = ()
+    static_unavailable_reason_counts: dict[str, int] = Field(default_factory=dict)
+    static_excluded_test_file_count: int | None = None
+    static_excluded_test_file_preview: tuple[dict[str, str], ...] = ()
+    static_excluded_test_reason_counts: dict[str, int] = Field(default_factory=dict)
+    static_out_of_scope_product_count: int | None = None
+    static_out_of_scope_product_preview: tuple[dict[str, str], ...] = ()
+    static_out_of_scope_reason_counts: dict[str, int] = Field(default_factory=dict)
     static_coverage_unsupported: tuple[tuple[str, int], ...] = ()
     static_coverage_unsupported_count: int | None = None
     static_coverage_reason_counts: dict[str, int] = Field(default_factory=dict)

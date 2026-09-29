@@ -32,7 +32,7 @@ def test_product_scope_cannot_opt_into_test_files(tmp_path: Path) -> None:
     )
 
     assert scope.selected_paths == ("app.py",)
-    assert not hasattr(scope, "excluded_test_files")
+    assert scope.excluded_test_files == (("tests/test_app.py", "test-directory:tests"),)
     assert not hasattr(scope, "all_tracked")
     with pytest.raises(TypeError):
         cast(Any, static_analysis.build_static_file_scope)(
@@ -72,6 +72,79 @@ def test_non_python_paths_do_not_change_python_scope_fingerprint(
 
     assert mixed.selected_paths == ("src/app.py",)
     assert mixed.fingerprint == product.fingerprint
+
+
+def test_scope_records_excluded_tests_and_out_of_scope_product_sources(
+    tmp_path: Path,
+) -> None:
+    scope = _scope(
+        tmp_path,
+        {
+            "api/app.py": "def run(): pass\n",
+            "api/test_client.py": "class TestClient: pass\n",
+            "api/test_math.py": "import pytest\ndef test_sum(): pass\n",
+            "tests/test_app.py": "def test_run(): pass\n",
+            "web/app.ts": "export const app = true;\n",
+            "web/view.jsx": "export const view = true;\n",
+            "web/app.test.ts": "import { test } from 'vitest'; test('x', () => {});\n",
+            "api/types.pyi": "def run() -> None: ...\n",
+            "README.md": "# docs\n",
+        },
+    )
+
+    assert scope.selected_paths == ("api/app.py", "api/test_client.py")
+    assert scope.excluded_test_files == (
+        ("api/test_math.py", "test-basename+content:python"),
+        ("tests/test_app.py", "test-directory:tests"),
+        ("web/app.test.ts", "test-basename+content:javascript-typescript"),
+    )
+    assert scope.out_of_scope_product_files == (
+        ("api/types.pyi", "python_stub_not_scanned"),
+        ("web/app.ts", "non_python_product_source"),
+        ("web/view.jsx", "non_python_product_source"),
+    )
+
+
+def test_mixed_language_product_sources_are_explicitly_out_of_scope(
+    tmp_path: Path,
+) -> None:
+    python_only = _scope(tmp_path, {"api/app.py": "def run(): pass\n"})
+    mixed = _scope(
+        tmp_path,
+        {
+            "api/app.py": "def run(): pass\n",
+            "api/src/main/java/App.java": "class App {}\n",
+            "engine/src/lib.rs": "pub fn run() {}\n",
+            "service/main.go": "package main\n",
+            "web/assets/runtime.js": "export const run = true;\n",
+            "workers/Worker.cs": "class Worker {}\n",
+            "docs/reference/tutorial.go": "package docs\n",
+            "docs/tools/illustration.py": "def draw(): pass\n",
+            "examples/worker.rs": "pub fn example() {}\n",
+            "assets/logo.svg": "<svg/>\n",
+            "assets/site.css": ".app {}\n",
+            "tests/helper.go": "package tests\n",
+            "src/test/Helper.java": "class Helper {}\n",
+            "engine/tests/helper.rs": "fn test() {}\n",
+            "service/parser_test.go": "package main\n",
+        },
+    )
+
+    assert mixed.selected_paths == ("api/app.py",)
+    assert mixed.fingerprint == python_only.fingerprint
+    assert mixed.out_of_scope_product_files == (
+        ("api/src/main/java/App.java", "non_python_product_source"),
+        ("engine/src/lib.rs", "non_python_product_source"),
+        ("service/main.go", "non_python_product_source"),
+        ("web/assets/runtime.js", "non_python_product_source"),
+        ("workers/Worker.cs", "non_python_product_source"),
+    )
+    assert mixed.excluded_test_files == (
+        ("engine/tests/helper.rs", "test-directory:tests"),
+        ("service/parser_test.go", "test-basename:go"),
+        ("src/test/Helper.java", "test-directory:test"),
+        ("tests/helper.go", "test-directory:tests"),
+    )
 
 
 def test_exact_test_directory_components_do_not_match_product_substrings(
@@ -268,7 +341,7 @@ def test_go_test_suffix_is_excluded_without_content_evidence(tmp_path: Path) -> 
     assert scope.selected_paths == ()
 
 
-def test_declared_test_tree_entry_points_remain_out_of_python_scope(
+def test_declared_test_tree_entry_points_are_not_mistaken_for_test_fixtures(
     tmp_path: Path,
 ) -> None:
     package = json.dumps(
@@ -286,7 +359,16 @@ def test_declared_test_tree_entry_points_remain_out_of_python_scope(
         },
     )
 
-    assert scope.selected_paths == ()
+    assert scope.selected_paths == ("tests/cli.py",)
+    assert (
+        "tests/cli.js",
+        "declared_non_python_entry",
+    ) in scope.out_of_scope_product_files
+    assert (
+        "web/__tests__/cli.js",
+        "declared_non_python_entry",
+    ) in scope.out_of_scope_product_files
+    assert all(path != "tests/cli.py" for path, _ in scope.excluded_test_files)
 
 
 def test_invalid_test_only_manifests_do_not_block_product_scope(

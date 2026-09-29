@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from time import monotonic
 from typing import Any
 from uuid import uuid4
+from weakref import WeakValueDictionary
 
 from sastsimi.config.user_config import ElapsedLimit, TokenLimit
 from sastsimi.contracts.refs import StoredDataRef
@@ -41,6 +42,7 @@ _NO_MODEL_RESPONSE_STATUSES = (
     "RATE_LIMITED",
     "OPENAI_SDK_UNAVAILABLE",
     "MODEL_OR_REQUEST_UNSUPPORTED",
+    "CONTEXT_LIMIT_EXCEEDED",
     "CURSOR_AUTH_REQUIRED",
     "CURSOR_AUTH_FAILED",
     "CURSOR_CONFIGURATION_FAILED",
@@ -50,6 +52,21 @@ _NO_MODEL_RESPONSE_STATUSES = (
     "CLAUDE_RATE_LIMITED",
 )
 _LOG = logging.getLogger(__name__)
+_BUDGET_GATES: WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
+    WeakValueDictionary()
+)
+
+
+def _analysis_budget_gate(
+    store: SimpleCheckpointStore, analysis_id: str
+) -> asyncio.Lock:
+    """Share one in-process accounting gate across clients for a single analysis."""
+    key = (str(store.database_path.resolve()), analysis_id)
+    gate = _BUDGET_GATES.get(key)
+    if gate is None:
+        gate = asyncio.Lock()
+        _BUDGET_GATES[key] = gate
+    return gate
 
 
 def _terminal(failure: StageFailure) -> bool:
@@ -158,6 +175,7 @@ class RunLimitedClient:
             max_elapsed_seconds=max_elapsed_seconds,
         )
         self._sleep = sleep
+        self._budget_gate = _analysis_budget_gate(store, artifacts.identity.analysis_id)
 
     def budget_failure(self) -> StageFailure | None:
         failure = self._budget.check()
@@ -211,7 +229,7 @@ class RunLimitedClient:
             safe_message="LLM call deadline reached",
         )
         for attempt in range(1, self._max_retries + 2):
-            async with self._semaphore:
+            async with self._budget_gate, self._semaphore:
                 budget_failure = self.budget_failure()
                 if budget_failure is not None:
                     return budget_failure

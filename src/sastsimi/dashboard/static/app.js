@@ -1,7 +1,7 @@
 const routeMatch = window.location.pathname.match(/^\/analyses\/([^/]+)$/);
 const state = {
   selected: routeMatch ? decodeURIComponent(routeMatch[1]) : null,
-  coveragePages: { gaps: null, unsupported: null },
+  coveragePages: { gaps: null, unavailable: null, unsupported: null, excluded_tests: null, out_of_scope: null },
   detail: null,
   events: [],
   selectedArtifacts: new Set(),
@@ -72,7 +72,7 @@ function analysisButton(item) {
       state.detail = null;
     }
     state.selected = routeId;
-    state.coveragePages = { gaps: null, unsupported: null };
+    state.coveragePages = { gaps: null, unavailable: null, unsupported: null, excluded_tests: null, out_of_scope: null };
     window.history.replaceState({}, "", `/analyses/${encodeURIComponent(routeId)}`);
     refresh();
   });
@@ -87,15 +87,38 @@ function recoveryAttempt(item) {
   return null;
 }
 
+function staticScopeNodes(detail) {
+  const nodes = [];
+  const groups = [
+    ["검증되지 않은 제품 파일", detail.static_unavailable_file_count, detail.static_unavailable_reason_counts, detail.static_unavailable_file_preview],
+    ["테스트 제외", detail.static_excluded_test_file_count, detail.static_excluded_test_reason_counts, detail.static_excluded_test_file_preview],
+    ["범위 밖 제품 코드", detail.static_out_of_scope_product_count, detail.static_out_of_scope_reason_counts, detail.static_out_of_scope_product_preview],
+  ];
+  for (const [label, count, reasonCounts, preview] of groups) {
+    if (count == null) continue;
+    nodes.push(el("div", `${label} ${count}개 (검사 완료 건수에 포함하지 않음)`, "meta"));
+    const reasons = Object.entries(reasonCounts || {}).map(([reason, total]) => `${reason} ${total}개`).join(" · ");
+    if (reasons) nodes.push(el("div", `${label} 이유: ${reasons}`, "meta"));
+    if (preview?.length) {
+      const details = el("details");
+      details.append(el("summary", `${label} 경로와 이유 보기 (${count}개 중 최대 100개)`));
+      preview.forEach((item) => details.append(el("div", `${item.path} · ${item.reason}`, "meta")));
+      nodes.push(details);
+    }
+  }
+  return nodes;
+}
+
 function staticCoverageNodes(detail) {
   if (detail.static_coverage_expected == null || detail.static_coverage_verified == null) {
     return [
       ...(detail.static_disposition === "PARTIAL" ? [el("div", "부분 분석: 커버리지 증거를 확인할 수 없습니다.", "warning")] : []),
-      el("div", "정적 검사 커버리지: 확인 불가 (검증된 기록 없음)", "meta")
+      el("div", "정적 검사 커버리지: 확인 불가 (검증된 기록 없음)", "meta"),
+      ...staticScopeNodes(detail),
     ];
   }
   const nodes = [el("div", `정적 검사 파일·규칙: 검증 ${detail.static_coverage_verified}/${detail.static_coverage_expected} · 미검증 ${detail.static_coverage_gap_count}`, "meta")];
-  if (detail.static_disposition === "PARTIAL" || detail.static_coverage_gap_count > 0 || detail.static_coverage_unsupported_count > 0) {
+  if (detail.static_disposition === "PARTIAL" || detail.static_coverage_gap_count > 0 || detail.static_unavailable_file_count > 0 || detail.static_coverage_unsupported_count > 0 || detail.static_out_of_scope_product_count > 0) {
     nodes.unshift(el("div", "부분 분석: 정적 검사가 불완전합니다. 확인된 Finding은 전체 검사 완료를 뜻하지 않습니다.", "warning"));
   }
   nodes.push(el("div", `지원되지 않는 제품 파일 ${detail.static_coverage_unsupported_count ?? "확인 불가"}개 · 커버리지 SHA-256 ${detail.static_coverage_digest || "확인 불가"}`, "meta"));
@@ -119,13 +142,20 @@ function staticCoverageNodes(detail) {
     detail.static_coverage_gap_preview.forEach((gap) => details.append(el("div", `${gap.path} · ${gap.rule_id} · ${gap.reason}`, "meta")));
     nodes.push(details);
   }
-  for (const kind of ["gaps", "unsupported"]) {
-    const count = kind === "gaps" ? detail.static_coverage_gap_count : detail.static_coverage_unsupported_count;
+  nodes.push(...staticScopeNodes(detail));
+  const ledgers = [
+    ["gaps", detail.static_coverage_gap_count, "미검증 파일·규칙"],
+    ["unavailable", detail.static_unavailable_file_count, "검증되지 않은 제품 파일"],
+    ["unsupported", detail.static_coverage_unsupported_count, "지원되지 않는 파일"],
+    ["excluded_tests", detail.static_excluded_test_file_count, "테스트 제외"],
+    ["out_of_scope", detail.static_out_of_scope_product_count, "범위 밖 제품 코드"],
+  ];
+  for (const [kind, count, label] of ledgers) {
     if (!count) continue;
     if (state.coveragePages[kind]?.coverage_digest !== detail.static_coverage_digest) state.coveragePages[kind] = null;
     const page = state.coveragePages[kind];
     const section = el("section", undefined, "coverage-ledger");
-    section.append(el("strong", `${kind === "gaps" ? "미검증 파일·규칙" : "지원되지 않는 파일"} 전체 원장 (${count}개)`));
+    section.append(el("strong", `${label} 전체 원장 (${count}개)`));
     if (page) {
       for (const item of page.items) section.append(el("div", `${item.path} · ${item.rule_id ? `${item.rule_id} · ` : ""}${item.reason}`, "meta"));
       section.append(el("div", `${page.offset + 1}–${page.offset + page.items.length} / ${page.total}`, "meta"));
@@ -185,6 +215,14 @@ function renderOverview(detail) {
     ["경과 시간", formatDuration(detail.elapsed_ms)],
     ["마지막 갱신", formatTime(detail.last_updated_at)],
   ];
+  if (detail.candidate_total_count != null) {
+    const decisions = detail.candidate_decision_counts || {};
+    values.splice(7, 0,
+      ["수집 후보", String(detail.candidate_total_count)],
+      ["선별", ["INCLUDE", "EXCLUDE", "UNDECIDED", "PENDING", "ERROR"].map((status) => `${status} ${decisions[status] || 0}`).join(" · ")],
+      ["심층 분석", `진행 ${detail.deep_analysis_running_count || 0} · 완료 ${detail.deep_analysis_completed_count || 0} · 대기 ${detail.deep_analysis_pending_count || 0} · 오류 ${detail.deep_analysis_error_count || 0}`]
+    );
+  }
   values.forEach(([label, value]) => {
     const metric = el("div", undefined, "metric");
     metric.append(el("span", label, "meta"), el("strong", value));
@@ -197,6 +235,15 @@ function renderOverview(detail) {
   progress.append(bar);
   box.append(progress);
   staticCoverageNodes(detail).forEach((node) => box.append(node));
+  if (detail.status === "PAUSED") {
+    const advice = detail.resume_action === "RESUME_INTERRUPTED"
+      ? `실행 중단 감지 (INTERRUPTED_RESUME_REQUIRED) · sastsimi resume ${detail.display_analysis_id || detail.analysis_id}`
+      : detail.resume_action === "CHECK_USAGE_TELEMETRY"
+        ? "사용량 정보가 없어 일시 중단됨 · 공급자 사용량과 한도 설정을 확인하세요."
+        : "예산 한도로 일시 중단됨 · 한도를 늘린 뒤 resume 하세요.";
+    box.append(el("div", advice, "warning"));
+  }
+  if (detail.status === "BLOCKED") box.append(el("div", "실행 오류로 중단됨 · 오류를 확인한 뒤 resume 하세요.", "warning"));
   if (detail.on_demand_possible) box.append(el("div", "추가 사용량 과금 가능", "warning"));
   if (detail.stale) box.append(el("div", "30초 넘게 갱신되지 않았습니다. 실행 상태와 터미널을 확인하세요.", "warning"));
   replace("overview", [box]);

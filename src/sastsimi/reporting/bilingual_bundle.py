@@ -187,6 +187,53 @@ def coverage_report_lines(
         f"- {'범위 증거 SHA-256' if korean else 'Coverage artifact SHA-256'}: "
         f"`{coverage.ref.content_hash}`",
     ]
+    if coverage.unavailable_file_count is not None:
+        label = (
+            "미검증 Python 소스 파일" if korean else "Unavailable Python source files"
+        )
+        lines.append(f"- {label}: {coverage.unavailable_file_count}")
+        lines.append(
+            f"- {'파일 미검증 이유' if korean else 'Unavailable file reasons'}: "
+            f"{reason_summary(coverage.unavailable_reasons)}"
+        )
+        if coverage.unavailable_preview:
+            examples = ", ".join(
+                f"{path} ({reason})" for path, reason in coverage.unavailable_preview
+            )
+            label = (
+                "미검증 파일 경로 예시" if korean else "Unavailable file path examples"
+            )
+            lines.append(f"- {label}: {examples}")
+    if coverage.excluded_test_file_count is not None:
+        lines.append(
+            f"- {'제외된 테스트 파일' if korean else 'Excluded test files'}: "
+            f"{coverage.excluded_test_file_count}"
+        )
+        lines.append(
+            f"- {'테스트 제외 이유' if korean else 'Test exclusion reasons'}: "
+            f"{reason_summary(coverage.excluded_test_reasons)}"
+        )
+        if coverage.excluded_test_preview:
+            examples = ", ".join(
+                f"{path} ({reason})" for path, reason in coverage.excluded_test_preview
+            )
+            label = "테스트 제외 경로 예시" if korean else "Excluded test path examples"
+            lines.append(f"- {label}: {examples}")
+    if coverage.out_of_scope_product_count is not None:
+        label = "검사 범위 밖 제품 파일" if korean else "Out-of-scope product files"
+        lines.append(f"- {label}: {coverage.out_of_scope_product_count}")
+        lines.append(
+            f"- {'범위 밖 이유' if korean else 'Out-of-scope reasons'}: "
+            f"{reason_summary(coverage.out_of_scope_reasons)}"
+        )
+        if coverage.out_of_scope_preview:
+            examples = ", ".join(
+                f"{path} ({reason})" for path, reason in coverage.out_of_scope_preview
+            )
+            lines.append(
+                f"- {'범위 밖 경로 예시' if korean else 'Out-of-scope path examples'}: "
+                f"{examples}"
+            )
     if coverage.partial:
         lines.append(
             "- PARTIAL 경고: 정적 분석이 불완전합니다. Finding 확인은 "
@@ -389,6 +436,15 @@ def render_bundle_files(
                 "unsupported_count": facts.coverage.unsupported_count,
                 "gap_reasons": dict(facts.coverage.gap_reasons),
                 "unsupported_reasons": dict(facts.coverage.unsupported_reasons),
+                "excluded_test_file_count": facts.coverage.excluded_test_file_count,
+                "excluded_test_reasons": dict(facts.coverage.excluded_test_reasons),
+                "excluded_test_preview": facts.coverage.excluded_test_preview,
+                "out_of_scope_product_count": facts.coverage.out_of_scope_product_count,
+                "out_of_scope_reasons": dict(facts.coverage.out_of_scope_reasons),
+                "out_of_scope_preview": facts.coverage.out_of_scope_preview,
+                "unavailable_file_count": facts.coverage.unavailable_file_count,
+                "unavailable_reasons": dict(facts.coverage.unavailable_reasons),
+                "unavailable_preview": facts.coverage.unavailable_preview,
                 "engine_errors": facts.coverage.engine_errors,
             }
             if facts.coverage is not None

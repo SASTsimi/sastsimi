@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Pydantic, SQLite, pytest, vanilla dashboard JS.
 
-**Spec:** `docs/superpowers/specs/2026-09-29-candidate-discovery-design.md`
+**Spec:** `docs/plans/2026-09-29-candidate-discovery-design.md`
 
 ## Global Constraints
 
@@ -121,5 +121,5 @@
 - [ ] Add failing integration tests for hundreds of candidates, mixed language, complete/partial/paused/resumed flows, and unchanged legacy data.
 - [ ] Run tests RED, implement only missing glue, then GREEN.
 - [ ] Run complete pytest, Ruff, mypy, and dashboard tests; record exact output.
-- [ ] Run low-cost PyJWT smoke pinned to `a4e1a3d1218b01c5806420b8f16d9308ac4adc30` and Dify pinned to the tested SHA. Record actual candidate/status/static-gap counts; do not equate old GHSA with new confirmed findings.
+- [ ] Run a small Python repository smoke test and Dify at pinned commits. Record actual candidate/status/static-gap counts; do not equate old GHSA with new confirmed findings. The observed trials are in `docs/validation/2026-09-29-candidate-discovery-trial.md`.
 - [ ] Update validation notes and README if observed behavior differs, rerun affected tests, and commit.
