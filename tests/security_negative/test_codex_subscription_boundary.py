@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 from dataclasses import replace
@@ -435,6 +436,101 @@ def test_execution_binding_rechecks_codex_home_before_use(
 
     with pytest.raises(ProviderExecutableBindingError):
         runner.verify_binding(request())
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_child_cleanup_has_distinct_process_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = approved_runner()
+
+    async def cleanup_unconfirmed(*_args: object, **_kwargs: object) -> _ChildResult:
+        raise codex_subscription._ProcessTreeTerminationError
+
+    monkeypatch.setattr(runner, "_run_child", cleanup_unconfirmed)
+    result = await runner.execute(request())
+
+    assert result.status == "FAILED"
+    assert result.cleanup_unconfirmed
+
+
+@pytest.mark.asyncio
+async def test_cleanup_os_error_is_not_treated_as_retryable_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def cleanup_fails(_process: object) -> None:
+        raise PermissionError
+
+    monkeypatch.setattr(codex_subscription, "_terminate_process_tree", cleanup_fails)
+    with pytest.raises(codex_subscription._ProcessTreeTerminationError):
+        await codex_subscription._terminate_process_tree_checked(object())
+
+
+@pytest.mark.asyncio
+async def test_temporary_cleanup_cannot_hide_unconfirmed_child(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runner = approved_runner()
+
+    class FailingTemporaryDirectory:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> str:
+            return str(tmp_path)
+
+        def __exit__(self, *_args: object) -> None:
+            raise PermissionError
+
+    async def cleanup_unconfirmed(*_args: object, **_kwargs: object) -> _ChildResult:
+        raise codex_subscription._ProcessTreeTerminationError
+
+    monkeypatch.setattr(
+        codex_subscription.tempfile, "TemporaryDirectory", FailingTemporaryDirectory
+    )
+    monkeypatch.setattr(runner, "_run_child", cleanup_unconfirmed)
+    result = await runner.execute(request())
+
+    assert result.status == "FAILED"
+    assert result.cleanup_unconfirmed
+
+
+@pytest.mark.asyncio
+async def test_temporary_setup_error_before_child_is_not_cleanup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = approved_runner()
+
+    class FailingTemporaryDirectory:
+        def __init__(self, **_kwargs: object) -> None:
+            raise PermissionError
+
+    monkeypatch.setattr(
+        codex_subscription.tempfile, "TemporaryDirectory", FailingTemporaryDirectory
+    )
+    result = await runner.execute(request())
+
+    assert result.status == "FAILED"
+    assert not result.cleanup_unconfirmed
+
+
+@pytest.mark.asyncio
+async def test_cleanup_deadline_does_not_wait_for_ignored_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def slow_to_cancel(_process: object) -> None:
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.25)
+
+    monkeypatch.setattr(codex_subscription, "_terminate_process_tree", slow_to_cancel)
+    monkeypatch.setattr(codex_subscription, "_TREE_KILLER_TIMEOUT_SECONDS", 0.01)
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(codex_subscription._ProcessTreeTerminationError):
+        await codex_subscription._terminate_process_tree_checked(object())
+    assert asyncio.get_running_loop().time() - started < 0.15
+    await asyncio.sleep(0.3)
 
 
 @pytest.mark.parametrize(

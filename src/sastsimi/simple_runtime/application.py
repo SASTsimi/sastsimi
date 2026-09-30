@@ -348,6 +348,18 @@ class SimpleAnalysisApplication:
             commit_id=run.commit_id,
             hypothesis_id=None,
         )
+        for checkpoint in self._store.list_checkpoints(exact):
+            if (
+                checkpoint.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+                and checkpoint.status in {StageStatus.BLOCKED, StageStatus.FAILED}
+            ):
+                return SimpleAnalysisOutcome(
+                    identity=identity,
+                    display_analysis_id=run.display_analysis_id,
+                    status="BLOCKED",
+                    current_stage=checkpoint.stage,
+                    error_code=checkpoint.error_code,
+                )
         if run.static_bundle_ref is not None:
             await self._assert_completed_static_scope(run, identity)
             if run.static_disposition == "PARTIAL":
@@ -1267,6 +1279,14 @@ class SimpleAnalysisApplication:
                     )
             else:
                 page_result = await propose_page(identity, static, after_cursor=cursor)
+                if (
+                    isinstance(page_result, StageFailure)
+                    and page_result.retryable
+                    and page_result.code in {"FAILED", "TIMED_OUT"}
+                ):
+                    page_result = await propose_page(
+                        identity, static, after_cursor=cursor
+                    )
                 if isinstance(page_result, StageFailure):
                     return page_result
                 seeds, next_cursor = page_result

@@ -335,6 +335,7 @@ class CodexCliProcessRunner:
         return tuple(arguments)
 
     async def execute(self, request: CodexProcessRequest) -> CodexProcessResult:
+        child_may_exist = False
         try:
             self.verify_binding(request)
             environment = self.child_environment(os.environ)
@@ -352,6 +353,7 @@ class CodexCliProcessRunner:
                     raise ProviderInputMismatchError
                 schema_path.write_bytes(canonical_bytes(_codex_output_schema(schema)))
                 async with asyncio.timeout(request.timeout_ms / 1_000):
+                    child_may_exist = True
                     version = await self._run_child(
                         (str(self.executable.path), "--version"),
                         stdin=None,
@@ -431,11 +433,19 @@ class CodexCliProcessRunner:
                 )
         except asyncio.CancelledError:
             raise
+        except _ProcessTreeTerminationError:
+            return CodexProcessResult("FAILED", None, None, cleanup_unconfirmed=True)
         except TimeoutError:
             return CodexProcessResult("TIMED_OUT", None, None)
         except ProviderInvalidOutputError:
             return CodexProcessResult("INVALID_OUTPUT", None, None)
-        except (ProviderExecutableBindingError, ProviderInputMismatchError, OSError):
+        except OSError:
+            # A filesystem error can mask an earlier child-cleanup failure while
+            # the temporary workspace unwinds. Fail closed before another call.
+            return CodexProcessResult(
+                "FAILED", None, None, cleanup_unconfirmed=child_may_exist
+            )
+        except (ProviderExecutableBindingError, ProviderInputMismatchError):
             return CodexProcessResult("FAILED", None, None)
 
     async def _run_child(
@@ -467,7 +477,7 @@ class CodexCliProcessRunner:
             process = await asyncio.shield(spawn_task)
         except asyncio.CancelledError:
             process = await asyncio.shield(spawn_task)
-            await _terminate_process_tree(process)
+            await _terminate_process_tree_checked(process)
             raise
         assert process.stdout is not None
         assert process.stderr is not None
@@ -492,11 +502,11 @@ class CodexCliProcessRunner:
                 await stderr_task,
             )
         except asyncio.CancelledError:
-            await _terminate_process_tree(process)
+            await _terminate_process_tree_checked(process)
             raise
         finally:
             if process.returncode is None:
-                await _terminate_process_tree(process)
+                await _terminate_process_tree_checked(process)
             for task in (stdin_task, stdout_task, stderr_task):
                 if task is not None and not task.done():
                     task.cancel()
@@ -1147,6 +1157,32 @@ async def _drain_bounded(reader: asyncio.StreamReader, retain_limit: int) -> byt
         if remaining > 0:
             retained.extend(chunk[:remaining])
     return bytes(retained)
+
+
+async def _terminate_process_tree_checked(
+    process: asyncio.subprocess.Process,
+) -> None:
+    """Never retry a Codex call if child cleanup fails or cannot finish."""
+
+    cleanup_task = asyncio.create_task(_terminate_process_tree(process))
+    try:
+        done, _pending = await asyncio.wait(
+            (cleanup_task,), timeout=3 * _TREE_KILLER_TIMEOUT_SECONDS
+        )
+        if not done:
+            raise _ProcessTreeTerminationError
+        await cleanup_task
+    except (OSError, TimeoutError, asyncio.CancelledError):
+        raise _ProcessTreeTerminationError from None
+    finally:
+        if not cleanup_task.done():
+            cleanup_task.cancel()
+            cleanup_task.add_done_callback(_drain_cleanup_task)
+
+
+def _drain_cleanup_task(task: asyncio.Task[None]) -> None:
+    if not task.cancelled():
+        task.exception()
 
 
 async def _terminate_process_tree(process: asyncio.subprocess.Process) -> None:

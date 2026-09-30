@@ -358,6 +358,84 @@ async def test_codex_terminal_failure_is_not_retried(
 
 
 @pytest.mark.asyncio
+async def test_unconfirmed_codex_process_cleanup_is_not_retried(
+    tmp_path: Path,
+) -> None:
+    artifacts = SimpleArtifactRepository(
+        tmp_path,
+        CheckpointIdentity(
+            analysis_id="analysis-queue",
+            workspace_id="workspace-queue",
+            commit_id="a" * 40,
+            hypothesis_id=None,
+        ),
+    )
+    runner = _CodexRunner(
+        [CodexProcessResult("FAILED", None, None, cleanup_unconfirmed=True)]
+    )
+    inner = SimpleCodexClient(
+        runner=runner,
+        provider_profile_ref=artifacts.put_json({"kind": "provider_profile"}),
+        model="test-model",
+        artifacts=artifacts,
+    )
+
+    result = await _wrapper(
+        tmp_path, inner, asyncio.Semaphore(1), max_tokens="unlimited"
+    ).call(prompt=b"safe", output_schema={}, timeout_ms=5000)
+
+    assert isinstance(result, StageFailure)
+    assert result.code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+    assert not result.retryable
+    assert runner.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_outer_deadline_preserves_unconfirmed_cleanup_failure(
+    tmp_path: Path,
+) -> None:
+    artifacts = SimpleArtifactRepository(
+        tmp_path,
+        CheckpointIdentity(
+            analysis_id="analysis-queue",
+            workspace_id="workspace-queue",
+            commit_id="a" * 40,
+            hypothesis_id=None,
+        ),
+    )
+
+    class CleanupOnCancelRunner:
+        calls = 0
+
+        async def execute(self, _request: CodexProcessRequest) -> CodexProcessResult:
+            self.calls += 1
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                return CodexProcessResult(
+                    "FAILED", None, None, cleanup_unconfirmed=True
+                )
+            raise AssertionError("deadline should cancel the child")
+
+    runner = CleanupOnCancelRunner()
+    inner = SimpleCodexClient(
+        runner=runner,
+        provider_profile_ref=artifacts.put_json({"kind": "provider_profile"}),
+        model="test-model",
+        artifacts=artifacts,
+    )
+
+    result = await _wrapper(
+        tmp_path, inner, asyncio.Semaphore(1), max_tokens="unlimited"
+    ).call(prompt=b"safe", output_schema={}, timeout_ms=200)
+
+    assert isinstance(result, StageFailure)
+    assert result.code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+    assert not result.retryable
+    assert runner.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_shared_queue_limits_concurrent_agents(tmp_path: Path) -> None:
     inner = _Client([_success() for _ in range(4)])
     gate = asyncio.Semaphore(2)

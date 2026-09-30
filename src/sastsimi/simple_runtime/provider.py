@@ -305,6 +305,13 @@ class SimpleCodexClient:
             result = await self._runner.execute(request)
         finished_at = datetime.now(UTC)
         elapsed_ms = max(0, int((monotonic() - started) * 1000))
+        if result.cleanup_unconfirmed:
+            return StageFailure(
+                code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+                retryable=False,
+                safe_message="Codex child process cleanup could not be confirmed",
+                evidence_refs=((request_ref,) if request_ref is not None else ()),
+            )
         if result.status == "INVALID_OUTPUT" or (
             result.status == "SUCCEEDED" and result.final_message is None
         ):

@@ -287,6 +287,101 @@ async def test_free_exploration_pages_are_checkpointed_and_not_repeated(
 
 
 @pytest.mark.asyncio
+async def test_retryable_free_page_failure_retries_only_that_page(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _hypotheses = _setup(tmp_path)
+
+    class FlakyPages(_PagedHypotheses):
+        def __init__(self) -> None:
+            super().__init__()
+            self.failed_once = False
+
+        async def propose_page(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+            *,
+            after_cursor: str | None,
+            page_budget_bytes: int = 32_768,
+        ) -> tuple[tuple[HypothesisSeed, ...], str | None] | StageFailure:
+            if after_cursor == "page-1" and not self.failed_once:
+                self.failed_once = True
+                self.cursors.append(after_cursor)
+                return StageFailure(
+                    code="FAILED",
+                    retryable=True,
+                    safe_message="Transient provider failure",
+                )
+            return await super().propose_page(
+                identity,
+                static,
+                after_cursor=after_cursor,
+                page_budget_bytes=page_budget_bytes,
+            )
+
+    paged = FlakyPages()
+    app._hypotheses = paged
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    second = await app.resume("analysis-1")
+
+    assert first.status == second.status == "COMPLETE"
+    assert paged.cursors == [None, "page-1", "page-1", "page-2"]
+    bundle_hash = app._static.result.static_bundle_ref.content_hash
+    assert set(store.survey_progress("analysis-1", bundle_hash)) == {
+        "__candidate_free_page_00000000__",
+        "__candidate_free_page_00000001__",
+        "__candidate_free_page_00000002__",
+        "__candidate_free_done__",
+    }
+
+
+@pytest.mark.asyncio
+async def test_resume_does_not_repeat_unconfirmed_codex_process_cleanup(
+    tmp_path: Path,
+) -> None:
+    app, _store, _client, _hypotheses = _setup(tmp_path)
+
+    class UnconfirmedCleanup(_PagedHypotheses):
+        async def propose_page(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+            *,
+            after_cursor: str | None,
+            page_budget_bytes: int = 32_768,
+        ) -> tuple[tuple[HypothesisSeed, ...], str | None] | StageFailure:
+            del identity, static, page_budget_bytes
+            self.cursors.append(after_cursor)
+            return StageFailure(
+                code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+                retryable=False,
+                safe_message="Codex child process cleanup could not be confirmed",
+            )
+
+    paged = UnconfirmedCleanup()
+    app._hypotheses = paged
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    second = await app.resume("analysis-1")
+
+    assert first.status == second.status == "BLOCKED"
+    assert second.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+    assert paged.cursors == [None]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("partial", [False, True])
 async def test_corrupt_free_exploration_completion_blocks_resume(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, partial: bool
