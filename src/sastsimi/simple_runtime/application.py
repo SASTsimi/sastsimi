@@ -15,10 +15,12 @@ from uuid import uuid4
 from sastsimi.config.user_config import ElapsedLimit, TokenLimit
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.prompt_redaction import redact_projected_json
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 
 from .artifacts import SimpleArtifactRepository
+from .ast_facts import focus_ast_facts, index_ast_manifest, validate_ast_manifest
 from .candidates import ingest_static_candidates
 from .discovery import BUDGET_PAUSE_CODES, CandidateDiscovery
 from .models import (
@@ -366,6 +368,17 @@ class SimpleAnalysisApplication:
                     )
                 except StaticEvidenceInvalid:
                     return self._invalid_partial_resume(run, identity)
+            elif run.static_bundle_ref.data_kind == "artifact":
+                try:
+                    artifacts = SimpleArtifactRepository(self._data_dir, identity)
+                    bundle = json.loads(artifacts.read(run.static_bundle_ref))
+                    ast_summary = (
+                        bundle.get("ast_summary") if isinstance(bundle, dict) else None
+                    )
+                    if isinstance(ast_summary, dict):
+                        validate_ast_manifest(artifacts, ast_summary)
+                except (OSError, ValueError, KeyError, TypeError):
+                    return self._invalid_partial_resume(run, identity)
         if run.static_coverage_ref is not None and run.candidate_pipeline_version != 1:
             try:
                 run = self._reconcile_hypothesis_checkpoint(run, identity)
@@ -412,6 +425,30 @@ class SimpleAnalysisApplication:
                     failed = self._block_invalid_chaining(error.checkpoint)
                     return self._bootstrap_outcome(run, failed)
                 if downstream_terminal:
+                    try:
+                        artifacts = SimpleArtifactRepository(self._data_dir, identity)
+                        bundle = json.loads(artifacts.read(run.static_bundle_ref))
+                        ast_summary = (
+                            bundle.get("ast_summary")
+                            if isinstance(bundle, dict)
+                            else None
+                        )
+                    except (OSError, ValueError, TypeError):
+                        return self._invalid_partial_resume(run, identity)
+                    if (
+                        isinstance(ast_summary, dict)
+                        and "format_version" not in ast_summary
+                        and isinstance(ast_summary.get("facts"), list)
+                    ):
+                        # Old candidate decisions must not be relabeled as
+                        # reviewed against a newly sharded AST bundle.
+                        return SimpleAnalysisOutcome(
+                            identity=identity,
+                            display_analysis_id=run.display_analysis_id,
+                            status="PARTIAL",
+                            current_stage=SimpleStage.HYPOTHESIS_DONE,
+                            error_code="AST_FORMAT_UPGRADE_NEW_ANALYSIS_REQUIRED",
+                        )
                     return await self._run_static(run, identity)
             return await self._run_candidate_pipeline(run, identity, static)
         retry_partial_static = run.static_disposition == "PARTIAL"
@@ -696,6 +733,74 @@ class SimpleAnalysisApplication:
             recorded_parsed = coverage.get("ast_parsed_file_count")
             if recorded_parsed is not None and recorded_parsed != parsed:
                 raise StaticEvidenceInvalid()
+            if isinstance(ast_summary, dict):
+                validate_ast_manifest(artifacts, ast_summary)
+                if ast_summary.get("format_version") == 2:
+                    if type(recorded_parsed) is not int or recorded_parsed != parsed:
+                        raise StaticEvidenceInvalid()
+                    source_ref = StoredDataRef.model_validate(
+                        bundle["source_manifest_ref"]
+                    )
+                    source_manifest = json.loads(artifacts.read(source_ref))
+                    if (
+                        not isinstance(source_manifest, dict)
+                        or source_manifest.get("kind") != "simple_tracked_sources"
+                        or not isinstance(source_manifest.get("paths"), list)
+                    ):
+                        raise StaticEvidenceInvalid()
+                    selected_paths = source_manifest["paths"]
+                    if any(not isinstance(path, str) for path in selected_paths):
+                        raise StaticEvidenceInvalid()
+                    python_paths = {
+                        path
+                        for path in selected_paths
+                        if path.lower().endswith((".py", ".pyi"))
+                    }
+                    if len(set(selected_paths)) != len(selected_paths):
+                        raise StaticEvidenceInvalid()
+                    parsed_paths = set(index_ast_manifest(artifacts, ast_summary))
+                    error_paths = ast_summary.get("parse_errors")
+                    oversize_paths = ast_summary.get("oversize_paths")
+                    if not isinstance(error_paths, list) or not isinstance(
+                        oversize_paths, list
+                    ):
+                        raise StaticEvidenceInvalid()
+                    for paths, summary_count, coverage_paths, coverage_count in (
+                        (
+                            error_paths,
+                            ast_summary.get("parse_error_count"),
+                            coverage.get("ast_parse_errors"),
+                            coverage.get("ast_parse_error_count"),
+                        ),
+                        (
+                            oversize_paths,
+                            ast_summary.get("oversize_count"),
+                            coverage.get("ast_oversize_paths"),
+                            coverage.get("ast_oversize_count"),
+                        ),
+                    ):
+                        if (
+                            not isinstance(paths, list)
+                            or any(
+                                not isinstance(path, str) or not path for path in paths
+                            )
+                            or type(summary_count) is not int
+                            or summary_count != len(paths)
+                            or type(coverage_count) is not int
+                            or coverage_count != summary_count
+                            or coverage_paths != paths
+                            or len(set(paths)) != len(paths)
+                        ):
+                            raise StaticEvidenceInvalid()
+                    if (
+                        parsed_paths & set(error_paths)
+                        or parsed_paths & set(oversize_paths)
+                        or set(error_paths) & set(oversize_paths)
+                        or parsed_paths | set(error_paths) | set(oversize_paths)
+                        != python_paths
+                        or coverage.get("ast_truncated") is not False
+                    ):
+                        raise StaticEvidenceInvalid()
             codeql_proof = False
             if (
                 bundle.get("codeql_executed") is True
@@ -912,6 +1017,13 @@ class SimpleAnalysisApplication:
             return self._candidate_bootstrap_failure(
                 run, identity, static, "DISCOVERY_CLIENT_UNAVAILABLE"
             )
+        bundle = json.loads(artifacts.read(static.static_bundle_ref))
+        ast_summary = bundle.get("ast_summary") if isinstance(bundle, dict) else None
+        ast_index = (
+            index_ast_manifest(artifacts, ast_summary)
+            if isinstance(ast_summary, dict) and "format_version" in ast_summary
+            else None
+        )
         prior = self._store.get(identity, SimpleStage.HYPOTHESIS_DONE)
         if (
             prior is None
@@ -967,17 +1079,32 @@ class SimpleAnalysisApplication:
                         identity, scope, candidate.candidate_id, "RUNNING"
                     )
                     continue
-                focused = artifacts.put_json(
-                    {
-                        "kind": "simple_static_fact_bundle",
-                        "analysis_id": identity.analysis_id,
-                        "workspace_id": identity.workspace_id,
-                        "commit_id": identity.commit_id,
-                        "static_coverage_ref": static.static_coverage_ref.model_dump(
-                            mode="json"
-                        ),
-                        "candidate_focus": CandidateDiscovery._projection(candidate),
-                    }
+                focused_data: dict[str, object] = {
+                    "kind": "simple_static_fact_bundle",
+                    "analysis_id": identity.analysis_id,
+                    "workspace_id": identity.workspace_id,
+                    "commit_id": identity.commit_id,
+                    "static_coverage_ref": static.static_coverage_ref.model_dump(
+                        mode="json"
+                    ),
+                    "candidate_focus": CandidateDiscovery._projection(candidate),
+                }
+                if isinstance(ast_summary, dict) and "format_version" in ast_summary:
+                    try:
+                        focused_data["ast_focus"] = focus_ast_facts(
+                            artifacts,
+                            ast_summary,
+                            path=candidate.path,
+                            line=candidate.line,
+                            manifest_index=ast_index,
+                        )
+                    except (OSError, ValueError, KeyError, TypeError):
+                        return self._candidate_bootstrap_failure(
+                            run, identity, static, "AST_FOCUS_EVIDENCE_INVALID"
+                        )
+                focused = artifacts.put_bytes(
+                    redact_projected_json(canonical_bytes(focused_data)).data,
+                    "application/json",
                 )
                 candidate_static = static.model_copy(
                     update={"static_bundle_ref": focused}

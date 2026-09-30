@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import hashlib
 import json
 import os
@@ -39,6 +38,7 @@ from .application import (
     StaticBootstrapResult,
 )
 from .artifacts import SimpleArtifactRepository
+from .ast_facts import collect_python_ast
 from .github_policy import DiscoveredPolicy
 from .hypothesis_pages import (
     MIN_PAGE_BUDGET_BYTES,
@@ -87,7 +87,6 @@ from .survey import HypothesisSurvey
 
 _MAX_TRACKED_FILES = 200_000
 _MAX_SOURCE_BYTES = 2 * 1024 * 1024
-_MAX_FACTS = 10_000
 _MAX_POLICY_BYTES = 256 * 1024
 _MAX_STATIC_SCAN_OUTPUT_BYTES = 64 * 1024 * 1024
 _MAX_STATIC_SCAN_REQUEST_BYTES = 1024 * 1024
@@ -331,7 +330,7 @@ class DirectStaticBootstrap:
         artifacts = SimpleArtifactRepository(request.data_dir, identity)
         repository_ref = artifacts.put_json(repository_profile)
 
-        ast_result = self._python_ast(workspace, scope.selected_paths)
+        ast_result = self._python_ast(workspace, scope.selected_paths, artifacts)
         ast_ref = artifacts.put_json(ast_result)
         rule_plan = None
         coverage_plan = None
@@ -1006,98 +1005,14 @@ class DirectStaticBootstrap:
         self,
         workspace: Path,
         tracked: tuple[str, ...],
+        artifacts: SimpleArtifactRepository,
     ) -> dict[str, object]:
-        root = workspace.resolve(strict=True)
-        facts: list[dict[str, object]] = []
-        parse_errors: list[str] = []
-        oversize_paths: list[str] = []
-        oversize_count = 0
-        parsed_file_count = 0
-        for relative in tracked:
-            if not relative.lower().endswith((".py", ".pyi")):
-                continue
-            path = root / relative
-            try:
-                before = path.lstat()
-                if (
-                    path.is_symlink()
-                    or not stat.S_ISREG(before.st_mode)
-                    or int(getattr(before, "st_file_attributes", 0)) & 0x400
-                ):
-                    raise OSError("AST_SOURCE_NOT_REGULAR")
-                resolved = path.resolve(strict=True)
-                resolved.relative_to(root)
-                if resolved != path:
-                    raise OSError("AST_SOURCE_PATH_REDIRECTED")
-                if before.st_size > _MAX_SOURCE_BYTES:
-                    oversize_count += 1
-                    oversize_paths.append(relative)
-                    continue
-                descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-                with os.fdopen(descriptor, "rb") as stream:
-                    current = os.fstat(stream.fileno())
-                    if not stat.S_ISREG(current.st_mode) or (
-                        before.st_dev,
-                        before.st_ino,
-                    ) != (current.st_dev, current.st_ino):
-                        raise OSError("AST_SOURCE_CHANGED")
-                    raw = stream.read(_MAX_SOURCE_BYTES + 1)
-                if len(raw) > _MAX_SOURCE_BYTES:
-                    oversize_count += 1
-                    oversize_paths.append(relative)
-                    continue
-                tree = ast.parse(raw.decode("utf-8"), filename=relative)
-            except (OSError, RuntimeError, ValueError, UnicodeError, SyntaxError):
-                parse_errors.append(relative)
-                continue
-            parsed_file_count += 1
-            if len(facts) >= _MAX_FACTS:
-                continue
-            for node in ast.walk(tree):
-                if isinstance(
-                    node,
-                    (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
-                ):
-                    facts.append(
-                        {
-                            "kind": type(node).__name__,
-                            "path": relative,
-                            "line": node.lineno,
-                            "name": node.name,
-                        }
-                    )
-                elif isinstance(node, ast.Call):
-                    name = self._call_name(node.func)
-                    if name:
-                        facts.append(
-                            {
-                                "kind": "Call",
-                                "path": relative,
-                                "line": node.lineno,
-                                "name": name,
-                            }
-                        )
-                if len(facts) >= _MAX_FACTS:
-                    break
-        return {
-            "kind": "simple_python_ast",
-            "facts": facts,
-            "parse_errors": parse_errors,
-            "parse_error_count": len(parse_errors),
-            "oversize_count": oversize_count,
-            "oversize_paths": oversize_paths,
-            "parsed_file_count": parsed_file_count,
-            "truncated": len(facts) >= _MAX_FACTS,
-        }
-
-    @staticmethod
-    def _call_name(node: ast.expr) -> str | None:
-        if isinstance(node, ast.Name):
-            return node.id
-        if isinstance(node, ast.Attribute):
-            parent = DirectStaticBootstrap._call_name(node.value)
-            return f"{parent}.{node.attr}" if parent else node.attr
-        return None
+        return collect_python_ast(
+            workspace,
+            tracked,
+            artifacts,
+            max_source_bytes=_MAX_SOURCE_BYTES,
+        )
 
     async def _collect_opengrep(
         self,

@@ -15,6 +15,7 @@ from sastsimi.simple_runtime.application import (
     StaticBootstrapResult,
 )
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.ast_facts import collect_python_ast
 from sastsimi.simple_runtime.models import (
     STAGE_VERSION,
     CheckpointIdentity,
@@ -133,6 +134,8 @@ def _setup(
     result_count: int = 1,
     decision: str = "EXCLUDE",
     partial: bool = False,
+    with_ast_summary: bool = False,
+    evidence_excerpt: str | None = None,
 ) -> tuple[SimpleAnalysisApplication, SimpleCheckpointStore, _Client, _Hypotheses]:
     data_dir = tmp_path / "data"
     workspace = tmp_path / "checkout"
@@ -156,7 +159,14 @@ def _setup(
                         "path": "app.py",
                         "start": {"line": i + 2},
                         "end": {"line": i + 2},
-                        "extra": {"message": "eval call"},
+                        "extra": {
+                            "message": "eval call",
+                            **(
+                                {"lines": evidence_excerpt}
+                                if evidence_excerpt is not None
+                                else {}
+                            ),
+                        },
                     }
                     for i in range(result_count)
                 ]
@@ -164,7 +174,19 @@ def _setup(
         ).encode(),
         "application/json",
     )
-    ast_ref = artifacts.put_json({"kind": "simple_python_ast", "facts": []})
+    ast_summary = (
+        collect_python_ast(workspace, ("app.py",), artifacts, max_source_bytes=32_768)
+        if with_ast_summary
+        else None
+    )
+    ast_ref = artifacts.put_json(
+        ast_summary
+        if ast_summary is not None
+        else {"kind": "simple_python_ast", "facts": []}
+    )
+    source_ref = artifacts.put_json(
+        {"kind": "simple_tracked_sources", "paths": ["app.py"]}
+    )
     coverage_ref = artifacts.put_json(
         {
             "kind": "simple_static_coverage_v1",
@@ -176,6 +198,18 @@ def _setup(
             "verified_count": 1,
             "gaps": [],
             "unsupported": [],
+            **(
+                {
+                    "ast_parsed_file_count": 1,
+                    "ast_parse_error_count": 0,
+                    "ast_parse_errors": [],
+                    "ast_oversize_count": 0,
+                    "ast_oversize_paths": [],
+                    "ast_truncated": False,
+                }
+                if ast_summary is not None
+                else {}
+            ),
             "out_of_scope_product_files": [
                 {"path": "web/app.ts", "reason": "PYTHON_ONLY"}
             ]
@@ -190,6 +224,7 @@ def _setup(
             "workspace_id": identity.workspace_id,
             "commit_id": identity.commit_id,
             "static_coverage_ref": coverage_ref.model_dump(mode="json"),
+            "source_manifest_ref": source_ref.model_dump(mode="json"),
             "engine_raw_refs": [raw_ref.model_dump(mode="json")],
             "engine_raw_sources": [
                 {
@@ -202,6 +237,7 @@ def _setup(
                 ast_ref.model_dump(mode="json"),
                 raw_ref.model_dump(mode="json"),
             ],
+            **({"ast_summary": ast_summary} if ast_summary is not None else {}),
         }
     )
     static = _Static(
@@ -450,6 +486,164 @@ class _ManyHypotheses:
         )
 
 
+@pytest.mark.asyncio
+async def test_candidate_hypothesis_bundle_contains_bounded_ast_focus(
+    tmp_path: Path,
+) -> None:
+    app, _store, _client, _hypotheses = _setup(
+        tmp_path, result_count=200, decision="INCLUDE", with_ast_summary=True
+    )
+    captured: list[dict[str, Any]] = []
+
+    class CaptureHypotheses:
+        async def propose(
+            self, identity: CheckpointIdentity, static: StaticBootstrapResult
+        ) -> tuple[HypothesisSeed, ...]:
+            if not captured:
+                captured.append(
+                    json.loads(
+                        SimpleArtifactRepository(tmp_path / "data", identity).read(
+                            static.static_bundle_ref
+                        )
+                    )
+                )
+            return ()
+
+    app._candidate_hypotheses = CaptureHypotheses()
+    outcome = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+
+    assert outcome.status == "COMPLETE"
+    assert len(captured) == 1
+    focused_bundle = captured[0]
+    ast_focus = focused_bundle["ast_focus"]
+    assert ast_focus["total_count"] > len(ast_focus["facts"])
+    assert any(
+        fact["path"] == "app.py"
+        and fact["line"] == focused_bundle["candidate_focus"]["line"]
+        for fact in ast_focus["facts"]
+    )
+    assert len(json.dumps(ast_focus, separators=(",", ":")).encode()) <= 8192
+    assert "manifest_ref" not in ast_focus
+    assert len(ast_focus["facts"]) < 201
+    assert "ast_summary" not in focused_bundle
+
+
+@pytest.mark.asyncio
+async def test_legacy_candidate_setup_without_ast_summary_still_resumes(
+    tmp_path: Path,
+) -> None:
+    app, _store, _client, _hypotheses = _setup(tmp_path)
+    outcome = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+
+    resumed = await app.resume("analysis-1")
+
+    assert outcome.status == resumed.status == "COMPLETE"
+
+
+@pytest.mark.asyncio
+async def test_legacy_partial_candidate_resume_does_not_mix_new_ast_evidence(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _hypotheses = _setup(tmp_path, partial=True)
+    static = app._static
+    assert isinstance(static, _Static)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    old_bundle = json.loads(artifacts.read(static.result.static_bundle_ref))
+    old_bundle["ast_summary"] = {
+        "kind": "simple_python_ast",
+        "facts": [],
+        "parsed_file_count": 1,
+        "fact_count": 0,
+        "truncated": False,
+    }
+    old_ref = artifacts.put_json(old_bundle)
+    static.result = static.result.model_copy(update={"static_bundle_ref": old_ref})
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    assert first.status == "PARTIAL"
+
+    new_summary = collect_python_ast(
+        tmp_path / "checkout", ("app.py",), artifacts, max_source_bytes=32_768
+    )
+    assert static.result.static_coverage_ref is not None
+    old_coverage = json.loads(artifacts.read(static.result.static_coverage_ref))
+    new_coverage = old_coverage | {"out_of_scope_product_files": []}
+    new_coverage_ref = artifacts.put_json(new_coverage)
+    new_bundle = old_bundle | {
+        "ast_summary": new_summary,
+        "static_coverage_ref": new_coverage_ref.model_dump(mode="json"),
+    }
+    static.result = static.result.model_copy(
+        update={
+            "static_bundle_ref": artifacts.put_json(new_bundle),
+            "static_coverage_ref": new_coverage_ref,
+            "static_disposition": "FULL",
+        }
+    )
+
+    resumed = await app.resume("analysis-1")
+
+    assert resumed.status == "PARTIAL"
+    assert resumed.error_code == "AST_FORMAT_UPGRADE_NEW_ANALYSIS_REQUIRED"
+    assert static.calls == 1
+    assert store.require_analysis_run("analysis-1").static_bundle_ref == old_ref
+
+
+@pytest.mark.asyncio
+async def test_completed_candidate_resume_rejects_missing_ast_artifact(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _hypotheses = _setup(tmp_path, with_ast_summary=True)
+    outcome = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    assert outcome.status == "COMPLETE"
+    identity = outcome.identity
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    run = store.require_analysis_run("analysis-1")
+    assert run.static_bundle_ref is not None
+    bundle = json.loads(artifacts.read(run.static_bundle_ref))
+    manifest = json.loads(
+        artifacts.read(
+            StoredDataRef.model_validate(bundle["ast_summary"]["manifest_ref"])
+        )
+    )
+    file_ref = StoredDataRef.model_validate(manifest["entries"][0]["ref"])
+    artifacts.artifacts.path_for(file_ref.content_hash).unlink()
+
+    resumed = await app.resume("analysis-1")
+
+    assert resumed.status == "BLOCKED"
+    assert resumed.error_code == "STATIC_EVIDENCE_INVALID"
+
+
 class _SuccessRunner(SimpleRuntimeRunner):
     def __init__(self, store: SimpleCheckpointStore) -> None:
         super().__init__(store, {})
@@ -470,6 +664,61 @@ class _SuccessRunner(SimpleRuntimeRunner):
             current_stage=SimpleStage.VERIFICATION_FINAL_DONE,
             status=StageStatus.SUCCEEDED,
         )
+
+
+@pytest.mark.asyncio
+async def test_candidate_focus_redacts_credential_shaped_excerpt_before_hypothesis(
+    tmp_path: Path,
+) -> None:
+    fake_expression = "password = compute()"
+    app, store, client, _ = _setup(
+        tmp_path,
+        decision="INCLUDE",
+        evidence_excerpt=fake_expression,
+        with_ast_summary=True,
+    )
+
+    class CaptureHypotheses(_ManyHypotheses):
+        def __init__(self, data_dir: Path) -> None:
+            super().__init__(data_dir)
+            self.focused_ref: StoredDataRef | None = None
+
+        async def propose(
+            self, identity: CheckpointIdentity, static: StaticBootstrapResult
+        ) -> tuple[HypothesisSeed, ...]:
+            self.focused_ref = static.static_bundle_ref
+            return await super().propose(identity, static)
+
+    hypotheses = CaptureHypotheses(tmp_path / "data")
+    app._candidate_hypotheses = hypotheses
+    app._runner_factory = lambda *_: _SuccessRunner(store)
+
+    outcome = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+
+    assert outcome.status == "COMPLETE", outcome.error_code
+    assert client.calls == hypotheses.calls == 1
+    assert hypotheses.focused_ref is not None
+    artifacts = SimpleArtifactRepository(tmp_path / "data", outcome.identity)
+    focused = json.loads(artifacts.read(hypotheses.focused_ref))
+    assert focused["candidate_focus"]["evidence_excerpt"] == "[REDACTED:CREDENTIAL]"
+    assert focused["candidate_focus"]["summary"] == "eval call"
+    assert focused["ast_focus"]["status"] == "AVAILABLE"
+
+    candidate = store.list_candidates(outcome.identity, "scope-1", limit=1)[0]
+    assert candidate.decision == "INCLUDE"
+    assert candidate.evidence_excerpt == fake_expression
+    run = store.require_analysis_run("analysis-1")
+    assert run.static_bundle_ref is not None
+    static_bundle = json.loads(artifacts.read(run.static_bundle_ref))
+    raw_ref = StoredDataRef.model_validate(static_bundle["engine_raw_refs"][0])
+    raw = json.loads(artifacts.read(raw_ref))
+    assert raw["results"][0]["extra"]["lines"] == fake_expression
 
 
 @pytest.mark.asyncio
