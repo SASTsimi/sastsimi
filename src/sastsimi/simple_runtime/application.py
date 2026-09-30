@@ -384,6 +384,11 @@ class SimpleAnalysisApplication:
                 run = self._reconcile_hypothesis_checkpoint(run, identity)
             except StaticEvidenceInvalid:
                 return self._invalid_partial_resume(run, identity)
+        if run.candidate_pipeline_version == 1:
+            try:
+                self._verify_registered_candidate_proposals(identity)
+            except (OSError, ValueError, StaticEvidenceInvalid):
+                return self._invalid_hypothesis_resume(run, identity)
         self._promote_legacy_inconclusive_pocs(exact)
         if (
             run.candidate_pipeline_version == 1
@@ -569,7 +574,7 @@ class SimpleAnalysisApplication:
         added: list[str] = []
         for ref in checkpoint.output_refs:
             try:
-                payload = json.loads(artifacts.read(ref))
+                payload = json.loads(artifacts.read_prompt_proposal(ref))
                 if (
                     not isinstance(payload, dict)
                     or payload.get("kind") != "simple_hypothesis_proposal"
@@ -613,6 +618,32 @@ class SimpleAnalysisApplication:
         )
         self._store.save_analysis_run(updated)
         return updated
+
+    def _verify_registered_candidate_proposals(
+        self, identity: CheckpointIdentity
+    ) -> None:
+        """Do not skip a completed candidate whose original evidence is gone."""
+
+        artifacts = SimpleArtifactRepository(self._data_dir, identity)
+        after_id: str | None = None
+        while True:
+            ids = self._store.list_hypotheses(identity, after_id=after_id, limit=64)
+            if not ids:
+                return
+            for hypothesis_id in ids:
+                after_id = hypothesis_id
+                child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+                checkpoint = self._store.get(child, SimpleStage.PRO_CON_DONE)
+                if checkpoint is None or not checkpoint.input_refs:
+                    raise StaticEvidenceInvalid()
+                proposal = json.loads(
+                    artifacts.read_prompt_proposal(checkpoint.input_refs[0])
+                )
+                if (
+                    proposal.get("hypothesis_id") != hypothesis_id
+                    or proposal.get("analysis_id") != identity.analysis_id
+                ):
+                    raise StaticEvidenceInvalid()
 
     async def _assert_completed_static_scope(
         self, run: SimpleAnalysisRun, identity: CheckpointIdentity
@@ -1264,7 +1295,9 @@ class SimpleAnalysisApplication:
                 )
             for seed in seeds:
                 try:
-                    proposal = json.loads(artifacts.read(seed.proposal_ref))
+                    proposal = json.loads(
+                        artifacts.read_prompt_proposal(seed.proposal_ref)
+                    )
                     if (
                         not isinstance(proposal, dict)
                         or proposal.get("kind") != "simple_hypothesis_proposal"
@@ -1352,7 +1385,27 @@ class SimpleAnalysisApplication:
             ):
                 raise ValueError("HYPOTHESIS_PAGE_CHECKPOINT_INVALID")
             for seed in page["seeds"]:
-                HypothesisSeed.model_validate(seed)
+                parsed = HypothesisSeed.model_validate(seed)
+                proposal = json.loads(
+                    artifacts.read_prompt_proposal(parsed.proposal_ref)
+                )
+                if (
+                    proposal.get("hypothesis_id") != parsed.hypothesis_id
+                    or proposal.get("analysis_id") != identity.analysis_id
+                    or "page_input_ref" not in proposal
+                ):
+                    raise ValueError("HYPOTHESIS_PAGE_CHECKPOINT_INVALID")
+                page_input_ref = StoredDataRef.model_validate(
+                    proposal["page_input_ref"]
+                )
+                page_input = json.loads(artifacts.read(page_input_ref))
+                if (
+                    not isinstance(page_input, dict)
+                    or page_input.get("kind") != "simple_hypothesis_source_page"
+                    or page_input.get("analysis_id") != identity.analysis_id
+                    or page_input.get("cursor") != cursor
+                ):
+                    raise ValueError("HYPOTHESIS_PAGE_CHECKPOINT_INVALID")
             next_cursor = page.get("next_cursor")
             if index == page_count - 1:
                 if next_cursor is not None:
@@ -1753,8 +1806,10 @@ class SimpleAnalysisApplication:
     ) -> str:
         artifacts = SimpleArtifactRepository(self._data_dir, identity)
         try:
-            value = json.loads(artifacts.read(ref))
-        except (OSError, ValueError):
+            value = json.loads(artifacts.read_prompt_proposal(ref))
+        except (OSError, ValueError) as error:
+            if str(error) == "HYPOTHESIS_PROPOSAL_ORIGINAL_INVALID":
+                raise StaticEvidenceInvalid() from error
             if strict:
                 raise StaticEvidenceInvalid() from None
             return ref.content_hash  # Legacy test/bootstrap refs have no artifact.

@@ -34,8 +34,11 @@ def _proposal(line: int) -> dict[str, object]:
 
 
 class _SurveyClient:
-    def __init__(self, *, fail_second: bool = False) -> None:
+    def __init__(
+        self, *, fail_second: bool = False, proposal_source: str = "user"
+    ) -> None:
         self.fail_second = fail_second
+        self.proposal_source = proposal_source
         self.openings = 0
         self.batches: list[tuple[str, ...]] = []
 
@@ -69,10 +72,12 @@ class _SurveyClient:
         self.batches.append(keys)
         if self.fail_second and len(self.batches) == 2:
             return StageFailure(code="RATE_LIMIT", retryable=True, safe_message="retry")
+        proposal = _proposal(2)
+        proposal["source"] = self.proposal_source
         return _answer(
             {
                 "decisions": [
-                    {"key": key, "status": "PROPOSED", "proposal": _proposal(2)}
+                    {"key": key, "status": "PROPOSED", "proposal": proposal}
                     if key == "P1"
                     else {"key": key, "status": "NOT_PROPOSED", "proposal": None}
                     for key in keys
@@ -134,6 +139,40 @@ async def test_survey_batches_eight_then_one_and_deduplicates(tmp_path: Path) ->
     )
     assert len(progress) == 10
     assert "__survey__" in progress
+
+
+@pytest.mark.asyncio
+async def test_survey_proposal_keeps_original_but_uses_redacted_followup_input(
+    tmp_path: Path,
+) -> None:
+    identity, static, store = _setup(tmp_path)
+    source = "access_token = request.args.get('token')"
+    client = _SurveyClient(proposal_source=source)
+    seeds = await DirectHypothesisBootstrap(
+        data_dir=tmp_path / "data",
+        client_factory=lambda *_: client,
+        feed="facts_survey",
+        store=store,
+    ).propose(identity, static)
+
+    assert not isinstance(seeds, StageFailure)
+    assert len(seeds) == 1
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    safe = json.loads(artifacts.read(seeds[0].proposal_ref))
+    assert safe["proposal"]["source"] == "[REDACTED:TOKEN]"
+    original_ref = type(seeds[0].proposal_ref).model_validate(
+        safe["original_proposal_ref"]
+    )
+    assert json.loads(artifacts.read(original_ref))["proposal"]["source"] == source
+    artifacts.prompt_context_strict((seeds[0].proposal_ref, static.static_bundle_ref))
+    artifacts.artifacts.path_for(original_ref.content_hash).unlink()
+    with pytest.raises(ValueError, match="HYPOTHESIS_PROPOSAL_ORIGINAL_INVALID"):
+        await DirectHypothesisBootstrap(
+            data_dir=tmp_path / "data",
+            client_factory=lambda *_: _SurveyClient(),
+            feed="facts_survey",
+            store=store,
+        ).propose(identity, static)
 
 
 @pytest.mark.asyncio

@@ -3341,7 +3341,7 @@ class DirectHypothesisBootstrap:
                 if hypothesis_id in seen:
                     continue
                 seen.add(hypothesis_id)
-                proposal_ref = artifacts.put_json(
+                proposal_ref = artifacts.put_prompt_proposal(
                     {
                         "kind": "simple_hypothesis_proposal",
                         "analysis_id": identity.analysis_id,
@@ -3364,7 +3364,7 @@ class DirectHypothesisBootstrap:
                             if result.response_ref is not None
                             else None
                         ),
-                    }
+                    },
                 )
                 seeds.append(
                     HypothesisSeed(
@@ -3488,7 +3488,7 @@ class DirectHypothesisBootstrap:
                     + canonical
                 ).hexdigest()[:32]
             )
-            proposal_ref = artifacts.put_json(
+            proposal_ref = artifacts.put_prompt_proposal(
                 {
                     "kind": "simple_hypothesis_proposal",
                     "analysis_id": identity.analysis_id,
@@ -3509,7 +3509,7 @@ class DirectHypothesisBootstrap:
                         if result.response_ref is not None
                         else None
                     ),
-                }
+                },
             )
             seeds.append(
                 HypothesisSeed(

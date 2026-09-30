@@ -236,6 +236,34 @@ async def test_paged_hypothesis_stable_seed_and_exact_page_artifacts(
 
 
 @pytest.mark.asyncio
+async def test_paged_hypothesis_redacts_proposal_before_strict_followup_context(
+    tmp_path: Path,
+) -> None:
+    proposal = _proposal("app.py:1")
+    proposal["source"] = "access_token = request.args.get('token')"
+    client = _Client([proposal])
+    bootstrap, identity, static, artifacts = _setup(
+        tmp_path, {"app.py": "value = 1\n"}, client
+    )
+
+    result = await bootstrap.propose_page(
+        identity, static, after_cursor=None, page_budget_bytes=2048
+    )
+
+    assert not isinstance(result, StageFailure)
+    seeds, _ = result
+    assert len(seeds) == 1
+    stored = json.loads(artifacts.read(seeds[0].proposal_ref))
+    assert stored["proposal"]["source"] == "[REDACTED:TOKEN]"
+    page_ref = type(seeds[0].proposal_ref).model_validate(stored["page_input_ref"])
+    artifacts.prompt_context_strict((seeds[0].proposal_ref, page_ref))
+    page_result_ref = type(seeds[0].proposal_ref).model_validate(
+        stored["page_result_ref"]
+    )
+    assert json.loads(artifacts.read(page_result_ref))["hypotheses"] == [proposal]
+
+
+@pytest.mark.asyncio
 async def test_paged_hypothesis_redacts_model_and_cas_page_without_moving_lines(
     tmp_path: Path,
 ) -> None:
@@ -471,3 +499,37 @@ async def test_candidate_focused_hypothesis_deduplicates_same_proposal(
     baseline = await bootstrap.propose(identity, focused_static)
     assert not isinstance(baseline, StageFailure)
     assert result[0].hypothesis_id == baseline[0].hypothesis_id
+
+
+@pytest.mark.asyncio
+async def test_candidate_hypothesis_redacts_proposal_before_strict_followup_context(
+    tmp_path: Path,
+) -> None:
+    proposal = _proposal("app.py:1")
+    proposal["source"] = "access_token = request.args.get('token')"
+    client = _Client([proposal])
+    bootstrap, identity, static, artifacts = _setup(
+        tmp_path, {"app.py": "value = 1\n"}, client
+    )
+    focused_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_fact_bundle",
+            "candidate_focus": {"candidate_id": "candidate-1"},
+        }
+    )
+    focused_static = static.model_copy(update={"static_bundle_ref": focused_ref})
+
+    result = await bootstrap.propose(identity, focused_static)
+
+    assert not isinstance(result, StageFailure)
+    assert len(result) == 1
+    stored = json.loads(artifacts.read(result[0].proposal_ref))
+    assert stored["proposal"]["source"] == "[REDACTED:TOKEN]"
+    artifacts.prompt_context_strict((result[0].proposal_ref, focused_ref))
+    original_ref = type(result[0].proposal_ref).model_validate(
+        stored["original_proposal_ref"]
+    )
+    assert json.loads(artifacts.read(original_ref))["proposal"] == proposal
+    artifacts.artifacts.path_for(original_ref.content_hash).unlink()
+    with pytest.raises(ValueError, match="HYPOTHESIS_PROPOSAL_ORIGINAL_INVALID"):
+        artifacts.prompt_context_strict((result[0].proposal_ref, focused_ref))

@@ -926,6 +926,120 @@ async def test_one_candidate_with_two_hypotheses_registers_as_one_batch(
 
 
 @pytest.mark.asyncio
+async def test_completed_candidate_resume_rejects_missing_original_proposal(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _ = _setup(tmp_path, decision="INCLUDE")
+    data_dir = tmp_path / "data"
+
+    class RedactedHypotheses(_ManyHypotheses):
+        async def propose(
+            self, identity: CheckpointIdentity, static: StaticBootstrapResult
+        ) -> tuple[HypothesisSeed, ...]:
+            self.calls += 1
+            artifacts = SimpleArtifactRepository(data_dir, identity)
+            bundle = json.loads(artifacts.read(static.static_bundle_ref))
+            hypothesis_id = "hypothesis-" + bundle["candidate_focus"]["candidate_id"]
+            ref = artifacts.put_prompt_proposal(
+                {
+                    "kind": "simple_hypothesis_proposal",
+                    "analysis_id": identity.analysis_id,
+                    "hypothesis_id": hypothesis_id,
+                    "proposal": {
+                        "title": "Credential flow",
+                        "source": "access_token = request.args.get('token')",
+                        "code_locations": ["app.py:2"],
+                    },
+                }
+            )
+            return (HypothesisSeed(hypothesis_id=hypothesis_id, proposal_ref=ref),)
+
+    app._candidate_hypotheses = RedactedHypotheses(data_dir)
+    app._runner_factory = lambda *_: _SuccessRunner(store)
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=data_dir,
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    assert first.status == "COMPLETE"
+    identity = first.identity
+    hypothesis_id = store.list_hypotheses(identity, limit=1)[0]
+    child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+    checkpoint = store.require(child, SimpleStage.PRO_CON_DONE)
+    artifacts = SimpleArtifactRepository(data_dir, identity)
+    safe = json.loads(artifacts.read(checkpoint.input_refs[0]))
+    original_ref = StoredDataRef.model_validate(safe["original_proposal_ref"])
+    artifacts.artifacts.path_for(original_ref.content_hash).unlink()
+
+    resumed = await app.resume(identity.analysis_id)
+
+    assert resumed.status == "BLOCKED"
+    assert resumed.error_code == "HYPOTHESIS_EVIDENCE_INVALID"
+
+
+def test_completed_free_page_rejects_foreign_analysis_proposal(tmp_path: Path) -> None:
+    app, _store, _client, _hypotheses = _setup(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    static = app._static
+    assert isinstance(static, _Static)
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    page_input_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_source_page",
+            "analysis_id": identity.analysis_id,
+            "cursor": None,
+        }
+    )
+    proposal_ref = artifacts.put_prompt_proposal(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": "other-analysis",
+            "hypothesis_id": "hypothesis-1",
+            "page_input_ref": page_input_ref.model_dump(mode="json"),
+            "proposal": {"title": "Different analysis"},
+        }
+    )
+    page_ref = artifacts.put_json(
+        {
+            "kind": "simple_candidate_free_exploration_page",
+            "analysis_id": identity.analysis_id,
+            "static_bundle_hash": static.result.static_bundle_ref.content_hash,
+            "cursor": None,
+            "next_cursor": None,
+            "seeds": [
+                HypothesisSeed(
+                    hypothesis_id="hypothesis-1", proposal_ref=proposal_ref
+                ).model_dump(mode="json")
+            ],
+        }
+    )
+    done_ref = artifacts.put_json(
+        {
+            "kind": "simple_candidate_free_exploration_complete",
+            "analysis_id": identity.analysis_id,
+            "static_bundle_hash": static.result.static_bundle_ref.content_hash,
+            "page_count": 1,
+        }
+    )
+    with pytest.raises(ValueError, match="HYPOTHESIS_PAGE_CHECKPOINT_INVALID"):
+        app._candidate_free_done_valid(
+            identity,
+            static.result,
+            {
+                "__candidate_free_page_00000000__": page_ref,
+                "__candidate_free_done__": done_ref,
+            },
+        )
+
+
+@pytest.mark.asyncio
 async def test_forty_candidates_create_forty_deep_hypotheses_without_run_json_cap(
     tmp_path: Path,
 ) -> None:

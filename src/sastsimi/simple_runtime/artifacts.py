@@ -59,6 +59,25 @@ class SimpleArtifactRepository:
     def put_json(self, value: object) -> StoredDataRef:
         return self.put_bytes(canonical_bytes(value), "application/json")
 
+    def put_prompt_proposal(self, value: Mapping[str, Any]) -> StoredDataRef:
+        """Keep the original locally while supplying a redacted proposal to agents."""
+
+        if value.get("kind") != "simple_hypothesis_proposal":
+            raise ValueError("HYPOTHESIS_PROPOSAL_KIND_INVALID")
+        raw = canonical_bytes(value)
+        safe = redact_projected_json(raw).data
+        if safe == raw:
+            return self.put_bytes(raw, "application/json")
+        original_ref = self.put_bytes(raw, "application/json")
+        projected = json.loads(safe)
+        if not isinstance(projected, dict):
+            raise ValueError("HYPOTHESIS_PROPOSAL_REDACTION_INVALID")
+        projected["original_proposal_ref"] = original_ref.model_dump(mode="json")
+        prompt_bytes = canonical_bytes(projected)
+        if redact_projected_json(prompt_bytes).data != prompt_bytes:
+            raise ValueError("HYPOTHESIS_PROPOSAL_REDACTION_INVALID")
+        return self.put_bytes(prompt_bytes, "application/json")
+
     def read(self, ref: StoredDataRef) -> bytes:
         self._require_scope(ref)
         if ref.record_id is None:
@@ -81,6 +100,41 @@ class SimpleArtifactRepository:
         if hashlib.sha256(payload).hexdigest() != ref.content_hash:
             raise ValueError("SIMPLE_RUNTIME_EXACT_REFERENCE_MISMATCH")
         return payload
+
+    def read_prompt_proposal(self, ref: StoredDataRef) -> bytes:
+        """Verify both the prompt-safe proposal and its original CAS evidence."""
+
+        payload = self.read(ref)
+        try:
+            proposal = json.loads(payload)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError("HYPOTHESIS_PROPOSAL_ORIGINAL_INVALID") from error
+        if (
+            not isinstance(proposal, dict)
+            or proposal.get("kind") != "simple_hypothesis_proposal"
+        ):
+            raise ValueError("HYPOTHESIS_PROPOSAL_ORIGINAL_INVALID")
+        self._require_proposal_original(proposal, payload)
+        return payload
+
+    def _require_proposal_original(
+        self, proposal: Mapping[str, Any], safe_payload: bytes
+    ) -> None:
+        if "original_proposal_ref" not in proposal:
+            return  # Existing unredacted proposals have no secondary CAS object.
+        try:
+            original_ref = StoredDataRef.model_validate(
+                proposal["original_proposal_ref"]
+            )
+            original = self.read(original_ref)
+            projected = json.loads(redact_projected_json(original).data)
+            if not isinstance(projected, dict):
+                raise ValueError("Invalid original proposal")
+            projected["original_proposal_ref"] = original_ref.model_dump(mode="json")
+            if canonical_bytes(projected) != safe_payload:
+                raise ValueError("Proposal projection mismatch")
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            raise ValueError("HYPOTHESIS_PROPOSAL_ORIGINAL_INVALID") from error
 
     def quarantine_corrupt(
         self, ref: StoredDataRef, *, max_bytes: int | None = None
@@ -430,6 +484,16 @@ class SimpleArtifactRepository:
         used = 0
         for ref in refs:
             raw = self.read(ref)
+            if not items:
+                try:
+                    first = json.loads(raw)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    first = None
+                if (
+                    isinstance(first, dict)
+                    and first.get("kind") == "simple_hypothesis_proposal"
+                ):
+                    self._require_proposal_original(first, raw)
             redacted = self._redacted(raw)
             if not items and redacted != raw:
                 raise ValueError("SIMPLE_RUNTIME_CONTEXT_REDACTED")
