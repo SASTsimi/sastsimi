@@ -369,6 +369,7 @@ def build_analysis_application(
             client_factory=client_factory,
             feed=profile.hypothesis_feed,
             store=store,
+            llm_timeout_seconds=profile.llm_timeout_seconds,
         ),
         runner_factory=runner_factory,
         profile_ref=profile.provider_profile_ref,
@@ -386,6 +387,7 @@ def build_analysis_application(
             client_factory=client_factory,
             feed="current",
             store=store,
+            llm_timeout_seconds=profile.llm_timeout_seconds,
         ),
     )
 

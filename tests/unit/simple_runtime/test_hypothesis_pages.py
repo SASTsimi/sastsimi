@@ -100,6 +100,49 @@ def _page(prompt: bytes) -> _Page:
     return cast(_Page, json.loads(raw))
 
 
+@pytest.mark.asyncio
+async def test_paged_hypothesis_uses_configured_finite_llm_timeout(
+    tmp_path: Path,
+) -> None:
+    class TimedClient(_Client):
+        def __init__(self) -> None:
+            super().__init__()
+            self.timeouts: list[int] = []
+
+        async def call(
+            self,
+            *,
+            prompt: bytes,
+            output_schema: Mapping[str, Any],
+            timeout_ms: int,
+            agent_name: str = "agent",
+        ) -> SimpleLLMCallResult | StageFailure:
+            self.timeouts.append(timeout_ms)
+            return await super().call(
+                prompt=prompt,
+                output_schema=output_schema,
+                timeout_ms=timeout_ms,
+                agent_name=agent_name,
+            )
+
+    client = TimedClient()
+    _bootstrap, identity, static, _artifacts = _setup(
+        tmp_path, {"app.py": "value = 1\n"}, client
+    )
+    configured = DirectHypothesisBootstrap(
+        data_dir=tmp_path,
+        client_factory=lambda _identity, _artifacts: client,
+        llm_timeout_seconds=300,
+    )
+
+    result = await configured.propose_page(
+        identity, static, after_cursor=None, page_budget_bytes=2048
+    )
+
+    assert not isinstance(result, StageFailure)
+    assert client.timeouts == [300_000]
+
+
 def test_source_pages_fit_budget_and_preserve_lines_across_number_growth(
     tmp_path: Path,
 ) -> None:

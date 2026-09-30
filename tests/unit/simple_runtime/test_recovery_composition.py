@@ -82,6 +82,16 @@ def _ref(identity: CheckpointIdentity, name: str) -> StoredDataRef:
     )
 
 
+def test_composition_passes_llm_timeout_to_both_hypothesis_paths(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path).model_copy(update={"llm_timeout_seconds": 300})
+    application = composition.build_analysis_application(_config(tmp_path), profile)
+
+    assert application._hypotheses._llm_timeout_ms == 300_000
+    assert application._candidate_hypotheses._llm_timeout_ms == 300_000
+
+
 @pytest.mark.parametrize(
     "saved_repository",
     [None, "https://github.com/acme/app"],

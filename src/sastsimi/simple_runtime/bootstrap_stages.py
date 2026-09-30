@@ -3152,10 +3152,14 @@ class DirectHypothesisBootstrap:
         max_hypotheses: int = 12,
         feed: str = "current",
         store: SimpleCheckpointStore | None = None,
+        llm_timeout_seconds: int = 180,
     ) -> None:
+        if not 1 <= llm_timeout_seconds <= 3600:
+            raise ValueError("HYPOTHESIS_LLM_TIMEOUT_INVALID")
         self._data_dir = data_dir
         self._client_factory = client_factory
         self._max_hypotheses = max_hypotheses
+        self._llm_timeout_ms = llm_timeout_seconds * 1000
         if feed not in {"current", "facts_survey"}:
             raise ValueError("HYPOTHESIS_FEED_INVALID")
         self._feed = feed
@@ -3243,7 +3247,7 @@ class DirectHypothesisBootstrap:
             result = await client.call(
                 prompt=page.prompt,
                 output_schema=PAGE_OUTPUT_SCHEMA,
-                timeout_ms=180_000,
+                timeout_ms=self._llm_timeout_ms,
                 agent_name="hypothesis_page",
             )
             if isinstance(result, StageFailure):
@@ -3444,7 +3448,7 @@ class DirectHypothesisBootstrap:
         result = await client.call(
             prompt=prompt,
             output_schema=schema,
-            timeout_ms=180_000,
+            timeout_ms=self._llm_timeout_ms,
             agent_name="hypothesis",
         )
         if isinstance(result, StageFailure):
