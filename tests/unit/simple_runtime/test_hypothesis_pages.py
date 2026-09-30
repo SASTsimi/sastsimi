@@ -8,9 +8,11 @@ from typing import Any, TypedDict, cast
 import pytest
 from pydantic import JsonValue
 
+from sastsimi.simple_runtime import hypothesis_pages
 from sastsimi.simple_runtime.application import StaticBootstrapResult
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.bootstrap_stages import DirectHypothesisBootstrap
+from sastsimi.simple_runtime.hypothesis_pages import SourcePageError, build_source_page
 from sastsimi.simple_runtime.models import CheckpointIdentity, StageFailure
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
 
@@ -96,6 +98,249 @@ def _page(prompt: bytes) -> _Page:
         b"\n</UNTRUSTED_EXACT_INPUTS>", 1
     )[0]
     return cast(_Page, json.loads(raw))
+
+
+def test_source_pages_fit_budget_and_preserve_lines_across_number_growth(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "app.py"
+    for padding in range(1, 101):
+        source = "".join(
+            f"value_{index:03d} = {'x' * padding!r}\n"
+            for index in range(1, 121)
+        )
+        source_path.write_bytes(source.encode("utf-8"))
+        cursor: str | None = None
+        chunks: list[str] = []
+        for _ in range(120):
+            page = build_source_page(
+                workspace=tmp_path,
+                paths=["app.py"],
+                bundle_hash="a" * 64,
+                manifest_hash="b" * 64,
+                after_cursor=cursor,
+                page_budget_bytes=2_048,
+            )
+            assert page is not None
+            assert len(page.prompt) <= 2_048
+            chunks.extend(str(segment["code"]) for segment in page.payload["segments"])
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+        else:
+            pytest.fail("Source page cursor did not finish")
+        assert "".join(chunks) == source
+
+
+def test_source_pages_redact_cross_line_credential_before_paginating(
+    tmp_path: Path,
+) -> None:
+    sentinel = "SYNTHETIC_VALUE_NOT_A_TOKEN_7291"
+    source = f"API_KEY = (\n  '{sentinel}'\n)\nprint('safe')\n"
+    (tmp_path / "app.py").write_bytes(source.encode("utf-8"))
+    cursor: str | None = None
+    prompts: list[bytes] = []
+    chunks: list[str] = []
+    for _ in range(3):
+        page = build_source_page(
+            workspace=tmp_path,
+            paths=["app.py"],
+            bundle_hash="a" * 64,
+            manifest_hash="b" * 64,
+            after_cursor=cursor,
+            page_budget_bytes=2_048,
+        )
+        assert page is not None
+        prompts.append(page.prompt)
+        chunks.extend(str(segment["code"]) for segment in page.payload["segments"])
+        assert len(page.prompt) <= 2_048
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+    else:
+        pytest.fail("Cross-line credential page traversal did not finish")
+    assert sentinel.encode() not in b"".join(prompts)
+    assert "[REDACTED:CREDENTIAL]" in "".join(chunks)
+    assert "".join(chunks).count("\n") == source.count("\n")
+
+
+def test_source_page_cursor_inside_cross_line_credential_cannot_reveal_value(
+    tmp_path: Path,
+) -> None:
+    sentinel = "SYNTHETIC_VALUE_NOT_A_TOKEN_7291"
+    source = f"API_KEY = (\r\n  '{sentinel}'\r\n)\r\nprint('safe')\r\n"
+    (tmp_path / "app.py").write_bytes(source.encode("utf-8"))
+    page = build_source_page(
+        workspace=tmp_path,
+        paths=["app.py"],
+        bundle_hash="a" * 64,
+        manifest_hash="b" * 64,
+        after_cursor=f"p1:{'a' * 64}:{'b' * 64}:0:1",
+        page_budget_bytes=2_048,
+    )
+    assert page is not None
+    assert len(page.prompt) <= 2_048
+    assert sentinel.encode() not in page.prompt
+    assert page.payload["segments"][0]["start_line"] == 2
+    assert (
+        "".join(str(segment["code"]) for segment in page.payload["segments"]).count(
+            "\r\n"
+        )
+        == 3
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "API_KEY = (\n  'SYNTHETIC_VALUE_7291'\n)\n",
+        "API_KEY = make_key(\n  'SYNTHETIC_VALUE_7291'\n)\n",
+        "API_KEY = '''SYNTHETIC_VALUE_7291\nsecond line'''\n",
+        "API_KEY = \\\n  'SYNTHETIC_VALUE_7291'\n",
+        "API_KEY: str = (\n  'SYNTHETIC_VALUE_7291'\n)\n",
+        "auth = (\n  'SYNTHETIC_VALUE_7291'\n)\n",
+        "api_key[0] = (\n  'SYNTHETIC_VALUE_7291'\n)\n",
+        "api_key.value = (\n  'SYNTHETIC_VALUE_7291'\n)\n",
+        "config['api_key'][0] = (\n  'SYNTHETIC_VALUE_7291'\n)\n",
+        "settings = {'api_key': (\n  'SYNTHETIC_VALUE_7291'\n)}\n",
+        "def load(api_key=(\n  'SYNTHETIC_VALUE_7291'\n)):\n  pass\n",
+        "type API_KEY = Literal[\n  'SYNTHETIC_VALUE_7291'\n]\n",
+        "setattr(settings, 'api_key', (\n  'SYNTHETIC_VALUE_7291'\n))\n",
+        "settings.setdefault('api_key', (\n  'SYNTHETIC_VALUE_7291'\n))\n",
+        "settings.update([('api_key', (\n  'SYNTHETIC_VALUE_7291'\n))])\n",
+        "# api_key:\n#   SYNTHETIC_VALUE_7291\n",
+        "# API_KEY = (\n# SYNTHETIC_VALUE_7291\n",
+        "API_KEY = get_default()  # actual: SYNTHETIC_VALUE_7291\n",
+    ],
+)
+def test_source_page_masks_valid_python_secret_value_expressions(
+    tmp_path: Path, source: str
+) -> None:
+    (tmp_path / "app.py").write_bytes(source.encode("utf-8"))
+    page = build_source_page(
+        workspace=tmp_path,
+        paths=["app.py"],
+        bundle_hash="a" * 64,
+        manifest_hash="b" * 64,
+        after_cursor=None,
+        page_budget_bytes=2_048,
+    )
+    assert page is not None
+    assert b"SYNTHETIC_VALUE_7291" not in page.prompt
+    assert len(page.prompt) <= 2_048
+    assert "".join(str(segment["code"]) for segment in page.payload["segments"]).count(
+        "\n"
+    ) == source.count("\n")
+
+
+def test_source_page_fails_closed_on_unparseable_python(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "app.py").write_bytes(
+        b"API_KEY = (\n  'SYNTHETIC_VALUE_7291'\n"
+    )
+    with pytest.raises(SourcePageError, match="HYPOTHESIS_PAGE_SOURCE_SYNTAX"):
+        build_source_page(
+            workspace=tmp_path,
+            paths=["app.py"],
+            bundle_hash="a" * 64,
+            manifest_hash="b" * 64,
+            after_cursor=None,
+            page_budget_bytes=2_048,
+        )
+
+
+def test_source_page_rejects_file_above_redaction_memory_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "app.py").write_bytes(b"x=1\n" * 30)
+    monkeypatch.setattr(hypothesis_pages, "MAX_SOURCE_FILE_BYTES", 100, raising=False)
+    with pytest.raises(SourcePageError, match="HYPOTHESIS_PAGE_SOURCE_TOO_LARGE"):
+        build_source_page(
+            workspace=tmp_path,
+            paths=["app.py"],
+            bundle_hash="a" * 64,
+            manifest_hash="b" * 64,
+            after_cursor=None,
+            page_budget_bytes=2_048,
+        )
+
+
+def test_source_page_rejects_excessive_line_count_before_parsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "app.py").write_bytes(b"x=1\n" * 6)
+    monkeypatch.setattr(hypothesis_pages, "MAX_SOURCE_LINES", 5, raising=False)
+    with pytest.raises(SourcePageError, match="HYPOTHESIS_PAGE_SOURCE_TOO_LARGE"):
+        build_source_page(
+            workspace=tmp_path,
+            paths=["app.py"],
+            bundle_hash="a" * 64,
+            manifest_hash="b" * 64,
+            after_cursor=None,
+            page_budget_bytes=2_048,
+        )
+
+
+def test_source_page_handles_deep_sensitive_assignment_target(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "API_KEY"
+        + "[0]" * 1_000
+        + " = (\n  'SYNTHETIC_VALUE_7291'\n)\n"
+    )
+    (tmp_path / "app.py").write_bytes(source.encode("utf-8"))
+    page = build_source_page(
+        workspace=tmp_path,
+        paths=["app.py"],
+        bundle_hash="a" * 64,
+        manifest_hash="b" * 64,
+        after_cursor=None,
+        page_budget_bytes=16_384,
+    )
+    assert page is not None
+    assert b"SYNTHETIC_VALUE_7291" not in page.prompt
+
+
+def test_source_page_keeps_nonsecret_session_mapping_flow(
+    tmp_path: Path,
+) -> None:
+    source = "session['role'] = request.headers['X-Role']\n"
+    (tmp_path / "app.py").write_bytes(source.encode("utf-8"))
+    page = build_source_page(
+        workspace=tmp_path,
+        paths=["app.py"],
+        bundle_hash="a" * 64,
+        manifest_hash="b" * 64,
+        after_cursor=None,
+        page_budget_bytes=2_048,
+    )
+    assert page is not None
+    assert page.payload["segments"][0]["code"] == source
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "auth['role'] = request.headers['X-Role']\n",
+        "auth.permissions = request.permissions\n",
+    ],
+)
+def test_source_page_keeps_nonsecret_auth_mapping_flow(
+    tmp_path: Path, source: str
+) -> None:
+    (tmp_path / "app.py").write_bytes(source.encode("utf-8"))
+    page = build_source_page(
+        workspace=tmp_path,
+        paths=["app.py"],
+        bundle_hash="a" * 64,
+        manifest_hash="b" * 64,
+        after_cursor=None,
+        page_budget_bytes=2_048,
+    )
+    assert page is not None
+    assert page.payload["segments"][0]["code"] == source
 
 
 @pytest.mark.asyncio

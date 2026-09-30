@@ -2,21 +2,28 @@
 
 from __future__ import annotations
 
+import ast
 import re
+import tokenize
 from dataclasses import dataclass
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any, BinaryIO
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.prompt_redaction import (
+    is_sensitive_name,
     redact_projected_json,
     redact_untrusted_text,
+    redact_untrusted_text_preserving_lines,
 )
 
 from .facts import safe_tracked_file
 
 MIN_PAGE_BUDGET_BYTES = 1_024
 MAX_PAGE_BUDGET_BYTES = 128 * 1_024
+MAX_SOURCE_FILE_BYTES = 2 * 1_024 * 1_024
+MAX_SOURCE_LINES = 50_000
 PAGE_HYPOTHESIS_LIMIT = 12
 
 _PROMPT_PREFIX = (
@@ -163,6 +170,176 @@ def _bounded_line(stream: BinaryIO) -> bytes:
     return line
 
 
+def _sensitive_target(target: ast.expr) -> bool:
+    pending = [(target, False)]
+    while pending:
+        current, mapping_base = pending.pop()
+        if isinstance(current, ast.Name):
+            if is_sensitive_name(current.id) and not (
+                mapping_base and current.id.lower() in {"auth", "session", "sessions"}
+            ):
+                return True
+        elif isinstance(current, ast.Attribute):
+            if is_sensitive_name(current.attr):
+                return True
+            pending.append((current.value, True))
+        elif isinstance(current, ast.Subscript):
+            if (
+                isinstance(current.slice, ast.Constant)
+                and isinstance(current.slice.value, str)
+                and is_sensitive_name(current.slice.value)
+            ):
+                return True
+            pending.append((current.value, True))
+        elif isinstance(current, (ast.Tuple, ast.List)):
+            pending.extend((element, mapping_base) for element in current.elts)
+        elif isinstance(current, ast.Starred):
+            pending.append((current.value, mapping_base))
+    return False
+
+
+def _mask_python_secret_values(source: bytes) -> bytes:
+    """Mask complete sensitive Python RHS spans before any source page is cut."""
+
+    try:
+        tree = ast.parse(source.decode("utf-8"))
+    except SyntaxError as exc:
+        raise SourcePageError("HYPOTHESIS_PAGE_SOURCE_SYNTAX") from exc
+    except UnicodeDecodeError as exc:
+        raise SourcePageError("HYPOTHESIS_PAGE_SOURCE_ENCODING") from exc
+    line_starts = [0]
+    for line in source.split(b"\n")[:-1]:
+        line_starts.append(line_starts[-1] + len(line) + 1)
+    spans: list[tuple[int, int]] = []
+
+    def add_value(value: ast.expr) -> None:
+        if (
+            value.end_lineno is None
+            or value.end_col_offset is None
+            or value.lineno < 1
+            or value.end_lineno > len(line_starts)
+        ):
+            raise SourcePageError("HYPOTHESIS_PAGE_REDACTION_FAILED")
+        start = line_starts[value.lineno - 1] + value.col_offset
+        end = line_starts[value.end_lineno - 1] + value.end_col_offset
+        if not 0 <= start < end <= len(source):
+            raise SourcePageError("HYPOTHESIS_PAGE_REDACTION_FAILED")
+        spans.append((start, end))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            if any(_sensitive_target(target) for target in node.targets):
+                add_value(node.value)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+            if _sensitive_target(node.target) and node.value is not None:
+                add_value(node.value)
+        elif isinstance(node, ast.TypeAlias):
+            if _sensitive_target(node.name):
+                add_value(node.value)
+        elif isinstance(node, ast.keyword):
+            if node.arg is not None and is_sensitive_name(node.arg):
+                add_value(node.value)
+        elif isinstance(node, ast.Call):
+            for index, argument in enumerate(node.args[:-1]):
+                if (
+                    isinstance(argument, ast.Constant)
+                    and isinstance(argument.value, str)
+                    and is_sensitive_name(argument.value)
+                ):
+                    add_value(node.args[index + 1])
+        elif isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values, strict=True):
+                if (
+                    isinstance(key, ast.Constant)
+                    and isinstance(key.value, str)
+                    and is_sensitive_name(key.value)
+                ):
+                    add_value(value)
+        elif isinstance(node, (ast.Tuple, ast.List)):
+            if (
+                len(node.elts) == 2
+                and isinstance(node.elts[0], ast.Constant)
+                and isinstance(node.elts[0].value, str)
+                and is_sensitive_name(node.elts[0].value)
+            ):
+                add_value(node.elts[1])
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            args = node.args
+            positional = [*args.posonlyargs, *args.args]
+            if args.defaults:
+                for arg, default in zip(
+                    positional[-len(args.defaults) :], args.defaults, strict=True
+                ):
+                    if is_sensitive_name(arg.arg):
+                        add_value(default)
+            for arg, keyword_default in zip(
+                args.kwonlyargs, args.kw_defaults, strict=True
+            ):
+                if keyword_default is not None and is_sensitive_name(arg.arg):
+                    add_value(keyword_default)
+
+    selected: list[tuple[int, int]] = []
+    for start, end in sorted(spans, key=lambda span: (span[0], -span[1])):
+        if selected and start < selected[-1][1]:
+            if end <= selected[-1][1]:
+                continue
+            raise SourcePageError("HYPOTHESIS_PAGE_REDACTION_FAILED")
+        selected.append((start, end))
+    pieces: list[bytes] = []
+    position = 0
+    for start, end in selected:
+        pieces.append(source[position:start])
+        line_breaks = b"".join(re.findall(rb"\r\n|[\r\n]", source[start:end]))
+        pieces.append(b"[REDACTED:CREDENTIAL]" + line_breaks)
+        position = end
+    pieces.append(source[position:])
+    masked = b"".join(pieces)
+    if source.count(b"\r") != masked.count(b"\r") or source.count(
+        b"\n"
+    ) != masked.count(b"\n"):
+        raise SourcePageError("HYPOTHESIS_PAGE_REDACTION_FAILED")
+    return masked
+
+
+def _mask_sensitive_comments(source: bytes) -> bytes:
+    """Hide credential-bearing comments, including adjacent comment continuations."""
+
+    try:
+        text = source.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SourcePageError("HYPOTHESIS_PAGE_SOURCE_ENCODING") from exc
+    comments: dict[int, tokenize.TokenInfo] = {}
+    try:
+        for token in tokenize.generate_tokens(StringIO(text).readline):
+            if token.type == tokenize.COMMENT:
+                comments[token.start[0] - 1] = token
+    except (tokenize.TokenError, IndentationError) as exc:
+        raise SourcePageError("HYPOTHESIS_PAGE_SOURCE_SYNTAX") from exc
+    lines = text.splitlines(keepends=True)
+    safe_lines: list[str] = []
+    continuation = False
+    for index, line in enumerate(lines):
+        comment = comments.get(index)
+        if comment is None:
+            continuation = False
+            safe_lines.append(line)
+            continue
+        column = comment.start[1]
+        comment_only = not line[:column].strip()
+        sensitive = is_sensitive_name(comment.string) or is_sensitive_name(
+            line[:column]
+        )
+        if sensitive or (comment_only and continuation):
+            line = (
+                line[:column]
+                + "# [REDACTED:CREDENTIAL]"
+                + line[column + len(comment.string) :]
+            )
+        continuation = sensitive or (comment_only and continuation)
+        safe_lines.append(line)
+    return "".join(safe_lines).encode("utf-8")
+
+
 def build_source_page(
     *,
     workspace: Path,
@@ -200,11 +377,31 @@ def build_source_page(
         candidate = safe_tracked_file(workspace, path)
         if candidate is None:
             raise SourcePageError("HYPOTHESIS_PAGE_SOURCE_UNAVAILABLE")
-        with candidate.open("rb") as stream:
-            while raw_line := _bounded_line(stream):
+        if candidate.stat().st_size > MAX_SOURCE_FILE_BYTES:
+            raise SourcePageError("HYPOTHESIS_PAGE_SOURCE_TOO_LARGE")
+        with candidate.open("rb") as source_stream:
+            line_count = 0
+            while raw_line := _bounded_line(source_stream):
+                line_count += 1
+                if line_count > MAX_SOURCE_LINES:
+                    raise SourcePageError("HYPOTHESIS_PAGE_SOURCE_TOO_LARGE")
                 if _PRIVATE_KEY_HEADER.search(raw_line):
                     raise SourcePageError("HYPOTHESIS_PAGE_REDACTION_FAILED")
-            stream.seek(0)
+            source_stream.seek(0)
+            source = source_stream.read(MAX_SOURCE_FILE_BYTES + 1)
+            if len(source) > MAX_SOURCE_FILE_BYTES:
+                raise SourcePageError("HYPOTHESIS_PAGE_SOURCE_TOO_LARGE")
+            try:
+                safe_source = redact_untrusted_text_preserving_lines(
+                    _mask_python_secret_values(_mask_sensitive_comments(source))
+                ).data
+            except SourcePageError:
+                raise
+            except UnicodeDecodeError as exc:
+                raise SourcePageError("HYPOTHESIS_PAGE_SOURCE_ENCODING") from exc
+            except ValueError as exc:
+                raise SourcePageError("HYPOTHESIS_PAGE_REDACTION_FAILED") from exc
+        with BytesIO(safe_source) as stream:
             line_index = 0
             if file_index == start_file:
                 while line_index < start_line:
@@ -223,7 +420,12 @@ def build_source_page(
                     prior_end = int(segment["end_line"])
                     segment["code"] = prior_code + model_line
                     segment["end_line"] = line_index + 1
-                    increment = len(canonical_bytes(model_line)) - 2
+                    increment = (
+                        len(canonical_bytes(model_line))
+                        - 2
+                        + len(str(line_index + 1))
+                        - len(str(prior_end))
+                    )
                 else:
                     segment = {
                         "path": path,

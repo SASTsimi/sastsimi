@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from .canonical_json import canonical_bytes
 
 _SECRET_KEY = re.compile(
-    r"(?:api[_-]?key|authorization|bearer|cookie|password|passwd|pwd|secret|"
+    r"(?:api[_-]?key|authorization|\bauth\b|bearer|cookie|password|passwd|pwd|secret|"
     r"token|session|credential|private[_-]?key|access[_-]?key|database[_-]?(?:url|uri)|"
     r"connection[_-]?(?:url|uri|string)|dsn)",
     re.IGNORECASE,
@@ -65,6 +65,7 @@ _POC_SANDBOX_ABSOLUTE_PATH = re.compile(
     r"(?<![\w/])/(?:workspace|tmp|etc|var|opt|srv|usr)(?:/|\b)"
     r"[^\s\r\n,;\"'<>]*"
 )
+_LINE_BREAK = re.compile(r"\r\n|[\r\n]")
 
 
 def _protect_safe_sandbox_paths(value: str) -> str:
@@ -85,12 +86,29 @@ class RedactionResult:
     categories: tuple[str, ...]
 
 
-def _replace_string(value: str) -> tuple[str, set[str]]:
+def is_sensitive_name(value: str) -> bool:
+    """Use the same sensitive-name policy for source and JSON redaction."""
+
+    return bool(_SECRET_KEY.search(value))
+
+
+def _replace_string(
+    value: str, *, preserve_lines: bool = False
+) -> tuple[str, set[str]]:
     if _PRIVATE_KEY.search(value) or _PRIVATE_KEY_HEADER.search(value):
+        if preserve_lines:
+            raise ValueError("PROMPT_REDACTION_FAILED")
         return "[REDACTED:CREDENTIAL]", {"CREDENTIAL"}
 
     result = _protect_safe_sandbox_paths(value)
     categories: set[str] = set()
+
+    def replacement(match: re.Match[str], category: str) -> str:
+        line_breaks = (
+            "".join(_LINE_BREAK.findall(match.group(0))) if preserve_lines else ""
+        )
+        return f"[REDACTED:{category}]{line_breaks}"
+
     for pattern, category in (
         (_COOKIE_ASSIGNMENT, "COOKIE"),
         (_TOKEN_ASSIGNMENT, "TOKEN"),
@@ -98,14 +116,25 @@ def _replace_string(value: str) -> tuple[str, set[str]]:
         (_ENV_CREDENTIAL_ASSIGNMENT, "CREDENTIAL"),
         (_CREDENTIAL_URI, "CREDENTIAL"),
     ):
-        result, count = pattern.subn(f"[REDACTED:{category}]", result)
+        def replace_current(
+            match: re.Match[str], category: str = category
+        ) -> str:
+            return replacement(match, category)
+
+        result, count = pattern.subn(replace_current, result)
         if count:
             categories.add(category)
-    result, token_count = _OPAQUE_TOKEN.subn("[REDACTED:TOKEN]", result)
+    result, token_count = _OPAQUE_TOKEN.subn(
+        lambda match: replacement(match, "TOKEN"), result
+    )
     if token_count:
         categories.add("TOKEN")
-    result, windows_count = _WINDOWS_PATH.subn("[REDACTED:HOST_ABSOLUTE_PATH]", result)
-    result, posix_count = _POSIX_HOST_PATH.subn("[REDACTED:HOST_ABSOLUTE_PATH]", result)
+    result, windows_count = _WINDOWS_PATH.subn(
+        lambda match: replacement(match, "HOST_ABSOLUTE_PATH"), result
+    )
+    result, posix_count = _POSIX_HOST_PATH.subn(
+        lambda match: replacement(match, "HOST_ABSOLUTE_PATH"), result
+    )
     if windows_count or posix_count:
         categories.add("HOST_ABSOLUTE_PATH")
     return _restore_safe_sandbox_paths(result), categories
@@ -221,6 +250,21 @@ def redact_untrusted_text(data: bytes) -> RedactionResult:
     value = data.decode("utf-8", errors="replace")
     redacted, categories = _replace_string(value)
     if _has_sensitive_string(redacted):
+        raise ValueError("PROMPT_REDACTION_FAILED")
+    return RedactionResult(redacted.encode("utf-8"), tuple(sorted(categories)))
+
+
+def redact_untrusted_text_preserving_lines(data: bytes) -> RedactionResult:
+    """Redact a complete source file before paging without shifting line numbers."""
+
+    value = data.decode("utf-8")
+    redacted, categories = _replace_string(value, preserve_lines=True)
+    if (
+        value.count("\r") != redacted.count("\r")
+        or value.count("\n") != redacted.count("\n")
+        or _replace_string(redacted)[0] != redacted
+        or _has_sensitive_string(redacted)
+    ):
         raise ValueError("PROMPT_REDACTION_FAILED")
     return RedactionResult(redacted.encode("utf-8"), tuple(sorted(categories)))
 
