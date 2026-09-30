@@ -15,6 +15,7 @@ from uuid import uuid4
 from sastsimi.config.user_config import ElapsedLimit, TokenLimit
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.prompt_redaction import redact_projected_json
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 
@@ -1101,7 +1102,10 @@ class SimpleAnalysisApplication:
                         return self._candidate_bootstrap_failure(
                             run, identity, static, "AST_FOCUS_EVIDENCE_INVALID"
                         )
-                focused = artifacts.put_json(focused_data)
+                focused = artifacts.put_bytes(
+                    redact_projected_json(canonical_bytes(focused_data)).data,
+                    "application/json",
+                )
                 candidate_static = static.model_copy(
                     update={"static_bundle_ref": focused}
                 )

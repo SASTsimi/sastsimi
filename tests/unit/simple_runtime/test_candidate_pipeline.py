@@ -135,6 +135,7 @@ def _setup(
     decision: str = "EXCLUDE",
     partial: bool = False,
     with_ast_summary: bool = False,
+    evidence_excerpt: str | None = None,
 ) -> tuple[SimpleAnalysisApplication, SimpleCheckpointStore, _Client, _Hypotheses]:
     data_dir = tmp_path / "data"
     workspace = tmp_path / "checkout"
@@ -158,7 +159,14 @@ def _setup(
                         "path": "app.py",
                         "start": {"line": i + 2},
                         "end": {"line": i + 2},
-                        "extra": {"message": "eval call"},
+                        "extra": {
+                            "message": "eval call",
+                            **(
+                                {"lines": evidence_excerpt}
+                                if evidence_excerpt is not None
+                                else {}
+                            ),
+                        },
                     }
                     for i in range(result_count)
                 ]
@@ -656,6 +664,61 @@ class _SuccessRunner(SimpleRuntimeRunner):
             current_stage=SimpleStage.VERIFICATION_FINAL_DONE,
             status=StageStatus.SUCCEEDED,
         )
+
+
+@pytest.mark.asyncio
+async def test_candidate_focus_redacts_credential_shaped_excerpt_before_hypothesis(
+    tmp_path: Path,
+) -> None:
+    fake_expression = "password = compute()"
+    app, store, client, _ = _setup(
+        tmp_path,
+        decision="INCLUDE",
+        evidence_excerpt=fake_expression,
+        with_ast_summary=True,
+    )
+
+    class CaptureHypotheses(_ManyHypotheses):
+        def __init__(self, data_dir: Path) -> None:
+            super().__init__(data_dir)
+            self.focused_ref: StoredDataRef | None = None
+
+        async def propose(
+            self, identity: CheckpointIdentity, static: StaticBootstrapResult
+        ) -> tuple[HypothesisSeed, ...]:
+            self.focused_ref = static.static_bundle_ref
+            return await super().propose(identity, static)
+
+    hypotheses = CaptureHypotheses(tmp_path / "data")
+    app._candidate_hypotheses = hypotheses
+    app._runner_factory = lambda *_: _SuccessRunner(store)
+
+    outcome = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+
+    assert outcome.status == "COMPLETE", outcome.error_code
+    assert client.calls == hypotheses.calls == 1
+    assert hypotheses.focused_ref is not None
+    artifacts = SimpleArtifactRepository(tmp_path / "data", outcome.identity)
+    focused = json.loads(artifacts.read(hypotheses.focused_ref))
+    assert focused["candidate_focus"]["evidence_excerpt"] == "[REDACTED:CREDENTIAL]"
+    assert focused["candidate_focus"]["summary"] == "eval call"
+    assert focused["ast_focus"]["status"] == "AVAILABLE"
+
+    candidate = store.list_candidates(outcome.identity, "scope-1", limit=1)[0]
+    assert candidate.decision == "INCLUDE"
+    assert candidate.evidence_excerpt == fake_expression
+    run = store.require_analysis_run("analysis-1")
+    assert run.static_bundle_ref is not None
+    static_bundle = json.loads(artifacts.read(run.static_bundle_ref))
+    raw_ref = StoredDataRef.model_validate(static_bundle["engine_raw_refs"][0])
+    raw = json.loads(artifacts.read(raw_ref))
+    assert raw["results"][0]["extra"]["lines"] == fake_expression
 
 
 @pytest.mark.asyncio
