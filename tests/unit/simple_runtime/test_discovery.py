@@ -242,6 +242,180 @@ async def test_invalid_ids_retry_with_schema_and_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_schema_requires_exact_batch_ids_and_decision_count() -> None:
+    class CapturingClient(_Client):
+        def __init__(self) -> None:
+            super().__init__()
+            self.schemas: list[Mapping[str, Any]] = []
+
+        async def call(
+            self,
+            *,
+            prompt: bytes,
+            output_schema: Mapping[str, Any],
+            timeout_ms: int,
+            agent_name: str = "agent",
+        ) -> SimpleLLMCallResult | StageFailure:
+            self.schemas.append(output_schema)
+            return await super().call(
+                prompt=prompt,
+                output_schema=output_schema,
+                timeout_ms=timeout_ms,
+                agent_name=agent_name,
+            )
+
+    client = CapturingClient()
+    outcome = await CandidateDiscovery(
+        store=_Store([_Candidate("candidate-a"), _Candidate("candidate-b")]),
+        artifacts=_Artifacts(),
+        client=client,
+    ).run(_identity(), "scope")
+
+    assert outcome.status == "COMPLETE"
+    decisions = client.schemas[0]["properties"]["decisions"]
+    assert decisions["minItems"] == decisions["maxItems"] == 2
+    assert decisions["items"]["properties"]["candidate_id"]["enum"] == [
+        "candidate-a",
+        "candidate-b",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_exhausted_invalid_batch_splits_and_isolates_bad_singleton() -> None:
+    class MalformedIdClient(_Client):
+        async def call(
+            self,
+            *,
+            prompt: bytes,
+            output_schema: Mapping[str, Any],
+            timeout_ms: int,
+            agent_name: str = "agent",
+        ) -> SimpleLLMCallResult | StageFailure:
+            result = await super().call(
+                prompt=prompt,
+                output_schema=output_schema,
+                timeout_ms=timeout_ms,
+                agent_name=agent_name,
+            )
+            assert isinstance(result, SimpleLLMCallResult)
+            rows = result.value["decisions"]
+            assert isinstance(rows, list)
+            first_row = rows[0]
+            assert isinstance(first_row, dict)
+            if len(rows) > 1 or first_row["candidate_id"] == "candidate-bad":
+                first_row["candidate_id"] = "malformed-id"
+            return result
+
+    store = _Store([_Candidate("candidate-bad"), _Candidate("candidate-good")])
+    client = MalformedIdClient()
+    outcome = await CandidateDiscovery(
+        store=store, artifacts=_Artifacts(), client=client, batch_size=2
+    ).run(_identity(), "scope")
+
+    assert outcome.status == "ERROR"
+    assert outcome.counts["ERROR"] == 1
+    assert outcome.counts["INCLUDE"] == 1
+    assert store.decisions == {
+        "candidate-bad": "ERROR",
+        "candidate-good": "INCLUDE",
+    }
+    assert client.batch_sizes == [2, 2, 2, 1, 1, 1, 1]
+
+
+@pytest.mark.asyncio
+async def test_provider_invalid_output_splits_and_isolates_bad_singleton() -> None:
+    class InvalidOutputClient(_Client):
+        async def call(
+            self,
+            *,
+            prompt: bytes,
+            output_schema: Mapping[str, Any],
+            timeout_ms: int,
+            agent_name: str = "agent",
+        ) -> SimpleLLMCallResult | StageFailure:
+            result = await super().call(
+                prompt=prompt,
+                output_schema=output_schema,
+                timeout_ms=timeout_ms,
+                agent_name=agent_name,
+            )
+            rows = json.loads(
+                prompt.split(b"<CANDIDATES>")[1].split(b"</CANDIDATES>")[0]
+            )
+            if len(rows) > 1 or rows[0]["candidate_id"] == "candidate-bad":
+                return StageFailure(
+                    code="INVALID_OUTPUT",
+                    retryable=False,
+                    safe_message="schema mismatch",
+                )
+            return result
+
+    store = _Store([_Candidate("candidate-bad"), _Candidate("candidate-good")])
+    client = InvalidOutputClient()
+    outcome = await CandidateDiscovery(
+        store=store, artifacts=_Artifacts(), client=client, batch_size=2
+    ).run(_identity(), "scope")
+
+    assert outcome.status == "ERROR"
+    assert store.decisions == {
+        "candidate-bad": "ERROR",
+        "candidate-good": "INCLUDE",
+    }
+    assert client.batch_sizes == [2, 2, 2, 1, 1, 1, 1]
+
+
+@pytest.mark.asyncio
+async def test_resume_retries_only_isolated_error_without_duplicate_decision() -> None:
+    class MalformedOnce(_Client):
+        async def call(
+            self,
+            *,
+            prompt: bytes,
+            output_schema: Mapping[str, Any],
+            timeout_ms: int,
+            agent_name: str = "agent",
+        ) -> SimpleLLMCallResult | StageFailure:
+            result = await super().call(
+                prompt=prompt,
+                output_schema=output_schema,
+                timeout_ms=timeout_ms,
+                agent_name=agent_name,
+            )
+            assert isinstance(result, SimpleLLMCallResult)
+            rows = result.value["decisions"]
+            assert isinstance(rows, list)
+            first_row = rows[0]
+            assert isinstance(first_row, dict)
+            if len(rows) > 1 or first_row["candidate_id"] == "candidate-bad":
+                first_row["candidate_id"] = "malformed-id"
+            return result
+
+    store = _Store([_Candidate("candidate-bad"), _Candidate("candidate-good")])
+    first = await CandidateDiscovery(
+        store=store, artifacts=_Artifacts(), client=MalformedOnce(), batch_size=2
+    ).run(_identity(), "scope")
+    assert first.counts["ERROR"] == 1
+    assert first.counts["INCLUDE"] == 1
+
+    artifacts = _Artifacts()
+    client = _Client()
+    resumed = await CandidateDiscovery(
+        store=store, artifacts=artifacts, client=client, batch_size=2
+    ).run(_identity(), "scope", retry_errors=True)
+
+    assert resumed.status == "COMPLETE"
+    assert resumed.counts["INCLUDE"] == 2
+    assert client.batch_sizes == [1]
+    assert (
+        sum(
+            isinstance(value, dict) and value.get("kind") == "simple_discovery_decision"
+            for value in artifacts.values
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
 async def test_provider_invalid_json_gets_bounded_schema_retry() -> None:
     store = _Store([_Candidate("candidate-1")])
     client = _Client(invalid_failure_once=True)

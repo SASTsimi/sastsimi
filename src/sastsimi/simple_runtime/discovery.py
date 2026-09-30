@@ -137,8 +137,10 @@ class CandidateDiscovery:
             return await self._split_or_error(
                 identity, scope, candidates, "DISCOVERY_INPUT_TOO_LARGE"
             )
-        schema = self._schema(len(candidates))
+        schema = self._schema(candidates)
         validation_error: str | None = None
+        semantic_validation_failed = False
+        provider_invalid_output = False
         last_ref: StoredDataRef | None = None
         provider_failure: StageFailure | None = None
         for _attempt in range(self._max_attempts):
@@ -169,7 +171,9 @@ class CandidateDiscovery:
                         identity, scope, candidates, result.code
                     )
                 validation_error = result.code
-                if result.code != "INVALID_OUTPUT":
+                if result.code == "INVALID_OUTPUT":
+                    provider_invalid_output = True
+                else:
                     provider_failure = result
                 if not result.retryable and result.code != "INVALID_OUTPUT":
                     break
@@ -178,6 +182,7 @@ class CandidateDiscovery:
             last_ref = result.raw_output_ref or result.response_ref
             decisions, validation_error = self._validate(result.value, candidates)
             if decisions is None:
+                semantic_validation_failed = True
                 last_ref = self._artifacts.put_json(
                     {
                         "kind": "simple_discovery_invalid",
@@ -231,6 +236,14 @@ class CandidateDiscovery:
                     attempt_ref=last_ref,
                 )
             return None
+        if (
+            (semantic_validation_failed or provider_invalid_output)
+            and provider_failure is None
+            and len(candidates) > 1
+        ):
+            return await self._split_or_error(
+                identity, scope, candidates, "DISCOVERY_INVALID_OUTPUT"
+            )
         for candidate in candidates:
             self._error(
                 identity,
@@ -318,7 +331,8 @@ class CandidateDiscovery:
         )
 
     @staticmethod
-    def _schema(count: int) -> dict[str, object]:
+    def _schema(candidates: tuple[Any, ...]) -> dict[str, object]:
+        count = len(candidates)
         return {
             "type": "object",
             "required": ["decisions"],
@@ -326,13 +340,19 @@ class CandidateDiscovery:
             "properties": {
                 "decisions": {
                     "type": "array",
+                    "minItems": count,
                     "maxItems": count,
                     "items": {
                         "type": "object",
                         "required": ["candidate_id", "status", "reason", "evidence"],
                         "additionalProperties": False,
                         "properties": {
-                            "candidate_id": {"type": "string"},
+                            "candidate_id": {
+                                "type": "string",
+                                "enum": [
+                                    candidate.candidate_id for candidate in candidates
+                                ],
+                            },
                             "status": {
                                 "type": "string",
                                 "enum": ["INCLUDE", "EXCLUDE", "UNDECIDED"],

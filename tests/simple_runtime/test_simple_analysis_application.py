@@ -448,6 +448,129 @@ def test_full_static_evidence_rejects_damaged_ast_manifest(
         application._validate_static_evidence(static, identity)
 
 
+@pytest.mark.parametrize(
+    "damage",
+    [
+        None,
+        "coverage_parse_count",
+        "coverage_parse_paths",
+        "coverage_oversize_count",
+        "coverage_oversize_paths",
+        "summary_parse_count",
+        "summary_oversize_count",
+        "missing_parse_path",
+        "missing_oversize_path",
+        "unselected_parse_path",
+        "full_with_unaccounted_paths",
+    ],
+)
+def test_v2_static_evidence_requires_exact_ast_source_partition(
+    tmp_path: Path, damage: str | None
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-ast-partition",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("f()\n", encoding="utf-8")
+    (workspace / "bad.py").write_text("def broken(:\n", encoding="utf-8")
+    (workspace / "huge.py").write_text("x" * 40, encoding="utf-8")
+    selected = ["app.py", "bad.py", "huge.py"]
+    summary = collect_python_ast(workspace, selected, artifacts, max_source_bytes=20)
+    source_ref = artifacts.put_json(
+        {"kind": "simple_tracked_sources", "paths": selected}
+    )
+    coverage: dict[str, object] = {
+        "kind": "simple_static_coverage_v1",
+        "analysis_id": identity.analysis_id,
+        "workspace_id": identity.workspace_id,
+        "commit_id": identity.commit_id,
+        "fingerprint": "f" * 64,
+        "expected_count": 1,
+        "verified_count": 1,
+        "gaps": [],
+        "unsupported": [],
+        "ast_parsed_file_count": 1,
+        "ast_parse_error_count": 1,
+        "ast_parse_errors": ["bad.py"],
+        "ast_oversize_count": 1,
+        "ast_oversize_paths": ["huge.py"],
+        "ast_truncated": False,
+    }
+    if damage == "coverage_parse_count":
+        coverage["ast_parse_error_count"] = 0
+    elif damage == "coverage_parse_paths":
+        coverage["ast_parse_errors"] = []
+    elif damage == "coverage_oversize_count":
+        coverage["ast_oversize_count"] = 0
+    elif damage == "coverage_oversize_paths":
+        coverage["ast_oversize_paths"] = []
+    elif damage == "summary_parse_count":
+        summary["parse_error_count"] = 0
+    elif damage == "summary_oversize_count":
+        summary["oversize_count"] = 0
+    elif damage == "missing_parse_path":
+        summary["parse_errors"] = []
+        summary["parse_error_count"] = 0
+        coverage["ast_parse_errors"] = []
+        coverage["ast_parse_error_count"] = 0
+    elif damage == "missing_oversize_path":
+        summary["oversize_paths"] = []
+        summary["oversize_count"] = 0
+        coverage["ast_oversize_paths"] = []
+        coverage["ast_oversize_count"] = 0
+    elif damage == "unselected_parse_path":
+        summary["parse_errors"] = ["ghost.py"]
+        coverage["ast_parse_errors"] = ["ghost.py"]
+    elif damage == "full_with_unaccounted_paths":
+        summary["parse_errors"] = []
+        summary["parse_error_count"] = 0
+        summary["oversize_paths"] = []
+        summary["oversize_count"] = 0
+        coverage["ast_parse_errors"] = []
+        coverage["ast_parse_error_count"] = 0
+        coverage["ast_oversize_paths"] = []
+        coverage["ast_oversize_count"] = 0
+    coverage_ref = artifacts.put_json(coverage)
+    bundle_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_fact_bundle",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "static_coverage_ref": coverage_ref.model_dump(mode="json"),
+            "source_manifest_ref": source_ref.model_dump(mode="json"),
+            "ast_summary": summary,
+        }
+    )
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3"),
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=_runner,
+    )
+    static = StaticBootstrapResult(
+        repository_profile_ref=_ref("repository-profile"),
+        static_bundle_ref=bundle_ref,
+        static_coverage_ref=coverage_ref,
+        static_disposition=(
+            "FULL" if damage == "full_with_unaccounted_paths" else "PARTIAL"
+        ),
+        workspace_path=workspace,
+    )
+
+    if damage is None:
+        application._validate_static_evidence(static, identity)
+    else:
+        with pytest.raises(StaticEvidenceInvalid):
+            application._validate_static_evidence(static, identity)
+
+
 @pytest.mark.parametrize("with_sarif_ref", [False, True])
 def test_opengrep_unavailable_accepts_only_durable_codeql_proof(
     tmp_path: Path, with_sarif_ref: bool

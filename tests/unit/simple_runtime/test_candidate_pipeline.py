@@ -176,6 +176,9 @@ def _setup(
         if ast_summary is not None
         else {"kind": "simple_python_ast", "facts": []}
     )
+    source_ref = artifacts.put_json(
+        {"kind": "simple_tracked_sources", "paths": ["app.py"]}
+    )
     coverage_ref = artifacts.put_json(
         {
             "kind": "simple_static_coverage_v1",
@@ -187,6 +190,18 @@ def _setup(
             "verified_count": 1,
             "gaps": [],
             "unsupported": [],
+            **(
+                {
+                    "ast_parsed_file_count": 1,
+                    "ast_parse_error_count": 0,
+                    "ast_parse_errors": [],
+                    "ast_oversize_count": 0,
+                    "ast_oversize_paths": [],
+                    "ast_truncated": False,
+                }
+                if ast_summary is not None
+                else {}
+            ),
             "out_of_scope_product_files": [
                 {"path": "web/app.ts", "reason": "PYTHON_ONLY"}
             ]
@@ -201,6 +216,7 @@ def _setup(
             "workspace_id": identity.workspace_id,
             "commit_id": identity.commit_id,
             "static_coverage_ref": coverage_ref.model_dump(mode="json"),
+            "source_manifest_ref": source_ref.model_dump(mode="json"),
             "engine_raw_refs": [raw_ref.model_dump(mode="json")],
             "engine_raw_sources": [
                 {
@@ -564,6 +580,7 @@ async def test_legacy_partial_candidate_resume_does_not_mix_new_ast_evidence(
     new_summary = collect_python_ast(
         tmp_path / "checkout", ("app.py",), artifacts, max_source_bytes=32_768
     )
+    assert static.result.static_coverage_ref is not None
     old_coverage = json.loads(artifacts.read(static.result.static_coverage_ref))
     new_coverage = old_coverage | {"out_of_scope_product_files": []}
     new_coverage_ref = artifacts.put_json(new_coverage)

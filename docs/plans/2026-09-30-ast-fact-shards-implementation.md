@@ -78,4 +78,3 @@
 - [ ] **Step 3: Review diff against spec and record validation instructions in README/note.** Expected: no secret or local path in committed docs.
 - [ ] **Step 4: Commit tests/docs.** `docs: explain file-scoped AST coverage and Dify verification`.
 - [ ] **Step 5: Only after tests pass, start one new Dify analysis at a pinned commit using a separate profile with cumulative limits set to `unlimited`.** Do not run additional live LLM tests. Record actual status and counts, not an assumed COMPLETE/finding.
-

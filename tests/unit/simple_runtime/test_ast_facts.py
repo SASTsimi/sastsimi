@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -80,9 +82,11 @@ def test_ast_focus_selects_nearby_facts_without_losing_file_evidence(
 
     assert len(canonical_bytes(focused)) <= 1024
     assert focused["total_count"] == 1000
-    assert focused["omitted_count"] == 1000 - len(focused["facts"])
+    facts = focused["facts"]
+    assert isinstance(facts, list)
+    assert focused["omitted_count"] == 1000 - len(facts)
     assert 0 < focused["omitted_count"] < 1000
-    assert any(fact["line"] == 900 for fact in focused["facts"])
+    assert any(fact["line"] == 900 for fact in facts)
     manifest = json.loads(
         artifacts.read(StoredDataRef.model_validate(summary["manifest_ref"]))
     )
@@ -147,7 +151,9 @@ def test_ast_focus_reads_one_file_when_manifest_exceeds_prompt_budget(
 
     assert focused["total_count"] == 1
     assert focused["omitted_count"] == 0
-    assert focused["facts"][0]["path"] == "file_0550.py"
+    facts = focused["facts"]
+    assert isinstance(facts, list)
+    assert facts[0]["path"] == "file_0550.py"
     assert len(canonical_bytes(focused)) < 8192
 
 
@@ -176,10 +182,12 @@ def test_ast_focus_unavailable_result_remains_bounded(tmp_path: Path) -> None:
     artifacts = _artifacts(tmp_path)
     summary = collect_python_ast(workspace, (), artifacts, max_source_bytes=100)
     summary["parse_errors"] = ["p" * 1024 + ".py"]
+    parse_errors = summary["parse_errors"]
+    assert isinstance(parse_errors, list)
 
     with pytest.raises(ValueError, match="AST_FOCUS_BUDGET_TOO_SMALL"):
         ast_facts.focus_ast_facts(
-            artifacts, summary, path=summary["parse_errors"][0], line=1, max_bytes=512
+            artifacts, summary, path=parse_errors[0], line=1, max_bytes=512
         )
 
 
@@ -196,10 +204,12 @@ def test_ast_focus_reuses_one_validated_manifest_for_many_candidates(
     calls = 0
     original = ast_facts._new_manifest
 
-    def counted(*args: object, **kwargs: object) -> object:
+    def counted(
+        artifacts: SimpleArtifactRepository, summary: Mapping[str, object]
+    ) -> list[dict[str, Any]]:
         nonlocal calls
         calls += 1
-        return original(*args, **kwargs)
+        return original(artifacts, summary)
 
     monkeypatch.setattr(ast_facts, "_new_manifest", counted)
 
@@ -208,6 +218,8 @@ def test_ast_focus_reuses_one_validated_manifest_for_many_candidates(
         focused = ast_facts.focus_ast_facts(
             artifacts, summary, path="app.py", line=line, manifest_index=index
         )
-        assert any(fact["line"] == line for fact in focused["facts"])
+        facts = focused["facts"]
+        assert isinstance(facts, list)
+        assert any(fact["line"] == line for fact in facts)
 
     assert calls == 1

@@ -734,6 +734,72 @@ class SimpleAnalysisApplication:
                 raise StaticEvidenceInvalid()
             if isinstance(ast_summary, dict):
                 validate_ast_manifest(artifacts, ast_summary)
+                if ast_summary.get("format_version") == 2:
+                    if type(recorded_parsed) is not int or recorded_parsed != parsed:
+                        raise StaticEvidenceInvalid()
+                    source_ref = StoredDataRef.model_validate(
+                        bundle["source_manifest_ref"]
+                    )
+                    source_manifest = json.loads(artifacts.read(source_ref))
+                    if (
+                        not isinstance(source_manifest, dict)
+                        or source_manifest.get("kind") != "simple_tracked_sources"
+                        or not isinstance(source_manifest.get("paths"), list)
+                    ):
+                        raise StaticEvidenceInvalid()
+                    selected_paths = source_manifest["paths"]
+                    if any(not isinstance(path, str) for path in selected_paths):
+                        raise StaticEvidenceInvalid()
+                    python_paths = {
+                        path
+                        for path in selected_paths
+                        if path.lower().endswith((".py", ".pyi"))
+                    }
+                    if len(set(selected_paths)) != len(selected_paths):
+                        raise StaticEvidenceInvalid()
+                    parsed_paths = set(index_ast_manifest(artifacts, ast_summary))
+                    error_paths = ast_summary.get("parse_errors")
+                    oversize_paths = ast_summary.get("oversize_paths")
+                    if not isinstance(error_paths, list) or not isinstance(
+                        oversize_paths, list
+                    ):
+                        raise StaticEvidenceInvalid()
+                    for paths, summary_count, coverage_paths, coverage_count in (
+                        (
+                            error_paths,
+                            ast_summary.get("parse_error_count"),
+                            coverage.get("ast_parse_errors"),
+                            coverage.get("ast_parse_error_count"),
+                        ),
+                        (
+                            oversize_paths,
+                            ast_summary.get("oversize_count"),
+                            coverage.get("ast_oversize_paths"),
+                            coverage.get("ast_oversize_count"),
+                        ),
+                    ):
+                        if (
+                            not isinstance(paths, list)
+                            or any(
+                                not isinstance(path, str) or not path for path in paths
+                            )
+                            or type(summary_count) is not int
+                            or summary_count != len(paths)
+                            or type(coverage_count) is not int
+                            or coverage_count != summary_count
+                            or coverage_paths != paths
+                            or len(set(paths)) != len(paths)
+                        ):
+                            raise StaticEvidenceInvalid()
+                    if (
+                        parsed_paths & set(error_paths)
+                        or parsed_paths & set(oversize_paths)
+                        or set(error_paths) & set(oversize_paths)
+                        or parsed_paths | set(error_paths) | set(oversize_paths)
+                        != python_paths
+                        or coverage.get("ast_truncated") is not False
+                    ):
+                        raise StaticEvidenceInvalid()
             codeql_proof = False
             if (
                 bundle.get("codeql_executed") is True
