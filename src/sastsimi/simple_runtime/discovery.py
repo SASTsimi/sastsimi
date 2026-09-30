@@ -173,12 +173,14 @@ class CandidateDiscovery:
                 validation_error = result.code
                 if result.code == "INVALID_OUTPUT":
                     provider_invalid_output = True
+                    provider_failure = None
                 else:
                     provider_failure = result
                 if not result.retryable and result.code != "INVALID_OUTPUT":
                     break
                 continue
             assert isinstance(result, SimpleLLMCallResult)
+            provider_failure = None
             last_ref = result.raw_output_ref or result.response_ref
             decisions, validation_error = self._validate(result.value, candidates)
             if decisions is None:

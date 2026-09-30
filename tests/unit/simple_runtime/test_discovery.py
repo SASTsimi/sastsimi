@@ -365,6 +365,53 @@ async def test_provider_invalid_output_splits_and_isolates_bad_singleton() -> No
 
 
 @pytest.mark.asyncio
+async def test_timeout_then_invalid_output_splits_without_stale_failure() -> None:
+    class MixedFailureClient(_Client):
+        async def call(
+            self,
+            *,
+            prompt: bytes,
+            output_schema: Mapping[str, Any],
+            timeout_ms: int,
+            agent_name: str = "agent",
+        ) -> SimpleLLMCallResult | StageFailure:
+            result = await super().call(
+                prompt=prompt,
+                output_schema=output_schema,
+                timeout_ms=timeout_ms,
+                agent_name=agent_name,
+            )
+            rows = json.loads(
+                prompt.split(b"<CANDIDATES>")[1].split(b"</CANDIDATES>")[0]
+            )
+            if len(rows) > 1 and self.batch_sizes.count(2) == 1:
+                return StageFailure(
+                    code="TIMED_OUT", retryable=True, safe_message="timeout"
+                )
+            if len(rows) > 1 or rows[0]["candidate_id"] == "candidate-bad":
+                return StageFailure(
+                    code="INVALID_OUTPUT",
+                    retryable=False,
+                    safe_message="schema mismatch",
+                )
+            return result
+
+    store = _Store([_Candidate("candidate-bad"), _Candidate("candidate-good")])
+    client = MixedFailureClient()
+    outcome = await CandidateDiscovery(
+        store=store, artifacts=_Artifacts(), client=client, batch_size=2
+    ).run(_identity(), "scope")
+
+    assert outcome.status == "ERROR"
+    assert outcome.error_code == "DISCOVERY_CANDIDATE_ERROR"
+    assert store.decisions == {
+        "candidate-bad": "ERROR",
+        "candidate-good": "INCLUDE",
+    }
+    assert client.batch_sizes == [2, 2, 2, 1, 1, 1, 1]
+
+
+@pytest.mark.asyncio
 async def test_resume_retries_only_isolated_error_without_duplicate_decision() -> None:
     class MalformedOnce(_Client):
         async def call(
