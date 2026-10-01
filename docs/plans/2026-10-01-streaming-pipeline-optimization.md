@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, SQLite, Pydantic, asyncio, pytest, Ruff, mypy.
 
-**Spec:** docs/superpowers/specs/2026-10-01-streaming-pipeline-optimization-design.md
+**Spec:** docs/decisions/2026-10-01-streaming-pipeline-optimization-design.md
 
 ## Global Constraints
 
