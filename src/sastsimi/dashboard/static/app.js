@@ -26,8 +26,9 @@ function analysisButton(item) {
   const routeId = item.display_analysis_id || item.analysis_id;
   if (state.selected === routeId) button.classList.add("selected");
   button.append(el("strong", item.display_analysis_id || item.analysis_id));
+  if (item.repository) button.append(el("div", item.repository, "repository"));
   button.append(el("div", `${item.current_stage} · ${item.status}`, "status"));
-  button.append(el("div", `진행 ${item.progress_percent}% · ${item.completed_units}/${item.known_units}`, "meta"));
+  button.append(el("div", `진행 ${item.progress_percent}% · ${item.completed_units}/${item.known_units} · 가설 ${item.hypothesis_count} · TRUE ${item.finding_count}`, "meta"));
   button.addEventListener("click", () => {
     state.selected = routeId;
     window.history.replaceState({}, "", `/analyses/${encodeURIComponent(routeId)}`);

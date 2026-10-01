@@ -13,6 +13,7 @@ class AnalysisSummaryView(ContractModel):
     display_analysis_id: str | None = None
     workspace_id: str | None = None
     commit_id: str | None = None
+    repository: str | None = None
     current_stage: str
     status: str
     completed_count: int
