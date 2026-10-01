@@ -294,6 +294,55 @@ async def test_report_is_refused_when_it_names_the_operators_own_identity(
     assert excinfo.value.failure.code == "REPORT_SENSITIVE_CONTENT"
 
 
+class _JargonOnFirstCallReporterClient(_ReporterClient):
+    """Leaks jargon once, then answers clean - a repair that actually works."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def call(self, **kwargs: Any) -> SimpleLLMCallResult:
+        self.calls += 1
+        result = await super().call(**kwargs)
+        if self.calls > 1:
+            return result
+        leaked = dict(result.value)
+        leaked["details_en"] = (
+            "The Pro agent confirmed this across two rounds. " + leaked["details_en"]
+        )
+        return SimpleLLMCallResult(
+            value=leaked,
+            prompt_digest=result.prompt_digest,
+            output_digest=result.output_digest,
+        )
+
+
+@pytest.mark.asyncio
+async def test_report_recovers_from_a_jargon_leak_on_retry(tmp_path: Path) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    prior, finding_ref = _reportable_prior(identity, artifacts)
+    current = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.REPORT_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(finding_ref,),
+        input_hash=input_reference_hash((finding_ref,)),
+        attempt_id="report-attempt",
+    )
+    client = _JargonOnFirstCallReporterClient()
+    stage = ReporterStage(client, artifacts)  # type: ignore[arg-type]
+
+    result = await stage(current, prior)
+
+    assert client.calls == 2
+    assert len(result.output_refs) == 3
+
+
 class _JargonLeakingReporterClient(_ReporterClient):
     async def call(self, **kwargs: Any) -> SimpleLLMCallResult:
         result = await super().call(**kwargs)

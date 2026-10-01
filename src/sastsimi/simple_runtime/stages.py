@@ -700,9 +700,16 @@ class _StructuredStage:
         self,
         checkpoint: StageCheckpoint,
         refs: tuple[StoredDataRef, ...],
+        *,
+        extra_instructions: str = "",
     ) -> tuple[SimpleLLMCallResult, StoredDataRef]:
         context = self._artifacts.prompt_context(refs)
         history = Exploration()
+        instructions = (
+            self._instructions
+            if not extra_instructions
+            else self._instructions + "\n\n" + extra_instructions
+        )
         # One conversation per agent: each later turn carries only the files
         # just served, and what came before is read from the prompt cache.
         async with conversation_with(
@@ -710,7 +717,7 @@ class _StructuredStage:
             output_schema=self._schema,
             timeout_ms=self._call_timeout_ms,
         ) as talk:
-            result = self._checked(await talk.ask(_prompt(self._instructions, context)))
+            result = self._checked(await talk.ask(_prompt(instructions, context)))
             # Reading one file is what makes the next one worth asking for, so
             # the agent is asked again with what it read rather than once with
             # everything someone decided in advance that it might want.
@@ -1518,6 +1525,12 @@ _PIPELINE_JARGON = frozenset(
     }
 )
 
+# A jargon leak is usually the reporter echoing a word it was told to avoid
+# rather than a stable preference, so naming the exact term and asking again
+# clears most of them; a human looks at whatever is still stuck after this
+# many tries instead of every transient miss needing that attention.
+_REPORT_JARGON_REPAIR_ATTEMPTS = 2
+
 
 def _cvss_text(cwe: Mapping[str, JsonValue]) -> str | None:
     """The CWE label's CVSS metrics as a vector and computed score.
@@ -1643,28 +1656,36 @@ its own field.
         dynamic = prior.get(SimpleStage.POC_EXECUTION_DONE)
         if dynamic is None or dynamic.validated_poc_ref is None:
             raise ValueError("REPORT_VALIDATED_POC_MISSING")
-        result, draft_ref = await self._stage.call(checkpoint, _prior_refs(prior))
+        refs = _prior_refs(prior)
         versions = await self._affected_versions(checkpoint, prior)
-        rendered = self._render(
-            result.value, checkpoint, prior, finding.output_refs[0], versions
-        )
-        submission = self._render_submission(
-            result.value, checkpoint, prior, finding.output_refs[0], versions
-        )
-        for candidate, is_submission in ((rendered, False), (submission, True)):
-            text = candidate.decode("utf-8")
-            # No secret-shaped-name check: the report is written from redacted
-            # repository code, so the check only refused reports that quote a
-            # fixture login, and a person reviews every report before it is sent.
-            # The operator's identity is not repository code and is not redacted
-            # on the way in, so it is still checked here.
-            leaked_jargon = is_submission and any(
-                term in text.lower() for term in _PIPELINE_JARGON
+        extra_instructions = ""
+        for attempt in range(_REPORT_JARGON_REPAIR_ATTEMPTS + 1):
+            result, draft_ref = await self._stage.call(
+                checkpoint, refs, extra_instructions=extra_instructions
             )
-            if (
-                any(literal in text for literal in self._operator_identity)
-                or leaked_jargon
-            ):
+            rendered = self._render(
+                result.value, checkpoint, prior, finding.output_refs[0], versions
+            )
+            submission = self._render_submission(
+                result.value, checkpoint, prior, finding.output_refs[0], versions
+            )
+            identity_leak = False
+            leaked_terms: list[str] = []
+            for candidate, is_submission in ((rendered, False), (submission, True)):
+                text = candidate.decode("utf-8")
+                # No secret-shaped-name check: the report is written from
+                # redacted repository code, so the check only refused reports
+                # that quote a fixture login, and a person reviews every
+                # report before it is sent. The operator's identity is not
+                # repository code and is not redacted on the way in, so it is
+                # still checked here.
+                if any(literal in text for literal in self._operator_identity):
+                    identity_leak = True
+                if is_submission:
+                    leaked_terms = [
+                        term for term in _PIPELINE_JARGON if term in text.lower()
+                    ]
+            if identity_leak:
                 raise StageFailed(
                     StageFailure(
                         code="REPORT_SENSITIVE_CONTENT",
@@ -1673,6 +1694,28 @@ its own field.
                         evidence_refs=(draft_ref,),
                     )
                 )
+            if not leaked_terms:
+                break
+            if attempt == _REPORT_JARGON_REPAIR_ATTEMPTS:
+                raise StageFailed(
+                    StageFailure(
+                        code="REPORT_SENSITIVE_CONTENT",
+                        retryable=False,
+                        safe_message="Report contains sensitive content",
+                        evidence_refs=(draft_ref,),
+                    )
+                )
+            # A rewrite almost always drops words it was just told never to
+            # use, where a fresh, unguided attempt might repeat the same slip
+            # - so this names the exact terms caught rather than only
+            # restating the standing instruction.
+            extra_instructions = (
+                "Your last answer used pipeline-internal wording that must "
+                "never appear in the submission: "
+                + ", ".join(sorted(leaked_terms))
+                + ". Rewrite every field using only language a maintainer "
+                "outside this project would recognize."
+            )
         report_dir = self._artifacts.paths.reports / checkpoint.identity.analysis_id
         report_dir.mkdir(parents=True, exist_ok=True)
         display_id = FindingDisplayIdStore(
