@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,6 +20,10 @@ from sastsimi.simple_runtime.application import (
 )
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.ast_facts import collect_python_ast
+from sastsimi.simple_runtime.bootstrap_stages import (
+    BatchProposalResult,
+    CandidateProposalOutcome,
+)
 from sastsimi.simple_runtime.models import (
     STAGE_VERSION,
     CheckpointIdentity,
@@ -139,6 +144,7 @@ def _setup(
     partial: bool = False,
     with_ast_summary: bool = False,
     evidence_excerpt: str | None = None,
+    pipeline_version: int = 1,
 ) -> tuple[SimpleAnalysisApplication, SimpleCheckpointStore, _Client, _Hypotheses]:
     data_dir = tmp_path / "data"
     workspace = tmp_path / "checkout"
@@ -264,6 +270,7 @@ def _setup(
         runner_factory=lambda *_: (_ for _ in ()).throw(AssertionError("runner")),
         id_factory=lambda: next(ids),
         candidate_pipeline_enabled=True,
+        candidate_pipeline_version=pipeline_version,
         candidate_client_factory=lambda *_: client,
     )
     return app, store, client, hypotheses
@@ -1334,6 +1341,320 @@ async def test_new_pipeline_persists_excluded_candidate_and_finishes_without_fin
         )["EXCLUDE"]
         == 1
     )
+
+
+@pytest.mark.asyncio
+async def test_v2_batch_resume_reuses_zero_seed_candidates(tmp_path: Path) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        result_count=2,
+        decision="INCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+
+    class V2Hypotheses:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, ...]] = []
+
+        async def propose_batch(
+            self,
+            identity: CheckpointIdentity,
+            _static: StaticBootstrapResult,
+            batch: object,
+            *,
+            requested_ids: tuple[str, ...] | None = None,
+        ) -> BatchProposalResult:
+            ids = requested_ids or batch.candidate_ids
+            self.calls.append(ids)
+            artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+            result_ref = artifacts.put_json(
+                {
+                    "kind": "simple_candidate_batch_response_v1",
+                    "batch_id": batch.batch_id,
+                    "requested_ids": ids,
+                    "candidate_results": [
+                        {"candidate_id": item, "status": "NO_HYPOTHESIS"}
+                        for item in ids
+                    ],
+                }
+            )
+            return BatchProposalResult(
+                results={
+                    candidate_id: CandidateProposalOutcome(
+                        status="NO_HYPOTHESIS",
+                        reason="No demonstrated input path",
+                        seeds=(),
+                        result_ref=result_ref,
+                    )
+                    for candidate_id in ids
+                },
+                missing_ids=(),
+                attempt_refs=(result_ref,),
+            )
+
+    hypotheses = V2Hypotheses()
+    app._candidate_hypotheses = hypotheses
+    request = SimpleAnalysisRequest(
+        data_dir=tmp_path / "data",
+        repository="https://github.com/example/repo",
+        commit="a" * 40,
+    )
+    first = await app.analyze(request)
+    second = await app.resume("analysis-1")
+    identity = first.identity
+    assert store.require_analysis_run("analysis-1").candidate_pipeline_version == 2
+    assert first.status != "COMPLETE"
+    assert second.status != "COMPLETE"
+    assert len(hypotheses.calls) == 1
+    progress = store.list_candidate_batch_outcomes(identity, "scope-1")
+    assert len(progress) == 2
+    assert all(record.status == "NO_HYPOTHESIS" for record in progress.values())
+    assert store.hypothesis_count(identity) == 0
+
+
+@pytest.mark.asyncio
+async def test_v2_partial_batch_retries_only_uncommitted_candidate(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        result_count=2,
+        decision="INCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+
+    class PartialV2Hypotheses:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, ...]] = []
+
+        async def propose_batch(
+            self,
+            identity: CheckpointIdentity,
+            _static: StaticBootstrapResult,
+            batch: object,
+            *,
+            requested_ids: tuple[str, ...] | None = None,
+        ) -> BatchProposalResult:
+            ids = requested_ids or batch.candidate_ids
+            self.calls.append(ids)
+            accepted = ids[:1] if len(self.calls) == 1 else ids
+            artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+            result_ref = artifacts.put_json(
+                {
+                    "kind": "simple_candidate_batch_response_v1",
+                    "batch_id": batch.batch_id,
+                    "requested_ids": ids,
+                    "candidate_results": [
+                        {"candidate_id": item, "status": "NO_HYPOTHESIS"}
+                        for item in accepted
+                    ],
+                }
+            )
+            missing = tuple(item for item in ids if item not in accepted)
+            return BatchProposalResult(
+                results={
+                    candidate_id: CandidateProposalOutcome(
+                        status="NO_HYPOTHESIS",
+                        reason="No demonstrated input path",
+                        seeds=(),
+                        result_ref=result_ref,
+                    )
+                    for candidate_id in accepted
+                },
+                missing_ids=missing,
+                attempt_refs=(result_ref,),
+                failure=(
+                    StageFailure(
+                        code="HYPOTHESIS_BATCH_OUTPUT_INVALID",
+                        retryable=False,
+                        safe_message="missing candidate",
+                    )
+                    if missing
+                    else None
+                ),
+            )
+
+    hypotheses = PartialV2Hypotheses()
+    app._candidate_hypotheses = hypotheses
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    assert first.status == "BLOCKED"
+    assert len(store.list_candidate_batch_outcomes(first.identity, "scope-1")) == 1
+    second = await app.resume("analysis-1")
+    assert second.status != "COMPLETE"
+    assert len(store.list_candidate_batch_outcomes(first.identity, "scope-1")) == 2
+    assert len(hypotheses.calls) == 2
+    assert len(hypotheses.calls[0]) == 2
+    assert len(hypotheses.calls[1]) == 1
+    assert hypotheses.calls[1][0] != hypotheses.calls[0][0]
+
+
+@pytest.mark.asyncio
+async def test_v2_batch_resume_preserves_pending_seed_without_reproposal(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        decision="INCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+
+    class OneSeed:
+        calls = 0
+
+        async def propose_batch(
+            self,
+            identity: CheckpointIdentity,
+            _static: StaticBootstrapResult,
+            batch: object,
+            *,
+            requested_ids: tuple[str, ...] | None = None,
+        ) -> BatchProposalResult:
+            self.calls += 1
+            ids = requested_ids or batch.candidate_ids
+            artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+            proposal_ref = artifacts.put_prompt_proposal(
+                {
+                    "kind": "simple_hypothesis_proposal",
+                    "analysis_id": identity.analysis_id,
+                    "hypothesis_id": "hypothesis-one",
+                    "candidate_id": ids[0],
+                    "proposal": {"summary": "Qualified candidate"},
+                }
+            )
+            response_ref = artifacts.put_json(
+                {
+                    "kind": "simple_candidate_batch_response_v1",
+                    "batch_id": batch.batch_id,
+                    "requested_ids": ids,
+                    "candidate_results": [
+                        {"candidate_id": ids[0], "status": "HYPOTHESES"}
+                    ],
+                }
+            )
+            return BatchProposalResult(
+                results={
+                    ids[0]: CandidateProposalOutcome(
+                        status="HYPOTHESES",
+                        reason="Visible reachable sensitive operation",
+                        seeds=(
+                            HypothesisSeed(
+                                hypothesis_id="hypothesis-one",
+                                proposal_ref=proposal_ref,
+                            ),
+                        ),
+                        result_ref=response_ref,
+                    )
+                },
+                missing_ids=(),
+                attempt_refs=(response_ref,),
+            )
+
+    hypotheses = OneSeed()
+    app._candidate_hypotheses = hypotheses
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    child = first.identity.model_copy(update={"hypothesis_id": "hypothesis-one"})
+    pending = store.require(child, SimpleStage.PRO_CON_DONE)
+    assert pending.status is StageStatus.PENDING
+    assert (
+        pending.input_refs[1]
+        != store.require_analysis_run("analysis-1").static_bundle_ref
+    )
+    second = await app.resume("analysis-1")
+    assert first.status == second.status == "PAUSED"
+    assert hypotheses.calls == 1
+    assert store.require(child, SimpleStage.PRO_CON_DONE) == pending
+    assert store.list_candidate_hypothesis_ids(
+        first.identity,
+        "scope-1",
+        next(iter(store.list_candidate_batch_outcomes(first.identity, "scope-1"))),
+    ) == ("hypothesis-one",)
+
+
+@pytest.mark.asyncio
+async def test_v2_resume_rejects_changed_candidate_source_hash(tmp_path: Path) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        result_count=2,
+        decision="INCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+
+    class ZeroSeeds:
+        calls = 0
+
+        async def propose_batch(
+            self,
+            identity: CheckpointIdentity,
+            _static: StaticBootstrapResult,
+            batch: object,
+            *,
+            requested_ids: tuple[str, ...] | None = None,
+        ) -> BatchProposalResult:
+            self.calls += 1
+            ids = requested_ids or batch.candidate_ids
+            artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+            ref = artifacts.put_json(
+                {
+                    "kind": "simple_candidate_batch_response_v1",
+                    "batch_id": batch.batch_id,
+                    "requested_ids": ids,
+                    "candidate_results": [
+                        {"candidate_id": item, "status": "NO_HYPOTHESIS"}
+                        for item in ids
+                    ],
+                }
+            )
+            return BatchProposalResult(
+                results={
+                    item: CandidateProposalOutcome(
+                        status="NO_HYPOTHESIS",
+                        reason="No source path",
+                        seeds=(),
+                        result_ref=ref,
+                    )
+                    for item in ids
+                },
+                missing_ids=(),
+                attempt_refs=(ref,),
+            )
+
+    hypotheses = ZeroSeeds()
+    app._candidate_hypotheses = hypotheses
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "UPDATE simple_candidate_batch_outcomes SET source_sha256 = ? "
+            "WHERE candidate_id = (SELECT MIN(candidate_id) "
+            "FROM simple_candidate_batch_outcomes)",
+            ("0" * 64,),
+        )
+    second = await app.resume("analysis-1")
+    assert first.status == "PAUSED"
+    assert second.status == "BLOCKED"
+    assert second.error_code == "CANDIDATE_BATCH_SCOPE_CHANGED"
+    assert hypotheses.calls == 1
 
 
 @pytest.mark.asyncio

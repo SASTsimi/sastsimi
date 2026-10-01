@@ -105,6 +105,17 @@ class StaticScanExecution:
     timeout_seconds: float
 
 
+@dataclass(frozen=True, slots=True)
+class CandidateBatchOutcomeRecord:
+    candidate_id: str
+    batch_id: str
+    static_bundle_hash: str
+    source_sha256: str | None
+    context_hash: str
+    status: str
+    result_ref: StoredDataRef
+
+
 class SimpleCheckpointStore:
     """Atomic checkpoint storage for the single-process local runtime."""
 
@@ -433,6 +444,43 @@ class SimpleCheckpointStore:
                     parent_hypothesis_ids_json TEXT NOT NULL DEFAULT '[]',
                     PRIMARY KEY (
                         analysis_id, workspace_id, commit_id, hypothesis_id
+                    )
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_candidate_batch_outcomes (
+                    analysis_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    scope_fingerprint TEXT NOT NULL,
+                    candidate_id TEXT NOT NULL,
+                    batch_id TEXT NOT NULL,
+                    static_bundle_hash TEXT NOT NULL,
+                    source_sha256 TEXT,
+                    context_hash TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    result_ref_json TEXT NOT NULL,
+                    PRIMARY KEY (
+                        analysis_id, workspace_id, commit_id,
+                        scope_fingerprint, candidate_id
+                    )
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_candidate_batch_progress (
+                    analysis_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    scope_fingerprint TEXT NOT NULL,
+                    batch_id TEXT NOT NULL,
+                    marker_ref_json TEXT NOT NULL,
+                    PRIMARY KEY (
+                        analysis_id, workspace_id, commit_id,
+                        scope_fingerprint, batch_id
                     )
                 )
                 """
@@ -813,6 +861,7 @@ class SimpleCheckpointStore:
             "RUNNING",
             "COMPLETE",
             "NO_HYPOTHESIS",
+            "INCONCLUSIVE",
             "ERROR",
         }:
             raise ValueError("CANDIDATE_DEEP_STATUS_INVALID")
@@ -972,6 +1021,196 @@ class SimpleCheckpointStore:
                     hypothesis_ref,
                     checkpoint=checkpoint,
                 )
+
+    def commit_candidate_batch_outcome(
+        self,
+        identity: CheckpointIdentity,
+        scope_fingerprint: str,
+        candidate_id: str,
+        *,
+        batch_id: str,
+        static_bundle_hash: str,
+        source_sha256: str | None,
+        context_hash: str,
+        status: str,
+        result_ref: StoredDataRef,
+        registrations: Sequence[tuple[str, StoredDataRef, StageCheckpoint]],
+    ) -> bool:
+        """Commit a v2 candidate verdict, all children, and deep status atomically."""
+
+        key = self._candidate_scope_key(identity, scope_fingerprint)
+        encoded_ref = self._candidate_ref_json(identity, result_ref)
+        if (
+            not candidate_id
+            or not batch_id
+            or not static_bundle_hash
+            or not context_hash
+            or status
+            not in {
+                "HYPOTHESES",
+                "NO_HYPOTHESIS",
+                "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS",
+            }
+            or (status == "HYPOTHESES") != bool(registrations)
+        ):
+            raise ValueError("CANDIDATE_BATCH_OUTCOME_INVALID")
+        deep_status = {
+            "HYPOTHESES": "RUNNING",
+            "NO_HYPOTHESIS": "NO_HYPOTHESIS",
+            "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS": "INCONCLUSIVE",
+        }[status]
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            prior = connection.execute(
+                "SELECT batch_id, static_bundle_hash, source_sha256, "
+                "context_hash, status, result_ref_json "
+                "FROM simple_candidate_batch_outcomes "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? AND candidate_id = ?",
+                (*key, candidate_id),
+            ).fetchone()
+            if prior is not None:
+                if (
+                    prior["batch_id"],
+                    prior["static_bundle_hash"],
+                    prior["source_sha256"],
+                    prior["context_hash"],
+                    prior["status"],
+                    prior["result_ref_json"],
+                ) != (
+                    batch_id,
+                    static_bundle_hash,
+                    source_sha256,
+                    context_hash,
+                    status,
+                    encoded_ref,
+                ):
+                    raise ValueError("CANDIDATE_BATCH_OUTCOME_CONFLICT")
+                return False
+            candidate = connection.execute(
+                "SELECT decision, deep_status FROM simple_static_candidates "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? AND candidate_id = ?",
+                (*key, candidate_id),
+            ).fetchone()
+            if (
+                candidate is None
+                or candidate["decision"]
+                not in {
+                    "INCLUDE",
+                    "UNDECIDED",
+                }
+                or candidate["deep_status"] not in {"PENDING", "ERROR"}
+            ):
+                raise ValueError("CANDIDATE_BATCH_OUTCOME_CONFLICT")
+            for hypothesis_id, hypothesis_ref, checkpoint in registrations:
+                self._register_candidate_hypothesis_connection(
+                    connection,
+                    identity,
+                    scope_fingerprint,
+                    candidate_id,
+                    hypothesis_id,
+                    hypothesis_ref,
+                    checkpoint=checkpoint,
+                )
+            connection.execute(
+                "UPDATE simple_static_candidates SET deep_status = ? "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? AND candidate_id = ?",
+                (deep_status, *key, candidate_id),
+            )
+            connection.execute(
+                "INSERT INTO simple_candidate_batch_outcomes "
+                "(analysis_id, workspace_id, commit_id, scope_fingerprint, "
+                "candidate_id, batch_id, static_bundle_hash, source_sha256, "
+                "context_hash, status, result_ref_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    *key,
+                    candidate_id,
+                    batch_id,
+                    static_bundle_hash,
+                    source_sha256,
+                    context_hash,
+                    status,
+                    encoded_ref,
+                ),
+            )
+        return True
+
+    def list_candidate_batch_outcomes(
+        self, identity: CheckpointIdentity, scope_fingerprint: str
+    ) -> dict[str, CandidateBatchOutcomeRecord]:
+        key = self._candidate_scope_key(identity, scope_fingerprint)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT candidate_id, batch_id, static_bundle_hash, source_sha256, "
+                "context_hash, status, result_ref_json "
+                "FROM simple_candidate_batch_outcomes "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? ORDER BY candidate_id",
+                key,
+            ).fetchall()
+        return {
+            str(row["candidate_id"]): CandidateBatchOutcomeRecord(
+                candidate_id=str(row["candidate_id"]),
+                batch_id=str(row["batch_id"]),
+                static_bundle_hash=str(row["static_bundle_hash"]),
+                source_sha256=row["source_sha256"],
+                context_hash=str(row["context_hash"]),
+                status=str(row["status"]),
+                result_ref=StoredDataRef.model_validate_json(row["result_ref_json"]),
+            )
+            for row in rows
+        }
+
+    def save_candidate_batch_progress(
+        self,
+        identity: CheckpointIdentity,
+        scope_fingerprint: str,
+        batch_id: str,
+        marker_ref: StoredDataRef,
+    ) -> None:
+        key = self._candidate_scope_key(identity, scope_fingerprint)
+        encoded_ref = self._candidate_ref_json(identity, marker_ref)
+        if not batch_id:
+            raise ValueError("CANDIDATE_BATCH_ID_INVALID")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT marker_ref_json FROM simple_candidate_batch_progress "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? AND batch_id = ?",
+                (*key, batch_id),
+            ).fetchone()
+            if row is not None:
+                if row["marker_ref_json"] != encoded_ref:
+                    raise ValueError("CANDIDATE_BATCH_PROGRESS_CONFLICT")
+                return
+            connection.execute(
+                "INSERT INTO simple_candidate_batch_progress "
+                "(analysis_id, workspace_id, commit_id, scope_fingerprint, "
+                "batch_id, marker_ref_json) VALUES (?, ?, ?, ?, ?, ?)",
+                (*key, batch_id, encoded_ref),
+            )
+
+    def list_candidate_batch_progress(
+        self, identity: CheckpointIdentity, scope_fingerprint: str
+    ) -> dict[str, StoredDataRef]:
+        key = self._candidate_scope_key(identity, scope_fingerprint)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT batch_id, marker_ref_json FROM simple_candidate_batch_progress "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? ORDER BY batch_id",
+                key,
+            ).fetchall()
+        return {
+            str(row["batch_id"]): StoredDataRef.model_validate_json(
+                row["marker_ref_json"]
+            )
+            for row in rows
+        }
 
     def _register_candidate_hypothesis_connection(
         self,

@@ -537,7 +537,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             hypothesis_id=None,
         )
         scope = run.candidate_scope_fingerprint
-        candidate_mode = run.candidate_pipeline_version == 1
+        candidate_mode = run.candidate_pipeline_version in {1, 2}
         return ProgressProjector(self._store).snapshot(
             run.analysis_id,
             static_disposition=run.static_disposition,
@@ -571,7 +571,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         lease_inactive = (
             analysis_run_lease_active(self._config.data_dir, exact) is False
         )
-        if run.candidate_pipeline_version == 1 and lease_inactive:
+        if run.candidate_pipeline_version in {1, 2} and lease_inactive:
             if self._store.unresolved_codex_call(exact) is not None:
                 snapshot = snapshot.model_copy(
                     update={
@@ -856,7 +856,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                         hypothesis_id=None,
                     )
                 )
-                if run.candidate_pipeline_version == 1
+                if run.candidate_pipeline_version in {1, 2}
                 else len(run.hypothesis_ids)
             ),
             "finding_count": len(findings),

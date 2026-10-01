@@ -384,3 +384,21 @@ async def test_forged_batch_identity_is_rejected_before_llm(tmp_path: Path) -> N
     assert isinstance(result, StageFailure)
     assert result.code == "HYPOTHESIS_BATCH_CONTEXT_INVALID"
     assert client.requests == []
+
+
+@pytest.mark.asyncio
+async def test_resume_subset_keeps_full_batch_identity_but_requests_only_missing(
+    tmp_path: Path,
+) -> None:
+    bootstrap, client, identity, static, batch, _ = _fixture(
+        tmp_path,
+        candidate_count=2,
+        responses=[[_row("C-001", "NO_HYPOTHESIS")]],
+    )
+    result = await bootstrap.propose_batch(
+        identity, static, batch, requested_ids=("C-001",)
+    )
+    assert not isinstance(result, StageFailure)
+    assert tuple(result.results) == ("C-001",)
+    assert client.requests[0]["owner"].candidate_ids == ("C-001",)
+    assert client.requests[0]["owner"].batch_id == batch.batch_id

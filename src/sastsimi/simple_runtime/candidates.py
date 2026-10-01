@@ -43,7 +43,7 @@ class CandidatePageStore(Protocol):
 CandidateKind = Literal["ENTRY_POINT", "FLOW", "HINT"]
 CandidateDecision = Literal["PENDING", "INCLUDE", "EXCLUDE", "UNDECIDED", "ERROR"]
 CandidateDeepStatus = Literal[
-    "PENDING", "RUNNING", "COMPLETE", "NO_HYPOTHESIS", "ERROR"
+    "PENDING", "RUNNING", "COMPLETE", "NO_HYPOTHESIS", "INCONCLUSIVE", "ERROR"
 ]
 
 

@@ -9,7 +9,7 @@ import sqlite3
 from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 from uuid import uuid4
 
 from sastsimi.config.user_config import ElapsedLimit, TokenLimit
@@ -21,6 +21,7 @@ from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 
 from .artifacts import SimpleArtifactRepository
 from .ast_facts import focus_ast_facts, index_ast_manifest, validate_ast_manifest
+from .candidate_batches import CandidateBatch, iter_candidate_batches
 from .candidates import ingest_static_candidates
 from .discovery import BUDGET_PAUSE_CODES, CandidateDiscovery
 from .models import (
@@ -46,6 +47,9 @@ from .recovery import (
 from .run_lease import AnalysisRunBusy, analysis_run_lease
 from .runner import RunOutcome, SimpleRuntimeRunner
 from .store import SimpleCheckpointStore
+
+if TYPE_CHECKING:
+    from .bootstrap_stages import BatchProposalResult
 
 
 class SimpleAnalysisRequest(ContractModel):
@@ -134,6 +138,7 @@ class SimpleAnalysisApplication:
         max_tokens: TokenLimit | None = None,
         max_cost_minor_units: int | None = None,
         candidate_pipeline_enabled: bool = False,
+        candidate_pipeline_version: int = 2,
         candidate_client_factory: Callable[
             [CheckpointIdentity, SimpleArtifactRepository], SimpleLLMClient
         ]
@@ -142,6 +147,8 @@ class SimpleAnalysisApplication:
     ) -> None:
         if not 1 <= max_parallel_hypotheses <= 32:
             raise ValueError("PARALLEL_HYPOTHESIS_LIMIT_INVALID")
+        if candidate_pipeline_version not in {1, 2}:
+            raise ValueError("CANDIDATE_PIPELINE_VERSION_INVALID")
         self._data_dir = data_dir
         self._store = store
         self._static = static_bootstrap
@@ -160,6 +167,7 @@ class SimpleAnalysisApplication:
         self._max_tokens = max_tokens
         self._max_cost_minor_units = max_cost_minor_units
         self._candidate_pipeline_enabled = candidate_pipeline_enabled
+        self._candidate_pipeline_version = candidate_pipeline_version
         self._candidate_client_factory = candidate_client_factory
         self._candidate_hypotheses = (
             candidate_hypothesis_bootstrap or hypothesis_bootstrap
@@ -192,7 +200,11 @@ class SimpleAnalysisApplication:
             started_at=datetime.now(UTC),
             llm_provider=self._llm_provider,
             on_demand_possible=self._on_demand_possible,
-            candidate_pipeline_version=1 if self._candidate_pipeline_enabled else None,
+            candidate_pipeline_version=(
+                self._candidate_pipeline_version
+                if self._candidate_pipeline_enabled
+                else None
+            ),
         )
         with analysis_run_lease(self._data_dir, analysis_id):
             self._store.save_analysis_run(run)
@@ -205,7 +217,10 @@ class SimpleAnalysisApplication:
         run: SimpleAnalysisRun,
         identity: CheckpointIdentity,
     ) -> SimpleAnalysisOutcome:
-        if run.candidate_pipeline_version == 1 and run.candidate_terminal is not None:
+        if (
+            run.candidate_pipeline_version in {1, 2}
+            and run.candidate_terminal is not None
+        ):
             run = run.model_copy(update={"candidate_terminal": None})
             self._store.save_analysis_run(run)
         while True:
@@ -301,7 +316,7 @@ class SimpleAnalysisApplication:
                 analysis_run=updated_run,
             )
             break
-        if updated_run.candidate_pipeline_version == 1:
+        if updated_run.candidate_pipeline_version in {1, 2}:
             return await self._run_candidate_pipeline(updated_run, identity, static)
         if run.static_disposition == "PARTIAL" and run.hypothesis_ids:
             if refresh_hypotheses:
@@ -413,19 +428,22 @@ class SimpleAnalysisApplication:
                         validate_ast_manifest(artifacts, ast_summary)
                 except (OSError, ValueError, KeyError, TypeError):
                     return self._invalid_partial_resume(run, identity)
-        if run.static_coverage_ref is not None and run.candidate_pipeline_version != 1:
+        if (
+            run.static_coverage_ref is not None
+            and run.candidate_pipeline_version not in {1, 2}
+        ):
             try:
                 run = self._reconcile_hypothesis_checkpoint(run, identity)
             except StaticEvidenceInvalid:
                 return self._invalid_partial_resume(run, identity)
-        if run.candidate_pipeline_version == 1:
+        if run.candidate_pipeline_version in {1, 2}:
             try:
                 self._verify_registered_candidate_proposals(identity)
             except (OSError, ValueError, StaticEvidenceInvalid):
                 return self._invalid_hypothesis_resume(run, identity)
         self._promote_legacy_inconclusive_pocs(exact)
         if (
-            run.candidate_pipeline_version == 1
+            run.candidate_pipeline_version in {1, 2}
             and self._max_cost_minor_units is not None
         ):
             self._store.reopen_budget_failures(
@@ -454,7 +472,9 @@ class SimpleAnalysisApplication:
             security_policy_ref=run.security_policy_ref,
             policy_snapshot_ref=run.policy_snapshot_ref,
         )
-        if run.candidate_pipeline_version == 1:
+        if run.candidate_pipeline_version in {1, 2}:
+            if run.candidate_pipeline_version == 2:
+                return await self._run_candidate_pipeline(run, identity, static)
             if run.static_disposition == "PARTIAL":
                 try:
                     downstream_terminal = self._candidate_downstream_terminal(
@@ -1123,6 +1143,10 @@ class SimpleAnalysisApplication:
                 evidence_refs=discovery.evidence_refs,
                 current_checkpoint=checkpoint,
             )
+        if run.candidate_pipeline_version == 2:
+            return await self._run_candidate_batches_v2(
+                run, identity, static, scope, artifacts, ast_summary, checkpoint
+            )
         after_id: str | None = None
         while True:
             page = self._store.list_candidates(
@@ -1249,6 +1273,258 @@ class SimpleAnalysisApplication:
             )
             self._store.complete(checkpoint, self._stage_result(completed))
         return await self._run_candidate_hypotheses(run, identity, static, scope)
+
+    @staticmethod
+    def _candidate_batch_source_hash(
+        artifacts: SimpleArtifactRepository, batch: CandidateBatch
+    ) -> str | None:
+        context = json.loads(artifacts.read(batch.shared_context_ref))
+        if (
+            not isinstance(context, dict)
+            or context.get("kind") != "simple_candidate_file_context_v1"
+            or context.get("path") != batch.path
+        ):
+            raise ValueError("CANDIDATE_BATCH_CONTEXT_INVALID")
+        source_hash = context.get("source_sha256")
+        if source_hash is not None and (
+            not isinstance(source_hash, str) or len(source_hash) != 64
+        ):
+            raise ValueError("CANDIDATE_BATCH_CONTEXT_INVALID")
+        return source_hash
+
+    @staticmethod
+    def _candidate_batch_response_valid(
+        artifacts: SimpleArtifactRepository,
+        batch: CandidateBatch,
+        candidate_id: str,
+        status: str,
+        result_ref: StoredDataRef,
+    ) -> None:
+        value = json.loads(artifacts.read(result_ref))
+        if (
+            not isinstance(value, dict)
+            or value.get("kind") != "simple_candidate_batch_response_v1"
+            or value.get("batch_id") != batch.batch_id
+            or candidate_id not in value.get("requested_ids", [])
+            or not isinstance(value.get("candidate_results"), list)
+        ):
+            raise ValueError("CANDIDATE_BATCH_RESPONSE_INVALID")
+        matches = [
+            row
+            for row in value["candidate_results"]
+            if isinstance(row, dict) and row.get("candidate_id") == candidate_id
+        ]
+        if len(matches) != 1 or matches[0].get("status") != status:
+            raise ValueError("CANDIDATE_BATCH_RESPONSE_INVALID")
+
+    async def _run_candidate_batches_v2(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+        scope: str,
+        artifacts: SimpleArtifactRepository,
+        ast_summary: object,
+        checkpoint: StageCheckpoint,
+    ) -> SimpleAnalysisOutcome:
+        """Produce durable batches; v2 completion awaits the surface stage."""
+
+        if not isinstance(ast_summary, dict):
+            return self._candidate_bootstrap_failure(
+                run,
+                identity,
+                static,
+                "AST_BATCH_MANIFEST_MISSING",
+                current_checkpoint=checkpoint,
+            )
+        propose_batch = getattr(self._candidate_hypotheses, "propose_batch", None)
+        if not callable(propose_batch):
+            return self._candidate_bootstrap_failure(
+                run,
+                identity,
+                static,
+                "HYPOTHESIS_BATCH_UNAVAILABLE",
+                current_checkpoint=checkpoint,
+            )
+        outcomes = self._store.list_candidate_batch_outcomes(identity, scope)
+        progress = self._store.list_candidate_batch_progress(identity, scope)
+        seen_batch_ids: set[str] = set()
+        seen_candidate_ids: set[str] = set()
+        batches = iter_candidate_batches(
+            self._store,
+            identity,
+            scope,
+            artifacts=artifacts,
+            ast_summary=ast_summary,
+            workspace=static.workspace_path,
+            max_prompt_bytes=128 * 1024,
+        )
+        for batch in batches:
+            if batch.batch_id in seen_batch_ids:
+                raise ValueError("CANDIDATE_BATCH_DUPLICATE")
+            seen_batch_ids.add(batch.batch_id)
+            seen_candidate_ids.update(batch.candidate_ids)
+            source_hash = self._candidate_batch_source_hash(artifacts, batch)
+            for candidate_id in batch.candidate_ids:
+                prior_outcome = outcomes.get(candidate_id)
+                if prior_outcome is None:
+                    continue
+                if (
+                    prior_outcome.batch_id != batch.batch_id
+                    or prior_outcome.static_bundle_hash
+                    != static.static_bundle_ref.content_hash
+                    or prior_outcome.source_sha256 != source_hash
+                    or prior_outcome.context_hash
+                    != batch.shared_context_ref.content_hash
+                ):
+                    raise ValueError("CANDIDATE_BATCH_SCOPE_CHANGED")
+                self._candidate_batch_response_valid(
+                    artifacts,
+                    batch,
+                    candidate_id,
+                    prior_outcome.status,
+                    prior_outcome.result_ref,
+                )
+            marker_ref = progress.get(batch.batch_id)
+            if marker_ref is not None:
+                marker = json.loads(artifacts.read(marker_ref))
+                if (
+                    not isinstance(marker, dict)
+                    or marker.get("kind") != "simple_candidate_batch_progress_v2"
+                    or marker.get("scope_fingerprint") != scope
+                    or marker.get("batch_id") != batch.batch_id
+                    or marker.get("static_bundle_hash")
+                    != static.static_bundle_ref.content_hash
+                    or marker.get("path") != batch.path
+                    or marker.get("candidate_ids") != list(batch.candidate_ids)
+                    or marker.get("shared_context_hash")
+                    != batch.shared_context_ref.content_hash
+                    or marker.get("source_sha256") != source_hash
+                    or set(batch.candidate_ids) - outcomes.keys()
+                ):
+                    raise ValueError("CANDIDATE_BATCH_PROGRESS_INVALID")
+                continue
+            missing = tuple(
+                candidate_id
+                for candidate_id in batch.candidate_ids
+                if candidate_id not in outcomes
+            )
+            if missing:
+                raw_result = await propose_batch(
+                    identity, static, batch, requested_ids=missing
+                )
+                if isinstance(raw_result, StageFailure):
+                    if raw_result.code not in BUDGET_PAUSE_CODES:
+                        for candidate_id in missing:
+                            self._store.save_candidate_deep_status(
+                                identity, scope, candidate_id, "ERROR"
+                            )
+                    return self._candidate_bootstrap_failure(
+                        run,
+                        identity,
+                        static,
+                        raw_result.code,
+                        paused=raw_result.code in BUDGET_PAUSE_CODES,
+                        evidence_refs=raw_result.evidence_refs,
+                        current_checkpoint=checkpoint,
+                    )
+                result = cast("BatchProposalResult", raw_result)
+                if set(result.results) - set(missing) or set(result.missing_ids) != (
+                    set(missing) - set(result.results)
+                ):
+                    raise ValueError("CANDIDATE_BATCH_RESULT_IDS_INVALID")
+                for candidate_id in missing:
+                    item = result.results.get(candidate_id)
+                    if item is None:
+                        continue
+                    self._candidate_batch_response_valid(
+                        artifacts, batch, candidate_id, item.status, item.result_ref
+                    )
+                    registrations: list[tuple[str, StoredDataRef, StageCheckpoint]] = []
+                    for seed in item.seeds:
+                        artifacts.prompt_context_strict(
+                            (seed.proposal_ref, batch.shared_context_ref)
+                        )
+                        inputs = (seed.proposal_ref, batch.shared_context_ref)
+                        pending = StageCheckpoint(
+                            identity=identity.model_copy(
+                                update={"hypothesis_id": seed.hypothesis_id}
+                            ),
+                            stage=SimpleStage.PRO_CON_DONE,
+                            status=StageStatus.PENDING,
+                            input_refs=inputs,
+                            input_hash=input_reference_hash(inputs),
+                        )
+                        registrations.append(
+                            (seed.hypothesis_id, seed.proposal_ref, pending)
+                        )
+                    self._store.commit_candidate_batch_outcome(
+                        identity,
+                        scope,
+                        candidate_id,
+                        batch_id=batch.batch_id,
+                        static_bundle_hash=static.static_bundle_ref.content_hash,
+                        source_sha256=source_hash,
+                        context_hash=batch.shared_context_ref.content_hash,
+                        status=item.status,
+                        result_ref=item.result_ref,
+                        registrations=registrations,
+                    )
+                    outcomes = self._store.list_candidate_batch_outcomes(
+                        identity, scope
+                    )
+                if result.failure is not None or result.missing_ids:
+                    for candidate_id in result.missing_ids:
+                        if result.failure is not None and (
+                            result.failure.code in BUDGET_PAUSE_CODES
+                        ):
+                            continue
+                        self._store.save_candidate_deep_status(
+                            identity, scope, candidate_id, "ERROR"
+                        )
+                    failure = result.failure or StageFailure(
+                        code="HYPOTHESIS_BATCH_OUTPUT_INVALID",
+                        retryable=False,
+                        safe_message="Candidate results were omitted",
+                    )
+                    return self._candidate_bootstrap_failure(
+                        run,
+                        identity,
+                        static,
+                        failure.code,
+                        paused=failure.code in BUDGET_PAUSE_CODES,
+                        evidence_refs=tuple(
+                            dict.fromkeys(
+                                (*result.attempt_refs, *failure.evidence_refs)
+                            )
+                        ),
+                        current_checkpoint=checkpoint,
+                    )
+            marker = artifacts.put_json(
+                {
+                    "kind": "simple_candidate_batch_progress_v2",
+                    "scope_fingerprint": scope,
+                    "batch_id": batch.batch_id,
+                    "static_bundle_hash": static.static_bundle_ref.content_hash,
+                    "path": batch.path,
+                    "candidate_ids": list(batch.candidate_ids),
+                    "shared_context_hash": batch.shared_context_ref.content_hash,
+                    "source_sha256": source_hash,
+                }
+            )
+            self._store.save_candidate_batch_progress(
+                identity, scope, batch.batch_id, marker
+            )
+        if set(outcomes) != seen_candidate_ids or set(progress) - seen_batch_ids:
+            raise ValueError("CANDIDATE_BATCH_PROGRESS_INVALID")
+        return self._candidate_bootstrap_failure(
+            run,
+            identity,
+            static,
+            "SURFACE_EXPLORATION_PENDING",
+            paused=True,
+            current_checkpoint=checkpoint,
+        )
 
     async def _run_free_candidate_exploration(
         self,
@@ -2113,7 +2389,7 @@ class SimpleAnalysisApplication:
     def _durable_hypothesis_ids(
         self, run: SimpleAnalysisRun, identity: CheckpointIdentity
     ) -> Iterator[str]:
-        if run.candidate_pipeline_version != 1:
+        if run.candidate_pipeline_version not in {1, 2}:
             yield from run.hypothesis_ids
             return
         after_id: str | None = None
