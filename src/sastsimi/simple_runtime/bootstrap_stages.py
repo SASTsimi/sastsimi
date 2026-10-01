@@ -372,6 +372,35 @@ def _required(result: SimpleLLMCallResult | StageFailure) -> SimpleLLMCallResult
     return result
 
 
+# INVALID_OUTPUT is a repairable code (REPAIRABLE_CODES in runner.py), but a
+# plain ``_required(await talk.ask(...))`` on a batch's opening turn turned
+# it into an immediate hard failure of the whole batch: read_batch's
+# ``except RuntimeError`` catches it and gives up rather than repairing, so
+# every later resume starts a fresh conversation and repeats the same
+# schema mistake against the same content, with no progress across
+# attempts.  Asking again first, in the same conversation, gives the model a
+# fresh sample at valid JSON before that happens.
+_INVALID_OUTPUT_RETRIES = 2
+
+
+async def _ask_required(
+    talk: SimpleConversation,
+    prompt: bytes,
+    *,
+    retries: int = _INVALID_OUTPUT_RETRIES,
+) -> SimpleLLMCallResult:
+    result = await talk.ask(prompt)
+    attempt = 0
+    while (
+        isinstance(result, StageFailure)
+        and result.code == "INVALID_OUTPUT"
+        and attempt < retries
+    ):
+        attempt += 1
+        result = await talk.ask(prompt)
+    return _required(result)
+
+
 def _findings_by_file(bundle: dict[str, object]) -> dict[str, list[dict[str, object]]]:
     by_file: dict[str, list[dict[str, object]]] = {}
     for key in ("codeql_findings", "opengrep_findings"):
@@ -1162,14 +1191,13 @@ class DirectHypothesisBootstrap:
         """
 
         history = Exploration()
-        result = _required(
-            await talk.ask(
-                instructions
-                + b"<UNTRUSTED_EXACT_INPUTS>\n"
-                + context
-                + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
-                + tail
-            )
+        result = await _ask_required(
+            talk,
+            instructions
+            + b"<UNTRUSTED_EXACT_INPUTS>\n"
+            + context
+            + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
+            + tail,
         )
         # Each turn reads new code and adds what it finds; earlier answers are
         # already in the conversation, and nothing proposed is removed -
@@ -1190,7 +1218,7 @@ class DirectHypothesisBootstrap:
             if not _string_list(result.value.get("requested_paths")) and not (
                 _string_list(result.value.get("requested_ast_paths"))
             ):
-                result = _required(await talk.ask(_READ_FIRST))
+                result = await _ask_required(talk, _READ_FIRST)
         else:
             absorb(result.value)
         for _ in range(_HYPOTHESIS_ROUNDS - 1):
@@ -1249,14 +1277,13 @@ class DirectHypothesisBootstrap:
         listed point is walked to the end; the list is the only choice made.
         """
 
-        survey = _required(
-            await talk.ask(
-                instructions
-                + b"<UNTRUSTED_EXACT_INPUTS>\n"
-                + context
-                + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
-                + _SURVEY
-            )
+        survey = await _ask_required(
+            talk,
+            instructions
+            + b"<UNTRUSTED_EXACT_INPUTS>\n"
+            + context
+            + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
+            + _SURVEY,
         )
         # A hypothesis is a possibility, so what the flows alone show is
         # proposed here; reading the points later adds what the code shows.
