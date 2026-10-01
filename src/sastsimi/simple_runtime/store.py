@@ -210,6 +210,30 @@ class SimpleCheckpointStore:
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS simple_codex_child_spawns (
+                    call_id TEXT NOT NULL,
+                    analysis_id TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (
+                        status IN ('SPAWNING', 'CAPTURED', 'EXITED')
+                    ),
+                    pid INTEGER,
+                    start_identity TEXT,
+                    PRIMARY KEY (call_id, phase)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_codex_call_versions (
+                    call_id TEXT PRIMARY KEY,
+                    analysis_id TEXT NOT NULL,
+                    candidate_pipeline_version INTEGER NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS simple_hypothesis_survey_progress (
                     analysis_id TEXT NOT NULL,
                     bundle_hash TEXT NOT NULL,
@@ -2242,7 +2266,94 @@ class SimpleCheckpointStore:
                 "VALUES (?, ?, 'IN_FLIGHT', ?)",
                 (call_id, analysis_id, datetime.now(UTC).isoformat()),
             )
+            run = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (analysis_id,),
+            ).fetchone()
+            if run is not None:
+                version = SimpleAnalysisRun.model_validate_json(
+                    run["run_json"]
+                ).candidate_pipeline_version
+                if version is not None:
+                    connection.execute(
+                        "INSERT INTO simple_codex_call_versions "
+                        "(call_id, analysis_id, candidate_pipeline_version) "
+                        "VALUES (?, ?, ?)",
+                        (call_id, analysis_id, version),
+                    )
             return True
+
+    def begin_codex_child_spawn(
+        self, *, call_id: str, analysis_id: str, phase: str
+    ) -> None:
+        """Durably record intent before any one of the three Codex child spawns."""
+
+        if phase not in {"VERSION", "LOGIN", "EXEC"}:
+            raise ValueError("CODEX_CHILD_IDENTITY_INVALID")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            call = connection.execute(
+                "SELECT 1 FROM simple_codex_calls WHERE call_id = ? "
+                "AND analysis_id = ? AND status = 'IN_FLIGHT'",
+                (call_id, analysis_id),
+            ).fetchone()
+            if call is None:
+                raise ValueError("CODEX_CHILD_IDENTITY_INVALID")
+            try:
+                connection.execute(
+                    "INSERT INTO simple_codex_child_spawns "
+                    "(call_id, analysis_id, phase, status) "
+                    "VALUES (?, ?, ?, 'SPAWNING')",
+                    (call_id, analysis_id, phase),
+                )
+            except sqlite3.IntegrityError as error:
+                raise ValueError("CODEX_CHILD_IDENTITY_CONFLICT") from error
+
+    def record_codex_child_spawn(
+        self,
+        *,
+        call_id: str,
+        analysis_id: str,
+        phase: str,
+        pid: int,
+        start_identity: str,
+    ) -> None:
+        """Bind a spawned OS process to its pre-existing durable intent."""
+
+        if type(pid) is not int or pid <= 0 or not start_identity:
+            raise ValueError("CODEX_CHILD_IDENTITY_INVALID")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            changed = connection.execute(
+                "UPDATE simple_codex_child_spawns SET status = 'CAPTURED', "
+                "pid = ?, start_identity = ? WHERE call_id = ? "
+                "AND analysis_id = ? AND phase = ? AND status = 'SPAWNING'",
+                (pid, start_identity, call_id, analysis_id, phase),
+            )
+            if changed.rowcount != 1:
+                raise ValueError("CODEX_CHILD_IDENTITY_CONFLICT")
+
+    def mark_codex_child_exited(
+        self,
+        *,
+        call_id: str,
+        analysis_id: str,
+        phase: str,
+        pid: int,
+        start_identity: str,
+    ) -> None:
+        """A checked child exit may settle only the exact captured identity."""
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            changed = connection.execute(
+                "UPDATE simple_codex_child_spawns SET status = 'EXITED' "
+                "WHERE call_id = ? AND analysis_id = ? AND phase = ? "
+                "AND pid = ? AND start_identity = ? AND status = 'CAPTURED'",
+                (call_id, analysis_id, phase, pid, start_identity),
+            )
+            if changed.rowcount != 1:
+                raise ValueError("CODEX_CHILD_IDENTITY_CONFLICT")
 
     def mark_codex_call_safe(self, call_id: str, analysis_id: str) -> None:
         """Resolve only a call whose matching attempt was durably recorded."""
@@ -2659,8 +2770,8 @@ class SimpleCheckpointStore:
             == stage.value
         )
 
-    @staticmethod
     def _codex_cleanup_confirmation_valid(
+        self,
         checkpoint: StageCheckpoint,
         ref: StoredDataRef,
         artifacts: SimpleArtifactRepository,
@@ -2715,6 +2826,73 @@ class SimpleCheckpointStore:
             or observed_at > datetime.now(UTC) + timedelta(minutes=5)
         ):
             return False
+        with self._connect() as connection:
+            version_row = (
+                connection.execute(
+                    "SELECT candidate_pipeline_version "
+                    "FROM simple_codex_call_versions WHERE call_id = ? "
+                    "AND analysis_id = ?",
+                    (call_id, identity.analysis_id),
+                ).fetchone()
+                if call_id is not None
+                else None
+            )
+            child_rows = (
+                connection.execute(
+                    "SELECT phase, status, pid, start_identity "
+                    "FROM simple_codex_child_spawns WHERE call_id = ? "
+                    "AND analysis_id = ? ORDER BY phase",
+                    (call_id, identity.analysis_id),
+                ).fetchall()
+                if call_id is not None
+                else []
+            )
+        strict_identity = bool(child_rows) or (
+            version_row is not None
+            and int(version_row["candidate_pipeline_version"]) >= 2
+        )
+        if strict_identity:
+            if call_id is None:
+                return False
+            if not child_rows or any(
+                row["status"] == "SPAWNING"
+                or row["pid"] is None
+                or not row["start_identity"]
+                for row in child_rows
+            ):
+                return False
+            expected_children = [
+                {
+                    "phase": str(row["phase"]),
+                    "pid": int(row["pid"]),
+                    "start_identity": str(row["start_identity"]),
+                }
+                for row in child_rows
+            ]
+            observed_children = marker.get("observed_children")
+            if (
+                not isinstance(observed_children, list)
+                or sorted(
+                    observed_children,
+                    key=lambda item: (
+                        str(item.get("phase")) if isinstance(item, dict) else ""
+                    ),
+                )
+                != expected_children
+                or marker.get("former_parent_pid")
+                not in {child["pid"] for child in expected_children}
+            ):
+                return False
+            from sastsimi.providers.codex_subscription import _child_identity_matches
+
+            if any(
+                _child_identity_matches(
+                    cast(int, child["pid"]), cast(str, child["start_identity"])
+                )
+                is not False
+                for child in expected_children
+            ):
+                return False
         return bool(
             marker.get("kind") == "simple_codex_cleanup_confirmation"
             and marker.get("analysis_id") == identity.analysis_id

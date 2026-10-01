@@ -288,9 +288,9 @@ class SimpleCodexClient:
         prompt_bytes: PromptByteCounts | None = None,
         invocation_id: str | None = None,
     ) -> SimpleLLMCallResult | StageFailure:
-        del owner, prompt_bytes, invocation_id
+        del owner, prompt_bytes
         prompt_digest = hashlib.sha256(prompt).hexdigest()
-        invocation_id = f"simple-{uuid4().hex}"
+        invocation_id = invocation_id or f"simple-{uuid4().hex}"
         request_ref = _request_artifact(
             self._artifacts,
             invocation_id=invocation_id,

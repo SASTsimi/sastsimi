@@ -74,9 +74,11 @@ class _CodexRunner:
     def __init__(self, outcomes: list[CodexProcessResult]) -> None:
         self.outcomes = outcomes
         self.calls = 0
+        self.requests: list[CodexProcessRequest] = []
 
-    async def execute(self, _request: CodexProcessRequest) -> CodexProcessResult:
+    async def execute(self, request: CodexProcessRequest) -> CodexProcessResult:
         self.calls += 1
+        self.requests.append(request)
         return self.outcomes.pop(0)
 
 
@@ -267,8 +269,106 @@ def test_codex_cleanup_confirmation_rejects_active_analysis_lease(
     assert store.unresolved_codex_call(identity.analysis_id) is None
 
 
+def test_v2_cleanup_confirmation_requires_captured_child_identity(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-exact-child",
+        workspace_id="workspace-exact-child",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    store = SimpleCheckpointStore(artifacts.paths.database)
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="https://example.invalid/repo.git",
+            candidate_pipeline_version=2,
+        )
+    )
+    checkpoint = store.mark_running(
+        identity, SimpleStage.HYPOTHESIS_DONE, (), attempt_id="exact-attempt"
+    )
+    call_id = "exact-call"
+    assert store.begin_codex_call(call_id, identity.analysis_id)
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "DELETE FROM simple_analysis_runs WHERE analysis_id = ?",
+            (identity.analysis_id,),
+        )
+    store.begin_codex_child_spawn(
+        call_id=call_id, analysis_id=identity.analysis_id, phase="EXEC"
+    )
+    arbitrary = _cleanup_confirmation(artifacts, checkpoint, call_id=call_id)
+    with pytest.raises(ValueError, match="CODEX_CLEANUP_CONFIRMATION_INVALID"):
+        store.confirm_codex_cleanup(checkpoint, arbitrary, artifacts)
+    store.record_codex_child_spawn(
+        call_id=call_id,
+        analysis_id=identity.analysis_id,
+        phase="EXEC",
+        pid=4242,
+        start_identity="started-4242",
+    )
+    store.begin_codex_child_spawn(
+        call_id=call_id, analysis_id=identity.analysis_id, phase="LOGIN"
+    )
+    store.record_codex_child_spawn(
+        call_id=call_id,
+        analysis_id=identity.analysis_id,
+        phase="LOGIN",
+        pid=4141,
+        start_identity="started-4141",
+    )
+    with pytest.raises(ValueError, match="CODEX_CLEANUP_CONFIRMATION_INVALID"):
+        store.confirm_codex_cleanup(checkpoint, arbitrary, artifacts)
+    assert store.unresolved_codex_call(identity.analysis_id) == call_id
+    exact_marker = artifacts.put_json(
+        json.loads(artifacts.read(arbitrary))
+        | {
+            "former_parent_pid": 4242,
+            "observed_children": [
+                {
+                    "phase": "EXEC",
+                    "pid": 4242,
+                    "start_identity": "started-4242",
+                },
+                {
+                    "phase": "LOGIN",
+                    "pid": 4141,
+                    "start_identity": "started-4141",
+                },
+            ],
+        }
+    )
+    wrong_identity = artifacts.put_json(
+        json.loads(artifacts.read(exact_marker))
+        | {
+            "observed_children": [
+                {
+                    "phase": "EXEC",
+                    "pid": 4242,
+                    "start_identity": "another-process",
+                },
+                {
+                    "phase": "LOGIN",
+                    "pid": 4141,
+                    "start_identity": "started-4141",
+                },
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="CODEX_CLEANUP_CONFIRMATION_INVALID"):
+        store.confirm_codex_cleanup(checkpoint, wrong_identity, artifacts)
+    store.confirm_codex_cleanup(checkpoint, exact_marker, artifacts)
+    assert store.unresolved_codex_call(identity.analysis_id) is None
+
+
 @pytest.mark.asyncio
-async def test_codex_unconfirmed_call_blocks_another_call_without_double_counting(
+async def test_codex_timeout_keeps_exact_child_owned(
     tmp_path: Path,
 ) -> None:
     runner = _CodexRunner(
@@ -291,13 +391,47 @@ async def test_codex_unconfirmed_call_blocks_another_call_without_double_countin
     assert second.code == "CODEX_CALL_IN_FLIGHT_UNRESOLVED"
     assert not second.retryable
     assert runner.calls == 1
+    assert runner.requests[0].invocation_id == call_id
     assert store.usage_summary("analysis-queue")["calls"] == 1
     with sqlite3.connect(store.database_path) as connection:
-        attempt_id = connection.execute(
-            "SELECT attempt_id FROM simple_llm_attempts WHERE analysis_id = ?",
+        attempt = connection.execute(
+            "SELECT attempt_id, input_tokens FROM simple_llm_attempts "
+            "WHERE analysis_id = ?",
             ("analysis-queue",),
         ).fetchone()
-    assert attempt_id == (call_id,)
+    assert attempt == (call_id, None)
+
+
+@pytest.mark.asyncio
+async def test_codex_confirmed_timeout_retries_with_new_owned_call(
+    tmp_path: Path,
+) -> None:
+    runner = _CodexRunner(
+        [
+            CodexProcessResult("TIMED_OUT", None, None),
+            CodexProcessResult("SUCCEEDED", b'{"ok":true}', None, 5, 2),
+        ]
+    )
+    client, store = _codex_client(tmp_path, runner, max_retries=1)
+    result = await client.call(prompt=b"safe", output_schema={}, timeout_ms=5000)
+    assert isinstance(result, SimpleLLMCallResult)
+    assert runner.calls == 2
+    with sqlite3.connect(store.database_path) as connection:
+        rows = connection.execute(
+            "SELECT c.call_id, c.status, a.input_tokens, m.retry_of "
+            "FROM simple_codex_calls AS c "
+            "JOIN simple_llm_attempts AS a ON a.attempt_id = c.call_id "
+            "LEFT JOIN simple_llm_attempt_metadata AS m "
+            "ON m.attempt_id = c.call_id ORDER BY c.started_at"
+        ).fetchall()
+    assert len(rows) == 2
+    assert [row[1] for row in rows] == ["SAFE", "SAFE"]
+    assert rows[0][2] is None
+    assert rows[1][2] == 5
+    assert rows[1][3] == rows[0][0]
+    assert [request.invocation_id for request in runner.requests] == [
+        row[0] for row in rows
+    ]
 
 
 @pytest.mark.asyncio

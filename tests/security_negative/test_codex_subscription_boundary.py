@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -161,6 +162,66 @@ def approved_runner() -> CodexCliProcessRunner:
         runtime_environment="PERSONAL_LOCAL",
     )
     return CodexCliProcessRunner(binding=binding)
+
+
+def test_current_child_identity_is_not_mistaken_for_exited_process() -> None:
+    pid = os.getpid()
+    start_identity = codex_subscription._child_start_identity(pid)
+    assert start_identity is not None
+    assert codex_subscription._child_identity_matches(pid, start_identity) is True
+
+
+@pytest.mark.asyncio
+async def test_spawn_observer_binds_actual_child_to_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = approved_runner()
+    events: list[tuple[str, str, str, int, str]] = []
+    runner._on_child_spawning = lambda call, phase: events.append(
+        ("spawning", call, phase, 0, "")
+    )
+    runner._on_child_started = lambda call, phase, pid, start: events.append(
+        ("start", call, phase, pid, start)
+    )
+    runner._on_child_stopped = lambda call, phase, pid, start: events.append(
+        ("stop", call, phase, pid, start)
+    )
+
+    class FakeProcess:
+        pid = 4242
+
+        def __init__(self) -> None:
+            self.stdout = asyncio.StreamReader()
+            self.stderr = asyncio.StreamReader()
+            self.stdout.feed_eof()
+            self.stderr.feed_eof()
+            self.returncode: int | None = None
+
+        async def wait(self) -> int:
+            self.returncode = 0
+            return 0
+
+    async def fake_spawn(*_args: object, **_kwargs: object) -> FakeProcess:
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+    monkeypatch.setattr(
+        codex_subscription, "_child_start_identity", lambda _pid: "started-4242"
+    )
+    result = await runner._run_child(
+        ("fake-codex",),
+        stdin=None,
+        cwd=Path.cwd(),
+        environment={},
+        invocation_id="call-1",
+        phase="EXEC",
+    )
+    assert result.returncode == 0
+    assert events == [
+        ("spawning", "call-1", "EXEC", 0, ""),
+        ("start", "call-1", "EXEC", 4242, "started-4242"),
+        ("stop", "call-1", "EXEC", 4242, "started-4242"),
+    ]
 
 
 def test_command_is_pinned_isolated_and_prompt_is_stdin_only() -> None:
@@ -568,6 +629,68 @@ async def test_stalled_spawn_returns_unconfirmed_cleanup_and_cleans_late_child(
         assert result.cleanup_unconfirmed
         release_spawn.set()
         await asyncio.wait_for(late_child_cleanup.wait(), timeout=1)
+    finally:
+        release_spawn.set()
+        await asyncio.wait_for(
+            asyncio.gather(invocation, return_exceptions=True), timeout=1
+        )
+
+
+@pytest.mark.asyncio
+async def test_late_spawn_observer_records_child_before_checked_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = approved_runner()
+    events: list[tuple[str, str, int | None]] = []
+    stopped = asyncio.Event()
+    release_spawn = asyncio.Event()
+    spawn_started = asyncio.Event()
+    runner._on_child_spawning = lambda call, phase: events.append((call, phase, None))
+    runner._on_child_started = lambda call, phase, pid, _start: events.append(
+        (call, phase, pid)
+    )
+
+    def record_stopped(call: str, phase: str, pid: int, _start: str) -> None:
+        events.append((call, phase, -pid))
+        stopped.set()
+
+    runner._on_child_stopped = record_stopped
+
+    class FakeProcess:
+        pid = 5151
+        returncode: int | None = None
+
+    process = FakeProcess()
+
+    async def delayed_spawn(*_args: object, **_kwargs: object) -> FakeProcess:
+        spawn_started.set()
+        await release_spawn.wait()
+        return process
+
+    async def terminate_late_child(value: object) -> None:
+        assert value is process
+        process.returncode = -9
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed_spawn)
+    monkeypatch.setattr(
+        codex_subscription, "_child_start_identity", lambda _pid: "started-5151"
+    )
+    monkeypatch.setattr(
+        codex_subscription, "_terminate_process_tree_checked", terminate_late_child
+    )
+    monkeypatch.setattr(codex_subscription, "_TREE_KILLER_TIMEOUT_SECONDS", 0.01)
+    invocation = asyncio.create_task(runner.execute(replace(request(), timeout_ms=200)))
+    await asyncio.wait_for(spawn_started.wait(), timeout=1)
+    try:
+        result = await asyncio.wait_for(invocation, timeout=1)
+        assert result.cleanup_unconfirmed
+        release_spawn.set()
+        await asyncio.wait_for(stopped.wait(), timeout=1)
+        assert events == [
+            ("call-1", "VERSION", None),
+            ("call-1", "VERSION", 5151),
+            ("call-1", "VERSION", -5151),
+        ]
     finally:
         release_spawn.set()
         await asyncio.wait_for(

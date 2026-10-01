@@ -230,7 +230,10 @@ class RunLimitedClient:
         agent_name: str = "agent",
         owner: AttemptOwner | None = None,
         prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult | StageFailure:
+        if invocation_id is not None:
+            raise ValueError("CODEX_CALL_ID_EXTERNALLY_SUPPLIED")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + max(1, timeout_ms) / 1000
         last_failure = StageFailure(
@@ -288,7 +291,17 @@ class RunLimitedClient:
                 started = monotonic()
                 inner_returned = False
                 try:
-                    if owner is None and prompt_bytes is None:
+                    if call_id is not None:
+                        call = self._inner.call(
+                            prompt=prompt,
+                            output_schema=output_schema,
+                            timeout_ms=max(1, int(remaining * 1000)),
+                            agent_name=agent_name,
+                            owner=owner,
+                            prompt_bytes=prompt_bytes,
+                            invocation_id=call_id,
+                        )
+                    elif owner is None and prompt_bytes is None:
                         call = self._inner.call(
                             prompt=prompt,
                             output_schema=output_schema,

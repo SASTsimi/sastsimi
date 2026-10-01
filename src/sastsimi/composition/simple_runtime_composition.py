@@ -278,7 +278,34 @@ class SimpleClientFactory:
         if not isinstance(provider_ref, StoredDataRef):
             raise ValueError("SIMPLE_RUNTIME_PROVIDER_REFERENCE_INVALID")
         return SimpleCodexClient(
-            runner=CodexCliProcessRunner(binding=binding.binding),
+            runner=CodexCliProcessRunner(
+                binding=binding.binding,
+                on_child_spawning=lambda call_id, phase: (
+                    self._store.begin_codex_child_spawn(
+                        call_id=call_id,
+                        analysis_id=identity.analysis_id,
+                        phase=phase,
+                    )
+                ),
+                on_child_started=lambda call_id, phase, pid, start: (
+                    self._store.record_codex_child_spawn(
+                        call_id=call_id,
+                        analysis_id=identity.analysis_id,
+                        phase=phase,
+                        pid=pid,
+                        start_identity=start,
+                    )
+                ),
+                on_child_stopped=lambda call_id, phase, pid, start: (
+                    self._store.mark_codex_child_exited(
+                        call_id=call_id,
+                        analysis_id=identity.analysis_id,
+                        phase=phase,
+                        pid=pid,
+                        start_identity=start,
+                    )
+                ),
+            ),
             provider_profile_ref=provider_ref,
             model=model,
             artifacts=artifacts,
@@ -544,10 +571,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         lease_inactive = (
             analysis_run_lease_active(self._config.data_dir, exact) is False
         )
-        if (
-            run.candidate_pipeline_version == 1
-            and lease_inactive
-        ):
+        if run.candidate_pipeline_version == 1 and lease_inactive:
             if self._store.unresolved_codex_call(exact) is not None:
                 snapshot = snapshot.model_copy(
                     update={
