@@ -119,6 +119,95 @@ class SurfaceIndex:
         }
 
 
+def surface_index_from_json(payload: object) -> SurfaceIndex:
+    """Read a persisted index without rebuilding the whole AST on resume."""
+
+    try:
+        if (
+            not isinstance(payload, dict)
+            or payload.get("kind") != "simple_attack_surface_index_v1"
+        ):
+            raise ValueError
+
+        def required_text(value: object) -> str:
+            if not isinstance(value, str) or not value:
+                raise ValueError
+            return value
+
+        raw_surfaces = payload["surfaces"]
+        raw_gaps = payload["static_gaps"]
+        count = payload["candidate_count"]
+        if not isinstance(raw_surfaces, list) or not isinstance(raw_gaps, list):
+            raise ValueError
+        if type(count) is not int or count < 0:
+            raise ValueError
+        surfaces: list[AttackSurface] = []
+        for row in raw_surfaces:
+            if not isinstance(row, dict):
+                raise ValueError
+            linked = row["linked_candidate_ids"]
+            evidence = row["evidence_refs"]
+            review = row["review_evidence_refs"]
+            line = row["line"]
+            if (
+                not isinstance(linked, list)
+                or not isinstance(evidence, list)
+                or not isinstance(review, list)
+                or type(line) is not int
+                or line < 1
+                or row["coverage_status"] != "UNCOVERED"
+                or review
+                or row["flow_identity"] is not None
+                and not isinstance(row["flow_identity"], str)
+            ):
+                raise ValueError
+            surfaces.append(
+                AttackSurface(
+                    surface_id=required_text(row["surface_id"]),
+                    type=required_text(row["type"]),
+                    path=required_text(row["path"]),
+                    symbol=required_text(row["symbol"]),
+                    line=line,
+                    linked_candidate_ids=tuple(required_text(item) for item in linked),
+                    evidence_refs=tuple(
+                        StoredDataRef.model_validate(item) for item in evidence
+                    ),
+                    detector=required_text(row["detector"]),
+                    flow_identity=row["flow_identity"],
+                )
+            )
+        gaps: list[StaticGap] = []
+        for row in raw_gaps:
+            if not isinstance(row, dict) or not isinstance(row.get("path"), str):
+                raise ValueError
+            gaps.append(
+                StaticGap(
+                    path=row["path"],
+                    rule_id=required_text(row["rule_id"]),
+                    reason=required_text(row["reason"]),
+                    engine=required_text(row["engine"]),
+                )
+            )
+        index = SurfaceIndex(
+            scope_fingerprint=required_text(payload["scope_fingerprint"]),
+            static_bundle_hash=required_text(payload["static_bundle_hash"]),
+            ast_manifest_hash=required_text(payload["ast_manifest_hash"]),
+            workspace_id=required_text(payload["workspace_id"]),
+            commit_id=required_text(payload["commit_id"]),
+            candidate_inventory_hash=required_text(payload["candidate_inventory_hash"]),
+            candidate_count=count,
+            surfaces=tuple(surfaces),
+            static_gaps=tuple(gaps),
+        )
+        if index.to_json() != payload or len(
+            {surface.surface_id for surface in surfaces}
+        ) != len(surfaces):
+            raise ValueError
+        return index
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("SURFACE_INDEX_CHECKPOINT_INVALID") from error
+
+
 @dataclass(frozen=True, slots=True)
 class SurfaceReview:
     """A completed review whose artifact explicitly names the reviewed parts."""

@@ -125,6 +125,19 @@ class AttackSurfaceIndexRecord:
     index_ref: StoredDataRef
 
 
+@dataclass(frozen=True, slots=True)
+class SurfaceExplorationProgressRecord:
+    surface_id: str
+    context_id: str
+    static_bundle_hash: str
+    index_hash: str
+    context_hash: str
+    source_sha256: str | None
+    status: str
+    result_ref: StoredDataRef
+    hypothesis_ids: tuple[str, ...]
+
+
 class SimpleCheckpointStore:
     """Atomic checkpoint storage for the single-process local runtime."""
 
@@ -522,6 +535,29 @@ class SimpleCheckpointStore:
                     index_ref_json TEXT NOT NULL,
                     PRIMARY KEY (
                         analysis_id, workspace_id, commit_id, scope_fingerprint
+                    )
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_surface_exploration_progress (
+                    analysis_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    scope_fingerprint TEXT NOT NULL,
+                    surface_id TEXT NOT NULL,
+                    context_id TEXT NOT NULL,
+                    static_bundle_hash TEXT NOT NULL,
+                    index_hash TEXT NOT NULL,
+                    context_hash TEXT NOT NULL,
+                    source_sha256 TEXT,
+                    status TEXT NOT NULL,
+                    result_ref_json TEXT NOT NULL,
+                    registrations_json TEXT NOT NULL,
+                    PRIMARY KEY (
+                        analysis_id, workspace_id, commit_id,
+                        scope_fingerprint, surface_id, context_id
                     )
                 )
                 """
@@ -1344,6 +1380,189 @@ class SimpleCheckpointStore:
             index_ref=StoredDataRef.model_validate_json(row["index_ref_json"]),
         )
 
+    def commit_surface_exploration(
+        self,
+        identity: CheckpointIdentity,
+        scope_fingerprint: str,
+        surface_id: str,
+        context_id: str,
+        *,
+        static_bundle_hash: str,
+        index_hash: str,
+        context_hash: str,
+        source_sha256: str | None,
+        status: str,
+        result_ref: StoredDataRef,
+        registrations: Sequence[tuple[str, StoredDataRef, StageCheckpoint]],
+    ) -> bool:
+        """Commit one context part and all its free hypotheses atomically."""
+
+        key = self._candidate_scope_key(identity, scope_fingerprint)
+        encoded_ref = cast(str, self._candidate_ref_json(identity, result_ref))
+        if (
+            not surface_id.strip()
+            or not context_id.strip()
+            or not static_bundle_hash.strip()
+            or not index_hash.strip()
+            or not context_hash.strip()
+            or (source_sha256 is not None and not source_sha256.strip())
+            or status
+            not in {
+                "HYPOTHESES",
+                "NO_HYPOTHESIS",
+                "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS",
+            }
+            or (status == "HYPOTHESES") != bool(registrations)
+        ):
+            raise ValueError("SURFACE_EXPLORATION_INVALID")
+        if len({item[0] for item in registrations}) != len(registrations):
+            raise ValueError("SURFACE_EXPLORATION_INVALID")
+        registrations_json = json.dumps(
+            [
+                (
+                    hypothesis_id,
+                    self._candidate_ref_json(identity, hypothesis_ref),
+                    checkpoint.model_dump(mode="json", exclude={"updated_at"}),
+                )
+                for hypothesis_id, hypothesis_ref, checkpoint in registrations
+            ],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        expected = (
+            static_bundle_hash,
+            index_hash,
+            context_hash,
+            source_sha256,
+            status,
+            encoded_ref,
+            registrations_json,
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            prior = connection.execute(
+                "SELECT static_bundle_hash, index_hash, context_hash, "
+                "source_sha256, status, result_ref_json, registrations_json "
+                "FROM simple_surface_exploration_progress "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? AND surface_id = ? AND context_id = ?",
+                (*key, surface_id, context_id),
+            ).fetchone()
+            if prior is not None:
+                actual = (
+                    prior["static_bundle_hash"],
+                    prior["index_hash"],
+                    prior["context_hash"],
+                    prior["source_sha256"],
+                    prior["status"],
+                    prior["result_ref_json"],
+                    prior["registrations_json"],
+                )
+                if actual != expected:
+                    raise ValueError("SURFACE_EXPLORATION_CONFLICT")
+                return False
+            for hypothesis_id, hypothesis_ref, checkpoint in registrations:
+                self._register_free_hypothesis_connection(
+                    connection, identity, hypothesis_id, hypothesis_ref, checkpoint
+                )
+            connection.execute(
+                "INSERT INTO simple_surface_exploration_progress "
+                "(analysis_id, workspace_id, commit_id, scope_fingerprint, "
+                "surface_id, context_id, static_bundle_hash, index_hash, "
+                "context_hash, source_sha256, status, result_ref_json, "
+                "registrations_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (*key, surface_id, context_id, *expected),
+            )
+        return True
+
+    def _surface_registration_ids(
+        self,
+        identity: CheckpointIdentity,
+        status: str,
+        registrations_json: str,
+    ) -> tuple[str, ...]:
+        try:
+            registrations: object = json.loads(registrations_json)
+        except (TypeError, ValueError) as error:
+            raise ValueError("SURFACE_EXPLORATION_REGISTRATIONS_CORRUPT") from error
+        if not isinstance(registrations, list):
+            raise ValueError("SURFACE_EXPLORATION_REGISTRATIONS_CORRUPT")
+        ids: list[str] = []
+        for registration in registrations:
+            if (
+                not isinstance(registration, list)
+                or len(registration) != 3
+                or not isinstance(registration[0], str)
+                or not registration[0].strip()
+                or not isinstance(registration[1], str)
+                or not isinstance(registration[2], dict)
+                or registration[0] in ids
+            ):
+                raise ValueError("SURFACE_EXPLORATION_REGISTRATIONS_CORRUPT")
+            hypothesis_id, ref_json, checkpoint_json = registration
+            try:
+                hypothesis_ref = StoredDataRef.model_validate_json(ref_json)
+                self._candidate_ref_json(identity, hypothesis_ref)
+                checkpoint = StageCheckpoint.model_validate_json(
+                    json.dumps(checkpoint_json, ensure_ascii=False)
+                )
+            except (TypeError, ValueError) as error:
+                raise ValueError("SURFACE_EXPLORATION_REGISTRATIONS_CORRUPT") from error
+            if (
+                checkpoint.identity
+                != identity.model_copy(update={"hypothesis_id": hypothesis_id})
+                or checkpoint.stage is not SimpleStage.PRO_CON_DONE
+                or checkpoint.stage_version != STAGE_VERSION[SimpleStage.PRO_CON_DONE]
+                or checkpoint.status is not StageStatus.PENDING
+                or not checkpoint.input_refs
+                or checkpoint.input_refs[0] != hypothesis_ref
+            ):
+                raise ValueError("SURFACE_EXPLORATION_REGISTRATIONS_CORRUPT")
+            ids.append(hypothesis_id)
+        if status not in {
+            "HYPOTHESES",
+            "NO_HYPOTHESIS",
+            "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS",
+        } or (status == "HYPOTHESES") != bool(ids):
+            raise ValueError("SURFACE_EXPLORATION_REGISTRATIONS_CORRUPT")
+        return tuple(ids)
+
+    def list_surface_exploration_progress(
+        self, identity: CheckpointIdentity, scope_fingerprint: str
+    ) -> dict[tuple[str, str], SurfaceExplorationProgressRecord]:
+        key = self._candidate_scope_key(identity, scope_fingerprint)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT surface_id, context_id, static_bundle_hash, index_hash, "
+                "context_hash, source_sha256, status, result_ref_json, "
+                "registrations_json "
+                "FROM simple_surface_exploration_progress "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? ORDER BY surface_id, context_id",
+                key,
+            ).fetchall()
+        return {
+            (str(row["surface_id"]), str(row["context_id"])): (
+                SurfaceExplorationProgressRecord(
+                    surface_id=str(row["surface_id"]),
+                    context_id=str(row["context_id"]),
+                    static_bundle_hash=str(row["static_bundle_hash"]),
+                    index_hash=str(row["index_hash"]),
+                    context_hash=str(row["context_hash"]),
+                    source_sha256=row["source_sha256"],
+                    status=str(row["status"]),
+                    result_ref=StoredDataRef.model_validate_json(
+                        row["result_ref_json"]
+                    ),
+                    hypothesis_ids=self._surface_registration_ids(
+                        identity, str(row["status"]), str(row["registrations_json"])
+                    ),
+                )
+            )
+            for row in rows
+        }
+
     def claim_hypothesis(
         self, identity: CheckpointIdentity, hypothesis_id: str, turn_id: str
     ) -> bool:
@@ -1462,6 +1681,29 @@ class SimpleCheckpointStore:
     ) -> None:
         """Commit a free-exploration hypothesis and its pending stage atomically."""
 
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._register_free_hypothesis_connection(
+                connection,
+                identity,
+                hypothesis_id,
+                hypothesis_ref,
+                checkpoint,
+                chain_depth=chain_depth,
+                parent_hypothesis_ids=parent_hypothesis_ids,
+            )
+
+    def _register_free_hypothesis_connection(
+        self,
+        connection: sqlite3.Connection,
+        identity: CheckpointIdentity,
+        hypothesis_id: str,
+        hypothesis_ref: StoredDataRef,
+        checkpoint: StageCheckpoint,
+        *,
+        chain_depth: int = 0,
+        parent_hypothesis_ids: tuple[str, ...] = (),
+    ) -> None:
         key = self._hypothesis_scope_key(identity)
         ref_json = self._candidate_ref_json(identity, hypothesis_ref)
         if (
@@ -1474,39 +1716,37 @@ class SimpleCheckpointStore:
         parents_json = json.dumps(
             parent_hypothesis_ids, ensure_ascii=False, separators=(",", ":")
         )
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT hypothesis_ref_json, chain_depth, "
-                "parent_hypothesis_ids_json FROM simple_candidate_hypotheses "
+        row = connection.execute(
+            "SELECT hypothesis_ref_json, chain_depth, "
+            "parent_hypothesis_ids_json FROM simple_candidate_hypotheses "
+            "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+            "AND hypothesis_id = ?",
+            (*key, hypothesis_id),
+        ).fetchone()
+        if row is None:
+            connection.execute(
+                "INSERT INTO simple_candidate_hypotheses "
+                "(analysis_id, workspace_id, commit_id, hypothesis_id, "
+                "hypothesis_ref_json, chain_depth, parent_hypothesis_ids_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (*key, hypothesis_id, ref_json, chain_depth, parents_json),
+            )
+        elif row["hypothesis_ref_json"] not in {None, ref_json} or (
+            int(row["chain_depth"]),
+            str(row["parent_hypothesis_ids_json"]),
+        ) != (chain_depth, parents_json):
+            raise ValueError("CANDIDATE_HYPOTHESIS_REF_CONFLICT")
+        elif row["hypothesis_ref_json"] is None:
+            connection.execute(
+                "UPDATE simple_candidate_hypotheses "
+                "SET hypothesis_ref_json = ? "
                 "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
                 "AND hypothesis_id = ?",
-                (*key, hypothesis_id),
-            ).fetchone()
-            if row is None:
-                connection.execute(
-                    "INSERT INTO simple_candidate_hypotheses "
-                    "(analysis_id, workspace_id, commit_id, hypothesis_id, "
-                    "hypothesis_ref_json, chain_depth, parent_hypothesis_ids_json) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (*key, hypothesis_id, ref_json, chain_depth, parents_json),
-                )
-            elif row["hypothesis_ref_json"] not in {None, ref_json} or (
-                int(row["chain_depth"]),
-                str(row["parent_hypothesis_ids_json"]),
-            ) != (chain_depth, parents_json):
-                raise ValueError("CANDIDATE_HYPOTHESIS_REF_CONFLICT")
-            elif row["hypothesis_ref_json"] is None:
-                connection.execute(
-                    "UPDATE simple_candidate_hypotheses "
-                    "SET hypothesis_ref_json = ? "
-                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
-                    "AND hypothesis_id = ?",
-                    (ref_json, *key, hypothesis_id),
-                )
-            self._insert_pending_pro_con_connection(
-                connection, identity, hypothesis_id, hypothesis_ref, checkpoint
+                (ref_json, *key, hypothesis_id),
             )
+        self._insert_pending_pro_con_connection(
+            connection, identity, hypothesis_id, hypothesis_ref, checkpoint
+        )
 
     def _insert_pending_pro_con_connection(
         self,

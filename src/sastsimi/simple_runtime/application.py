@@ -22,8 +22,12 @@ from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from .artifacts import SimpleArtifactRepository
 from .ast_facts import focus_ast_facts, index_ast_manifest, validate_ast_manifest
 from .attack_surfaces import (
+    SurfaceIndex,
+    SurfaceReview,
     build_attack_surface_index,
     candidate_inventory_hash,
+    evaluate_surface_coverage,
+    surface_index_from_json,
 )
 from .candidate_batches import (
     MAX_CANDIDATES_PER_BATCH,
@@ -55,6 +59,11 @@ from .recovery import (
 from .run_lease import AnalysisRunBusy, analysis_run_lease
 from .runner import RunOutcome, SimpleRuntimeRunner
 from .store import SimpleCheckpointStore
+from .surface_contexts import (
+    SurfaceContext,
+    SurfaceContextOverflow,
+    iter_uncovered_surface_contexts,
+)
 
 if TYPE_CHECKING:
     from .bootstrap_stages import BatchProposalResult
@@ -1121,8 +1130,10 @@ class SimpleAnalysisApplication:
             if isinstance(ast_summary, dict) and "format_version" in ast_summary
             else None
         )
+        surface_index: SurfaceIndex | None = None
+        surface_index_ref: StoredDataRef | None = None
         if run.candidate_pipeline_version == 2 and isinstance(ast_summary, dict):
-            self._ensure_attack_surface_index(
+            surface_index, surface_index_ref = self._ensure_attack_surface_index(
                 identity, static, scope, artifacts, bundle, ast_summary
             )
         prior = self._store.get(identity, SimpleStage.HYPOTHESIS_DONE)
@@ -1160,8 +1171,18 @@ class SimpleAnalysisApplication:
                 current_checkpoint=checkpoint,
             )
         if run.candidate_pipeline_version == 2:
+            if surface_index is None or surface_index_ref is None:
+                raise ValueError("SURFACE_INDEX_CHECKPOINT_INVALID")
             return await self._run_candidate_batches_v2(
-                run, identity, static, scope, artifacts, ast_summary, checkpoint
+                run,
+                identity,
+                static,
+                scope,
+                artifacts,
+                ast_summary,
+                surface_index,
+                surface_index_ref,
+                checkpoint,
             )
         after_id: str | None = None
         while True:
@@ -1298,7 +1319,7 @@ class SimpleAnalysisApplication:
         artifacts: SimpleArtifactRepository,
         bundle: object,
         ast_summary: dict[str, object],
-    ) -> StoredDataRef:
+    ) -> tuple[SurfaceIndex, StoredDataRef]:
         """Build once from all static candidates; validate the exact replay set."""
 
         if not isinstance(bundle, dict):
@@ -1325,6 +1346,7 @@ class SimpleAnalysisApplication:
             ):
                 raise ValueError("SURFACE_INDEX_SCOPE_CHANGED")
             payload = json.loads(artifacts.read(existing.index_ref))
+            index = surface_index_from_json(payload)
             if (
                 not isinstance(payload, dict)
                 or payload.get("kind") != "simple_attack_surface_index_v1"
@@ -1334,11 +1356,9 @@ class SimpleAnalysisApplication:
                 or payload.get("ast_manifest_hash") != ast_hash
                 or payload.get("candidate_inventory_hash") != inventory_hash
                 or payload.get("candidate_count") != len(candidates)
-                or not isinstance(payload.get("surfaces"), list)
-                or not isinstance(payload.get("static_gaps"), list)
             ):
                 raise ValueError("SURFACE_INDEX_CHECKPOINT_INVALID")
-            return existing.index_ref
+            return index, existing.index_ref
         index = build_attack_surface_index(
             bundle, ast_summary, candidates, artifacts=artifacts
         )
@@ -1360,7 +1380,7 @@ class SimpleAnalysisApplication:
             candidate_count=index.candidate_count,
             index_ref=index_ref,
         )
-        return index_ref
+        return index, index_ref
 
     @staticmethod
     def _candidate_batch_source_hash(
@@ -1475,6 +1495,8 @@ class SimpleAnalysisApplication:
         scope: str,
         artifacts: SimpleArtifactRepository,
         ast_summary: object,
+        surface_index: SurfaceIndex,
+        surface_index_ref: StoredDataRef,
         checkpoint: StageCheckpoint,
     ) -> SimpleAnalysisOutcome:
         """Produce durable batches; v2 completion awaits the surface stage."""
@@ -1766,14 +1788,411 @@ class SimpleAnalysisApplication:
                 current_stage=incomplete.current_stage,
                 error_code=incomplete.error_code,
             )
+        surface_outcome = await self._run_targeted_surface_exploration(
+            run,
+            identity,
+            static,
+            scope,
+            artifacts,
+            ast_summary,
+            surface_index,
+            surface_index_ref,
+            checkpoint,
+            attempted_in_turn=attempted_in_turn,
+            turn_id=turn_id,
+        )
+        if surface_outcome is not None:
+            return surface_outcome
         return self._candidate_bootstrap_failure(
             run,
             identity,
             static,
-            "SURFACE_EXPLORATION_PENDING",
+            "SURFACE_TERMINAL_PROOF_PENDING",
             paused=True,
             current_checkpoint=checkpoint,
         )
+
+    def _candidate_surface_reviews(
+        self,
+        identity: CheckpointIdentity,
+        scope: str,
+        index: SurfaceIndex,
+        artifacts: SimpleArtifactRepository,
+    ) -> tuple[SurfaceReview, ...]:
+        """Only a qualified, terminal candidate child may cover its linked site."""
+
+        reviews: list[SurfaceReview] = []
+        by_candidate: dict[str, list[str]] = {}
+        for surface in index.surfaces:
+            for candidate_id in surface.linked_candidate_ids:
+                by_candidate.setdefault(candidate_id, []).append(surface.surface_id)
+        surfaces = {surface.surface_id: surface for surface in index.surfaces}
+        for candidate_id, surface_ids in by_candidate.items():
+            after_id: str | None = None
+            while True:
+                ids = self._store.list_candidate_hypothesis_ids(
+                    identity, scope, candidate_id, after_id=after_id, limit=64
+                )
+                if not ids:
+                    break
+                after_id = ids[-1]
+                for hypothesis_id in ids:
+                    if not self._candidate_hypothesis_terminal(identity, hypothesis_id):
+                        continue
+                    child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+                    pro_con = self._store.get(child, SimpleStage.PRO_CON_DONE)
+                    final = self._store.get(child, SimpleStage.VERIFICATION_FINAL_DONE)
+                    if (
+                        pro_con is None
+                        or not pro_con.input_refs
+                        or final is None
+                        or final.status is not StageStatus.SUCCEEDED
+                        or not final.output_refs
+                    ):
+                        continue
+                    proposal_ref = pro_con.input_refs[0]
+                    proposal = json.loads(artifacts.read_prompt_proposal(proposal_ref))
+                    if (
+                        not isinstance(proposal, dict)
+                        or proposal.get("kind") != "simple_hypothesis_proposal"
+                        or proposal.get("candidate_id") != candidate_id
+                        or proposal.get("hypothesis_id") != hypothesis_id
+                    ):
+                        raise ValueError("SURFACE_CANDIDATE_REVIEW_INVALID")
+                    qualification = proposal.get("qualification")
+                    described = proposal.get("proposal")
+                    if not isinstance(qualification, dict) or not isinstance(
+                        described, dict
+                    ):
+                        continue
+                    locations = qualification.get("evidence_locations")
+                    code_locations = described.get("code_locations")
+                    if (
+                        qualification.get("attacker_control") not in {"YES", "POSSIBLE"}
+                        or qualification.get("sensitive_operation") != "YES"
+                        or qualification.get("reachability") not in {"YES", "POSSIBLE"}
+                        or not isinstance(qualification.get("trust_boundary"), str)
+                        or not qualification["trust_boundary"].strip()
+                        or not isinstance(locations, list)
+                        or not isinstance(code_locations, list)
+                        or not all(isinstance(item, str) for item in locations)
+                        or not all(isinstance(item, str) for item in code_locations)
+                    ):
+                        continue
+                    for ref in final.output_refs:
+                        artifacts.read(ref)
+                    evidence_locations = tuple(
+                        dict.fromkeys((*locations, *code_locations))
+                    )
+                    for surface_id in surface_ids:
+                        surface = surfaces[surface_id]
+                        if f"{surface.path}:{surface.line}" not in evidence_locations:
+                            continue
+                        reviews.append(
+                            SurfaceReview(
+                                surface_id=surface_id,
+                                candidate_id=candidate_id,
+                                hypothesis_id=hypothesis_id,
+                                verification_status="COMPLETE",
+                                reviewed_parts=frozenset(
+                                    {"ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY"}
+                                ),
+                                evidence_locations=evidence_locations,
+                                evidence_refs=(proposal_ref, *final.output_refs),
+                            )
+                        )
+        return tuple(reviews)
+
+    async def _run_targeted_surface_exploration(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+        scope: str,
+        artifacts: SimpleArtifactRepository,
+        ast_summary: dict[str, object],
+        index: SurfaceIndex,
+        index_ref: StoredDataRef,
+        checkpoint: StageCheckpoint,
+        *,
+        attempted_in_turn: set[str],
+        turn_id: str,
+    ) -> SimpleAnalysisOutcome | None:
+        propose_surface = getattr(self._candidate_hypotheses, "propose_surface", None)
+        if not callable(propose_surface):
+            return self._candidate_bootstrap_failure(
+                run,
+                identity,
+                static,
+                "HYPOTHESIS_SURFACE_UNAVAILABLE",
+                current_checkpoint=checkpoint,
+            )
+        reviews = self._candidate_surface_reviews(identity, scope, index, artifacts)
+        coverage = evaluate_surface_coverage(index, reviews)
+        progress = self._store.list_surface_exploration_progress(identity, scope)
+        seen_contexts: set[tuple[str, str]] = set()
+        try:
+            contexts = iter_uncovered_surface_contexts(
+                index,
+                coverage,
+                64 * 1024,
+                artifacts=artifacts,
+                ast_summary=ast_summary,
+                workspace=static.workspace_path,
+            )
+            for context in contexts:
+                key = (context.surface_id, context.context_id)
+                if key in seen_contexts:
+                    raise ValueError("SURFACE_CONTEXT_DUPLICATE")
+                seen_contexts.add(key)
+                prior = progress.get(key)
+                if prior is not None:
+                    if (
+                        prior.static_bundle_hash
+                        != static.static_bundle_ref.content_hash
+                        or prior.index_hash != index_ref.content_hash
+                        or prior.context_hash != context.context_hash
+                        or prior.source_sha256 != context.source_sha256
+                    ):
+                        raise ValueError("SURFACE_EXPLORATION_SCOPE_CHANGED")
+                    self._surface_result_valid(
+                        artifacts,
+                        context,
+                        prior.status,
+                        prior.result_ref,
+                        static.static_bundle_ref.content_hash,
+                        analysis_id=identity.analysis_id,
+                        expected_seed_ids=prior.hypothesis_ids,
+                    )
+                    for hypothesis_id in prior.hypothesis_ids:
+                        child = identity.model_copy(
+                            update={"hypothesis_id": hypothesis_id}
+                        )
+                        saved = self._store.require(child, SimpleStage.PRO_CON_DONE)
+                        if not saved.input_refs:
+                            raise ValueError("SURFACE_EXPLORATION_PROPOSAL_INVALID")
+                        self._surface_proposal_valid(
+                            artifacts,
+                            identity,
+                            context,
+                            static,
+                            prior.result_ref,
+                            hypothesis_id,
+                            saved.input_refs[0],
+                        )
+                else:
+                    pending_count = len(
+                        self._store.list_incomplete_hypotheses(
+                            identity, limit=self._max_pending_candidate_children + 1
+                        )
+                    )
+                    if pending_count + 4 > self._max_pending_candidate_children:
+                        return self._candidate_bootstrap_failure(
+                            run,
+                            identity,
+                            static,
+                            "CANDIDATE_BACKPRESSURE_BLOCKED",
+                            current_checkpoint=checkpoint,
+                        )
+                    result = await propose_surface(identity, static, context)
+                    if isinstance(result, StageFailure):
+                        return self._candidate_bootstrap_failure(
+                            run,
+                            identity,
+                            static,
+                            result.code,
+                            paused=result.code in BUDGET_PAUSE_CODES,
+                            evidence_refs=result.evidence_refs,
+                            current_checkpoint=checkpoint,
+                        )
+                    self._surface_result_valid(
+                        artifacts,
+                        context,
+                        result.status,
+                        result.result_ref,
+                        static.static_bundle_ref.content_hash,
+                        analysis_id=identity.analysis_id,
+                        expected_seed_ids=tuple(
+                            seed.hypothesis_id for seed in result.seeds
+                        ),
+                        expected_reviewed_parts=result.reviewed_parts,
+                        expected_locations=result.evidence_locations,
+                    )
+                    registrations: list[tuple[str, StoredDataRef, StageCheckpoint]] = []
+                    for seed in result.seeds:
+                        self._surface_proposal_valid(
+                            artifacts,
+                            identity,
+                            context,
+                            static,
+                            result.result_ref,
+                            seed.hypothesis_id,
+                            seed.proposal_ref,
+                        )
+                        artifacts.prompt_context_strict(
+                            (seed.proposal_ref, context.context_ref)
+                        )
+                        inputs = (seed.proposal_ref, context.context_ref)
+                        registrations.append(
+                            (
+                                seed.hypothesis_id,
+                                seed.proposal_ref,
+                                StageCheckpoint(
+                                    identity=identity.model_copy(
+                                        update={"hypothesis_id": seed.hypothesis_id}
+                                    ),
+                                    stage=SimpleStage.PRO_CON_DONE,
+                                    status=StageStatus.PENDING,
+                                    input_refs=inputs,
+                                    input_hash=input_reference_hash(inputs),
+                                ),
+                            )
+                        )
+                    self._store.commit_surface_exploration(
+                        identity,
+                        scope,
+                        context.surface_id,
+                        context.context_id,
+                        static_bundle_hash=static.static_bundle_ref.content_hash,
+                        index_hash=index_ref.content_hash,
+                        context_hash=context.context_hash,
+                        source_sha256=context.source_sha256,
+                        status=result.status,
+                        result_ref=result.result_ref,
+                        registrations=registrations,
+                    )
+                drained = await self._drain_candidate_children(
+                    run,
+                    identity,
+                    static,
+                    attempted_in_turn=attempted_in_turn,
+                    turn_id=turn_id,
+                    max_runnable=self._max_pending_candidate_children,
+                )
+                if drained is not None:
+                    return SimpleAnalysisOutcome(
+                        identity=identity,
+                        display_analysis_id=run.display_analysis_id,
+                        status=(
+                            "PAUSED"
+                            if drained.error_code in BUDGET_PAUSE_CODES
+                            else "FAILED"
+                            if drained.status is StageStatus.FAILED
+                            else "BLOCKED"
+                        ),
+                        current_stage=drained.current_stage,
+                        error_code=drained.error_code,
+                    )
+        except SurfaceContextOverflow as error:
+            return self._candidate_bootstrap_failure(
+                run, identity, static, str(error), current_checkpoint=checkpoint
+            )
+        if set(progress) - seen_contexts:
+            covered_ids = {
+                surface.surface_id
+                for surface in coverage.surfaces
+                if surface.coverage_status == "COVERED"
+            }
+            if any(
+                surface_id not in covered_ids
+                for surface_id, _context_id in set(progress) - seen_contexts
+            ):
+                raise ValueError("SURFACE_EXPLORATION_SCOPE_CHANGED")
+        return None
+
+    @staticmethod
+    def _surface_proposal_valid(
+        artifacts: SimpleArtifactRepository,
+        identity: CheckpointIdentity,
+        context: SurfaceContext,
+        static: StaticBootstrapResult,
+        result_ref: StoredDataRef,
+        hypothesis_id: str,
+        proposal_ref: StoredDataRef,
+    ) -> None:
+        proposal = json.loads(artifacts.read_prompt_proposal(proposal_ref))
+        if not isinstance(proposal, dict):
+            raise ValueError("SURFACE_EXPLORATION_PROPOSAL_INVALID")
+        try:
+            saved_static = StoredDataRef.model_validate(proposal["static_bundle_ref"])
+            saved_context = StoredDataRef.model_validate(
+                proposal["surface_context_ref"]
+            )
+            saved_result = StoredDataRef.model_validate(proposal["surface_result_ref"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("SURFACE_EXPLORATION_PROPOSAL_INVALID") from error
+        if (
+            proposal.get("kind") != "simple_hypothesis_proposal"
+            or proposal.get("analysis_id") != identity.analysis_id
+            or proposal.get("hypothesis_id") != hypothesis_id
+            or proposal.get("surface_id") != context.surface_id
+            or proposal.get("context_id") != context.context_id
+            or proposal.get("part_index") != context.part_index
+            or proposal.get("part_count") != context.part_count
+            or saved_static != static.static_bundle_ref
+            or saved_context != context.context_ref
+            or saved_result != result_ref
+            or not isinstance(proposal.get("proposal"), dict)
+            or not isinstance(proposal.get("qualification"), dict)
+        ):
+            raise ValueError("SURFACE_EXPLORATION_PROPOSAL_INVALID")
+
+    @staticmethod
+    def _surface_result_valid(
+        artifacts: SimpleArtifactRepository,
+        context: SurfaceContext,
+        status: str,
+        result_ref: StoredDataRef,
+        static_bundle_hash: str,
+        *,
+        analysis_id: str,
+        expected_seed_ids: tuple[str, ...],
+        expected_reviewed_parts: frozenset[str] | None = None,
+        expected_locations: tuple[str, ...] | None = None,
+    ) -> None:
+        value = json.loads(artifacts.read(result_ref))
+        seed_ids = value.get("seed_ids") if isinstance(value, dict) else None
+        parts = value.get("reviewed_parts") if isinstance(value, dict) else None
+        locations = value.get("evidence_locations") if isinstance(value, dict) else None
+        if (
+            not isinstance(value, dict)
+            or value.get("kind") != "simple_surface_hypothesis_result_v1"
+            or value.get("analysis_id") != analysis_id
+            or value.get("surface_id") != context.surface_id
+            or value.get("context_id") != context.context_id
+            or value.get("part_index") != context.part_index
+            or value.get("part_count") != context.part_count
+            or value.get("context_hash") != context.context_hash
+            or value.get("static_bundle_hash") != static_bundle_hash
+            or value.get("status") != status
+            or status
+            not in {
+                "HYPOTHESES",
+                "NO_HYPOTHESIS",
+                "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS",
+            }
+            or not isinstance(parts, list)
+            or not all(
+                item in {"ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY"}
+                for item in parts
+            )
+            or not isinstance(locations, list)
+            or not all(isinstance(item, str) for item in locations)
+            or not isinstance(seed_ids, list)
+            or not all(isinstance(item, str) and item for item in seed_ids)
+            or len(seed_ids) != len(set(seed_ids))
+            or tuple(seed_ids) != expected_seed_ids
+            or (status == "HYPOTHESES") != bool(seed_ids)
+            or (
+                expected_reviewed_parts is not None
+                and set(parts) != expected_reviewed_parts
+            )
+            or (
+                expected_locations is not None
+                and tuple(locations) != expected_locations
+            )
+        ):
+            raise ValueError("SURFACE_EXPLORATION_RESULT_INVALID")
 
     async def _run_free_candidate_exploration(
         self,

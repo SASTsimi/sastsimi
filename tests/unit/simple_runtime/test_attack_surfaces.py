@@ -13,6 +13,7 @@ from sastsimi.simple_runtime.attack_surfaces import (
     build_attack_surface_index,
     candidate_inventory_hash,
     evaluate_surface_coverage,
+    surface_index_from_json,
 )
 from sastsimi.simple_runtime.candidates import CandidateOrigin, StaticCandidate
 from sastsimi.simple_runtime.models import CheckpointIdentity
@@ -121,6 +122,19 @@ def test_surface_index_tracks_unreviewed_sink(tmp_path: Path) -> None:
     assert sink.linked_candidate_ids == ()
     assert sink.coverage_status == "UNCOVERED"
     assert coverage.complete is False
+
+
+def test_saved_surface_index_replays_exactly_and_rejects_tampering(
+    tmp_path: Path,
+) -> None:
+    bundle, summary, candidates, artifacts = _fixture(tmp_path)
+    index = build_attack_surface_index(bundle, summary, candidates, artifacts=artifacts)
+    payload = index.to_json()
+
+    assert surface_index_from_json(payload) == index
+    altered = {**payload, "kind": "simple_attack_surface_index_unknown"}
+    with pytest.raises(ValueError, match="SURFACE_INDEX_CHECKPOINT_INVALID"):
+        surface_index_from_json(altered)
 
 
 def test_candidate_presence_and_partial_review_do_not_cover_surface(

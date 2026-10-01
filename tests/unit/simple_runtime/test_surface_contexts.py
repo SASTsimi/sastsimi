@@ -1,0 +1,280 @@
+"""Targeted surface context preserves exact, bounded review evidence."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.ast_facts import collect_python_ast
+from sastsimi.simple_runtime.attack_surfaces import (
+    AttackSurface,
+    SurfaceCoverage,
+    SurfaceIndex,
+)
+from sastsimi.simple_runtime.models import CheckpointIdentity
+from sastsimi.simple_runtime.surface_contexts import iter_uncovered_surface_contexts
+
+
+def _setup(
+    tmp_path: Path, source: str, *, surface_line: int = 3
+) -> tuple[
+    SurfaceIndex,
+    SurfaceCoverage,
+    SimpleArtifactRepository,
+    dict[str, object],
+    Path,
+]:
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    (workspace / "app.py").write_text(source, encoding="utf-8")
+    identity = CheckpointIdentity(
+        analysis_id="surface-context-analysis",
+        workspace_id="surface-context-workspace",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    ast_summary = collect_python_ast(
+        workspace, ("app.py",), artifacts, max_source_bytes=3 * 1024 * 1024
+    )
+    raw_ref = artifacts.put_json({"kind": "static-evidence"})
+    surface = AttackSurface(
+        surface_id="S-auth",
+        type="AUTHORIZATION",
+        path="app.py",
+        symbol="check_permission",
+        line=surface_line,
+        linked_candidate_ids=("C-1",),
+        evidence_refs=(raw_ref,),
+        detector="AST_CALL",
+    )
+    covered = replace(surface, surface_id="S-covered", coverage_status="COVERED")
+    index = SurfaceIndex(
+        scope_fingerprint="scope-1",
+        static_bundle_hash="b" * 64,
+        ast_manifest_hash="c" * 64,
+        workspace_id=identity.workspace_id,
+        commit_id=identity.commit_id,
+        candidate_inventory_hash="d" * 64,
+        candidate_count=1,
+        surfaces=(surface, covered),
+        static_gaps=(),
+    )
+    coverage = SurfaceCoverage(
+        scope_fingerprint=index.scope_fingerprint,
+        static_bundle_hash=index.static_bundle_hash,
+        ast_manifest_hash=index.ast_manifest_hash,
+        candidate_inventory_hash=index.candidate_inventory_hash,
+        candidate_count=index.candidate_count,
+        surfaces=index.surfaces,
+        static_gaps=(),
+    )
+    return index, coverage, artifacts, ast_summary, workspace
+
+
+def _contexts(
+    fixture: tuple[
+        SurfaceIndex,
+        SurfaceCoverage,
+        SimpleArtifactRepository,
+        dict[str, object],
+        Path,
+    ],
+    *,
+    budget_bytes: int = 4096,
+) -> tuple[object, ...]:
+    index, coverage, artifacts, ast_summary, workspace = fixture
+    return tuple(
+        iter_uncovered_surface_contexts(
+            index,
+            coverage,
+            budget_bytes,
+            artifacts=artifacts,
+            ast_summary=ast_summary,
+            workspace=workspace,
+        )
+    )
+
+
+def test_only_uncovered_or_insufficient_surfaces_get_stable_redacted_context(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "def route(user):\n"
+        "    value = user.name\n"
+        "    check_permission(value)\n"
+        "    return value\n" + ("\n" * 12) + "def unrelated():\n" + "    return 1\n"
+    )
+    fixture = _setup(tmp_path, source)
+    first = _contexts(fixture)
+    replay = _contexts(fixture)
+
+    assert len(first) == 1
+    assert [item.surface_id for item in first] == ["S-auth"]
+    assert first[0].context_id == replay[0].context_id
+    assert first[0].context_ref == replay[0].context_ref
+    assert first[0].context_hash == first[0].context_ref.content_hash
+    payload = json.loads(fixture[2].read(first[0].context_ref))
+    assert payload["kind"] == "simple_surface_context_v1"
+    assert payload["surface_id"] == "S-auth"
+    assert payload["scope_fingerprint"] == "scope-1"
+    assert any(
+        "check_permission(value)" in row["text"] for row in payload["source_lines"]
+    )
+    assert any(fact["name"] == "check_permission" for fact in payload["ast_facts"])
+    assert payload["omitted_source_line_count"] >= 1
+    assert first[0].prompt_bytes == len(fixture[2].read(first[0].context_ref))
+
+
+def test_long_nearby_context_splits_into_complete_numbered_parts(
+    tmp_path: Path,
+) -> None:
+    lines = [
+        "def route(value):",
+        *[f"    item_{i} = '{str(i) * 360}'" for i in range(7)],
+    ]
+    lines.append("    check_permission(value)")
+    fixture = _setup(tmp_path, "\n".join(lines) + "\n", surface_line=8)
+
+    contexts = _contexts(fixture, budget_bytes=2400)
+    payloads = [json.loads(fixture[2].read(item.context_ref)) for item in contexts]
+
+    assert len(contexts) > 1
+    assert [item.part_index for item in contexts] == list(range(len(contexts)))
+    assert all(item.part_count == len(contexts) for item in contexts)
+    assert all(item.prompt_bytes <= 2400 for item in contexts)
+    assert len({item.context_id for item in contexts}) == len(contexts)
+    sent_lines = [row for payload in payloads for row in payload["source_lines"]]
+    assert len(sent_lines) == len({row["line"] for row in sent_lines})
+    assert {row["line"] for row in sent_lines} >= {3, 4, 5, 6, 7, 8}
+    assert all(row["text"] == lines[row["line"] - 1] for row in sent_lines)
+
+
+def test_single_line_exceeding_budget_is_explicitly_unavailable(tmp_path: Path) -> None:
+    giant = "    check_permission('" + "x" * 5000 + "')"
+    fixture = _setup(tmp_path, "def route():\n    pass\n" + giant + "\n")
+
+    contexts = _contexts(fixture, budget_bytes=2400)
+    payloads = [json.loads(fixture[2].read(item.context_ref)) for item in contexts]
+
+    assert contexts
+    assert all(item.prompt_bytes <= 2400 for item in contexts)
+    assert all(
+        giant not in fixture[2].read(item.context_ref).decode() for item in contexts
+    )
+    assert any(
+        row["line"] == 3 and row["reason"] == "SOURCE_LINE_TOO_LARGE"
+        for payload in payloads
+        for row in payload["unavailable_source_lines"]
+    )
+    assert all(payload["source_status"] == "PARTIAL" for payload in payloads)
+    assert all(
+        item.source_unavailable_reason == "SOURCE_LINE_TOO_LARGE" for item in contexts
+    )
+    assert any(item.omitted_source_line_count >= 1 for item in contexts)
+
+
+def test_surface_location_outside_readable_file_is_explicit_gap(tmp_path: Path) -> None:
+    fixture = _setup(
+        tmp_path, "def route():\n    check_permission()\n", surface_line=90
+    )
+
+    contexts = _contexts(fixture)
+    payload = json.loads(fixture[2].read(contexts[0].context_ref))
+
+    assert payload["source_status"] == "UNAVAILABLE"
+    assert payload["source_unavailable_reason"] == "SURFACE_LOCATION_BEYOND_SOURCE"
+    assert contexts[0].source_unavailable_reason == "SURFACE_LOCATION_BEYOND_SOURCE"
+    assert payload["source_lines"] == []
+
+
+def test_index_and_coverage_scope_mismatch_is_rejected(tmp_path: Path) -> None:
+    fixture = _setup(tmp_path, "def route():\n    pass\n    check_permission()\n")
+    index, coverage, artifacts, ast_summary, workspace = fixture
+
+    with pytest.raises(ValueError, match="SURFACE_CONTEXT_SCOPE_MISMATCH"):
+        tuple(
+            iter_uncovered_surface_contexts(
+                index,
+                replace(coverage, static_bundle_hash="wrong"),
+                4096,
+                artifacts=artifacts,
+                ast_summary=ast_summary,
+                workspace=workspace,
+            )
+        )
+
+
+def test_candidate_inventory_revision_changes_context_identity(tmp_path: Path) -> None:
+    fixture = _setup(tmp_path, "def route():\n    pass\n    check_permission()\n")
+    first = _contexts(fixture)[0]
+    index, coverage, artifacts, ast_summary, workspace = fixture
+    revised = (
+        replace(index, candidate_inventory_hash="e" * 64),
+        replace(coverage, candidate_inventory_hash="e" * 64),
+        artifacts,
+        ast_summary,
+        workspace,
+    )
+
+    second = _contexts(revised)[0]
+
+    assert first.context_id != second.context_id
+    assert first.context_hash != second.context_hash
+
+
+def test_inconclusive_coverage_does_not_change_same_source_context(
+    tmp_path: Path,
+) -> None:
+    fixture = _setup(tmp_path, "def route():\n    pass\n    check_permission()\n")
+    first = _contexts(fixture)[0]
+    index, coverage, artifacts, ast_summary, workspace = fixture
+    inconclusive = replace(
+        coverage,
+        surfaces=(
+            replace(coverage.surfaces[0], coverage_status="INSUFFICIENT"),
+            coverage.surfaces[1],
+        ),
+    )
+
+    second = _contexts((index, inconclusive, artifacts, ast_summary, workspace))[0]
+
+    assert first.context_id == second.context_id
+    assert first.context_hash == second.context_hash
+
+
+def test_too_large_file_is_not_reported_as_inspected_source(tmp_path: Path) -> None:
+    source = "def route():\n    check_permission()\n" + ("# padding\n" * 240_000)
+    fixture = _setup(tmp_path, source, surface_line=2)
+
+    contexts = _contexts(fixture)
+    payload = json.loads(fixture[2].read(contexts[0].context_ref))
+
+    assert contexts[0].source_unavailable_reason == "SOURCE_TOO_LARGE"
+    assert payload["source_status"] == "UNAVAILABLE"
+    assert payload["source_lines"] == []
+    assert payload["source_unavailable_reason"] == "SOURCE_TOO_LARGE"
+
+
+def test_unsafe_source_path_fails_instead_of_reading_host_file(tmp_path: Path) -> None:
+    fixture = _setup(tmp_path, "def route():\n    pass\n    check_permission()\n")
+    index, coverage, artifacts, ast_summary, workspace = fixture
+    unsafe = replace(index.surfaces[0], path="../secret.py")
+    index = replace(index, surfaces=(unsafe,))
+    coverage = replace(coverage, surfaces=(unsafe,))
+
+    with pytest.raises(ValueError, match="CANDIDATE_CONTEXT_SOURCE_UNSAFE_OR_MISSING"):
+        tuple(
+            iter_uncovered_surface_contexts(
+                index,
+                coverage,
+                4096,
+                artifacts=artifacts,
+                ast_summary=ast_summary,
+                workspace=workspace,
+            )
+        )

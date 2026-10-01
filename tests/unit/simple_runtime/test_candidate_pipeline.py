@@ -20,10 +20,16 @@ from sastsimi.simple_runtime.application import (
 )
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.ast_facts import collect_python_ast
+from sastsimi.simple_runtime.attack_surfaces import (
+    build_attack_surface_index,
+    evaluate_surface_coverage,
+)
 from sastsimi.simple_runtime.bootstrap_stages import (
     BatchProposalResult,
     CandidateProposalOutcome,
+    SurfaceProposalResult,
 )
+from sastsimi.simple_runtime.candidates import ingest_static_candidates
 from sastsimi.simple_runtime.models import (
     STAGE_VERSION,
     CheckpointIdentity,
@@ -37,6 +43,7 @@ from sastsimi.simple_runtime.models import (
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
 from sastsimi.simple_runtime.runner import RunOutcome, SimpleRuntimeRunner
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
+from sastsimi.simple_runtime.surface_contexts import iter_uncovered_surface_contexts
 
 
 class _Static:
@@ -1423,6 +1430,337 @@ async def test_v2_batch_resume_reuses_zero_seed_candidates(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_v2_targeted_exploration_checkpoints_each_surface_without_source_pages(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        decision="INCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+
+    class TargetedOnly:
+        def __init__(self) -> None:
+            self.batch_calls = 0
+            self.surface_calls: list[str] = []
+
+        async def propose_batch(
+            self,
+            identity: CheckpointIdentity,
+            _static: StaticBootstrapResult,
+            batch: object,
+            *,
+            requested_ids: tuple[str, ...] | None = None,
+        ) -> BatchProposalResult:
+            self.batch_calls += 1
+            ids = requested_ids or batch.candidate_ids
+            artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+            ref = artifacts.put_json(
+                {
+                    "kind": "simple_candidate_batch_response_v1",
+                    "batch_id": batch.batch_id,
+                    "requested_ids": ids,
+                    "candidate_results": [
+                        {"candidate_id": item, "status": "NO_HYPOTHESIS"}
+                        for item in ids
+                    ],
+                }
+            )
+            return BatchProposalResult(
+                results={
+                    item: CandidateProposalOutcome(
+                        status="NO_HYPOTHESIS",
+                        reason="No supported attack path",
+                        seeds=(),
+                        result_ref=ref,
+                    )
+                    for item in ids
+                },
+                missing_ids=(),
+                attempt_refs=(ref,),
+            )
+
+        async def propose_surface(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+            context: object,
+        ) -> SurfaceProposalResult:
+            self.surface_calls.append(context.context_id)
+            artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+            payload = json.loads(artifacts.read(context.context_ref))
+            location = f"{payload['path']}:{payload['line']}"
+            ref = artifacts.put_json(
+                {
+                    "kind": "simple_surface_hypothesis_result_v1",
+                    "analysis_id": identity.analysis_id,
+                    "surface_id": context.surface_id,
+                    "context_id": context.context_id,
+                    "part_index": context.part_index,
+                    "part_count": context.part_count,
+                    "context_hash": context.context_hash,
+                    "static_bundle_hash": static.static_bundle_ref.content_hash,
+                    "status": "NO_HYPOTHESIS",
+                    "reason": "Reviewed the visible call site",
+                    "reviewed_parts": [
+                        "ENTRY",
+                        "SENSITIVE_OPERATION",
+                        "TRUST_BOUNDARY",
+                    ],
+                    "evidence_locations": [location],
+                    "seed_ids": [],
+                }
+            )
+            return SurfaceProposalResult(
+                surface_id=context.surface_id,
+                context_id=context.context_id,
+                part_index=context.part_index,
+                part_count=context.part_count,
+                status="NO_HYPOTHESIS",
+                reason="Reviewed the visible call site",
+                seeds=(),
+                result_ref=ref,
+                reviewed_parts=frozenset(
+                    {"ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY"}
+                ),
+                evidence_locations=(location,),
+            )
+
+    targeted = TargetedOnly()
+    paged = _PagedHypotheses()
+    app._candidate_hypotheses = targeted
+    app._hypotheses = paged
+    request = SimpleAnalysisRequest(
+        data_dir=tmp_path / "data",
+        repository="https://github.com/example/repo",
+        commit="a" * 40,
+    )
+    first = await app.analyze(request)
+    second = await app.resume("analysis-1")
+
+    assert paged.cursors == []
+    assert targeted.batch_calls == 1
+    assert targeted.surface_calls
+    assert len(targeted.surface_calls) == len(set(targeted.surface_calls))
+    assert second.status == first.status
+    assert len(
+        store.list_surface_exploration_progress(first.identity, "scope-1")
+    ) == len(targeted.surface_calls)
+
+
+def test_v2_targeted_exploration_skips_candidate_surface_with_terminal_proof(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        decision="INCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    static = app._static.result
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    bundle = json.loads(artifacts.read(static.static_bundle_ref))
+    ast_summary = bundle["ast_summary"]
+    ingest_static_candidates(
+        identity,
+        "scope-1",
+        static.static_bundle_ref,
+        artifacts,
+        store,
+        workspace=static.workspace_path,
+    )
+    candidate = store.list_candidates(identity, "scope-1")[0]
+    store.save_candidate_decision(
+        identity, "scope-1", candidate.candidate_id, "INCLUDE", "verified path"
+    )
+    proposal_ref = artifacts.put_prompt_proposal(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "hypothesis_id": "hypothesis-covered",
+            "candidate_id": candidate.candidate_id,
+            "qualification": {
+                "attacker_control": "YES",
+                "sensitive_operation": "YES",
+                "reachability": "YES",
+                "trust_boundary": "request reaches eval",
+                "evidence_locations": ["app.py:2"],
+            },
+            "proposal": {"code_locations": ["app.py:2"]},
+        }
+    )
+    child = identity.model_copy(update={"hypothesis_id": "hypothesis-covered"})
+    inputs = (proposal_ref, static.static_bundle_ref)
+    store.register_candidate_hypothesis(
+        identity,
+        "scope-1",
+        candidate.candidate_id,
+        "hypothesis-covered",
+        proposal_ref,
+        checkpoint=StageCheckpoint(
+            identity=child,
+            stage=SimpleStage.PRO_CON_DONE,
+            status=StageStatus.PENDING,
+            input_refs=inputs,
+            input_hash=input_reference_hash(inputs),
+        ),
+    )
+    proof_ref = artifacts.put_json({"kind": "terminal-review"})
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=child,
+            stage=SimpleStage.VERIFICATION_FINAL_DONE,
+            stage_version=STAGE_VERSION[SimpleStage.VERIFICATION_FINAL_DONE],
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(proof_ref,),
+            verdict="FALSE",
+        )
+    )
+    index = build_attack_surface_index(
+        bundle,
+        ast_summary,
+        store.list_candidates(identity, "scope-1"),
+        artifacts=artifacts,
+    )
+    reviews = app._candidate_surface_reviews(identity, "scope-1", index, artifacts)
+    coverage = evaluate_surface_coverage(index, reviews)
+    linked = [surface for surface in coverage.surfaces if surface.linked_candidate_ids]
+    assert linked
+    assert all(surface.coverage_status == "COVERED" for surface in linked)
+    contexts = tuple(
+        iter_uncovered_surface_contexts(
+            index,
+            coverage,
+            64 * 1024,
+            artifacts=artifacts,
+            ast_summary=ast_summary,
+            workspace=static.workspace_path,
+        )
+    )
+    assert contexts
+    assert not {context.surface_id for context in contexts} & {
+        surface.surface_id for surface in linked
+    }
+
+
+@pytest.mark.asyncio
+async def test_v2_surface_seed_is_verified_before_next_surface(tmp_path: Path) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        decision="EXCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+    events: list[str] = []
+
+    class StreamingSurface:
+        async def propose_batch(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("Excluded candidates must not be proposed")
+
+        async def propose_surface(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+            context: object,
+        ) -> SurfaceProposalResult:
+            events.append(f"surface:{context.surface_id}")
+            first = (
+                len([event for event in events if event.startswith("surface:")]) == 1
+            )
+            hypothesis_id = "hypothesis-streamed"
+            status = "HYPOTHESES" if first else "NO_HYPOTHESIS"
+            artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+            ref = artifacts.put_json(
+                {
+                    "kind": "simple_surface_hypothesis_result_v1",
+                    "analysis_id": identity.analysis_id,
+                    "surface_id": context.surface_id,
+                    "context_id": context.context_id,
+                    "part_index": context.part_index,
+                    "part_count": context.part_count,
+                    "context_hash": context.context_hash,
+                    "static_bundle_hash": static.static_bundle_ref.content_hash,
+                    "status": status,
+                    "reason": "Visible qualified path" if first else "No path",
+                    "reviewed_parts": [],
+                    "evidence_locations": [],
+                    "seed_ids": [hypothesis_id] if first else [],
+                }
+            )
+            seeds: tuple[HypothesisSeed, ...] = ()
+            if first:
+                proposal_ref = artifacts.put_prompt_proposal(
+                    {
+                        "kind": "simple_hypothesis_proposal",
+                        "analysis_id": identity.analysis_id,
+                        "hypothesis_id": hypothesis_id,
+                        "surface_id": context.surface_id,
+                        "context_id": context.context_id,
+                        "part_index": context.part_index,
+                        "part_count": context.part_count,
+                        "static_bundle_ref": static.static_bundle_ref.model_dump(
+                            mode="json"
+                        ),
+                        "surface_context_ref": context.context_ref.model_dump(
+                            mode="json"
+                        ),
+                        "surface_result_ref": ref.model_dump(mode="json"),
+                        "proposal": {"code_locations": []},
+                        "qualification": {"evidence_locations": []},
+                    }
+                )
+                seeds = (
+                    HypothesisSeed(
+                        hypothesis_id=hypothesis_id, proposal_ref=proposal_ref
+                    ),
+                )
+            return SurfaceProposalResult(
+                surface_id=context.surface_id,
+                context_id=context.context_id,
+                part_index=context.part_index,
+                part_count=context.part_count,
+                status=status,
+                reason="Visible qualified path" if first else "No path",
+                seeds=seeds,
+                result_ref=ref,
+                reviewed_parts=frozenset(),
+                evidence_locations=(),
+            )
+
+    class RecordingRunner(_SuccessRunner):
+        async def resume_hypothesis(self, identity: CheckpointIdentity) -> RunOutcome:
+            events.append(f"child:{identity.hypothesis_id}")
+            return await super().resume_hypothesis(identity)
+
+    app._candidate_hypotheses = StreamingSurface()
+    app._runner_factory = lambda *_: RecordingRunner(store)
+    outcome = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+
+    assert outcome.status != "COMPLETE"
+    surface_positions = [
+        index for index, event in enumerate(events) if event.startswith("surface:")
+    ]
+    assert len(surface_positions) >= 2
+    assert surface_positions[0] < events.index("child:hypothesis-streamed")
+    assert events.index("child:hypothesis-streamed") < surface_positions[1]
+
+
+@pytest.mark.asyncio
 async def test_v2_partial_batch_retries_only_uncommitted_candidate(
     tmp_path: Path,
 ) -> None:
@@ -1585,7 +1923,8 @@ async def test_v2_batch_resume_preserves_pending_seed_without_reproposal(
         != store.require_analysis_run("analysis-1").static_bundle_ref
     )
     second = await app.resume("analysis-1")
-    assert first.status == second.status == "PAUSED"
+    assert first.status == second.status == "BLOCKED"
+    assert second.error_code == "HYPOTHESIS_SURFACE_UNAVAILABLE"
     assert hypotheses.calls == 1
     assert store.require(child, SimpleStage.PRO_CON_DONE) == pending
     assert store.list_candidate_hypothesis_ids(
@@ -1661,7 +2000,8 @@ async def test_v2_resume_rejects_changed_candidate_source_hash(tmp_path: Path) -
             ("0" * 64,),
         )
     second = await app.resume("analysis-1")
-    assert first.status == "PAUSED"
+    assert first.status == "BLOCKED"
+    assert first.error_code == "HYPOTHESIS_SURFACE_UNAVAILABLE"
     assert second.status == "BLOCKED"
     assert second.error_code == "CANDIDATE_BATCH_SCOPE_CHANGED"
     assert hypotheses.calls == 1
