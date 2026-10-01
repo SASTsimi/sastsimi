@@ -117,7 +117,7 @@ def render_file_context(
         last = max(candidate.line, candidate.end_line) + 1
         if prepared.source_unavailable_reason is None:
             wanted_lines.update(range(first, min(last, len(prepared.source_lines)) + 1))
-            if last > len(prepared.source_lines):
+            if max(candidate.line, candidate.end_line) > len(prepared.source_lines):
                 outside_source.append(
                     {
                         "candidate_id": candidate.candidate_id,

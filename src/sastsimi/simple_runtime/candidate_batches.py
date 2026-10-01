@@ -24,7 +24,10 @@ from .models import CheckpointIdentity
 from .store import SimpleCheckpointStore
 
 MAX_CANDIDATES_PER_BATCH = 16
-PROMPT_HEADROOM_BYTES = 768
+# The qualified per-ID JSON schema currently uses ~1.6 KiB before the fixed
+# instructions and transport framing. Reserve generous byte headroom when
+# splitting; the caller still checks the exact rendered prompt and schema.
+PROMPT_HEADROOM_BYTES = 4096
 
 
 class CandidateContextOverflow(ValueError):
@@ -38,14 +41,32 @@ class CandidateContextOverflow(ValueError):
 @dataclass(frozen=True, slots=True)
 class CandidateBatch:
     batch_id: str
+    scope_fingerprint: str
     path: str
     candidate_ids: tuple[str, ...]
     candidates: tuple[StaticCandidate, ...]
     shared_context_ref: StoredDataRef
     prompt_bytes: int
+    max_prompt_bytes: int
 
 
-def _candidate_projection(candidate: StaticCandidate) -> dict[str, object]:
+def candidate_batch_id(
+    scope_fingerprint: str,
+    path: str,
+    candidate_ids: tuple[str, ...],
+    context_hash: str,
+) -> str:
+    key = {
+        "kind": "simple_candidate_batch_v1",
+        "scope_fingerprint": scope_fingerprint,
+        "path": path,
+        "candidate_ids": candidate_ids,
+        "shared_context_hash": context_hash,
+    }
+    return hashlib.sha256(canonical_bytes(key)).hexdigest()
+
+
+def candidate_prompt_projection(candidate: StaticCandidate) -> dict[str, object]:
     value = {
         "candidate_id": candidate.candidate_id,
         "kind": candidate.kind,
@@ -90,27 +111,26 @@ def _assemble_batch(
         canonical_bytes(
             {
                 "shared_context": context_payload,
-                "candidates": [_candidate_projection(item) for item in candidates],
+                "candidates": [
+                    candidate_prompt_projection(item) for item in candidates
+                ],
             }
         )
     )
     candidate_ids = tuple(item.candidate_id for item in candidates)
     if prompt_bytes > max_prompt_bytes:
         raise CandidateContextOverflow(candidate_ids)
-    key = {
-        "kind": "simple_candidate_batch_v1",
-        "scope_fingerprint": scope_fingerprint,
-        "path": path,
-        "candidate_ids": candidate_ids,
-        "shared_context_hash": context_ref.content_hash,
-    }
     return CandidateBatch(
-        batch_id=hashlib.sha256(canonical_bytes(key)).hexdigest(),
+        batch_id=candidate_batch_id(
+            scope_fingerprint, path, candidate_ids, context_ref.content_hash
+        ),
+        scope_fingerprint=scope_fingerprint,
         path=path,
         candidate_ids=candidate_ids,
         candidates=tuple(candidates),
         shared_context_ref=context_ref,
         prompt_bytes=prompt_bytes,
+        max_prompt_bytes=max_prompt_bytes,
     )
 
 

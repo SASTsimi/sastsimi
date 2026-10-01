@@ -130,7 +130,7 @@ def test_context_overflow_splits_without_loss(tmp_path: Path) -> None:
                 artifacts=artifacts,
                 ast_summary=summary,
                 workspace=workspace,
-                max_prompt_bytes=3_500,
+                max_prompt_bytes=7_500,
                 db_page_size=3,
             )
         )
@@ -142,7 +142,7 @@ def test_context_overflow_splits_without_loss(tmp_path: Path) -> None:
     )
     assert len(first) > 1
     assert emitted == expected_ids
-    assert all(batch.prompt_bytes <= 3_500 for batch in first)
+    assert all(batch.prompt_bytes <= 7_500 for batch in first)
     assert [(batch.batch_id, batch.shared_context_ref) for batch in first] == [
         (batch.batch_id, batch.shared_context_ref) for batch in second
     ]
