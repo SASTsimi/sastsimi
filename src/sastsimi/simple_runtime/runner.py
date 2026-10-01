@@ -141,11 +141,27 @@ class SimpleRuntimeRunner:
                 )
             prior = self.store.prior(identity, stage)
             preceding = next(reversed(prior.values()), None)
+            # A retry of a PoC-building stage that just failed does not
+            # inherit that attempt's own image: reusing it blindly repeats
+            # whatever environment problem produced the failure (a stale
+            # build, a missing dependency) verbatim on every attempt, so a
+            # stall counts to MAX_STALL_REPEATS without the environment ever
+            # having a chance to come out differently.  Falling back to
+            # `preceding` here forces a fresh recipe/image on this retry;
+            # a first attempt (existing is None) is unaffected.
+            retrying_poc_build = existing is not None and existing.status in (
+                StageStatus.BLOCKED,
+                StageStatus.FAILED,
+            ) and stage in (
+                SimpleStage.POC_CANDIDATE_DONE,
+                SimpleStage.POC_EXECUTION_DONE,
+            )
             inherit_from = (
                 existing
                 if existing is not None
                 and existing.recipe_ref is not None
                 and existing.image_digest is not None
+                and not retrying_poc_build
                 else preceding
             )
             attempt_id = (
