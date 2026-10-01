@@ -214,8 +214,14 @@ answers, from the code you have read.
    in `requested_ast_paths` the files whose definitions and calls are enough.
    The runtime then sends that code, with the static tool hits recorded for
    each file, in the next turn of this conversation.
-6. Leave both lists empty only when every entry point in this part has been
-   read this way.
+6. `all_tool_findings_index` lists every static-tool hit's file, line and
+   rule across the whole repository, including files with no entry point in
+   this part. A hit there is not a verdict - most are noise - but a file it
+   names is a candidate for `requested_paths` on its own, the same as an
+   entry point's handler.
+7. Leave both lists empty only when every entry point in this part has been
+   read this way and every file `all_tool_findings_index` names has been
+   either read or deliberately left for a later part.
 """
     + _COMMON_ANALYSIS
 )
@@ -237,6 +243,9 @@ every point that deserves a closer look - however minor. A point is anything
 the analysis above would examine: a defence to test, a transformation of
 controlled input, a check that differs from a sibling's or is missing, a trust
 boundary the input crosses, an authorization, state or resource decision.
+Also add a point for every file `all_tool_findings_index` names that has no
+entry point of its own in this part - most of those hits are noise, but the
+file is otherwise never read by this survey at all.
 
 For each point give the `entry_point`, the `concern` in one line, and `read`:
 the code to read for it (`path:start-end`, or several separated by spaces).
@@ -372,6 +381,35 @@ def _findings_by_file(bundle: dict[str, object]) -> dict[str, list[dict[str, obj
                 path = str(value["path"]).lstrip("/")
                 by_file.setdefault(path, []).append({"tool": key[:-9], **value})
     return by_file
+
+
+def _findings_index(bundle: dict[str, object]) -> list[dict[str, object]]:
+    """Every tool hit's file, line and rule, with no snippet or metadata.
+
+    A full finding (with its code snippet) is only cheap enough to attach to
+    a file the agent already chose to read - the fact feed's hits run well
+    past a batch's byte budget on their own.  This index is small enough
+    (tens of KB even with hundreds of hits) to stand in every batch, so a
+    file the agent never requested is still visible as "something was
+    flagged here" rather than silently absent from everything it reads.
+    """
+
+    index: list[dict[str, object]] = []
+    for key in ("codeql_findings", "opengrep_findings"):
+        values = bundle.get(key)
+        for value in values if isinstance(values, list) else []:
+            if not isinstance(value, dict) or not value.get("path"):
+                continue
+            rule = value.get("rule_id")
+            index.append(
+                {
+                    "tool": key[:-9],
+                    "path": str(value["path"]).lstrip("/"),
+                    "line": value.get("line"),
+                    "rule": str(rule).rsplit(".", 1)[-1] if rule else None,
+                }
+            )
+    return index
 
 
 def _attach_findings(
@@ -1394,7 +1432,15 @@ class DirectHypothesisBootstrap:
             **(
                 {"excluded_from_every_batch": feeding.excluded}
                 | (
-                    {"files_with_no_entry_point_read_on_request": feeding.unfed}
+                    {
+                        "files_with_no_entry_point_read_on_request": feeding.unfed,
+                        # A full hit (with its code snippet) only arrives once
+                        # its file is read; this index is the cheap compact
+                        # form, present up front so a file the agent never
+                        # requests is still flagged rather than silently
+                        # unmentioned.
+                        "all_tool_findings_index": _findings_index(bundle),
+                    }
                     if feeding.kind == "facts"
                     else {}
                 )
