@@ -101,6 +101,15 @@ for (const expected of [
 ]) {
   assert.ok(shown.includes(expected), `missing ${expected}: ${shown}`);
 }
+detail.llm_unrecorded_in_flight_codex_calls = 1;
+vm.runInContext("renderOverview(state.detail)", context);
+shown = text(nodes.get("overview"));
+assert.ok(shown.includes("진행·종료 미확인 Codex 호출 1건"), shown);
+assert.ok(shown.includes("실제 사용량과 과금 여부는 미확인"), shown);
+detail.llm_unrecorded_in_flight_codex_calls = 0;
+vm.runInContext("renderOverview(state.detail)", context);
+shown = text(nodes.get("overview"));
+assert.ok(!shown.includes("진행·종료 미확인 Codex 호출 1건"), shown);
 const ledgers = [];
 const collectLedgers = (item) => {
   if (item.className === "coverage-ledger") ledgers.push(item);
@@ -160,6 +169,20 @@ Promise.all([task, unavailableTask]).then(() => {
   shown = text(nodes.get("overview"));
   assert.ok(shown.includes("INTERRUPTED_RESUME_REQUIRED"), shown);
   assert.ok(shown.includes("sastsimi resume A-001"), shown);
+  detail.status = "BLOCKED";
+  detail.resume_action = "MANUAL_CODEX_CLEANUP_REVIEW";
+  detail.error_code = "CODEX_CALL_IN_FLIGHT_UNRESOLVED";
+  vm.runInContext("renderOverview(state.detail)", context);
+  shown = text(nodes.get("overview"));
+  assert.ok(shown.includes("수동 검토"), shown);
+  assert.ok(shown.includes("CLI에는"), shown);
+  assert.ok(!shown.includes("종료 확인을 기록한 뒤"), shown);
+  assert.ok(!shown.includes("resume"), shown);
+  detail.error_code = "CODEX_PROCESS_CLEANUP_UNCONFIRMED";
+  vm.runInContext("renderOverview(state.detail)", context);
+  shown = text(nodes.get("overview"));
+  assert.ok(shown.includes("수동 검토"), shown);
+  assert.ok(!shown.includes("resume"), shown);
 }).catch((error) => { console.error(error); process.exitCode = 1; });
 """
     result = subprocess.run(

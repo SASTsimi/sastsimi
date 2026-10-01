@@ -3203,6 +3203,9 @@ class DirectHypothesisBootstrap:
         client = self._client_factory(identity, artifacts)
         budget = page_budget_bytes
         attempt_refs: list[StoredDataRef] = []
+        retry_failure_refs: list[StoredDataRef] = []
+        semantic_retry_refs: list[StoredDataRef] = []
+        validation_feedback: dict[str, Any] | None = None
         while True:
             try:
                 page = build_source_page(
@@ -3218,17 +3221,36 @@ class DirectHypothesisBootstrap:
                     code=exc.code,
                     retryable=False,
                     safe_message="Source page cannot be built without omitting code",
-                    evidence_refs=tuple(attempt_refs),
+                    evidence_refs=tuple(
+                        dict.fromkeys(
+                            (*retry_failure_refs, *attempt_refs, *semantic_retry_refs)
+                        )
+                    ),
                 )
             except OSError:
                 return StageFailure(
                     code="HYPOTHESIS_PAGE_SOURCE_UNAVAILABLE",
                     retryable=False,
                     safe_message="Source file is unavailable",
-                    evidence_refs=tuple(attempt_refs),
+                    evidence_refs=tuple(
+                        dict.fromkeys(
+                            (*retry_failure_refs, *attempt_refs, *semantic_retry_refs)
+                        )
+                    ),
                 )
             if page is None:
                 return (), None
+            prompt = page.prompt
+            if validation_feedback is not None:
+                prompt += (
+                    b"<PAGE_VALIDATION_FEEDBACK>\n"
+                    + canonical_bytes(validation_feedback)
+                    + b"\n</PAGE_VALIDATION_FEEDBACK>\n"
+                    + b"Repair the complete response for this same source page. "
+                    b"Use only the allowed page paths and line ranges above. "
+                    b"Return every valid distinct hypothesis; do not invent paths "
+                    b"or silently omit an invalid proposal.\n"
+                )
             input_ref = artifacts.put_json(
                 {
                     "kind": "simple_hypothesis_source_page",
@@ -3240,60 +3262,57 @@ class DirectHypothesisBootstrap:
                     ),
                     "source_manifest_ref": manifest_ref.model_dump(mode="json"),
                     "page": page.payload,
-                    "prompt": page.prompt.decode("utf-8"),
+                    "prompt": prompt.decode("utf-8"),
                 }
             )
             attempt_refs.append(input_ref)
             result = await client.call(
-                prompt=page.prompt,
+                prompt=prompt,
                 output_schema=PAGE_OUTPUT_SCHEMA,
                 timeout_ms=self._llm_timeout_ms,
                 agent_name="hypothesis_page",
             )
             if isinstance(result, StageFailure):
                 if (
-                    result.code == "CONTEXT_LIMIT_EXCEEDED"
+                    result.code in {"CONTEXT_LIMIT_EXCEEDED", "TIMED_OUT"}
                     and budget > MIN_PAGE_BUDGET_BYTES
                 ):
+                    retry_failure_refs.extend(result.evidence_refs)
+                    # A smaller source page has different allowed locations.
+                    # Keep the old invalid result as audit evidence, but give
+                    # the new page its own semantic repair allowance.
+                    retry_failure_refs.extend(semantic_retry_refs)
+                    semantic_retry_refs.clear()
+                    validation_feedback = None
                     budget = max(MIN_PAGE_BUDGET_BYTES, budget // 2)
                     continue
+                if result.code == "TIMED_OUT":
+                    result = result.model_copy(
+                        update={
+                            "code": "HYPOTHESIS_PAGE_TIMEOUT_EXHAUSTED",
+                            "retryable": False,
+                            "safe_message": "Source page timed out at the minimum size",
+                        }
+                    )
                 return result.model_copy(
-                    update={"evidence_refs": (*result.evidence_refs, *attempt_refs)}
+                    update={
+                        "evidence_refs": tuple(
+                            dict.fromkeys(
+                                (
+                                    *retry_failure_refs,
+                                    *result.evidence_refs,
+                                    *attempt_refs,
+                                    *semantic_retry_refs,
+                                )
+                            )
+                        )
+                    }
                 )
             assert isinstance(result, SimpleLLMCallResult)
             raw = result.value.get("hypotheses")
             ranges = page.ranges
-            valid = False
-            if isinstance(raw, list) and len(raw) <= PAGE_HYPOTHESIS_LIMIT:
-                valid = True
-                for item in raw:
-                    proposal, errors = validate_proposal(
-                        item, lines={path: end for path, (_, end) in ranges.items()}
-                    )
-                    if (
-                        proposal is None
-                        or errors
-                        or set(proposal)
-                        != {
-                            "title",
-                            "vulnerability_type",
-                            "summary",
-                            "code_locations",
-                            "source",
-                            "sink",
-                            "rationale",
-                        }
-                    ):
-                        valid = False
-                        break
-                    for location in proposal["code_locations"]:
-                        path, line_text = location.rsplit(":", 1)
-                        start, end = ranges[path]
-                        if not start <= int(line_text) <= end:
-                            valid = False
-                            break
-                    if not valid:
-                        break
+            feedback = self._page_validation_feedback(raw, ranges)
+            valid = feedback is None
             page_result_ref = artifacts.put_json(
                 {
                     "kind": "simple_hypothesis_page_result",
@@ -3304,8 +3323,29 @@ class DirectHypothesisBootstrap:
                     "attempt_input_refs": [
                         ref.model_dump(mode="json") for ref in attempt_refs
                     ],
+                    **(
+                        {
+                            "semantic_retry_refs": [
+                                ref.model_dump(mode="json")
+                                for ref in semantic_retry_refs
+                            ]
+                        }
+                        if semantic_retry_refs
+                        else {}
+                    ),
+                    **(
+                        {
+                            "retry_failure_refs": [
+                                ref.model_dump(mode="json")
+                                for ref in retry_failure_refs
+                            ]
+                        }
+                        if retry_failure_refs
+                        else {}
+                    ),
                     "hypotheses": raw,
                     "validation_status": "VALID" if valid else "INVALID",
+                    "validation_feedback": feedback,
                     "llm_request_ref": (
                         result.request_ref.model_dump(mode="json")
                         if result.request_ref is not None
@@ -3324,11 +3364,23 @@ class DirectHypothesisBootstrap:
                 }
             )
             if not valid:
+                semantic_retry_refs.append(page_result_ref)
+                if len(semantic_retry_refs) == 1:
+                    validation_feedback = feedback
+                    continue
                 return StageFailure(
                     code="HYPOTHESIS_PAGE_OUTPUT_INVALID",
-                    retryable=True,
+                    retryable=False,
                     safe_message="Hypothesis output is invalid or outside the source",
-                    evidence_refs=(input_ref, page_result_ref),
+                    evidence_refs=tuple(
+                        dict.fromkeys(
+                            (
+                                *retry_failure_refs,
+                                *attempt_refs,
+                                *semantic_retry_refs,
+                            )
+                        )
+                    ),
                 )
             assert isinstance(raw, list)
             seeds: list[HypothesisSeed] = []
@@ -3376,6 +3428,90 @@ class DirectHypothesisBootstrap:
                     )
                 )
             return tuple(seeds), page.next_cursor
+
+    @staticmethod
+    def _page_validation_feedback(
+        raw: object, ranges: dict[str, tuple[int, int]]
+    ) -> dict[str, Any] | None:
+        allowed = {path: [start, end] for path, (start, end) in ranges.items()}
+        errors: list[dict[str, object]] = []
+        invalid_locations: list[str] = []
+        if not isinstance(raw, list):
+            errors.append(
+                {"hypothesis_index": None, "errors": ["hypotheses is not an array"]}
+            )
+        elif len(raw) > PAGE_HYPOTHESIS_LIMIT:
+            errors.append(
+                {
+                    "hypothesis_index": None,
+                    "errors": [f"hypotheses exceeds {PAGE_HYPOTHESIS_LIMIT} proposals"],
+                }
+            )
+        else:
+            seen: set[bytes] = set()
+            expected_fields = {
+                "title",
+                "vulnerability_type",
+                "summary",
+                "code_locations",
+                "source",
+                "sink",
+                "rationale",
+            }
+            for index, item in enumerate(raw):
+                try:
+                    proposal, proposal_errors = validate_proposal(
+                        item,
+                        lines={path: end for path, (_, end) in ranges.items()},
+                    )
+                except ValueError:
+                    proposal, proposal_errors = None, ("invalid code location",)
+                item_errors = list(proposal_errors)
+                if isinstance(item, dict):
+                    if set(item) != expected_fields:
+                        item_errors.append("proposal fields do not match schema")
+                    canonical = canonical_bytes(item)
+                    if canonical in seen:
+                        item_errors.append("duplicate proposal in page")
+                    seen.add(canonical)
+                    locations = item.get("code_locations")
+                    if isinstance(locations, list):
+                        for location in locations:
+                            if not isinstance(location, str):
+                                continue
+                            path, separator, line_text = location.rpartition(":")
+                            page_range = ranges.get(path)
+                            line = (
+                                int(line_text)
+                                if separator
+                                and line_text.isascii()
+                                and line_text.isdecimal()
+                                and len(line_text) <= 9
+                                else None
+                            )
+                            if page_range is None or line is None:
+                                invalid_locations.append(location)
+                            elif not page_range[0] <= line <= page_range[1]:
+                                invalid_locations.append(location)
+                                item_errors.append(
+                                    "code location is outside the current page"
+                                )
+                if proposal is None and not item_errors:
+                    item_errors.append("proposal is invalid")
+                if item_errors:
+                    errors.append(
+                        {
+                            "hypothesis_index": index,
+                            "errors": list(dict.fromkeys(item_errors)),
+                        }
+                    )
+        if not errors:
+            return None
+        return {
+            "allowed_page_ranges": allowed,
+            "errors": errors,
+            "invalid_locations": list(dict.fromkeys(invalid_locations)),
+        }
 
     async def propose(
         self,

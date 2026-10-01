@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import timedelta
 from pathlib import Path
 from typing import cast
 
@@ -12,6 +13,7 @@ from sastsimi.config.user_config import (
     SimpleToolBinding,
     UserConfig,
 )
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
@@ -21,6 +23,7 @@ from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleAnalysisRun,
     SimpleStage,
+    StageFailure,
     StageStatus,
 )
 from sastsimi.simple_runtime.run_lease import analysis_run_lease
@@ -151,6 +154,9 @@ def test_composition_injects_identity_scoped_recovery_into_app_and_runner(
     assert app_recovery.identity == identity
     assert runner.recovery is not None
     assert cast(Coordinator, runner.recovery).identity == identity
+    assert runner.cleanup_artifacts is not None
+    assert runner.cleanup_artifacts.identity == identity
+    assert runner.cleanup_artifacts.data_dir == tmp_path / "data"
     candidate = runner.handlers[SimpleStage.POC_CANDIDATE_DONE]
     assert isinstance(candidate, PoCCandidateStage)
     assert candidate._workspace_path == static.workspace_path
@@ -209,6 +215,153 @@ def test_public_candidate_status_marks_unleased_running_stage_interrupted(
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(composition, "analysis_run_lease_active", lambda *_: None)
         assert app.status("A-001")["status"] == "RUNNING"
+
+
+def test_public_candidate_status_requires_cleanup_for_unresolved_codex_call(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    app = composition.PublicSimpleRuntimeApplication(config, _profile(tmp_path))
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    AnalysisDisplayIdStore(app._store.database_path).get_or_allocate(
+        identity.analysis_id
+    )
+    app._store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="https://github.com/example/repo",
+            candidate_pipeline_version=1,
+        )
+    )
+    app._store.mark_running(
+        identity, SimpleStage.STATIC_DONE, (), attempt_id="static-1"
+    )
+    assert app._store.begin_codex_call("unresolved-call", identity.analysis_id)
+
+    idle = app.status("A-001")
+    assert idle["status"] == "BLOCKED"
+    assert idle["error_code"] == "CODEX_CALL_IN_FLIGHT_UNRESOLVED"
+    assert idle["resume_action"] == "MANUAL_CODEX_CLEANUP_REVIEW"
+
+    with analysis_run_lease(config.data_dir, identity.analysis_id):
+        assert app.status("A-001")["status"] == "RUNNING"
+
+
+def test_public_candidate_status_requires_review_for_unconfirmed_codex_cleanup(
+    tmp_path: Path,
+) -> None:
+    app = composition.PublicSimpleRuntimeApplication(
+        _config(tmp_path), _profile(tmp_path)
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    AnalysisDisplayIdStore(app._store.database_path).get_or_allocate(
+        identity.analysis_id
+    )
+    app._store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="https://github.com/example/repo",
+            candidate_pipeline_version=1,
+        )
+    )
+    running = app._store.mark_running(
+        identity, SimpleStage.STATIC_DONE, (), attempt_id="static-1"
+    )
+    app._store.mark_failure(
+        running,
+        StageFailure(
+            code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+            retryable=False,
+            safe_message="Codex process cleanup was not confirmed",
+        ),
+        StageStatus.BLOCKED,
+    )
+
+    idle = app.status("A-001")
+    assert idle["status"] == "BLOCKED"
+    assert idle["error_code"] == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+    assert idle["resume_action"] == "MANUAL_CODEX_CLEANUP_REVIEW"
+
+
+def test_public_candidate_status_shows_resume_after_exact_cleanup_confirmation(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    app = composition.PublicSimpleRuntimeApplication(config, _profile(tmp_path))
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    AnalysisDisplayIdStore(app._store.database_path).get_or_allocate(
+        identity.analysis_id
+    )
+    app._store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="https://github.com/example/repo",
+            candidate_pipeline_version=1,
+        )
+    )
+    running = app._store.mark_running(
+        identity, SimpleStage.STATIC_DONE, (), attempt_id="static-1"
+    )
+    blocked = app._store.mark_failure(
+        running,
+        StageFailure(
+            code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+            retryable=False,
+            safe_message="Codex process cleanup was not confirmed",
+        ),
+        StageStatus.BLOCKED,
+    )
+    call_id = "confirmed-call"
+    assert app._store.begin_codex_call(call_id, identity.analysis_id)
+    artifacts = SimpleArtifactRepository(config.data_dir, identity)
+    confirmation = artifacts.put_json(
+        {
+            "kind": "simple_codex_cleanup_confirmation",
+            "analysis_id": identity.analysis_id,
+            "stage": blocked.stage.value,
+            "attempt_id": blocked.attempt_id,
+            "checkpoint_sha256": hashlib.sha256(canonical_bytes(blocked)).hexdigest(),
+            "call_id": call_id,
+            "process_tree_stopped": True,
+            "verification_method": "windows_process_inventory",
+            "former_parent_pid": 12345,
+            "observed_matching_process_count": 0,
+            "observed_at": (blocked.updated_at + timedelta(seconds=1)).isoformat(),
+        }
+    )
+    assert app.status("A-001")["resume_action"] == "MANUAL_CODEX_CLEANUP_REVIEW"
+    app._store.confirm_codex_cleanup(blocked, confirmation, artifacts)
+
+    with analysis_run_lease(config.data_dir, identity.analysis_id):
+        assert app.status("A-001")["resume_action"] != "RESUME_INTERRUPTED"
+    resumed = app.status("A-001")
+    assert resumed["status"] == "PAUSED"
+    assert resumed["error_code"] == "INTERRUPTED_RESUME_REQUIRED"
+    assert resumed["resume_action"] == "RESUME_INTERRUPTED"
 
 
 def test_public_legacy_running_status_is_not_reclassified_without_lease(

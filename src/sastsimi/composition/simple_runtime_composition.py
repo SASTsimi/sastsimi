@@ -64,6 +64,7 @@ from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleAnalysisRun,
     SimpleStage,
+    StageCheckpoint,
     StageStatus,
 )
 from sastsimi.simple_runtime.portable_docker import (
@@ -341,6 +342,7 @@ def build_analysis_application(
                 ),
             ),
             codex_invalid_output_resume=profile.provider == "codex",
+            cleanup_artifacts=artifacts,
             recovery=recovery_factory(identity),
             policy_snapshot_ref=static.policy_snapshot_ref,
         )
@@ -539,18 +541,48 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         exact = self._display.resolve(analysis_id)
         run = self._store.require_analysis_run(exact)
         snapshot = self._progress_snapshot(run)
+        lease_inactive = (
+            analysis_run_lease_active(self._config.data_dir, exact) is False
+        )
         if (
             run.candidate_pipeline_version == 1
-            and snapshot.status == "RUNNING"
-            and analysis_run_lease_active(self._config.data_dir, exact) is False
+            and lease_inactive
         ):
-            snapshot = snapshot.model_copy(
-                update={
-                    "status": "PAUSED",
-                    "error_code": "INTERRUPTED_RESUME_REQUIRED",
-                    "resume_action": "RESUME_INTERRUPTED",
-                }
-            )
+            if self._store.unresolved_codex_call(exact) is not None:
+                snapshot = snapshot.model_copy(
+                    update={
+                        "status": "BLOCKED",
+                        "error_code": "CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+                    }
+                )
+            elif snapshot.status == "RUNNING":
+                snapshot = snapshot.model_copy(
+                    update={
+                        "status": "PAUSED",
+                        "error_code": "INTERRUPTED_RESUME_REQUIRED",
+                        "resume_action": "RESUME_INTERRUPTED",
+                    }
+                )
+        if snapshot.status in {"BLOCKED", "FAILED"} and snapshot.error_code in {
+            "CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+            "CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+        }:
+            if (
+                lease_inactive
+                and self._confirmed_cleanup_resume_ready(exact)
+                and analysis_run_lease_active(self._config.data_dir, exact) is False
+            ):
+                snapshot = snapshot.model_copy(
+                    update={
+                        "status": "PAUSED",
+                        "error_code": "INTERRUPTED_RESUME_REQUIRED",
+                        "resume_action": "RESUME_INTERRUPTED",
+                    }
+                )
+            else:
+                snapshot = snapshot.model_copy(
+                    update={"resume_action": "MANUAL_CODEX_CLEANUP_REVIEW"}
+                )
         return {
             "analysis_id": run.display_analysis_id,
             "exact_analysis_id": exact,
@@ -575,6 +607,39 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             "resume_action": snapshot.resume_action,
             **self._static_coverage_status(run),
         }
+
+    def _confirmed_cleanup_resume_ready(self, analysis_id: str) -> bool:
+        cleanup_errors = {
+            "CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+            "CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+        }
+        try:
+            checkpoints: tuple[StageCheckpoint, ...] = self._store.list_checkpoints(
+                analysis_id
+            )
+            affected = [
+                checkpoint
+                for checkpoint in checkpoints
+                if checkpoint.status in {StageStatus.BLOCKED, StageStatus.FAILED}
+                and checkpoint.error_code in cleanup_errors
+            ]
+            if not affected or self._store.unresolved_codex_call(analysis_id):
+                return False
+            return all(
+                self._store.has_codex_cleanup_confirmation(
+                    checkpoint,
+                    SimpleArtifactRepository(
+                        self._config.data_dir, checkpoint.identity
+                    ),
+                )
+                if checkpoint.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+                else self._store.confirmed_codex_call_covering(
+                    analysis_id, checkpoint.updated_at
+                )
+                for checkpoint in affected
+            )
+        except (OSError, ValueError, LookupError, sqlite3.Error):
+            return False
 
     def _static_coverage_status(self, run: SimpleAnalysisRun) -> dict[str, object]:
         """Expose only bounded, exact-verified static scope facts."""

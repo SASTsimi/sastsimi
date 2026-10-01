@@ -40,6 +40,8 @@ class AnalysisSummaryView(ContractModel):
     llm_output_tokens: int = 0
     llm_cost_minor_units: float | None = None
     llm_unknown_cost_calls: int = 0
+    llm_unknown_token_calls: int = 0
+    llm_unrecorded_in_flight_codex_calls: int = 0
     cursor_input_tokens: int = 0
     cursor_output_tokens: int = 0
     cursor_cost_cents: float | None = None

@@ -105,6 +105,20 @@ class _CheckpointProjection:
         )
 
 
+class _ReadOnlyCheckpointStore(SimpleCheckpointStore):
+    """Reuse exact cleanup audit checks without initializing or writing the DB."""
+
+    def __init__(self, database_path: Path) -> None:
+        self._database_path = database_path
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(
+            f"file:{self._database_path.as_posix()}?mode=ro", uri=True
+        )
+        connection.row_factory = sqlite3.Row
+        return connection
+
+
 class DashboardQuery:
     def __init__(self, data_dir: str | Path) -> None:
         self._data_dir = Path(data_dir).resolve()
@@ -1037,11 +1051,19 @@ class DashboardQuery:
                 run.candidate_scope_fingerprint if run else None
             ),
         )
-        if (
+        lease_inactive = analysis_run_lease_active(self._data_dir, analysis_id) is False
+        if lease_inactive and self._unresolved_codex_call(analysis_id):
+            progress = progress.model_copy(
+                update={
+                    "status": "BLOCKED",
+                    "error_code": "CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+                }
+            )
+        elif (
             run is not None
             and run.candidate_pipeline_version == 1
             and progress.status == "RUNNING"
-            and analysis_run_lease_active(self._data_dir, analysis_id) is False
+            and lease_inactive
         ):
             progress = progress.model_copy(
                 update={
@@ -1050,6 +1072,26 @@ class DashboardQuery:
                     "resume_action": "RESUME_INTERRUPTED",
                 }
             )
+        if progress.status in {"BLOCKED", "FAILED"} and progress.error_code in {
+            "CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+            "CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+        }:
+            if (
+                lease_inactive
+                and self._confirmed_cleanup_resume_ready(analysis_id, values)
+                and analysis_run_lease_active(self._data_dir, analysis_id) is False
+            ):
+                progress = progress.model_copy(
+                    update={
+                        "status": "PAUSED",
+                        "error_code": "INTERRUPTED_RESUME_REQUIRED",
+                        "resume_action": "RESUME_INTERRUPTED",
+                    }
+                )
+            else:
+                progress = progress.model_copy(
+                    update={"resume_action": "MANUAL_CODEX_CLEANUP_REVIEW"}
+                )
         admissions = [
             item
             for item in values
@@ -1091,6 +1133,10 @@ class DashboardQuery:
                 else None
             ),
             llm_unknown_cost_calls=int(usage["unknown_cost_calls"] or 0),
+            llm_unknown_token_calls=int(usage.get("unknown_token_calls") or 0),
+            llm_unrecorded_in_flight_codex_calls=int(
+                usage.get("unrecorded_in_flight_codex_calls") or 0
+            ),
             cursor_input_tokens=int(usage["input_tokens"] or 0),
             cursor_output_tokens=int(usage["output_tokens"] or 0),
             cursor_cost_cents=(
@@ -1834,6 +1880,50 @@ class DashboardQuery:
                 registered = int(row[0]) if row is not None else 0
         return decisions, deep, registered
 
+    def _unresolved_codex_call(self, analysis_id: str) -> bool:
+        with self._connect() as connection:
+            if not self._table_exists(connection, "simple_codex_calls"):
+                return False
+            row = connection.execute(
+                "SELECT 1 FROM simple_codex_calls "
+                "WHERE analysis_id = ? AND status = 'IN_FLIGHT' LIMIT 1",
+                (analysis_id,),
+            ).fetchone()
+        return row is not None
+
+    def _confirmed_cleanup_resume_ready(
+        self, analysis_id: str, checkpoints: list[StageCheckpoint]
+    ) -> bool:
+        cleanup_errors = {
+            "CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+            "CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+        }
+        affected = [
+            checkpoint
+            for checkpoint in checkpoints
+            if checkpoint.status in {StageStatus.BLOCKED, StageStatus.FAILED}
+            and checkpoint.error_code in cleanup_errors
+        ]
+        if not affected:
+            return False
+        try:
+            store = _ReadOnlyCheckpointStore(self._database)
+            if store.unresolved_codex_call(analysis_id) is not None:
+                return False
+            return all(
+                store.has_codex_cleanup_confirmation(
+                    checkpoint,
+                    SimpleArtifactRepository(self._data_dir, checkpoint.identity),
+                )
+                if checkpoint.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+                else store.confirmed_codex_call_covering(
+                    analysis_id, checkpoint.updated_at
+                )
+                for checkpoint in affected
+            )
+        except (OSError, ValueError, LookupError, sqlite3.Error):
+            return False
+
     def _usage_summary(self, analysis_id: str) -> dict[str, int | float | None]:
         with self._connect() as connection:
             if not self._table_exists(connection, "simple_llm_attempts"):
@@ -1843,6 +1933,8 @@ class DashboardQuery:
                     "output_tokens": 0,
                     "cost_minor_units": None,
                     "unknown_cost_calls": 0,
+                    "unknown_token_calls": 0,
+                    "unrecorded_in_flight_codex_calls": 0,
                 }
             return SimpleCheckpointStore.usage_summary_from_connection(
                 connection, analysis_id

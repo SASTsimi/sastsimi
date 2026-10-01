@@ -8,6 +8,7 @@ from typing import Any, TypedDict, cast
 import pytest
 from pydantic import JsonValue
 
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime import hypothesis_pages
 from sastsimi.simple_runtime.application import StaticBootstrapResult
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
@@ -487,6 +488,221 @@ async def test_paged_hypothesis_rejects_more_than_twelve_or_out_of_page(
 
 
 @pytest.mark.asyncio
+async def test_paged_hypothesis_repairs_invalid_location_with_page_ranges(
+    tmp_path: Path,
+) -> None:
+    class RepairClient(_Client):
+        def __init__(self) -> None:
+            super().__init__()
+            self.responses = [
+                [_proposal("invented/app.py:3")],
+                [_proposal("app.py:2")],
+            ]
+            self.raw_ref: StoredDataRef | None = None
+
+        async def call(
+            self,
+            *,
+            prompt: bytes,
+            output_schema: Mapping[str, Any],
+            timeout_ms: int,
+            agent_name: str = "agent",
+        ) -> SimpleLLMCallResult | StageFailure:
+            del output_schema, timeout_ms, agent_name
+            self.prompts.append(prompt)
+            return SimpleLLMCallResult(
+                value=cast(dict[str, JsonValue], {"hypotheses": self.responses.pop(0)}),
+                prompt_digest="a" * 64,
+                output_digest="b" * 64,
+                raw_output_ref=self.raw_ref if len(self.prompts) == 1 else None,
+            )
+
+    client = RepairClient()
+    bootstrap, identity, static, artifacts = _setup(
+        tmp_path, {"app.py": "first = 1\nsecond = 2\n"}, client
+    )
+    client.raw_ref = artifacts.put_json({"kind": "raw_invalid_model_output"})
+
+    result = await bootstrap.propose_page(
+        identity, static, after_cursor=None, page_budget_bytes=2048
+    )
+
+    assert not isinstance(result, StageFailure)
+    seeds, cursor = result
+    assert cursor is None
+    assert len(seeds) == 1
+    assert len(client.prompts) == 2
+    feedback = json.loads(
+        client.prompts[1]
+        .split(b"<PAGE_VALIDATION_FEEDBACK>\n", 1)[1]
+        .split(b"\n</PAGE_VALIDATION_FEEDBACK>", 1)[0]
+    )
+    assert feedback["allowed_page_ranges"] == {"app.py": [1, 2]}
+    assert feedback["errors"] == [
+        {
+            "hypothesis_index": 0,
+            "errors": ["code location is outside the tracked checkout"],
+        }
+    ]
+    assert feedback["invalid_locations"] == ["invented/app.py:3"]
+    proposal = json.loads(artifacts.read_prompt_proposal(seeds[0].proposal_ref))
+    assert proposal["proposal"]["code_locations"] == ["app.py:2"]
+    successful = json.loads(
+        artifacts.read(StoredDataRef.model_validate(proposal["page_result_ref"]))
+    )
+    assert len(successful["semantic_retry_refs"]) == 1
+    invalid = json.loads(
+        artifacts.read(
+            StoredDataRef.model_validate(successful["semantic_retry_refs"][0])
+        )
+    )
+    assert invalid["validation_status"] == "INVALID"
+    assert invalid["hypotheses"] == [_proposal("invented/app.py:3")]
+    assert invalid["llm_raw_output_ref"] == client.raw_ref.model_dump(mode="json")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_code", ["CONTEXT_LIMIT_EXCEEDED", "TIMED_OUT"])
+async def test_paged_hypothesis_shrink_resets_page_feedback_but_keeps_evidence(
+    tmp_path: Path, failure_code: str
+) -> None:
+    class ShrinkingRepairClient(_Client):
+        def __init__(self) -> None:
+            super().__init__()
+            self.failure_ref: StoredDataRef | None = None
+
+        async def call(
+            self,
+            *,
+            prompt: bytes,
+            output_schema: Mapping[str, Any],
+            timeout_ms: int,
+            agent_name: str = "agent",
+        ) -> SimpleLLMCallResult | StageFailure:
+            del output_schema, timeout_ms, agent_name
+            self.prompts.append(prompt)
+            if len(self.prompts) == 2:
+                assert self.failure_ref is not None
+                return StageFailure(
+                    code=failure_code,
+                    retryable=True,
+                    safe_message="Repair request was too large",
+                    evidence_refs=(self.failure_ref,),
+                )
+            location = {
+                1: "b.py:99",
+                3: "b.py:1",
+                4: "a.py:1",
+            }[len(self.prompts)]
+            return SimpleLLMCallResult(
+                value=cast(dict[str, JsonValue], {"hypotheses": [_proposal(location)]}),
+                prompt_digest="a" * 64,
+                output_digest="b" * 64,
+            )
+
+    client = ShrinkingRepairClient()
+    bootstrap, identity, static, artifacts = _setup(
+        tmp_path,
+        {
+            "a.py": "a = " + "x" * 900 + "\n",
+            "b.py": "b = " + "y" * 900 + "\n",
+        },
+        client,
+    )
+    client.failure_ref = artifacts.put_json({"kind": "oversized_repair_request"})
+
+    result = await bootstrap.propose_page(
+        identity, static, after_cursor=None, page_budget_bytes=4096
+    )
+
+    assert not isinstance(result, StageFailure)
+    seeds, cursor = result
+    assert len(seeds) == 1
+    assert cursor is not None
+    assert len(client.prompts) == 4
+    assert [segment["path"] for segment in _page(client.prompts[0])["segments"]] == [
+        "a.py",
+        "b.py",
+    ]
+    assert [segment["path"] for segment in _page(client.prompts[2])["segments"]] == [
+        "a.py"
+    ]
+    assert b"<PAGE_VALIDATION_FEEDBACK>" in client.prompts[1]
+    assert b"<PAGE_VALIDATION_FEEDBACK>" not in client.prompts[2]
+    feedback = json.loads(
+        client.prompts[3]
+        .split(b"<PAGE_VALIDATION_FEEDBACK>\n", 1)[1]
+        .split(b"\n</PAGE_VALIDATION_FEEDBACK>", 1)[0]
+    )
+    assert feedback["allowed_page_ranges"] == {"a.py": [1, 1]}
+    proposal = json.loads(artifacts.read_prompt_proposal(seeds[0].proposal_ref))
+    final = json.loads(
+        artifacts.read(StoredDataRef.model_validate(proposal["page_result_ref"]))
+    )
+    assert len(final["semantic_retry_refs"]) == 1
+    prior_failures = [
+        json.loads(artifacts.read(StoredDataRef.model_validate(ref)))
+        for ref in final["retry_failure_refs"]
+    ]
+    assert {record["kind"] for record in prior_failures} == {
+        "simple_hypothesis_page_result",
+        "oversized_repair_request",
+    }
+    assert any(
+        record.get("hypotheses") == [_proposal("b.py:99")]
+        for record in prior_failures
+    )
+
+
+@pytest.mark.asyncio
+async def test_paged_hypothesis_bounded_invalid_repair_keeps_raw_evidence(
+    tmp_path: Path,
+) -> None:
+    client = _Client([_proposal("invented/app.py:3")])
+    bootstrap, identity, static, artifacts = _setup(
+        tmp_path, {"app.py": "first = 1\nsecond = 2\n"}, client
+    )
+
+    result = await bootstrap.propose_page(
+        identity, static, after_cursor=None, page_budget_bytes=2048
+    )
+
+    assert isinstance(result, StageFailure)
+    assert result.code == "HYPOTHESIS_PAGE_OUTPUT_INVALID"
+    assert not result.retryable
+    assert len(client.prompts) == 2
+    records = [json.loads(artifacts.read(ref)) for ref in result.evidence_refs]
+    invalid = [
+        record
+        for record in records
+        if record.get("kind") == "simple_hypothesis_page_result"
+    ]
+    assert len(invalid) == 2
+    assert all(record["validation_status"] == "INVALID" for record in invalid)
+    assert all(
+        record["hypotheses"] == [_proposal("invented/app.py:3")] for record in invalid
+    )
+
+
+@pytest.mark.asyncio
+async def test_paged_hypothesis_does_not_silently_drop_duplicate_proposals(
+    tmp_path: Path,
+) -> None:
+    client = _Client([_proposal("app.py:1"), _proposal("app.py:1")])
+    bootstrap, identity, static, _artifacts = _setup(
+        tmp_path, {"app.py": "first = 1\n"}, client
+    )
+
+    result = await bootstrap.propose_page(
+        identity, static, after_cursor=None, page_budget_bytes=2048
+    )
+
+    assert isinstance(result, StageFailure)
+    assert result.code == "HYPOTHESIS_PAGE_OUTPUT_INVALID"
+    assert len(client.prompts) == 2
+
+
+@pytest.mark.asyncio
 async def test_paged_hypothesis_stable_seed_and_exact_page_artifacts(
     tmp_path: Path,
 ) -> None:
@@ -678,6 +894,169 @@ async def test_paged_hypothesis_splits_again_after_model_context_overflow(
     assert len(client.prompts[1]) <= 8_192
     assert _page(client.prompts[1])["segments"][0]["start_line"] == 1
     assert artifacts.read(static.static_bundle_ref)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_code", ["CONTEXT_LIMIT_EXCEEDED", "TIMED_OUT"])
+async def test_paged_hypothesis_success_retains_failed_attempt_evidence(
+    tmp_path: Path, failure_code: str
+) -> None:
+    class FailureOnce(_Client):
+        def __init__(self) -> None:
+            super().__init__([_proposal("app.py:1")])
+            self.failure_refs: tuple[StoredDataRef, ...] = ()
+
+        async def call(
+            self,
+            *,
+            prompt: bytes,
+            output_schema: Mapping[str, Any],
+            timeout_ms: int,
+            agent_name: str = "agent",
+        ) -> SimpleLLMCallResult | StageFailure:
+            if not self.prompts:
+                self.prompts.append(prompt)
+                return StageFailure(
+                    code=failure_code,
+                    retryable=failure_code == "TIMED_OUT",
+                    safe_message="First page attempt failed",
+                    evidence_refs=self.failure_refs,
+                )
+            return await super().call(
+                prompt=prompt,
+                output_schema=output_schema,
+                timeout_ms=timeout_ms,
+                agent_name=agent_name,
+            )
+
+    client = FailureOnce()
+    source = "".join("x = " + "a" * 900 + "\n" for _ in range(12))
+    bootstrap, identity, static, artifacts = _setup(
+        tmp_path, {"app.py": source}, client
+    )
+    request_ref = artifacts.put_json({"kind": "failed_llm_request"})
+    diagnostic_ref = artifacts.put_json({"kind": "failed_llm_diagnostic"})
+    client.failure_refs = (request_ref, diagnostic_ref)
+
+    result = await bootstrap.propose_page(
+        identity, static, after_cursor=None, page_budget_bytes=16_384
+    )
+
+    assert not isinstance(result, StageFailure)
+    seeds, _cursor = result
+    assert len(seeds) == 1
+    proposal = json.loads(artifacts.read(seeds[0].proposal_ref))
+    page_result_ref = StoredDataRef.model_validate(proposal["page_result_ref"])
+    page_result = json.loads(artifacts.read(page_result_ref))
+    assert page_result["retry_failure_refs"] == [
+        request_ref.model_dump(mode="json"),
+        diagnostic_ref.model_dump(mode="json"),
+    ]
+    assert len(page_result["attempt_input_refs"]) == 2
+    assert "retry_failure_refs" not in proposal
+    assert request_ref.content_hash.encode() not in client.prompts[1]
+    assert diagnostic_ref.content_hash.encode() not in client.prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_paged_hypothesis_splits_only_unfinished_page_after_timeout(
+    tmp_path: Path,
+) -> None:
+    class TimeoutOnce(_Client):
+        async def call(
+            self,
+            *,
+            prompt: bytes,
+            output_schema: Mapping[str, Any],
+            timeout_ms: int,
+            agent_name: str = "agent",
+        ) -> SimpleLLMCallResult | StageFailure:
+            if not self.prompts:
+                self.prompts.append(prompt)
+                return StageFailure(
+                    code="TIMED_OUT",
+                    retryable=True,
+                    safe_message="LLM call deadline reached",
+                )
+            return await super().call(
+                prompt=prompt,
+                output_schema=output_schema,
+                timeout_ms=timeout_ms,
+                agent_name=agent_name,
+            )
+
+    client = TimeoutOnce()
+    source = "".join("x = " + "a" * 900 + "\n" for _ in range(12))
+    bootstrap, identity, static, _artifacts = _setup(
+        tmp_path, {"app.py": source}, client
+    )
+
+    result = await bootstrap.propose_page(
+        identity, static, after_cursor=None, page_budget_bytes=16_384
+    )
+
+    assert not isinstance(result, StageFailure)
+    _seeds, cursor = result
+    assert cursor is not None
+    assert len(client.prompts) == 2
+    assert len(client.prompts[1]) <= 8_192
+    assert _page(client.prompts[1])["segments"][0]["start_line"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure_code", "expected_code"),
+    [
+        ("TIMED_OUT", "HYPOTHESIS_PAGE_TIMEOUT_EXHAUSTED"),
+        ("CONTEXT_LIMIT_EXCEEDED", "CONTEXT_LIMIT_EXCEEDED"),
+    ],
+)
+async def test_paged_hypothesis_final_size_failure_keeps_all_prior_evidence(
+    tmp_path: Path, failure_code: str, expected_code: str
+) -> None:
+    class AlwaysFails(_Client):
+        def __init__(self) -> None:
+            super().__init__()
+            self.failure_refs: tuple[StoredDataRef, StoredDataRef] | None = None
+
+        async def call(
+            self,
+            *,
+            prompt: bytes,
+            output_schema: Mapping[str, Any],
+            timeout_ms: int,
+            agent_name: str = "agent",
+        ) -> SimpleLLMCallResult | StageFailure:
+            del output_schema, timeout_ms, agent_name
+            self.prompts.append(prompt)
+            return StageFailure(
+                code=failure_code,
+                retryable=True,
+                safe_message="Page request failed",
+                evidence_refs=(self.failure_refs[len(self.prompts) - 1],)
+                if self.failure_refs is not None
+                else (),
+            )
+
+    client = AlwaysFails()
+    bootstrap, identity, static, artifacts = _setup(
+        tmp_path, {"app.py": "x = 1\n"}, client
+    )
+    client.failure_refs = (
+        artifacts.put_json({"kind": "first_timed_out_request"}),
+        artifacts.put_json({"kind": "second_timed_out_request"}),
+    )
+
+    result = await bootstrap.propose_page(
+        identity, static, after_cursor=None, page_budget_bytes=2_048
+    )
+
+    assert isinstance(result, StageFailure)
+    assert result.code == expected_code
+    assert result.retryable is (failure_code == "CONTEXT_LIMIT_EXCEEDED")
+    assert len(client.prompts) == 2
+    assert len(result.evidence_refs) == 3  # Identical page inputs share one artifact.
+    assert all(ref in result.evidence_refs for ref in client.failure_refs)
 
 
 @pytest.mark.asyncio

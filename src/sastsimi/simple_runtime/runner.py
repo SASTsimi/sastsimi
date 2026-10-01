@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import Mapping
 from typing import Literal, Protocol
 from uuid import uuid4
@@ -8,6 +9,7 @@ from uuid import uuid4
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.refs import StoredDataRef
 
+from .artifacts import SimpleArtifactRepository
 from .models import (
     HYPOTHESIS_STAGES,
     STAGE_ORDER,
@@ -65,12 +67,14 @@ class SimpleRuntimeRunner:
         recovery: RecoveryCoordinator | None = None,
         policy_snapshot_ref: StoredDataRef | None = None,
         codex_invalid_output_resume: bool = False,
+        cleanup_artifacts: SimpleArtifactRepository | None = None,
     ) -> None:
         self.store = store
         self.handlers = handlers
         self.recovery = recovery
         self.policy_snapshot_ref = policy_snapshot_ref
         self.codex_invalid_output_resume = codex_invalid_output_resume
+        self.cleanup_artifacts = cleanup_artifacts
 
     async def resume_analysis(self, identity: CheckpointIdentity) -> RunOutcome:
         return await self.resume_hypothesis(identity)
@@ -315,6 +319,23 @@ class SimpleRuntimeRunner:
             return False
         if checkpoint.status is StageStatus.SUCCEEDED:
             return False
+        if checkpoint.status in {
+            StageStatus.RUNNING,
+            StageStatus.BLOCKED,
+            StageStatus.FAILED,
+        } and self._confirmed_codex_cleanup_allows_replay(checkpoint):
+            self.store.replace_from(
+                checkpoint.model_copy(
+                    update={
+                        "status": StageStatus.PENDING,
+                        "output_refs": (),
+                        "attempt_id": None,
+                        "error_code": None,
+                        "retryable": False,
+                    }
+                )
+            )
+            return False
         if checkpoint.status is StageStatus.RUNNING:
             return await self._recover_or_stop(
                 checkpoint,
@@ -369,6 +390,31 @@ class SimpleRuntimeRunner:
             checkpoint.status,
             already_failed=True,
         )
+
+    def _confirmed_codex_cleanup_allows_replay(
+        self, checkpoint: StageCheckpoint
+    ) -> bool:
+        artifacts = self.cleanup_artifacts
+        if (
+            checkpoint.identity.hypothesis_id is None
+            or artifacts is None
+            or artifacts.identity != checkpoint.identity
+        ):
+            return False
+        try:
+            if self.store.unresolved_codex_call(checkpoint.identity.analysis_id):
+                return False
+            if checkpoint.status is StageStatus.RUNNING:
+                return self.store.has_codex_cleanup_confirmation(checkpoint, artifacts)
+            if checkpoint.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED":
+                return self.store.has_codex_cleanup_confirmation(checkpoint, artifacts)
+            if checkpoint.error_code == "CODEX_CALL_IN_FLIGHT_UNRESOLVED":
+                return self.store.confirmed_codex_call_covering(
+                    checkpoint.identity.analysis_id, checkpoint.updated_at
+                )
+            return False
+        except (OSError, ValueError, LookupError, sqlite3.Error):
+            return False
 
     async def _recover_or_stop(
         self,

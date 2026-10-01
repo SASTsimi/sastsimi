@@ -149,6 +149,17 @@ def emit_public(
             )
         return
     if data.get("status") in {"BLOCKED", "FAILED"}:
+        if data.get("error_code") in {
+            "CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+            "CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+        }:
+            stream.write(
+                "Codex 호출 또는 프로세스 정리 상태를 확인할 수 없어 차단되었습니다. "
+                "호출과 프로세스를 확실히 연결할 기록이 없어 운영자의 수동 검토가 "
+                "필요합니다. 현재 CLI에는 종료 확인 명령이 없으며 "
+                "resume을 반복해도 재개되지 않습니다.\n"
+            )
+            return
         if data.get("error_code") == "RECOVERY_EXHAUSTED":
             stream.write("자동 복구 한도에 도달해 수동 검토가 필요합니다.\n")
             return

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from io import StringIO
 
+import pytest
+
 from sastsimi.interfaces.cli.public import emit_public
 
 
@@ -98,6 +100,34 @@ def test_text_interrupted_run_explains_resume_without_budget_advice() -> None:
     assert "오류: INTERRUPTED_RESUME_REQUIRED" in rendered
     assert "sastsimi resume A-007" in rendered
     assert "예산" not in rendered
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    ("CODEX_CALL_IN_FLIGHT_UNRESOLVED", "CODEX_PROCESS_CLEANUP_UNCONFIRMED"),
+)
+def test_text_unconfirmed_codex_cleanup_requires_manual_review(
+    error_code: str,
+) -> None:
+    output = StringIO()
+    emit_public(
+        "text",
+        output,
+        command="status",
+        data={
+            "analysis_id": "A-001",
+            "status": "BLOCKED",
+            "error_code": error_code,
+            "resume_action": "MANUAL_CODEX_CLEANUP_REVIEW",
+        },
+    )
+
+    rendered = output.getvalue()
+    assert "수동 검토" in rendered
+    assert "CLI에는" in rendered
+    assert "확인 명령이 없" in rendered
+    assert "종료 확인을 기록한 뒤" not in rendered
+    assert "sastsimi resume A-001" not in rendered
 
 
 def test_text_status_shows_bounded_static_scope_categories() -> None:

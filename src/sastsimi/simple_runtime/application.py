@@ -348,18 +348,40 @@ class SimpleAnalysisApplication:
             commit_id=run.commit_id,
             hypothesis_id=None,
         )
-        for checkpoint in self._store.list_checkpoints(exact):
+        checkpoints = self._store.list_checkpoints(exact)
+        if self._store.unresolved_codex_call(exact) is not None:
+            latest = (
+                max(checkpoints, key=lambda item: item.updated_at).stage
+                if checkpoints
+                else SimpleStage.STATIC_DONE
+            )
+            return SimpleAnalysisOutcome(
+                identity=identity,
+                display_analysis_id=run.display_analysis_id,
+                status="BLOCKED",
+                current_stage=latest,
+                error_code="CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+            )
+        for checkpoint in checkpoints:
             if (
                 checkpoint.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
                 and checkpoint.status in {StageStatus.BLOCKED, StageStatus.FAILED}
             ):
-                return SimpleAnalysisOutcome(
-                    identity=identity,
-                    display_analysis_id=run.display_analysis_id,
-                    status="BLOCKED",
-                    current_stage=checkpoint.stage,
-                    error_code=checkpoint.error_code,
-                )
+                try:
+                    confirmed = self._store.has_codex_cleanup_confirmation(
+                        checkpoint,
+                        SimpleArtifactRepository(self._data_dir, checkpoint.identity),
+                    )
+                except (OSError, ValueError, sqlite3.Error):
+                    confirmed = False
+                if not confirmed:
+                    return SimpleAnalysisOutcome(
+                        identity=identity,
+                        display_analysis_id=run.display_analysis_id,
+                        status="BLOCKED",
+                        current_stage=checkpoint.stage,
+                        error_code=checkpoint.error_code,
+                    )
         if run.static_bundle_ref is not None:
             await self._assert_completed_static_scope(run, identity)
             if run.static_disposition == "PARTIAL":
@@ -1098,6 +1120,8 @@ class SimpleAnalysisApplication:
                 static,
                 code,
                 paused=discovery.status == "PAUSED",
+                evidence_refs=discovery.evidence_refs,
+                current_checkpoint=checkpoint,
             )
         after_id: str | None = None
         while True:
@@ -1143,7 +1167,11 @@ class SimpleAnalysisApplication:
                         )
                     except (OSError, ValueError, KeyError, TypeError):
                         return self._candidate_bootstrap_failure(
-                            run, identity, static, "AST_FOCUS_EVIDENCE_INVALID"
+                            run,
+                            identity,
+                            static,
+                            "AST_FOCUS_EVIDENCE_INVALID",
+                            current_checkpoint=checkpoint,
                         )
                 focused = artifacts.put_bytes(
                     redact_projected_json(canonical_bytes(focused_data)).data,
@@ -1168,6 +1196,8 @@ class SimpleAnalysisApplication:
                         static,
                         proposed.code,
                         paused=budget_paused,
+                        evidence_refs=proposed.evidence_refs,
+                        current_checkpoint=checkpoint,
                     )
                 if not proposed:
                     self._store.save_candidate_deep_status(
@@ -1206,6 +1236,8 @@ class SimpleAnalysisApplication:
                 static,
                 free_failure.code,
                 paused=free_failure.code in BUDGET_PAUSE_CODES,
+                evidence_refs=free_failure.evidence_refs,
+                current_checkpoint=checkpoint,
             )
         if checkpoint.status is not StageStatus.SUCCEEDED:
             completed = artifacts.put_json(
@@ -1278,17 +1310,27 @@ class SimpleAnalysisApplication:
                         evidence_refs=(existing,),
                     )
             else:
+                first_failure_refs: tuple[StoredDataRef, ...] = ()
                 page_result = await propose_page(identity, static, after_cursor=cursor)
                 if (
                     isinstance(page_result, StageFailure)
                     and page_result.retryable
                     and page_result.code in {"FAILED", "TIMED_OUT"}
                 ):
+                    first_failure_refs = page_result.evidence_refs
                     page_result = await propose_page(
                         identity, static, after_cursor=cursor
                     )
                 if isinstance(page_result, StageFailure):
-                    return page_result
+                    return page_result.model_copy(
+                        update={
+                            "evidence_refs": tuple(
+                                dict.fromkeys(
+                                    (*first_failure_refs, *page_result.evidence_refs)
+                                )
+                            )
+                        }
+                    )
                 seeds, next_cursor = page_result
                 page_record = {
                     "kind": "simple_candidate_free_exploration_page",
@@ -1297,6 +1339,16 @@ class SimpleAnalysisApplication:
                     "cursor": cursor,
                     "next_cursor": next_cursor,
                     "seeds": [seed.model_dump(mode="json") for seed in seeds],
+                    **(
+                        {
+                            "retry_failure_refs": [
+                                ref.model_dump(mode="json")
+                                for ref in first_failure_refs
+                            ]
+                        }
+                        if first_failure_refs
+                        else {}
+                    ),
                 }
                 marker = artifacts.put_json(page_record)
                 self._store.save_survey_progress(
@@ -1672,12 +1724,34 @@ class SimpleAnalysisApplication:
         code: str,
         *,
         paused: bool = False,
+        evidence_refs: tuple[StoredDataRef, ...] = (),
+        current_checkpoint: StageCheckpoint | None = None,
     ) -> SimpleAnalysisOutcome:
-        checkpoint = self._store.mark_running(
-            identity,
-            SimpleStage.HYPOTHESIS_DONE,
-            (static.static_bundle_ref,),
-            attempt_id=uuid4().hex,
+        existing = self._store.get(identity, SimpleStage.HYPOTHESIS_DONE)
+        if (
+            code == "CODEX_CALL_IN_FLIGHT_UNRESOLVED"
+            and existing is not None
+            and existing.status in {StageStatus.BLOCKED, StageStatus.FAILED}
+        ):
+            return SimpleAnalysisOutcome(
+                identity=identity,
+                display_analysis_id=run.display_analysis_id,
+                status="BLOCKED",
+                current_stage=existing.stage,
+                error_code=code,
+            )
+        checkpoint = (
+            current_checkpoint
+            if current_checkpoint is not None
+            and current_checkpoint.status is StageStatus.RUNNING
+            and current_checkpoint.input_refs
+            and current_checkpoint.input_refs[0] == static.static_bundle_ref
+            else self._store.mark_running(
+                identity,
+                SimpleStage.HYPOTHESIS_DONE,
+                (static.static_bundle_ref,),
+                attempt_id=uuid4().hex,
+            )
         )
         self._store.mark_failure(
             checkpoint,
@@ -1685,6 +1759,7 @@ class SimpleAnalysisApplication:
                 code=code,
                 retryable=False,
                 safe_message="Candidate analysis did not complete",
+                evidence_refs=evidence_refs,
             ),
             StageStatus.BLOCKED,
         )

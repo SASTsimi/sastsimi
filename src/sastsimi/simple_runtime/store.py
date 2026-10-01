@@ -6,7 +6,7 @@ import math
 import sqlite3
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, cast
 
@@ -19,8 +19,10 @@ from sastsimi.observability.agent_activity import (
 )
 from sastsimi.storage.agent_activity import AgentActivityStore
 
+from .artifacts import SimpleArtifactRepository
 from .candidates import StaticCandidate
 from .models import (
+    HYPOTHESIS_STAGES,
     STAGE_ORDER,
     STAGE_VERSION,
     CheckpointIdentity,
@@ -39,6 +41,7 @@ from .recovery import (
     RecoveryAction,
     RecoveryResolution,
 )
+from .run_lease import AnalysisRunBusy, analysis_run_lease
 
 ROLE_BY_STAGE: dict[SimpleStage, str] = {
     SimpleStage.STATIC_DONE: "Static Analysis Runtime",
@@ -156,6 +159,27 @@ class SimpleCheckpointStore:
                     cost_cents REAL,
                     artifact_ref_json TEXT NOT NULL
                 )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_codex_calls (
+                    call_id TEXT PRIMARY KEY,
+                    analysis_id TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (
+                        status IN ('IN_FLIGHT', 'SAFE', 'CONFIRMED')
+                    ),
+                    started_at TEXT NOT NULL,
+                    resolved_at TEXT,
+                    confirmation_ref_json TEXT
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS simple_codex_one_in_flight
+                ON simple_codex_calls (analysis_id)
+                WHERE status = 'IN_FLIGHT'
                 """
             )
             connection.execute(
@@ -2081,6 +2105,97 @@ class SimpleCheckpointStore:
                 if row is None or tuple(row) != values:
                     raise ValueError("LLM_ATTEMPT_CONFLICT")
 
+    def unresolved_codex_call(self, analysis_id: str) -> str | None:
+        """Return the durable call ID that still needs process resolution."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT call_id FROM simple_codex_calls "
+                "WHERE analysis_id = ? AND status = 'IN_FLIGHT'",
+                (analysis_id,),
+            ).fetchone()
+        return str(row["call_id"]) if row is not None else None
+
+    def confirmed_codex_call_covering(
+        self, analysis_id: str, observed_at: datetime
+    ) -> bool:
+        """Match a sibling's blocked time to a resolved, audited Codex call."""
+
+        if observed_at.tzinfo is None:
+            return False
+        observed_utc = observed_at.astimezone(UTC)
+        with self._connect() as connection:
+            unresolved = connection.execute(
+                "SELECT 1 FROM simple_codex_calls "
+                "WHERE analysis_id = ? AND status = 'IN_FLIGHT' LIMIT 1",
+                (analysis_id,),
+            ).fetchone()
+            if unresolved is not None:
+                return False
+            rows = connection.execute(
+                "SELECT started_at, resolved_at FROM simple_codex_calls "
+                "WHERE analysis_id = ? AND status = 'CONFIRMED' "
+                "AND confirmation_ref_json IS NOT NULL AND resolved_at IS NOT NULL",
+                (analysis_id,),
+            ).fetchall()
+        for row in rows:
+            try:
+                started = datetime.fromisoformat(row["started_at"])
+                resolved = datetime.fromisoformat(row["resolved_at"])
+            except (TypeError, ValueError):
+                continue
+            if (
+                started.tzinfo is not None
+                and resolved.tzinfo is not None
+                and started.astimezone(UTC) <= observed_utc <= resolved.astimezone(UTC)
+            ):
+                return True
+        return False
+
+    def begin_codex_call(self, call_id: str, analysis_id: str) -> bool:
+        """Atomically reserve one Codex process for an analysis across processes."""
+
+        if not call_id or not analysis_id:
+            raise ValueError("CODEX_CALL_IDENTITY_INVALID")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT 1 FROM simple_codex_calls "
+                "WHERE analysis_id = ? AND status = 'IN_FLIGHT'",
+                (analysis_id,),
+            ).fetchone()
+            if row is not None:
+                return False
+            connection.execute(
+                "INSERT INTO simple_codex_calls "
+                "(call_id, analysis_id, status, started_at) "
+                "VALUES (?, ?, 'IN_FLIGHT', ?)",
+                (call_id, analysis_id, datetime.now(UTC).isoformat()),
+            )
+            return True
+
+    def mark_codex_call_safe(self, call_id: str, analysis_id: str) -> None:
+        """Resolve only a call whose matching attempt was durably recorded."""
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "UPDATE simple_codex_calls "
+                "SET status = 'SAFE', resolved_at = ? "
+                "WHERE call_id = ? AND analysis_id = ? AND status = 'IN_FLIGHT' "
+                "AND EXISTS (SELECT 1 FROM simple_llm_attempts "
+                "WHERE attempt_id = ? AND analysis_id = ?)",
+                (
+                    datetime.now(UTC).isoformat(),
+                    call_id,
+                    analysis_id,
+                    call_id,
+                    analysis_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("CODEX_CALL_SAFE_UNVERIFIED")
+
     @staticmethod
     def usage_summary_from_connection(
         connection: sqlite3.Connection, analysis_id: str
@@ -2092,14 +2207,77 @@ class SimpleCheckpointStore:
                    COALESCE(SUM(output_tokens), 0) AS output_tokens,
                    SUM(cost_cents) AS cost_minor_units,
                    COALESCE(SUM(CASE WHEN cost_cents IS NULL THEN 1 ELSE 0 END), 0)
-                       AS unknown_cost_calls
+                       AS unknown_cost_calls,
+                   COALESCE(SUM(CASE
+                       WHEN (input_tokens IS NULL OR output_tokens IS NULL)
+                            AND status NOT IN ("""
+            + ",".join("?" for _ in _NO_MODEL_RESPONSE_STATUSES)
+            + """
+                       ) THEN 1 ELSE 0 END), 0) AS unknown_token_calls
             FROM simple_llm_attempts WHERE analysis_id = ?
             """,
-            (analysis_id,),
+            (*_NO_MODEL_RESPONSE_STATUSES, analysis_id),
         ).fetchone()
         assert row is not None
+        tables = {
+            str(item["name"])
+            for item in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name IN ('simple_codex_calls', 'agent_activity_events')"
+            )
+        }
+        tracked_rows = (
+            connection.execute(
+                "SELECT call_id, status, confirmation_ref_json "
+                "FROM simple_codex_calls WHERE analysis_id = ? "
+                "AND status IN ('CONFIRMED', 'IN_FLIGHT')",
+                (analysis_id,),
+            ).fetchall()
+            if "simple_codex_calls" in tables
+            else []
+        )
+        tracked_refs = {
+            str(item["confirmation_ref_json"])
+            for item in tracked_rows
+            if item["status"] == "CONFIRMED"
+            and item["confirmation_ref_json"] is not None
+        }
+        missing_tracked = [
+            item
+            for item in tracked_rows
+            if connection.execute(
+                "SELECT 1 FROM simple_llm_attempts "
+                "WHERE attempt_id = ? AND analysis_id = ?",
+                (str(item["call_id"]), analysis_id),
+            ).fetchone()
+            is None
+        ]
+        unrecorded_in_flight = sum(
+            item["status"] == "IN_FLIGHT" for item in missing_tracked
+        )
+        legacy_refs: set[str] = set()
+        events = (
+            connection.execute(
+                "SELECT event_json FROM agent_activity_events "
+                "WHERE analysis_id = ? AND event_json LIKE ?",
+                (analysis_id, '%"CODEX_PROCESS_CLEANUP_CONFIRMED"%'),
+            )
+            if "agent_activity_events" in tables
+            else ()
+        )
+        for item in events:
+            event = AgentActivityEvent.model_validate_json(item["event_json"])
+            if (
+                event.kind is ActivityKind.DECISION_RECORDED
+                and event.error_code == "CODEX_PROCESS_CLEANUP_CONFIRMED"
+                and len(event.output_refs) == 1
+            ):
+                ref_json = event.output_refs[0].model_dump_json()
+                if ref_json not in tracked_refs:
+                    legacy_refs.add(ref_json)
+        unlinked = len(missing_tracked) + len(legacy_refs)
         return {
-            "calls": int(row["calls"]),
+            "calls": int(row["calls"]) + unlinked,
             "input_tokens": int(row["input_tokens"]),
             "output_tokens": int(row["output_tokens"]),
             "cost_minor_units": (
@@ -2107,7 +2285,10 @@ class SimpleCheckpointStore:
                 if row["cost_minor_units"] is not None
                 else None
             ),
-            "unknown_cost_calls": int(row["unknown_cost_calls"]),
+            "unknown_cost_calls": int(row["unknown_cost_calls"]) + unlinked,
+            "unknown_token_calls": int(row["unknown_token_calls"]) + unlinked,
+            "unlinked_codex_usage_calls": unlinked,
+            "unrecorded_in_flight_codex_calls": unrecorded_in_flight,
         }
 
     def usage_summary(self, analysis_id: str) -> dict[str, int | float | None]:
@@ -2248,19 +2429,13 @@ class SimpleCheckpointStore:
                 (analysis_id,),
             ).fetchone()
             assert elapsed is not None
-            unknown_tokens = connection.execute(
-                "SELECT 1 FROM simple_llm_attempts "
-                "WHERE analysis_id = ? "
-                "AND (input_tokens IS NULL OR output_tokens IS NULL) "
-                "AND status NOT IN ("
-                f"{','.join('?' for _ in _NO_MODEL_RESPONSE_STATUSES)}) "
-                "LIMIT 1",
-                (analysis_id, *_NO_MODEL_RESPONSE_STATUSES),
-            ).fetchone()
             if (
                 (
                     max_tokens != "unlimited"
-                    and (tokens >= max_tokens or unknown_tokens is not None)
+                    and (
+                        tokens >= max_tokens
+                        or int(summary["unknown_token_calls"] or 0) > 0
+                    )
                 )
                 or (cost is not None and float(cost) >= max_cost_minor_units)
                 or (
@@ -2413,6 +2588,278 @@ class SimpleCheckpointStore:
             ).stage
             == stage.value
         )
+
+    @staticmethod
+    def _codex_cleanup_confirmation_valid(
+        checkpoint: StageCheckpoint,
+        ref: StoredDataRef,
+        artifacts: SimpleArtifactRepository,
+    ) -> bool:
+        identity = checkpoint.identity
+        if (
+            artifacts.identity != identity
+            or str(ref.workspace_id) != identity.workspace_id
+            or str(ref.commit_id) != identity.commit_id
+            or checkpoint.attempt_id is None
+        ):
+            return False
+        try:
+            marker = json.loads(artifacts.read(ref))
+        except (OSError, TypeError, ValueError):
+            return False
+        if not isinstance(marker, dict):
+            return False
+        call_id = marker.get("call_id")
+        if "call_id" in marker:
+            if (
+                not isinstance(call_id, str)
+                or not call_id
+                or checkpoint.status
+                not in {StageStatus.RUNNING, StageStatus.BLOCKED, StageStatus.FAILED}
+            ):
+                return False
+        else:
+            legacy_stage = (
+                checkpoint.stage is SimpleStage.HYPOTHESIS_DONE
+                and identity.hypothesis_id is None
+            ) or (
+                checkpoint.stage in HYPOTHESIS_STAGES
+                and identity.hypothesis_id is not None
+            )
+            if (
+                not legacy_stage
+                or checkpoint.error_code != "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+                or checkpoint.status not in {StageStatus.BLOCKED, StageStatus.FAILED}
+            ):
+                return False
+        observed = marker.get("observed_at")
+        if not isinstance(observed, str):
+            return False
+        try:
+            observed_at = datetime.fromisoformat(observed)
+        except (TypeError, ValueError):
+            return False
+        if (
+            observed_at.tzinfo is None
+            or observed_at <= checkpoint.updated_at
+            or observed_at > datetime.now(UTC) + timedelta(minutes=5)
+        ):
+            return False
+        return bool(
+            marker.get("kind") == "simple_codex_cleanup_confirmation"
+            and marker.get("analysis_id") == identity.analysis_id
+            and marker.get("stage") == checkpoint.stage.value
+            and marker.get("attempt_id") == checkpoint.attempt_id
+            and marker.get("checkpoint_sha256")
+            == hashlib.sha256(canonical_bytes(checkpoint)).hexdigest()
+            and marker.get("process_tree_stopped") is True
+            and marker.get("verification_method")
+            in {"windows_process_inventory", "posix_process_inventory"}
+            and type(marker.get("former_parent_pid")) is int
+            and marker["former_parent_pid"] > 0
+            and type(marker.get("observed_matching_process_count")) is int
+            and marker["observed_matching_process_count"] == 0
+        )
+
+    def has_codex_cleanup_confirmation(
+        self,
+        checkpoint: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+    ) -> bool:
+        """Accept only an append-only confirmation for this exact failed attempt."""
+
+        if checkpoint.attempt_id is None:
+            return False
+        for event in self.stage_activity(
+            checkpoint.identity, checkpoint.stage, checkpoint.attempt_id
+        ):
+            if (
+                event.kind is not ActivityKind.DECISION_RECORDED
+                or event.error_code != "CODEX_PROCESS_CLEANUP_CONFIRMED"
+                or len(event.output_refs) != 1
+                or not self._codex_cleanup_confirmation_valid(
+                    checkpoint, event.output_refs[0], artifacts
+                )
+            ):
+                continue
+            marker = json.loads(artifacts.read(event.output_refs[0]))
+            call_id = marker.get("call_id")
+            if call_id is None:
+                if (
+                    self.require_analysis_run(
+                        checkpoint.identity.analysis_id
+                    ).candidate_pipeline_version
+                    == 1
+                    and self.unresolved_codex_call(checkpoint.identity.analysis_id)
+                    is None
+                ):
+                    return True
+            else:
+                with self._connect() as connection:
+                    row = connection.execute(
+                        "SELECT status, confirmation_ref_json "
+                        "FROM simple_codex_calls "
+                        "WHERE call_id = ? AND analysis_id = ?",
+                        (call_id, checkpoint.identity.analysis_id),
+                    ).fetchone()
+                if (
+                    row is not None
+                    and row["status"] == "CONFIRMED"
+                    and row["confirmation_ref_json"]
+                    == event.output_refs[0].model_dump_json()
+                ):
+                    return True
+        return False
+
+    def confirm_codex_cleanup(
+        self,
+        checkpoint: StageCheckpoint,
+        confirmation_ref: StoredDataRef,
+        artifacts: SimpleArtifactRepository,
+    ) -> None:
+        """Confirm cleanup only while holding this analysis's exclusive run lease."""
+
+        if artifacts.paths.database.resolve() != self._database_path.resolve():
+            raise ValueError("CODEX_CLEANUP_CONFIRMATION_INVALID")
+        try:
+            with analysis_run_lease(
+                artifacts.data_dir, checkpoint.identity.analysis_id
+            ):
+                self._confirm_codex_cleanup_with_lease(
+                    checkpoint, confirmation_ref, artifacts
+                )
+        except AnalysisRunBusy as error:
+            raise ValueError("CODEX_CLEANUP_CONFIRMATION_ACTIVE_RUN") from error
+
+    def _confirm_codex_cleanup_with_lease(
+        self,
+        checkpoint: StageCheckpoint,
+        confirmation_ref: StoredDataRef,
+        artifacts: SimpleArtifactRepository,
+    ) -> None:
+        """Record a human process-inventory check without altering the failure."""
+
+        if not self._codex_cleanup_confirmation_valid(
+            checkpoint, confirmation_ref, artifacts
+        ):
+            raise ValueError("CODEX_CLEANUP_CONFIRMATION_INVALID")
+        marker = json.loads(artifacts.read(confirmation_ref))
+        call_id = marker.get("call_id")
+        if call_id is None and (
+            self.require_analysis_run(
+                checkpoint.identity.analysis_id
+            ).candidate_pipeline_version
+            != 1
+        ):
+            raise ValueError("CODEX_CLEANUP_CONFIRMATION_INVALID")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT checkpoint_json FROM simple_runtime_checkpoints
+                WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?
+                """,
+                (
+                    checkpoint.identity.analysis_id,
+                    self._hypothesis_key(checkpoint.identity),
+                    checkpoint.stage.value,
+                ),
+            ).fetchone()
+            if (
+                row is None
+                or StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                != checkpoint
+            ):
+                raise ValueError("CODEX_CLEANUP_CONFIRMATION_STALE")
+            unresolved = connection.execute(
+                "SELECT call_id FROM simple_codex_calls "
+                "WHERE analysis_id = ? AND status = 'IN_FLIGHT'",
+                (checkpoint.identity.analysis_id,),
+            ).fetchone()
+            if call_id is None:
+                if unresolved is not None:
+                    raise ValueError("CODEX_CLEANUP_CONFIRMATION_INVALID")
+            elif unresolved is None or unresolved["call_id"] != call_id:
+                raise ValueError("CODEX_CLEANUP_CONFIRMATION_INVALID")
+            prior_events = connection.execute(
+                "SELECT sequence, event_json FROM agent_activity_events "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND attempt_id = ?",
+                (
+                    checkpoint.identity.analysis_id,
+                    self._hypothesis_key(checkpoint.identity),
+                    checkpoint.attempt_id,
+                ),
+            ).fetchall()
+            if call_id is None and any(
+                (
+                    event := AgentActivityEvent.model_validate_json(item["event_json"])
+                ).error_code
+                == "CODEX_PROCESS_CLEANUP_CONFIRMED"
+                and event.output_refs == (confirmation_ref,)
+                for item in prior_events
+            ):
+                return
+            used = {int(item["sequence"]) for item in prior_events}
+            sequence = next(
+                (
+                    value
+                    for offset in range(21, 99)
+                    if (value := self._stage_sequence(checkpoint.stage, offset))
+                    not in used
+                ),
+                None,
+            )
+            if sequence is None:
+                raise ValueError("CODEX_CLEANUP_CONFIRMATION_EVENT_LIMIT")
+            event = self._lifecycle_event(
+                checkpoint,
+                ActivityKind.DECISION_RECORDED,
+                sequence=sequence,
+                status=checkpoint.status,
+                summary_ko="하위 Codex 프로세스 종료 확인 후 재개를 승인했습니다.",
+                output_refs=(confirmation_ref,),
+                error_code="CODEX_PROCESS_CLEANUP_CONFIRMED",
+            )
+            AgentActivityStore.append_connection(connection, event)
+            if call_id is not None:
+                attempt = connection.execute(
+                    "SELECT analysis_id FROM simple_llm_attempts WHERE attempt_id = ?",
+                    (call_id,),
+                ).fetchone()
+                if attempt is None:
+                    connection.execute(
+                        """
+                        INSERT INTO simple_llm_attempts (
+                            attempt_id, analysis_id, agent, model, attempt_number,
+                            status, elapsed_ms, input_tokens, output_tokens,
+                            cost_cents, artifact_ref_json
+                        ) VALUES (?, ?, 'unknown', 'unknown', 0,
+                                  'CODEX_USAGE_UNAVAILABLE', 0, NULL, NULL,
+                                  NULL, ?)
+                        """,
+                        (
+                            call_id,
+                            checkpoint.identity.analysis_id,
+                            confirmation_ref.model_dump_json(),
+                        ),
+                    )
+                elif attempt["analysis_id"] != checkpoint.identity.analysis_id:
+                    raise ValueError("LLM_ATTEMPT_CONFLICT")
+                updated = connection.execute(
+                    "UPDATE simple_codex_calls "
+                    "SET status = 'CONFIRMED', resolved_at = ?, "
+                    "confirmation_ref_json = ? "
+                    "WHERE call_id = ? AND analysis_id = ? AND status = 'IN_FLIGHT'",
+                    (
+                        datetime.now(UTC).isoformat(),
+                        confirmation_ref.model_dump_json(),
+                        call_id,
+                        checkpoint.identity.analysis_id,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise ValueError("CODEX_CLEANUP_CONFIRMATION_STALE")
+            connection.commit()
 
     def reusable(
         self,

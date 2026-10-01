@@ -30,6 +30,7 @@ class DiscoveryOutcome:
     status: Literal["COMPLETE", "PAUSED", "ERROR"]
     counts: dict[str, int]
     error_code: str | None = None
+    evidence_refs: tuple[StoredDataRef, ...] = ()
 
 
 class CandidateDiscovery:
@@ -65,6 +66,7 @@ class CandidateDiscovery:
     ) -> DiscoveryOutcome:
         # ERROR rows are attempted once on an explicit resume, not repeatedly
         # within the same run if the provider continues returning bad output.
+        audit_refs: list[StoredDataRef] = []
         if retry_errors:
             after_id: str | None = None
             while True:
@@ -78,7 +80,9 @@ class CandidateDiscovery:
                 if not errors:
                     break
                 after_id = errors[-1].candidate_id
-                failure = await self._process(identity, scope_fingerprint, errors)
+                failure = await self._process(
+                    identity, scope_fingerprint, errors, audit_refs
+                )
                 if failure is not None:
                     return DiscoveryOutcome(
                         status=(
@@ -88,6 +92,7 @@ class CandidateDiscovery:
                             identity, scope_fingerprint
                         ),
                         error_code=failure.code,
+                        evidence_refs=tuple(audit_refs),
                     )
         while True:
             pending = self._store.list_candidates(
@@ -101,33 +106,54 @@ class CandidateDiscovery:
                     error_code="DISCOVERY_CANDIDATE_ERROR"
                     if counts.get("ERROR", 0)
                     else None,
+                    evidence_refs=tuple(audit_refs),
                 )
-            failure = await self._process(identity, scope_fingerprint, pending)
+            failure = await self._process(
+                identity, scope_fingerprint, pending, audit_refs
+            )
             if failure is not None:
                 return DiscoveryOutcome(
                     status="PAUSED" if failure.code in BUDGET_PAUSE_CODES else "ERROR",
                     counts=self._store.candidate_counts(identity, scope_fingerprint),
                     error_code=failure.code,
+                    evidence_refs=tuple(audit_refs),
                 )
 
     async def _process(
-        self, identity: CheckpointIdentity, scope: str, candidates: tuple[Any, ...]
+        self,
+        identity: CheckpointIdentity,
+        scope: str,
+        candidates: tuple[Any, ...],
+        audit_refs: list[StoredDataRef],
+        inherited_refs: tuple[StoredDataRef, ...] = (),
     ) -> StageFailure | None:
+        failure_refs = inherited_refs
         budget = getattr(self._client, "budget_failure", None)
         if callable(budget):
             failure = budget()
             if isinstance(failure, StageFailure):
+                audit_refs.extend(failure.evidence_refs)
+                failure_refs += failure.evidence_refs
                 if failure.code in BUDGET_PAUSE_CODES:
                     return failure
                 for candidate in candidates:
-                    self._error(identity, scope, candidate, failure.code)
+                    self._error(
+                        identity,
+                        scope,
+                        candidate,
+                        failure.code,
+                        failure_refs=failure_refs,
+                        attempt_ref=failure.evidence_refs[-1]
+                        if failure.evidence_refs
+                        else None,
+                    )
                 return failure
         try:
             prompt = self._prompt(candidates)
         except (TypeError, ValueError):
             code = "DISCOVERY_INPUT_REDACTION_FAILED"
             for candidate in candidates:
-                self._error(identity, scope, candidate, code)
+                self._error(identity, scope, candidate, code, failure_refs=failure_refs)
             return StageFailure(
                 code=code,
                 retryable=False,
@@ -135,7 +161,12 @@ class CandidateDiscovery:
             )
         if len(prompt) > self._max_prompt_bytes:
             return await self._split_or_error(
-                identity, scope, candidates, "DISCOVERY_INPUT_TOO_LARGE"
+                identity,
+                scope,
+                candidates,
+                "DISCOVERY_INPUT_TOO_LARGE",
+                audit_refs,
+                failure_refs,
             )
         schema = self._schema(candidates)
         validation_error: str | None = None
@@ -155,7 +186,12 @@ class CandidateDiscovery:
                 )
             if len(request) > self._max_prompt_bytes:
                 return await self._split_or_error(
-                    identity, scope, candidates, "DISCOVERY_INPUT_TOO_LARGE"
+                    identity,
+                    scope,
+                    candidates,
+                    "DISCOVERY_INPUT_TOO_LARGE",
+                    audit_refs,
+                    failure_refs,
                 )
             result = await self._client.call(
                 prompt=request,
@@ -164,13 +200,22 @@ class CandidateDiscovery:
                 agent_name="discovery",
             )
             if isinstance(result, StageFailure):
+                audit_refs.extend(result.evidence_refs)
+                failure_refs += result.evidence_refs
                 if result.code in BUDGET_PAUSE_CODES:
                     return result
                 if result.code == "CONTEXT_LIMIT_EXCEEDED":
                     return await self._split_or_error(
-                        identity, scope, candidates, result.code
+                        identity,
+                        scope,
+                        candidates,
+                        result.code,
+                        audit_refs,
+                        failure_refs,
                     )
                 validation_error = result.code
+                if result.evidence_refs:
+                    last_ref = result.evidence_refs[-1]
                 if result.code == "INVALID_OUTPUT":
                     provider_invalid_output = True
                     provider_failure = None
@@ -219,14 +264,8 @@ class CandidateDiscovery:
                         else None,
                     }
                 )
-                evidence_refs = tuple(
-                    ref
-                    for ref in (
-                        candidate.evidence_ref,
-                        result.response_ref,
-                        decision_ref,
-                    )
-                    if isinstance(ref, StoredDataRef)
+                evidence_refs = self._candidate_evidence_refs(
+                    candidate, *failure_refs, result.response_ref, decision_ref
                 )
                 self._store.save_candidate_decision(
                     identity,
@@ -235,7 +274,8 @@ class CandidateDiscovery:
                     decision["status"],
                     decision["reason"],
                     evidence_refs=evidence_refs,
-                    attempt_ref=last_ref,
+                    attempt_ref=last_ref
+                    or getattr(candidate, "decision_attempt_ref", None),
                 )
             return None
         if (
@@ -244,7 +284,12 @@ class CandidateDiscovery:
             and len(candidates) > 1
         ):
             return await self._split_or_error(
-                identity, scope, candidates, "DISCOVERY_INVALID_OUTPUT"
+                identity,
+                scope,
+                candidates,
+                "DISCOVERY_INVALID_OUTPUT",
+                audit_refs,
+                failure_refs,
             )
         for candidate in candidates:
             self._error(
@@ -253,6 +298,7 @@ class CandidateDiscovery:
                 candidate,
                 validation_error or "DISCOVERY_INVALID_OUTPUT",
                 attempt_ref=last_ref,
+                failure_refs=failure_refs,
             )
         return provider_failure
 
@@ -262,15 +308,28 @@ class CandidateDiscovery:
         scope: str,
         candidates: tuple[Any, ...],
         code: str,
+        audit_refs: list[StoredDataRef],
+        failure_refs: tuple[StoredDataRef, ...],
     ) -> StageFailure | None:
         if len(candidates) == 1:
-            self._error(identity, scope, candidates[0], code)
+            self._error(
+                identity,
+                scope,
+                candidates[0],
+                code,
+                failure_refs=failure_refs,
+                attempt_ref=failure_refs[-1] if failure_refs else None,
+            )
             return None
         middle = len(candidates) // 2
-        paused = await self._process(identity, scope, candidates[:middle])
+        paused = await self._process(
+            identity, scope, candidates[:middle], audit_refs, failure_refs
+        )
         if paused is not None:
             return paused
-        return await self._process(identity, scope, candidates[middle:])
+        return await self._process(
+            identity, scope, candidates[middle:], audit_refs, failure_refs
+        )
 
     def _error(
         self,
@@ -280,21 +339,35 @@ class CandidateDiscovery:
         code: str,
         *,
         attempt_ref: StoredDataRef | None = None,
+        failure_refs: tuple[StoredDataRef, ...] = (),
     ) -> None:
-        refs = (
-            (candidate.evidence_ref,)
-            if isinstance(candidate.evidence_ref, StoredDataRef)
-            else ()
-        )
         self._store.save_candidate_decision(
             identity,
             scope,
             candidate.candidate_id,
             "ERROR",
             code,
-            evidence_refs=refs,
-            attempt_ref=attempt_ref,
+            evidence_refs=self._candidate_evidence_refs(
+                candidate, *failure_refs, attempt_ref
+            ),
+            attempt_ref=attempt_ref
+            or getattr(candidate, "decision_attempt_ref", None),
         )
+
+    @staticmethod
+    def _candidate_evidence_refs(
+        candidate: Any, *current_refs: StoredDataRef | None
+    ) -> tuple[StoredDataRef, ...]:
+        refs: list[StoredDataRef] = []
+        for ref in (
+            candidate.evidence_ref,
+            *getattr(candidate, "decision_evidence_refs", ()),
+            getattr(candidate, "decision_attempt_ref", None),
+            *current_refs,
+        ):
+            if isinstance(ref, StoredDataRef) and ref not in refs:
+                refs.append(ref)
+        return tuple(refs)
 
     @staticmethod
     def _projection(candidate: Any) -> dict[str, object]:

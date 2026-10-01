@@ -210,8 +210,9 @@ function renderOverview(detail) {
     ["체이닝 자식", String(detail.child_hypothesis_count)],
     ["LLM 호출", String(detail.llm_attempt_count || 0)],
     ["LLM 토큰", `입력 ${detail.llm_input_tokens || 0} / 출력 ${detail.llm_output_tokens || 0}`],
+    ["토큰 미확인 호출", String(detail.llm_unknown_token_calls || 0)],
     ["확인된 비용", detail.llm_cost_minor_units == null ? "미제공" : `${detail.llm_cost_minor_units}¢`],
-    ["비용 미제공 호출", String(detail.llm_unknown_cost_calls || 0)],
+    ["비용 미확인 호출", String(detail.llm_unknown_cost_calls || 0)],
     ["경과 시간", formatDuration(detail.elapsed_ms)],
     ["마지막 갱신", formatTime(detail.last_updated_at)],
   ];
@@ -243,8 +244,17 @@ function renderOverview(detail) {
         : "예산 한도로 일시 중단됨 · 한도를 늘린 뒤 resume 하세요.";
     box.append(el("div", advice, "warning"));
   }
-  if (detail.status === "BLOCKED") box.append(el("div", "실행 오류로 중단됨 · 오류를 확인한 뒤 resume 하세요.", "warning"));
+  const codexCleanupReview = ["CODEX_CALL_IN_FLIGHT_UNRESOLVED", "CODEX_PROCESS_CLEANUP_UNCONFIRMED"].includes(detail.error_code);
+  if (detail.status === "BLOCKED" || (detail.status === "FAILED" && codexCleanupReview)) {
+    const advice = codexCleanupReview
+      ? "Codex 호출 또는 프로세스 정리 상태를 확인할 수 없습니다 · 운영자 수동 검토가 필요합니다. 현재 CLI에는 확인 명령이 없어 자동 재개할 수 없습니다."
+      : "실행 오류로 중단됨 · 오류를 확인한 뒤 resume 하세요.";
+    box.append(el("div", advice, "warning"));
+  }
   if (detail.on_demand_possible) box.append(el("div", "추가 사용량 과금 가능", "warning"));
+  if (detail.llm_unrecorded_in_flight_codex_calls > 0) {
+    box.append(el("div", `진행·종료 미확인 Codex 호출 ${detail.llm_unrecorded_in_flight_codex_calls}건 · 실제 사용량과 과금 여부는 미확인`, "warning"));
+  }
   if (detail.stale) box.append(el("div", "30초 넘게 갱신되지 않았습니다. 실행 상태와 터미널을 확인하세요.", "warning"));
   replace("overview", [box]);
   document.getElementById("overview").classList.remove("empty");

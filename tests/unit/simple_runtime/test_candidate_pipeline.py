@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.application import (
     HypothesisSeed,
@@ -77,7 +80,7 @@ class _PagedHypotheses:
         *,
         after_cursor: str | None,
         page_budget_bytes: int = 32_768,
-    ) -> tuple[tuple[HypothesisSeed, ...], str | None]:
+    ) -> tuple[tuple[HypothesisSeed, ...], str | None] | StageFailure:
         del page_budget_bytes
         self.cursors.append(after_cursor)
         return (), {None: "page-1", "page-1": "page-2", "page-2": None}[after_cursor]
@@ -266,6 +269,35 @@ def _setup(
     return app, store, client, hypotheses
 
 
+def _cleanup_audit(
+    artifacts: SimpleArtifactRepository,
+    checkpoint: StageCheckpoint,
+    *,
+    process_tree_stopped: bool = True,
+    observed_at: datetime | None = None,
+    call_id: str | None = None,
+) -> StoredDataRef:
+    return artifacts.put_json(
+        {
+            "kind": "simple_codex_cleanup_confirmation",
+            "analysis_id": checkpoint.identity.analysis_id,
+            "stage": checkpoint.stage.value,
+            "attempt_id": checkpoint.attempt_id,
+            "checkpoint_sha256": hashlib.sha256(
+                canonical_bytes(checkpoint)
+            ).hexdigest(),
+            "process_tree_stopped": process_tree_stopped,
+            "verification_method": "windows_process_inventory",
+            "former_parent_pid": 12345,
+            "observed_matching_process_count": 0,
+            "observed_at": (
+                observed_at or checkpoint.updated_at + timedelta(seconds=1)
+            ).isoformat(),
+            **({"call_id": call_id} if call_id is not None else {}),
+        }
+    )
+
+
 @pytest.mark.asyncio
 async def test_free_exploration_pages_are_checkpointed_and_not_repeated(
     tmp_path: Path,
@@ -291,6 +323,15 @@ async def test_retryable_free_page_failure_retries_only_that_page(
     tmp_path: Path,
 ) -> None:
     app, store, _client, _hypotheses = _setup(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    request_ref = artifacts.put_json({"kind": "failed_free_page_request"})
+    diagnostic_ref = artifacts.put_json({"kind": "failed_free_page_diagnostic"})
 
     class FlakyPages(_PagedHypotheses):
         def __init__(self) -> None:
@@ -312,6 +353,7 @@ async def test_retryable_free_page_failure_retries_only_that_page(
                     code="FAILED",
                     retryable=True,
                     safe_message="Transient provider failure",
+                    evidence_refs=(request_ref, diagnostic_ref),
                 )
             return await super().propose_page(
                 identity,
@@ -334,12 +376,170 @@ async def test_retryable_free_page_failure_retries_only_that_page(
     assert first.status == second.status == "COMPLETE"
     assert paged.cursors == [None, "page-1", "page-1", "page-2"]
     bundle_hash = app._static.result.static_bundle_ref.content_hash
-    assert set(store.survey_progress("analysis-1", bundle_hash)) == {
+    progress = store.survey_progress("analysis-1", bundle_hash)
+    assert set(progress) == {
         "__candidate_free_page_00000000__",
         "__candidate_free_page_00000001__",
         "__candidate_free_page_00000002__",
         "__candidate_free_done__",
     }
+    retried_page = json.loads(
+        artifacts.read(progress["__candidate_free_page_00000001__"])
+    )
+    assert retried_page["retry_failure_refs"] == [
+        request_ref.model_dump(mode="json"),
+        diagnostic_ref.model_dump(mode="json"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_historical_invalid_free_page_resumes_without_repeating_prior_work(
+    tmp_path: Path,
+) -> None:
+    app, store, candidate_client, _hypotheses = _setup(
+        tmp_path, decision="INCLUDE", with_ast_summary=True
+    )
+    focused = _ManyHypotheses(tmp_path / "data")
+    app._candidate_hypotheses = focused
+    app._runner_factory = lambda *_: _SuccessRunner(store)
+
+    class InvalidSecondPage(_PagedHypotheses):
+        def __init__(self) -> None:
+            super().__init__()
+            self.repair_available = False
+
+        async def propose_page(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+            *,
+            after_cursor: str | None,
+            page_budget_bytes: int = 32_768,
+        ) -> tuple[tuple[HypothesisSeed, ...], str | None] | StageFailure:
+            del identity, static, page_budget_bytes
+            self.cursors.append(after_cursor)
+            if after_cursor == "page-1" and not self.repair_available:
+                return StageFailure(
+                    code="HYPOTHESIS_PAGE_OUTPUT_INVALID",
+                    retryable=False,
+                    safe_message="One location was outside the source page",
+                )
+            return (), {None: "page-1", "page-1": None}[after_cursor]
+
+    pages = InvalidSecondPage()
+    app._hypotheses = pages
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+
+    assert (first.status, first.error_code) == (
+        "BLOCKED",
+        "HYPOTHESIS_PAGE_OUTPUT_INVALID",
+    )
+    run = store.require_analysis_run("analysis-1")
+    assert run.static_bundle_ref is not None
+    progress_before = store.survey_progress(
+        "analysis-1", run.static_bundle_ref.content_hash
+    )
+    first_page_ref = progress_before["__candidate_free_page_00000000__"]
+    prior_id = store.list_hypotheses(first.identity, limit=1)[0]
+    prior_child = first.identity.model_copy(update={"hypothesis_id": prior_id})
+    completed_job = StageCheckpoint(
+        identity=prior_child,
+        stage=SimpleStage.VERIFICATION_FINAL_DONE,
+        stage_version=STAGE_VERSION[SimpleStage.VERIFICATION_FINAL_DONE],
+        status=StageStatus.SUCCEEDED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        verdict="FALSE",
+    )
+    store.save_checkpoint(completed_job)
+    pages.repair_available = True
+
+    resumed = await app.resume("analysis-1")
+
+    assert resumed.status == "COMPLETE", resumed.error_code
+    assert resumed.identity.analysis_id == first.identity.analysis_id
+    assert pages.cursors == [None, "page-1", "page-1"]
+    assert candidate_client.calls == focused.calls == 1
+    progress_after = store.survey_progress(
+        "analysis-1", run.static_bundle_ref.content_hash
+    )
+    assert progress_after["__candidate_free_page_00000000__"] == first_page_ref
+    assert (
+        store.require(prior_child, SimpleStage.VERIFICATION_FINAL_DONE) == completed_job
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_free_page_preserves_both_attempt_refs_on_running_stage(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _hypotheses = _setup(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    first_ref = artifacts.put_json({"kind": "first_page_failure"})
+    second_ref = artifacts.put_json({"kind": "second_page_failure"})
+
+    class FailedPages(_PagedHypotheses):
+        def __init__(self) -> None:
+            super().__init__()
+            self.running_attempt_id: str | None = None
+
+        async def propose_page(
+            self,
+            _identity: CheckpointIdentity,
+            _static: StaticBootstrapResult,
+            *,
+            after_cursor: str | None,
+            page_budget_bytes: int = 32_768,
+        ) -> tuple[tuple[HypothesisSeed, ...], str | None] | StageFailure:
+            del page_budget_bytes
+            self.cursors.append(after_cursor)
+            checkpoint = store.get(identity, SimpleStage.HYPOTHESIS_DONE)
+            assert checkpoint is not None
+            assert checkpoint.status is StageStatus.RUNNING
+            if self.running_attempt_id is None:
+                self.running_attempt_id = checkpoint.attempt_id
+                return StageFailure(
+                    code="FAILED",
+                    retryable=True,
+                    safe_message="First page attempt failed",
+                    evidence_refs=(first_ref,),
+                )
+            assert checkpoint.attempt_id == self.running_attempt_id
+            return StageFailure(
+                code="FAILED",
+                retryable=False,
+                safe_message="Second page attempt failed",
+                evidence_refs=(second_ref,),
+            )
+
+    paged = FailedPages()
+    app._hypotheses = paged
+    outcome = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+
+    failed = store.get(identity, SimpleStage.HYPOTHESIS_DONE)
+    assert outcome.status == "BLOCKED"
+    assert paged.cursors == [None, None]
+    assert failed is not None
+    assert failed.attempt_id == paged.running_attempt_id
+    assert failed.output_refs == (first_ref, second_ref)
 
 
 @pytest.mark.asyncio
@@ -379,6 +579,266 @@ async def test_resume_does_not_repeat_unconfirmed_codex_process_cleanup(
     assert first.status == second.status == "BLOCKED"
     assert second.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
     assert paged.cursors == [None]
+
+
+@pytest.mark.asyncio
+async def test_exhausted_source_page_timeout_is_not_retried_at_full_size(
+    tmp_path: Path,
+) -> None:
+    app, _store, _client, _hypotheses = _setup(tmp_path)
+
+    class ExhaustedPages(_PagedHypotheses):
+        async def propose_page(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+            *,
+            after_cursor: str | None,
+            page_budget_bytes: int = 32_768,
+        ) -> tuple[tuple[HypothesisSeed, ...], str | None] | StageFailure:
+            del identity, static, page_budget_bytes
+            self.cursors.append(after_cursor)
+            return StageFailure(
+                code="HYPOTHESIS_PAGE_TIMEOUT_EXHAUSTED",
+                retryable=False,
+                safe_message="Source page timed out at the minimum size",
+            )
+
+    paged = ExhaustedPages()
+    app._hypotheses = paged
+    outcome = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+
+    assert outcome.status == "BLOCKED"
+    assert outcome.error_code == "HYPOTHESIS_PAGE_TIMEOUT_EXHAUSTED"
+    assert paged.cursors == [None]
+
+
+@pytest.mark.asyncio
+async def test_verified_codex_cleanup_can_resume_without_repeating_completed_work(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _hypotheses = _setup(tmp_path)
+
+    class RecoveredPages(_PagedHypotheses):
+        async def propose_page(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+            *,
+            after_cursor: str | None,
+            page_budget_bytes: int = 32_768,
+        ) -> tuple[tuple[HypothesisSeed, ...], str | None] | StageFailure:
+            del identity, static, page_budget_bytes
+            self.cursors.append(after_cursor)
+            if len(self.cursors) == 2:
+                return StageFailure(
+                    code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+                    retryable=False,
+                    safe_message="Codex child process cleanup could not be confirmed",
+                )
+            return (), {None: "page-1", "page-1": None}[after_cursor]
+
+    paged = RecoveredPages()
+    app._hypotheses = paged
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    assert first.status == "BLOCKED"
+    checkpoint = store.get(first.identity, SimpleStage.HYPOTHESIS_DONE)
+    assert checkpoint is not None
+    artifacts = SimpleArtifactRepository(tmp_path / "data", first.identity)
+    audit = _cleanup_audit(artifacts, checkpoint)
+
+    store.confirm_codex_cleanup(checkpoint, audit, artifacts)
+    second = await app.resume("analysis-1")
+
+    assert second.status == "COMPLETE"
+    assert paged.cursors == [None, "page-1", "page-1"]
+    assert store.has_codex_cleanup_confirmation(checkpoint, artifacts)
+
+
+@pytest.mark.asyncio
+async def test_resume_blocks_unresolved_codex_call_without_changing_running_checkpoint(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _hypotheses = _setup(tmp_path)
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    assert first.status == "COMPLETE"
+    prior = store.get(first.identity, SimpleStage.HYPOTHESIS_DONE)
+    assert prior is not None
+    running = store.mark_running(
+        first.identity,
+        SimpleStage.HYPOTHESIS_DONE,
+        prior.input_refs,
+        attempt_id="crashed-stage-attempt",
+    )
+    store.begin_codex_call("crashed-call", first.identity.analysis_id)
+    before_events = store.stage_activity(
+        first.identity, SimpleStage.HYPOTHESIS_DONE, "crashed-stage-attempt"
+    )
+
+    blocked = await app.resume("analysis-1")
+
+    assert blocked.status == "BLOCKED"
+    assert blocked.error_code == "CODEX_CALL_IN_FLIGHT_UNRESOLVED"
+    assert blocked.current_stage is SimpleStage.HYPOTHESIS_DONE
+    assert store.get(first.identity, SimpleStage.HYPOTHESIS_DONE) == running
+    assert (
+        store.stage_activity(
+            first.identity, SimpleStage.HYPOTHESIS_DONE, "crashed-stage-attempt"
+        )
+        == before_events
+    )
+
+    artifacts = SimpleArtifactRepository(tmp_path / "data", first.identity)
+    audit = _cleanup_audit(artifacts, running, call_id="crashed-call")
+    store.confirm_codex_cleanup(running, audit, artifacts)
+
+    assert store.unresolved_codex_call("analysis-1") is None
+    assert store.get(first.identity, SimpleStage.HYPOTHESIS_DONE) == running
+    assert store.has_codex_cleanup_confirmation(running, artifacts)
+    after_events = store.stage_activity(
+        first.identity, SimpleStage.HYPOTHESIS_DONE, "crashed-stage-attempt"
+    )
+    assert len(after_events) == len(before_events) + 1
+    assert after_events[-1].kind.value == "DECISION_RECORDED"
+
+
+@pytest.mark.asyncio
+async def test_tracked_codex_cleanup_confirmation_resolves_exact_call_only(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _hypotheses = _setup(tmp_path)
+
+    class UnconfirmedPages(_PagedHypotheses):
+        async def propose_page(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+            *,
+            after_cursor: str | None,
+            page_budget_bytes: int = 32_768,
+        ) -> tuple[tuple[HypothesisSeed, ...], str | None] | StageFailure:
+            del identity, static, page_budget_bytes
+            self.cursors.append(after_cursor)
+            if len(self.cursors) == 2:
+                return StageFailure(
+                    code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+                    retryable=False,
+                    safe_message="Codex cleanup could not be confirmed",
+                )
+            return (), {None: "page-1", "page-1": None}[after_cursor]
+
+    pages = UnconfirmedPages()
+    app._hypotheses = pages
+    call_id = "tracked-call"
+    store.begin_codex_call(call_id, "analysis-1")
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    assert first.status == "BLOCKED"
+    checkpoint = store.get(first.identity, SimpleStage.HYPOTHESIS_DONE)
+    assert checkpoint is not None
+    artifacts = SimpleArtifactRepository(tmp_path / "data", first.identity)
+    wrong = _cleanup_audit(artifacts, checkpoint, call_id="other-call")
+    with pytest.raises(ValueError, match="CODEX_CLEANUP_CONFIRMATION_INVALID"):
+        store.confirm_codex_cleanup(checkpoint, wrong, artifacts)
+    assert store.unresolved_codex_call("analysis-1") == call_id
+
+    blocked = await app.resume("analysis-1")
+    assert blocked.status == "BLOCKED"
+    assert blocked.error_code == "CODEX_CALL_IN_FLIGHT_UNRESOLVED"
+    assert store.get(first.identity, SimpleStage.HYPOTHESIS_DONE) == checkpoint
+
+    audit = _cleanup_audit(artifacts, checkpoint, call_id=call_id)
+    usage_before = store.usage_summary("analysis-1")
+    assert usage_before["calls"] == 1
+    assert usage_before["unknown_token_calls"] == 1
+    assert usage_before["unknown_cost_calls"] == 1
+    assert usage_before["unrecorded_in_flight_codex_calls"] == 1
+    store.confirm_codex_cleanup(checkpoint, audit, artifacts)
+    assert store.unresolved_codex_call("analysis-1") is None
+    assert store.has_codex_cleanup_confirmation(checkpoint, artifacts)
+    usage = store.usage_summary("analysis-1")
+    assert usage["calls"] == usage_before["calls"]
+    assert usage["unknown_token_calls"] == 1
+    assert usage["unknown_cost_calls"] == 1
+    assert usage["unrecorded_in_flight_codex_calls"] == 0
+    assert usage["unlinked_codex_usage_calls"] == 0
+
+    resumed = await app.resume("analysis-1")
+    assert resumed.status == "COMPLETE"
+    assert pages.cursors == [None, "page-1", "page-1"]
+
+
+@pytest.mark.asyncio
+async def test_codex_cleanup_confirmation_rejects_unverified_process_tree(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _hypotheses = _setup(tmp_path)
+
+    class UnconfirmedCleanup(_PagedHypotheses):
+        async def propose_page(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+            *,
+            after_cursor: str | None,
+            page_budget_bytes: int = 32_768,
+        ) -> tuple[tuple[HypothesisSeed, ...], str | None] | StageFailure:
+            del identity, static, after_cursor, page_budget_bytes
+            return StageFailure(
+                code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+                retryable=False,
+                safe_message="Codex child process cleanup could not be confirmed",
+            )
+
+    app._hypotheses = UnconfirmedCleanup()
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    checkpoint = store.get(first.identity, SimpleStage.HYPOTHESIS_DONE)
+    assert checkpoint is not None
+    artifacts = SimpleArtifactRepository(tmp_path / "data", first.identity)
+    audit = _cleanup_audit(artifacts, checkpoint, process_tree_stopped=False)
+
+    with pytest.raises(ValueError, match="CODEX_CLEANUP_CONFIRMATION_INVALID"):
+        store.confirm_codex_cleanup(checkpoint, audit, artifacts)
+    stale = _cleanup_audit(
+        artifacts,
+        checkpoint,
+        observed_at=checkpoint.updated_at - timedelta(seconds=1),
+    )
+    with pytest.raises(ValueError, match="CODEX_CLEANUP_CONFIRMATION_INVALID"):
+        store.confirm_codex_cleanup(checkpoint, stale, artifacts)
+    second = await app.resume("analysis-1")
+
+    assert second.status == "BLOCKED"
+    assert second.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
 
 
 @pytest.mark.asyncio

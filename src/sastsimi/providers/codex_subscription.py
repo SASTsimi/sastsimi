@@ -30,6 +30,7 @@ from sastsimi.contracts.llm import (
 )
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.ports.dto import CancellationResult, CapabilityProbeResult
+from sastsimi.ports.llm_invocation import CODEX_PROCESS_CLEANUP_UNCONFIRMED_ERROR
 
 from .base import (
     CODEX_PVD_RUNNER_MARKER,
@@ -60,6 +61,8 @@ _TREE_KILLER_TIMEOUT_SECONDS = 2.0
 _ARRAY_ENVELOPE_KEY = "items"
 _CHATGPT_LOGIN_STATUS = "Logged in using ChatGPT"
 _PROCESS_LOCK = Lock()
+_LATE_SPAWN_LOCK = Lock()
+_LATE_SPAWN_PENDING = 0
 _RATE_LIMIT_MARKERS = (
     b"rate limit",
     b"rate_limit",
@@ -91,6 +94,12 @@ def _invalid_process_output(
         invalid_output_sha256=hashlib.sha256(source).hexdigest(),
         invalid_output_source=source_name,
     )
+
+
+def _late_spawn_resolved() -> None:
+    global _LATE_SPAWN_PENDING
+    with _LATE_SPAWN_LOCK:
+        _LATE_SPAWN_PENDING -= 1
 
 
 @asynccontextmanager
@@ -456,28 +465,48 @@ class CodexCliProcessRunner:
         cwd: Path,
         environment: Mapping[str, str],
     ) -> _ChildResult:
+        global _LATE_SPAWN_PENDING
         self.verify_executable()
-        spawn_task = asyncio.create_task(
-            asyncio.create_subprocess_exec(
-                *argv,
-                stdin=(
-                    asyncio.subprocess.DEVNULL
-                    if stdin is None
-                    else asyncio.subprocess.PIPE
-                ),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=dict(environment),
-                creationflags=_windows_creation_flags(),
-                start_new_session=os.name != "nt",
+        with _LATE_SPAWN_LOCK:
+            if _LATE_SPAWN_PENDING:
+                raise _ProcessTreeTerminationError
+            spawn_task = asyncio.create_task(
+                asyncio.create_subprocess_exec(
+                    *argv,
+                    stdin=(
+                        asyncio.subprocess.DEVNULL
+                        if stdin is None
+                        else asyncio.subprocess.PIPE
+                    ),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=cwd,
+                    env=dict(environment),
+                    creationflags=_windows_creation_flags(),
+                    start_new_session=os.name != "nt",
+                )
             )
-        )
         try:
             process = await asyncio.shield(spawn_task)
         except asyncio.CancelledError:
-            process = await asyncio.shield(spawn_task)
+            with _LATE_SPAWN_LOCK:
+                _LATE_SPAWN_PENDING += 1
+            try:
+                done, _pending = await asyncio.wait(
+                    (spawn_task,), timeout=3 * _TREE_KILLER_TIMEOUT_SECONDS
+                )
+            except asyncio.CancelledError:
+                spawn_task.add_done_callback(_terminate_late_spawn)
+                raise _ProcessTreeTerminationError from None
+            if not done:
+                spawn_task.add_done_callback(_terminate_late_spawn)
+                raise _ProcessTreeTerminationError from None
+            try:
+                process = spawn_task.result()
+            except BaseException:
+                raise _ProcessTreeTerminationError from None
             await _terminate_process_tree_checked(process)
+            _late_spawn_resolved()
             raise
         assert process.stdout is not None
         assert process.stderr is not None
@@ -614,16 +643,20 @@ class CodexSubscriptionAdapter:
                 try:
                     return await work_task
                 except _ProcessTreeTerminationError:
-                    normalized = codex_failure("FAILED")
+                    normalized = _cleanup_unconfirmed_failure()
             else:
                 cleanup_error = await _cancel_and_wait(work_task)
-                normalized = codex_failure(
-                    "FAILED" if cleanup_error is not None else "TIMED_OUT"
+                normalized = (
+                    _cleanup_unconfirmed_failure()
+                    if cleanup_error is not None
+                    else codex_failure("TIMED_OUT")
                 )
         except asyncio.CancelledError:
             cleanup_error = await _cancel_and_wait(work_task)
-            normalized = codex_failure(
-                "FAILED" if cleanup_error is not None else "CANCELLED"
+            normalized = (
+                _cleanup_unconfirmed_failure()
+                if cleanup_error is not None
+                else codex_failure("CANCELLED")
             )
         return self._build_checked(
             request,
@@ -656,7 +689,14 @@ class CodexSubscriptionAdapter:
                         timeout_ms=request.timeout_ms,
                     )
                 )
-            if process_result.status != "SUCCEEDED":
+            if process_result.cleanup_unconfirmed:
+                outcome = self._failure_outcome(
+                    request,
+                    _cleanup_unconfirmed_failure(),
+                    started_at=started_at,
+                    started_ms=started_ms,
+                )
+            elif process_result.status != "SUCCEEDED":
                 outcome = self._failure_outcome(
                     request,
                     codex_failure(process_result.status),
@@ -1183,6 +1223,32 @@ async def _terminate_process_tree_checked(
 def _drain_cleanup_task(task: asyncio.Task[None]) -> None:
     if not task.cancelled():
         task.exception()
+
+
+def _cleanup_unconfirmed_failure() -> NormalizedFailure:
+    return NormalizedFailure("FAILED", CODEX_PROCESS_CLEANUP_UNCONFIRMED_ERROR)
+
+
+def _terminate_late_spawn(
+    spawn_task: asyncio.Task[asyncio.subprocess.Process],
+) -> None:
+    """Attempt cleanup if a timed-out spawn later yields a process handle."""
+
+    try:
+        process = spawn_task.result()
+    except BaseException:
+        return
+    cleanup_task = asyncio.create_task(_terminate_process_tree_checked(process))
+
+    def confirm_cleanup(task: asyncio.Task[None]) -> None:
+        try:
+            task.result()
+        except BaseException:
+            pass
+        else:
+            _late_spawn_resolved()
+
+    cleanup_task.add_done_callback(confirm_cleanup)
 
 
 async def _terminate_process_tree(process: asyncio.subprocess.Process) -> None:

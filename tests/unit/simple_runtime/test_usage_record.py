@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -64,6 +65,9 @@ def test_usage_summary_is_durable_idempotent_and_preserves_unknown_cost(
         "output_tokens": 0,
         "cost_minor_units": 125.0,
         "unknown_cost_calls": 1,
+        "unknown_token_calls": 1,
+        "unlinked_codex_usage_calls": 0,
+        "unrecorded_in_flight_codex_calls": 0,
     }
     with pytest.raises(ValueError, match="LLM_ATTEMPT_CONFLICT"):
         store.record_llm_attempt(
@@ -79,6 +83,142 @@ def test_usage_summary_is_durable_idempotent_and_preserves_unknown_cost(
             cost_cents=75.0,
             artifact_ref=ref,
         )
+
+
+def test_usage_summary_reads_legacy_attempt_table_without_codex_tables(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="legacy-usage",
+        workspace_id="legacy-workspace",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    store = SimpleCheckpointStore(artifacts.paths.database)
+    store.record_llm_attempt(
+        attempt_id="legacy-attempt",
+        analysis_id=identity.analysis_id,
+        agent="hypothesis",
+        model="legacy-model",
+        attempt_number=1,
+        status="SUCCEEDED",
+        elapsed_ms=100,
+        input_tokens=3,
+        output_tokens=2,
+        cost_cents=1.0,
+        artifact_ref=artifacts.put_json({"kind": "attempt"}),
+    )
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute("DROP TABLE simple_codex_calls")
+        connection.execute("DROP TABLE agent_activity_events")
+        connection.row_factory = sqlite3.Row
+        summary = SimpleCheckpointStore.usage_summary_from_connection(
+            connection, identity.analysis_id
+        )
+
+    assert summary == {
+        "calls": 1,
+        "input_tokens": 3,
+        "output_tokens": 2,
+        "cost_minor_units": 1.0,
+        "unknown_cost_calls": 0,
+        "unknown_token_calls": 0,
+        "unlinked_codex_usage_calls": 0,
+        "unrecorded_in_flight_codex_calls": 0,
+    }
+
+
+def test_unrecorded_in_flight_codex_call_counts_as_possible_usage_once(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-in-flight-usage",
+        workspace_id="workspace-in-flight-usage",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    store = SimpleCheckpointStore(artifacts.paths.database)
+    assert store.begin_codex_call("unrecorded-call", identity.analysis_id)
+
+    pending = store.usage_summary(identity.analysis_id)
+    assert pending == {
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost_minor_units": None,
+        "unknown_cost_calls": 1,
+        "unknown_token_calls": 1,
+        "unlinked_codex_usage_calls": 1,
+        "unrecorded_in_flight_codex_calls": 1,
+    }
+    finite = RunUsageBudget(
+        store=store,
+        analysis_id=identity.analysis_id,
+        max_tokens=100,
+        max_cost_minor_units=100,
+        max_elapsed_seconds=3600,
+    )
+    assert (failure := finite.check()) is not None
+    assert failure.code == "LLM_TOKEN_USAGE_UNAVAILABLE"
+
+    store.record_llm_attempt(
+        attempt_id="unrecorded-call",
+        analysis_id=identity.analysis_id,
+        agent="hypothesis",
+        model="codex",
+        attempt_number=1,
+        status="SUCCEEDED",
+        elapsed_ms=50,
+        input_tokens=5,
+        output_tokens=2,
+        cost_cents=1.0,
+        artifact_ref=artifacts.put_json({"kind": "attempt"}),
+    )
+    linked = store.usage_summary(identity.analysis_id)
+    assert linked["calls"] == 1
+    assert linked["input_tokens"] == 5
+    assert linked["output_tokens"] == 2
+    assert linked["cost_minor_units"] == 1.0
+    assert linked["unknown_cost_calls"] == 0
+    assert linked["unknown_token_calls"] == 0
+    assert linked["unlinked_codex_usage_calls"] == 0
+    assert linked["unrecorded_in_flight_codex_calls"] == 0
+
+
+def test_confirming_unrecorded_codex_call_does_not_double_count_usage(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-confirmed-usage",
+        workspace_id="workspace-confirmed-usage",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    store = SimpleCheckpointStore(
+        SimpleArtifactRepository(tmp_path, identity).paths.database
+    )
+    assert store.begin_codex_call("same-call", identity.analysis_id)
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "UPDATE simple_codex_calls SET status = 'CONFIRMED', "
+            "resolved_at = ?, confirmation_ref_json = ? "
+            "WHERE call_id = ? AND analysis_id = ?",
+            (
+                datetime.now(UTC).isoformat(),
+                '{"confirmation":"recorded"}',
+                "same-call",
+                identity.analysis_id,
+            ),
+        )
+
+    confirmed = store.usage_summary(identity.analysis_id)
+    assert confirmed["calls"] == 1
+    assert confirmed["unknown_token_calls"] == 1
+    assert confirmed["unknown_cost_calls"] == 1
+    assert confirmed["unlinked_codex_usage_calls"] == 1
+    assert confirmed["unrecorded_in_flight_codex_calls"] == 0
 
 
 def test_known_usage_ceiling_blocks_next_call(tmp_path: Path) -> None:

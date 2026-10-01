@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.observability.agent_activity import ActivityKind
@@ -117,6 +119,31 @@ def _recording_handlers(
 
         handlers[current_stage] = handle
     return handlers
+
+
+def _cleanup_confirmation(
+    artifacts: SimpleArtifactRepository,
+    checkpoint: StageCheckpoint,
+    *,
+    call_id: str,
+) -> StoredDataRef:
+    return artifacts.put_json(
+        {
+            "kind": "simple_codex_cleanup_confirmation",
+            "analysis_id": checkpoint.identity.analysis_id,
+            "stage": checkpoint.stage.value,
+            "attempt_id": checkpoint.attempt_id,
+            "checkpoint_sha256": hashlib.sha256(
+                canonical_bytes(checkpoint)
+            ).hexdigest(),
+            "call_id": call_id,
+            "process_tree_stopped": True,
+            "verification_method": "windows_process_inventory",
+            "former_parent_pid": 12345,
+            "observed_matching_process_count": 0,
+            "observed_at": (datetime.now(UTC) + timedelta(seconds=1)).isoformat(),
+        }
+    )
 
 
 class _Recovery:
@@ -541,6 +568,162 @@ async def test_resume_preserves_other_terminal_poc_failures(
     assert calls == []
     assert store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE) == candidate
     assert store.require(_identity(), SimpleStage.POC_EXECUTION_DONE) == failed
+
+
+@pytest.mark.asyncio
+async def test_confirmed_running_child_cleanup_replays_without_generic_recovery(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.VERIFICATION_INITIAL_DONE)
+    prior = store.require(_identity(), SimpleStage.VERIFICATION_INITIAL_DONE)
+    stage = SimpleStage.POC_CANDIDATE_DONE
+    running = store.mark_running(
+        _identity(),
+        stage,
+        store.input_refs_for(_identity(), stage),
+        attempt_id="interrupted-child-attempt",
+    )
+    call_id = "interrupted-child-call"
+    assert store.begin_codex_call(call_id, _identity().analysis_id)
+    artifacts = SimpleArtifactRepository(tmp_path, _identity())
+    confirmation = _cleanup_confirmation(artifacts, running, call_id=call_id)
+    store.confirm_codex_cleanup(running, confirmation, artifacts)
+    calls: list[SimpleStage] = []
+    recovery = _Recovery(tmp_path, RecoveryAction.STOP)
+    runner = SimpleRuntimeRunner(
+        store,
+        _recording_handlers(calls),
+        recovery=recovery,
+        cleanup_artifacts=artifacts,
+    )
+
+    resumed = await runner.resume_hypothesis(_identity())
+
+    replayed = store.require(_identity(), stage)
+    assert resumed.status is StageStatus.SUCCEEDED
+    assert resumed.current_stage is SimpleStage.REPORT_DONE
+    assert calls[0] is stage
+    assert recovery.calls == []
+    assert store.require(_identity(), SimpleStage.VERIFICATION_INITIAL_DONE) == prior
+    assert replayed.status is StageStatus.SUCCEEDED
+    assert replayed.attempt_id != running.attempt_id
+    assert replayed.attempt_number == running.attempt_number + 1
+
+
+@pytest.mark.asyncio
+async def test_confirmed_child_cleanup_replays_only_failed_stage(tmp_path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.VERIFICATION_INITIAL_DONE)
+    prior = store.require(_identity(), SimpleStage.VERIFICATION_INITIAL_DONE)
+    stage = SimpleStage.POC_CANDIDATE_DONE
+    running = store.mark_running(
+        _identity(),
+        stage,
+        store.input_refs_for(_identity(), stage),
+        attempt_id="cleanup-attempt",
+    )
+    failed = store.mark_failure(
+        running,
+        StageFailure(
+            code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+            retryable=False,
+            safe_message="Codex process cleanup is unknown",
+        ),
+        StageStatus.BLOCKED,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, _identity())
+    calls: list[SimpleStage] = []
+    runner = SimpleRuntimeRunner(
+        store, _recording_handlers(calls), cleanup_artifacts=artifacts
+    )
+
+    unconfirmed = await runner.resume_hypothesis(_identity())
+    assert unconfirmed.status is StageStatus.BLOCKED
+    assert unconfirmed.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+    assert calls == []
+    assert store.require(_identity(), stage) == failed
+
+    call_id = "tracked-cleanup-call"
+    assert store.begin_codex_call(call_id, _identity().analysis_id)
+    confirmation = _cleanup_confirmation(artifacts, failed, call_id=call_id)
+    store.confirm_codex_cleanup(failed, confirmation, artifacts)
+    resumed = await runner.resume_hypothesis(_identity())
+
+    replayed = store.require(_identity(), stage)
+    assert resumed.status is StageStatus.SUCCEEDED
+    assert resumed.current_stage is SimpleStage.REPORT_DONE
+    assert calls[0] is stage
+    assert SimpleStage.PRO_CON_DONE not in calls
+    assert SimpleStage.VERIFICATION_INITIAL_DONE not in calls
+    assert store.require(_identity(), SimpleStage.VERIFICATION_INITIAL_DONE) == prior
+    assert replayed.status is StageStatus.SUCCEEDED
+    assert replayed.attempt_id != failed.attempt_id
+    assert replayed.attempt_number == failed.attempt_number + 1
+
+
+@pytest.mark.asyncio
+async def test_confirmed_cleanup_replays_sibling_blocked_by_same_call(tmp_path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    stage = SimpleStage.PRO_CON_DONE
+    call_id = "shared-tracked-call"
+    assert store.begin_codex_call(call_id, _identity().analysis_id)
+    first = store.mark_running(
+        _identity(), stage, (_ref("first-proposal"),), attempt_id="first-attempt"
+    )
+    failed = store.mark_failure(
+        first,
+        StageFailure(
+            code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+            retryable=False,
+            safe_message="Codex process cleanup is unknown",
+        ),
+        StageStatus.BLOCKED,
+    )
+    sibling = _identity().model_copy(update={"hypothesis_id": "hypothesis-2"})
+    other = store.mark_running(
+        sibling, stage, (_ref("sibling-proposal"),), attempt_id="sibling-attempt"
+    )
+    blocked = store.mark_failure(
+        other,
+        StageFailure(
+            code="CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+            retryable=False,
+            safe_message="A prior Codex call is unresolved",
+        ),
+        StageStatus.BLOCKED,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, sibling)
+    calls: list[SimpleStage] = []
+    runner = SimpleRuntimeRunner(
+        store, _recording_handlers(calls), cleanup_artifacts=artifacts
+    )
+
+    without_confirmation = await runner.resume_hypothesis(sibling)
+    assert without_confirmation.status is StageStatus.BLOCKED
+    assert without_confirmation.error_code == "CODEX_CALL_IN_FLIGHT_UNRESOLVED"
+    assert calls == []
+    assert store.require(sibling, stage) == blocked
+
+    source_artifacts = SimpleArtifactRepository(tmp_path, _identity())
+    confirmation = _cleanup_confirmation(source_artifacts, failed, call_id=call_id)
+    store.confirm_codex_cleanup(failed, confirmation, source_artifacts)
+    source_runner = SimpleRuntimeRunner(
+        store,
+        _recording_handlers([]),
+        cleanup_artifacts=source_artifacts,
+    )
+    source_resumed = await source_runner.resume_hypothesis(_identity())
+    assert source_resumed.status is StageStatus.SUCCEEDED
+    assert store.require(_identity(), stage).status is StageStatus.SUCCEEDED
+    resumed = await runner.resume_hypothesis(sibling)
+
+    replayed = store.require(sibling, stage)
+    assert resumed.status is StageStatus.SUCCEEDED
+    assert calls[0] is stage
+    assert replayed.status is StageStatus.SUCCEEDED
+    assert replayed.attempt_id != blocked.attempt_id
+    assert replayed.attempt_number == blocked.attempt_number + 1
 
 
 def test_report_format_upgrade_reuses_earlier_stages_but_not_old_report(

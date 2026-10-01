@@ -440,6 +440,7 @@ class FakeAdapter:
         entered: asyncio.Event | None = None,
         release: asyncio.Event | None = None,
         cancellation: CancellationResult | None = None,
+        failure_error: str | None = None,
     ) -> None:
         self.records = records
         self.result_builder = result_builder
@@ -452,6 +453,7 @@ class FakeAdapter:
         self.entered = entered
         self.release = release
         self.cancellation = cancellation or CancellationResult(False, "not active")
+        self.failure_error = failure_error
         self.cancelled_ids: list[str] = []
 
     async def invoke(self, request: LLMInvocationRequest) -> LLMInvocationResult:
@@ -482,7 +484,7 @@ class FakeAdapter:
             parsed_output = json.loads(response_text)
             session_ref = "session-1"
         else:
-            safe_error = f"{self.status}: safe provider failure"
+            safe_error = self.failure_error or f"{self.status}: safe provider failure"
         outcome = NormalizedProviderResult(
             status=self.status,
             provider="OPENAI",
@@ -790,6 +792,7 @@ def build_service(
     entered: asyncio.Event | None = None,
     release: asyncio.Event | None = None,
     cancellation: CancellationResult | None = None,
+    failure_error: str | None = None,
     request_semantic_validators: Mapping[tuple[LLMRole, str], RequestSemanticValidator]
     | None = None,
 ) -> tuple[LLMCallService, FakeAdapter, RecordingAuthorization]:
@@ -817,6 +820,7 @@ def build_service(
         entered=entered,
         release=release,
         cancellation=cancellation,
+        failure_error=failure_error,
     )
     adapters = ExactAdapterResolver({(data.provider_ref, "gpt-test"): adapter})
     authorization = RecordingAuthorization(data.records, data.claimed_ref)
@@ -1020,6 +1024,36 @@ async def test_timeout_stays_unresolved_and_blocks_duplicate_resume() -> None:
         call_spec_ref=data.spec_ref,
     )
 
+    assert first.dispatch_state == "UNRESOLVED"
+    assert authorization.dispatched == 1
+    assert authorization.returned == 0
+    with pytest.raises(ValueError, match="external request outcome is unknown"):
+        await service.invoke(
+            work=data.work,
+            decision_ref=data.decision_ref,
+            reservation_ref=data.reservation_ref,
+            call_spec_ref=data.spec_ref,
+        )
+    assert adapter.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_codex_cleanup_stays_unresolved_and_blocks_replay() -> None:
+    data = fixture()
+    service, adapter, authorization = build_service(
+        data,
+        "FAILED",
+        failure_error="FAILED: Codex process cleanup unconfirmed",
+    )
+
+    first = await service.invoke(
+        work=data.work,
+        decision_ref=data.decision_ref,
+        reservation_ref=data.reservation_ref,
+        call_spec_ref=data.spec_ref,
+    )
+
+    assert first.result.status == "FAILED"
     assert first.dispatch_state == "UNRESOLVED"
     assert authorization.dispatched == 1
     assert authorization.returned == 0

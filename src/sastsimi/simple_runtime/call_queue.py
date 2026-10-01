@@ -52,6 +52,7 @@ _NO_MODEL_RESPONSE_STATUSES = (
     "CLAUDE_RATE_LIMITED",
 )
 _LOG = logging.getLogger(__name__)
+_CODEX_CLEANUP_GRACE_SECONDS = 15.0
 _BUDGET_GATES: WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
     WeakValueDictionary()
 )
@@ -77,6 +78,14 @@ def _final_failure(failure: StageFailure) -> StageFailure:
     if failure.code == "INVALID_OUTPUT":
         return failure.model_copy(update={"retryable": False})
     return failure
+
+
+def _unresolved_codex_call_failure() -> StageFailure:
+    return StageFailure(
+        code="CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+        retryable=False,
+        safe_message="A prior Codex call requires process cleanup confirmation",
+    )
 
 
 class RunUsageBudget:
@@ -123,23 +132,15 @@ class RunUsageBudget:
                 retryable=False,
                 safe_message="Analysis elapsed-time ceiling has been reached",
             )
-        if self._max_tokens != "unlimited":
-            with sqlite3.connect(self._store.database_path) as connection:
-                unknown_tokens = connection.execute(
-                    "SELECT 1 FROM simple_llm_attempts "
-                    "WHERE analysis_id = ? "
-                    "AND (input_tokens IS NULL OR output_tokens IS NULL) "
-                    "AND status NOT IN ("
-                    f"{','.join('?' for _ in _NO_MODEL_RESPONSE_STATUSES)}) "
-                    "LIMIT 1",
-                    (self._analysis_id, *_NO_MODEL_RESPONSE_STATUSES),
-                ).fetchone()
-            if unknown_tokens is not None:
-                return StageFailure(
-                    code="LLM_TOKEN_USAGE_UNAVAILABLE",
-                    retryable=False,
-                    safe_message="A previous LLM attempt did not report token usage",
-                )
+        if (
+            self._max_tokens != "unlimited"
+            and int(summary["unknown_token_calls"] or 0) > 0
+        ):
+            return StageFailure(
+                code="LLM_TOKEN_USAGE_UNAVAILABLE",
+                retryable=False,
+                safe_message="A previous LLM attempt did not report token usage",
+            )
         return None
 
 
@@ -236,13 +237,51 @@ class RunLimitedClient:
         )
         for attempt in range(1, self._max_retries + 2):
             async with self._budget_gate, self._semaphore:
+                analysis_id = self._artifacts.identity.analysis_id
+                if (
+                    self._provider == "codex-cli"
+                    and self._store.unresolved_codex_call(analysis_id) is not None
+                ):
+                    return _unresolved_codex_call_failure()
                 budget_failure = self.budget_failure()
                 if budget_failure is not None:
                     return budget_failure
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     return _final_failure(last_failure)
+                call_id = uuid4().hex if self._provider == "codex-cli" else None
+                if call_id is not None and not self._store.begin_codex_call(
+                    call_id, analysis_id
+                ):
+                    return _unresolved_codex_call_failure()
+
+                def record_attempt(
+                    agent: str,
+                    attempt_number: int,
+                    started_at: float,
+                    status: str,
+                    result: SimpleLLMCallResult | None,
+                    failure: StageFailure | None = None,
+                    *,
+                    codex_call_id: str | None = call_id,
+                ) -> None:
+                    if codex_call_id is None:
+                        self._record_attempt(
+                            agent, attempt_number, started_at, status, result, failure
+                        )
+                    else:
+                        self._record_attempt(
+                            agent,
+                            attempt_number,
+                            started_at,
+                            status,
+                            result,
+                            failure,
+                            attempt_id=codex_call_id,
+                        )
+
                 started = monotonic()
+                inner_returned = False
                 try:
                     result = await asyncio.wait_for(
                         self._inner.call(
@@ -251,10 +290,18 @@ class RunLimitedClient:
                             timeout_ms=max(1, int(remaining * 1000)),
                             agent_name=agent_name,
                         ),
-                        timeout=remaining,
+                        # The Codex runner owns its request timeout and may still
+                        # need to confirm child-process cleanup after it expires.
+                        timeout=remaining
+                        + (
+                            _CODEX_CLEANUP_GRACE_SECONDS
+                            if self._provider == "codex-cli"
+                            else 0.0
+                        ),
                     )
+                    inner_returned = True
                 except asyncio.CancelledError:
-                    self._record_attempt(
+                    record_attempt(
                         agent_name,
                         attempt,
                         started,
@@ -275,13 +322,15 @@ class RunLimitedClient:
                         safe_message="LLM request did not complete",
                     )
                 if isinstance(result, SimpleLLMCallResult):
-                    self._record_attempt(
+                    record_attempt(
                         agent_name,
                         attempt,
                         started,
                         "SUCCEEDED",
                         result,
                     )
+                    if call_id is not None:
+                        self._store.mark_codex_call_safe(call_id, analysis_id)
                     return result
                 terminal = _terminal(result)
                 failure = (
@@ -291,9 +340,27 @@ class RunLimitedClient:
                 )
                 if failure.code == "INVALID_OUTPUT" and attempt > self._max_retries:
                     failure = failure.model_copy(update={"retryable": False})
-                self._record_attempt(
-                    agent_name, attempt, started, failure.code, None, failure
+                if failure.code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED":
+                    failure = failure.model_copy(update={"retryable": False})
+                record_attempt(
+                    agent_name,
+                    attempt,
+                    started,
+                    failure.code,
+                    None,
+                    failure,
                 )
+                if call_id is not None:
+                    if (
+                        not inner_returned
+                        or failure.code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+                    ):
+                        return (
+                            failure
+                            if inner_returned
+                            else _unresolved_codex_call_failure()
+                        )
+                    self._store.mark_codex_call_safe(call_id, analysis_id)
                 if failure.retryable and attempt <= self._max_retries:
                     # A billable failure without usage must block a retry even when
                     # the call deadline expires before the backoff can begin.
@@ -317,6 +384,8 @@ class RunLimitedClient:
         status: str,
         result: SimpleLLMCallResult | None,
         failure: StageFailure | None = None,
+        *,
+        attempt_id: str | None = None,
     ) -> None:
         elapsed = max(0, int((monotonic() - started) * 1000))
         input_tokens = token_count(result.input_tokens) if result is not None else None
@@ -364,7 +433,7 @@ class RunLimitedClient:
         }
         ref = self._artifacts.put_json(metadata)
         self._store.record_llm_attempt(
-            attempt_id=uuid4().hex,
+            attempt_id=attempt_id or uuid4().hex,
             analysis_id=self._artifacts.identity.analysis_id,
             agent=agent,
             model=self._model,

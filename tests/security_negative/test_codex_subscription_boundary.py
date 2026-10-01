@@ -533,6 +533,110 @@ async def test_cleanup_deadline_does_not_wait_for_ignored_cancellation(
     await asyncio.sleep(0.3)
 
 
+@pytest.mark.asyncio
+async def test_stalled_spawn_returns_unconfirmed_cleanup_and_cleans_late_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = approved_runner()
+    spawn_started = asyncio.Event()
+    release_spawn = asyncio.Event()
+    late_child_cleanup = asyncio.Event()
+    late_child = object()
+
+    async def delayed_spawn(*_args: object, **_kwargs: object) -> object:
+        spawn_started.set()
+        await release_spawn.wait()
+        return late_child
+
+    async def terminate_late_child(process: object) -> None:
+        assert process is late_child
+        late_child_cleanup.set()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed_spawn)
+    monkeypatch.setattr(
+        codex_subscription, "_terminate_process_tree_checked", terminate_late_child
+    )
+    monkeypatch.setattr(codex_subscription, "_TREE_KILLER_TIMEOUT_SECONDS", 0.01)
+    invocation = asyncio.create_task(runner.execute(replace(request(), timeout_ms=200)))
+    await asyncio.wait_for(spawn_started.wait(), timeout=1)
+
+    try:
+        done, _pending = await asyncio.wait((invocation,), timeout=0.5)
+        assert invocation in done
+        result = invocation.result()
+        assert result.status == "FAILED"
+        assert result.cleanup_unconfirmed
+        release_spawn.set()
+        await asyncio.wait_for(late_child_cleanup.wait(), timeout=1)
+    finally:
+        release_spawn.set()
+        await asyncio.wait_for(
+            asyncio.gather(invocation, return_exceptions=True), timeout=1
+        )
+
+
+@pytest.mark.asyncio
+async def test_late_spawn_blocks_new_codex_process_until_cleanup_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = approved_runner()
+    spawn_started = asyncio.Event()
+    release_spawn = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+    spawn_count = 0
+    late_child = object()
+
+    async def delayed_spawn(*_args: object, **_kwargs: object) -> object:
+        nonlocal spawn_count
+        spawn_count += 1
+        if spawn_count == 1:
+            spawn_started.set()
+            await release_spawn.wait()
+            return late_child
+        raise OSError("second spawn reached subprocess boundary")
+
+    async def terminate_late_child(process: object) -> None:
+        assert process is late_child
+        cleanup_started.set()
+        await release_cleanup.wait()
+        cleanup_finished.set()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed_spawn)
+    monkeypatch.setattr(
+        codex_subscription, "_terminate_process_tree_checked", terminate_late_child
+    )
+    monkeypatch.setattr(codex_subscription, "_TREE_KILLER_TIMEOUT_SECONDS", 0.01)
+    first = asyncio.create_task(runner.execute(replace(request(), timeout_ms=200)))
+    await asyncio.wait_for(spawn_started.wait(), timeout=1)
+
+    try:
+        first_result = await asyncio.wait_for(first, timeout=1)
+        assert first_result.cleanup_unconfirmed
+        second_result = await asyncio.to_thread(
+            lambda: asyncio.run(runner.execute(replace(request(), timeout_ms=200)))
+        )
+        assert second_result.cleanup_unconfirmed
+        assert spawn_count == 1
+
+        release_spawn.set()
+        await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+        third_result = await runner.execute(replace(request(), timeout_ms=200))
+        assert third_result.cleanup_unconfirmed
+        assert spawn_count == 1
+
+        release_cleanup.set()
+        await asyncio.wait_for(cleanup_finished.wait(), timeout=1)
+        await asyncio.sleep(0.02)
+        await runner.execute(replace(request(), timeout_ms=200))
+        assert spawn_count == 2
+    finally:
+        release_spawn.set()
+        release_cleanup.set()
+        await asyncio.wait_for(asyncio.gather(first, return_exceptions=True), 1)
+
+
 @pytest.mark.parametrize(
     "result",
     [
