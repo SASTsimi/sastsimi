@@ -399,6 +399,12 @@ class SimpleCheckpointStore:
                 "decision, candidate_id)"
             )
             connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_static_candidates_file_order "
+                "ON simple_static_candidates "
+                "(analysis_id, workspace_id, commit_id, scope_fingerprint, "
+                "json_extract(candidate_json, '$.path'), candidate_id)"
+            )
+            connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS simple_candidate_artifact_cursors (
                     analysis_id TEXT NOT NULL,
@@ -652,30 +658,60 @@ class SimpleCheckpointStore:
         args.append(limit)
         with self._connect() as connection:
             rows = connection.execute(query, args).fetchall()
-        result: list[StaticCandidate] = []
-        for row in rows:
-            candidate = StaticCandidate.model_validate_json(row["candidate_json"])
-            refs = tuple(
-                StoredDataRef.model_validate(ref)
-                for ref in json.loads(row["decision_evidence_refs_json"])
-            )
-            attempt = (
-                StoredDataRef.model_validate_json(row["decision_attempt_ref_json"])
-                if row["decision_attempt_ref_json"] is not None
-                else None
-            )
-            result.append(
-                candidate.model_copy(
-                    update={
-                        "decision": row["decision"],
-                        "decision_reason": row["decision_reason"],
-                        "decision_evidence_refs": refs,
-                        "decision_attempt_ref": attempt,
-                        "deep_status": row["deep_status"],
-                    }
-                )
-            )
-        return tuple(result)
+        return tuple(self._candidate_from_row(row) for row in rows)
+
+    @staticmethod
+    def _candidate_from_row(row: sqlite3.Row) -> StaticCandidate:
+        candidate = StaticCandidate.model_validate_json(row["candidate_json"])
+        refs = tuple(
+            StoredDataRef.model_validate(ref)
+            for ref in json.loads(row["decision_evidence_refs_json"])
+        )
+        attempt = (
+            StoredDataRef.model_validate_json(row["decision_attempt_ref_json"])
+            if row["decision_attempt_ref_json"] is not None
+            else None
+        )
+        return candidate.model_copy(
+            update={
+                "decision": row["decision"],
+                "decision_reason": row["decision_reason"],
+                "decision_evidence_refs": refs,
+                "decision_attempt_ref": attempt,
+                "deep_status": row["deep_status"],
+            }
+        )
+
+    def list_candidate_batch_page(
+        self,
+        identity: CheckpointIdentity,
+        scope_fingerprint: str,
+        *,
+        after: tuple[str, str] | None = None,
+        limit: int = 32,
+    ) -> tuple[StaticCandidate, ...]:
+        """Page selected candidates by file then ID, never by raw-result page."""
+
+        if limit <= 0:
+            raise ValueError("CANDIDATE_PAGE_ARGUMENT_INVALID")
+        key = self._candidate_scope_key(identity, scope_fingerprint)
+        path_expr = "json_extract(candidate_json, '$.path')"
+        query = (
+            "SELECT candidate_json, decision, decision_reason, "
+            "decision_evidence_refs_json, decision_attempt_ref_json, deep_status "
+            "FROM simple_static_candidates "
+            "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+            "AND scope_fingerprint = ? AND decision IN ('INCLUDE', 'UNDECIDED')"
+        )
+        args: list[object] = list(key)
+        if after is not None:
+            query += f" AND ({path_expr} > ? OR ({path_expr} = ? AND candidate_id > ?))"
+            args.extend((after[0], after[0], after[1]))
+        query += f" ORDER BY {path_expr}, candidate_id LIMIT ?"
+        args.append(limit)
+        with self._connect() as connection:
+            rows = connection.execute(query, args).fetchall()
+        return tuple(self._candidate_from_row(row) for row in rows)
 
     def candidate_counts(
         self, identity: CheckpointIdentity, scope_fingerprint: str

@@ -254,6 +254,32 @@ def index_ast_manifest(
     return {str(entry["path"]): entry for entry in _new_manifest(artifacts, summary)}
 
 
+def read_ast_file_facts(
+    artifacts: SimpleArtifactRepository,
+    summary: Mapping[str, object],
+    path: str,
+    *,
+    manifest_index: Mapping[str, Mapping[str, object]] | None = None,
+) -> tuple[StoredDataRef | None, tuple[dict[str, Any], ...], str | None]:
+    """Read one fully validated file artifact, or name its explicit gap."""
+
+    entry = (
+        manifest_index.get(path)
+        if manifest_index is not None
+        else index_ast_manifest(artifacts, summary).get(path)
+    )
+    if entry is not None:
+        ref, facts = _read_file(artifacts, entry)
+        return ref, tuple(facts), None
+    parse_errors = summary.get("parse_errors")
+    oversize_paths = summary.get("oversize_paths")
+    if isinstance(parse_errors, list) and path in parse_errors:
+        return None, (), "AST_PARSE_ERROR"
+    if isinstance(oversize_paths, list) and path in oversize_paths:
+        return None, (), "AST_SOURCE_TOO_LARGE"
+    raise ValueError("AST_FOCUS_PATH_UNKNOWN")
+
+
 def focus_ast_facts(
     artifacts: SimpleArtifactRepository,
     summary: Mapping[str, object],
