@@ -215,11 +215,13 @@ answers, from the code you have read.
    in `requested_ast_paths` the files whose definitions and calls are enough.
    The runtime then sends that code, with the static tool hits recorded for
    each file, in the next turn of this conversation.
-6. `all_tool_findings_index` lists every static-tool hit's file, line and
-   rule across the whole repository, including files with no entry point in
-   this part. A hit there is not a verdict - most are noise - but a file it
-   names is a candidate for `requested_paths` on its own, the same as an
-   entry point's handler.
+6. `all_tool_findings_index` lists every static-tool rule that fired in each
+   file across the whole repository (with how many times and a few sample
+   lines), including files with no entry point in this part. A hit there is
+   not a verdict - most are noise, and a rule repeating hundreds of times in
+   one file is usually a single pattern, not hundreds of findings - but a
+   file it names is a candidate for `requested_paths` on its own, the same
+   as an entry point's handler.
 7. Leave both lists empty only when every entry point in this part has been
    read this way and every file `all_tool_findings_index` names has been
    either read or deliberately left for a later part.
@@ -421,33 +423,48 @@ def _findings_by_file(bundle: dict[str, object]) -> dict[str, list[dict[str, obj
     return by_file
 
 
+_FINDINGS_INDEX_SAMPLE_LINES = 5
+
+
 def _findings_index(bundle: dict[str, object]) -> list[dict[str, object]]:
-    """Every tool hit's file, line and rule, with no snippet or metadata.
+    """Every tool hit's file and rule, grouped, with no snippet or metadata.
 
     A full finding (with its code snippet) is only cheap enough to attach to
     a file the agent already chose to read - the fact feed's hits run well
-    past a batch's byte budget on their own.  This index is small enough
-    (tens of KB even with hundreds of hits) to stand in every batch, so a
-    file the agent never requested is still visible as "something was
-    flagged here" rather than silently absent from everything it reads.
+    past a batch's byte budget on their own.  One entry per hit was sized
+    for a few hundred of them; a noisy rule repeating hundreds of times in
+    one file (a test file's own fixtures were the worst case measured, 536
+    hits of one rule) made the index itself the largest single piece of the
+    prompt.  Grouping by file and rule keeps the same information - which
+    files and which rules - at a size that holds regardless of how often a
+    rule repeats in one place.
     """
 
-    index: list[dict[str, object]] = []
+    counts: dict[tuple[str, str, str | None], list[int]] = {}
     for key in ("codeql_findings", "opengrep_findings"):
         values = bundle.get(key)
         for value in values if isinstance(values, list) else []:
             if not isinstance(value, dict) or not value.get("path"):
                 continue
             rule = value.get("rule_id")
-            index.append(
-                {
-                    "tool": key[:-9],
-                    "path": str(value["path"]).lstrip("/"),
-                    "line": value.get("line"),
-                    "rule": str(rule).rsplit(".", 1)[-1] if rule else None,
-                }
+            group = (
+                key[:-9],
+                str(value["path"]).lstrip("/"),
+                str(rule).rsplit(".", 1)[-1] if rule else None,
             )
-    return index
+            line = value.get("line")
+            if isinstance(line, int):
+                counts.setdefault(group, []).append(line)
+    return [
+        {
+            "tool": tool,
+            "path": path,
+            "rule": rule,
+            "count": len(lines),
+            "lines": sorted(lines)[:_FINDINGS_INDEX_SAMPLE_LINES],
+        }
+        for (tool, path, rule), lines in counts.items()
+    ]
 
 
 def _attach_findings(
