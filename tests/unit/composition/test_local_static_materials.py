@@ -19,7 +19,7 @@ def test_loader_builds_the_exact_runtime_material_closure() -> None:
 
     assert value.enabled_tools == ("AST", "OPENGREP", "CODEQL")
     assert value.codeql_query_pack_sha256 == (
-        "b34dec784e43da96f45b65099db69297851f89c95b63049cc946b18c469a738a"
+        "790ce002833978dd2b29bbf9bbeafb35d7745f3963101fc01b7eec725c212348"
     )
     manifest = json.loads(value.evidence[value.analysis_config_sha256])
     assert set(manifest["tools"]) == {"OPENGREP", "CODEQL"}

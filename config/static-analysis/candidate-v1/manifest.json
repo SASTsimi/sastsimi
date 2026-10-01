@@ -7,8 +7,8 @@
     },
     {
       "path": "codeql/python-security.qls",
-      "sha256": "5e116e6daa639876d954a6974aaab589d3a3ac94b902f6521321cf063fd18edb",
-      "size_bytes": 396
+      "sha256": "3fdc93c20c881ce02f6ad04fe209d1bd241b0edfc2a0df2e43e5093a09773fa6",
+      "size_bytes": 1625
     },
     {
       "path": "codeql/qlpack.yml",
@@ -17,18 +17,18 @@
     },
     {
       "path": "codeql/rule-catalog.json",
-      "sha256": "eb7129c6039317b410881f56ce700115f15e77545ca2afd079b2ec2b17f6b8c1",
-      "size_bytes": 1274
+      "sha256": "4d1d6c15415397bab890a3c047bc9e56a3de14d4908ee0eff061ccecf0aaed47",
+      "size_bytes": 6985
     },
     {
       "path": "codeql/rule-mapping.json",
-      "sha256": "c530f77ad879bc5f34f88163e11f13595468390d4a0697721db70b367c372de5",
-      "size_bytes": 1301
+      "sha256": "dcb93fb1ae70564e4c6e432cd53531b93dba5229ac0901edeb7844b124954abb",
+      "size_bytes": 7948
     },
     {
       "path": "codeql/rule-selection.json",
-      "sha256": "dbbf2909380bbe1e80d2b56ed66156d261865087aed5e8447d13cc27e37e338d",
-      "size_bytes": 567
+      "sha256": "5945c98f4800536d6fc17c05bd96029c8cf28f646bf10d7563ad508c3fcfbdbf",
+      "size_bytes": 1757
     },
     {
       "path": "opengrep/rule-catalog.json",
@@ -52,7 +52,7 @@
     }
   ],
   "material_set": "sastsimi-static-candidate-v1",
-  "material_set_sha256": "90fda208d7846cf6e35b4bd6a9c7805c326e1ee5bf44154396e990e3383ec15f",
+  "material_set_sha256": "c9093b7bb82e626c281d437aec2c68aa88d5f815b5a8b8ea5d758bb6e7d66650",
   "production_ready": false,
   "schema_version": 1,
   "status": "CANDIDATE"

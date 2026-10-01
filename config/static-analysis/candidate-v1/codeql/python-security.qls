@@ -3,12 +3,51 @@
   from: codeql/python-queries
   include:
     id:
+      - py/bad-tag-filter
+      - py/bind-socket-all-network-interfaces
+      - py/clear-text-logging-sensitive-data
+      - py/clear-text-storage-sensitive-data
+      - py/client-exposed-cookie
       - py/code-injection
       - py/command-line-injection
+      - py/cookie-injection
+      - py/csrf-protection-disabled
+      - py/flask-debug
+      - py/full-ssrf
+      - py/http-response-splitting
+      - py/incomplete-hostname-regexp
+      - py/incomplete-url-substring-sanitization
+      - py/insecure-cookie
+      - py/insecure-default-protocol
+      - py/insecure-protocol
+      - py/insecure-temporary-file
+      - py/jinja2/autoescape-false
+      - py/ldap-injection
+      - py/log-injection
       - py/nosql-injection
+      - py/overly-large-range
+      - py/overly-permissive-file
+      - py/pam-auth-bypass
+      - py/paramiko-missing-host-key-validation
+      - py/partial-ssrf
       - py/path-injection
+      - py/polynomial-redos
+      - py/redos
       - py/reflective-xss
+      - py/regex-injection
+      - py/request-without-cert-validation
+      - py/samesite-none-cookie
       - py/shell-command-constructed-from-input
       - py/sql-injection
+      - py/stack-trace-exposure
+      - py/tarslip
+      - py/template-injection
+      - py/unsafe-deserialization
       - py/url-redirection
+      - py/use-of-input
+      - py/weak-crypto-key
+      - py/weak-cryptographic-algorithm
+      - py/weak-sensitive-data-hashing
+      - py/xml-bomb
       - py/xpath-injection
+      - py/xxe

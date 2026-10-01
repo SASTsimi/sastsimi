@@ -4,15 +4,246 @@
   "query_pack": "codeql/python-queries@1.8.10",
   "rule_pack_id": "sastsimi/python-security-candidate@1.0.0",
   "rules": [
-    {"cwe": "CWE-094", "query_path": "Security/CWE-094/CodeInjection.ql", "rule_id": "py/code-injection"},
-    {"cwe": "CWE-078", "query_path": "Security/CWE-078/CommandInjection.ql", "rule_id": "py/command-line-injection"},
-    {"cwe": "CWE-943", "query_path": "Security/CWE-943/NoSqlInjection.ql", "rule_id": "py/nosql-injection"},
-    {"cwe": "CWE-022", "query_path": "Security/CWE-022/PathInjection.ql", "rule_id": "py/path-injection"},
-    {"cwe": "CWE-079", "query_path": "Security/CWE-079/ReflectedXss.ql", "rule_id": "py/reflective-xss"},
-    {"cwe": "CWE-078", "query_path": "Security/CWE-078/UnsafeShellCommandConstruction.ql", "rule_id": "py/shell-command-constructed-from-input"},
-    {"cwe": "CWE-089", "query_path": "Security/CWE-089/SqlInjection.ql", "rule_id": "py/sql-injection"},
-    {"cwe": "CWE-601", "query_path": "Security/CWE-601/UrlRedirect.ql", "rule_id": "py/url-redirection"},
-    {"cwe": "CWE-643", "query_path": "Security/CWE-643/XpathInjection.ql", "rule_id": "py/xpath-injection"}
+    {
+      "cwe": "CWE-116",
+      "query_path": "Security/CWE-116/BadTagFilter.ql",
+      "rule_id": "py/bad-tag-filter"
+    },
+    {
+      "cwe": "CWE-200",
+      "query_path": "Security/CVE-2018-1281/BindToAllInterfaces.ql",
+      "rule_id": "py/bind-socket-all-network-interfaces"
+    },
+    {
+      "cwe": "CWE-312",
+      "query_path": "Security/CWE-312/CleartextLogging.ql",
+      "rule_id": "py/clear-text-logging-sensitive-data"
+    },
+    {
+      "cwe": "CWE-312",
+      "query_path": "Security/CWE-312/CleartextStorage.ql",
+      "rule_id": "py/clear-text-storage-sensitive-data"
+    },
+    {
+      "cwe": "CWE-1004",
+      "query_path": "Security/CWE-1004/NonHttpOnlyCookie.ql",
+      "rule_id": "py/client-exposed-cookie"
+    },
+    {
+      "cwe": "CWE-094",
+      "query_path": "Security/CWE-094/CodeInjection.ql",
+      "rule_id": "py/code-injection"
+    },
+    {
+      "cwe": "CWE-078",
+      "query_path": "Security/CWE-078/CommandInjection.ql",
+      "rule_id": "py/command-line-injection"
+    },
+    {
+      "cwe": "CWE-020",
+      "query_path": "Security/CWE-020/CookieInjection.ql",
+      "rule_id": "py/cookie-injection"
+    },
+    {
+      "cwe": "CWE-352",
+      "query_path": "Security/CWE-352/CSRFProtectionDisabled.ql",
+      "rule_id": "py/csrf-protection-disabled"
+    },
+    {
+      "cwe": "CWE-215",
+      "query_path": "Security/CWE-215/FlaskDebug.ql",
+      "rule_id": "py/flask-debug"
+    },
+    {
+      "cwe": "CWE-918",
+      "query_path": "Security/CWE-918/FullServerSideRequestForgery.ql",
+      "rule_id": "py/full-ssrf"
+    },
+    {
+      "cwe": "CWE-113",
+      "query_path": "Security/CWE-113/HeaderInjection.ql",
+      "rule_id": "py/http-response-splitting"
+    },
+    {
+      "cwe": "CWE-020",
+      "query_path": "Security/CWE-020/IncompleteHostnameRegExp.ql",
+      "rule_id": "py/incomplete-hostname-regexp"
+    },
+    {
+      "cwe": "CWE-020",
+      "query_path": "Security/CWE-020/IncompleteUrlSubstringSanitization.ql",
+      "rule_id": "py/incomplete-url-substring-sanitization"
+    },
+    {
+      "cwe": "CWE-614",
+      "query_path": "Security/CWE-614/InsecureCookie.ql",
+      "rule_id": "py/insecure-cookie"
+    },
+    {
+      "cwe": "CWE-327",
+      "query_path": "Security/CWE-327/InsecureDefaultProtocol.ql",
+      "rule_id": "py/insecure-default-protocol"
+    },
+    {
+      "cwe": "CWE-327",
+      "query_path": "Security/CWE-327/InsecureProtocol.ql",
+      "rule_id": "py/insecure-protocol"
+    },
+    {
+      "cwe": "CWE-377",
+      "query_path": "Security/CWE-377/InsecureTemporaryFile.ql",
+      "rule_id": "py/insecure-temporary-file"
+    },
+    {
+      "cwe": "CWE-079",
+      "query_path": "Security/CWE-079/Jinja2WithoutEscaping.ql",
+      "rule_id": "py/jinja2/autoescape-false"
+    },
+    {
+      "cwe": "CWE-090",
+      "query_path": "Security/CWE-090/LdapInjection.ql",
+      "rule_id": "py/ldap-injection"
+    },
+    {
+      "cwe": "CWE-117",
+      "query_path": "Security/CWE-117/LogInjection.ql",
+      "rule_id": "py/log-injection"
+    },
+    {
+      "cwe": "CWE-943",
+      "query_path": "Security/CWE-943/NoSqlInjection.ql",
+      "rule_id": "py/nosql-injection"
+    },
+    {
+      "cwe": "CWE-020",
+      "query_path": "Security/CWE-020/OverlyLargeRange.ql",
+      "rule_id": "py/overly-large-range"
+    },
+    {
+      "cwe": "CWE-732",
+      "query_path": "Security/CWE-732/WeakFilePermissions.ql",
+      "rule_id": "py/overly-permissive-file"
+    },
+    {
+      "cwe": "CWE-285",
+      "query_path": "Security/CWE-285/PamAuthorization.ql",
+      "rule_id": "py/pam-auth-bypass"
+    },
+    {
+      "cwe": "CWE-295",
+      "query_path": "Security/CWE-295/MissingHostKeyValidation.ql",
+      "rule_id": "py/paramiko-missing-host-key-validation"
+    },
+    {
+      "cwe": "CWE-918",
+      "query_path": "Security/CWE-918/PartialServerSideRequestForgery.ql",
+      "rule_id": "py/partial-ssrf"
+    },
+    {
+      "cwe": "CWE-022",
+      "query_path": "Security/CWE-022/PathInjection.ql",
+      "rule_id": "py/path-injection"
+    },
+    {
+      "cwe": "CWE-1333",
+      "query_path": "Security/CWE-730/PolynomialReDoS.ql",
+      "rule_id": "py/polynomial-redos"
+    },
+    {
+      "cwe": "CWE-1333",
+      "query_path": "Security/CWE-730/ReDoS.ql",
+      "rule_id": "py/redos"
+    },
+    {
+      "cwe": "CWE-079",
+      "query_path": "Security/CWE-079/ReflectedXss.ql",
+      "rule_id": "py/reflective-xss"
+    },
+    {
+      "cwe": "CWE-730",
+      "query_path": "Security/CWE-730/RegexInjection.ql",
+      "rule_id": "py/regex-injection"
+    },
+    {
+      "cwe": "CWE-295",
+      "query_path": "Security/CWE-295/RequestWithoutValidation.ql",
+      "rule_id": "py/request-without-cert-validation"
+    },
+    {
+      "cwe": "CWE-1275",
+      "query_path": "Security/CWE-1275/SameSiteNoneCookie.ql",
+      "rule_id": "py/samesite-none-cookie"
+    },
+    {
+      "cwe": "CWE-078",
+      "query_path": "Security/CWE-078/UnsafeShellCommandConstruction.ql",
+      "rule_id": "py/shell-command-constructed-from-input"
+    },
+    {
+      "cwe": "CWE-089",
+      "query_path": "Security/CWE-089/SqlInjection.ql",
+      "rule_id": "py/sql-injection"
+    },
+    {
+      "cwe": "CWE-209",
+      "query_path": "Security/CWE-209/StackTraceExposure.ql",
+      "rule_id": "py/stack-trace-exposure"
+    },
+    {
+      "cwe": "CWE-022",
+      "query_path": "Security/CWE-022/TarSlip.ql",
+      "rule_id": "py/tarslip"
+    },
+    {
+      "cwe": "CWE-074",
+      "query_path": "Security/CWE-074/TemplateInjection.ql",
+      "rule_id": "py/template-injection"
+    },
+    {
+      "cwe": "CWE-502",
+      "query_path": "Security/CWE-502/UnsafeDeserialization.ql",
+      "rule_id": "py/unsafe-deserialization"
+    },
+    {
+      "cwe": "CWE-601",
+      "query_path": "Security/CWE-601/UrlRedirect.ql",
+      "rule_id": "py/url-redirection"
+    },
+    {
+      "cwe": "CWE-094",
+      "query_path": "Expressions/UseofInput.ql",
+      "rule_id": "py/use-of-input"
+    },
+    {
+      "cwe": "CWE-326",
+      "query_path": "Security/CWE-326/WeakCryptoKey.ql",
+      "rule_id": "py/weak-crypto-key"
+    },
+    {
+      "cwe": "CWE-327",
+      "query_path": "Security/CWE-327/BrokenCryptoAlgorithm.ql",
+      "rule_id": "py/weak-cryptographic-algorithm"
+    },
+    {
+      "cwe": "CWE-327",
+      "query_path": "Security/CWE-327/WeakSensitiveDataHashing.ql",
+      "rule_id": "py/weak-sensitive-data-hashing"
+    },
+    {
+      "cwe": "CWE-776",
+      "query_path": "Security/CWE-776/XmlBomb.ql",
+      "rule_id": "py/xml-bomb"
+    },
+    {
+      "cwe": "CWE-643",
+      "query_path": "Security/CWE-643/XpathInjection.ql",
+      "rule_id": "py/xpath-injection"
+    },
+    {
+      "cwe": "CWE-611",
+      "query_path": "Security/CWE-611/Xxe.ql",
+      "rule_id": "py/xxe"
+    }
   ],
   "schema_version": 1,
   "status": "CANDIDATE",

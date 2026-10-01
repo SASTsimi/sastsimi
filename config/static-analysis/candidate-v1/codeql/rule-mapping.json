@@ -1,15 +1,294 @@
 {
   "production_ready": false,
   "rules": [
-    {"flow_start_fact_kind": "SOURCE", "requires_code_flow": true, "result_fact_kind": "SINK", "rule_id": "py/code-injection"},
-    {"flow_start_fact_kind": "SOURCE", "requires_code_flow": true, "result_fact_kind": "SINK", "rule_id": "py/command-line-injection"},
-    {"flow_start_fact_kind": "SOURCE", "requires_code_flow": true, "result_fact_kind": "SINK", "rule_id": "py/nosql-injection"},
-    {"flow_start_fact_kind": "SOURCE", "requires_code_flow": true, "result_fact_kind": "SINK", "rule_id": "py/path-injection"},
-    {"flow_start_fact_kind": "SOURCE", "requires_code_flow": true, "result_fact_kind": "SINK", "rule_id": "py/reflective-xss"},
-    {"flow_start_fact_kind": "SOURCE", "requires_code_flow": true, "result_fact_kind": "SINK", "rule_id": "py/shell-command-constructed-from-input"},
-    {"flow_start_fact_kind": "SOURCE", "requires_code_flow": true, "result_fact_kind": "SINK", "rule_id": "py/sql-injection"},
-    {"flow_start_fact_kind": "SOURCE", "requires_code_flow": true, "result_fact_kind": "SINK", "rule_id": "py/url-redirection"},
-    {"flow_start_fact_kind": "SOURCE", "requires_code_flow": true, "result_fact_kind": "SINK", "rule_id": "py/xpath-injection"}
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/bad-tag-filter"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/bind-socket-all-network-interfaces"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/clear-text-logging-sensitive-data"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/clear-text-storage-sensitive-data"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/client-exposed-cookie"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/code-injection"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/command-line-injection"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/cookie-injection"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/csrf-protection-disabled"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/flask-debug"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/full-ssrf"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/http-response-splitting"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/incomplete-hostname-regexp"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/incomplete-url-substring-sanitization"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/insecure-cookie"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/insecure-default-protocol"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/insecure-protocol"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/insecure-temporary-file"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/jinja2/autoescape-false"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/ldap-injection"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/log-injection"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/nosql-injection"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/overly-large-range"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/overly-permissive-file"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/pam-auth-bypass"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/paramiko-missing-host-key-validation"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/partial-ssrf"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/path-injection"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/polynomial-redos"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/redos"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/reflective-xss"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/regex-injection"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/request-without-cert-validation"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/samesite-none-cookie"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/shell-command-constructed-from-input"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/sql-injection"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/stack-trace-exposure"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/tarslip"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/template-injection"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/unsafe-deserialization"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/url-redirection"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/use-of-input"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/weak-crypto-key"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/weak-cryptographic-algorithm"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/weak-sensitive-data-hashing"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/xml-bomb"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/xpath-injection"
+    },
+    {
+      "flow_start_fact_kind": "SOURCE",
+      "requires_code_flow": true,
+      "result_fact_kind": "SINK",
+      "rule_id": "py/xxe"
+    }
   ],
   "schema_version": 1,
   "status": "CANDIDATE",
