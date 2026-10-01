@@ -15,6 +15,8 @@ class ProgressSnapshot(ContractModel):
     skipped_units: int = 0
     known_units: int
     percent: int
+    percentage_kind: Literal["known_checkpoint_fraction"] | None = None
+    phase_counts: dict[str, dict[str, int]] = Field(default_factory=dict)
     current_stage: str | None = None
     current_hypothesis_id: str | None = None
     error_code: str | None = None

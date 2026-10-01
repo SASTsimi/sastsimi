@@ -1037,8 +1037,12 @@ async def test_non_codex_short_deadline_still_cancels_slow_inner(
             output_schema: Mapping[str, Any],
             timeout_ms: int,
             agent_name: str = "agent",
+            owner: AttemptOwner | None = None,
+            prompt_bytes: PromptByteCounts | None = None,
+            invocation_id: str | None = None,
         ) -> SimpleLLMCallResult | StageFailure:
-            del prompt, output_schema, agent_name
+            del prompt, output_schema, agent_name, owner, prompt_bytes
+            del invocation_id
             self.requested_timeout_ms = timeout_ms
             try:
                 await asyncio.Event().wait()
@@ -1197,8 +1201,12 @@ async def test_unmeasured_api_cost_blocks_next_billable_call(tmp_path: Path) -> 
             output_schema: Mapping[str, Any],
             timeout_ms: int,
             agent_name: str = "agent",
+            owner: AttemptOwner | None = None,
+            prompt_bytes: PromptByteCounts | None = None,
+            invocation_id: str | None = None,
         ) -> SimpleLLMCallResult:
-            del prompt, output_schema, timeout_ms, agent_name
+            del prompt, output_schema, timeout_ms, agent_name, owner, prompt_bytes
+            del invocation_id
             self.calls += 1
             return _success()
 
@@ -1239,8 +1247,12 @@ async def test_api_cost_guard_survives_resume_without_blocking_first_fallback(
             output_schema: Mapping[str, Any],
             timeout_ms: int,
             agent_name: str = "agent",
+            owner: AttemptOwner | None = None,
+            prompt_bytes: PromptByteCounts | None = None,
+            invocation_id: str | None = None,
         ) -> SimpleLLMCallResult:
-            del prompt, output_schema, timeout_ms, agent_name
+            del prompt, output_schema, timeout_ms, agent_name, owner, prompt_bytes
+            del invocation_id
             self.calls += 1
             return _success()
 
@@ -1418,8 +1430,12 @@ async def test_context_limit_rejection_allows_smaller_resumed_api_call(
             output_schema: Mapping[str, Any],
             timeout_ms: int,
             agent_name: str = "agent",
+            owner: AttemptOwner | None = None,
+            prompt_bytes: PromptByteCounts | None = None,
+            invocation_id: str | None = None,
         ) -> SimpleLLMCallResult | StageFailure:
-            del prompt, output_schema, timeout_ms, agent_name
+            del prompt, output_schema, timeout_ms, agent_name, owner, prompt_bytes
+            del invocation_id
             self.calls += 1
             if self.calls == 1:
                 return StageFailure(

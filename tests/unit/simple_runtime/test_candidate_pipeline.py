@@ -6,13 +6,17 @@ import sqlite3
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.application import (
+    BatchProposalResult,
+    CandidateProposalOutcome,
+    HypothesisBootstrap,
     HypothesisSeed,
     SimpleAnalysisApplication,
     SimpleAnalysisRequest,
@@ -21,15 +25,17 @@ from sastsimi.simple_runtime.application import (
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.ast_facts import collect_python_ast
 from sastsimi.simple_runtime.attack_surfaces import (
+    ReviewPart,
     build_attack_surface_index,
     evaluate_surface_coverage,
 )
+from sastsimi.simple_runtime.attempt_owner import AttemptOwner, PromptByteCounts
 from sastsimi.simple_runtime.bootstrap_stages import (
-    BatchProposalResult,
-    CandidateProposalOutcome,
     SurfaceProposalResult,
 )
+from sastsimi.simple_runtime.candidate_batches import CandidateBatch
 from sastsimi.simple_runtime.candidates import ingest_static_candidates
+from sastsimi.simple_runtime.chaining import SimpleChainingStage
 from sastsimi.simple_runtime.models import (
     STAGE_VERSION,
     CheckpointIdentity,
@@ -41,9 +47,17 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
-from sastsimi.simple_runtime.runner import RunOutcome, SimpleRuntimeRunner
+from sastsimi.simple_runtime.runner import (
+    RunOutcome,
+    SimpleRuntimeRunner,
+    SimpleStageHandler,
+)
+from sastsimi.simple_runtime.stages import ProConBatchBlocked
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
-from sastsimi.simple_runtime.surface_contexts import iter_uncovered_surface_contexts
+from sastsimi.simple_runtime.surface_contexts import (
+    SurfaceContext,
+    iter_uncovered_surface_contexts,
+)
 
 
 class _Static:
@@ -120,8 +134,11 @@ class _Client:
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult:
-        del output_schema, timeout_ms
+        del output_schema, timeout_ms, owner, prompt_bytes, invocation_id
         assert agent_name == "discovery"
         self.calls += 1
         rows = json.loads(prompt.split(b"<CANDIDATES>")[1].split(b"</CANDIDATES>")[0])
@@ -313,6 +330,76 @@ def _cleanup_audit(
 
 
 @pytest.mark.asyncio
+async def test_failed_pro_con_batch_marks_all_requested_ids_attempted_this_turn(
+    tmp_path: Path,
+) -> None:
+    """A blocked batch cannot retry its missing IDs via the individual runner."""
+
+    app, store, _client, _hypotheses = _setup(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    shared = artifacts.put_json({"kind": "shared_context"})
+    static_ref = artifacts.put_json({"kind": "static_bundle"})
+    hypothesis_ids = ("batch-child-one", "batch-child-two")
+    for hypothesis_id in hypothesis_ids:
+        store.upsert_hypothesis(identity, hypothesis_id)
+        proposal = artifacts.put_prompt_proposal(
+            {
+                "kind": "simple_hypothesis_proposal",
+                "analysis_id": identity.analysis_id,
+                "hypothesis_id": hypothesis_id,
+                "proposal": {"summary": "test"},
+            }
+        )
+        refs = (proposal, shared, static_ref)
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=identity.model_copy(update={"hypothesis_id": hypothesis_id}),
+                stage=SimpleStage.PRO_CON_DONE,
+                status=StageStatus.PENDING,
+                input_refs=refs,
+                input_hash=input_reference_hash(refs),
+            )
+        )
+
+    class _BlockedBatch:
+        async def run_pro_batch(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise ProConBatchBlocked(
+                StageFailure(
+                    code="PRO_CON_BATCH_RESPONSE_INVALID",
+                    retryable=True,
+                    safe_message="invalid batch",
+                ),
+                {},
+                hypothesis_ids,
+            )
+
+        async def run_con_batch(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("Con must not run after a blocked Pro batch")
+
+    app._runner_factory = lambda *_: cast(
+        SimpleRuntimeRunner,
+        SimpleNamespace(handlers={SimpleStage.PRO_CON_DONE: _BlockedBatch()}),
+    )
+    attempted: set[str] = set()
+    outcome = await app._prewarm_pro_con_batches(
+        identity,
+        cast(_Static, app._static).result,
+        hypothesis_ids,
+        attempted,
+    )
+
+    assert outcome is not None
+    assert outcome.status is StageStatus.BLOCKED
+    assert attempted == set(hypothesis_ids)
+
+
+@pytest.mark.asyncio
 async def test_free_exploration_pages_are_checkpointed_and_not_repeated(
     tmp_path: Path,
 ) -> None:
@@ -389,7 +476,7 @@ async def test_retryable_free_page_failure_retries_only_that_page(
 
     assert first.status == second.status == "COMPLETE"
     assert paged.cursors == [None, "page-1", "page-1", "page-2"]
-    bundle_hash = app._static.result.static_bundle_ref.content_hash
+    bundle_hash = cast(_Static, app._static).result.static_bundle_ref.content_hash
     progress = store.survey_progress("analysis-1", bundle_hash)
     assert set(progress) == {
         "__candidate_free_page_00000000__",
@@ -1368,7 +1455,7 @@ async def test_v2_batch_resume_reuses_zero_seed_candidates(tmp_path: Path) -> No
             self,
             identity: CheckpointIdentity,
             _static: StaticBootstrapResult,
-            batch: object,
+            batch: CandidateBatch,
             *,
             requested_ids: tuple[str, ...] | None = None,
         ) -> BatchProposalResult:
@@ -1401,7 +1488,7 @@ async def test_v2_batch_resume_reuses_zero_seed_candidates(tmp_path: Path) -> No
             )
 
     hypotheses = V2Hypotheses()
-    app._candidate_hypotheses = hypotheses
+    app._candidate_hypotheses = cast(HypothesisBootstrap, hypotheses)
     request = SimpleAnalysisRequest(
         data_dir=tmp_path / "data",
         repository="https://github.com/example/repo",
@@ -1429,9 +1516,18 @@ async def test_v2_batch_resume_reuses_zero_seed_candidates(tmp_path: Path) -> No
     assert surface_data["candidate_count"] == 2
 
 
+@pytest.mark.parametrize(
+    ("reviewed_parts", "expected_status"),
+    [
+        (frozenset({"ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY"}), "COMPLETE"),
+        (frozenset({"ENTRY"}), "PARTIAL"),
+    ],
+)
 @pytest.mark.asyncio
 async def test_v2_targeted_exploration_checkpoints_each_surface_without_source_pages(
     tmp_path: Path,
+    reviewed_parts: frozenset[ReviewPart],
+    expected_status: str,
 ) -> None:
     app, store, _client, _ = _setup(
         tmp_path,
@@ -1449,7 +1545,7 @@ async def test_v2_targeted_exploration_checkpoints_each_surface_without_source_p
             self,
             identity: CheckpointIdentity,
             _static: StaticBootstrapResult,
-            batch: object,
+            batch: CandidateBatch,
             *,
             requested_ids: tuple[str, ...] | None = None,
         ) -> BatchProposalResult:
@@ -1485,7 +1581,7 @@ async def test_v2_targeted_exploration_checkpoints_each_surface_without_source_p
             self,
             identity: CheckpointIdentity,
             static: StaticBootstrapResult,
-            context: object,
+            context: SurfaceContext,
         ) -> SurfaceProposalResult:
             self.surface_calls.append(context.context_id)
             artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
@@ -1503,11 +1599,7 @@ async def test_v2_targeted_exploration_checkpoints_each_surface_without_source_p
                     "static_bundle_hash": static.static_bundle_ref.content_hash,
                     "status": "NO_HYPOTHESIS",
                     "reason": "Reviewed the visible call site",
-                    "reviewed_parts": [
-                        "ENTRY",
-                        "SENSITIVE_OPERATION",
-                        "TRUST_BOUNDARY",
-                    ],
+                    "reviewed_parts": sorted(reviewed_parts),
                     "evidence_locations": [location],
                     "seed_ids": [],
                 }
@@ -1521,16 +1613,29 @@ async def test_v2_targeted_exploration_checkpoints_each_surface_without_source_p
                 reason="Reviewed the visible call site",
                 seeds=(),
                 result_ref=ref,
-                reviewed_parts=frozenset(
-                    {"ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY"}
-                ),
+                reviewed_parts=reviewed_parts,
                 evidence_locations=(location,),
             )
 
     targeted = TargetedOnly()
     paged = _PagedHypotheses()
-    app._candidate_hypotheses = targeted
+    app._candidate_hypotheses = cast(HypothesisBootstrap, targeted)
     app._hypotheses = paged
+
+    class PoolRunner(_SuccessRunner):
+        def __init__(
+            self, backing: SimpleCheckpointStore, root: CheckpointIdentity
+        ) -> None:
+            super().__init__(backing)
+            self.handlers = {
+                SimpleStage.CHAINING_DONE: SimpleChainingStage(
+                    store=backing,
+                    client=_Client(),
+                    artifacts=SimpleArtifactRepository(tmp_path / "data", root),
+                )
+            }
+
+    app._runner_factory = lambda backing, root, _static: PoolRunner(backing, root)
     request = SimpleAnalysisRequest(
         data_dir=tmp_path / "data",
         repository="https://github.com/example/repo",
@@ -1543,13 +1648,23 @@ async def test_v2_targeted_exploration_checkpoints_each_surface_without_source_p
     assert targeted.batch_calls == 1
     assert targeted.surface_calls
     assert len(targeted.surface_calls) == len(set(targeted.surface_calls))
-    assert second.status == first.status
+    assert first.status == second.status == expected_status, (
+        first.error_code,
+        second.error_code,
+    )
+    terminal = store.require_analysis_run("analysis-1").candidate_terminal
+    assert terminal is not None
+    assert terminal.surface_counts["UNCOVERED"] == 0
+    assert terminal.surface_counts["INSUFFICIENT"] == (
+        0 if expected_status == "COMPLETE" else len(targeted.surface_calls)
+    )
+    assert terminal.surface_coverage_hash
     assert len(
         store.list_surface_exploration_progress(first.identity, "scope-1")
     ) == len(targeted.surface_calls)
 
 
-def test_v2_targeted_exploration_skips_candidate_surface_with_terminal_proof(
+def test_v2_targeted_exploration_keeps_candidate_surface_without_role_bound_proof(
     tmp_path: Path,
 ) -> None:
     app, store, _client, _ = _setup(
@@ -1564,7 +1679,7 @@ def test_v2_targeted_exploration_skips_candidate_surface_with_terminal_proof(
         commit_id="a" * 40,
         hypothesis_id=None,
     )
-    static = app._static.result
+    static = cast(_Static, app._static).result
     artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
     bundle = json.loads(artifacts.read(static.static_bundle_ref))
     ast_summary = bundle["ast_summary"]
@@ -1635,7 +1750,7 @@ def test_v2_targeted_exploration_skips_candidate_surface_with_terminal_proof(
     coverage = evaluate_surface_coverage(index, reviews)
     linked = [surface for surface in coverage.surfaces if surface.linked_candidate_ids]
     assert linked
-    assert all(surface.coverage_status == "COVERED" for surface in linked)
+    assert all(surface.coverage_status == "INSUFFICIENT" for surface in linked)
     contexts = tuple(
         iter_uncovered_surface_contexts(
             index,
@@ -1647,7 +1762,7 @@ def test_v2_targeted_exploration_skips_candidate_surface_with_terminal_proof(
         )
     )
     assert contexts
-    assert not {context.surface_id for context in contexts} & {
+    assert {context.surface_id for context in contexts} >= {
         surface.surface_id for surface in linked
     }
 
@@ -1670,7 +1785,7 @@ async def test_v2_surface_seed_is_verified_before_next_surface(tmp_path: Path) -
             self,
             identity: CheckpointIdentity,
             static: StaticBootstrapResult,
-            context: object,
+            context: SurfaceContext,
         ) -> SurfaceProposalResult:
             events.append(f"surface:{context.surface_id}")
             first = (
@@ -1741,7 +1856,7 @@ async def test_v2_surface_seed_is_verified_before_next_surface(tmp_path: Path) -
             events.append(f"child:{identity.hypothesis_id}")
             return await super().resume_hypothesis(identity)
 
-    app._candidate_hypotheses = StreamingSurface()
+    app._candidate_hypotheses = cast(HypothesisBootstrap, StreamingSurface())
     app._runner_factory = lambda *_: RecordingRunner(store)
     outcome = await app.analyze(
         SimpleAnalysisRequest(
@@ -1758,6 +1873,130 @@ async def test_v2_surface_seed_is_verified_before_next_surface(tmp_path: Path) -
     assert len(surface_positions) >= 2
     assert surface_positions[0] < events.index("child:hypothesis-streamed")
     assert events.index("child:hypothesis-streamed") < surface_positions[1]
+
+
+@pytest.mark.asyncio
+async def test_v2_shared_candidate_context_batches_pro_and_con(tmp_path: Path) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        result_count=2,
+        decision="INCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+    calls: list[tuple[str, tuple[str, ...]]] = []
+
+    class TwoSeeds:
+        async def propose_batch(
+            self,
+            identity: CheckpointIdentity,
+            _static: StaticBootstrapResult,
+            batch: CandidateBatch,
+            *,
+            requested_ids: tuple[str, ...] | None = None,
+        ) -> BatchProposalResult:
+            ids = requested_ids or batch.candidate_ids
+            artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+            response = artifacts.put_json(
+                {
+                    "kind": "simple_candidate_batch_response_v1",
+                    "batch_id": batch.batch_id,
+                    "requested_ids": ids,
+                    "candidate_results": [
+                        {"candidate_id": item, "status": "HYPOTHESES"} for item in ids
+                    ],
+                }
+            )
+            outcomes: dict[str, CandidateProposalOutcome] = {}
+            for number, candidate_id in enumerate(ids):
+                hypothesis_id = f"hypothesis-batched-{number}"
+                proposal = artifacts.put_prompt_proposal(
+                    {
+                        "kind": "simple_hypothesis_proposal",
+                        "analysis_id": identity.analysis_id,
+                        "hypothesis_id": hypothesis_id,
+                        "candidate_id": candidate_id,
+                        "proposal": {"summary": "Shared source context"},
+                    }
+                )
+                outcomes[candidate_id] = CandidateProposalOutcome(
+                    status="HYPOTHESES",
+                    reason="shared context",
+                    seeds=(
+                        HypothesisSeed(
+                            hypothesis_id=hypothesis_id, proposal_ref=proposal
+                        ),
+                    ),
+                    result_ref=response,
+                )
+            return BatchProposalResult(
+                results=outcomes,
+                missing_ids=(),
+                attempt_refs=(response,),
+            )
+
+    class BatchHandler:
+        async def run_pro_batch(
+            self,
+            checkpoints: Mapping[str, StageCheckpoint],
+            shared_ref: StoredDataRef,
+            *,
+            existing: Mapping[str, StoredDataRef] | None = None,
+        ) -> dict[str, StoredDataRef]:
+            del shared_ref, existing
+            ids = tuple(checkpoints)
+            calls.append(("pro", ids))
+            return {
+                item: SimpleArtifactRepository(
+                    tmp_path / "data", checkpoints[item].identity
+                ).put_json({"kind": "simple_pro_evidence", "hypothesis_id": item})
+                for item in ids
+            }
+
+        async def run_con_batch(
+            self,
+            checkpoints: Mapping[str, StageCheckpoint],
+            shared_ref: StoredDataRef,
+            *,
+            existing: Mapping[str, StoredDataRef] | None = None,
+        ) -> dict[str, StoredDataRef]:
+            del shared_ref, existing
+            ids = tuple(checkpoints)
+            calls.append(("con", ids))
+            return {
+                item: SimpleArtifactRepository(
+                    tmp_path / "data", checkpoints[item].identity
+                ).put_json({"kind": "simple_con_evidence", "hypothesis_id": item})
+                for item in ids
+            }
+
+    handler = BatchHandler()
+
+    class BatchRunner(_SuccessRunner):
+        def __init__(self, backing: SimpleCheckpointStore) -> None:
+            super().__init__(backing)
+            self.handlers = {
+                SimpleStage.PRO_CON_DONE: cast(SimpleStageHandler, handler)
+            }
+
+    app._candidate_hypotheses = cast(HypothesisBootstrap, TwoSeeds())
+    app._runner_factory = lambda *_: BatchRunner(store)
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    assert first.status == "BLOCKED"  # This test does not supply a surface proposer.
+    assert [role for role, _ids in calls] == ["pro", "con"]
+    assert calls[0][1] == calls[1][1]
+    assert len(calls[0][1]) == 2
+    for hypothesis_id in calls[0][1]:
+        child = first.identity.model_copy(update={"hypothesis_id": hypothesis_id})
+        checkpoint = store.require(child, SimpleStage.PRO_CON_DONE)
+        assert store.get_pro_con_batch_evidence(child, "pro", checkpoint.input_hash)
+        assert store.get_pro_con_batch_evidence(child, "con", checkpoint.input_hash)
 
 
 @pytest.mark.asyncio
@@ -1780,7 +2019,7 @@ async def test_v2_partial_batch_retries_only_uncommitted_candidate(
             self,
             identity: CheckpointIdentity,
             _static: StaticBootstrapResult,
-            batch: object,
+            batch: CandidateBatch,
             *,
             requested_ids: tuple[str, ...] | None = None,
         ) -> BatchProposalResult:
@@ -1824,7 +2063,7 @@ async def test_v2_partial_batch_retries_only_uncommitted_candidate(
             )
 
     hypotheses = PartialV2Hypotheses()
-    app._candidate_hypotheses = hypotheses
+    app._candidate_hypotheses = cast(HypothesisBootstrap, hypotheses)
     first = await app.analyze(
         SimpleAnalysisRequest(
             data_dir=tmp_path / "data",
@@ -1861,7 +2100,7 @@ async def test_v2_batch_resume_preserves_pending_seed_without_reproposal(
             self,
             identity: CheckpointIdentity,
             _static: StaticBootstrapResult,
-            batch: object,
+            batch: CandidateBatch,
             *,
             requested_ids: tuple[str, ...] | None = None,
         ) -> BatchProposalResult:
@@ -1906,7 +2145,7 @@ async def test_v2_batch_resume_preserves_pending_seed_without_reproposal(
             )
 
     hypotheses = OneSeed()
-    app._candidate_hypotheses = hypotheses
+    app._candidate_hypotheses = cast(HypothesisBootstrap, hypotheses)
     app._runner_factory = lambda *_: _SuccessRunner(store)
     first = await app.analyze(
         SimpleAnalysisRequest(
@@ -1951,7 +2190,7 @@ async def test_v2_resume_rejects_changed_candidate_source_hash(tmp_path: Path) -
             self,
             identity: CheckpointIdentity,
             _static: StaticBootstrapResult,
-            batch: object,
+            batch: CandidateBatch,
             *,
             requested_ids: tuple[str, ...] | None = None,
         ) -> BatchProposalResult:
@@ -1984,7 +2223,7 @@ async def test_v2_resume_rejects_changed_candidate_source_hash(tmp_path: Path) -
             )
 
     hypotheses = ZeroSeeds()
-    app._candidate_hypotheses = hypotheses
+    app._candidate_hypotheses = cast(HypothesisBootstrap, hypotheses)
     first = await app.analyze(
         SimpleAnalysisRequest(
             data_dir=tmp_path / "data",

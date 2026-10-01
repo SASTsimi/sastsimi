@@ -2,8 +2,10 @@ import asyncio
 import hashlib
 import json
 import os
+import tempfile
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 from pydantic import JsonValue
@@ -524,7 +526,9 @@ async def test_cleanup_os_error_is_not_treated_as_retryable_failure(
 
     monkeypatch.setattr(codex_subscription, "_terminate_process_tree", cleanup_fails)
     with pytest.raises(codex_subscription._ProcessTreeTerminationError):
-        await codex_subscription._terminate_process_tree_checked(object())
+        await codex_subscription._terminate_process_tree_checked(
+            cast(asyncio.subprocess.Process, object())
+        )
 
 
 @pytest.mark.asyncio
@@ -546,9 +550,7 @@ async def test_temporary_cleanup_cannot_hide_unconfirmed_child(
     async def cleanup_unconfirmed(*_args: object, **_kwargs: object) -> _ChildResult:
         raise codex_subscription._ProcessTreeTerminationError
 
-    monkeypatch.setattr(
-        codex_subscription.tempfile, "TemporaryDirectory", FailingTemporaryDirectory
-    )
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", FailingTemporaryDirectory)
     monkeypatch.setattr(runner, "_run_child", cleanup_unconfirmed)
     result = await runner.execute(request())
 
@@ -566,9 +568,7 @@ async def test_temporary_setup_error_before_child_is_not_cleanup_failure(
         def __init__(self, **_kwargs: object) -> None:
             raise PermissionError
 
-    monkeypatch.setattr(
-        codex_subscription.tempfile, "TemporaryDirectory", FailingTemporaryDirectory
-    )
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", FailingTemporaryDirectory)
     result = await runner.execute(request())
 
     assert result.status == "FAILED"
@@ -589,7 +589,9 @@ async def test_cleanup_deadline_does_not_wait_for_ignored_cancellation(
     monkeypatch.setattr(codex_subscription, "_TREE_KILLER_TIMEOUT_SECONDS", 0.01)
     started = asyncio.get_running_loop().time()
     with pytest.raises(codex_subscription._ProcessTreeTerminationError):
-        await codex_subscription._terminate_process_tree_checked(object())
+        await codex_subscription._terminate_process_tree_checked(
+            cast(asyncio.subprocess.Process, object())
+        )
     assert asyncio.get_running_loop().time() - started < 0.15
     await asyncio.sleep(0.3)
 

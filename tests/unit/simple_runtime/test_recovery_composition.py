@@ -19,6 +19,7 @@ from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.simple_runtime.application import StaticBootstrapResult
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.bootstrap_stages import DirectHypothesisBootstrap
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleAnalysisRun,
@@ -91,7 +92,9 @@ def test_composition_passes_llm_timeout_to_both_hypothesis_paths(
     profile = _profile(tmp_path).model_copy(update={"llm_timeout_seconds": 300})
     application = composition.build_analysis_application(_config(tmp_path), profile)
 
+    assert isinstance(application._hypotheses, DirectHypothesisBootstrap)
     assert application._hypotheses._llm_timeout_ms == 300_000
+    assert isinstance(application._candidate_hypotheses, DirectHypothesisBootstrap)
     assert application._candidate_hypotheses._llm_timeout_ms == 300_000
 
 

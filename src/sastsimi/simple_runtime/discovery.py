@@ -350,8 +350,7 @@ class CandidateDiscovery:
             evidence_refs=self._candidate_evidence_refs(
                 candidate, *failure_refs, attempt_ref
             ),
-            attempt_ref=attempt_ref
-            or getattr(candidate, "decision_attempt_ref", None),
+            attempt_ref=attempt_ref or getattr(candidate, "decision_attempt_ref", None),
         )
 
     @staticmethod

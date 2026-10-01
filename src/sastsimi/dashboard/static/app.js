@@ -58,7 +58,8 @@ function analysisButton(item) {
   button.append(el("strong", routeId));
   button.append(el("div", item.repository || "저장소 정보 없음", "meta truncate"));
   const row = el("div", undefined, "status-row");
-  row.append(badge(item.status), el("span", `${item.progress_percent}%`));
+  const percentLabel = item.percentage_kind === "known_checkpoint_fraction" ? "현재 알려진 checkpoint 비율 " : "";
+  row.append(badge(item.status), el("span", `${percentLabel}${item.progress_percent}%`));
   button.append(row);
   button.append(el("div", `현재 단계: ${item.current_stage}`, "meta"));
   if (item.static_disposition === "PARTIAL") button.append(el("div", "정적 분석 일부만 검증됨", "warning"));
@@ -194,8 +195,9 @@ function renderOverview(detail) {
   box.append(title);
   box.append(el("div", detail.repository || "저장소 정보 없음", "repository mono"));
   const metrics = el("div", undefined, "metric-grid");
+  const v2 = detail.percentage_kind === "known_checkpoint_fraction";
   const values = [
-    ["진행률", `${detail.progress_percent}%`],
+    [v2 ? "현재 알려진 checkpoint 비율" : "진행률", `${detail.progress_percent}%`],
     ["현재 단계", detail.current_stage],
     ["Commit", detail.commit_id || "-"],
     ["실행 프로필", detail.profile_ref || "미기록"],
@@ -224,6 +226,34 @@ function renderOverview(detail) {
       ["심층 분석", `진행 ${detail.deep_analysis_running_count || 0} · 완료 ${detail.deep_analysis_completed_count || 0} · 대기 ${detail.deep_analysis_pending_count || 0} · 오류 ${detail.deep_analysis_error_count || 0}`]
     );
   }
+  if (v2) {
+    const phases = detail.phase_counts || {};
+    for (const [key, label] of [
+      ["static", "정적 단계"], ["triage", "후보 선별"],
+      ["candidate_deep", "후보 심층 처리"], ["verification", "가설 검증"],
+    ]) {
+      const phase = phases[key];
+      if (Number.isInteger(phase?.completed) && Number.isInteger(phase?.known)) {
+        values.push([label, `${phase.completed}/${phase.known}`]);
+      }
+    }
+    const poc = phases.poc;
+    if (Number.isInteger(poc?.attempted) && Number.isInteger(poc?.completed)) {
+      values.push(["PoC 시도", `${poc.attempted}건 · 완료 ${poc.completed}건`]);
+    }
+    const surface = phases.surface;
+    if (Number.isInteger(surface?.total)) {
+      if (["covered", "uncovered", "insufficient"].every((key) => Number.isInteger(surface[key]))) {
+        values.push(["보안 surface", `검토 근거 충족 ${surface.covered}/${surface.total} · 미검토 ${surface.uncovered} · 근거 부족 ${surface.insufficient}`]);
+      } else if (Number.isInteger(surface.recorded_contexts)) {
+        values.push(["보안 surface", `저장된 context ${surface.recorded_contexts}건 · 인덱스 ${surface.total}개 · coverage 확인 전`]);
+      } else {
+        values.push(["보안 surface", "coverage 확인 불가"]);
+      }
+    } else {
+      values.push(["보안 surface", "coverage 확인 불가"]);
+    }
+  }
   values.forEach(([label, value]) => {
     const metric = el("div", undefined, "metric");
     metric.append(el("span", label, "meta"), el("strong", value));
@@ -235,6 +265,12 @@ function renderOverview(detail) {
   bar.style.width = `${detail.progress_percent}%`;
   progress.append(bar);
   box.append(progress);
+  if (v2) {
+    box.append(el("div", "진행률은 현재 알려진 checkpoint 비율이며 비용·시간·저장소 전체 커버리지를 뜻하지 않습니다.", "meta"));
+    if ((detail.phase_counts?.surface?.uncovered || 0) > 0 || (detail.phase_counts?.surface?.insufficient || 0) > 0) {
+      box.append(el("div", "부분 분석: 보안 surface 검토 범위가 남아 있습니다.", "warning"));
+    }
+  }
   staticCoverageNodes(detail).forEach((node) => box.append(node));
   if (detail.status === "PAUSED") {
     const advice = detail.resume_action === "RESUME_INTERRUPTED"

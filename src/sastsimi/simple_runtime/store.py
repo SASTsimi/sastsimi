@@ -562,6 +562,40 @@ class SimpleCheckpointStore:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_pro_con_batch_evidence (
+                    analysis_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    hypothesis_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    input_hash TEXT NOT NULL,
+                    evidence_ref_json TEXT NOT NULL,
+                    PRIMARY KEY (
+                        analysis_id, workspace_id, commit_id,
+                        hypothesis_id, role, input_hash
+                    )
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_chaining_pool_batches (
+                    analysis_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    pool_fingerprint TEXT NOT NULL,
+                    batch_index INTEGER NOT NULL,
+                    batch_count INTEGER NOT NULL,
+                    result_ref_json TEXT NOT NULL,
+                    PRIMARY KEY (
+                        analysis_id, workspace_id, commit_id,
+                        pool_fingerprint, batch_index
+                    )
+                )
+                """
+            )
             hypothesis_columns = {
                 row["name"]
                 for row in connection.execute(
@@ -1562,6 +1596,137 @@ class SimpleCheckpointStore:
             )
             for row in rows
         }
+
+    @staticmethod
+    def _pro_con_batch_key(
+        identity: CheckpointIdentity, role: str, input_hash: str
+    ) -> tuple[str, str, str, str, str, str]:
+        if (
+            not identity.hypothesis_id
+            or role not in {"pro", "con"}
+            or not input_hash.strip()
+        ):
+            raise ValueError("PRO_CON_BATCH_EVIDENCE_INVALID")
+        return (
+            identity.analysis_id,
+            identity.workspace_id,
+            identity.commit_id,
+            identity.hypothesis_id,
+            role,
+            input_hash,
+        )
+
+    def save_pro_con_batch_evidence(
+        self,
+        identity: CheckpointIdentity,
+        role: str,
+        input_hash: str,
+        evidence_ref: StoredDataRef,
+    ) -> bool:
+        """Save one role as soon as it succeeds; exact replay never replaces it."""
+
+        key = self._pro_con_batch_key(identity, role, input_hash)
+        encoded = self._candidate_ref_json(identity, evidence_ref)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT evidence_ref_json FROM simple_pro_con_batch_evidence "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND hypothesis_id = ? AND role = ? AND input_hash = ?",
+                key,
+            ).fetchone()
+            if row is not None:
+                if row["evidence_ref_json"] != encoded:
+                    raise ValueError("PRO_CON_BATCH_EVIDENCE_CONFLICT")
+                return False
+            connection.execute(
+                "INSERT INTO simple_pro_con_batch_evidence "
+                "(analysis_id, workspace_id, commit_id, hypothesis_id, role, "
+                "input_hash, evidence_ref_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (*key, encoded),
+            )
+        return True
+
+    def get_pro_con_batch_evidence(
+        self,
+        identity: CheckpointIdentity,
+        role: str,
+        input_hash: str,
+    ) -> StoredDataRef | None:
+        key = self._pro_con_batch_key(identity, role, input_hash)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT evidence_ref_json FROM simple_pro_con_batch_evidence "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND hypothesis_id = ? AND role = ? AND input_hash = ?",
+                key,
+            ).fetchone()
+        if row is None:
+            return None
+        ref = StoredDataRef.model_validate_json(row["evidence_ref_json"])
+        self._candidate_ref_json(identity, ref)
+        return ref
+
+    def save_chaining_pool_batch(
+        self,
+        identity: CheckpointIdentity,
+        pool_fingerprint: str,
+        batch_index: int,
+        batch_count: int,
+        result_ref: StoredDataRef,
+    ) -> bool:
+        """Persist one exact final-pool result before registering its children."""
+
+        key = self._candidate_scope_key(identity, pool_fingerprint)
+        encoded = self._candidate_ref_json(identity, result_ref)
+        if batch_count < 1 or not 0 <= batch_index < batch_count:
+            raise ValueError("CHAINING_POOL_BATCH_INVALID")
+        batch_key = (*key, batch_index)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT batch_count, result_ref_json "
+                "FROM simple_chaining_pool_batches "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND pool_fingerprint = ? AND batch_index = ?",
+                batch_key,
+            ).fetchone()
+            if row is not None:
+                if (int(row["batch_count"]), row["result_ref_json"]) != (
+                    batch_count,
+                    encoded,
+                ):
+                    raise ValueError("CHAINING_POOL_BATCH_CONFLICT")
+                return False
+            connection.execute(
+                "INSERT INTO simple_chaining_pool_batches "
+                "(analysis_id, workspace_id, commit_id, pool_fingerprint, "
+                "batch_index, batch_count, result_ref_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (*batch_key, batch_count, encoded),
+            )
+        return True
+
+    def list_chaining_pool_batches(
+        self, identity: CheckpointIdentity, pool_fingerprint: str
+    ) -> dict[int, tuple[int, StoredDataRef]]:
+        """Return only this workspace/commit/pool's durable batch outputs."""
+
+        key = self._candidate_scope_key(identity, pool_fingerprint)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT batch_index, batch_count, result_ref_json "
+                "FROM simple_chaining_pool_batches "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND pool_fingerprint = ? ORDER BY batch_index",
+                key,
+            ).fetchall()
+        result: dict[int, tuple[int, StoredDataRef]] = {}
+        for row in rows:
+            ref = StoredDataRef.model_validate_json(row["result_ref_json"])
+            self._candidate_ref_json(identity, ref)
+            result[int(row["batch_index"])] = (int(row["batch_count"]), ref)
+        return result
 
     def claim_hypothesis(
         self, identity: CheckpointIdentity, hypothesis_id: str, turn_id: str
@@ -3560,10 +3725,10 @@ class SimpleCheckpointStore:
                 not in {child["pid"] for child in expected_children}
             ):
                 return False
-            from sastsimi.providers.codex_subscription import _child_identity_matches
+            from sastsimi.providers.codex_subscription import child_identity_matches
 
             if any(
-                _child_identity_matches(
+                child_identity_matches(
                     cast(int, child["pid"]), cast(str, child["start_identity"])
                 )
                 is not False

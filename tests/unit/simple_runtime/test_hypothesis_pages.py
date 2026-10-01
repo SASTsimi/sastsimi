@@ -12,6 +12,7 @@ from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime import hypothesis_pages
 from sastsimi.simple_runtime.application import StaticBootstrapResult
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.attempt_owner import AttemptOwner, PromptByteCounts
 from sastsimi.simple_runtime.bootstrap_stages import DirectHypothesisBootstrap
 from sastsimi.simple_runtime.hypothesis_pages import SourcePageError, build_source_page
 from sastsimi.simple_runtime.models import CheckpointIdentity, StageFailure
@@ -39,6 +40,32 @@ class _Client:
             value={"hypotheses": self.hypotheses},
             prompt_digest="a" * 64,
             output_digest="b" * 64,
+        )
+
+
+class _ClientAdapter:
+    """Accept the full runtime client protocol for focused page test clients."""
+
+    def __init__(self, client: _Client) -> None:
+        self.client = client
+
+    async def call(
+        self,
+        *,
+        prompt: bytes,
+        output_schema: Mapping[str, Any],
+        timeout_ms: int,
+        agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
+    ) -> SimpleLLMCallResult | StageFailure:
+        del owner, prompt_bytes, invocation_id
+        return await self.client.call(
+            prompt=prompt,
+            output_schema=output_schema,
+            timeout_ms=timeout_ms,
+            agent_name=agent_name,
         )
 
 
@@ -89,7 +116,8 @@ def _setup(
         workspace_path=workspace,
     )
     bootstrap = DirectHypothesisBootstrap(
-        data_dir=tmp_path, client_factory=lambda _identity, _artifacts: client
+        data_dir=tmp_path,
+        client_factory=lambda _identity, _artifacts: _ClientAdapter(client),
     )
     return bootstrap, identity, static, artifacts
 
@@ -132,7 +160,7 @@ async def test_paged_hypothesis_uses_configured_finite_llm_timeout(
     )
     configured = DirectHypothesisBootstrap(
         data_dir=tmp_path,
-        client_factory=lambda _identity, _artifacts: client,
+        client_factory=lambda _identity, _artifacts: _ClientAdapter(client),
         llm_timeout_seconds=300,
     )
 
@@ -150,8 +178,7 @@ def test_source_pages_fit_budget_and_preserve_lines_across_number_growth(
     source_path = tmp_path / "app.py"
     for padding in range(1, 101):
         source = "".join(
-            f"value_{index:03d} = {'x' * padding!r}\n"
-            for index in range(1, 121)
+            f"value_{index:03d} = {'x' * padding!r}\n" for index in range(1, 121)
         )
         source_path.write_bytes(source.encode("utf-8"))
         cursor: str | None = None
@@ -280,9 +307,7 @@ def test_source_page_masks_valid_python_secret_value_expressions(
 def test_source_page_fails_closed_on_unparseable_python(
     tmp_path: Path,
 ) -> None:
-    (tmp_path / "app.py").write_bytes(
-        b"API_KEY = (\n  'SYNTHETIC_VALUE_7291'\n"
-    )
+    (tmp_path / "app.py").write_bytes(b"API_KEY = (\n  'SYNTHETIC_VALUE_7291'\n")
     with pytest.raises(SourcePageError, match="HYPOTHESIS_PAGE_SOURCE_SYNTAX"):
         build_source_page(
             workspace=tmp_path,
@@ -329,11 +354,7 @@ def test_source_page_rejects_excessive_line_count_before_parsing(
 def test_source_page_handles_deep_sensitive_assignment_target(
     tmp_path: Path,
 ) -> None:
-    source = (
-        "API_KEY"
-        + "[0]" * 1_000
-        + " = (\n  'SYNTHETIC_VALUE_7291'\n)\n"
-    )
+    source = "API_KEY" + "[0]" * 1_000 + " = (\n  'SYNTHETIC_VALUE_7291'\n)\n"
     (tmp_path / "app.py").write_bytes(source.encode("utf-8"))
     page = build_source_page(
         workspace=tmp_path,
@@ -649,8 +670,7 @@ async def test_paged_hypothesis_shrink_resets_page_feedback_but_keeps_evidence(
         "oversized_repair_request",
     }
     assert any(
-        record.get("hypotheses") == [_proposal("b.py:99")]
-        for record in prior_failures
+        record.get("hypotheses") == [_proposal("b.py:99")] for record in prior_failures
     )
 
 

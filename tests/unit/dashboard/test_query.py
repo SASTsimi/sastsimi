@@ -17,6 +17,7 @@ from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.bundle_files import PublishedBundle, parse_bundle_manifest
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.attack_surfaces import AttackSurface, SurfaceIndex
 from sastsimi.simple_runtime.candidates import normalize_candidate_page
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
@@ -643,12 +644,180 @@ def test_dashboard_candidate_counts_are_scope_bound_and_not_duplicated(
     store.save_analysis_run(
         run.model_copy(
             update={
+                "candidate_pipeline_version": 2,
+                "candidate_scope_fingerprint": "scope-1",
+            }
+        )
+    )
+    v2 = query.get_analysis("analysis-a")
+    assert v2.candidate_total_count == 3
+    assert v2.percentage_kind == "known_checkpoint_fraction"
+    assert v2.phase_counts["triage"] == {"completed": 2, "known": 3}
+
+    store.save_analysis_run(
+        run.model_copy(
+            update={
                 "candidate_pipeline_version": 1,
                 "candidate_scope_fingerprint": "different-scope",
             }
         )
     )
     assert query.get_analysis("analysis-a").candidate_total_count == 0
+
+
+def test_v2_dashboard_does_not_complete_a_partially_recorded_surface(
+    tmp_path: Path,
+) -> None:
+    seed(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = store.require_analysis_run("analysis-a")
+    identity = _static_identity()
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    bundle_ref = artifacts.put_json({"kind": "simple_static_fact_bundle"})
+    surfaces = tuple(
+        AttackSurface(
+            surface_id=f"surface-{index}",
+            type="AUTHORIZATION",
+            path=f"pkg/item_{index}.py",
+            symbol="check_access" + "x" * (1024 * 1024)
+            if index == 0
+            else "check_access",
+            line=index + 1,
+            linked_candidate_ids=(),
+            evidence_refs=(),
+            detector="AST",
+        )
+        for index in range(2)
+    )
+    index = SurfaceIndex(
+        scope_fingerprint="scope-1",
+        static_bundle_hash=bundle_ref.content_hash,
+        ast_manifest_hash="ast-hash",
+        workspace_id=identity.workspace_id,
+        commit_id=identity.commit_id,
+        candidate_inventory_hash="inventory-hash",
+        candidate_count=0,
+        surfaces=surfaces,
+        static_gaps=(),
+    )
+    index_ref = artifacts.put_json(index.to_json())
+    store.save_analysis_run(
+        run.model_copy(
+            update={
+                "candidate_pipeline_version": 2,
+                "candidate_scope_fingerprint": "scope-1",
+                "static_bundle_ref": bundle_ref,
+            }
+        )
+    )
+    store.save_attack_surface_index(
+        identity,
+        "scope-1",
+        static_bundle_hash=bundle_ref.content_hash,
+        ast_manifest_hash="ast-hash",
+        candidate_inventory_hash="inventory-hash",
+        candidate_count=0,
+        index_ref=index_ref,
+    )
+    for context_id in ("part-1", "part-2"):
+        result_ref = artifacts.put_json(
+            {
+                "kind": "simple_surface_hypothesis_result_v1",
+                "context_id": context_id,
+            }
+        )
+        store.commit_surface_exploration(
+            identity,
+            "scope-1",
+            "surface-0",
+            context_id,
+            static_bundle_hash=bundle_ref.content_hash,
+            index_hash=index_ref.content_hash,
+            context_hash=context_id,
+            source_sha256=None,
+            status="NO_HYPOTHESIS",
+            result_ref=result_ref,
+            registrations=(),
+        )
+        partial = DashboardQuery(tmp_path).get_analysis("analysis-a")
+        assert partial.phase_counts["surface"] == {
+            "recorded_contexts": 1 if context_id == "part-1" else 2,
+            "completed": 0,
+            "total": 2,
+        }
+
+    query = DashboardQuery(tmp_path)
+    detail = query.get_analysis("analysis-a")
+    assert detail.phase_counts["surface"] == {
+        "recorded_contexts": 2,
+        "completed": 0,
+        "total": 2,
+    }
+    assert query.list_analyses()[0].phase_counts["surface"] == {
+        "recorded_contexts": 2,
+        "completed": 0,
+        "total": 2,
+    }
+
+    coverage_ref = artifacts.put_json(
+        {
+            **index.to_json(),
+            "kind": "simple_attack_surface_coverage_v1",
+            "surfaces": [
+                {**surfaces[0].to_json(), "coverage_status": "COVERED"},
+                surfaces[1].to_json(),
+            ],
+            "complete": False,
+        }
+    )
+    missing_coverage_ref = index_ref.model_copy(update={"content_hash": "0" * 64})
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.HYPOTHESIS_DONE,
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(index_ref, coverage_ref, missing_coverage_ref),
+        )
+    )
+    terminal = CandidateTerminal(
+        status="PARTIAL",
+        bundle_hash=bundle_ref.content_hash,
+        scope_fingerprint="scope-1",
+        decision_counts={},
+        deep_counts={},
+        hypothesis_count=1,
+        surface_index_hash=index_ref.content_hash,
+        surface_coverage_hash=coverage_ref.content_hash,
+        surface_counts={"COVERED": 1, "UNCOVERED": 1, "INSUFFICIENT": 0},
+        producer_finished=True,
+    )
+    store.save_analysis_run(
+        store.require_analysis_run("analysis-a").model_copy(
+            update={"candidate_terminal": terminal}
+        )
+    )
+    verified = query.get_analysis("analysis-a")
+    assert verified.phase_counts["surface"]["completed"] == 1
+    assert verified.phase_counts["surface"]["covered"] == 1
+    assert verified.phase_counts["surface"]["uncovered"] == 1
+
+    store.save_analysis_run(
+        store.require_analysis_run("analysis-a").model_copy(
+            update={
+                "candidate_terminal": terminal.model_copy(
+                    update={"surface_coverage_hash": "0" * 64}
+                )
+            }
+        )
+    )
+    unverified = query.get_analysis("analysis-a")
+    assert unverified.phase_counts["surface"] == {
+        "recorded_contexts": 2,
+        "completed": 0,
+        "total": 2,
+    }
 
 
 def test_dashboard_shows_test_exclusions_and_python_only_scope(

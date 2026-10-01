@@ -209,8 +209,7 @@ class LLMCallService:
                     provider_status in {"TIMED_OUT", "CANCELLED"}
                     or (
                         provider_status == "FAILED"
-                        and result.safe_error
-                        == CODEX_PROCESS_CLEANUP_UNCONFIRMED_ERROR
+                        and result.safe_error == CODEX_PROCESS_CLEANUP_UNCONFIRMED_ERROR
                     )
                     or (
                         provider_status is None

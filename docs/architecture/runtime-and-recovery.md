@@ -18,6 +18,13 @@
 달라졌거나 불완전한 PoC attempt가 확인되면 그 지점부터 뒤 결과만 무효화합니다.
 예상하지 못한 예외는 재시도 가능한 `BLOCKED`로 저장하며 `FALSE`로 바꾸지 않습니다.
 
+신규 후보 파이프라인(v2)은 파일별 묶음의 후보 ID별 결과, 해당 가설의 단계,
+보안 표면별 문맥·탐색 결과를 범위와 입력 hash에 묶어 저장합니다. 재개 시 유효한
+완료 결과는 유지하고 누락된 후보 ID나 표면 문맥부터 이어갑니다. 기존 v1의
+후보별 기록·자유 탐색 페이지 cursor는 다른 뜻으로 해석하지 않고 이전 경로로
+재개합니다. `HYPOTHESIS_DONE`은 v2에서 모든 가설 공급원과 등록된 자식 검증,
+최종 Chaining 확인을 마친 시점이며 자식 실행의 시작 조건이 아닙니다.
+
 재시도 가능한 오류는 LLM 복구 결정으로 도구 재시도, 생성 입력 재작성 또는 일회용
 Docker 환경 재구성을 최대 3회 수행합니다. 각 결정과 변경은 artifact와 checkpoint에
 남고 `status`와 대시보드에는 현재 복구 시도 횟수가 표시됩니다. 한 계보가 소진되면
@@ -34,6 +41,18 @@ Docker 환경 재구성을 최대 3회 수행합니다. 각 결정과 변경은 
 동시 재개 요청은 두 번째 Agent·PoC 작업을 실행하지 않고 현재 상태와
 `ANALYSIS_ALREADY_RUNNING` 이유를 돌려줍니다. 잠금 파일은 남겨 두되 잠금 자체는
 프로세스 종료 시 해제되므로 강제 종료 뒤에도 정상적인 `resume`이 가능합니다.
+v2는 자식 ID를 원자적으로 claim하고 한 실행 턴에 실패한 자식을 묶음마다 다시
+시작하지 않습니다. 완료된 다른 자식의 근거는 보존됩니다. 현재 자식 검증과
+Codex CLI의 실제 호출은 안전상 순차 처리하며, OpenAI API의 유료 호출도 분석별
+예산 검사부터 시도 기록까지 하나씩 처리합니다.
+
+LLM 시도 원장에는 분석·단계·후보/가설/표면 소유자와 재시도 연결, 공급자가 실제로
+보고한 토큰·비용 및 분류별 프롬프트 바이트 수를 구분해 기록합니다. 바이트 수는
+토큰이나 청구액의 추정치가 아닙니다. 토큰·비용 한도는 호출 전에 확인하므로
+마지막 호출이 한도를 넘길 수 있고, 공급자가 보고하지 않은 사용량은 0으로
+처리하지 않습니다. 수치 한도 중단은 성공한 checkpoint를 지우지 않고 `PAUSED`로
+남기며, 한도를 조정한 뒤 `resume`할 수 있습니다. 사용량 자체가 미확인인
+호출은 한도 숫자만 올려도 안전한 재호출이 보장되지 않습니다.
 
 Technical Gate의 `REVISE`는 같은 Gate만 반복 호출하지 않습니다. 저장소가
 Gate 피드백과 기존 실행 근거를 exact reference로 보존하면서 해당 가설의
@@ -54,6 +73,7 @@ Gate 결정은 최대 세 번입니다. `ACCEPT`는 이후 단계로 진행하�
 - 실행기: `src/sastsimi/simple_runtime/runner.py`
 - checkpoint 저장: `src/sastsimi/simple_runtime/store.py`
 - 분석 단위 제어: `src/sastsimi/simple_runtime/application.py`
+- 분석별 LLM 예산·호출 원장: `src/sastsimi/simple_runtime/call_queue.py`
 - 이전 실행 자료 연결: `src/sastsimi/simple_runtime/migration.py`
 - 진행률 계산: `src/sastsimi/progress/projector.py`
 

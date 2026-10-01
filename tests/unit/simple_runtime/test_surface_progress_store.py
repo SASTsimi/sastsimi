@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 
@@ -169,45 +170,55 @@ def test_surface_part_conflict_rejects_changed_binding_or_registration(
         proposal_ref,
         _pending(identity, "hypothesis-1", proposal_ref, context_ref),
     )
-    kwargs = dict(
-        static_bundle_hash="b" * 64,
-        index_hash="c" * 64,
-        context_hash=context_ref.content_hash,
-        source_sha256="d" * 64,
-        status="HYPOTHESES",
-        result_ref=result_ref,
-        registrations=(registration,),
-    )
-    assert store.commit_surface_exploration(
-        identity, "scope-1", "surface-1", "context-1", **kwargs
-    )
 
-    changes = (
-        {"static_bundle_hash": "e" * 64},
-        {"index_hash": "e" * 64},
-        {"context_hash": "e" * 64},
-        {"source_sha256": None},
-        {"status": "NO_HYPOTHESIS", "registrations": ()},
-        {"result_ref": different_result_ref},
-        {
-            "registrations": (
+    def commit(
+        *,
+        static_bundle_hash: str = "b" * 64,
+        index_hash: str = "c" * 64,
+        context_hash: str = context_ref.content_hash,
+        source_sha256: str | None = "d" * 64,
+        status: str = "HYPOTHESES",
+        result_ref: StoredDataRef = result_ref,
+        registrations: tuple[tuple[str, StoredDataRef, StageCheckpoint], ...] = (
+            registration,
+        ),
+    ) -> bool:
+        return store.commit_surface_exploration(
+            identity,
+            "scope-1",
+            "surface-1",
+            "context-1",
+            static_bundle_hash=static_bundle_hash,
+            index_hash=index_hash,
+            context_hash=context_hash,
+            source_sha256=source_sha256,
+            status=status,
+            result_ref=result_ref,
+            registrations=registrations,
+        )
+
+    assert commit()
+
+    changes: tuple[Callable[[], bool], ...] = (
+        lambda: commit(static_bundle_hash="e" * 64),
+        lambda: commit(index_hash="e" * 64),
+        lambda: commit(context_hash="e" * 64),
+        lambda: commit(source_sha256=None),
+        lambda: commit(status="NO_HYPOTHESIS", registrations=()),
+        lambda: commit(result_ref=different_result_ref),
+        lambda: commit(
+            registrations=(
                 (
                     "hypothesis-2",
                     other_proposal_ref,
                     _pending(identity, "hypothesis-2", other_proposal_ref, context_ref),
                 ),
             )
-        },
+        ),
     )
-    for change in changes:
+    for commit_changed in changes:
         with pytest.raises(ValueError, match="SURFACE_EXPLORATION_CONFLICT"):
-            store.commit_surface_exploration(
-                identity,
-                "scope-1",
-                "surface-1",
-                "context-1",
-                **(kwargs | change),
-            )
+            commit_changed()
     assert not store.has_hypothesis(identity, "hypothesis-2")
     assert len(store.list_surface_exploration_progress(identity, "scope-1")) == 1
 

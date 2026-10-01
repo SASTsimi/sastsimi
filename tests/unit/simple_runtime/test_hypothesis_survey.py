@@ -9,6 +9,7 @@ import pytest
 
 from sastsimi.simple_runtime.application import StaticBootstrapResult
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.attempt_owner import AttemptOwner, PromptByteCounts
 from sastsimi.simple_runtime.bootstrap_stages import DirectHypothesisBootstrap
 from sastsimi.simple_runtime.models import CheckpointIdentity, StageFailure
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
@@ -49,8 +50,11 @@ class _SurveyClient:
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult | StageFailure:
-        del output_schema, timeout_ms
+        del output_schema, timeout_ms, owner, prompt_bytes, invocation_id
         if agent_name == "hypothesis_survey":
             self.openings += 1
             return _answer(

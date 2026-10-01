@@ -10,6 +10,7 @@ import pytest
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.ast_facts import collect_python_ast
 from sastsimi.simple_runtime.candidate_batches import (
+    CandidateBatch,
     CandidateContextOverflow,
     iter_candidate_batches,
 )
@@ -121,7 +122,7 @@ def test_context_overflow_splits_without_loss(tmp_path: Path) -> None:
         tmp_path, count=8, excerpt_size=600
     )
 
-    def build() -> tuple[object, ...]:
+    def build() -> tuple[CandidateBatch, ...]:
         return tuple(
             iter_candidate_batches(
                 store,

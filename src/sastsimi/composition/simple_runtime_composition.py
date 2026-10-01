@@ -28,7 +28,10 @@ from sastsimi.policy.adapters.official_http import (
 )
 from sastsimi.ports.public_commands import PublicCommandApplication
 from sastsimi.progress.models import ProgressSnapshot
-from sastsimi.progress.projector import ProgressProjector
+from sastsimi.progress.projector import (
+    ProgressProjector,
+    verified_surface_coverage_counts,
+)
 from sastsimi.providers.codex_subscription import CodexCliProcessRunner
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
@@ -42,6 +45,7 @@ from sastsimi.simple_runtime.application import (
     StaticBootstrapResult,
 )
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.attack_surfaces import surface_index_from_json
 from sastsimi.simple_runtime.bootstrap_stages import (
     DirectHypothesisBootstrap,
     DirectStaticBootstrap,
@@ -88,6 +92,8 @@ from sastsimi.simple_runtime.stages import build_stage_handlers
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 from .simple_process import LocalProcessExecutor
+
+_MAX_SURFACE_PROGRESS_BYTES = 64 * 1024 * 1024
 
 
 def _codex_home() -> Path:
@@ -539,6 +545,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         )
         scope = run.candidate_scope_fingerprint
         candidate_mode = run.candidate_pipeline_version in {1, 2}
+        surface_counts, surface_index_hash = self._surface_metrics(run, identity, scope)
         return ProgressProjector(self._store).snapshot(
             run.analysis_id,
             static_disposition=run.static_disposition,
@@ -563,7 +570,89 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                 else None
             ),
             candidate_scope_fingerprint=scope if candidate_mode else None,
+            surface_counts=surface_counts,
+            surface_index_hash=surface_index_hash,
         )
+
+    def _surface_metrics(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        scope: str | None,
+    ) -> tuple[dict[str, int] | None, str | None]:
+        if (
+            run.candidate_pipeline_version != 2
+            or scope is None
+            or run.static_bundle_ref is None
+        ):
+            return None, None
+        try:
+            record = self._store.get_attack_surface_index(identity, scope)
+            if record is None:
+                return None, None
+            repository = SimpleArtifactRepository(self._config.data_dir, identity)
+            raw = repository.read_bounded(record.index_ref, _MAX_SURFACE_PROGRESS_BYTES)
+            index = surface_index_from_json(json.loads(raw))
+            if (
+                record.static_bundle_hash != run.static_bundle_ref.content_hash
+                or index.scope_fingerprint != scope
+                or index.workspace_id != identity.workspace_id
+                or index.commit_id != identity.commit_id
+                or index.static_bundle_hash != record.static_bundle_hash
+                or index.ast_manifest_hash != record.ast_manifest_hash
+                or index.candidate_inventory_hash != record.candidate_inventory_hash
+                or index.candidate_count != record.candidate_count
+            ):
+                return None, None
+            progress = self._store.list_surface_exploration_progress(identity, scope)
+        except (OSError, ValueError, sqlite3.Error):
+            return None, None
+        indexed = {surface.surface_id for surface in index.surfaces}
+        recorded_contexts = sum(
+            1
+            for item in progress.values()
+            if item.surface_id in indexed
+            and item.static_bundle_hash == record.static_bundle_hash
+            and item.index_hash == record.index_ref.content_hash
+        )
+        counts = {"TOTAL": len(indexed), "CONTEXT_RECORDS": recorded_contexts}
+        terminal = run.candidate_terminal
+        if (
+            terminal is not None
+            and terminal.surface_index_hash == record.index_ref.content_hash
+            and terminal.surface_coverage_hash
+        ):
+            try:
+                coverage_ref = next(
+                    (
+                        ref
+                        for checkpoint in self._store.list_checkpoints(run.analysis_id)
+                        if checkpoint.identity == identity
+                        and checkpoint.stage is SimpleStage.HYPOTHESIS_DONE
+                        and checkpoint.status is StageStatus.SUCCEEDED
+                        for ref in checkpoint.output_refs
+                        if ref.content_hash == terminal.surface_coverage_hash
+                    ),
+                    None,
+                )
+                verified = (
+                    verified_surface_coverage_counts(
+                        json.loads(
+                            repository.read_bounded(
+                                coverage_ref, _MAX_SURFACE_PROGRESS_BYTES
+                            )
+                        ),
+                        index,
+                        terminal,
+                    )
+                    if coverage_ref is not None
+                    else None
+                )
+            except (OSError, ValueError, sqlite3.Error):
+                verified = None
+            if verified is not None:
+                counts.update(verified)
+        return counts, record.index_ref.content_hash
 
     def status(self, analysis_id: str) -> dict[str, object]:
         exact = self._display.resolve(analysis_id)
@@ -613,6 +702,8 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             "exact_analysis_id": exact,
             "status": snapshot.status,
             "percent": snapshot.percent,
+            "percentage_kind": snapshot.percentage_kind,
+            "phase_counts": snapshot.phase_counts,
             "completed_units": snapshot.completed_units,
             "known_units": snapshot.known_units,
             "current_stage": snapshot.current_stage,

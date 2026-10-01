@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.application import HypothesisSeed
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
@@ -17,7 +18,9 @@ from sastsimi.simple_runtime.models import (
 from tests.unit.simple_runtime.test_candidate_batches import _fixture
 
 
-def _pending(identity: CheckpointIdentity, seed: HypothesisSeed, context_ref: object):
+def _pending(
+    identity: CheckpointIdentity, seed: HypothesisSeed, context_ref: StoredDataRef
+) -> StageCheckpoint:
     child = identity.model_copy(update={"hypothesis_id": seed.hypothesis_id})
     inputs = (seed.proposal_ref, context_ref)
     return StageCheckpoint(

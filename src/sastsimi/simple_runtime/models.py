@@ -70,7 +70,7 @@ class CheckpointIdentity(ContractModel):
 
 
 class CandidateTerminal(ContractModel):
-    """Durable proof that candidate v1 finished all known downstream work."""
+    """Durable proof that a candidate pipeline finished known downstream work."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -80,6 +80,13 @@ class CandidateTerminal(ContractModel):
     decision_counts: dict[str, int]
     deep_counts: dict[str, int]
     hypothesis_count: int = Field(ge=0)
+    surface_index_hash: str | None = None
+    surface_coverage_hash: str | None = None
+    surface_counts: dict[str, int] = Field(default_factory=dict)
+    producer_finished: bool = False
+    chaining_pool_fingerprint: str | None = None
+    chaining_batch_count: int | None = Field(default=None, ge=0)
+    pending_child_count: int = Field(default=0, ge=0)
 
 
 class SimpleAnalysisRun(ContractModel):

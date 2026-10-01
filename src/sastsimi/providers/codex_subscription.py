@@ -156,11 +156,16 @@ def _child_start_identity(pid: int) -> str | None:
     return _child_identity_observation(pid)[1]
 
 
-def _child_identity_matches(pid: int, start_identity: str) -> bool | None:
+def child_identity_matches(pid: int, start_identity: str) -> bool | None:
+    """Check the exact child process identity; unknown observations stay unknown."""
     status, observed = _child_identity_observation(pid)
     if status == "UNKNOWN":
         return None
     return status == "RUNNING" and observed == start_identity
+
+
+# Keep the historical module-local name used by provider boundary tests.
+_child_identity_matches = child_identity_matches
 
 
 def _invalid_process_output(

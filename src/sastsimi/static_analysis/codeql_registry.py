@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import stat
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -131,10 +132,22 @@ def publish_codeql_database(
         ):
             raise ValueError("CODEQL_DATABASE_CHANGED_DURING_PUBLICATION")
         _write_exclusive(staging / _MANIFEST_NAME, canonical_bytes(descriptor))
-        _require_active(cancellation_requested)
-        if target.exists():
-            raise FileExistsError("CODEQL_DATABASE_ALREADY_PUBLISHED")
-        os.rename(staging, target)
+        for attempt in range(3):
+            _require_active(cancellation_requested)
+            if target.exists():
+                raise FileExistsError("CODEQL_DATABASE_ALREADY_PUBLISHED")
+            try:
+                os.rename(staging, target)
+                break
+            except OSError as error:
+                if os.name != "nt" or getattr(error, "winerror", None) not in {5, 32}:
+                    raise
+                if target.exists():
+                    raise FileExistsError("CODEQL_DATABASE_ALREADY_PUBLISHED") from None
+                _require_active(cancellation_requested)
+                if attempt == 2:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
         return _validated_entry(target, identity)
     except FileExistsError:
         raise FileExistsError("CODEQL_DATABASE_ALREADY_PUBLISHED") from None

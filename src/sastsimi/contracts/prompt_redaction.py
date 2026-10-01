@@ -116,9 +116,8 @@ def _replace_string(
         (_ENV_CREDENTIAL_ASSIGNMENT, "CREDENTIAL"),
         (_CREDENTIAL_URI, "CREDENTIAL"),
     ):
-        def replace_current(
-            match: re.Match[str], category: str = category
-        ) -> str:
+
+        def replace_current(match: re.Match[str], category: str = category) -> str:
             return replacement(match, category)
 
         result, count = pattern.subn(replace_current, result)

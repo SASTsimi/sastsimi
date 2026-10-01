@@ -60,6 +60,63 @@ def _emit_static_coverage(stream: TextIO, data: dict[str, object]) -> None:
             stream.write(f"  … 외 {omitted}개\n")
 
 
+def _emit_v2_phase_counts(stream: TextIO, data: dict[str, object]) -> None:
+    if data.get("percentage_kind") != "known_checkpoint_fraction":
+        return
+    stream.write(
+        "이 비율은 현재 알려진 checkpoint 기준이며 비용·시간·저장소 전체 커버리지를 "
+        "뜻하지 않습니다.\n"
+    )
+    phases = data.get("phase_counts")
+    if not isinstance(phases, dict):
+        stream.write("보안 surface: coverage 확인 불가\n")
+        return
+    for key, label in (
+        ("static", "정적 단계"),
+        ("triage", "후보 선별"),
+        ("candidate_deep", "후보 심층 처리"),
+        ("verification", "가설 검증"),
+    ):
+        values = phases.get(key)
+        if (
+            isinstance(values, dict)
+            and type(values.get("completed")) is int
+            and type(values.get("known")) is int
+        ):
+            stream.write(f"{label}: {values['completed']}/{values['known']}\n")
+    poc = phases.get("poc")
+    if (
+        isinstance(poc, dict)
+        and type(poc.get("attempted")) is int
+        and type(poc.get("completed")) is int
+    ):
+        stream.write(f"PoC 시도: {poc['attempted']}건 · 완료 {poc['completed']}건\n")
+    surface = phases.get("surface")
+    if not isinstance(surface, dict) or type(surface.get("total")) is not int:
+        stream.write("보안 surface: coverage 확인 불가\n")
+        return
+    total = surface["total"]
+    if all(
+        type(surface.get(key)) is int
+        for key in ("covered", "uncovered", "insufficient")
+    ):
+        stream.write(
+            f"보안 surface: 검토 근거 충족 {surface['covered']}/{total} · "
+            f"미검토 {surface['uncovered']} · 근거 부족 {surface['insufficient']}\n"
+        )
+        if surface["uncovered"] or surface["insufficient"]:
+            stream.write("부분 분석: 보안 surface 검토 범위가 남아 있습니다.\n")
+    else:
+        recorded_contexts = surface.get("recorded_contexts")
+        if type(recorded_contexts) is int:
+            stream.write(
+                f"보안 surface: 저장된 context {recorded_contexts}건 · "
+                f"인덱스 {total}개 · coverage 확인 전\n"
+            )
+        else:
+            stream.write("보안 surface: coverage 확인 불가\n")
+
+
 def emit_public(
     output_format: str,
     stream: TextIO,
@@ -85,10 +142,16 @@ def emit_public(
     if "status" in data:
         stream.write(f"상태: {data['status']}\n")
     if "percent" in data:
-        stream.write(f"진행률: {data['percent']}%\n")
+        label = (
+            "현재 알려진 checkpoint 비율"
+            if data.get("percentage_kind") == "known_checkpoint_fraction"
+            else "진행률"
+        )
+        stream.write(f"{label}: {data['percent']}%\n")
     if "current_stage" in data:
         stream.write(f"현재 단계: {data['current_stage']}\n")
     _emit_static_coverage(stream, data)
+    _emit_v2_phase_counts(stream, data)
     candidate_total = data.get("candidate_total_count")
     if type(candidate_total) is int:
         raw_decisions = data.get("candidate_decision_counts")

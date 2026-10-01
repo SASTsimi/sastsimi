@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from sastsimi.simple_runtime.application import (
-    HypothesisSeed,
-    SimpleAnalysisRequest,
-)
-from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
-from sastsimi.simple_runtime.bootstrap_stages import (
     BatchProposalResult,
     CandidateProposalOutcome,
+    HypothesisBootstrap,
+    HypothesisSeed,
+    SimpleAnalysisRequest,
+    StaticBootstrapResult,
 )
+from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.candidate_batches import CandidateBatch
 from sastsimi.simple_runtime.models import (
     STAGE_VERSION,
     CheckpointIdentity,
@@ -24,7 +26,7 @@ from sastsimi.simple_runtime.models import (
     StageStatus,
     input_reference_hash,
 )
-from sastsimi.simple_runtime.runner import RunOutcome
+from sastsimi.simple_runtime.runner import RunOutcome, SimpleRuntimeRunner
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from tests.unit.simple_runtime.test_candidate_batches import _fixture
 from tests.unit.simple_runtime.test_candidate_pipeline import _setup
@@ -39,8 +41,8 @@ class _SeedBatches:
     async def propose_batch(
         self,
         identity: CheckpointIdentity,
-        _static: object,
-        batch: object,
+        _static: StaticBootstrapResult,
+        batch: CandidateBatch,
         *,
         requested_ids: tuple[str, ...] | None = None,
     ) -> BatchProposalResult:
@@ -132,8 +134,10 @@ async def test_streaming_starts_verification_before_next_batch(tmp_path: Path) -
     )
     events: list[str] = []
     producer = _SeedBatches(tmp_path / "data", events)
-    app._candidate_hypotheses = producer
-    app._runner_factory = lambda *_: _RecordingRunner(store, events)
+    app._candidate_hypotheses = cast(HypothesisBootstrap, producer)
+    app._runner_factory = lambda *_: cast(
+        SimpleRuntimeRunner, _RecordingRunner(store, events)
+    )
 
     outcome = await app.analyze(
         SimpleAnalysisRequest(
@@ -166,8 +170,10 @@ async def test_blocked_child_is_attempted_once_across_batches(tmp_path: Path) ->
     )
     events: list[str] = []
     producer = _SeedBatches(tmp_path / "data", events)
-    app._candidate_hypotheses = producer
-    app._runner_factory = lambda *_: _RecordingRunner(store, events, blocked=True)
+    app._candidate_hypotheses = cast(HypothesisBootstrap, producer)
+    app._runner_factory = lambda *_: cast(
+        SimpleRuntimeRunner, _RecordingRunner(store, events, blocked=True)
+    )
 
     outcome = await app.analyze(
         SimpleAnalysisRequest(
@@ -201,8 +207,8 @@ async def test_partial_batch_verifies_committed_sibling_before_resume(
         async def propose_batch(
             self,
             identity: CheckpointIdentity,
-            static: object,
-            batch: object,
+            static: StaticBootstrapResult,
+            batch: CandidateBatch,
             *,
             requested_ids: tuple[str, ...] | None = None,
         ) -> BatchProposalResult:
@@ -224,8 +230,10 @@ async def test_partial_batch_verifies_committed_sibling_before_resume(
             )
 
     producer = PartialProducer(tmp_path / "data", events)
-    app._candidate_hypotheses = producer
-    app._runner_factory = lambda *_: _RecordingRunner(store, events)
+    app._candidate_hypotheses = cast(HypothesisBootstrap, producer)
+    app._runner_factory = lambda *_: cast(
+        SimpleRuntimeRunner, _RecordingRunner(store, events)
+    )
     first = await app.analyze(
         SimpleAnalysisRequest(
             data_dir=tmp_path / "data",
@@ -239,7 +247,8 @@ async def test_partial_batch_verifies_committed_sibling_before_resume(
     assert len(store.list_candidate_batch_outcomes(first.identity, "scope-1")) == 1
 
     second = await app.resume("analysis-1")
-    assert second.status == "PAUSED"
+    assert second.status == "BLOCKED"
+    assert second.error_code == "HYPOTHESIS_SURFACE_UNAVAILABLE"
     assert len(store.list_candidate_batch_outcomes(first.identity, "scope-1")) == 17
     assert events.count(events[1]) == 1
 
@@ -258,8 +267,10 @@ async def test_backpressure_stops_production_with_pending_children(
     app._max_pending_candidate_children = 64
     events: list[str] = []
     producer = _SeedBatches(tmp_path / "data", events)
-    app._candidate_hypotheses = producer
-    app._runner_factory = lambda *_: _RecordingRunner(store, events, blocked=True)
+    app._candidate_hypotheses = cast(HypothesisBootstrap, producer)
+    app._runner_factory = lambda *_: cast(
+        SimpleRuntimeRunner, _RecordingRunner(store, events, blocked=True)
+    )
 
     outcome = await app.analyze(
         SimpleAnalysisRequest(
@@ -275,9 +286,12 @@ async def test_backpressure_stops_production_with_pending_children(
     assert store.hypothesis_count(outcome.identity) <= 64
     assert len(store.list_candidate_batch_outcomes(outcome.identity, "scope-1")) < 65
 
-    app._runner_factory = lambda *_: _RecordingRunner(store, events)
+    app._runner_factory = lambda *_: cast(
+        SimpleRuntimeRunner, _RecordingRunner(store, events)
+    )
     resumed = await app.resume("analysis-1")
-    assert resumed.status == "PAUSED"
+    assert resumed.status == "BLOCKED"
+    assert resumed.error_code == "HYPOTHESIS_SURFACE_UNAVAILABLE"
     assert producer.calls == 5
     assert len(store.list_candidate_batch_outcomes(outcome.identity, "scope-1")) == 65
 

@@ -23,6 +23,10 @@ CLI
 - 분석 단위: `src/sastsimi/simple_runtime/application.py`
 - 정적 부트스트랩과 파일별 AST 사실·manifest: `src/sastsimi/simple_runtime/bootstrap_stages.py`,
   `src/sastsimi/simple_runtime/ast_facts.py`
+- v2 파일별 후보 묶음·공유 문맥: `src/sastsimi/simple_runtime/candidate_batches.py`,
+  `src/sastsimi/simple_runtime/file_context.py`
+- 보안 표면 인덱스·표적 탐색 문맥: `src/sastsimi/simple_runtime/attack_surfaces.py`,
+  `src/sastsimi/simple_runtime/surface_contexts.py`
 - 재개 실행기: `src/sastsimi/simple_runtime/runner.py`
 - stage 구현: `src/sastsimi/simple_runtime/stages.py`
 - 상태·계약: `src/sastsimi/simple_runtime/models.py`
@@ -31,7 +35,8 @@ CLI
 ## 기능별 위치
 
 - Repository Loader와 정적 도구: `src/sastsimi/static_analysis`
-- LLM 연결: `src/sastsimi/simple_runtime/provider.py`, `src/sastsimi/providers`
+- LLM 연결·분석별 호출 예산: `src/sastsimi/simple_runtime/provider.py`,
+  `src/sastsimi/simple_runtime/call_queue.py`, `src/sastsimi/providers`
 - PoC와 Docker: `src/sastsimi/simple_runtime/poc.py`, `portable_docker.py`,
   `src/sastsimi/sandbox`
 - Chaining: `src/sastsimi/simple_runtime/chaining.py`

@@ -16,7 +16,10 @@ from sastsimi.simple_runtime.attack_surfaces import (
     SurfaceIndex,
 )
 from sastsimi.simple_runtime.models import CheckpointIdentity
-from sastsimi.simple_runtime.surface_contexts import iter_uncovered_surface_contexts
+from sastsimi.simple_runtime.surface_contexts import (
+    SurfaceContext,
+    iter_uncovered_surface_contexts,
+)
 
 
 def _setup(
@@ -86,7 +89,7 @@ def _contexts(
     ],
     *,
     budget_bytes: int = 4096,
-) -> tuple[object, ...]:
+) -> tuple[SurfaceContext, ...]:
     index, coverage, artifacts, ast_summary, workspace = fixture
     return tuple(
         iter_uncovered_surface_contexts(
@@ -175,7 +178,11 @@ def test_single_line_exceeding_budget_is_explicitly_unavailable(tmp_path: Path) 
     assert all(
         item.source_unavailable_reason == "SOURCE_LINE_TOO_LARGE" for item in contexts
     )
-    assert any(item.omitted_source_line_count >= 1 for item in contexts)
+    assert any(
+        item.omitted_source_line_count is not None
+        and item.omitted_source_line_count >= 1
+        for item in contexts
+    )
 
 
 def test_surface_location_outside_readable_file_is_explicit_gap(tmp_path: Path) -> None:

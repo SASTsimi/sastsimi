@@ -17,7 +17,10 @@ from sastsimi.contracts.prompt_redaction import (
 )
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.observability.agent_activity import AgentActivityEvent
-from sastsimi.progress.projector import ProgressProjector
+from sastsimi.progress.projector import (
+    ProgressProjector,
+    verified_surface_coverage_counts,
+)
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.bundle_files import (
     MAX_BUNDLE_FILE_BYTES,
@@ -26,6 +29,7 @@ from sastsimi.reporting.bundle_files import (
 )
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.attack_surfaces import surface_index_from_json
 from sastsimi.simple_runtime.gate_guard import technical_gate_accepted
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
@@ -64,6 +68,7 @@ _DISPLAY_ID = re.compile(r"F-[0-9]{3,}\Z")
 _RULE_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_ARTIFACT_BYTES = 1024 * 1024
+_MAX_SURFACE_PROGRESS_BYTES = 64 * 1024 * 1024
 _MAX_ARTIFACTS = 512
 _MAX_PROJECTED_ARTIFACT_BYTES = 64 * 1024 * 1024
 _STALE_SECONDS = 30
@@ -1018,6 +1023,7 @@ class DashboardQuery:
         candidate_counts, candidate_deep_counts, registered_hypotheses = (
             self._candidate_metrics(run)
         )
+        surface_counts, surface_index_hash = self._surface_metrics(run, values)
         usage = self._usage_summary(analysis_id)
         hypotheses = tuple(
             self._project_hypothesis(
@@ -1050,6 +1056,8 @@ class DashboardQuery:
             candidate_scope_fingerprint=(
                 run.candidate_scope_fingerprint if run else None
             ),
+            surface_counts=surface_counts,
+            surface_index_hash=surface_index_hash,
         )
         lease_inactive = analysis_run_lease_active(self._data_dir, analysis_id) is False
         if lease_inactive and self._unresolved_codex_call(analysis_id):
@@ -1061,7 +1069,7 @@ class DashboardQuery:
             )
         elif (
             run is not None
-            and run.candidate_pipeline_version == 1
+            and run.candidate_pipeline_version in {1, 2}
             and progress.status == "RUNNING"
             and lease_inactive
         ):
@@ -1145,6 +1153,8 @@ class DashboardQuery:
                 else None
             ),
             progress_percent=progress.percent,
+            percentage_kind=progress.percentage_kind,
+            phase_counts=progress.phase_counts,
             completed_units=progress.completed_units,
             known_units=progress.known_units,
             admitted_primitive_count=sum(
@@ -1833,7 +1843,7 @@ class DashboardQuery:
     ) -> tuple[dict[str, int] | None, dict[str, int] | None, int | None]:
         if (
             run is None
-            or run.candidate_pipeline_version != 1
+            or run.candidate_pipeline_version not in {1, 2}
             or not run.candidate_scope_fingerprint
         ):
             return None, None, None
@@ -1879,6 +1889,109 @@ class DashboardQuery:
                 ).fetchone()
                 registered = int(row[0]) if row is not None else 0
         return decisions, deep, registered
+
+    def _surface_metrics(
+        self, run: SimpleAnalysisRun | None, checkpoints: list[StageCheckpoint]
+    ) -> tuple[dict[str, int] | None, str | None]:
+        if (
+            run is None
+            or run.candidate_pipeline_version != 2
+            or not run.candidate_scope_fingerprint
+            or run.static_bundle_ref is None
+        ):
+            return None, None
+        key = (
+            run.analysis_id,
+            run.workspace_id,
+            run.commit_id,
+            run.candidate_scope_fingerprint,
+        )
+        with self._connect() as connection:
+            if not self._table_exists(connection, "simple_attack_surface_indexes"):
+                return None, None
+            row = connection.execute(
+                "SELECT static_bundle_hash, ast_manifest_hash, "
+                "candidate_inventory_hash, candidate_count, index_ref_json "
+                "FROM simple_attack_surface_indexes WHERE analysis_id = ? "
+                "AND workspace_id = ? AND commit_id = ? AND scope_fingerprint = ?",
+                key,
+            ).fetchone()
+            if row is None:
+                return None, None
+            try:
+                index_ref = StoredDataRef.model_validate_json(row["index_ref_json"])
+                identity = CheckpointIdentity(
+                    analysis_id=run.analysis_id,
+                    workspace_id=run.workspace_id,
+                    commit_id=run.commit_id,
+                    hypothesis_id=None,
+                )
+                repository = SimpleArtifactRepository(self._data_dir, identity)
+                raw = repository.read_bounded(index_ref, _MAX_SURFACE_PROGRESS_BYTES)
+                index = surface_index_from_json(json.loads(raw))
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                return None, None
+            if (
+                index_ref.workspace_id.root != run.workspace_id
+                or index_ref.commit_id.root != run.commit_id
+                or row["static_bundle_hash"] != run.static_bundle_ref.content_hash
+                or index.scope_fingerprint != run.candidate_scope_fingerprint
+                or index.workspace_id != run.workspace_id
+                or index.commit_id != run.commit_id
+                or index.static_bundle_hash != row["static_bundle_hash"]
+                or index.ast_manifest_hash != row["ast_manifest_hash"]
+                or index.candidate_inventory_hash != row["candidate_inventory_hash"]
+                or index.candidate_count != row["candidate_count"]
+            ):
+                return None, None
+            rows = (
+                connection.execute(
+                    "SELECT surface_id, context_id FROM "
+                    "simple_surface_exploration_progress "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND scope_fingerprint = ? AND static_bundle_hash = ? "
+                    "AND index_hash = ?",
+                    (*key, row["static_bundle_hash"], index_ref.content_hash),
+                ).fetchall()
+                if self._table_exists(connection, "simple_surface_exploration_progress")
+                else ()
+            )
+        indexed = {surface.surface_id for surface in index.surfaces}
+        recorded_contexts = sum(str(item["surface_id"]) in indexed for item in rows)
+        counts = {"TOTAL": len(indexed), "CONTEXT_RECORDS": recorded_contexts}
+        terminal = run.candidate_terminal
+        if (
+            terminal is not None
+            and terminal.surface_index_hash == index_ref.content_hash
+            and terminal.surface_coverage_hash
+        ):
+            coverage_ref = next(
+                (
+                    ref
+                    for checkpoint in checkpoints
+                    if checkpoint.identity.hypothesis_id is None
+                    and checkpoint.stage is SimpleStage.HYPOTHESIS_DONE
+                    and checkpoint.status is StageStatus.SUCCEEDED
+                    for ref in checkpoint.output_refs
+                    if ref.content_hash == terminal.surface_coverage_hash
+                ),
+                None,
+            )
+            if coverage_ref is not None:
+                try:
+                    coverage = json.loads(
+                        repository.read_bounded(
+                            coverage_ref, _MAX_SURFACE_PROGRESS_BYTES
+                        )
+                    )
+                    verified = verified_surface_coverage_counts(
+                        coverage, index, terminal
+                    )
+                except (OSError, ValueError, TypeError, sqlite3.Error):
+                    verified = None
+                if verified is not None:
+                    counts.update(verified)
+        return counts, index_ref.content_hash
 
     def _unresolved_codex_call(self, analysis_id: str) -> bool:
         with self._connect() as connection:

@@ -22,6 +22,7 @@ from sastsimi.simple_runtime.application import (
     StaticBootstrapResult,
 )
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.attempt_owner import AttemptOwner, PromptByteCounts
 from sastsimi.simple_runtime.bootstrap_stages import (
     DirectHypothesisBootstrap,
     DirectStaticBootstrap,
@@ -1399,8 +1400,12 @@ class _Client:
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult:
-        del prompt, output_schema, timeout_ms, agent_name
+        del prompt, output_schema, timeout_ms, agent_name, owner, prompt_bytes
+        del invocation_id
         return SimpleLLMCallResult(
             value={
                 "hypotheses": [

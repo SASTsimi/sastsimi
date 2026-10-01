@@ -6,15 +6,18 @@ import json
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import pytest
+from pydantic import JsonValue
 
 from sastsimi.simple_runtime.application import StaticBootstrapResult
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.ast_facts import collect_python_ast
+from sastsimi.simple_runtime.attempt_owner import AttemptOwner, PromptByteCounts
 from sastsimi.simple_runtime.bootstrap_stages import DirectHypothesisBootstrap
 from sastsimi.simple_runtime.candidate_batches import (
+    CandidateBatch,
     candidate_batch_id,
     iter_candidate_batches,
 )
@@ -29,8 +32,8 @@ def _row(
     status: str,
     *,
     reason: str = "reviewed code evidence",
-    hypotheses: list[dict[str, object]] | None = None,
-) -> dict[str, object]:
+    hypotheses: list[JsonValue] | None = None,
+) -> dict[str, JsonValue]:
     return {
         "candidate_id": candidate_id,
         "status": status,
@@ -43,7 +46,7 @@ def _hypothesis(
     *,
     attacker_control: str = "POSSIBLE",
     controls: str = "UNKNOWN",
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     return {
         "title": "Potential unsafe evaluation",
         "vulnerability_type": "CODE_INJECTION",
@@ -64,10 +67,19 @@ def _hypothesis(
     }
 
 
+class _Request(TypedDict):
+    prompt: bytes
+    schema: Mapping[str, Any]
+    timeout_ms: int
+    agent_name: str
+    owner: AttemptOwner | None
+    prompt_bytes: PromptByteCounts | None
+
+
 class _Client:
-    def __init__(self, responses: list[list[dict[str, object]]]) -> None:
+    def __init__(self, responses: list[list[JsonValue]]) -> None:
         self.responses = responses
-        self.requests: list[dict[str, object]] = []
+        self.requests: list[_Request] = []
 
     async def call(
         self,
@@ -76,9 +88,11 @@ class _Client:
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
-        owner: object = None,
-        prompt_bytes: object = None,
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult:
+        del invocation_id
         self.requests.append(
             {
                 "prompt": prompt,
@@ -100,13 +114,13 @@ def _fixture(
     tmp_path: Path,
     *,
     candidate_count: int,
-    responses: list[list[dict[str, object]]],
+    responses: list[list[JsonValue]],
 ) -> tuple[
     DirectHypothesisBootstrap,
     _Client,
     CheckpointIdentity,
     StaticBootstrapResult,
-    object,
+    CandidateBatch,
     SimpleArtifactRepository,
 ]:
     workspace = tmp_path / "checkout"
@@ -169,7 +183,7 @@ def _fixture(
     client = _Client(responses)
     bootstrap = DirectHypothesisBootstrap(
         data_dir=tmp_path / "data",
-        client_factory=lambda *_: client,
+        client_factory=lambda _identity, _artifacts: client,
     )
     static = StaticBootstrapResult(
         repository_profile_ref=source_ref,
@@ -196,8 +210,12 @@ async def test_batch_output_retries_only_missing_candidate(tmp_path: Path) -> No
     assert len(result.results["C-000"].seeds) == 1
     assert result.results["C-001"].status == "NO_HYPOTHESIS"
     assert len(client.requests) == 2
-    assert client.requests[0]["owner"].candidate_ids == ("C-000", "C-001")
-    assert client.requests[1]["owner"].candidate_ids == ("C-001",)
+    first_owner = client.requests[0]["owner"]
+    second_owner = client.requests[1]["owner"]
+    assert first_owner is not None
+    assert second_owner is not None
+    assert first_owner.candidate_ids == ("C-000", "C-001")
+    assert second_owner.candidate_ids == ("C-001",)
     assert (
         b'"C-000"'
         not in client.requests[1]["prompt"]
@@ -328,7 +346,7 @@ async def test_unavailable_source_cannot_become_negative_result(tmp_path: Path) 
 
 @pytest.mark.asyncio
 async def test_batch_hypothesis_ids_ignore_response_order(tmp_path: Path) -> None:
-    first_rows = [
+    first_rows: list[JsonValue] = [
         _row("C-000", "HYPOTHESES", hypotheses=[_hypothesis()]),
         _row("C-001", "HYPOTHESES", hypotheses=[_hypothesis()]),
     ]
@@ -400,5 +418,7 @@ async def test_resume_subset_keeps_full_batch_identity_but_requests_only_missing
     )
     assert not isinstance(result, StageFailure)
     assert tuple(result.results) == ("C-001",)
-    assert client.requests[0]["owner"].candidate_ids == ("C-001",)
-    assert client.requests[0]["owner"].batch_id == batch.batch_id
+    owner = client.requests[0]["owner"]
+    assert owner is not None
+    assert owner.candidate_ids == ("C-001",)
+    assert owner.batch_id == batch.batch_id

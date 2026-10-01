@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.attempt_owner import AttemptOwner, PromptByteCounts
 from sastsimi.simple_runtime.call_queue import RunUsageBudget
 from sastsimi.simple_runtime.models import CheckpointIdentity, SimpleAnalysisRun
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
@@ -86,8 +87,6 @@ def test_usage_summary_is_durable_idempotent_and_preserves_unknown_cost(
 
 
 def test_attempt_owner_survives_retry_and_legacy_migration(tmp_path: Path) -> None:
-    from sastsimi.simple_runtime.attempt_owner import AttemptOwner, PromptByteCounts
-
     identity = CheckpointIdentity(
         analysis_id="owned-attempts",
         workspace_id="workspace-owned",
@@ -97,19 +96,32 @@ def test_attempt_owner_survives_retry_and_legacy_migration(tmp_path: Path) -> No
     artifacts = SimpleArtifactRepository(tmp_path, identity)
     store = SimpleCheckpointStore(artifacts.paths.database)
     ref = artifacts.put_json({"kind": "attempt"})
-    common = dict(
-        analysis_id=identity.analysis_id,
-        agent="discovery",
-        model="fake-model",
-        attempt_number=1,
-        status="FAILED",
-        elapsed_ms=12,
-        input_tokens=None,
-        output_tokens=None,
-        cost_cents=None,
-        artifact_ref=ref,
-    )
-    store.record_llm_attempt(attempt_id="legacy", **common)
+
+    def record(
+        attempt_id: str,
+        *,
+        owner: AttemptOwner | None = None,
+        retry_of: str | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+    ) -> None:
+        store.record_llm_attempt(
+            attempt_id=attempt_id,
+            analysis_id=identity.analysis_id,
+            agent="discovery",
+            model="fake-model",
+            attempt_number=1,
+            status="FAILED",
+            elapsed_ms=12,
+            input_tokens=None,
+            output_tokens=None,
+            cost_cents=None,
+            artifact_ref=ref,
+            owner=owner,
+            retry_of=retry_of,
+            prompt_bytes=prompt_bytes,
+        )
+
+    record("legacy")
     owner = AttemptOwner(
         analysis_id=identity.analysis_id,
         stage="DISCOVERY",
@@ -123,15 +135,9 @@ def test_attempt_owner_survives_retry_and_legacy_migration(tmp_path: Path) -> No
         candidate_specific_bytes=7,
         fixed_prompt_bytes=11,
     )
-    store.record_llm_attempt(
-        attempt_id="first", owner=owner, prompt_bytes=bytes_used, **common
-    )
-    store.record_llm_attempt(
-        attempt_id="retry", owner=owner, retry_of="first", **common
-    )
-    store.record_llm_attempt(
-        attempt_id="first", owner=owner, prompt_bytes=bytes_used, **common
-    )
+    record("first", owner=owner, prompt_bytes=bytes_used)
+    record("retry", owner=owner, retry_of="first")
+    record("first", owner=owner, prompt_bytes=bytes_used)
 
     with sqlite3.connect(store.database_path) as connection:
         connection.row_factory = sqlite3.Row

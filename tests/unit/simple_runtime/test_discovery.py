@@ -9,6 +9,7 @@ import pytest
 
 from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.simple_runtime.attempt_owner import AttemptOwner, PromptByteCounts
 from sastsimi.simple_runtime.discovery import CandidateDiscovery
 from sastsimi.simple_runtime.models import CheckpointIdentity, StageFailure
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
@@ -159,8 +160,11 @@ class _Client:
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult | StageFailure:
-        del output_schema, timeout_ms
+        del output_schema, timeout_ms, owner, prompt_bytes, invocation_id
         assert agent_name == "discovery"
         self.calls.append(prompt)
         if self.fatal_code is not None:
@@ -266,6 +270,9 @@ async def test_recovered_provider_failure_keeps_failed_attempt_ref_in_decision()
             output_schema: Mapping[str, Any],
             timeout_ms: int,
             agent_name: str = "agent",
+            owner: AttemptOwner | None = None,
+            prompt_bytes: PromptByteCounts | None = None,
+            invocation_id: str | None = None,
         ) -> SimpleLLMCallResult | StageFailure:
             if not self.calls:
                 self.calls.append(prompt)
@@ -280,6 +287,9 @@ async def test_recovered_provider_failure_keeps_failed_attempt_ref_in_decision()
                 output_schema=output_schema,
                 timeout_ms=timeout_ms,
                 agent_name=agent_name,
+                owner=owner,
+                prompt_bytes=prompt_bytes,
+                invocation_id=invocation_id,
             )
 
     store = _Store([_Candidate("candidate-1")])
@@ -347,9 +357,7 @@ async def test_resume_error_keeps_prior_decision_and_attempt_refs() -> None:
     outcome = await CandidateDiscovery(
         store=store,
         artifacts=_Artifacts(),
-        client=_Client(
-            fatal_code="TIMED_OUT", fatal_refs=(current_diagnostic,)
-        ),
+        client=_Client(fatal_code="TIMED_OUT", fatal_refs=(current_diagnostic,)),
     ).run(_identity(), "scope", retry_errors=True)
 
     assert outcome.status == "ERROR"
@@ -424,6 +432,9 @@ async def test_schema_requires_exact_batch_ids_and_decision_count() -> None:
             output_schema: Mapping[str, Any],
             timeout_ms: int,
             agent_name: str = "agent",
+            owner: AttemptOwner | None = None,
+            prompt_bytes: PromptByteCounts | None = None,
+            invocation_id: str | None = None,
         ) -> SimpleLLMCallResult | StageFailure:
             self.schemas.append(output_schema)
             return await super().call(
@@ -431,6 +442,9 @@ async def test_schema_requires_exact_batch_ids_and_decision_count() -> None:
                 output_schema=output_schema,
                 timeout_ms=timeout_ms,
                 agent_name=agent_name,
+                owner=owner,
+                prompt_bytes=prompt_bytes,
+                invocation_id=invocation_id,
             )
 
     client = CapturingClient()
@@ -459,12 +473,18 @@ async def test_exhausted_invalid_batch_splits_and_isolates_bad_singleton() -> No
             output_schema: Mapping[str, Any],
             timeout_ms: int,
             agent_name: str = "agent",
+            owner: AttemptOwner | None = None,
+            prompt_bytes: PromptByteCounts | None = None,
+            invocation_id: str | None = None,
         ) -> SimpleLLMCallResult | StageFailure:
             result = await super().call(
                 prompt=prompt,
                 output_schema=output_schema,
                 timeout_ms=timeout_ms,
                 agent_name=agent_name,
+                owner=owner,
+                prompt_bytes=prompt_bytes,
+                invocation_id=invocation_id,
             )
             assert isinstance(result, SimpleLLMCallResult)
             rows = result.value["decisions"]
@@ -503,12 +523,18 @@ async def test_provider_invalid_output_splits_and_isolates_bad_singleton() -> No
             output_schema: Mapping[str, Any],
             timeout_ms: int,
             agent_name: str = "agent",
+            owner: AttemptOwner | None = None,
+            prompt_bytes: PromptByteCounts | None = None,
+            invocation_id: str | None = None,
         ) -> SimpleLLMCallResult | StageFailure:
             result = await super().call(
                 prompt=prompt,
                 output_schema=output_schema,
                 timeout_ms=timeout_ms,
                 agent_name=agent_name,
+                owner=owner,
+                prompt_bytes=prompt_bytes,
+                invocation_id=invocation_id,
             )
             rows = json.loads(
                 prompt.split(b"<CANDIDATES>")[1].split(b"</CANDIDATES>")[0]
@@ -550,12 +576,18 @@ async def test_timeout_then_invalid_output_splits_without_stale_failure() -> Non
             output_schema: Mapping[str, Any],
             timeout_ms: int,
             agent_name: str = "agent",
+            owner: AttemptOwner | None = None,
+            prompt_bytes: PromptByteCounts | None = None,
+            invocation_id: str | None = None,
         ) -> SimpleLLMCallResult | StageFailure:
             result = await super().call(
                 prompt=prompt,
                 output_schema=output_schema,
                 timeout_ms=timeout_ms,
                 agent_name=agent_name,
+                owner=owner,
+                prompt_bytes=prompt_bytes,
+                invocation_id=invocation_id,
             )
             rows = json.loads(
                 prompt.split(b"<CANDIDATES>")[1].split(b"</CANDIDATES>")[0]
@@ -597,12 +629,18 @@ async def test_resume_retries_only_isolated_error_without_duplicate_decision() -
             output_schema: Mapping[str, Any],
             timeout_ms: int,
             agent_name: str = "agent",
+            owner: AttemptOwner | None = None,
+            prompt_bytes: PromptByteCounts | None = None,
+            invocation_id: str | None = None,
         ) -> SimpleLLMCallResult | StageFailure:
             result = await super().call(
                 prompt=prompt,
                 output_schema=output_schema,
                 timeout_ms=timeout_ms,
                 agent_name=agent_name,
+                owner=owner,
+                prompt_bytes=prompt_bytes,
+                invocation_id=invocation_id,
             )
             assert isinstance(result, SimpleLLMCallResult)
             rows = result.value["decisions"]

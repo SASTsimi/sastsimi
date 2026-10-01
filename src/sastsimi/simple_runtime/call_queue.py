@@ -59,6 +59,31 @@ _BUDGET_GATES: WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
 )
 
 
+def effective_hypothesis_concurrency(
+    provider: str,
+    configured: int,
+    *,
+    atomic_budget_reservations: bool = False,
+    exact_child_claims: bool = False,
+) -> int:
+    """Bound child scheduling to independently established safety guarantees.
+
+    The API allowance is for child tasks, not simultaneous billable requests:
+    ``RunLimitedClient`` still holds its analysis budget gate through each call.
+    The caller must hold the analysis run lease when asserting that gate provides
+    atomic budget reservation, and must claim each child in the checkpoint store.
+    """
+    if type(configured) is not int or not 1 <= configured <= 32:
+        raise ValueError("HYPOTHESIS_CONCURRENCY_INVALID")
+    if (
+        provider.strip().casefold() in {"openai", "openai-api"}
+        and atomic_budget_reservations is True
+        and exact_child_claims is True
+    ):
+        return configured
+    return 1
+
+
 def _analysis_budget_gate(
     store: SimpleCheckpointStore, analysis_id: str
 ) -> asyncio.Lock:
@@ -234,6 +259,11 @@ class RunLimitedClient:
     ) -> SimpleLLMCallResult | StageFailure:
         if invocation_id is not None:
             raise ValueError("CODEX_CALL_ID_EXTERNALLY_SUPPLIED")
+        if (
+            owner is not None
+            and owner.analysis_id != self._artifacts.identity.analysis_id
+        ):
+            raise ValueError("LLM_ATTEMPT_OWNER_INVALID")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + max(1, timeout_ms) / 1000
         last_failure = StageFailure(

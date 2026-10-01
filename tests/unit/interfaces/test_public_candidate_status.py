@@ -63,6 +63,69 @@ def test_legacy_text_status_does_not_claim_zero_candidates() -> None:
     assert "후보:" not in output.getvalue()
 
 
+def test_v2_text_status_labels_phase_counts_and_unknown_surface_coverage() -> None:
+    output = StringIO()
+    emit_public(
+        "text",
+        output,
+        command="status",
+        data={
+            "analysis_id": "A-012",
+            "status": "RUNNING",
+            "percent": 55,
+            "percentage_kind": "known_checkpoint_fraction",
+            "phase_counts": {
+                "static": {"completed": 1, "known": 1},
+                "triage": {"completed": 2, "known": 3},
+                "candidate_deep": {"completed": 1, "known": 2},
+                "verification": {"completed": 1, "known": 2},
+                "poc": {"attempted": 1, "completed": 0},
+                "surface": {"recorded_contexts": 1, "completed": 0, "total": 2},
+            },
+        },
+    )
+
+    rendered = output.getvalue()
+    assert "현재 알려진 checkpoint 비율: 55%" in rendered
+    assert "정적 단계: 1/1" in rendered
+    assert "후보 선별: 2/3" in rendered
+    assert "후보 심층 처리: 1/2" in rendered
+    assert "가설 검증: 1/2" in rendered
+    assert "PoC 시도: 1건 · 완료 0건" in rendered
+    surface_label = "보안 surface: 저장된 context 1건 · 인덱스 2개 · coverage 확인 전"
+    assert surface_label in rendered
+    assert "탐색 기록 1/2" not in rendered
+    assert "비용·시간·저장소 전체 커버리지" in rendered
+
+
+def test_v2_text_status_discloses_uncovered_surface_limit() -> None:
+    output = StringIO()
+    emit_public(
+        "text",
+        output,
+        command="status",
+        data={
+            "analysis_id": "A-012",
+            "status": "PARTIAL",
+            "percentage_kind": "known_checkpoint_fraction",
+            "phase_counts": {
+                "surface": {
+                    "recorded_contexts": 1,
+                    "completed": 1,
+                    "total": 2,
+                    "covered": 1,
+                    "uncovered": 1,
+                    "insufficient": 0,
+                }
+            },
+        },
+    )
+
+    rendered = output.getvalue()
+    assert "보안 surface: 검토 근거 충족 1/2 · 미검토 1 · 근거 부족 0" in rendered
+    assert "부분 분석: 보안 surface 검토 범위가 남아 있습니다" in rendered
+
+
 def test_text_paused_without_usage_shows_telemetry_action() -> None:
     output = StringIO()
     emit_public(

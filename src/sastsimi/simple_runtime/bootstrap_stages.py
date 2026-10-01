@@ -34,6 +34,8 @@ from sastsimi.static_analysis.file_scope import (
 )
 
 from .application import (
+    BatchProposalResult,
+    CandidateProposalOutcome,
     HypothesisSeed,
     SimpleAnalysisRequest,
     StaticBootstrapResult,
@@ -128,22 +130,6 @@ _SURFACE_PROMPT_LIMIT_BYTES = 128 * 1024
 _SURFACE_REVIEW_PARTS: frozenset[str] = frozenset(
     {"ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY"}
 )
-
-
-@dataclass(frozen=True, slots=True)
-class CandidateProposalOutcome:
-    status: str
-    reason: str
-    seeds: tuple[HypothesisSeed, ...]
-    result_ref: StoredDataRef
-
-
-@dataclass(frozen=True, slots=True)
-class BatchProposalResult:
-    results: dict[str, CandidateProposalOutcome]
-    missing_ids: tuple[str, ...]
-    attempt_refs: tuple[StoredDataRef, ...]
-    failure: StageFailure | None = None
 
 
 @dataclass(frozen=True, slots=True)
