@@ -85,6 +85,79 @@ def test_usage_summary_is_durable_idempotent_and_preserves_unknown_cost(
         )
 
 
+def test_attempt_owner_survives_retry_and_legacy_migration(tmp_path: Path) -> None:
+    from sastsimi.simple_runtime.attempt_owner import AttemptOwner, PromptByteCounts
+
+    identity = CheckpointIdentity(
+        analysis_id="owned-attempts",
+        workspace_id="workspace-owned",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    store = SimpleCheckpointStore(artifacts.paths.database)
+    ref = artifacts.put_json({"kind": "attempt"})
+    common = dict(
+        analysis_id=identity.analysis_id,
+        agent="discovery",
+        model="fake-model",
+        attempt_number=1,
+        status="FAILED",
+        elapsed_ms=12,
+        input_tokens=None,
+        output_tokens=None,
+        cost_cents=None,
+        artifact_ref=ref,
+    )
+    store.record_llm_attempt(attempt_id="legacy", **common)
+    owner = AttemptOwner(
+        analysis_id=identity.analysis_id,
+        stage="DISCOVERY",
+        candidate_ids=("C-1",),
+        file_path="app/main.py",
+        batch_id="batch-1",
+    )
+    bytes_used = PromptByteCounts(
+        raw_source_bytes=3,
+        shared_context_bytes=5,
+        candidate_specific_bytes=7,
+        fixed_prompt_bytes=11,
+    )
+    store.record_llm_attempt(
+        attempt_id="first", owner=owner, prompt_bytes=bytes_used, **common
+    )
+    store.record_llm_attempt(
+        attempt_id="retry", owner=owner, retry_of="first", **common
+    )
+    store.record_llm_attempt(
+        attempt_id="first", owner=owner, prompt_bytes=bytes_used, **common
+    )
+
+    with sqlite3.connect(store.database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            "SELECT a.attempt_id, m.stage, m.candidate_ids_json, m.file_path, "
+            "m.batch_id, m.retry_of, m.raw_source_bytes, m.shared_context_bytes, "
+            "m.candidate_specific_bytes, m.fixed_prompt_bytes "
+            "FROM simple_llm_attempts AS a LEFT JOIN simple_llm_attempt_metadata AS m "
+            "ON m.attempt_id = a.attempt_id WHERE a.analysis_id = ? "
+            "ORDER BY a.attempt_id",
+            (identity.analysis_id,),
+        ).fetchall()
+    by_id = {row["attempt_id"]: row for row in rows}
+    assert by_id["legacy"]["stage"] is None
+    assert by_id["first"]["stage"] == "DISCOVERY"
+    assert by_id["first"]["candidate_ids_json"] == '["C-1"]'
+    assert by_id["first"]["file_path"] == "app/main.py"
+    assert by_id["first"]["batch_id"] == "batch-1"
+    assert by_id["first"]["raw_source_bytes"] == 3
+    assert by_id["first"]["shared_context_bytes"] == 5
+    assert by_id["first"]["candidate_specific_bytes"] == 7
+    assert by_id["first"]["fixed_prompt_bytes"] == 11
+    assert by_id["retry"]["retry_of"] == "first"
+    assert len(rows) == 3
+
+
 def test_usage_summary_reads_legacy_attempt_table_without_codex_tables(
     tmp_path: Path,
 ) -> None:

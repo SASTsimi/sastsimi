@@ -16,6 +16,7 @@ from sastsimi.config.user_config import ElapsedLimit, TokenLimit
 from sastsimi.contracts.refs import StoredDataRef
 
 from .artifacts import SimpleArtifactRepository
+from .attempt_owner import AttemptOwner, PromptByteCounts
 from .models import StageFailure
 from .provider import (
     SimpleCodexClient,
@@ -227,6 +228,8 @@ class RunLimitedClient:
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
     ) -> SimpleLLMCallResult | StageFailure:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + max(1, timeout_ms) / 1000
@@ -235,6 +238,7 @@ class RunLimitedClient:
             retryable=True,
             safe_message="LLM call deadline reached",
         )
+        previous_attempt_id: str | None = None
         for attempt in range(1, self._max_retries + 2):
             async with self._budget_gate, self._semaphore:
                 analysis_id = self._artifacts.identity.analysis_id
@@ -265,31 +269,43 @@ class RunLimitedClient:
                     *,
                     codex_call_id: str | None = call_id,
                 ) -> None:
-                    if codex_call_id is None:
-                        self._record_attempt(
-                            agent, attempt_number, started_at, status, result, failure
-                        )
-                    else:
-                        self._record_attempt(
-                            agent,
-                            attempt_number,
-                            started_at,
-                            status,
-                            result,
-                            failure,
-                            attempt_id=codex_call_id,
-                        )
+                    nonlocal previous_attempt_id
+                    recorded_id = codex_call_id or uuid4().hex
+                    self._record_attempt(
+                        agent,
+                        attempt_number,
+                        started_at,
+                        status,
+                        result,
+                        failure,
+                        attempt_id=recorded_id,
+                        owner=owner,
+                        retry_of=previous_attempt_id,
+                        prompt_bytes=prompt_bytes,
+                    )
+                    previous_attempt_id = recorded_id
 
                 started = monotonic()
                 inner_returned = False
                 try:
-                    result = await asyncio.wait_for(
-                        self._inner.call(
+                    if owner is None and prompt_bytes is None:
+                        call = self._inner.call(
                             prompt=prompt,
                             output_schema=output_schema,
                             timeout_ms=max(1, int(remaining * 1000)),
                             agent_name=agent_name,
-                        ),
+                        )
+                    else:
+                        call = self._inner.call(
+                            prompt=prompt,
+                            output_schema=output_schema,
+                            timeout_ms=max(1, int(remaining * 1000)),
+                            agent_name=agent_name,
+                            owner=owner,
+                            prompt_bytes=prompt_bytes,
+                        )
+                    result = await asyncio.wait_for(
+                        call,
                         # The Codex runner owns its request timeout and may still
                         # need to confirm child-process cleanup after it expires.
                         timeout=remaining
@@ -386,6 +402,9 @@ class RunLimitedClient:
         failure: StageFailure | None = None,
         *,
         attempt_id: str | None = None,
+        owner: AttemptOwner | None = None,
+        retry_of: str | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
     ) -> None:
         elapsed = max(0, int((monotonic() - started) * 1000))
         input_tokens = token_count(result.input_tokens) if result is not None else None
@@ -444,4 +463,7 @@ class RunLimitedClient:
             output_tokens=output_tokens,
             cost_cents=cost,
             artifact_ref=ref,
+            owner=owner,
+            retry_of=retry_of,
+            prompt_bytes=prompt_bytes,
         )

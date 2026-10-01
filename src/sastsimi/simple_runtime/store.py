@@ -20,6 +20,7 @@ from sastsimi.observability.agent_activity import (
 from sastsimi.storage.agent_activity import AgentActivityStore
 
 from .artifacts import SimpleArtifactRepository
+from .attempt_owner import AttemptOwner, PromptByteCounts
 from .candidates import StaticCandidate
 from .models import (
     HYPOTHESIS_STAGES,
@@ -160,6 +161,31 @@ class SimpleCheckpointStore:
                     artifact_ref_json TEXT NOT NULL
                 )
                 """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_llm_attempt_metadata (
+                    attempt_id TEXT PRIMARY KEY,
+                    analysis_id TEXT NOT NULL,
+                    stage TEXT,
+                    candidate_ids_json TEXT,
+                    hypothesis_id TEXT,
+                    surface_id TEXT,
+                    file_path TEXT,
+                    batch_id TEXT,
+                    context_id TEXT,
+                    checkpoint_attempt_id TEXT,
+                    retry_of TEXT,
+                    raw_source_bytes INTEGER,
+                    shared_context_bytes INTEGER,
+                    candidate_specific_bytes INTEGER,
+                    fixed_prompt_bytes INTEGER
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_llm_attempt_metadata_stage "
+                "ON simple_llm_attempt_metadata (analysis_id, stage)"
             )
             connection.execute(
                 """
@@ -2072,7 +2098,12 @@ class SimpleCheckpointStore:
         output_tokens: int | None,
         cost_cents: float | None,
         artifact_ref: StoredDataRef,
+        owner: AttemptOwner | None = None,
+        retry_of: str | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
     ) -> None:
+        if owner is not None and owner.analysis_id != analysis_id:
+            raise ValueError("LLM_ATTEMPT_OWNER_INVALID")
         values = (
             attempt_id,
             analysis_id,
@@ -2099,11 +2130,50 @@ class SimpleCheckpointStore:
             )
             if cursor.rowcount == 0:
                 row = connection.execute(
-                    "SELECT * FROM simple_llm_attempts WHERE attempt_id = ?",
+                    "SELECT attempt_id, analysis_id, agent, model, attempt_number, "
+                    "status, elapsed_ms, input_tokens, output_tokens, cost_cents, "
+                    "artifact_ref_json FROM simple_llm_attempts WHERE attempt_id = ?",
                     (attempt_id,),
                 ).fetchone()
                 if row is None or tuple(row) != values:
                     raise ValueError("LLM_ATTEMPT_CONFLICT")
+            if owner is not None or retry_of is not None or prompt_bytes is not None:
+                metadata = (
+                    attempt_id,
+                    analysis_id,
+                    owner.stage if owner else None,
+                    json.dumps(owner.candidate_ids, separators=(",", ":"))
+                    if owner
+                    else None,
+                    owner.hypothesis_id if owner else None,
+                    owner.surface_id if owner else None,
+                    owner.file_path if owner else None,
+                    owner.batch_id if owner else None,
+                    owner.context_id if owner else None,
+                    owner.checkpoint_attempt_id if owner else None,
+                    retry_of,
+                    prompt_bytes.raw_source_bytes if prompt_bytes else None,
+                    prompt_bytes.shared_context_bytes if prompt_bytes else None,
+                    prompt_bytes.candidate_specific_bytes if prompt_bytes else None,
+                    prompt_bytes.fixed_prompt_bytes if prompt_bytes else None,
+                )
+                inserted = connection.execute(
+                    "INSERT OR IGNORE INTO simple_llm_attempt_metadata VALUES "
+                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    metadata,
+                )
+                if inserted.rowcount == 0:
+                    row = connection.execute(
+                        "SELECT attempt_id, analysis_id, stage, candidate_ids_json, "
+                        "hypothesis_id, surface_id, file_path, batch_id, context_id, "
+                        "checkpoint_attempt_id, retry_of, raw_source_bytes, "
+                        "shared_context_bytes, candidate_specific_bytes, "
+                        "fixed_prompt_bytes FROM simple_llm_attempt_metadata "
+                        "WHERE attempt_id = ?",
+                        (attempt_id,),
+                    ).fetchone()
+                    if row is None or tuple(row) != metadata:
+                        raise ValueError("LLM_ATTEMPT_CONFLICT")
 
     def unresolved_codex_call(self, analysis_id: str) -> str | None:
         """Return the durable call ID that still needs process resolution."""

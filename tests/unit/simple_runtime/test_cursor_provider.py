@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.attempt_owner import AttemptOwner
 from sastsimi.simple_runtime.call_queue import RunUsageBudget
 from sastsimi.simple_runtime.cursor_provider import (
     CursorCLIRateLimitError,
@@ -128,6 +129,34 @@ async def test_valid_json_and_separate_raw_parsed_artifacts(
     assert attempt is not None
     assert attempt[:3] == (12, 3, "SUCCEEDED")
     assert "content_hash" in attempt[3]
+
+
+@pytest.mark.asyncio
+async def test_cursor_attempt_records_logical_owner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CURSOR_API_KEY", "test-key")
+    client = provider(tmp_path, FakeTransport(['{"verdict":"TRUE"}']))
+    result = await client.call(
+        prompt=b"prompt",
+        output_schema=SCHEMA,
+        timeout_ms=5_000,
+        agent_name="verification_result",
+        owner=AttemptOwner(
+            analysis_id="analysis-1",
+            stage="VERIFICATION_FINAL_DONE",
+            hypothesis_id="hypothesis-1",
+        ),
+    )
+    assert isinstance(result, SimpleLLMCallResult)
+    with sqlite3.connect(tmp_path / "db" / "sastsimi.sqlite3") as connection:
+        rows = connection.execute(
+            "SELECT m.stage, m.hypothesis_id FROM simple_llm_attempts AS a "
+            "JOIN simple_llm_attempt_metadata AS m ON m.attempt_id = a.attempt_id "
+            "WHERE a.analysis_id = ?",
+            ("analysis-1",),
+        ).fetchall()
+    assert rows == [("VERIFICATION_FINAL_DONE", "hypothesis-1")]
 
 
 @pytest.mark.asyncio

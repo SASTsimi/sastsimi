@@ -18,6 +18,7 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.providers.base import CodexProcessRequest, CodexProcessResult
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.attempt_owner import AttemptOwner, PromptByteCounts
 from sastsimi.simple_runtime.call_queue import RunLimitedClient, RunUsageBudget
 from sastsimi.simple_runtime.cursor_provider import CursorProvider
 from sastsimi.simple_runtime.models import (
@@ -53,8 +54,12 @@ class _Client:
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult | StageFailure:
-        del prompt, output_schema, timeout_ms, agent_name
+        del prompt, output_schema, timeout_ms, agent_name, owner, prompt_bytes
+        del invocation_id
         self.calls += 1
         self.active += 1
         self.peak = max(self.peak, self.active)
@@ -83,6 +88,64 @@ def _success() -> SimpleLLMCallResult:
         input_tokens=5,
         output_tokens=2,
     )
+
+
+@pytest.mark.asyncio
+async def test_owned_retry_rows_link_logical_attempts(tmp_path: Path) -> None:
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    inner = _Client(
+        [
+            StageFailure(
+                code="RATE_LIMITED",
+                retryable=True,
+                safe_message="try again",
+            ),
+            _success(),
+        ]
+    )
+    client = _wrapper(
+        tmp_path,
+        inner,
+        asyncio.Semaphore(1),
+        max_retries=1,
+        max_tokens="unlimited",
+        sleep=no_sleep,
+    )
+    owner = AttemptOwner(
+        analysis_id="analysis-queue",
+        stage="DISCOVERY",
+        candidate_ids=("C-1", "C-2"),
+        batch_id="batch-1",
+        file_path="app/main.py",
+    )
+    result = await client.call(
+        prompt=b"prompt",
+        output_schema={"type": "object"},
+        timeout_ms=10_000,
+        agent_name="discovery",
+        owner=owner,
+        prompt_bytes=PromptByteCounts(fixed_prompt_bytes=6),
+    )
+    assert isinstance(result, SimpleLLMCallResult)
+    with sqlite3.connect(client._store.database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            "SELECT a.attempt_id, a.status, m.stage, m.candidate_ids_json, "
+            "m.batch_id, m.file_path, m.retry_of, m.fixed_prompt_bytes "
+            "FROM simple_llm_attempts AS a JOIN simple_llm_attempt_metadata AS m "
+            "ON m.attempt_id = a.attempt_id ORDER BY a.attempt_number"
+        ).fetchall()
+    assert len(rows) == 2
+    assert rows[0]["status"] == "RATE_LIMITED"
+    assert rows[1]["status"] == "SUCCEEDED"
+    assert rows[0]["stage"] == rows[1]["stage"] == "DISCOVERY"
+    assert rows[0]["candidate_ids_json"] == '["C-1","C-2"]'
+    assert rows[1]["retry_of"] == rows[0]["attempt_id"]
+    assert rows[1]["batch_id"] == "batch-1"
+    assert rows[1]["file_path"] == "app/main.py"
+    assert rows[1]["fixed_prompt_bytes"] == 6
 
 
 def _wrapper(

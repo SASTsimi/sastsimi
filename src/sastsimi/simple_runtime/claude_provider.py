@@ -26,6 +26,7 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 
 from .artifacts import SimpleArtifactRepository
+from .attempt_owner import AttemptOwner, PromptByteCounts
 from .models import StageFailure
 from .provider import SimpleLLMCallResult, _validate_schema
 from .store import SimpleCheckpointStore
@@ -540,7 +541,11 @@ class ClaudeProvider:
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult | StageFailure:
+        del invocation_id
         model = self._agent_models.get(agent_name, self._default_model)
         timeout = min(self._timeout_seconds, max(1, timeout_ms) / 1000)
         digest = hashlib.sha256(prompt).hexdigest()
@@ -551,6 +556,7 @@ class ClaudeProvider:
             retryable=False,
             safe_message="Claude call did not complete",
         )
+        previous_attempt_id: str | None = None
         async with self._semaphore:
             for attempt in range(1, self._max_retries + 2):
                 if self._budget_check is not None:
@@ -589,7 +595,7 @@ class ClaudeProvider:
                     parsed_ref = self._artifacts.put_bytes(
                         canonical, "application/json"
                     )
-                    self._record_attempt(
+                    previous_attempt_id = self._record_attempt(
                         agent_name,
                         model,
                         attempt,
@@ -598,6 +604,9 @@ class ClaudeProvider:
                         raw_ref,
                         parsed_ref,
                         usage,
+                        owner=owner,
+                        retry_of=previous_attempt_id,
+                        prompt_bytes=prompt_bytes,
                     )
                     return SimpleLLMCallResult(
                         value=response.value,
@@ -658,7 +667,7 @@ class ClaudeProvider:
                         retryable=True,
                         safe_message="Claude CLI request timed out",
                     )
-                self._record_attempt(
+                previous_attempt_id = self._record_attempt(
                     agent_name,
                     model,
                     attempt,
@@ -667,6 +676,9 @@ class ClaudeProvider:
                     raw_ref,
                     parsed_ref,
                     usage,
+                    owner=owner,
+                    retry_of=previous_attempt_id,
+                    prompt_bytes=prompt_bytes,
                 )
                 if not retryable or attempt > self._max_retries:
                     break
@@ -683,7 +695,11 @@ class ClaudeProvider:
         raw_ref: StoredDataRef | None,
         parsed_ref: StoredDataRef | None,
         usage: Mapping[str, int | float | None],
-    ) -> None:
+        *,
+        owner: AttemptOwner | None,
+        retry_of: str | None,
+        prompt_bytes: PromptByteCounts | None,
+    ) -> str:
         elapsed = max(0, int((monotonic() - started) * 1000))
         input_tokens = token_count(usage.get("input_tokens"))
         output_tokens = token_count(usage.get("output_tokens"))
@@ -719,8 +735,9 @@ class ClaudeProvider:
                 "on_demand_possible": True,
             }
         )
+        attempt_id = uuid4().hex
         self._attempt_store.record_llm_attempt(
-            attempt_id=uuid4().hex,
+            attempt_id=attempt_id,
             analysis_id=self._artifacts.identity.analysis_id,
             agent=agent,
             model=model,
@@ -731,7 +748,11 @@ class ClaudeProvider:
             output_tokens=output_tokens,
             cost_cents=cost,
             artifact_ref=artifact_ref,
+            owner=owner,
+            retry_of=retry_of,
+            prompt_bytes=prompt_bytes,
         )
+        return attempt_id
 
 
 __all__ = [

@@ -22,6 +22,7 @@ from sastsimi.contracts.prompt_redaction import (
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.providers.base import CodexProcessRequest, CodexProcessRunner
 
+from .attempt_owner import AttemptOwner, PromptByteCounts
 from .models import StageFailure
 
 
@@ -53,6 +54,9 @@ class SimpleLLMClient(Protocol):
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult | StageFailure: ...
 
 
@@ -280,7 +284,11 @@ class SimpleCodexClient:
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult | StageFailure:
+        del owner, prompt_bytes, invocation_id
         prompt_digest = hashlib.sha256(prompt).hexdigest()
         invocation_id = f"simple-{uuid4().hex}"
         request_ref = _request_artifact(
@@ -442,7 +450,11 @@ class SimpleOpenAIClient:
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult | StageFailure:
+        del owner, prompt_bytes, invocation_id
         credential = os.environ.get(self._variable)
         if credential is None or not credential or credential != credential.strip():
             return StageFailure(
