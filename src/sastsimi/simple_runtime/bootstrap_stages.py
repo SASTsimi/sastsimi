@@ -25,6 +25,7 @@ from .artifacts import SimpleArtifactRepository
 from .exploration import Exploration, render_round
 from .facts import extract_flows
 from .feeding import (
+    MAP_BYTES,
     Batch,
     Feeding,
     fenced,
@@ -345,6 +346,14 @@ _PART_BYTES = 120_000
 # Past this much sent and received, the next part starts a fresh conversation
 # carrying the agent's notes and the hypotheses so far.
 _COMPACT_AT_BYTES = 600_000
+
+_FACT_FEEDS = ("facts", "facts_sequential", "facts_survey")
+# The code feed's repository map (`MAP_BYTES`) is sized to be the agent's
+# only way to see what the rest of the repository defines.  A fact feed
+# already carries that for every flow step whose callee is in-repo, so the
+# full map there is mostly redundant with the batch's own content - at full
+# size it was the largest single piece of some batches' prompts.
+_FACT_MAP_BYTES = 60_000
 
 _SEQUENTIAL_INSTRUCTIONS = """
 ## Reading the whole repository in parts
@@ -1530,21 +1539,31 @@ class DirectHypothesisBootstrap:
         )
         # Every source file goes into exactly one batch; nothing is chosen for
         # the agent, because one that chose by name never opened the router
-        # the target defect was in.
-        feeding = plan_feeding(static.workspace_path, sources)
+        # the target defect was in.  The repository map's own budget
+        # (`MAP_BYTES`, 400KB) is sized for the code feed, where it is the
+        # only way to learn what else the repository defines; a fact feed
+        # already names a flow step's own definition site when its callee is
+        # in-repo, so the full map there mostly repeats what the batch's own
+        # content says - and crowded a batch of real entry points (taiga's
+        # own, once read at all, ran to 493KB per call) enough that the
+        # model returned no suspicious points for it, without erroring.
+        map_bytes = _FACT_MAP_BYTES if self._feed in _FACT_FEEDS else MAP_BYTES
+        feeding = plan_feeding(static.workspace_path, sources, map_bytes=map_bytes)
         flows_ref = bundle.get("route_flows_ref")
         sequential = self._feed == "facts_sequential"
-        if self._feed in ("facts", "facts_sequential", "facts_survey") and isinstance(
+        if self._feed in _FACT_FEEDS and isinstance(
             flows_ref, dict
         ):
             # The fact bundle's entry points are read first; source is read on
             # request, a file or a line range at a time.
             flows = json.loads(artifacts.read(StoredDataRef.model_validate(flows_ref)))
-            fact_feeding = (
-                plan_fact_feeding(flows, feeding, batch_bytes=_PART_BYTES)
-                if sequential
-                else plan_fact_feeding(flows, feeding)
-            )
+            # `_PART_BYTES` applies here regardless of feed mode: every batch
+            # - sequential or not - also carries the repository map and the
+            # findings index on top of what plan_fact_feeding counts, so the
+            # bigger default (`BATCH_BYTES`, sized for the code feed, which
+            # carries neither) left enough room for a real batch to pass
+            # this budget and still overflow the model's own context limit.
+            fact_feeding = plan_fact_feeding(flows, feeding, batch_bytes=_PART_BYTES)
             # Entry points are found only where a route decorator names them;
             # a checkout with none would otherwise be read not at all.
             if fact_feeding.batches:
