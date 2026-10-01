@@ -312,17 +312,20 @@ def test_hypothesis_feed_is_opt_in_and_round_trips(tmp_path: Path) -> None:
         "max_parallel_containers",
     ):
         legacy_text = legacy_text.replace(f"{name} = 1\n", "")
+    legacy_text = legacy_text.replace("max_pending_candidate_children = 128\n", "")
     old.write_text(
         legacy_text,
         encoding="utf-8",
     )
     assert load_simple_execution_profile(old).hypothesis_feed == "current"
     assert load_simple_execution_profile(old).max_parallel_hypotheses == 1
+    assert load_simple_execution_profile(old).max_pending_candidate_children == 128
 
     selected = profile.model_copy(
         update={
             "hypothesis_feed": "facts_survey",
             "max_parallel_hypotheses": 2,
+            "max_pending_candidate_children": 256,
             "max_parallel_builds": 2,
             "max_parallel_containers": 3,
         }
@@ -331,5 +334,6 @@ def test_hypothesis_feed_is_opt_in_and_round_trips(tmp_path: Path) -> None:
     selected.write(new)
     assert load_simple_execution_profile(new).hypothesis_feed == "facts_survey"
     assert load_simple_execution_profile(new).max_parallel_hypotheses == 2
+    assert load_simple_execution_profile(new).max_pending_candidate_children == 256
     assert load_simple_execution_profile(new).max_parallel_builds == 2
     assert load_simple_execution_profile(new).max_parallel_containers == 3

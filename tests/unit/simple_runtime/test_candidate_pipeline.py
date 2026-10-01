@@ -1560,6 +1560,7 @@ async def test_v2_batch_resume_preserves_pending_seed_without_reproposal(
 
     hypotheses = OneSeed()
     app._candidate_hypotheses = hypotheses
+    app._runner_factory = lambda *_: _SuccessRunner(store)
     first = await app.analyze(
         SimpleAnalysisRequest(
             data_dir=tmp_path / "data",

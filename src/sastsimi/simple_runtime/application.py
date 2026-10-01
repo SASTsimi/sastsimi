@@ -21,7 +21,11 @@ from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 
 from .artifacts import SimpleArtifactRepository
 from .ast_facts import focus_ast_facts, index_ast_manifest, validate_ast_manifest
-from .candidate_batches import CandidateBatch, iter_candidate_batches
+from .candidate_batches import (
+    MAX_CANDIDATES_PER_BATCH,
+    CandidateBatch,
+    iter_candidate_batches,
+)
 from .candidates import ingest_static_candidates
 from .discovery import BUDGET_PAUSE_CODES, CandidateDiscovery
 from .models import (
@@ -139,6 +143,7 @@ class SimpleAnalysisApplication:
         max_cost_minor_units: int | None = None,
         candidate_pipeline_enabled: bool = False,
         candidate_pipeline_version: int = 2,
+        max_pending_candidate_children: int = 128,
         candidate_client_factory: Callable[
             [CheckpointIdentity, SimpleArtifactRepository], SimpleLLMClient
         ]
@@ -149,6 +154,8 @@ class SimpleAnalysisApplication:
             raise ValueError("PARALLEL_HYPOTHESIS_LIMIT_INVALID")
         if candidate_pipeline_version not in {1, 2}:
             raise ValueError("CANDIDATE_PIPELINE_VERSION_INVALID")
+        if max_pending_candidate_children < MAX_CANDIDATES_PER_BATCH * 4:
+            raise ValueError("CANDIDATE_PENDING_LIMIT_INVALID")
         self._data_dir = data_dir
         self._store = store
         self._static = static_bootstrap
@@ -168,6 +175,7 @@ class SimpleAnalysisApplication:
         self._max_cost_minor_units = max_cost_minor_units
         self._candidate_pipeline_enabled = candidate_pipeline_enabled
         self._candidate_pipeline_version = candidate_pipeline_version
+        self._max_pending_candidate_children = max_pending_candidate_children
         self._candidate_client_factory = candidate_client_factory
         self._candidate_hypotheses = (
             candidate_hypothesis_bootstrap or hypothesis_bootstrap
@@ -1317,6 +1325,68 @@ class SimpleAnalysisApplication:
         if len(matches) != 1 or matches[0].get("status") != status:
             raise ValueError("CANDIDATE_BATCH_RESPONSE_INVALID")
 
+    async def _drain_candidate_children(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+        *,
+        attempted_in_turn: set[str],
+        turn_id: str,
+        max_runnable: int,
+    ) -> RunOutcome | None:
+        """Run each durable child at most once this turn; never finalize the run."""
+
+        incomplete: RunOutcome | None = None
+        attempted_count = 0
+        while attempted_count < max_runnable:
+            after_id: str | None = None
+            made_progress = False
+            while attempted_count < max_runnable:
+                ids = self._store.list_incomplete_hypotheses(
+                    identity, after_id=after_id, limit=32
+                )
+                if not ids:
+                    break
+                for hypothesis_id in ids:
+                    after_id = hypothesis_id
+                    if hypothesis_id in attempted_in_turn:
+                        continue
+                    if not self._store.claim_hypothesis(
+                        identity, hypothesis_id, turn_id
+                    ):
+                        continue
+                    attempted_in_turn.add(hypothesis_id)
+                    attempted_count += 1
+                    made_progress = True
+                    child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+                    try:
+                        outcome = await self._runner_factory(
+                            self._store,
+                            child,
+                            static,
+                        ).resume_hypothesis(child)
+                    finally:
+                        self._store.release_hypothesis_claim(
+                            identity, hypothesis_id, turn_id
+                        )
+                    if outcome.status in {StageStatus.BLOCKED, StageStatus.FAILED}:
+                        if outcome.error_code in BUDGET_PAUSE_CODES:
+                            return outcome
+                        if (
+                            incomplete is None
+                            or outcome.status is StageStatus.FAILED
+                            and incomplete.status is StageStatus.BLOCKED
+                        ):
+                            incomplete = outcome
+                    else:
+                        self._register_chain_children(run, child, static)
+                    if attempted_count >= max_runnable:
+                        break
+            if not made_progress:
+                break
+        return incomplete
+
     async def _run_candidate_batches_v2(
         self,
         run: SimpleAnalysisRun,
@@ -1348,6 +1418,12 @@ class SimpleAnalysisApplication:
             )
         outcomes = self._store.list_candidate_batch_outcomes(identity, scope)
         progress = self._store.list_candidate_batch_progress(identity, scope)
+        self._store.clear_stale_hypothesis_claims(identity)
+        self._recover_candidate_chains(run, identity, static)
+        self._invalidate_stale_report_coverage(run, identity)
+        attempted_in_turn: set[str] = set()
+        turn_id = uuid4().hex
+        incomplete: RunOutcome | None = None
         seen_batch_ids: set[str] = set()
         seen_candidate_ids: set[str] = set()
         batches = iter_candidate_batches(
@@ -1403,6 +1479,29 @@ class SimpleAnalysisApplication:
                     or set(batch.candidate_ids) - outcomes.keys()
                 ):
                     raise ValueError("CANDIDATE_BATCH_PROGRESS_INVALID")
+                drained = await self._drain_candidate_children(
+                    run,
+                    identity,
+                    static,
+                    attempted_in_turn=attempted_in_turn,
+                    turn_id=turn_id,
+                    max_runnable=self._max_pending_candidate_children,
+                )
+                if drained is not None:
+                    if drained.error_code in BUDGET_PAUSE_CODES:
+                        return SimpleAnalysisOutcome(
+                            identity=identity,
+                            display_analysis_id=run.display_analysis_id,
+                            status="PAUSED",
+                            current_stage=drained.current_stage,
+                            error_code=drained.error_code,
+                        )
+                    if (
+                        incomplete is None
+                        or drained.status is StageStatus.FAILED
+                        and incomplete.status is StageStatus.BLOCKED
+                    ):
+                        incomplete = drained
                 continue
             missing = tuple(
                 candidate_id
@@ -1410,6 +1509,22 @@ class SimpleAnalysisApplication:
                 if candidate_id not in outcomes
             )
             if missing:
+                pending_count = len(
+                    self._store.list_incomplete_hypotheses(
+                        identity, limit=self._max_pending_candidate_children + 1
+                    )
+                )
+                if (
+                    pending_count + len(batch.candidate_ids) * 4
+                    > self._max_pending_candidate_children
+                ):
+                    return self._candidate_bootstrap_failure(
+                        run,
+                        identity,
+                        static,
+                        "CANDIDATE_BACKPRESSURE_BLOCKED",
+                        current_checkpoint=checkpoint,
+                    )
                 raw_result = await propose_batch(
                     identity, static, batch, requested_ids=missing
                 )
@@ -1474,6 +1589,27 @@ class SimpleAnalysisApplication:
                         identity, scope
                     )
                 if result.failure is not None or result.missing_ids:
+                    if result.failure is None or (
+                        result.failure.code not in BUDGET_PAUSE_CODES
+                    ):
+                        drained = await self._drain_candidate_children(
+                            run,
+                            identity,
+                            static,
+                            attempted_in_turn=attempted_in_turn,
+                            turn_id=turn_id,
+                            max_runnable=self._max_pending_candidate_children,
+                        )
+                        if drained is not None and (
+                            drained.error_code in BUDGET_PAUSE_CODES
+                        ):
+                            return SimpleAnalysisOutcome(
+                                identity=identity,
+                                display_analysis_id=run.display_analysis_id,
+                                status="PAUSED",
+                                current_stage=drained.current_stage,
+                                error_code=drained.error_code,
+                            )
                     for candidate_id in result.missing_ids:
                         if result.failure is not None and (
                             result.failure.code in BUDGET_PAUSE_CODES
@@ -1515,8 +1651,41 @@ class SimpleAnalysisApplication:
             self._store.save_candidate_batch_progress(
                 identity, scope, batch.batch_id, marker
             )
+            drained = await self._drain_candidate_children(
+                run,
+                identity,
+                static,
+                attempted_in_turn=attempted_in_turn,
+                turn_id=turn_id,
+                max_runnable=self._max_pending_candidate_children,
+            )
+            if drained is not None:
+                if drained.error_code in BUDGET_PAUSE_CODES:
+                    return SimpleAnalysisOutcome(
+                        identity=identity,
+                        display_analysis_id=run.display_analysis_id,
+                        status="PAUSED",
+                        current_stage=drained.current_stage,
+                        error_code=drained.error_code,
+                    )
+                if (
+                    incomplete is None
+                    or drained.status is StageStatus.FAILED
+                    and incomplete.status is StageStatus.BLOCKED
+                ):
+                    incomplete = drained
         if set(outcomes) != seen_candidate_ids or set(progress) - seen_batch_ids:
             raise ValueError("CANDIDATE_BATCH_PROGRESS_INVALID")
+        if incomplete is not None:
+            return SimpleAnalysisOutcome(
+                identity=identity,
+                display_analysis_id=run.display_analysis_id,
+                status=(
+                    "FAILED" if incomplete.status is StageStatus.FAILED else "BLOCKED"
+                ),
+                current_stage=incomplete.current_stage,
+                error_code=incomplete.error_code,
+            )
         return self._candidate_bootstrap_failure(
             run,
             identity,

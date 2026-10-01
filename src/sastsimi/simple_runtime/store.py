@@ -485,6 +485,20 @@ class SimpleCheckpointStore:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_candidate_child_claims (
+                    analysis_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    hypothesis_id TEXT NOT NULL,
+                    turn_id TEXT NOT NULL,
+                    PRIMARY KEY (
+                        analysis_id, workspace_id, commit_id, hypothesis_id
+                    )
+                )
+                """
+            )
             hypothesis_columns = {
                 row["name"]
                 for row in connection.execute(
@@ -1211,6 +1225,47 @@ class SimpleCheckpointStore:
             )
             for row in rows
         }
+
+    def clear_stale_hypothesis_claims(self, identity: CheckpointIdentity) -> None:
+        """Call only after acquiring the analysis lease and checking Codex cleanup."""
+
+        key = self._hypothesis_scope_key(identity)
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM simple_candidate_child_claims "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ?",
+                key,
+            )
+
+    def claim_hypothesis(
+        self, identity: CheckpointIdentity, hypothesis_id: str, turn_id: str
+    ) -> bool:
+        """Claim one child atomically, preventing duplicate concurrent starts."""
+
+        key = self._hypothesis_scope_key(identity)
+        if not hypothesis_id or not turn_id:
+            raise ValueError("CANDIDATE_CHILD_CLAIM_INVALID")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            inserted = connection.execute(
+                "INSERT OR IGNORE INTO simple_candidate_child_claims "
+                "(analysis_id, workspace_id, commit_id, hypothesis_id, turn_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (*key, hypothesis_id, turn_id),
+            )
+        return inserted.rowcount == 1
+
+    def release_hypothesis_claim(
+        self, identity: CheckpointIdentity, hypothesis_id: str, turn_id: str
+    ) -> None:
+        key = self._hypothesis_scope_key(identity)
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM simple_candidate_child_claims "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND hypothesis_id = ? AND turn_id = ?",
+                (*key, hypothesis_id, turn_id),
+            )
 
     def _register_candidate_hypothesis_connection(
         self,

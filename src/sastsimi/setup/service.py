@@ -73,6 +73,7 @@ class SetupChoices(BaseModel):
     hypothesis_feed: Literal["current", "facts_survey"] = "current"
     semgrep_fallback: bool = False
     max_parallel_hypotheses: int = Field(default=1, gt=0, le=32)
+    max_pending_candidate_children: int = Field(default=128, ge=64, le=8192)
     max_parallel_builds: int = Field(default=1, gt=0, le=32)
     max_parallel_containers: int = Field(default=1, gt=0, le=32)
     cursor_allow_on_demand: bool = False
@@ -483,6 +484,7 @@ class SetupService:
             hypothesis_feed=choices.hypothesis_feed,
             semgrep_fallback=choices.semgrep_fallback,
             max_parallel_hypotheses=choices.max_parallel_hypotheses,
+            max_pending_candidate_children=choices.max_pending_candidate_children,
             max_parallel_builds=choices.max_parallel_builds,
             max_parallel_containers=choices.max_parallel_containers,
             cursor_allow_on_demand=choices.cursor_allow_on_demand,
@@ -523,6 +525,7 @@ class SetupService:
             hypothesis_feed=choices.hypothesis_feed,
             semgrep_fallback=choices.semgrep_fallback,
             max_parallel_hypotheses=choices.max_parallel_hypotheses,
+            max_pending_candidate_children=choices.max_pending_candidate_children,
             max_parallel_builds=choices.max_parallel_builds,
             max_parallel_containers=choices.max_parallel_containers,
             cursor_allow_on_demand=choices.cursor_allow_on_demand,

@@ -145,6 +145,7 @@ class UserConfig(BaseModel):
     hypothesis_feed: Literal["current", "facts_survey"] = "current"
     semgrep_fallback: bool = False
     max_parallel_hypotheses: int = Field(default=1, gt=0, le=32)
+    max_pending_candidate_children: int = Field(default=128, ge=64, le=8192)
     max_parallel_builds: int = Field(default=1, gt=0, le=32)
     max_parallel_containers: int = Field(default=1, gt=0, le=32)
     cursor_allow_on_demand: bool = False
@@ -247,6 +248,7 @@ class UserConfig(BaseModel):
             f"hypothesis_feed = {_quoted(self.hypothesis_feed)}",
             f"semgrep_fallback = {str(self.semgrep_fallback).lower()}",
             f"max_parallel_hypotheses = {self.max_parallel_hypotheses}",
+            f"max_pending_candidate_children = {self.max_pending_candidate_children}",
             f"max_parallel_builds = {self.max_parallel_builds}",
             f"max_parallel_containers = {self.max_parallel_containers}",
             f"cursor_allow_on_demand = {str(self.cursor_allow_on_demand).lower()}",
@@ -317,6 +319,7 @@ class SimpleExecutionProfile(BaseModel):
     hypothesis_feed: Literal["current", "facts_survey"] = "current"
     semgrep_fallback: bool = False
     max_parallel_hypotheses: int = Field(default=1, gt=0, le=32)
+    max_pending_candidate_children: int = Field(default=128, ge=64, le=8192)
     max_parallel_builds: int = Field(default=1, gt=0, le=32)
     max_parallel_containers: int = Field(default=1, gt=0, le=32)
     cursor_allow_on_demand: bool = False
@@ -383,6 +386,7 @@ class SimpleExecutionProfile(BaseModel):
             f"hypothesis_feed = {_quoted(self.hypothesis_feed)}",
             f"semgrep_fallback = {str(self.semgrep_fallback).lower()}",
             f"max_parallel_hypotheses = {self.max_parallel_hypotheses}",
+            f"max_pending_candidate_children = {self.max_pending_candidate_children}",
             f"max_parallel_builds = {self.max_parallel_builds}",
             f"max_parallel_containers = {self.max_parallel_containers}",
             f"cursor_allow_on_demand = {str(self.cursor_allow_on_demand).lower()}",

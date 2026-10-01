@@ -195,6 +195,7 @@ def main(
         "--hypothesis-feed", choices=["current", "facts_survey"], default="current"
     )
     setup_parser.add_argument("--max-parallel-hypotheses", type=int, default=1)
+    setup_parser.add_argument("--max-pending-candidate-children", type=int, default=128)
     setup_parser.add_argument("--max-parallel-builds", type=int, default=1)
     setup_parser.add_argument("--max-parallel-containers", type=int, default=1)
     setup_parser.add_argument("--cursor-allow-on-demand", action="store_true")

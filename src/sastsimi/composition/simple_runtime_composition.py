@@ -406,6 +406,7 @@ def build_analysis_application(
         model=profile.model,
         recovery_factory=recovery_factory,
         max_parallel_hypotheses=profile.max_parallel_hypotheses,
+        max_pending_candidate_children=profile.max_pending_candidate_children,
         max_elapsed_seconds=profile.max_elapsed_seconds,
         max_tokens=profile.max_tokens,
         max_cost_minor_units=profile.max_cost_minor_units,
