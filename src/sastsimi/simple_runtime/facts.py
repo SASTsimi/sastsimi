@@ -103,8 +103,20 @@ def _names_in(node: ast.AST) -> set[str]:
 def _route_of(decorator: ast.expr) -> dict[str, Any] | None:
     if not isinstance(decorator, ast.Call):
         return None
-    verb = decorator.func.attr if isinstance(decorator.func, ast.Attribute) else None
-    if verb is None or verb.lower() not in _ROUTE_VERBS:
+    name = (
+        decorator.func.attr
+        if isinstance(decorator.func, ast.Attribute)
+        else decorator.func.id
+        if isinstance(decorator.func, ast.Name)
+        else None
+    )
+    if name is None:
+        return None
+    # ``@action``/``@list_route``/``@detail_route`` route by their own name,
+    # not the HTTP verb - that comes from their ``methods`` keyword instead,
+    # parsed the same way as any other route below.
+    is_custom_action = name in _ACTION_DECORATORS
+    if not is_custom_action and name.lower() not in _ROUTE_VERBS:
         return None
     # `@mock.patch(...)` is not a PATCH route; its receiver gives it away.
     if isinstance(decorator.func, ast.Attribute):
@@ -132,6 +144,7 @@ def _route_of(decorator: ast.expr) -> dict[str, Any] | None:
                 ]
             else:
                 methods = [ast.unparse(keyword.value)]
+    verb = methods[0].lower() if is_custom_action and methods else name
     return {
         "verb": verb,
         "path": path,
@@ -141,6 +154,60 @@ def _route_of(decorator: ast.expr) -> dict[str, Any] | None:
         else None,
         **({"dependencies": dependencies} if dependencies else {}),
     }
+
+
+# Django REST Framework's ``@action``/``@list_route``/``@detail_route``
+# decorators route by their own name; the verb comes from their ``methods``
+# keyword, read generically like any other route's.
+_ACTION_DECORATORS = frozenset({"action", "list_route", "detail_route"})
+
+# A class-based view dispatches by method *name* alone, with no decorator a
+# generic scan could ever find - Django's View, DRF's ViewSet/APIView and
+# Flask-RESTful's Resource all work this way.  The base-class hint below
+# keeps this from firing on an unrelated class that just happens to define a
+# method called ``get`` or ``create``.
+_CBV_BASE_HINTS = ("View", "ViewSet", "Resource", "APIView")
+_CBV_VERB_METHODS: dict[str, str] = {
+    "get": "GET",
+    "post": "POST",
+    "put": "PUT",
+    "patch": "PATCH",
+    "delete": "DELETE",
+    "head": "HEAD",
+    "options": "OPTIONS",
+    "list": "GET",
+    "create": "POST",
+    "retrieve": "GET",
+    "update": "PUT",
+    "partial_update": "PATCH",
+    "destroy": "DELETE",
+}
+
+
+def _cbv_routes(tree: ast.Module) -> dict[int, dict[str, Any]]:
+    """A synthesized route for each undecorated class-based-view method."""
+
+    routes: dict[int, dict[str, Any]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        bases = [_name(base) or "" for base in node.bases]
+        if not any(hint in base for base in bases for hint in _CBV_BASE_HINTS):
+            continue
+        for item in node.body:
+            if (
+                isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and not item.decorator_list
+                and item.name in _CBV_VERB_METHODS
+            ):
+                verb = _CBV_VERB_METHODS[item.name]
+                routes[id(item)] = {
+                    "verb": verb.lower(),
+                    "path": None,
+                    "methods": [verb],
+                    "router": node.name,
+                }
+    return routes
 
 
 def _injected(argument: ast.arg, default: ast.expr | None) -> bool:
@@ -340,10 +407,13 @@ def extract_flows(workspace: Path, sources: Sequence[str]) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
     for path, tree in trees.items():
         router_guards = _router_dependencies(tree)
+        cbv_routes = _cbv_routes(tree)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             routes = [r for r in map(_route_of, node.decorator_list) if r]
+            if not routes and id(node) in cbv_routes:
+                routes = [cbv_routes[id(node)]]
             if not routes:
                 continue
             arguments = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
