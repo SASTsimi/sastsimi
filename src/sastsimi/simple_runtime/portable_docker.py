@@ -840,9 +840,13 @@ class DirectEnvironmentPreparer:
         # Old pinned dependencies frequently need a native build - a C
         # extension, a database driver - that a bare Python image has no
         # toolchain for.  Installed once, cheap when nothing needs it.
+        # mealie's python-ldap needs libldap2-dev/libsasl2-dev (lber.h):
+        # without them its wheel build fails and the install layer falls
+        # back to no install at all, for every hypothesis in the run.
         build_tools = (
             "RUN apt-get update && apt-get install -y --no-install-recommends "
             "build-essential libpq-dev libjpeg-dev zlib1g-dev "
+            "libldap2-dev libsasl2-dev "
             "&& rm -rf /var/lib/apt/lists/*\n"
             if install_layer
             else ""
