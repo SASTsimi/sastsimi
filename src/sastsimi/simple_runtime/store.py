@@ -116,6 +116,15 @@ class CandidateBatchOutcomeRecord:
     result_ref: StoredDataRef
 
 
+@dataclass(frozen=True, slots=True)
+class AttackSurfaceIndexRecord:
+    static_bundle_hash: str
+    ast_manifest_hash: str
+    candidate_inventory_hash: str
+    candidate_count: int
+    index_ref: StoredDataRef
+
+
 class SimpleCheckpointStore:
     """Atomic checkpoint storage for the single-process local runtime."""
 
@@ -495,6 +504,24 @@ class SimpleCheckpointStore:
                     turn_id TEXT NOT NULL,
                     PRIMARY KEY (
                         analysis_id, workspace_id, commit_id, hypothesis_id
+                    )
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_attack_surface_indexes (
+                    analysis_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    scope_fingerprint TEXT NOT NULL,
+                    static_bundle_hash TEXT NOT NULL,
+                    ast_manifest_hash TEXT NOT NULL,
+                    candidate_inventory_hash TEXT NOT NULL,
+                    candidate_count INTEGER NOT NULL,
+                    index_ref_json TEXT NOT NULL,
+                    PRIMARY KEY (
+                        analysis_id, workspace_id, commit_id, scope_fingerprint
                     )
                 )
                 """
@@ -1236,6 +1263,86 @@ class SimpleCheckpointStore:
                 "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ?",
                 key,
             )
+
+    def save_attack_surface_index(
+        self,
+        identity: CheckpointIdentity,
+        scope_fingerprint: str,
+        *,
+        static_bundle_hash: str,
+        ast_manifest_hash: str,
+        candidate_inventory_hash: str,
+        candidate_count: int,
+        index_ref: StoredDataRef,
+    ) -> None:
+        key = self._candidate_scope_key(identity, scope_fingerprint)
+        encoded_ref = self._candidate_ref_json(identity, index_ref)
+        if (
+            not static_bundle_hash
+            or not ast_manifest_hash
+            or not candidate_inventory_hash
+            or candidate_count < 0
+        ):
+            raise ValueError("SURFACE_INDEX_CHECKPOINT_INVALID")
+        expected = (
+            static_bundle_hash,
+            ast_manifest_hash,
+            candidate_inventory_hash,
+            candidate_count,
+            encoded_ref,
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT static_bundle_hash, ast_manifest_hash, "
+                "candidate_inventory_hash, candidate_count, index_ref_json "
+                "FROM simple_attack_surface_indexes "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ?",
+                key,
+            ).fetchone()
+            if row is not None:
+                existing = (
+                    row["static_bundle_hash"],
+                    row["ast_manifest_hash"],
+                    row["candidate_inventory_hash"],
+                    row["candidate_count"],
+                    row["index_ref_json"],
+                )
+                if existing != expected:
+                    raise ValueError("SURFACE_INDEX_CHECKPOINT_CONFLICT")
+                return
+            connection.execute(
+                "INSERT INTO simple_attack_surface_indexes "
+                "(analysis_id, workspace_id, commit_id, scope_fingerprint, "
+                "static_bundle_hash, ast_manifest_hash, candidate_inventory_hash, "
+                "candidate_count, index_ref_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (*key, *expected),
+            )
+
+    def get_attack_surface_index(
+        self, identity: CheckpointIdentity, scope_fingerprint: str
+    ) -> AttackSurfaceIndexRecord | None:
+        key = self._candidate_scope_key(identity, scope_fingerprint)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT static_bundle_hash, ast_manifest_hash, "
+                "candidate_inventory_hash, candidate_count, index_ref_json "
+                "FROM simple_attack_surface_indexes "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ?",
+                key,
+            ).fetchone()
+        if row is None:
+            return None
+        return AttackSurfaceIndexRecord(
+            static_bundle_hash=str(row["static_bundle_hash"]),
+            ast_manifest_hash=str(row["ast_manifest_hash"]),
+            candidate_inventory_hash=str(row["candidate_inventory_hash"]),
+            candidate_count=int(row["candidate_count"]),
+            index_ref=StoredDataRef.model_validate_json(row["index_ref_json"]),
+        )
 
     def claim_hypothesis(
         self, identity: CheckpointIdentity, hypothesis_id: str, turn_id: str

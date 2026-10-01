@@ -21,12 +21,16 @@ from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 
 from .artifacts import SimpleArtifactRepository
 from .ast_facts import focus_ast_facts, index_ast_manifest, validate_ast_manifest
+from .attack_surfaces import (
+    build_attack_surface_index,
+    candidate_inventory_hash,
+)
 from .candidate_batches import (
     MAX_CANDIDATES_PER_BATCH,
     CandidateBatch,
     iter_candidate_batches,
 )
-from .candidates import ingest_static_candidates
+from .candidates import StaticCandidate, ingest_static_candidates
 from .discovery import BUDGET_PAUSE_CODES, CandidateDiscovery
 from .models import (
     STAGE_VERSION,
@@ -1117,6 +1121,10 @@ class SimpleAnalysisApplication:
             if isinstance(ast_summary, dict) and "format_version" in ast_summary
             else None
         )
+        if run.candidate_pipeline_version == 2 and isinstance(ast_summary, dict):
+            self._ensure_attack_surface_index(
+                identity, static, scope, artifacts, bundle, ast_summary
+            )
         prior = self._store.get(identity, SimpleStage.HYPOTHESIS_DONE)
         if (
             prior is None
@@ -1281,6 +1289,78 @@ class SimpleAnalysisApplication:
             )
             self._store.complete(checkpoint, self._stage_result(completed))
         return await self._run_candidate_hypotheses(run, identity, static, scope)
+
+    def _ensure_attack_surface_index(
+        self,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+        scope: str,
+        artifacts: SimpleArtifactRepository,
+        bundle: object,
+        ast_summary: dict[str, object],
+    ) -> StoredDataRef:
+        """Build once from all static candidates; validate the exact replay set."""
+
+        if not isinstance(bundle, dict):
+            raise ValueError("SURFACE_STATIC_BUNDLE_INVALID")
+        candidates: list[StaticCandidate] = []
+        after_id: str | None = None
+        while True:
+            page = self._store.list_candidates(
+                identity, scope, after_id=after_id, limit=128
+            )
+            if not page:
+                break
+            candidates.extend(page)
+            after_id = page[-1].candidate_id
+        inventory_hash = candidate_inventory_hash(candidates)
+        ast_hash = hashlib.sha256(canonical_bytes(ast_summary)).hexdigest()
+        existing = self._store.get_attack_surface_index(identity, scope)
+        if existing is not None:
+            if (
+                existing.static_bundle_hash != static.static_bundle_ref.content_hash
+                or existing.ast_manifest_hash != ast_hash
+                or existing.candidate_inventory_hash != inventory_hash
+                or existing.candidate_count != len(candidates)
+            ):
+                raise ValueError("SURFACE_INDEX_SCOPE_CHANGED")
+            payload = json.loads(artifacts.read(existing.index_ref))
+            if (
+                not isinstance(payload, dict)
+                or payload.get("kind") != "simple_attack_surface_index_v1"
+                or payload.get("scope_fingerprint") != scope
+                or payload.get("static_bundle_hash")
+                != static.static_bundle_ref.content_hash
+                or payload.get("ast_manifest_hash") != ast_hash
+                or payload.get("candidate_inventory_hash") != inventory_hash
+                or payload.get("candidate_count") != len(candidates)
+                or not isinstance(payload.get("surfaces"), list)
+                or not isinstance(payload.get("static_gaps"), list)
+            ):
+                raise ValueError("SURFACE_INDEX_CHECKPOINT_INVALID")
+            return existing.index_ref
+        index = build_attack_surface_index(
+            bundle, ast_summary, candidates, artifacts=artifacts
+        )
+        if (
+            index.scope_fingerprint != scope
+            or index.static_bundle_hash != static.static_bundle_ref.content_hash
+            or index.ast_manifest_hash != ast_hash
+            or index.candidate_inventory_hash != inventory_hash
+            or index.candidate_count != len(candidates)
+        ):
+            raise ValueError("SURFACE_INDEX_CHECKPOINT_INVALID")
+        index_ref = artifacts.put_json(index.to_json())
+        self._store.save_attack_surface_index(
+            identity,
+            scope,
+            static_bundle_hash=index.static_bundle_hash,
+            ast_manifest_hash=index.ast_manifest_hash,
+            candidate_inventory_hash=index.candidate_inventory_hash,
+            candidate_count=index.candidate_count,
+            index_ref=index_ref,
+        )
+        return index_ref
 
     @staticmethod
     def _candidate_batch_source_hash(

@@ -1411,6 +1411,15 @@ async def test_v2_batch_resume_reuses_zero_seed_candidates(tmp_path: Path) -> No
     assert len(progress) == 2
     assert all(record.status == "NO_HYPOTHESIS" for record in progress.values())
     assert store.hypothesis_count(identity) == 0
+    surface_record = store.get_attack_surface_index(identity, "scope-1")
+    assert surface_record is not None
+    surface_data = json.loads(
+        SimpleArtifactRepository(tmp_path / "data", identity).read(
+            surface_record.index_ref
+        )
+    )
+    assert surface_data["kind"] == "simple_attack_surface_index_v1"
+    assert surface_data["candidate_count"] == 2
 
 
 @pytest.mark.asyncio
