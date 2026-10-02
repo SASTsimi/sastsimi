@@ -357,6 +357,115 @@ async def test_unproven_agent_requirement_is_blocked(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_pinned_source_checkout_requirement_uses_tracked_python_file(
+    tmp_path: Path,
+) -> None:
+    workspace, commit, path, digest = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    docker = _Docker()
+
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        wheel_bundle_path=path,
+        wheel_bundle_sha256=digest,
+    ).prepare(
+        checkpoint,
+        {},
+        ("python:3.12", f"Source checkout at commit {commit} containing app.py"),
+    )
+
+    assert json.loads(artifacts.read(result.recipe_ref))["status"] == "BUILT"
+    assert len(docker.calls) == 1
+    context_archive = docker.calls[0][2]
+    assert context_archive is not None
+    with tarfile.open(fileobj=io.BytesIO(context_archive), mode="r:") as context:
+        assert "app.py" in context.getnames()
+
+
+def test_pinned_source_checkout_requirement_accepts_sha256_commit() -> None:
+    commit = "a" * 64
+    assert DirectEnvironmentPreparer._offline_agent_requirements(
+        (f"Source checkout at commit {commit} containing src/app.py",),
+        commit_id=commit,
+    ) == ((), ("src/app.py",))
+
+
+def test_pinned_source_checkout_requirement_accepts_unicode_spaced_path() -> None:
+    commit = "a" * 40
+    assert DirectEnvironmentPreparer._offline_agent_requirements(
+        (f"Source checkout at commit {commit} containing src/설정 파일.py",),
+        commit_id=commit,
+    ) == ((), ("src/설정 파일.py",))
+
+
+def test_pinned_source_checkout_requirement_accepts_file_first_wording() -> None:
+    commit = "a" * 40
+    assert DirectEnvironmentPreparer._offline_agent_requirements(
+        (f"Source checkout of src/app.py at commit {commit}",),
+        commit_id=commit,
+    ) == ((), ("src/app.py",))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "requirement_template",
+    [
+        "Source checkout at commit "
+        "0000000000000000000000000000000000000000 containing app.py",
+        "Source checkout at commit {commit} containing missing.py",
+        "Source checkout at commit {commit} containing ../app.py",
+        "Source checkout at commit {commit}, with its declared runtime "
+        "dependencies installed",
+        "A readable test file outside the app's root_path",
+    ],
+)
+async def test_unproven_source_checkout_requirement_is_blocked(
+    tmp_path: Path, requirement_template: str
+) -> None:
+    workspace, commit, path, digest = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    docker = _Docker()
+
+    with pytest.raises(ValueError, match="POC_OFFLINE_REQUIREMENT_UNSUPPORTED"):
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+            wheel_bundle_path=path,
+            wheel_bundle_sha256=digest,
+        ).prepare(checkpoint, {}, (requirement_template.format(commit=commit),))
+
+    assert docker.calls == []
+
+
+@pytest.mark.asyncio
+async def test_untracked_python_file_does_not_satisfy_source_checkout(
+    tmp_path: Path,
+) -> None:
+    workspace, commit, path, digest = _fixture(tmp_path)
+    (workspace / "untracked.py").write_text("pass\n", encoding="utf-8")
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    docker = _Docker()
+
+    with pytest.raises(ValueError, match="POC_OFFLINE_REQUIREMENT_UNSUPPORTED"):
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+            wheel_bundle_path=path,
+            wheel_bundle_sha256=digest,
+        ).prepare(
+            checkpoint,
+            {},
+            (f"Source checkout at commit {commit} containing untracked.py",),
+        )
+
+    assert docker.calls == []
+
+
+@pytest.mark.asyncio
 async def test_pip_inline_comment_is_accepted(tmp_path: Path) -> None:
     workspace, commit, path, digest = _fixture(tmp_path, "sample-pkg==1.0  # pinned\n")
     artifacts, checkpoint = _checkpoint(tmp_path, commit)
@@ -478,9 +587,13 @@ async def test_offline_dependency_failure_is_nonretryable_stage_block(
 ) -> None:
     _workspace, commit, _path, _digest = _fixture(tmp_path)
     artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    prompts: list[bytes] = []
 
     class _Client:
-        async def call(self, **_kwargs: object) -> SimpleLLMCallResult:
+        async def call(self, **kwargs: object) -> SimpleLLMCallResult:
+            prompt = kwargs["prompt"]
+            assert isinstance(prompt, bytes)
+            prompts.append(prompt)
             return SimpleLLMCallResult(
                 value={
                     "initial_assessment": "HOLD",
@@ -507,3 +620,5 @@ async def test_offline_dependency_failure_is_nonretryable_stage_block(
         await stage(checkpoint, {})
     assert blocked.value.failure.code == "POC_OFFLINE_DEPENDENCY_MISSING"
     assert blocked.value.failure.retryable is False
+    assert b"in-process PoC fixtures" in prompts[0]
+    assert b"already provided by the pinned checkout" in prompts[0]

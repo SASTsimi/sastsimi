@@ -29,6 +29,10 @@ from sastsimi.sandbox.docker_adapter import (
     DockerOperationError,
 )
 from sastsimi.sandbox.recipe_store import EnvironmentRecipeStore
+from sastsimi.static_analysis.file_scope import (
+    build_static_file_scope,
+    is_test_only_path,
+)
 
 from .artifacts import SimpleArtifactRepository
 from .models import CheckpointIdentity, SimpleStage, StageCheckpoint
@@ -47,6 +51,13 @@ _MAX_OUTPUT = 1024 * 1024
 _MAX_PINNED_CONTEXT_BYTES = 64 * 1024 * 1024
 _MAX_PINNED_FILES = 20_000
 _OFFLINE_BASE_IMAGE = "python:3.12-slim"
+_OFFLINE_PINNED_SOURCE = re.compile(
+    r"Source checkout at commit ((?:[0-9a-f]{40}|[0-9a-f]{64})) "
+    r"containing (.+\.py)"
+)
+_OFFLINE_PINNED_SOURCE_FILE_FIRST = re.compile(
+    r"Source checkout of (.+\.py) at commit ((?:[0-9a-f]{40}|[0-9a-f]{64}))"
+)
 _OFFLINE_MISSING = re.compile(
     rb"(?i)(?:no matching distribution found|could not find a version that satisfies|"
     rb"no matching distribution|package.*not found|missing build dependency|"
@@ -184,6 +195,7 @@ def build_pinned_context(
     stream = io.BytesIO()
     names = {"dockerfile", ".dockerignore"}
     total_bytes = len(dockerfile)
+    excluded_test_paths: frozenset[str] | None = None
 
     def add_member(
         archive: tarfile.TarFile, name: str, raw: bytes, mode: int = 0o644
@@ -231,6 +243,19 @@ def build_pinned_context(
             if EnvironmentRecipeStore._dockerignored(name, ignore_patterns):
                 continue
             if EnvironmentRecipeStore._looks_secret(name):
+                if is_test_only_path(root, name):
+                    if excluded_test_paths is None:
+                        try:
+                            tracked = tuple(path.decode("utf-8") for path in paths)
+                            scope = build_static_file_scope(root, tracked)
+                        except (UnicodeError, ValueError) as error:
+                            raise ValueError("PINNED_CONTEXT_UNSAFE") from error
+                        excluded_test_paths = frozenset(
+                            path for path, _reason in scope.excluded_test_files
+                        )
+                    if name in excluded_test_paths:
+                        # Test-only credentials never enter a product PoC image.
+                        continue
                 raise ValueError("PINNED_CONTEXT_SECRET_FILE_DENIED")
             target = root.joinpath(*parts)
             try:
@@ -371,19 +396,24 @@ class PortableDockerRuntime:
         labels: Mapping[str, str],
         context_archive: bytes | None = None,
     ) -> str:
+        builder_name: str | None = None
         if context_archive is not None:
             if self._network != "none":
                 raise ValueError("POC_OFFLINE_NETWORK_REQUIRED")
             _verify_context_archive(context_archive, dockerfile)
-            builder = await self._run(
-                ("buildx", "inspect", "default"), timeout_seconds=30
+            builder = await self._run(("buildx", "inspect"), timeout_seconds=30)
+            name_match = re.search(
+                rb"(?m)^Name:[ \t]*([A-Za-z0-9][A-Za-z0-9_.-]{0,127})[ \t]*$",
+                builder.stdout,
             )
             if (
                 builder.exit_code != 0
                 or builder.timed_out
+                or name_match is None
                 or re.search(rb"(?m)^Driver:\s*docker\s*$", builder.stdout) is None
             ):
                 raise ValueError("POC_OFFLINE_BUILDER_UNSUPPORTED")
+            builder_name = name_match.group(1).decode("ascii")
             cache_key += ":" + hashlib.sha256(context_archive).hexdigest()
         recipe_digest = hashlib.sha256(cache_key.encode()).hexdigest()
         tag = f"sastsimi-simple:{recipe_digest[:24]}"
@@ -405,8 +435,8 @@ class PortableDockerRuntime:
         args: list[str] = [
             "build",
         ]
-        if context_archive is not None:
-            args.extend(("--builder", "default"))
+        if builder_name is not None:
+            args.extend(("--builder", builder_name))
         args.extend(("--pull=false", "--network", self._network))
         build_labels = dict(labels)
         if context_archive is not None:
@@ -1093,7 +1123,11 @@ class DirectEnvironmentPreparer:
             raise ValueError("POC_WHEEL_ARCHIVE_PAIR_REQUIRED")
         if self._recovery_patch(checkpoint):
             raise ValueError("POC_OFFLINE_RECOVERY_PATCH_UNSUPPORTED")
-        extra_python_requirements = self._offline_agent_requirements(requirements)
+        extra_python_requirements, required_source_paths = (
+            self._offline_agent_requirements(
+                requirements, commit_id=checkpoint.identity.commit_id
+            )
+        )
         target_manifest = self._target_manifest_path(prior)
         if target_manifest is None:
             for name in ("requirements.txt", "pyproject.toml"):
@@ -1149,6 +1183,8 @@ class DirectEnvironmentPreparer:
                 paths = {member.name for member in archive}
         except KeyError as error:
             raise ValueError("POC_OFFLINE_MANIFEST_EXCLUDED") from error
+        if any(path not in paths for path in required_source_paths):
+            raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED")
         self._validate_offline_manifest(target_manifest, manifest, paths)
         dockerfile_ref = self._artifacts.put_bytes(dockerfile, "text/x-dockerfile")
         manifest_sha256 = hashlib.sha256(manifest).hexdigest()
@@ -1238,11 +1274,35 @@ class DirectEnvironmentPreparer:
         return ReproductionEnvironment(recipe_ref, image_digest)
 
     @staticmethod
-    def _offline_agent_requirements(requirements: tuple[str, ...]) -> tuple[str, ...]:
+    def _offline_agent_requirements(
+        requirements: tuple[str, ...], *, commit_id: str
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         accepted: list[str] = []
+        source_paths: list[str] = []
         for raw in requirements:
             item = raw.strip()
             if item.casefold() in {"python:3.12", "python 3.12"}:
+                continue
+            pinned_source = _OFFLINE_PINNED_SOURCE.fullmatch(item)
+            file_first_source = _OFFLINE_PINNED_SOURCE_FILE_FIRST.fullmatch(item)
+            if pinned_source is not None or file_first_source is not None:
+                if pinned_source is not None:
+                    source_commit, source_path = pinned_source.groups()
+                else:
+                    assert file_first_source is not None
+                    source_path, source_commit = file_first_source.groups()
+                if (
+                    source_commit != commit_id
+                    or len(source_path) > 512
+                    or source_path != source_path.strip()
+                    or source_path.startswith("/")
+                    or "\\" in source_path
+                    or ":" in source_path
+                    or any(ord(char) < 32 or ord(char) == 127 for char in source_path)
+                    or any(part in {"", ".", ".."} for part in source_path.split("/"))
+                ):
+                    raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED")
+                source_paths.append(source_path)
                 continue
             explicit_python = item.casefold().startswith("pip:")
             if explicit_python:
@@ -1261,7 +1321,7 @@ class DirectEnvironmentPreparer:
             if parsed.url is not None:
                 raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED")
             accepted.append(item)
-        return tuple(accepted)
+        return tuple(accepted), tuple(source_paths)
 
     @staticmethod
     def _offline_dockerfile(

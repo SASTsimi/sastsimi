@@ -5409,6 +5409,9 @@ def test_ast_saves_all_facts_by_file_without_total_cap(
         "path": "a.py",
         "line": 10_000,
         "name": "f",
+        "callee_kind": "DIRECT",
+        "receiver_kind": None,
+        "attribute_arg_kind": None,
     }
 
 

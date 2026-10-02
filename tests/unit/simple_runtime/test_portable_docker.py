@@ -113,7 +113,7 @@ class _ArchiveDocker(PortableDockerRuntime):
         self.calls.append((call, input_bytes))
         if call[:2] == ("buildx", "inspect"):
             return DockerCommandOutcome(
-                0, b"Name: default\nDriver: docker\n", b"", False
+                0, b"Name: desktop-linux\nDriver: docker\n", b"", False
             )
         if call[:2] == ("image", "inspect"):
             return DockerCommandOutcome(1, b"", b"not found", False)
@@ -274,6 +274,36 @@ def test_archive_context_honors_dockerignore_and_blocks_tracked_secret(
         build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
 
 
+def test_archive_context_omits_test_only_secret_fixture(tmp_path: Path) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    fixture = workspace / "tests" / "test_apps" / ".env"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text("SECRET=fixture-only\n", encoding="utf-8")
+    commit = _commit_fixture(workspace, "test fixture")
+
+    raw = build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        assert "app.py" in archive.getnames()
+        assert "tests/test_apps/.env" not in archive.getnames()
+        assert b"fixture-only" not in raw
+
+
+def test_archive_context_blocks_declared_product_secret_under_tests(
+    tmp_path: Path,
+) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    product = workspace / "tests" / ".env.prod.js"
+    product.parent.mkdir(parents=True)
+    product.write_text("export const value = 'dummy';\n", encoding="utf-8")
+    (workspace / "package.json").write_text(
+        '{"main":"./tests/.env.prod.js"}\n', encoding="utf-8"
+    )
+    commit = _commit_fixture(workspace, "declared product")
+
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_SECRET_FILE_DENIED"):
+        build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+
 def test_archive_context_preserves_executable_bit_and_rejects_filter(
     tmp_path: Path,
 ) -> None:
@@ -312,7 +342,8 @@ async def test_tar_build_uses_network_none(tmp_path: Path) -> None:
     args, input_bytes = next(
         (args, payload) for args, payload in docker.calls if args[0] == "build"
     )
-    assert args[:3] == ("build", "--builder", "default")
+    assert docker.calls[0][0] == ("buildx", "inspect")
+    assert args[:3] == ("build", "--builder", "desktop-linux")
     assert ("--network", "none") == args[
         args.index("--network") : args.index("--network") + 2
     ]

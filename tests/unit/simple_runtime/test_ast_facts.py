@@ -62,7 +62,9 @@ def test_ast_manifest_distinguishes_empty_parsed_file_from_unparsed_files(
     assert file_record == {
         "kind": "simple_python_ast_file_v2",
         "path": "empty.py",
-        "source_sha256": hashlib.sha256((workspace / "empty.py").read_bytes()).hexdigest(),
+        "source_sha256": hashlib.sha256(
+            (workspace / "empty.py").read_bytes()
+        ).hexdigest(),
         "facts": [],
     }
 

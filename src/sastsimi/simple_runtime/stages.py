@@ -1785,6 +1785,13 @@ minimal environment requirements needed to obtain decisive evidence. Provider
 or tool errors are not vulnerability FALSE.
 For Python dependencies, use `pip:<PEP 508 requirement>`; for the Python 3.12
 runtime use `python:3.12`. Do not invent dependency versions or tools.
+The source is already provided by the pinned checkout; do not list that checkout
+as an environment requirement. Describe in-process PoC fixtures (objects, temp
+files, local test clients) and how the PoC creates them in reproduction_goal,
+not in environment_requirements. List external services, credentials, network
+callers, or other unprovided prerequisites in environment_requirements; never
+assume they exist just to make a PoC run. For offline execution, such unmet
+prerequisites must remain blocked rather than being claimed as verified.
 """,
             schema=_object_schema(
                 {
