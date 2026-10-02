@@ -16,6 +16,7 @@ dependencies = [
   "platformdirs>=4,<5",
   "openai>=2,<3",
   "cursor-sdk==1.0.32",
+  "packaging>=24,<27",
 ]
 
 [project.scripts]

@@ -311,6 +311,8 @@ class SimpleExecutionProfile(BaseModel):
     max_elapsed_seconds: ElapsedLimit = "unlimited"
     static_scan_pass_seconds: int = Field(default=180, gt=0)
     docker_network: Literal["NONE", "BRIDGE"]
+    poc_wheel_archive_path: Path | None = None
+    poc_wheel_archive_sha256: str | None = None
     tools: dict[str, SimpleToolBinding]
     agent_models: dict[str, str] = Field(default_factory=dict)
     llm_timeout_seconds: int = Field(default=180, gt=0, le=3600)
@@ -331,6 +333,11 @@ class SimpleExecutionProfile(BaseModel):
     def validate_paths(cls, value: object) -> Path:
         return _local_path(value)
 
+    @field_validator("poc_wheel_archive_path", mode="before")
+    @classmethod
+    def validate_wheel_archive_path(cls, value: object) -> Path | None:
+        return None if value is None else _local_path(value)
+
     @field_validator("provider_profile_ref", "provider")
     @classmethod
     def safe_names(cls, value: str) -> str:
@@ -347,6 +354,15 @@ class SimpleExecutionProfile(BaseModel):
 
     @model_validator(mode="after")
     def validate_credential(self) -> Self:
+        if (self.poc_wheel_archive_path is None) != (
+            self.poc_wheel_archive_sha256 is None
+        ):
+            raise ValueError("POC_WHEEL_ARCHIVE_PAIR_REQUIRED")
+        if (
+            self.poc_wheel_archive_sha256 is not None
+            and re.fullmatch(r"[0-9a-f]{64}", self.poc_wheel_archive_sha256) is None
+        ):
+            raise ValueError("POC_WHEEL_ARCHIVE_DIGEST_INVALID")
         _credential_ref(self.auth_mode, self.credential_ref)
         if self.provider == "cursor" and not (
             self.auth_mode == "API_KEY"
@@ -380,6 +396,16 @@ class SimpleExecutionProfile(BaseModel):
             f"max_tokens = {_limit_toml(self.max_tokens)}",
             f"max_elapsed_seconds = {_limit_toml(self.max_elapsed_seconds)}",
             f"docker_network = {_quoted(self.docker_network)}",
+            *(
+                [
+                    "poc_wheel_archive_path = "
+                    f"{_quoted(self.poc_wheel_archive_path.as_posix())}",
+                    "poc_wheel_archive_sha256 = "
+                    f"{_quoted(self.poc_wheel_archive_sha256)}",
+                ]
+                if self.poc_wheel_archive_path is not None
+                else []
+            ),
             f"llm_timeout_seconds = {self.llm_timeout_seconds}",
             f"llm_max_retries = {self.llm_max_retries}",
             f"llm_max_concurrency = {self.llm_max_concurrency}",
