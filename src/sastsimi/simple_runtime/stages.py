@@ -971,7 +971,12 @@ artifact. Do not reinterpret an execution error as DISPROVED.
             or not isinstance(recipe.get("attempt_id"), str)
             or not recipe["attempt_id"]
             or recipe.get("dockerfile_source")
-            not in {"REPOSITORY_DOCKERFILE", "GENERATED", "GENERATED_NO_INSTALL"}
+            not in {
+                "REPOSITORY_DOCKERFILE",
+                "GENERATED",
+                "GENERATED_NO_INSTALL",
+                "GENERATED_OFFLINE_WHEELS",
+            }
             or not isinstance(recipe.get("degraded"), bool)
         ):
             raise StageFailed(
@@ -982,6 +987,48 @@ artifact. Do not reinterpret an execution error as DISPROVED.
                     evidence_refs=evidence_refs,
                 )
             )
+        if recipe["dockerfile_source"] == "GENERATED_OFFLINE_WHEELS":
+
+            def valid_sha(value: object) -> bool:
+                return (
+                    isinstance(value, str)
+                    and len(value) == 64
+                    and all(character in "0123456789abcdef" for character in value)
+                )
+
+            try:
+                wheel_ref = StoredDataRef.model_validate(
+                    recipe.get("wheel_archive_ref")
+                )
+                dockerfile_ref = StoredDataRef.model_validate(
+                    recipe.get("dockerfile_ref")
+                )
+                wheel_sha = recipe.get("wheel_archive_sha256")
+                base_digest = recipe.get("base_image_digest")
+                valid = (
+                    recipe.get("build_network") == "none"
+                    and valid_sha(wheel_sha)
+                    and valid_sha(recipe.get("manifest_sha256"))
+                    and valid_sha(recipe.get("context_sha256"))
+                    and isinstance(base_digest, str)
+                    and base_digest.startswith("sha256:")
+                    and valid_sha(base_digest.removeprefix("sha256:"))
+                    and wheel_ref.content_hash == wheel_sha
+                    and hashlib.sha256(self._artifacts.read(wheel_ref)).hexdigest()
+                    == wheel_sha
+                    and bool(self._artifacts.read(dockerfile_ref))
+                )
+            except (OSError, TypeError, ValueError):
+                valid = False
+            if not valid:
+                raise StageFailed(
+                    StageFailure(
+                        code="POC_ENVIRONMENT_RECIPE_INVALID",
+                        retryable=False,
+                        safe_message="Offline PoC recipe provenance is incomplete",
+                        evidence_refs=evidence_refs,
+                    )
+                )
         initial = prior.get(SimpleStage.VERIFICATION_INITIAL_DONE)
         image_bound = (
             isinstance(candidate.image_digest, str)
@@ -1736,6 +1783,8 @@ Pro and Con evidence. Return an initial TRUE, FALSE, or HOLD assessment, but do
 not call it the final verdict. Define one concrete reproduction goal and the
 minimal environment requirements needed to obtain decisive evidence. Provider
 or tool errors are not vulnerability FALSE.
+For Python dependencies, use `pip:<PEP 508 requirement>`; for the Python 3.12
+runtime use `python:3.12`. Do not invent dependency versions or tools.
 """,
             schema=_object_schema(
                 {
@@ -1792,7 +1841,7 @@ or tool errors are not vulnerability FALSE.
             raise StageBlocked(
                 StageFailure(
                     code=code[:160],
-                    retryable=True,
+                    retryable=not code.startswith(("POC_OFFLINE_", "WHEEL_")),
                     safe_message="Reproduction environment did not complete",
                     evidence_refs=(output_ref, *attempt_refs, *failed_recipe_refs),
                 )

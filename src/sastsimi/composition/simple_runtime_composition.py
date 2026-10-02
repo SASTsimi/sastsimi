@@ -351,6 +351,13 @@ def build_analysis_application(
             docker=docker,
             artifacts=artifacts,
             workspace=static.workspace_path,
+            wheel_bundle_path=profile.poc_wheel_archive_path,
+            wheel_bundle_sha256=profile.poc_wheel_archive_sha256,
+            git_executable=(
+                str(profile.tools["git"].executable_path)
+                if "git" in profile.tools
+                else "git"
+            ),
         )
         try:
             repository_url = runtime_store.require_analysis_run(

@@ -111,6 +111,10 @@ class _ArchiveDocker(PortableDockerRuntime):
         del timeout_seconds
         call = tuple(args)
         self.calls.append((call, input_bytes))
+        if call[:2] == ("buildx", "inspect"):
+            return DockerCommandOutcome(
+                0, b"Name: default\nDriver: docker\n", b"", False
+            )
         if call[:2] == ("image", "inspect"):
             return DockerCommandOutcome(1, b"", b"not found", False)
         return DockerCommandOutcome(0, b"", b"", False)
@@ -226,24 +230,175 @@ def test_archive_context_rejects_source_symlink_or_changed_content(
         build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
 
 
+def _commit_fixture(workspace: Path, message: str) -> str:
+    subprocess.run(("git", "-C", str(workspace), "add", "."), check=True)
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            message,
+        ),
+        check=True,
+    )
+    return (
+        subprocess.check_output(("git", "-C", str(workspace), "rev-parse", "HEAD"))
+        .decode("ascii")
+        .strip()
+    )
+
+
+def test_archive_context_honors_dockerignore_and_blocks_tracked_secret(
+    tmp_path: Path,
+) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    (workspace / ".env").write_text("SECRET=private\n", encoding="utf-8")
+    (workspace / ".dockerignore").write_text(".env\n", encoding="utf-8")
+    commit = _commit_fixture(workspace, "ignore")
+
+    raw = build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        assert ".env" not in archive.getnames()
+        assert ".dockerignore" not in archive.getnames()
+
+    (workspace / ".dockerignore").write_text("# no exclusions\n", encoding="utf-8")
+    commit = _commit_fixture(workspace, "unignore")
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_SECRET_FILE_DENIED"):
+        build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+
+def test_archive_context_preserves_executable_bit_and_rejects_filter(
+    tmp_path: Path,
+) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    subprocess.run(
+        ("git", "-C", str(workspace), "update-index", "--chmod=+x", "app.py"),
+        check=True,
+    )
+    commit = _commit_fixture(workspace, "executable")
+    raw = build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        assert archive.getmember("app.py").mode == 0o755
+
+    (workspace / ".gitattributes").write_text("app.py filter=lfs\n", encoding="utf-8")
+    commit = _commit_fixture(workspace, "filter")
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_FILTER_UNSUPPORTED"):
+        build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+
 @pytest.mark.asyncio
 async def test_tar_build_uses_network_none(tmp_path: Path) -> None:
     docker = _ArchiveDocker()
-    raw = b"verified-tar"
+    workspace, commit = _committed_workspace(tmp_path)
+    dockerfile = b"FROM python:3.12-slim\n"
+    raw = build_pinned_context(workspace, commit, dockerfile, {})
 
     with pytest.raises(DockerOperationError, match="DOCKER_IMAGE_INSPECT_FAILED"):
         await docker.build_or_reuse(
             workspace=tmp_path,
-            dockerfile=b"FROM python:3.12-slim\n",
+            dockerfile=dockerfile,
             cache_key="archive-build",
             labels={},
             context_archive=raw,
         )
 
-    args, input_bytes = docker.calls[1]
-    assert args[:4] == ("build", "--pull=false", "--network", "none")
+    args, input_bytes = next(
+        (args, payload) for args, payload in docker.calls if args[0] == "build"
+    )
+    assert args[:3] == ("build", "--builder", "default")
+    assert ("--network", "none") == args[
+        args.index("--network") : args.index("--network") + 2
+    ]
     assert args[-3:] == ("--file", "Dockerfile", "-")
     assert input_bytes == raw
+
+
+@pytest.mark.asyncio
+async def test_tar_build_rejects_unverified_archive(tmp_path: Path) -> None:
+    docker = _ArchiveDocker()
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_UNSAFE"):
+        await docker.build_or_reuse(
+            workspace=tmp_path,
+            dockerfile=b"FROM python:3.12-slim\n",
+            cache_key="invalid",
+            labels={},
+            context_archive=b"not a tar",
+        )
+    assert docker.calls == []
+
+
+@pytest.mark.asyncio
+async def test_archive_cache_hit_requires_matching_recipe_label(tmp_path: Path) -> None:
+    workspace, commit = _committed_workspace(tmp_path)
+    dockerfile = b"FROM python:3.12-slim\n"
+    raw = build_pinned_context(workspace, commit, dockerfile, {})
+
+    class _WrongCache(_ArchiveDocker):
+        async def _run(
+            self,
+            args: Sequence[str],
+            *,
+            timeout_seconds: int,
+            input_bytes: bytes | None = None,
+        ) -> DockerCommandOutcome:
+            del timeout_seconds
+            self.calls.append((tuple(args), input_bytes))
+            if tuple(args)[:2] == ("buildx", "inspect"):
+                return DockerCommandOutcome(
+                    0, b"Name: default\nDriver: docker\n", b"", False
+                )
+            return DockerCommandOutcome(
+                0, b"0" * 64 + b"|sha256:" + b"a" * 64 + b"\n", b"", False
+            )
+
+    docker = _WrongCache()
+    with pytest.raises(ValueError, match="POC_OFFLINE_CACHE_MISMATCH"):
+        await docker.build_or_reuse(
+            workspace=workspace,
+            dockerfile=dockerfile,
+            cache_key="offline",
+            labels={},
+            context_archive=raw,
+        )
+    assert len(docker.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_archive_build_rejects_non_engine_builder(tmp_path: Path) -> None:
+    workspace, commit = _committed_workspace(tmp_path)
+    dockerfile = b"FROM python:3.12-slim\n"
+    raw = build_pinned_context(workspace, commit, dockerfile, {})
+
+    class _ContainerBuilder(_ArchiveDocker):
+        async def _run(
+            self,
+            args: Sequence[str],
+            *,
+            timeout_seconds: int,
+            input_bytes: bytes | None = None,
+        ) -> DockerCommandOutcome:
+            del timeout_seconds
+            self.calls.append((tuple(args), input_bytes))
+            return DockerCommandOutcome(
+                0, b"Name: default\nDriver: docker-container\n", b"", False
+            )
+
+    docker = _ContainerBuilder()
+    with pytest.raises(ValueError, match="POC_OFFLINE_BUILDER_UNSUPPORTED"):
+        await docker.build_or_reuse(
+            workspace=workspace,
+            dockerfile=dockerfile,
+            cache_key="offline",
+            labels={},
+            context_archive=raw,
+        )
+    assert len(docker.calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -568,6 +723,7 @@ async def test_reproduction_container_keeps_baked_workspace_writable() -> None:
     assert create[0] == "create"
     assert "--read-only" not in create
     assert "--network" in create
+    assert create[create.index("--network") + 1] == "none"
     assert "no-new-privileges" in create
 
 

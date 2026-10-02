@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -180,6 +181,7 @@ def _poc_with_recipe(
     recipe_image_digest: str | None = f"sha256:{'2' * 64}",
     client: _InterpretationClient | None = None,
     docker: _Docker | None = None,
+    offline_metadata: bool = True,
 ) -> tuple[
     PoCExecutionStage,
     StageCheckpoint,
@@ -206,6 +208,22 @@ def _poc_with_recipe(
     )
     recipe_ref = None
     if recipe_source is not None:
+        offline_fields: dict[str, object] = {}
+        if recipe_source == "GENERATED_OFFLINE_WHEELS" and offline_metadata:
+            wheel_bytes = b"validated test wheel bundle"
+            wheel_ref = artifacts.put_bytes(wheel_bytes, "application/x-tar")
+            dockerfile_ref = artifacts.put_bytes(
+                b"FROM sastsimi-offline-base:verified\n", "text/x-dockerfile"
+            )
+            offline_fields = {
+                "wheel_archive_ref": wheel_ref.model_dump(mode="json"),
+                "wheel_archive_sha256": hashlib.sha256(wheel_bytes).hexdigest(),
+                "manifest_sha256": "a" * 64,
+                "context_sha256": "b" * 64,
+                "base_image_digest": "sha256:" + "c" * 64,
+                "build_network": "none",
+                "dockerfile_ref": dockerfile_ref.model_dump(mode="json"),
+            }
         recipe_ref = (
             artifacts.put_bytes(b"{", "application/json")
             if corrupt_recipe
@@ -220,6 +238,7 @@ def _poc_with_recipe(
                     "dockerfile_source": recipe_source,
                     "degraded": degraded,
                     "status": "BUILT",
+                    **offline_fields,
                     **(
                         {"image_digest": recipe_image_digest}
                         if recipe_image_digest is not None
@@ -262,6 +281,37 @@ def _poc_with_recipe(
         artifacts,
         containers,
     )
+
+
+@pytest.mark.asyncio
+async def test_verified_offline_recipe_may_reach_poc_validation(tmp_path: Path) -> None:
+    stage, current, prior, artifacts, containers = _poc_with_recipe(
+        tmp_path, recipe_source="GENERATED_OFFLINE_WHEELS", degraded=False
+    )
+
+    result = await stage(current, prior)
+
+    assert result.validated_poc_ref is not None
+    assert json.loads(artifacts.read(result.validated_poc_ref))["kind"] == (
+        "simple_validated_poc"
+    )
+    assert containers.acquired == 1
+
+
+@pytest.mark.asyncio
+async def test_offline_recipe_without_provenance_cannot_validate_poc(
+    tmp_path: Path,
+) -> None:
+    stage, current, prior, _artifacts, containers = _poc_with_recipe(
+        tmp_path,
+        recipe_source="GENERATED_OFFLINE_WHEELS",
+        degraded=False,
+        offline_metadata=False,
+    )
+    with pytest.raises(StageFailed) as failed:
+        await stage(current, prior)
+    assert failed.value.failure.code == "POC_ENVIRONMENT_RECIPE_INVALID"
+    assert containers.acquired == 0
 
 
 @pytest.mark.asyncio
