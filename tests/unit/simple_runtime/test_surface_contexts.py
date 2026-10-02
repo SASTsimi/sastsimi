@@ -18,6 +18,7 @@ from sastsimi.simple_runtime.attack_surfaces import (
 from sastsimi.simple_runtime.models import CheckpointIdentity
 from sastsimi.simple_runtime.surface_contexts import (
     SurfaceContext,
+    expanded_surface_contexts,
     iter_uncovered_surface_contexts,
 )
 
@@ -285,3 +286,124 @@ def test_unsafe_source_path_fails_instead_of_reading_host_file(tmp_path: Path) -
                 workspace=workspace,
             )
         )
+
+
+def test_enclosing_function_changes_context(tmp_path: Path) -> None:
+    source = (
+        "def route(value):\n"
+        "    normalized = helper(value)\n"
+        + "    # spacer\n" * 20
+        + "    check_permission(normalized)\n"
+        + "def helper(value):\n"
+        + "    return value.strip()\n"
+    )
+    fixture = _setup(tmp_path, source, surface_line=23)
+    index, _coverage, artifacts, summary, workspace = fixture
+    first = _contexts(fixture)[0]
+    expanded = expanded_surface_contexts(
+        index,
+        index.surfaces[0],
+        artifacts=artifacts,
+        ast_summary=summary,
+        workspace=workspace,
+    )
+    first_payload = json.loads(artifacts.read(first.context_ref))
+    expanded_payload = json.loads(artifacts.read(expanded[0].context_ref))
+
+    assert first_payload["kind"] == "simple_surface_context_v1"
+    assert all(row["line"] != 2 for row in first_payload["source_lines"])
+    assert expanded_payload["kind"] == "simple_surface_context_v2"
+    assert {2, 23, 24, 25} <= {row["line"] for row in expanded_payload["source_lines"]}
+    assert expanded[0].context_id != first.context_id
+
+
+def test_expansion_stays_within_budget_and_splits(tmp_path: Path) -> None:
+    source = "def route(value):\n" + "    # " + "x" * 110 + "\n" * 1
+    source += "    # filler\n" * 110 + "    check_permission(value)\n"
+    fixture = _setup(tmp_path, source, surface_line=113)
+    index, _coverage, artifacts, summary, workspace = fixture
+
+    expanded = expanded_surface_contexts(
+        index,
+        index.surfaces[0],
+        artifacts=artifacts,
+        ast_summary=summary,
+        workspace=workspace,
+        budget_bytes=2400,
+    )
+    assert len(expanded) > 1
+    assert all(item.prompt_bytes <= 2400 for item in expanded)
+    assert [item.part_index for item in expanded] == list(range(len(expanded)))
+    assert all(item.part_count == len(expanded) for item in expanded)
+    assert all(
+        any(
+            row["line"] == 113
+            for row in json.loads(artifacts.read(item.context_ref))["source_lines"]
+        )
+        for item in expanded
+    )
+
+
+def test_oversized_line_and_external_file_remain_insufficient(tmp_path: Path) -> None:
+    giant = "    check_permission('" + "x" * 70_000 + "')"
+    fixture = _setup(tmp_path, "def route():\n" + giant + "\n", surface_line=2)
+    index, _coverage, artifacts, summary, workspace = fixture
+
+    expanded = expanded_surface_contexts(
+        index,
+        index.surfaces[0],
+        artifacts=artifacts,
+        ast_summary=summary,
+        workspace=workspace,
+    )
+    payload = json.loads(artifacts.read(expanded[0].context_ref))
+    assert payload["source_status"] == "PARTIAL"
+    assert {"line": 2, "reason": "SOURCE_LINE_TOO_LARGE"} in payload[
+        "unavailable_source_lines"
+    ]
+    assert giant not in artifacts.read(expanded[0].context_ref).decode()
+
+    external_root = tmp_path / "external"
+    external_root.mkdir()
+    external_fixture = _setup(
+        external_root,
+        "def route(value):\n    return super().eval(value)\n",
+        surface_line=2,
+    )
+    other_index, _coverage, other_artifacts, other_summary, other_workspace = (
+        external_fixture
+    )
+    external_surface = replace(other_index.surfaces[0], symbol="super().eval")
+    other_index = replace(
+        other_index,
+        surfaces=(external_surface, *other_index.surfaces[1:]),
+    )
+    external = expanded_surface_contexts(
+        other_index,
+        external_surface,
+        artifacts=other_artifacts,
+        ast_summary=other_summary,
+        workspace=other_workspace,
+    )
+    external_payload = json.loads(other_artifacts.read(external[0].context_ref))
+    assert external_payload["unavailable_implementation"] == (
+        "CALL_RESULT_IMPLEMENTATION_NOT_IN_SAME_FILE"
+    )
+
+
+def test_expansion_redacts_secrets(tmp_path: Path) -> None:
+    secret = "sk-1234567890abcdefgh"
+    source = f'def route(value):\n    token = "{secret}"\n    check_permission(value)\n'
+    fixture = _setup(tmp_path, source)
+    index, _coverage, artifacts, summary, workspace = fixture
+
+    expanded = expanded_surface_contexts(
+        index,
+        index.surfaces[0],
+        artifacts=artifacts,
+        ast_summary=summary,
+        workspace=workspace,
+    )
+    raw = artifacts.read(expanded[0].context_ref)
+    assert secret.encode() not in raw
+    assert b"REDACTED" in raw

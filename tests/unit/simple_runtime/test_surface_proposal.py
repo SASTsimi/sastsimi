@@ -253,6 +253,62 @@ def _as_part(
     )
 
 
+def _as_v2(
+    artifacts: SimpleArtifactRepository, context: SurfaceContext
+) -> SurfaceContext:
+    payload = json.loads(artifacts.read(context.context_ref))
+    payload["kind"] = "simple_surface_context_v2"
+    payload["selection_scope"] = "ENCLOSING_DEFINITION"
+    payload["selected_source_line_count"] = 2
+    payload["unavailable_implementation"] = None
+    ref = artifacts.put_json(payload)
+    context_id = hashlib.sha256(
+        canonical_bytes(
+            {
+                "kind": "simple_surface_context_id_v2",
+                "scope_fingerprint": payload["scope_fingerprint"],
+                "surface_id": context.surface_id,
+                "part_index": context.part_index,
+                "context_hash": ref.content_hash,
+            }
+        )
+    ).hexdigest()
+    return replace(
+        context,
+        context_ref=ref,
+        context_hash=ref.content_hash,
+        context_id=context_id,
+        prompt_bytes=len(artifacts.read(ref)),
+    )
+
+
+@pytest.mark.asyncio
+async def test_v1_and_v2_proposals_require_exact_source_location(
+    tmp_path: Path,
+) -> None:
+    bootstrap, client, identity, static, context, artifacts = _fixture(tmp_path)
+    expanded = _as_v2(artifacts, context)
+    client.replies.extend(
+        [
+            _reply(
+                expanded.context_id,
+                status="HYPOTHESES",
+                hypotheses=[_proposal("other.py:2")],
+            ),
+            _reply(expanded.context_id, status="HYPOTHESES", hypotheses=[_proposal()]),
+        ]
+    )
+
+    result = await bootstrap.propose_surface(identity, static, expanded)
+
+    assert not isinstance(result, StageFailure)
+    assert len(client.requests) == 2
+    assert result.status == "HYPOTHESES"
+    assert json.loads(artifacts.read(result.result_ref))["kind"] == (
+        "simple_surface_hypothesis_result_v2"
+    )
+
+
 @pytest.mark.asyncio
 async def test_surface_hypothesis_is_bound_to_exact_visible_evidence(
     tmp_path: Path,

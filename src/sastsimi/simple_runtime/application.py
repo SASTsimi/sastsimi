@@ -2837,12 +2837,19 @@ class SimpleAnalysisApplication:
         expected_locations: tuple[str, ...] | None = None,
     ) -> None:
         value = json.loads(artifacts.read(result_ref))
+        context_payload = json.loads(artifacts.read(context.context_ref))
+        expected_kind = (
+            "simple_surface_hypothesis_result_v2"
+            if isinstance(context_payload, dict)
+            and context_payload.get("kind") == "simple_surface_context_v2"
+            else "simple_surface_hypothesis_result_v1"
+        )
         seed_ids = value.get("seed_ids") if isinstance(value, dict) else None
         parts = value.get("reviewed_parts") if isinstance(value, dict) else None
         locations = value.get("evidence_locations") if isinstance(value, dict) else None
         if (
             not isinstance(value, dict)
-            or value.get("kind") != "simple_surface_hypothesis_result_v1"
+            or value.get("kind") != expected_kind
             or value.get("analysis_id") != analysis_id
             or value.get("surface_id") != context.surface_id
             or value.get("context_id") != context.context_id

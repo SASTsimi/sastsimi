@@ -6,6 +6,7 @@ surface was reviewed or that unavailable source contains no vulnerability.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 from collections.abc import Iterator, Mapping
@@ -386,3 +387,230 @@ def iter_uncovered_surface_contexts(
                     int | None, payload["omitted_ast_fact_count"]
                 ),
             )
+
+
+def _expanded_source_lines(
+    prepared: PreparedFileContext, surface: AttackSurface
+) -> tuple[tuple[int, ...], str]:
+    """Prefer the enclosing definition and direct same-file callees."""
+
+    if not prepared.source_lines:
+        return (), "SOURCE_UNAVAILABLE"
+    try:
+        tree = ast.parse("\n".join(prepared.source_lines) + "\n")
+    except (SyntaxError, ValueError):
+        # Redaction can invalidate syntax; retain visible redacted lines instead.
+        return tuple(range(1, len(prepared.source_lines) + 1)), "FULL_FILE_FALLBACK"
+    definitions = tuple(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and isinstance(getattr(node, "end_lineno", None), int)
+    )
+    enclosing = [
+        node
+        for node in definitions
+        if node.lineno <= surface.line <= cast(int, node.end_lineno)
+    ]
+    if not enclosing:
+        return tuple(range(1, len(prepared.source_lines) + 1)), "FULL_FILE"
+    scope = min(
+        enclosing,
+        key=lambda node: (cast(int, node.end_lineno) - node.lineno, -node.lineno),
+    )
+    chosen = set(range(scope.lineno, cast(int, scope.end_lineno) + 1))
+    called = {
+        node.func.id
+        for node in ast.walk(scope)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    for node in definitions:
+        if node.name in called and node is not scope:
+            chosen.update(range(node.lineno, cast(int, node.end_lineno) + 1))
+    chosen.add(surface.line)
+    return tuple(sorted(chosen)), "ENCLOSING_DEFINITION"
+
+
+def expanded_surface_contexts(
+    index: SurfaceIndex,
+    surface: AttackSurface,
+    *,
+    artifacts: SimpleArtifactRepository,
+    ast_summary: Mapping[str, object],
+    workspace: Path,
+    budget_bytes: int = 64 * 1024,
+) -> tuple[SurfaceContext, ...]:
+    """Persist one deterministic, redacted same-file second look in bounded parts."""
+
+    if budget_bytes < 512 or budget_bytes > 64 * 1024:
+        raise ValueError("SURFACE_CONTEXT_BUDGET_INVALID")
+    if (
+        surface not in index.surfaces
+        or str(artifacts.identity.workspace_id) != index.workspace_id
+    ):
+        raise ValueError("SURFACE_CONTEXT_SCOPE_MISMATCH")
+    manifest_index = index_ast_manifest(artifacts, ast_summary)
+    prepared = prepare_file_context(
+        artifacts, ast_summary, workspace, surface.path, manifest_index=manifest_index
+    )
+    manifest_entry = manifest_index.get(surface.path)
+    expected_source = (
+        manifest_entry.get("source_sha256") if manifest_entry is not None else None
+    )
+    if expected_source is not None and prepared.source_sha256 != expected_source:
+        raise ValueError("SURFACE_CONTEXT_SOURCE_CHANGED")
+    selected, selection_scope = _expanded_source_lines(prepared, surface)
+    if prepared.source_unavailable_reason is None:
+        all_lines = tuple(range(1, len(prepared.source_lines) + 1))
+        full_items = [
+            {"line": line, "text": prepared.source_lines[line - 1]}
+            for line in all_lines
+        ]
+        full_probe = _surface_payload(
+            index,
+            surface,
+            prepared,
+            full_items,
+            list(prepared.ast_facts),
+            [],
+            [],
+            source_window_count=len(all_lines),
+            ast_nearby_count=len(prepared.ast_facts),
+            part_index=0,
+            part_count=1,
+        )
+        full_probe["kind"] = "simple_surface_context_v2"
+        full_probe["selection_scope"] = "FULL_FILE"
+        if len(canonical_bytes(full_probe)) <= budget_bytes - min(
+            2048, budget_bytes // 8
+        ):
+            selected, selection_scope = all_lines, "FULL_FILE"
+    selected_set = set(selected)
+    anchor: list[dict[str, object]] = (
+        [{"line": surface.line, "text": prepared.source_lines[surface.line - 1]}]
+        if surface.line in selected_set and surface.line <= len(prepared.source_lines)
+        else []
+    )
+    source_items = [
+        {"line": line, "text": prepared.source_lines[line - 1]}
+        for line in selected
+        if line != surface.line and line <= len(prepared.source_lines)
+    ]
+    ast_items = [
+        fact for fact in prepared.ast_facts if int(fact["line"]) in selected_set
+    ]
+    unavailable_source: list[dict[str, object]] = []
+    unavailable_ast: list[dict[str, object]] = []
+    upper = max(1, len(source_items) + len(ast_items) + 1)
+
+    def payload(
+        sources: list[dict[str, object]],
+        facts: list[dict[str, Any]],
+        *,
+        part_index: int = upper,
+        part_count: int = upper,
+    ) -> dict[str, object]:
+        result = _surface_payload(
+            index,
+            surface,
+            prepared,
+            sources,
+            facts,
+            unavailable_source,
+            unavailable_ast,
+            source_window_count=len(selected),
+            ast_nearby_count=len(ast_items),
+            part_index=part_index,
+            part_count=part_count,
+        )
+        result["kind"] = "simple_surface_context_v2"
+        result["selection_scope"] = selection_scope
+        result["selected_source_line_count"] = len(selected)
+        result["unavailable_implementation"] = (
+            "CALL_RESULT_IMPLEMENTATION_NOT_IN_SAME_FILE"
+            if "()." in surface.symbol
+            else None
+        )
+        return result
+
+    if anchor and len(canonical_bytes(payload(anchor, []))) > budget_bytes:
+        unavailable_source.append(
+            {"line": surface.line, "reason": "SOURCE_LINE_TOO_LARGE"}
+        )
+        anchor = []
+    usable_source: list[dict[str, object]] = []
+    for item in source_items:
+        if len(canonical_bytes(payload([*anchor, item], []))) > budget_bytes:
+            unavailable_source.append(
+                {"line": item["line"], "reason": "SOURCE_LINE_TOO_LARGE"}
+            )
+        else:
+            usable_source.append(item)
+    usable_ast: list[dict[str, Any]] = []
+    for item in ast_items:
+        if len(canonical_bytes(payload(anchor, [item]))) > budget_bytes:
+            unavailable_ast.append(
+                {"line": item["line"], "reason": "AST_FACT_TOO_LARGE"}
+            )
+        else:
+            usable_ast.append(item)
+    if len(canonical_bytes(payload(anchor, []))) > budget_bytes:
+        raise SurfaceContextOverflow(surface.surface_id)
+
+    chunks: list[tuple[list[dict[str, object]], list[dict[str, Any]]]] = []
+    current_source = list(anchor)
+    current_ast: list[dict[str, Any]] = []
+    for kind, item in [
+        *(("source", item) for item in usable_source),
+        *(("ast", item) for item in usable_ast),
+    ]:
+        next_source = [*current_source, item] if kind == "source" else current_source
+        next_ast = [*current_ast, item] if kind == "ast" else current_ast
+        if len(canonical_bytes(payload(next_source, next_ast))) > budget_bytes:
+            chunks.append((current_source, current_ast))
+            current_source = [*anchor, item] if kind == "source" else list(anchor)
+            current_ast = [item] if kind == "ast" else []
+        else:
+            current_source, current_ast = next_source, next_ast
+    chunks.append((current_source, current_ast))
+    contexts: list[SurfaceContext] = []
+    for part_index, (sources, facts) in enumerate(chunks):
+        record = payload(sources, facts, part_index=part_index, part_count=len(chunks))
+        encoded = canonical_bytes(record)
+        if len(encoded) > budget_bytes:
+            raise SurfaceContextOverflow(surface.surface_id)
+        ref = artifacts.put_json(record)
+        context_id = hashlib.sha256(
+            canonical_bytes(
+                {
+                    "kind": "simple_surface_context_id_v2",
+                    "scope_fingerprint": index.scope_fingerprint,
+                    "surface_id": surface.surface_id,
+                    "part_index": part_index,
+                    "context_hash": ref.content_hash,
+                }
+            )
+        ).hexdigest()
+        contexts.append(
+            SurfaceContext(
+                surface_id=surface.surface_id,
+                context_id=context_id,
+                context_hash=ref.content_hash,
+                context_ref=ref,
+                part_index=part_index,
+                part_count=len(chunks),
+                prompt_bytes=len(encoded),
+                source_sha256=prepared.source_sha256,
+                source_unavailable_reason=cast(
+                    str | None, record["source_unavailable_reason"]
+                ),
+                ast_unavailable_reason=prepared.ast_unavailable_reason,
+                omitted_source_line_count=cast(
+                    int | None, record["omitted_source_line_count"]
+                ),
+                omitted_ast_fact_count=cast(
+                    int | None, record["omitted_ast_fact_count"]
+                ),
+            )
+        )
+    return tuple(contexts)

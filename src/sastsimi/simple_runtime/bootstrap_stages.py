@@ -3754,10 +3754,11 @@ class DirectHypothesisBootstrap:
         payload = json.loads(raw)
         if not isinstance(payload, dict):
             raise ValueError("HYPOTHESIS_SURFACE_CONTEXT_INVALID")
+        context_version = 2 if payload.get("kind") == "simple_surface_context_v2" else 1
         expected_id = hashlib.sha256(
             canonical_bytes(
                 {
-                    "kind": "simple_surface_context_id_v1",
+                    "kind": f"simple_surface_context_id_v{context_version}",
                     "scope_fingerprint": payload.get("scope_fingerprint"),
                     "surface_id": context.surface_id,
                     "part_index": context.part_index,
@@ -3770,7 +3771,28 @@ class DirectHypothesisBootstrap:
         source_count = payload.get("source_line_count")
         unavailable_lines = payload.get("unavailable_source_lines")
         if (
-            payload.get("kind") != "simple_surface_context_v1"
+            payload.get("kind")
+            not in {"simple_surface_context_v1", "simple_surface_context_v2"}
+            or (
+                context_version == 2
+                and payload.get("selection_scope")
+                not in {
+                    "FULL_FILE",
+                    "FULL_FILE_FALLBACK",
+                    "ENCLOSING_DEFINITION",
+                    "SOURCE_UNAVAILABLE",
+                }
+            )
+            or (
+                context_version == 2
+                and (
+                    type(payload.get("selected_source_line_count")) is not int
+                    or payload["selected_source_line_count"] < 0
+                    or payload.get("unavailable_implementation")
+                    not in {None, "CALL_RESULT_IMPLEMENTATION_NOT_IN_SAME_FILE"}
+                    or len(raw) > 64 * 1024
+                )
+            )
             or not isinstance(payload.get("scope_fingerprint"), str)
             or not payload["scope_fingerprint"]
             or payload.get("static_bundle_hash")
@@ -3893,6 +3915,11 @@ class DirectHypothesisBootstrap:
             payload.get("source_status") != "AVAILABLE"
             or bool(unavailable_source)
             or bool(unavailable_ast)
+            or bool(payload.get("unavailable_implementation"))
+            or (
+                payload.get("kind") == "simple_surface_context_v2"
+                and payload.get("line") not in visible_lines
+            )
         )
         if raw["status"] == "NO_HYPOTHESIS" and incomplete_context:
             raise ValueError("HYPOTHESIS_SURFACE_SOURCE_INCOMPLETE")
@@ -4007,7 +4034,11 @@ class DirectHypothesisBootstrap:
                 )
             input_ref = artifacts.put_json(
                 {
-                    "kind": "simple_surface_hypothesis_prompt_v1",
+                    "kind": (
+                        "simple_surface_hypothesis_prompt_v2"
+                        if payload["kind"] == "simple_surface_context_v2"
+                        else "simple_surface_hypothesis_prompt_v1"
+                    ),
                     "surface_id": context.surface_id,
                     "context_id": context.context_id,
                     "part_index": context.part_index,
@@ -4089,7 +4120,11 @@ class DirectHypothesisBootstrap:
                 for proposal, qualification in qualified
             ]
             response_record = {
-                "kind": "simple_surface_hypothesis_result_v1",
+                "kind": (
+                    "simple_surface_hypothesis_result_v2"
+                    if payload["kind"] == "simple_surface_context_v2"
+                    else "simple_surface_hypothesis_result_v1"
+                ),
                 "analysis_id": identity.analysis_id,
                 "surface_id": context.surface_id,
                 "context_id": context.context_id,

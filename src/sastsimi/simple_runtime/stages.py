@@ -198,9 +198,13 @@ def _trusted_batch_evidence_hashes(
     if isinstance(context, dict) and context.get("kind") in {
         "simple_candidate_file_context_v1",
         "simple_surface_context_v1",
+        "simple_surface_context_v2",
     }:
         add_ref(context.get("ast_file_ref"))
-        if context.get("kind") == "simple_surface_context_v1":
+        if context.get("kind") in {
+            "simple_surface_context_v1",
+            "simple_surface_context_v2",
+        }:
             hashes = context.get("static_evidence_ref_hashes", [])
             if not isinstance(hashes, list):
                 raise ValueError("PRO_CON_BATCH_CONTEXT_INVALID")
