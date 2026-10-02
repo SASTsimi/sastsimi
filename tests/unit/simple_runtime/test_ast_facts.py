@@ -77,9 +77,7 @@ def _collected_calls(tmp_path: Path, source: str) -> tuple[dict[str, Any], ...]:
     summary = collect_python_ast(
         workspace, ("sample.py",), artifacts, max_source_bytes=4096
     )
-    _, facts, gap = ast_facts.read_ast_file_facts(
-        artifacts, summary, "sample.py"
-    )
+    _, facts, gap = ast_facts.read_ast_file_facts(artifacts, summary, "sample.py")
     assert gap is None
     return tuple(fact for fact in facts if fact["kind"] == "Call")
 

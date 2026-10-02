@@ -297,20 +297,24 @@ def _read_file(
                 or not fact["name"]
             ):
                 raise ValueError("AST_MANIFEST_INVALID")
-            if current and fact["kind"] == "Call" and (
-                fact.get("callee_kind") not in {"DIRECT", "ATTRIBUTE"}
-                or fact.get("receiver_kind")
-                not in {None, "NAME", "ATTRIBUTE", "CALL_RESULT", "OTHER"}
-                or (
-                    fact["callee_kind"] == "DIRECT"
-                    and fact.get("receiver_kind") is not None
+            if (
+                current
+                and fact["kind"] == "Call"
+                and (
+                    fact.get("callee_kind") not in {"DIRECT", "ATTRIBUTE"}
+                    or fact.get("receiver_kind")
+                    not in {None, "NAME", "ATTRIBUTE", "CALL_RESULT", "OTHER"}
+                    or (
+                        fact["callee_kind"] == "DIRECT"
+                        and fact.get("receiver_kind") is not None
+                    )
+                    or (
+                        fact["callee_kind"] == "ATTRIBUTE"
+                        and fact.get("receiver_kind") is None
+                    )
+                    or fact.get("attribute_arg_kind")
+                    not in {None, "STRING_LITERAL", "NONLITERAL"}
                 )
-                or (
-                    fact["callee_kind"] == "ATTRIBUTE"
-                    and fact.get("receiver_kind") is None
-                )
-                or fact.get("attribute_arg_kind")
-                not in {None, "STRING_LITERAL", "NONLITERAL"}
             ):
                 raise ValueError("AST_MANIFEST_INVALID")
         return ref, facts

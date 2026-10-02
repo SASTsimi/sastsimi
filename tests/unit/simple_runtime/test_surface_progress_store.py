@@ -131,6 +131,7 @@ def test_second_look_version_is_durable_and_conflict_checked(tmp_path: Path) -> 
     artifacts = SimpleArtifactRepository(tmp_path / "artifacts", identity)
     store = SimpleCheckpointStore(tmp_path / "ledger.sqlite3")
     result_ref = artifacts.put_json({"kind": "simple_surface_hypothesis_result_v2"})
+
     def commit(target: SimpleCheckpointStore, proposal_version: int) -> bool:
         return target.commit_surface_exploration(
             identity,

@@ -50,6 +50,7 @@ _COMMIT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _MAX_OUTPUT = 1024 * 1024
 _MAX_PINNED_CONTEXT_BYTES = 64 * 1024 * 1024
 _MAX_PINNED_FILES = 20_000
+_REPRODUCIBLE_SOURCE_MTIME = 315532800  # 1980-01-01 UTC; wheel ZIP minimum.
 _OFFLINE_BASE_IMAGE = "python:3.12-slim"
 _OFFLINE_PINNED_SOURCE = re.compile(
     r"Source checkout at commit ((?:[0-9a-f]{40}|[0-9a-f]{64})) "
@@ -155,6 +156,109 @@ def build_pinned_context(
     if len(entries) > _MAX_PINNED_FILES + 1:
         raise ValueError("PINNED_CONTEXT_TOO_LARGE")
     paths = [entry.split(b"\t", 1)[1] for entry in entries if entry and b"\t" in entry]
+    tracked_paths = frozenset(paths)
+
+    def in_nested_project(name: str) -> bool:
+        for parent in PurePosixPath(name).parents:
+            if parent == PurePosixPath("."):
+                break
+            prefix = f"{parent.as_posix()}/"
+            if any(
+                f"{prefix}{manifest}".encode() in tracked_paths
+                for manifest in (
+                    "pyproject.toml",
+                    "setup.py",
+                    "setup.cfg",
+                    "MANIFEST.in",
+                    "package.json",
+                )
+            ):
+                return True
+        return False
+
+    def flit_package_boundary() -> tuple[str, tuple[str, ...], tuple[str, ...]] | None:
+        """Only omit test fixtures proven outside a simple Flit wheel package."""
+
+        if any(path in {b"setup.py", b"setup.cfg", b"MANIFEST.in"} for path in paths):
+            return None
+        for entry in entries:
+            if not entry or not entry.endswith(b"\tpyproject.toml"):
+                continue
+            try:
+                header, _path = entry.split(b"\t", 1)
+                mode, kind, object_id = header.split()
+            except ValueError:
+                return None
+            if mode != b"100644" or kind != b"blob":
+                return None
+            project_blob = git("cat-file", "blob", object_id.decode("ascii"))
+            if project_blob.returncode != 0 or len(project_blob.stdout) > 1024 * 1024:
+                return None
+            try:
+                project = tomllib.loads(project_blob.stdout.decode("utf-8"))
+            except (UnicodeError, tomllib.TOMLDecodeError):
+                return None
+            build = project.get("build-system")
+            metadata = project.get("project")
+            tool = project.get("tool")
+            flit = tool.get("flit") if isinstance(tool, dict) else None
+            module = flit.get("module") if isinstance(flit, dict) else None
+            module_name = module.get("name") if isinstance(module, dict) else None
+            if (
+                not isinstance(build, dict)
+                or build.get("build-backend") != "flit_core.buildapi"
+                or not isinstance(metadata, dict)
+                or not isinstance(flit, dict)
+                or "external-data" in flit
+                or "metadata" in flit
+                or not isinstance(module_name, str)
+                or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", module_name) is None
+            ):
+                return None
+            dynamic = metadata.get("dynamic", [])
+            if not isinstance(dynamic, list) or any(
+                field in {"readme", "license", "license-files"} for field in dynamic
+            ):
+                return None
+            direct_refs: list[str] = []
+            readme = metadata.get("readme")
+            if isinstance(readme, str):
+                direct_refs.append(readme)
+            elif isinstance(readme, dict) and isinstance(readme.get("file"), str):
+                direct_refs.append(readme["file"])
+            elif readme is not None and not (
+                isinstance(readme, dict) and isinstance(readme.get("text"), str)
+            ):
+                return None
+            license_value = metadata.get("license")
+            if isinstance(license_value, dict):
+                if isinstance(license_value.get("file"), str):
+                    direct_refs.append(license_value["file"])
+                elif not isinstance(license_value.get("text"), str):
+                    return None
+            elif license_value is not None and not isinstance(license_value, str):
+                return None
+            license_files = metadata.get("license-files", [])
+            if not isinstance(license_files, list) or any(
+                not isinstance(pattern, str) for pattern in license_files
+            ):
+                return None
+            for reference in (*direct_refs, *license_files):
+                parsed = PurePosixPath(reference)
+                if (
+                    not reference
+                    or parsed.is_absolute()
+                    or "\\" in reference
+                    or ".." in parsed.parts
+                ):
+                    return None
+            for prefix in (f"src/{module_name}", module_name):
+                if f"{prefix}/__init__.py".encode() in tracked_paths:
+                    return prefix, tuple(direct_refs), tuple(license_files)
+            return None
+        return None
+
+    flit_boundary = flit_package_boundary()
     try:
         attributes = subprocess.run(
             (git_executable, "-C", str(root), "check-attr", "-z", "--stdin", "filter"),
@@ -207,7 +311,7 @@ def build_pinned_context(
         info = tarfile.TarInfo(name)
         info.size = len(raw)
         info.mode = mode
-        info.mtime = 0
+        info.mtime = _REPRODUCIBLE_SOURCE_MTIME
         archive.addfile(info, io.BytesIO(raw))
 
     with tarfile.open(fileobj=stream, mode="w", format=tarfile.PAX_FORMAT) as archive:
@@ -253,7 +357,19 @@ def build_pinned_context(
                         excluded_test_paths = frozenset(
                             path for path, _reason in scope.excluded_test_files
                         )
-                    if name in excluded_test_paths:
+                    if (
+                        name in excluded_test_paths
+                        and flit_boundary is not None
+                        and not name.startswith(f"{flit_boundary[0]}/")
+                        and not in_nested_project(name)
+                        and all(
+                            PurePosixPath(reference).as_posix() != name
+                            for reference in flit_boundary[1]
+                        )
+                        and not any(
+                            fnmatchcase(name, pattern) for pattern in flit_boundary[2]
+                        )
+                    ):
                         # Test-only credentials never enter a product PoC image.
                         continue
                 raise ValueError("PINNED_CONTEXT_SECRET_FILE_DENIED")
@@ -1363,6 +1479,7 @@ class DirectEnvironmentPreparer:
             "WORKDIR /workspace\n"
             "COPY wheels/ /opt/sastsimi-wheels/\n"
             "COPY . /workspace\n"
+            "RUN find /workspace -type f -exec touch -t 198001020000.00 {} +\n"
             "RUN python -m pip install --no-cache-dir --no-index "
             "--find-links=/opt/sastsimi-wheels --only-binary=:all: "
             f"{target}\n"

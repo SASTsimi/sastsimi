@@ -270,6 +270,17 @@ def test_offline_dockerfile_rejects_control_character_path() -> None:
         )
 
 
+def test_offline_dockerfile_normalizes_zip_compatible_source_mtime() -> None:
+    dockerfile = DirectEnvironmentPreparer._offline_dockerfile(
+        "pyproject.toml", "sastsimi-offline-base:" + "b" * 64
+    )
+    normalize = b"RUN find /workspace -type f -exec touch -t 198001020000.00 {} +"
+    install = b"RUN python -m pip install"
+    assert normalize in dockerfile
+    assert dockerfile.index(b"COPY . /workspace") < dockerfile.index(normalize)
+    assert dockerfile.index(normalize) < dockerfile.index(install)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("manifest", "requirements"),

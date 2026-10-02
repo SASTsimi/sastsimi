@@ -331,6 +331,15 @@ SYMBOL_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
             "sastsimi.static_analysis.file_scope.is_test_only_path",
         }
     ),
+    # The pinned Docker context must apply the same conservative test-file
+    # selector before omitting tracked test-only secret fixtures.
+    "sastsimi.simple_runtime.portable_docker": frozenset(
+        {
+            "sastsimi.static_analysis.file_scope",
+            "sastsimi.static_analysis.file_scope.build_static_file_scope",
+            "sastsimi.static_analysis.file_scope.is_test_only_path",
+        }
+    ),
 }
 
 # Reject actual import/code-execution members, including references captured as

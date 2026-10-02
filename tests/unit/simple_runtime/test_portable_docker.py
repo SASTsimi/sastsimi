@@ -276,6 +276,15 @@ def test_archive_context_honors_dockerignore_and_blocks_tracked_secret(
 
 def test_archive_context_omits_test_only_secret_fixture(tmp_path: Path) -> None:
     workspace, _commit = _committed_workspace(tmp_path)
+    package = workspace / "src" / "sample"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "sample"\nversion = "1.0.0"\n'
+        '[build-system]\nbuild-backend = "flit_core.buildapi"\n'
+        '[tool.flit.module]\nname = "sample"\n',
+        encoding="utf-8",
+    )
     fixture = workspace / "tests" / "test_apps" / ".env"
     fixture.parent.mkdir(parents=True)
     fixture.write_text("SECRET=fixture-only\n", encoding="utf-8")
@@ -286,6 +295,113 @@ def test_archive_context_omits_test_only_secret_fixture(tmp_path: Path) -> None:
         assert "app.py" in archive.getnames()
         assert "tests/test_apps/.env" not in archive.getnames()
         assert b"fixture-only" not in raw
+
+
+def test_archive_context_blocks_test_secret_inside_package(tmp_path: Path) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    package = workspace / "src" / "sample"
+    (package / "tests").mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "tests" / ".env").write_text("SECRET=packaged\n", encoding="utf-8")
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "sample"\nversion = "1.0.0"\n'
+        '[build-system]\nbuild-backend = "flit_core.buildapi"\n'
+        '[tool.flit.module]\nname = "sample"\n',
+        encoding="utf-8",
+    )
+    commit = _commit_fixture(workspace, "packaged test data")
+
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_SECRET_FILE_DENIED"):
+        build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+
+def test_archive_context_blocks_ambiguous_test_secret_package_data(
+    tmp_path: Path,
+) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    fixture = workspace / "tests" / ".env"
+    fixture.parent.mkdir()
+    fixture.write_text("SECRET=maybe-packaged\n", encoding="utf-8")
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "sample"\nversion = "1.0.0"\n'
+        '[build-system]\nbuild-backend = "flit_core.buildapi"\n'
+        '[tool.flit.module]\nname = "sample"\n'
+        '[tool.flit.external-data]\ndirectory = "tests"\n',
+        encoding="utf-8",
+    )
+    package = workspace / "src" / "sample"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    commit = _commit_fixture(workspace, "ambiguous data")
+
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_SECRET_FILE_DENIED"):
+        build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+
+def test_archive_context_blocks_secret_in_nested_project(tmp_path: Path) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    package = workspace / "src" / "sample"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "sample"\nversion = "1.0.0"\n'
+        '[build-system]\nbuild-backend = "flit_core.buildapi"\n'
+        '[tool.flit.module]\nname = "sample"\n',
+        encoding="utf-8",
+    )
+    nested = workspace / "examples" / "tool"
+    nested.mkdir(parents=True)
+    (nested / "pyproject.toml").write_text(
+        '[build-system]\nbuild-backend = "setuptools.build_meta"\n',
+        encoding="utf-8",
+    )
+    secret = nested / "tests" / ".env"
+    secret.parent.mkdir()
+    secret.write_text("SECRET=nested-product-data\n", encoding="utf-8")
+    commit = _commit_fixture(workspace, "nested project")
+
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_SECRET_FILE_DENIED"):
+        build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    (
+        'readme = "tests/.env"',
+        'license = {file = "tests/.env"}',
+        'license-files = ["tests/*.env"]',
+    ),
+)
+def test_archive_context_blocks_test_secret_referenced_by_project_metadata(
+    tmp_path: Path, metadata: str
+) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    package = workspace / "src" / "sample"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (workspace / "pyproject.toml").write_text(
+        f'[project]\nname = "sample"\nversion = "1.0.0"\n{metadata}\n'
+        '[build-system]\nbuild-backend = "flit_core.buildapi"\n'
+        '[tool.flit.module]\nname = "sample"\n',
+        encoding="utf-8",
+    )
+    secret = workspace / "tests" / ".env"
+    secret.parent.mkdir()
+    secret.write_text("SECRET=metadata-input\n", encoding="utf-8")
+    commit = _commit_fixture(workspace, "metadata input")
+
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_SECRET_FILE_DENIED"):
+        build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+
+def test_archive_context_uses_reproducible_zip_compatible_mtime(
+    tmp_path: Path,
+) -> None:
+    workspace, commit = _committed_workspace(tmp_path)
+    raw = build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        assert {member.mtime for member in archive} == {315532800}
 
 
 def test_archive_context_blocks_declared_product_secret_under_tests(
@@ -308,6 +424,7 @@ def test_archive_context_preserves_executable_bit_and_rejects_filter(
     tmp_path: Path,
 ) -> None:
     workspace, _commit = _committed_workspace(tmp_path)
+    (workspace / "app.py").chmod(0o755)
     subprocess.run(
         ("git", "-C", str(workspace), "update-index", "--chmod=+x", "app.py"),
         check=True,
