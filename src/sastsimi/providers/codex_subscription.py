@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from pydantic import JsonValue
 
@@ -97,7 +97,8 @@ def _child_identity_observation(
     if type(pid) is not int or pid <= 0:
         return "UNKNOWN", None
     if os.name == "nt":
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        load_library = cast(Callable[..., Any], vars(ctypes)["WinDLL"])
+        kernel32 = load_library("kernel32", use_last_error=True)
         kernel32.OpenProcess.argtypes = [
             ctypes.c_uint32,
             ctypes.c_int,
@@ -108,9 +109,10 @@ def _child_identity_observation(
         # also needs SYNCHRONIZE to distinguish a live PID from an exited one.
         handle = kernel32.OpenProcess(0x1000 | 0x00100000, 0, pid)
         if not handle:
+            get_last_error = cast(Callable[[], int], vars(ctypes)["get_last_error"])
             return (
                 ("MISSING", None)
-                if ctypes.get_last_error() in {87, 1168}
+                if get_last_error() in {87, 1168}
                 else ("UNKNOWN", None)
             )
         try:

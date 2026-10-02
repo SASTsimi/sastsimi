@@ -249,7 +249,7 @@ def test_windows_persistent_rename_denial_stops_after_three_attempts(
                 identity=_identity(),
             )
 
-    assert error.value.winerror == 5
+    assert getattr(error.value, "winerror", None) == 5
     assert attempts == 3
     assert tuple(registry.iterdir()) == ()
 
@@ -278,7 +278,7 @@ def test_windows_unrelated_rename_permission_error_is_not_retried(
                 identity=_identity(),
             )
 
-    assert error.value.winerror == 1314
+    assert getattr(error.value, "winerror", None) == 1314
     assert attempts == 1
     assert tuple(registry.iterdir()) == ()
 
