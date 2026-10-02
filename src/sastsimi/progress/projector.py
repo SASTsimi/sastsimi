@@ -21,7 +21,14 @@ from .models import ProgressSnapshot
 
 _ANALYSIS_STAGES = (SimpleStage.STATIC_DONE, SimpleStage.HYPOTHESIS_DONE)
 _CANDIDATE_DECISIONS = ("PENDING", "INCLUDE", "EXCLUDE", "UNDECIDED", "ERROR")
-_DEEP_STATUSES = ("PENDING", "RUNNING", "COMPLETE", "NO_HYPOTHESIS", "ERROR")
+_DEEP_STATUSES = (
+    "PENDING",
+    "RUNNING",
+    "COMPLETE",
+    "NO_HYPOTHESIS",
+    "INCONCLUSIVE",
+    "ERROR",
+)
 _SURFACE_STATUSES = ("COVERED", "UNCOVERED", "INSUFFICIENT")
 _BUDGET_CODES = frozenset(
     {
@@ -32,6 +39,58 @@ _BUDGET_CODES = frozenset(
         "LLM_COST_USAGE_UNAVAILABLE",
     }
 )
+_CHILD_ERROR_PREFIX = "CANDIDATE_CHILD_ERROR:"
+_BOUND_CHILD_ERROR_PREFIX = "CANDIDATE_CHILD_ERROR_BOUND:"
+
+
+def _visible_child_error(
+    checkpoints: list[StageCheckpoint], selected: StageCheckpoint
+) -> StageCheckpoint:
+    if (
+        selected.stage is not SimpleStage.HYPOTHESIS_DONE
+        or selected.identity.hypothesis_id is not None
+        or selected.error_code is None
+    ):
+        return selected
+    child_id = ""
+    attempt_id = ""
+    if selected.error_code.startswith("CANDIDATE_CHILD_CODEX_STATE_PENDING"):
+        parts = selected.error_code.split(":", 2)
+        if len(parts) == 3:
+            child_id, attempt_id = parts[1:]
+        codes = {"CODEX_CALL_IN_FLIGHT_UNRESOLVED", "CODEX_PROCESS_CLEANUP_UNCONFIRMED"}
+    elif selected.error_code.startswith(_BOUND_CHILD_ERROR_PREFIX):
+        payload = selected.error_code.removeprefix(_BOUND_CHILD_ERROR_PREFIX)
+        parts = payload.rsplit(":", 2)
+        codes = {parts[0] if len(parts) == 3 else payload}
+        if len(parts) == 3:
+            child_id, attempt_id = parts[1:]
+    elif selected.error_code.startswith(_CHILD_ERROR_PREFIX):
+        codes = {selected.error_code.removeprefix(_CHILD_ERROR_PREFIX)}
+    else:
+        return selected
+    children = [
+        item
+        for item in checkpoints
+        if item.identity.hypothesis_id is not None
+        and child_id != ""
+        and attempt_id != ""
+        and item.identity.hypothesis_id == child_id
+        and item.attempt_id == attempt_id
+        and item.identity.analysis_id == selected.identity.analysis_id
+        and item.identity.workspace_id == selected.identity.workspace_id
+        and item.identity.commit_id == selected.identity.commit_id
+        and item.error_code in codes
+    ]
+    if children:
+        return max(children, key=lambda item: item.updated_at)
+    if selected.error_code.startswith("CANDIDATE_CHILD_CODEX_STATE_PENDING"):
+        return selected.model_copy(
+            update={"error_code": "CODEX_PROCESS_CLEANUP_UNCONFIRMED"}
+        )
+    if selected.error_code.startswith((_CHILD_ERROR_PREFIX, _BOUND_CHILD_ERROR_PREFIX)):
+        return selected.model_copy(update={"error_code": next(iter(codes))})
+    return selected
 
 
 def _normalized_counts(
@@ -241,7 +300,11 @@ class ProgressProjector:
         )
         candidate_total = sum(decisions.values())
         deep_eligible = decisions.get("INCLUDE", 0) + decisions.get("UNDECIDED", 0)
-        deep_completed = deep.get("COMPLETE", 0) + deep.get("NO_HYPOTHESIS", 0)
+        deep_completed = (
+            deep.get("COMPLETE", 0)
+            + deep.get("NO_HYPOTHESIS", 0)
+            + deep.get("INCONCLUSIVE", 0)
+        )
         terminal_valid = bool(
             candidate_mode
             and candidate_counts is not None
@@ -498,7 +561,9 @@ class ProgressProjector:
                 and item.error_code not in _BUDGET_CODES
             ]
             if failed:
-                return "FAILED", max(failed, key=lambda item: item.updated_at)
+                return "FAILED", _visible_child_error(
+                    failed, max(failed, key=lambda item: item.updated_at)
+                )
             blocked = [
                 item
                 for item in checkpoints
@@ -506,7 +571,9 @@ class ProgressProjector:
                 and item.error_code not in _BUDGET_CODES
             ]
             if blocked:
-                return "BLOCKED", max(blocked, key=lambda item: item.updated_at)
+                return "BLOCKED", _visible_child_error(
+                    blocked, max(blocked, key=lambda item: item.updated_at)
+                )
             if (candidate_counts or {}).get("ERROR", 0) or (
                 candidate_deep_counts or {}
             ).get("ERROR", 0):
@@ -549,7 +616,11 @@ class ProgressProjector:
             deep_eligible = candidate_counts.get("INCLUDE", 0) + candidate_counts.get(
                 "UNDECIDED", 0
             )
-            deep_terminal = deep.get("COMPLETE", 0) + deep.get("NO_HYPOTHESIS", 0)
+            deep_terminal = (
+                deep.get("COMPLETE", 0)
+                + deep.get("NO_HYPOTHESIS", 0)
+                + deep.get("INCONCLUSIVE", 0)
+            )
             if (
                 candidate_counts.get("PENDING", 0)
                 or deep.get("PENDING", 0)

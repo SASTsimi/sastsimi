@@ -4055,6 +4055,21 @@ class DirectHypothesisBootstrap:
                 feedback = None
             except ValueError as error:
                 feedback = str(error)[:160]
+                if str(error.__cause__) == (
+                    "HYPOTHESIS_BATCH_QUALIFICATION_UNGROUNDED"
+                ):
+                    feedback = (
+                        "Ungrounded qualification: HYPOTHESES requires "
+                        "qualification.attacker_control YES or POSSIBLE, "
+                        "qualification.sensitive_operation YES, "
+                        "qualification.reachability YES or POSSIBLE, "
+                        "qualification.controls NONE, POSSIBLE, or UNKNOWN, "
+                        "and nonempty trust_boundary and preconditions, "
+                        "all supported by visible evidence. Do not invent support: "
+                        "use NO_HYPOTHESIS if ruled out, or "
+                        "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS with hypotheses=[] "
+                        "if required context is missing."
+                    )
                 status = "INVALID"
                 reason = feedback
                 qualified = ()

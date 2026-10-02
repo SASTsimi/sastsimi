@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 from typing import cast
 
 import pytest
 
+from sastsimi.progress.projector import ProgressProjector
 from sastsimi.simple_runtime.application import (
     BatchProposalResult,
     CandidateProposalOutcome,
+    ChainingEvidenceInvalid,
     HypothesisBootstrap,
     HypothesisSeed,
     SimpleAnalysisRequest,
@@ -188,6 +191,215 @@ async def test_blocked_child_is_attempted_once_across_batches(tmp_path: Path) ->
     assert len(child_events) == len(set(child_events))
     assert len(child_events) == 17
     assert producer.calls == 2
+    root = store.require(outcome.identity, SimpleStage.HYPOTHESIS_DONE)
+    assert root.status is StageStatus.BLOCKED
+    assert root.error_code == "CANDIDATE_CHILD_ERROR:TEST_CHILD_BLOCKED"
+    snapshot = ProgressProjector(store).snapshot(
+        outcome.identity.analysis_id, candidate_pipeline_version=2
+    )
+    assert snapshot.status == "BLOCKED"
+    assert snapshot.error_code == "TEST_CHILD_BLOCKED"
+
+
+@pytest.mark.asyncio
+async def test_child_cleanup_block_does_not_create_unconfirmable_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        result_count=1,
+        decision="INCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+    events: list[str] = []
+    app._candidate_hypotheses = cast(
+        HypothesisBootstrap, _SeedBatches(tmp_path / "data", events)
+    )
+
+    class CleanupBlockedRunner:
+        async def resume_hypothesis(self, identity: CheckpointIdentity) -> RunOutcome:
+            pending = store.require(identity, SimpleStage.PRO_CON_DONE)
+            store.save_checkpoint(
+                pending.model_copy(
+                    update={
+                        "status": StageStatus.BLOCKED,
+                        "attempt_id": "child-cleanup-attempt",
+                        "error_code": "CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+                    }
+                )
+            )
+            return RunOutcome(
+                current_stage=SimpleStage.PRO_CON_DONE,
+                status=StageStatus.BLOCKED,
+                error_code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+                attempt_id="child-cleanup-attempt",
+            )
+
+    app._runner_factory = lambda *_: cast(SimpleRuntimeRunner, CleanupBlockedRunner())
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    assert first.status == "BLOCKED"
+    root = store.require(first.identity, SimpleStage.HYPOTHESIS_DONE)
+    assert root.status is StageStatus.BLOCKED
+    assert root.error_code != "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+    assert (root.error_code or "").startswith("CANDIDATE_CHILD_CODEX_STATE_PENDING:")
+    snapshot = ProgressProjector(store).snapshot(
+        first.identity.analysis_id, candidate_pipeline_version=2
+    )
+    assert snapshot.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+
+    monkeypatch.setattr(
+        store,
+        "has_codex_cleanup_confirmation",
+        lambda checkpoint, _artifacts: checkpoint.identity.hypothesis_id is not None,
+    )
+    app._runner_factory = lambda *_: cast(
+        SimpleRuntimeRunner, _RecordingRunner(store, events)
+    )
+    resumed = await app.resume(first.identity.analysis_id)
+    assert resumed.error_code != "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+
+
+@pytest.mark.asyncio
+async def test_missing_codex_child_checkpoint_cannot_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        result_count=1,
+        decision="INCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+    events: list[str] = []
+    app._candidate_hypotheses = cast(
+        HypothesisBootstrap, _SeedBatches(tmp_path / "data", events)
+    )
+
+    calls: list[str] = []
+
+    class UnpersistedCleanupRunner:
+        async def resume_hypothesis(self, _identity: CheckpointIdentity) -> RunOutcome:
+            calls.append("run")
+            return RunOutcome(
+                current_stage=SimpleStage.PRO_CON_DONE,
+                status=StageStatus.BLOCKED,
+                error_code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+                attempt_id="new-unrecorded-attempt",
+            )
+
+    app._runner_factory = lambda *_: cast(
+        SimpleRuntimeRunner, UnpersistedCleanupRunner()
+    )
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    assert first.status == "BLOCKED"
+    assert (
+        store.require(first.identity, SimpleStage.HYPOTHESIS_DONE).error_code or ""
+    ).startswith("CANDIDATE_CHILD_CODEX_STATE_PENDING:")
+    assert not any(
+        checkpoint.identity.hypothesis_id is not None
+        and checkpoint.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+        for checkpoint in store.list_checkpoints(first.identity.analysis_id)
+    )
+    root_code = store.require(first.identity, SimpleStage.HYPOTHESIS_DONE).error_code
+    assert root_code is not None
+    child_id = root_code.split(":", 2)[1]
+    stale = first.identity.model_copy(update={"hypothesis_id": child_id})
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=stale,
+            stage=SimpleStage.PRO_CON_DONE,
+            status=StageStatus.BLOCKED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            error_code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+            attempt_id="old-attempt",
+            updated_at=store.require(
+                first.identity, SimpleStage.HYPOTHESIS_DONE
+            ).updated_at
+            - timedelta(seconds=1),
+        )
+    )
+    monkeypatch.setattr(store, "has_codex_cleanup_confirmation", lambda *_: True)
+    monkeypatch.setattr(app, "_verify_registered_candidate_proposals", lambda _: None)
+    snapshot = ProgressProjector(store).snapshot(
+        first.identity.analysis_id, candidate_pipeline_version=2
+    )
+    assert snapshot.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+    assert snapshot.current_hypothesis_id is None
+
+    resumed = await app.resume(first.identity.analysis_id)
+
+    assert resumed.status == "BLOCKED"
+    assert resumed.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+    assert calls == ["run"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_chaining_child_closes_running_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        result_count=1,
+        decision="INCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+
+    async def invalid_chaining(
+        _run: object, identity: CheckpointIdentity, static: StaticBootstrapResult
+    ) -> object:
+        store.mark_running(
+            identity,
+            SimpleStage.HYPOTHESIS_DONE,
+            (static.static_bundle_ref,),
+            attempt_id="root-attempt",
+        )
+        child = identity.model_copy(update={"hypothesis_id": "invalid-chain"})
+        checkpoint = StageCheckpoint(
+            identity=child,
+            stage=SimpleStage.CHAINING_DONE,
+            status=StageStatus.RUNNING,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            attempt_id="child-attempt",
+        )
+        store.save_checkpoint(checkpoint)
+        raise ChainingEvidenceInvalid(checkpoint)
+
+    monkeypatch.setattr(app, "_run_candidate_pipeline_inner", invalid_chaining)
+    outcome = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+
+    assert outcome.status == "BLOCKED"
+    root_identity = outcome.identity.model_copy(update={"hypothesis_id": None})
+    assert store.require(root_identity, SimpleStage.HYPOTHESIS_DONE).status is (
+        StageStatus.BLOCKED
+    )
+    snapshot = ProgressProjector(store).snapshot(
+        outcome.identity.analysis_id, candidate_pipeline_version=2
+    )
+    assert snapshot.status == "BLOCKED"
+    assert snapshot.error_code == "CHAINING_EVIDENCE_INVALID"
 
 
 @pytest.mark.asyncio

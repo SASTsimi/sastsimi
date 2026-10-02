@@ -42,6 +42,7 @@ def _save(
     status: StageStatus = StageStatus.SUCCEEDED,
     verdict: Literal["TRUE", "FALSE", "HOLD"] | None = None,
     attempt_number: int = 0,
+    attempt_id: str | None = None,
     error_code: str | None = None,
     gate_decision: Literal["ACCEPT", "REVISE", "REJECT"] | None = None,
     gate_revision_count: int = 0,
@@ -63,6 +64,7 @@ def _save(
         ),
         verdict=verdict,
         attempt_number=attempt_number,
+        attempt_id=attempt_id,
         error_code=error_code,
         gate_decision=gate_decision,
         gate_revision_count=gate_revision_count,
@@ -143,6 +145,204 @@ def test_candidate_progress_counts_decisions_and_deep_work_separately(
     assert snapshot.completed_units == 7
     assert snapshot.known_units == 10
     assert snapshot.percent == 70
+
+
+def test_v2_inconclusive_candidate_does_not_hide_blocked_stage(tmp_path: Path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="inconclusive-candidate",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(
+        store,
+        identity,
+        SimpleStage.HYPOTHESIS_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="HYPOTHESIS_SURFACE_OUTPUT_INVALID",
+    )
+
+    snapshot = ProgressProjector(store).snapshot(
+        "inconclusive-candidate",
+        candidate_pipeline_version=2,
+        candidate_counts={"INCLUDE": 1},
+        candidate_deep_counts={"INCONCLUSIVE": 1},
+    )
+
+    assert snapshot.status == "BLOCKED"
+    assert snapshot.error_code == "HYPOTHESIS_SURFACE_OUTPUT_INVALID"
+    assert snapshot.deep_analysis_completed_count == 1
+    assert snapshot.phase_counts["candidate_deep"] == {"completed": 1, "known": 1}
+
+
+def test_v2_root_child_block_displays_actual_failed_hypothesis(tmp_path: Path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="blocked-child",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    child = identity.model_copy(update={"hypothesis_id": "hypothesis-1"})
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(
+        store,
+        child,
+        SimpleStage.POC_EXECUTION_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="POC_EXECUTION_FAILED",
+        attempt_id="attempt-1",
+    )
+    _save(
+        store,
+        identity,
+        SimpleStage.HYPOTHESIS_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="CANDIDATE_CHILD_ERROR_BOUND:POC_EXECUTION_FAILED:hypothesis-1:attempt-1",
+    )
+
+    snapshot = ProgressProjector(store).snapshot(
+        identity.analysis_id, candidate_pipeline_version=2
+    )
+
+    assert snapshot.status == "BLOCKED"
+    assert snapshot.current_stage == SimpleStage.POC_EXECUTION_DONE.value
+    assert snapshot.current_hypothesis_id == "hypothesis-1"
+    assert snapshot.error_code == "POC_EXECUTION_FAILED"
+
+
+def test_v2_direct_root_error_is_not_misattributed_to_old_child(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="direct-root-error",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    child = identity.model_copy(update={"hypothesis_id": "old-hypothesis"})
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(
+        store,
+        child,
+        SimpleStage.POC_EXECUTION_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="INVALID_OUTPUT",
+    )
+    _save(
+        store,
+        identity,
+        SimpleStage.HYPOTHESIS_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="INVALID_OUTPUT",
+    )
+
+    snapshot = ProgressProjector(store).snapshot(
+        identity.analysis_id, candidate_pipeline_version=2
+    )
+
+    assert snapshot.status == "BLOCKED"
+    assert snapshot.current_stage == SimpleStage.HYPOTHESIS_DONE.value
+    assert snapshot.current_hypothesis_id is None
+    assert snapshot.error_code == "INVALID_OUTPUT"
+
+
+def test_v2_child_marker_preserves_colon_in_error_code(tmp_path: Path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="colon-child-error",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    child = identity.model_copy(update={"hypothesis_id": "hypothesis-1"})
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(
+        store,
+        child,
+        SimpleStage.PRO_CON_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="REQUIRED_TOOL_MISSING:FOO",
+        attempt_id="attempt-1",
+    )
+    _save(
+        store,
+        identity,
+        SimpleStage.HYPOTHESIS_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="CANDIDATE_CHILD_ERROR_BOUND:REQUIRED_TOOL_MISSING:FOO:hypothesis-1:attempt-1",
+    )
+
+    snapshot = ProgressProjector(store).snapshot(
+        identity.analysis_id, candidate_pipeline_version=2
+    )
+
+    assert snapshot.error_code == "REQUIRED_TOOL_MISSING:FOO"
+    assert snapshot.current_hypothesis_id == "hypothesis-1"
+
+
+def test_v2_unbound_child_marker_preserves_full_colon_error(tmp_path: Path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="unbound-colon-error",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(
+        store,
+        identity,
+        SimpleStage.HYPOTHESIS_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="CANDIDATE_CHILD_ERROR:ENV_ERROR:A:B",
+    )
+
+    snapshot = ProgressProjector(store).snapshot(
+        identity.analysis_id, candidate_pipeline_version=2
+    )
+
+    assert snapshot.error_code == "ENV_ERROR:A:B"
+    assert snapshot.current_hypothesis_id is None
+
+
+def test_v2_missing_codex_child_remains_manual_cleanup_block(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="missing-codex-child",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    old_child = identity.model_copy(update={"hypothesis_id": "old-hypothesis"})
+    _save(
+        store,
+        old_child,
+        SimpleStage.PRO_CON_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+    )
+    _save(
+        store,
+        identity,
+        SimpleStage.HYPOTHESIS_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="CANDIDATE_CHILD_CODEX_STATE_PENDING",
+    )
+
+    snapshot = ProgressProjector(store).snapshot(
+        identity.analysis_id, candidate_pipeline_version=2
+    )
+
+    assert snapshot.status == "BLOCKED"
+    assert snapshot.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+    assert snapshot.current_hypothesis_id is None
 
 
 def test_v2_progress_is_phase_counted_and_replay_stable(tmp_path: Path) -> None:

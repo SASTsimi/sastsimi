@@ -396,6 +396,8 @@ async def test_failed_pro_con_batch_marks_all_requested_ids_attempted_this_turn(
 
     assert outcome is not None
     assert outcome.status is StageStatus.BLOCKED
+    assert outcome.hypothesis_id == hypothesis_ids[0]
+    assert outcome.attempt_id is not None
     assert attempted == set(hypothesis_ids)
 
 

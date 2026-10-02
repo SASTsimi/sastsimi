@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Literal, Protocol, cast
 from uuid import uuid4
 
+from pydantic import Field
+
 from sastsimi.config.user_config import ElapsedLimit, TokenLimit
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -130,6 +132,8 @@ class SimpleAnalysisOutcome(ContractModel):
     status: Literal["RUNNING", "BLOCKED", "FAILED", "COMPLETE", "PARTIAL", "PAUSED"]
     current_stage: SimpleStage
     error_code: str | None = None
+    child_hypothesis_id: str | None = Field(default=None, exclude=True)
+    child_attempt_id: str | None = Field(default=None, exclude=True)
 
 
 class StaticBootstrap(Protocol):
@@ -422,6 +426,46 @@ class SimpleAnalysisApplication:
                 status="BLOCKED",
                 current_stage=latest,
                 error_code="CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+            )
+        root_codex_pending = next(
+            (
+                checkpoint
+                for checkpoint in checkpoints
+                if checkpoint.identity.hypothesis_id is None
+                and checkpoint.stage is SimpleStage.HYPOTHESIS_DONE
+                and checkpoint.status in {StageStatus.BLOCKED, StageStatus.FAILED}
+                and (checkpoint.error_code or "").startswith(
+                    "CANDIDATE_CHILD_CODEX_STATE_PENDING"
+                )
+            ),
+            None,
+        )
+        marker_parts = (
+            root_codex_pending.error_code.split(":", 2)
+            if root_codex_pending is not None and root_codex_pending.error_code
+            else []
+        )
+        pending_child_id = marker_parts[1] if len(marker_parts) == 3 else ""
+        pending_attempt_id = marker_parts[2] if len(marker_parts) == 3 else ""
+        matching_child = any(
+            bool(pending_child_id)
+            and bool(pending_attempt_id)
+            and checkpoint.identity.hypothesis_id == pending_child_id
+            and checkpoint.identity.workspace_id == identity.workspace_id
+            and checkpoint.identity.commit_id == identity.commit_id
+            and checkpoint.attempt_id == pending_attempt_id
+            and checkpoint.status in {StageStatus.BLOCKED, StageStatus.FAILED}
+            and checkpoint.error_code
+            in {"CODEX_CALL_IN_FLIGHT_UNRESOLVED", "CODEX_PROCESS_CLEANUP_UNCONFIRMED"}
+            for checkpoint in checkpoints
+        )
+        if root_codex_pending is not None and not matching_child:
+            return SimpleAnalysisOutcome(
+                identity=identity,
+                display_analysis_id=run.display_analysis_id,
+                status="BLOCKED",
+                current_stage=SimpleStage.HYPOTHESIS_DONE,
+                error_code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
             )
         for checkpoint in checkpoints:
             if (
@@ -1094,10 +1138,13 @@ class SimpleAnalysisApplication:
             if run.candidate_terminal is not None:
                 run = run.model_copy(update={"candidate_terminal": None})
                 self._store.save_analysis_run(run)
-            return await self._run_candidate_pipeline_inner(run, identity, static)
+            outcome = await self._run_candidate_pipeline_inner(run, identity, static)
+            return self._finalize_candidate_exit(identity, outcome)
         except ChainingEvidenceInvalid as error:
             failed = self._block_invalid_chaining(error.checkpoint)
-            return self._bootstrap_outcome(run, failed)
+            return self._finalize_candidate_exit(
+                identity, self._bootstrap_outcome(run, failed)
+            )
         except Exception as error:
             return self._candidate_bootstrap_failure(
                 run,
@@ -1105,6 +1152,48 @@ class SimpleAnalysisApplication:
                 static,
                 self._safe_error_code(error, "CANDIDATE_PIPELINE_ERROR"),
             )
+
+    def _finalize_candidate_exit(
+        self, identity: CheckpointIdentity, outcome: SimpleAnalysisOutcome
+    ) -> SimpleAnalysisOutcome:
+        if outcome.status in {"PAUSED", "BLOCKED", "FAILED"}:
+            root = self._store.get(identity, SimpleStage.HYPOTHESIS_DONE)
+            if root is not None and root.status is StageStatus.RUNNING:
+                code = outcome.error_code or "CANDIDATE_CHILD_WORK_INCOMPLETE"
+                if code in {
+                    "CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+                    "CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+                }:
+                    # The actual child has the process-bound confirmation.
+                    # Copying this code to the root creates an unconfirmable
+                    # second checkpoint and prevents a safe same-ID resume.
+                    code = "CANDIDATE_CHILD_CODEX_STATE_PENDING"
+                    if outcome.child_hypothesis_id and outcome.child_attempt_id:
+                        code += (
+                            f":{outcome.child_hypothesis_id}:{outcome.child_attempt_id}"
+                        )
+                elif code not in BUDGET_PAUSE_CODES:
+                    if outcome.child_hypothesis_id and outcome.child_attempt_id:
+                        code = (
+                            f"CANDIDATE_CHILD_ERROR_BOUND:{code}"
+                            f":{outcome.child_hypothesis_id}:{outcome.child_attempt_id}"
+                        )
+                    else:
+                        code = f"CANDIDATE_CHILD_ERROR:{code}"
+                self._store.mark_failure(
+                    root,
+                    StageFailure(
+                        code=code,
+                        retryable=False,
+                        safe_message="Candidate child analysis did not complete",
+                    ),
+                    (
+                        StageStatus.FAILED
+                        if outcome.status == "FAILED"
+                        else StageStatus.BLOCKED
+                    ),
+                )
+        return outcome
 
     async def _run_candidate_pipeline_inner(
         self,
@@ -1500,6 +1589,9 @@ class SimpleAnalysisApplication:
                         self._store.release_hypothesis_claim(
                             identity, hypothesis_id, turn_id
                         )
+                    outcome = outcome.model_copy(
+                        update={"hypothesis_id": hypothesis_id}
+                    )
                     if outcome.status in {StageStatus.BLOCKED, StageStatus.FAILED}:
                         if outcome.error_code in BUDGET_PAUSE_CODES:
                             return outcome
@@ -1619,6 +1711,8 @@ class SimpleAnalysisApplication:
                             current_stage=SimpleStage.PRO_CON_DONE,
                             status=status,
                             error_code=error.failure.code,
+                            hypothesis_id=missing[0],
+                            attempt_id=running.attempt_id,
                         )
                     except ValueError as error:
                         if str(error) == "PRO_CON_BATCH_CONTEXT_OVERFLOW":
@@ -1745,6 +1839,8 @@ class SimpleAnalysisApplication:
                             status="PAUSED",
                             current_stage=drained.current_stage,
                             error_code=drained.error_code,
+                            child_hypothesis_id=drained.hypothesis_id,
+                            child_attempt_id=drained.attempt_id,
                         )
                     if (
                         incomplete is None
@@ -1859,6 +1955,8 @@ class SimpleAnalysisApplication:
                                 status="PAUSED",
                                 current_stage=drained.current_stage,
                                 error_code=drained.error_code,
+                                child_hypothesis_id=drained.hypothesis_id,
+                                child_attempt_id=drained.attempt_id,
                             )
                     for candidate_id in result.missing_ids:
                         if result.failure is not None and (
@@ -1917,6 +2015,8 @@ class SimpleAnalysisApplication:
                         status="PAUSED",
                         current_stage=drained.current_stage,
                         error_code=drained.error_code,
+                        child_hypothesis_id=drained.hypothesis_id,
+                        child_attempt_id=drained.attempt_id,
                     )
                 if (
                     incomplete is None
@@ -1935,6 +2035,8 @@ class SimpleAnalysisApplication:
                 ),
                 current_stage=incomplete.current_stage,
                 error_code=incomplete.error_code,
+                child_hypothesis_id=incomplete.hypothesis_id,
+                child_attempt_id=incomplete.attempt_id,
             )
         surface_outcome = await self._run_targeted_surface_exploration(
             run,
@@ -2303,6 +2405,8 @@ class SimpleAnalysisApplication:
                         ),
                         current_stage=drained.current_stage,
                         error_code=drained.error_code,
+                        child_hypothesis_id=drained.hypothesis_id,
+                        child_attempt_id=drained.attempt_id,
                     )
                 if chaining.pool_fingerprint(identity) != fingerprint:
                     break
@@ -2648,6 +2752,8 @@ class SimpleAnalysisApplication:
                         ),
                         current_stage=drained.current_stage,
                         error_code=drained.error_code,
+                        child_hypothesis_id=drained.hypothesis_id,
+                        child_attempt_id=drained.attempt_id,
                     )
         except SurfaceContextOverflow as error:
             return self._candidate_bootstrap_failure(
@@ -3117,6 +3223,9 @@ class SimpleAnalysisApplication:
                         child,
                         static,
                     ).resume_hypothesis(child)
+                    outcome = outcome.model_copy(
+                        update={"hypothesis_id": hypothesis_id}
+                    )
                     latest_stage = outcome.current_stage
                     if outcome.status in {StageStatus.BLOCKED, StageStatus.FAILED}:
                         if outcome.error_code in BUDGET_PAUSE_CODES:
@@ -3126,6 +3235,8 @@ class SimpleAnalysisApplication:
                                 status="PAUSED",
                                 current_stage=latest_stage,
                                 error_code=outcome.error_code,
+                                child_hypothesis_id=outcome.hypothesis_id,
+                                child_attempt_id=outcome.attempt_id,
                             )
                         if (
                             incomplete is None
@@ -3186,6 +3297,8 @@ class SimpleAnalysisApplication:
                 else "BLOCKED",
                 current_stage=incomplete.current_stage,
                 error_code=incomplete.error_code,
+                child_hypothesis_id=incomplete.hypothesis_id,
+                child_attempt_id=incomplete.attempt_id,
             )
         counts = self._store.candidate_counts(identity, scope)
         deep = self._store.candidate_deep_counts(identity, scope)
@@ -3551,6 +3664,8 @@ class SimpleAnalysisApplication:
             status=status,
             current_stage=failed.stage,
             error_code=failed.error_code,
+            child_hypothesis_id=failed.identity.hypothesis_id,
+            child_attempt_id=failed.attempt_id,
         )
 
     async def _run_hypotheses(
@@ -3583,6 +3698,9 @@ class SimpleAnalysisApplication:
             )
             index += len(children)
             for child, outcome in zip(children, outcomes, strict=True):
+                outcome = outcome.model_copy(
+                    update={"hypothesis_id": child.hypothesis_id}
+                )
                 latest_stage = outcome.current_stage
                 if outcome.status in {StageStatus.BLOCKED, StageStatus.FAILED}:
                     if (
@@ -3601,6 +3719,8 @@ class SimpleAnalysisApplication:
                             current_stage=failed.stage,
                             status=failed.status,
                             error_code=failed.error_code,
+                            hypothesis_id=failed.identity.hypothesis_id,
+                            attempt_id=failed.attempt_id,
                         )
         if incomplete is not None:
             outcome_status: Literal["BLOCKED", "FAILED"] = (
@@ -3612,6 +3732,8 @@ class SimpleAnalysisApplication:
                 status=outcome_status,
                 current_stage=incomplete.current_stage,
                 error_code=incomplete.error_code,
+                child_hypothesis_id=incomplete.hypothesis_id,
+                child_attempt_id=incomplete.attempt_id,
             )
         return SimpleAnalysisOutcome(
             identity=identity,

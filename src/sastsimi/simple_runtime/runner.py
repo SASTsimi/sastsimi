@@ -56,6 +56,8 @@ class RunOutcome(ContractModel):
     current_stage: SimpleStage
     status: StageStatus
     error_code: str | None = None
+    hypothesis_id: str | None = None
+    attempt_id: str | None = None
 
 
 class SimpleRuntimeRunner:
@@ -209,6 +211,7 @@ class SimpleRuntimeRunner:
                         current_stage=stage,
                         status=StageStatus.FAILED,
                         error_code=failure.code,
+                        attempt_id=checkpoint.attempt_id,
                     )
                 try:
                     result = await handler(checkpoint, prior)
@@ -360,6 +363,7 @@ class SimpleRuntimeRunner:
                     current_stage=checkpoint.stage,
                     status=checkpoint.status,
                     error_code=checkpoint.error_code,
+                    attempt_id=checkpoint.attempt_id,
                 )
             self.store.replace_from(
                 checkpoint.model_copy(
@@ -378,6 +382,7 @@ class SimpleRuntimeRunner:
                 current_stage=checkpoint.stage,
                 status=checkpoint.status,
                 error_code=checkpoint.error_code,
+                attempt_id=checkpoint.attempt_id,
             )
         return await self._recover_or_stop(
             checkpoint,
@@ -434,6 +439,7 @@ class SimpleRuntimeRunner:
                 current_stage=checkpoint.stage,
                 status=original_status,
                 error_code=failure.code,
+                attempt_id=failed.attempt_id,
             )
         if failed.attempt_number >= MAX_RECOVERY_ATTEMPTS:
             exhausted = self.store.mark_recovery_exhausted(failed)
@@ -441,6 +447,7 @@ class SimpleRuntimeRunner:
                 current_stage=checkpoint.stage,
                 status=StageStatus.BLOCKED,
                 error_code=exhausted.error_code,
+                attempt_id=exhausted.attempt_id,
             )
         resolution = await self.recovery.decide(failed, failure)
         if resolution.decision.action is RecoveryAction.STOP:
@@ -449,6 +456,7 @@ class SimpleRuntimeRunner:
                 current_stage=checkpoint.stage,
                 status=original_status,
                 error_code=failure.code,
+                attempt_id=failed.attempt_id,
             )
         restart_stage = self._recovery_restart_stage(
             checkpoint.stage,
@@ -460,6 +468,7 @@ class SimpleRuntimeRunner:
                 current_stage=checkpoint.stage,
                 status=original_status,
                 error_code=failure.code,
+                attempt_id=failed.attempt_id,
             )
         self.store.prepare_recovery(failed, resolution, restart_stage)
         return None

@@ -372,6 +372,104 @@ async def test_surface_invalid_location_retries_then_preserves_valid_result(
 
 
 @pytest.mark.asyncio
+async def test_surface_ungrounded_attacker_control_gets_specific_repair_feedback(
+    tmp_path: Path,
+) -> None:
+    bootstrap, client, identity, static, context, artifacts = _fixture(tmp_path)
+    ungrounded = _proposal()
+    qualification = cast(dict[str, object], ungrounded["qualification"])
+    qualification["attacker_control"] = "UNKNOWN"
+    client.replies.extend(
+        [
+            _reply(
+                context.context_id,
+                status="HYPOTHESES",
+                hypotheses=[ungrounded],
+            ),
+            _reply(
+                context.context_id,
+                status="INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS",
+            ),
+        ]
+    )
+
+    result = await bootstrap.propose_surface(identity, static, context)
+
+    assert not isinstance(result, StageFailure)
+    assert result.status == "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS"
+    assert result.seeds == ()
+    assert result.reviewed_parts == frozenset()
+    assert len(client.requests) == 2
+    assert b"qualification.attacker_control" in client.requests[1]["prompt"]
+    assert b"YES or POSSIBLE" in client.requests[1]["prompt"]
+    recorded = json.loads(artifacts.read(result.result_ref))
+    assert recorded["validation_status"] == "VALID"
+
+
+@pytest.mark.asyncio
+async def test_surface_ungrounded_sensitive_operation_is_not_misdiagnosed(
+    tmp_path: Path,
+) -> None:
+    bootstrap, client, identity, static, context, _ = _fixture(tmp_path)
+    ungrounded = _proposal()
+    qualification = cast(dict[str, object], ungrounded["qualification"])
+    qualification["sensitive_operation"] = "UNKNOWN"
+    client.replies.extend(
+        [
+            _reply(
+                context.context_id,
+                status="HYPOTHESES",
+                hypotheses=[ungrounded],
+            ),
+            _reply(
+                context.context_id,
+                status="INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS",
+            ),
+        ]
+    )
+
+    result = await bootstrap.propose_surface(identity, static, context)
+
+    assert not isinstance(result, StageFailure)
+    assert result.status == "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS"
+    assert b"qualification.sensitive_operation" in client.requests[1]["prompt"]
+    assert b"qualification.attacker_control" in client.requests[1]["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_surface_blocking_control_gets_allowed_repair_values(
+    tmp_path: Path,
+) -> None:
+    bootstrap, client, identity, static, context, _ = _fixture(tmp_path)
+    ungrounded = _proposal()
+    qualification = cast(dict[str, object], ungrounded["qualification"])
+    qualification["controls"] = "PROVEN_BLOCKING"
+    client.replies.extend(
+        [
+            _reply(
+                context.context_id,
+                status="HYPOTHESES",
+                hypotheses=[ungrounded],
+            ),
+            _reply(
+                context.context_id,
+                status="NO_HYPOTHESIS",
+            ),
+        ]
+    )
+
+    result = await bootstrap.propose_surface(identity, static, context)
+
+    assert not isinstance(result, StageFailure)
+    assert result.status == "NO_HYPOTHESIS"
+    assert len(client.requests) == 2
+    assert (
+        b"qualification.controls NONE, POSSIBLE, or UNKNOWN"
+        in (client.requests[1]["prompt"])
+    )
+
+
+@pytest.mark.asyncio
 async def test_surface_invalid_output_fails_after_bounded_retry(tmp_path: Path) -> None:
     bootstrap, client, identity, static, context, artifacts = _fixture(tmp_path)
     client.replies.extend(
