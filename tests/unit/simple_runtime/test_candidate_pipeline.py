@@ -1552,7 +1552,7 @@ async def test_v2_batch_resume_reuses_zero_seed_candidates(tmp_path: Path) -> No
             surface_record.index_ref
         )
     )
-    assert surface_data["kind"] == "simple_attack_surface_index_v1"
+    assert surface_data["kind"] == "simple_attack_surface_index_v2"
     assert surface_data["candidate_count"] == 2
 
 

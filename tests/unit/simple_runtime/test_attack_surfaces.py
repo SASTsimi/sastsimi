@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.ast_facts import collect_python_ast
 from sastsimi.simple_runtime.attack_surfaces import (
@@ -122,6 +125,86 @@ def test_surface_index_tracks_unreviewed_sink(tmp_path: Path) -> None:
     assert sink.linked_candidate_ids == ()
     assert sink.coverage_status == "UNCOVERED"
     assert coverage.complete is False
+
+
+def test_direct_eval_not_super_eval(tmp_path: Path) -> None:
+    bundle, summary, candidates, artifacts = _fixture(
+        tmp_path,
+        source="eval(value)\nsuper().eval(value)\n",
+        candidate_lines=(),
+        flow_identities=(),
+    )
+    index = build_attack_surface_index(bundle, summary, candidates, artifacts=artifacts)
+
+    dynamic = [item for item in index.surfaces if item.type == "DYNAMIC_CODE_EXECUTION"]
+    assert [(item.path, item.line, item.symbol, item.detector) for item in dynamic] == [
+        ("app.py", 1, "eval", "AST")
+    ]
+    assert index.to_json()["kind"] == "simple_attack_surface_index_v2"
+    assert index.ast_source_hashes == (
+        ("app.py", summary_source_hash(summary, artifacts)),
+    )
+
+
+def summary_source_hash(
+    summary: dict[str, object], artifacts: SimpleArtifactRepository
+) -> str:
+    manifest = json.loads(
+        artifacts.read(StoredDataRef.model_validate(summary["manifest_ref"]))
+    )
+    return str(manifest["entries"][0]["source_sha256"])
+
+
+def test_dynamic_getattr_not_literal_getattr(tmp_path: Path) -> None:
+    bundle, summary, candidates, artifacts = _fixture(
+        tmp_path,
+        source='getattr(ast, "Num", None)\ngetattr(node, node.attr)\n',
+        candidate_lines=(),
+        flow_identities=(),
+    )
+    index = build_attack_surface_index(bundle, summary, candidates, artifacts=artifacts)
+
+    reflection = [item for item in index.surfaces if item.type == "REFLECTION"]
+    assert [
+        (item.path, item.line, item.symbol, item.detector) for item in reflection
+    ] == [("app.py", 2, "getattr", "AST")]
+
+
+def test_call_result_write_text_still_indexed(tmp_path: Path) -> None:
+    bundle, summary, candidates, artifacts = _fixture(
+        tmp_path,
+        source="Path(name).write_text(data)\n",
+        candidate_lines=(),
+        flow_identities=(),
+    )
+    index = build_attack_surface_index(bundle, summary, candidates, artifacts=artifacts)
+
+    assert [(item.type, item.symbol, item.line) for item in index.surfaces] == [
+        ("FILE_WRITE", "Path().write_text", 1)
+    ]
+
+
+def test_distinct_flow_identities_stay_distinct(tmp_path: Path) -> None:
+    bundle, summary, candidates, artifacts = _fixture(
+        tmp_path,
+        candidate_lines=(6, 6),
+        flow_identities=("source-a-to-sink", "source-b-to-sink"),
+    )
+    index = build_attack_surface_index(bundle, summary, candidates, artifacts=artifacts)
+
+    flow_ids = [item.surface_id for item in index.surfaces if item.flow_identity]
+    assert len(flow_ids) == len(set(flow_ids)) == 2
+
+
+def test_v1_index_round_trip(tmp_path: Path) -> None:
+    bundle, summary, candidates, artifacts = _fixture(tmp_path)
+    current = build_attack_surface_index(
+        bundle, summary, candidates, artifacts=artifacts
+    )
+    old = replace(current, index_version=1, ast_source_hashes=())
+
+    assert old.to_json()["kind"] == "simple_attack_surface_index_v1"
+    assert surface_index_from_json(old.to_json()) == old
 
 
 def test_saved_surface_index_replays_exactly_and_rejects_tampering(

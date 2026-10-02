@@ -910,7 +910,7 @@ class SimpleAnalysisApplication:
                 raise StaticEvidenceInvalid()
             if isinstance(ast_summary, dict):
                 validate_ast_manifest(artifacts, ast_summary)
-                if ast_summary.get("format_version") == 2:
+                if ast_summary.get("format_version") in {2, 3}:
                     if type(recorded_parsed) is not int or recorded_parsed != parsed:
                         raise StaticEvidenceInvalid()
                     source_ref = StoredDataRef.model_validate(
@@ -1461,15 +1461,29 @@ class SimpleAnalysisApplication:
                 raise ValueError("SURFACE_INDEX_SCOPE_CHANGED")
             payload = json.loads(artifacts.read(existing.index_ref))
             index = surface_index_from_json(payload)
+            if index.index_version == 2:
+                manifest = index_ast_manifest(artifacts, ast_summary)
+                expected_source_hashes = tuple(
+                    (path, str(entry["source_sha256"]))
+                    for path, entry in sorted(manifest.items())
+                )
+                if index.ast_source_hashes != expected_source_hashes:
+                    raise ValueError("SURFACE_INDEX_CHECKPOINT_INVALID")
             if (
                 not isinstance(payload, dict)
-                or payload.get("kind") != "simple_attack_surface_index_v1"
+                or payload.get("kind")
+                not in {
+                    "simple_attack_surface_index_v1",
+                    "simple_attack_surface_index_v2",
+                }
                 or payload.get("scope_fingerprint") != scope
                 or payload.get("static_bundle_hash")
                 != static.static_bundle_ref.content_hash
                 or payload.get("ast_manifest_hash") != ast_hash
                 or payload.get("candidate_inventory_hash") != inventory_hash
                 or payload.get("candidate_count") != len(candidates)
+                or index.index_version
+                != (2 if ast_summary.get("format_version") == 3 else 1)
             ):
                 raise ValueError("SURFACE_INDEX_CHECKPOINT_INVALID")
             return index, existing.index_ref

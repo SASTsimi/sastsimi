@@ -95,10 +95,12 @@ class SurfaceIndex:
     candidate_count: int
     surfaces: tuple[AttackSurface, ...]
     static_gaps: tuple[StaticGap, ...]
+    index_version: int = 1
+    ast_source_hashes: tuple[tuple[str, str], ...] = ()
 
     def to_json(self) -> dict[str, object]:
-        return {
-            "kind": "simple_attack_surface_index_v1",
+        payload: dict[str, object] = {
+            "kind": f"simple_attack_surface_index_v{self.index_version}",
             "scope_fingerprint": self.scope_fingerprint,
             "static_bundle_hash": self.static_bundle_hash,
             "ast_manifest_hash": self.ast_manifest_hash,
@@ -117,17 +119,24 @@ class SurfaceIndex:
                 for gap in self.static_gaps
             ],
         }
+        if self.index_version == 2:
+            payload["ast_source_hashes"] = [
+                {"path": path, "source_sha256": source_sha256}
+                for path, source_sha256 in self.ast_source_hashes
+            ]
+        return payload
 
 
 def surface_index_from_json(payload: object) -> SurfaceIndex:
     """Read a persisted index without rebuilding the whole AST on resume."""
 
     try:
-        if (
-            not isinstance(payload, dict)
-            or payload.get("kind") != "simple_attack_surface_index_v1"
-        ):
+        if not isinstance(payload, dict) or payload.get("kind") not in {
+            "simple_attack_surface_index_v1",
+            "simple_attack_surface_index_v2",
+        }:
             raise ValueError
+        version = 2 if payload["kind"] == "simple_attack_surface_index_v2" else 1
 
         def required_text(value: object) -> str:
             if not isinstance(value, str) or not value:
@@ -141,6 +150,27 @@ def surface_index_from_json(payload: object) -> SurfaceIndex:
             raise ValueError
         if type(count) is not int or count < 0:
             raise ValueError
+        source_hashes: list[tuple[str, str]] = []
+        if version == 2:
+            raw_hashes = payload["ast_source_hashes"]
+            if not isinstance(raw_hashes, list):
+                raise ValueError
+            for row in raw_hashes:
+                if not isinstance(row, dict):
+                    raise ValueError
+                path = required_text(row["path"])
+                digest = required_text(row["source_sha256"])
+                if (
+                    path.startswith("/")
+                    or "\\" in path
+                    or ".." in path.split("/")
+                    or len(digest) != 64
+                    or any(character not in "0123456789abcdef" for character in digest)
+                    or source_hashes
+                    and path <= source_hashes[-1][0]
+                ):
+                    raise ValueError
+                source_hashes.append((path, digest))
         surfaces: list[AttackSurface] = []
         for row in raw_surfaces:
             if not isinstance(row, dict):
@@ -198,6 +228,8 @@ def surface_index_from_json(payload: object) -> SurfaceIndex:
             candidate_count=count,
             surfaces=tuple(surfaces),
             static_gaps=tuple(gaps),
+            index_version=version,
+            ast_source_hashes=tuple(source_hashes),
         )
         if index.to_json() != payload or len(
             {surface.surface_id for surface in surfaces}
@@ -271,8 +303,25 @@ class _Draft:
     evidence_refs: set[StoredDataRef]
 
 
-def _ast_call_type(name: str) -> str | None:
-    name = name.casefold()
+def _ast_call_type(fact: Mapping[str, object], *, legacy: bool) -> str | None:
+    name_value = fact.get("name")
+    if not isinstance(name_value, str):
+        return None
+    name = name_value.casefold()
+    if not legacy:
+        callee_kind = fact.get("callee_kind")
+        if callee_kind not in {"DIRECT", "ATTRIBUTE"}:
+            raise ValueError("SURFACE_EVIDENCE_INVALID")
+        if name == "getattr" and callee_kind == "DIRECT":
+            return (
+                "REFLECTION" if fact.get("attribute_arg_kind") == "NONLITERAL" else None
+            )
+        if name in {"eval", "exec"} and callee_kind != "DIRECT":
+            return None
+        if name in {"builtins.eval", "builtins.exec"} and (
+            callee_kind != "ATTRIBUTE" or fact.get("receiver_kind") != "NAME"
+        ):
+            return None
     leaf = name.rsplit(".", 1)[-1]
     if name in {"authenticate", "login_required"} or leaf == "is_authenticated":
         return "AUTHENTICATION"
@@ -293,7 +342,7 @@ def _ast_call_type(name: str) -> str | None:
         "subprocess.check_output",
     }:
         return "COMMAND_EXECUTION"
-    if name in {"eval", "exec"}:
+    if name in {"eval", "exec", "builtins.eval", "builtins.exec"}:
         return "DYNAMIC_CODE_EXECUTION"
     if leaf in {"write_text", "write_bytes", "unlink"} or name in {
         "os.remove",
@@ -377,8 +426,10 @@ def _coverage_data(
 
 def _ast_files(
     summary: Mapping[str, object], artifacts: SimpleArtifactRepository | None
-) -> Iterator[tuple[str, tuple[dict[str, object], ...], StoredDataRef | None]]:
-    if summary.get("format_version") == 2:
+) -> Iterator[
+    tuple[str, tuple[dict[str, object], ...], StoredDataRef | None, str | None]
+]:
+    if summary.get("format_version") in {2, 3}:
         if artifacts is None:
             raise ValueError("SURFACE_EVIDENCE_UNAVAILABLE")
         try:
@@ -392,7 +443,13 @@ def _ast_files(
                 )
             except (OSError, KeyError, TypeError, ValueError) as error:
                 raise ValueError("SURFACE_EVIDENCE_INVALID") from error
-            yield path, facts, ref
+            source_sha256 = indexed[path].get("source_sha256")
+            yield (
+                path,
+                facts,
+                ref,
+                source_sha256 if isinstance(source_sha256, str) else None,
+            )
         return
     inline_facts = summary.get("facts")
     if not isinstance(inline_facts, list):
@@ -403,7 +460,7 @@ def _ast_files(
             raise ValueError("SURFACE_EVIDENCE_INVALID")
         grouped[fact["path"]].append(fact)
     for path in sorted(grouped):
-        yield path, tuple(grouped[path]), None
+        yield path, tuple(grouped[path]), None, None
 
 
 def _static_gaps(
@@ -557,16 +614,20 @@ def build_attack_surface_index(
     ast_by_location: dict[
         tuple[str, int, str], list[tuple[str, int, str, str, str | None]]
     ] = defaultdict(list)
+    ast_source_hashes: list[tuple[str, str]] = []
+    legacy_ast = ast_manifest.get("format_version") != 3
 
-    for path, facts, file_ref in _ast_files(ast_manifest, artifacts):
+    for path, facts, file_ref, source_sha256 in _ast_files(ast_manifest, artifacts):
         if not path.lower().endswith((".py", ".pyi")):
             continue
+        if source_sha256 is not None:
+            ast_source_hashes.append((path, source_sha256))
         for fact in facts:
             fact_kind, line, name = fact.get("kind"), fact.get("line"), fact.get("name")
             if type(line) is not int or line < 1 or not isinstance(name, str):
                 raise ValueError("SURFACE_EVIDENCE_INVALID")
             if fact_kind == "Call":
-                surface_type = _ast_call_type(name)
+                surface_type = _ast_call_type(fact, legacy=legacy_ast)
             elif fact_kind in {"FunctionDef", "AsyncFunctionDef"} and name in {
                 "route",
                 "webhook",
@@ -646,7 +707,7 @@ def build_attack_surface_index(
     for key in sorted(drafts, key=lambda item: (*item[:4], item[4] or "")):
         item = drafts[key]
         stable = {
-            "version": 1,
+            "version": 1 if legacy_ast else 2,
             "scope_fingerprint": scope,
             "static_bundle_hash": bundle_hash,
             "path": item.path,
@@ -681,6 +742,8 @@ def build_attack_surface_index(
         candidate_count=len(candidates),
         surfaces=tuple(surfaces),
         static_gaps=_static_gaps(coverage, ast_manifest),
+        index_version=1 if legacy_ast else 2,
+        ast_source_hashes=tuple(ast_source_hashes),
     )
 
 
