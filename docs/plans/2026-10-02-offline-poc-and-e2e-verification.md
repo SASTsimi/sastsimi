@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, `tarfile`, `packaging` wheel tags, Docker CLI, Pydantic, pytest, PowerShell.
 
-**Spec:** `docs/superpowers/specs/2026-10-02-real-repository-e2e-hardening-design.md`
+**Spec:** `docs/plans/2026-10-02-real-repository-e2e-hardening-design.md`
 
 ## Global Constraints
 

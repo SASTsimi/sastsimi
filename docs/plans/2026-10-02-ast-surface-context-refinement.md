@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, `ast`, Pydantic, SQLite checkpoints, content-addressed artifacts, pytest.
 
-**Spec:** `docs/superpowers/specs/2026-10-02-real-repository-e2e-hardening-design.md`
+**Spec:** `docs/plans/2026-10-02-real-repository-e2e-hardening-design.md`
 
 ## Global Constraints
 
