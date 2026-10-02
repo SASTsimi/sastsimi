@@ -58,6 +58,7 @@ from .models import (
     StageStatus,
     input_reference_hash,
     terminal_gate_outcome,
+    terminal_initial_outcome,
     terminal_poc_outcome,
 )
 from .provider import SimpleLLMClient
@@ -488,6 +489,54 @@ class SimpleAnalysisApplication:
                         current_stage=checkpoint.stage,
                         error_code=checkpoint.error_code,
                     )
+        for checkpoint in checkpoints:
+            if terminal_initial_outcome(checkpoint) is None:
+                continue
+            try:
+                SimpleArtifactRepository(
+                    self._data_dir, checkpoint.identity
+                ).verified_terminal_initial_outcome(checkpoint)
+            except (OSError, ValueError, sqlite3.Error):
+                failed = self._store.mark_failure(
+                    checkpoint,
+                    StageFailure(
+                        code="INITIAL_VERIFICATION_EVIDENCE_INVALID",
+                        retryable=False,
+                        safe_message=(
+                            "Initial verification evidence is unavailable or invalid"
+                        ),
+                        evidence_refs=checkpoint.output_refs,
+                    ),
+                    StageStatus.BLOCKED,
+                )
+                return self._bootstrap_outcome(run, failed)
+        for checkpoint in checkpoints:
+            if (
+                checkpoint.poc_stop_decision_ref is None
+                and terminal_poc_outcome(checkpoint) is None
+            ):
+                continue
+            error_code = (
+                "POC_STOP_EVIDENCE_INVALID"
+                if checkpoint.poc_stop_decision_ref is not None
+                else "POC_TERMINAL_EVIDENCE_INVALID"
+            )
+            try:
+                SimpleArtifactRepository(
+                    self._data_dir, checkpoint.identity
+                ).verified_terminal_poc_outcome(checkpoint)
+            except (OSError, ValueError, sqlite3.Error):
+                failed = self._store.mark_failure(
+                    checkpoint,
+                    StageFailure(
+                        code=error_code,
+                        retryable=False,
+                        safe_message="Terminal PoC evidence is unavailable or invalid",
+                        evidence_refs=checkpoint.output_refs,
+                    ),
+                    StageStatus.BLOCKED,
+                )
+                return self._bootstrap_outcome(run, failed)
         if run.static_bundle_ref is not None:
             await self._assert_completed_static_scope(run, identity)
             if run.static_disposition == "PARTIAL":
@@ -658,11 +707,15 @@ class SimpleAnalysisApplication:
                 return False
             children[hypothesis_id][checkpoint.stage] = checkpoint
         for stages in children.values():
+            initial = stages.get(SimpleStage.VERIFICATION_INITIAL_DONE)
             final = stages.get(SimpleStage.VERIFICATION_FINAL_DONE)
             chaining = stages.get(SimpleStage.CHAINING_DONE)
             report = stages.get(SimpleStage.REPORT_DONE)
             if (
-                terminal_poc_outcome(stages.get(SimpleStage.POC_EXECUTION_DONE))
+                self._store.verified_terminal_initial_outcome(initial) is not None
+                or self._store.verified_terminal_poc_outcome(
+                    stages.get(SimpleStage.POC_EXECUTION_DONE)
+                )
                 is not None
                 or final is not None
                 and (
@@ -1049,7 +1102,7 @@ class SimpleAnalysisApplication:
             raise StaticEvidenceInvalid() from error
 
     def _promote_legacy_inconclusive_pocs(self, analysis_id: str) -> int:
-        """Reclassify only exact exhausted PoCs that actually ran inconclusively."""
+        """Reclassify verified exhausted or explicitly stopped inconclusive PoCs."""
 
         promoted = 0
         for checkpoint in self._store.list_checkpoints(analysis_id):
@@ -1058,14 +1111,31 @@ class SimpleAnalysisApplication:
                 or checkpoint.stage_version
                 != STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
                 or checkpoint.status is not StageStatus.BLOCKED
-                or checkpoint.error_code != "RECOVERY_EXHAUSTED"
-                or checkpoint.attempt_number < MAX_RECOVERY_ATTEMPTS
+                or checkpoint.error_code
+                not in {"RECOVERY_EXHAUSTED", "POC_INCONCLUSIVE"}
                 or len(checkpoint.output_refs) != 2
                 or checkpoint.validated_poc_ref is not None
             ):
                 continue
-            execution_ref, interpretation_ref = checkpoint.output_refs
             artifacts = SimpleArtifactRepository(self._data_dir, checkpoint.identity)
+            if checkpoint.error_code == "POC_INCONCLUSIVE":
+                try:
+                    self._store.promote_inconclusive_execution(
+                        checkpoint, artifacts=artifacts
+                    )
+                except ValueError as error:
+                    if str(error) not in {
+                        "POC_INCONCLUSIVE_PROMOTION_STALE",
+                        "POC_INCONCLUSIVE_STOP_UNVERIFIED",
+                        "POC_INCONCLUSIVE_PROMOTION_INVALID",
+                    }:
+                        raise
+                    continue
+                promoted += 1
+                continue
+            if checkpoint.attempt_number < MAX_RECOVERY_ATTEMPTS:
+                continue
+            execution_ref, interpretation_ref = checkpoint.output_refs
             try:
                 execution = json.loads(artifacts.read(execution_ref))
                 interpretation = json.loads(artifacts.read(interpretation_ref))
@@ -3256,6 +3326,7 @@ class SimpleAnalysisApplication:
         self, identity: CheckpointIdentity, hypothesis_id: str
     ) -> bool:
         child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+        initial = self._store.get(child, SimpleStage.VERIFICATION_INITIAL_DONE)
         final = self._store.get(child, SimpleStage.VERIFICATION_FINAL_DONE)
         poc = self._store.get(child, SimpleStage.POC_EXECUTION_DONE)
         chain = self._store.get(child, SimpleStage.CHAINING_DONE)
@@ -3267,7 +3338,8 @@ class SimpleAnalysisApplication:
         ):
             return False
         return bool(
-            terminal_poc_outcome(poc) is not None
+            self._store.verified_terminal_initial_outcome(initial) is not None
+            or self._store.verified_terminal_poc_outcome(poc) is not None
             or final is not None
             and final.status is StageStatus.SUCCEEDED
             and (

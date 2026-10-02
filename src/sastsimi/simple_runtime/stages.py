@@ -1788,10 +1788,11 @@ runtime use `python:3.12`. Do not invent dependency versions or tools.
 The source is already provided by the pinned checkout; do not list that checkout
 as an environment requirement. Describe in-process PoC fixtures (objects, temp
 files, local test clients) and how the PoC creates them in reproduction_goal,
-not in environment_requirements. List external services, credentials, network
-callers, or other unprovided prerequisites in environment_requirements; never
-assume they exist just to make a PoC run. For offline execution, such unmet
-prerequisites must remain blocked rather than being claimed as verified.
+not in environment_requirements. Put only installable runtime requirements in
+environment_requirements. List external services, credentials, attacker control
+of another process, network callers, or other unprovided attack prerequisites
+in unmet_external_prerequisites. Never assume they exist just to make a PoC
+run. If this list is nonempty, the hypothesis is inconclusive, not verified.
 """,
             schema=_object_schema(
                 {
@@ -1799,6 +1800,7 @@ prerequisites must remain blocked rather than being claimed as verified.
                     "rationale": _string(),
                     "reproduction_goal": _string(),
                     "environment_requirements": _string_array(),
+                    "unmet_external_prerequisites": _string_array(),
                     "supporting_refs": _string_array(),
                     "limitations": _string_array(),
                 },
@@ -1807,6 +1809,7 @@ prerequisites must remain blocked rather than being claimed as verified.
                     "rationale",
                     "reproduction_goal",
                     "environment_requirements",
+                    "unmet_external_prerequisites",
                     "supporting_refs",
                     "limitations",
                 ],
@@ -1827,6 +1830,30 @@ prerequisites must remain blocked rather than being claimed as verified.
         if not isinstance(raw_requirements, list):
             raise ValueError("ENVIRONMENT_REQUIREMENTS_INVALID")
         requirements = tuple(str(value) for value in raw_requirements)
+        raw_external = result.value["unmet_external_prerequisites"]
+        if not isinstance(raw_external, list) or any(
+            not isinstance(value, str) or not value.strip() for value in raw_external
+        ):
+            raise ValueError("EXTERNAL_PREREQUISITES_INVALID")
+        if raw_external:
+            return StageResult(
+                output_refs=(output_ref,),
+                external_prerequisites_ref=output_ref,
+                verdict="HOLD",
+                activity_events=(
+                    _activity_event(
+                        checkpoint,
+                        ActivityKind.DECISION_RECORDED,
+                        offset=10,
+                        summary_ko=(
+                            "미입증 외부 공격 전제를 기록하고 "
+                            "가설을 미확정으로 종료했습니다."
+                        ),
+                        output_refs=(output_ref,),
+                        llm=result,
+                    ),
+                ),
+            )
         try:
             environment = await self._environments.prepare(
                 checkpoint,

@@ -129,7 +129,8 @@ class SimpleClientFactory:
         self._semaphore = asyncio.Semaphore(profile.llm_max_concurrency)
         self._cursor_models = CursorModelCatalog()
         self._store = SimpleCheckpointStore(
-            profile.data_dir / "db" / "sastsimi.sqlite3"
+            profile.data_dir / "db" / "sastsimi.sqlite3",
+            artifact_data_dir=profile.data_dir,
         )
 
     def _budget(self, identity: CheckpointIdentity) -> RunUsageBudget:
@@ -327,7 +328,9 @@ def build_analysis_application(
     profile: SimpleExecutionProfile,
 ) -> SimpleAnalysisApplication:
     data_dir = config.data_dir
-    store = SimpleCheckpointStore(data_dir / "db" / "sastsimi.sqlite3")
+    store = SimpleCheckpointStore(
+        data_dir / "db" / "sastsimi.sqlite3", artifact_data_dir=data_dir
+    )
     client_factory = SimpleClientFactory(profile)
     docker = PortableDockerRuntime(profile)
 
@@ -443,7 +446,10 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
     def __init__(self, config: UserConfig, profile: SimpleExecutionProfile) -> None:
         self._config = config
         self._profile = profile
-        self._store = SimpleCheckpointStore(config.data_dir / "db" / "sastsimi.sqlite3")
+        self._store = SimpleCheckpointStore(
+            config.data_dir / "db" / "sastsimi.sqlite3",
+            artifact_data_dir=config.data_dir,
+        )
         self._display = AnalysisDisplayIdStore(self._store.database_path)
 
     def analyze(self, repository: str, commit: str) -> dict[str, object]:
@@ -557,7 +563,9 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         scope = run.candidate_scope_fingerprint
         candidate_mode = run.candidate_pipeline_version in {1, 2}
         surface_counts, surface_index_hash = self._surface_metrics(run, identity, scope)
-        return ProgressProjector(self._store).snapshot(
+        return ProgressProjector(
+            self._store, artifact_data_dir=self._config.data_dir
+        ).snapshot(
             run.analysis_id,
             static_disposition=run.static_disposition,
             candidate_pipeline_version=run.candidate_pipeline_version or 0,

@@ -191,7 +191,7 @@ async def test_simple_resume_passes_saved_policy_context_to_runner(
         lambda **_kwargs: object(),
     )
 
-    received: list[tuple[object, object, object, bool]] = []
+    received: list[tuple[object, object, object, bool, object]] = []
 
     class _Runner:
         def __init__(
@@ -201,6 +201,7 @@ async def test_simple_resume_passes_saved_policy_context_to_runner(
             *,
             policy_snapshot_ref: StoredDataRef | None = None,
             codex_invalid_output_resume: bool = False,
+            cleanup_artifacts: SimpleArtifactRepository | None = None,
         ) -> None:
             scope = handlers[SimpleStage.SCOPE_GATE_DONE]
             received.append(
@@ -209,6 +210,7 @@ async def test_simple_resume_passes_saved_policy_context_to_runner(
                     scope._policy_snapshot_ref,
                     scope._repository_url,
                     codex_invalid_output_resume,
+                    cleanup_artifacts.identity if cleanup_artifacts else None,
                 )
             )
 
@@ -226,7 +228,9 @@ async def test_simple_resume_passes_saved_policy_context_to_runner(
         profile_path=tmp_path / "profile.toml",
     )
 
-    assert received == [(policy_ref, policy_ref, "https://github.com/acme/app", True)]
+    assert received == [
+        (policy_ref, policy_ref, "https://github.com/acme/app", True, identity)
+    ]
 
 
 @pytest.mark.asyncio
@@ -305,8 +309,10 @@ async def test_simple_resume_writes_invalid_output_diagnostics_per_hypothesis(
             *,
             policy_snapshot_ref: StoredDataRef | None = None,
             codex_invalid_output_resume: bool = False,
+            cleanup_artifacts: SimpleArtifactRepository | None = None,
         ) -> None:
             assert codex_invalid_output_resume
+            assert cleanup_artifacts is not None
             self.client = handlers["client"]
 
         async def resume_hypothesis(self, identity: CheckpointIdentity) -> RunOutcome:

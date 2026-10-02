@@ -742,6 +742,7 @@ class _HandoffClient:
                 "rationale": "Run the isolated PoC.",
                 "reproduction_goal": "Observe the exact fixture marker.",
                 "environment_requirements": ["python:3.12"],
+                "unmet_external_prerequisites": [],
                 "supporting_refs": [],
                 "limitations": [],
             },

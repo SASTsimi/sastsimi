@@ -137,6 +137,8 @@ class StageCheckpoint(ContractModel):
     recovery_lineage_id: str | None = None
     recovery_origin_stage: SimpleStage | None = None
     recovery_decision_refs: tuple[StoredDataRef, ...] = ()
+    poc_stop_decision_ref: StoredDataRef | None = None
+    external_prerequisites_ref: StoredDataRef | None = None
     error_code: str | None = None
     retryable: bool = False
     recipe_ref: StoredDataRef | None = None
@@ -160,6 +162,7 @@ class StageCheckpoint(ContractModel):
 
 class StageResult(ContractModel):
     output_refs: tuple[StoredDataRef, ...]
+    external_prerequisites_ref: StoredDataRef | None = None
     validated_poc_ref: StoredDataRef | None = None
     report_ref: StoredDataRef | None = None
     bundle_manifest_ref: StoredDataRef | None = None
@@ -181,10 +184,29 @@ class StageFailure(ContractModel):
     evidence_refs: tuple[StoredDataRef, ...] = ()
 
 
+def terminal_initial_outcome(
+    checkpoint: StageCheckpoint | None,
+) -> Literal["INCONCLUSIVE"] | None:
+    """Return an explicit, non-reportable unmet attack prerequisite."""
+
+    if (
+        checkpoint is not None
+        and checkpoint.stage is SimpleStage.VERIFICATION_INITIAL_DONE
+        and checkpoint.status is StageStatus.SUCCEEDED
+        and checkpoint.verdict == "HOLD"
+        and checkpoint.external_prerequisites_ref is not None
+        and checkpoint.external_prerequisites_ref in checkpoint.output_refs
+        and checkpoint.recipe_ref is None
+        and checkpoint.validated_poc_ref is None
+    ):
+        return "INCONCLUSIVE"
+    return None
+
+
 def terminal_poc_outcome(
     checkpoint: StageCheckpoint | None,
 ) -> Literal["INCONCLUSIVE"] | None:
-    """Return a completed, non-reportable PoC observation after bounded attempts."""
+    """Return a completed, non-reportable PoC after exhaustion or verified STOP."""
 
     if (
         checkpoint is not None
@@ -192,7 +214,10 @@ def terminal_poc_outcome(
         and checkpoint.status is StageStatus.SUCCEEDED
         and checkpoint.stage_version == STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
         and checkpoint.verdict == "HOLD"
-        and checkpoint.attempt_number >= MAX_RECOVERY_ATTEMPTS
+        and (
+            checkpoint.attempt_number >= MAX_RECOVERY_ATTEMPTS
+            or checkpoint.poc_stop_decision_ref is not None
+        )
         and checkpoint.validated_poc_ref is None
         and len(checkpoint.output_refs) >= 2
     ):

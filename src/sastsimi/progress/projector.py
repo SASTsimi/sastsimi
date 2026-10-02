@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Literal, Protocol
 
+from sastsimi.simple_runtime.artifacts import verified_terminal_projection
 from sastsimi.simple_runtime.attack_surfaces import SurfaceIndex
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
@@ -14,6 +16,7 @@ from sastsimi.simple_runtime.models import (
     StageCheckpoint,
     StageStatus,
     terminal_gate_outcome,
+    terminal_initial_outcome,
     terminal_poc_outcome,
 )
 from sastsimi.simple_runtime.poc_currentness import (
@@ -166,8 +169,11 @@ class CheckpointQuery(Protocol):
 
 
 class ProgressProjector:
-    def __init__(self, store: CheckpointQuery) -> None:
+    def __init__(
+        self, store: CheckpointQuery, *, artifact_data_dir: str | Path | None = None
+    ) -> None:
         self._store = store
+        self._artifact_data_dir = artifact_data_dir
 
     def snapshot(
         self,
@@ -185,7 +191,9 @@ class ProgressProjector:
         surface_index_hash: str | None = None,
         analysis_active: bool = False,
     ) -> ProgressSnapshot:
-        checkpoints = self._store.list_checkpoints(analysis_id)
+        checkpoints = verified_terminal_projection(
+            self._store.list_checkpoints(analysis_id), self._artifact_data_dir
+        )
         if not checkpoints:
             raise LookupError("ANALYSIS_PROGRESS_NOT_FOUND")
         by_hypothesis: dict[str, list[StageCheckpoint]] = defaultdict(list)
@@ -251,7 +259,27 @@ class ProgressProjector:
                 None,
             )
             gate_outcome = terminal_gate_outcome(gate)
-            if terminal_poc_outcome(execution) is not None:
+            initial = next(
+                (
+                    item
+                    for item in values
+                    if item.stage is SimpleStage.VERIFICATION_INITIAL_DONE
+                ),
+                None,
+            )
+            if terminal_initial_outcome(initial) is not None:
+                initial_index = HYPOTHESIS_STAGES.index(
+                    SimpleStage.VERIFICATION_INITIAL_DONE
+                )
+                present_after = sum(
+                    item.stage in HYPOTHESIS_STAGES[initial_index + 1 :]
+                    and item.status is StageStatus.SUCCEEDED
+                    for item in values
+                )
+                skipped += len(HYPOTHESIS_STAGES[initial_index + 1 :]) - present_after
+                terminal_hypotheses += 1
+                inconclusive_hypotheses += 1
+            elif terminal_poc_outcome(execution) is not None:
                 execution_index = HYPOTHESIS_STAGES.index(
                     SimpleStage.POC_EXECUTION_DONE
                 )

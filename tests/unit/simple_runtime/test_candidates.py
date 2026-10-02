@@ -647,6 +647,45 @@ def test_incomplete_hypothesis_page_uses_terminal_checkpoint_evidence(
     assert store.list_incomplete_hypotheses(identity, after_id="H-003", limit=2) == ()
 
 
+def test_unmet_external_prerequisite_is_not_requeued_as_incomplete(
+    tmp_path: Path,
+) -> None:
+    identity = _identity()
+    child = identity.model_copy(update={"hypothesis_id": "H-external"})
+    store = SimpleCheckpointStore(
+        tmp_path / "ledger.sqlite3", artifact_data_dir=tmp_path / "data"
+    )
+    store.upsert_hypothesis(identity, "H-external")
+    evidence = _artifacts(tmp_path, child).put_json(
+        {
+            "kind": "simple_initial_verification",
+            "attempt_id": "initial-attempt",
+            "result": {
+                "initial_assessment": "HOLD",
+                "unmet_external_prerequisites": ["attacker control unproven"],
+            },
+        }
+    )
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=child,
+            stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+            stage_version=STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE],
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(evidence,),
+            attempt_id="initial-attempt",
+            verdict="HOLD",
+            external_prerequisites_ref=evidence,
+        )
+    )
+
+    assert store.list_incomplete_hypotheses(identity, limit=1) == ()
+    _artifacts(tmp_path, child).artifacts.path_for(evidence.content_hash).unlink()
+    assert store.list_incomplete_hypotheses(identity, limit=1) == ("H-external",)
+
+
 def test_legacy_v2_poc_keeps_completed_candidate_hypothesis_incomplete(
     tmp_path: Path,
 ) -> None:

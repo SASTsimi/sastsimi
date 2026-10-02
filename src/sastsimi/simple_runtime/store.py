@@ -19,7 +19,7 @@ from sastsimi.observability.agent_activity import (
 )
 from sastsimi.storage.agent_activity import AgentActivityStore
 
-from .artifacts import SimpleArtifactRepository
+from .artifacts import LEGACY_RECOVERY_FALLBACK_STOPS, SimpleArtifactRepository
 from .attempt_owner import AttemptOwner, PromptByteCounts
 from .candidates import StaticCandidate
 from .models import (
@@ -35,11 +35,14 @@ from .models import (
     StageStatus,
     input_reference_hash,
     terminal_gate_outcome,
+    terminal_initial_outcome,
     terminal_poc_outcome,
 )
 from .recovery import (
+    ALLOWED_ACTIONS,
     MAX_RECOVERY_ATTEMPTS,
     RecoveryAction,
+    RecoveryDecision,
     RecoveryResolution,
 )
 from .run_lease import AnalysisRunBusy, analysis_run_lease
@@ -142,8 +145,13 @@ class SurfaceExplorationProgressRecord:
 class SimpleCheckpointStore:
     """Atomic checkpoint storage for the single-process local runtime."""
 
-    def __init__(self, database_path: str | Path) -> None:
+    def __init__(
+        self, database_path: str | Path, *, artifact_data_dir: str | Path | None = None
+    ) -> None:
         self._database_path = Path(database_path)
+        self._artifact_data_dir = (
+            Path(artifact_data_dir) if artifact_data_dir is not None else None
+        )
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
@@ -2026,7 +2034,13 @@ class SimpleCheckpointStore:
                     final = stages.get(SimpleStage.VERIFICATION_FINAL_DONE)
                     chain = stages.get(SimpleStage.CHAINING_DONE)
                     terminal = (
-                        terminal_poc_outcome(stages.get(SimpleStage.POC_EXECUTION_DONE))
+                        self.verified_terminal_initial_outcome(
+                            stages.get(SimpleStage.VERIFICATION_INITIAL_DONE)
+                        )
+                        is not None
+                        or self.verified_terminal_poc_outcome(
+                            stages.get(SimpleStage.POC_EXECUTION_DONE)
+                        )
                         is not None
                         or final is not None
                         and (
@@ -2045,6 +2059,34 @@ class SimpleCheckpointStore:
                 if len(rows) < max(32, limit):
                     break
         return tuple(selected)
+
+    def verified_terminal_initial_outcome(
+        self, checkpoint: StageCheckpoint | None
+    ) -> Literal["INCONCLUSIVE"] | None:
+        if terminal_initial_outcome(checkpoint) is None:
+            return None
+        if self._artifact_data_dir is None or checkpoint is None:
+            return None
+        try:
+            return SimpleArtifactRepository(
+                self._artifact_data_dir, checkpoint.identity
+            ).verified_terminal_initial_outcome(checkpoint)
+        except (OSError, ValueError, sqlite3.Error):
+            return None
+
+    def verified_terminal_poc_outcome(
+        self, checkpoint: StageCheckpoint | None
+    ) -> Literal["INCONCLUSIVE"] | None:
+        if terminal_poc_outcome(checkpoint) is None or checkpoint is None:
+            return None
+        if self._artifact_data_dir is None:
+            return None
+        try:
+            return SimpleArtifactRepository(
+                self._artifact_data_dir, checkpoint.identity
+            ).verified_terminal_poc_outcome(checkpoint)
+        except (OSError, ValueError, sqlite3.Error):
+            return None
 
     def list_hypotheses(
         self,
@@ -4120,6 +4162,7 @@ class SimpleCheckpointStore:
             "image_digest": result.image_digest or checkpoint.image_digest,
             "container_id": result.container_id or checkpoint.container_id,
             "validated_poc_ref": result.validated_poc_ref,
+            "external_prerequisites_ref": result.external_prerequisites_ref,
             "report_ref": result.report_ref,
             "bundle_manifest_ref": result.bundle_manifest_ref,
             "bundle_archive_ref": result.bundle_archive_ref,
@@ -4457,29 +4500,32 @@ class SimpleCheckpointStore:
         return exhausted
 
     def promote_inconclusive_execution(
-        self, exhausted: StageCheckpoint
+        self,
+        exhausted: StageCheckpoint,
+        *,
+        artifacts: SimpleArtifactRepository | None = None,
     ) -> StageCheckpoint:
         """Atomically preserve an executed, evidence-checked PoC as non-reportable."""
 
+        exhausted_attempts = (
+            exhausted.error_code == "RECOVERY_EXHAUSTED"
+            and exhausted.attempt_number >= MAX_RECOVERY_ATTEMPTS
+        )
+        stopped_inconclusive = (
+            exhausted.error_code == "POC_INCONCLUSIVE"
+            and exhausted.attempt_number >= 1
+            and artifacts is not None
+            and artifacts.identity == exhausted.identity
+        )
         if (
             exhausted.stage is not SimpleStage.POC_EXECUTION_DONE
             or exhausted.stage_version != STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
             or exhausted.status is not StageStatus.BLOCKED
-            or exhausted.error_code != "RECOVERY_EXHAUSTED"
-            or exhausted.attempt_number < MAX_RECOVERY_ATTEMPTS
+            or not (exhausted_attempts or stopped_inconclusive)
             or len(exhausted.output_refs) != 2
             or exhausted.validated_poc_ref is not None
         ):
             raise ValueError("POC_INCONCLUSIVE_PROMOTION_INVALID")
-        completed = exhausted.model_copy(
-            update={
-                "status": StageStatus.SUCCEEDED,
-                "verdict": "HOLD",
-                "error_code": None,
-                "retryable": False,
-                "updated_at": datetime.now(UTC),
-            }
-        )
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -4498,6 +4544,24 @@ class SimpleCheckpointStore:
                 != exhausted
             ):
                 raise ValueError("POC_INCONCLUSIVE_PROMOTION_STALE")
+            stop_ref = None
+            if stopped_inconclusive:
+                assert artifacts is not None
+                stop_ref = self._verified_inconclusive_stop(
+                    connection, exhausted, artifacts
+                )
+                if stop_ref is None:
+                    raise ValueError("POC_INCONCLUSIVE_STOP_UNVERIFIED")
+            completed = exhausted.model_copy(
+                update={
+                    "status": StageStatus.SUCCEEDED,
+                    "verdict": "HOLD",
+                    "error_code": None,
+                    "retryable": False,
+                    "poc_stop_decision_ref": stop_ref,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
             self._upsert_checkpoint_connection(connection, completed)
             AgentActivityStore.append_connection(
                 connection,
@@ -4507,7 +4571,13 @@ class SimpleCheckpointStore:
                     sequence=self._stage_sequence(completed.stage, 2),
                     status=StageStatus.SUCCEEDED,
                     summary_ko=(
-                        "완료된 PoC 실행의 반복된 근거 부족을 미확정으로 기록했습니다."
+                        "완료된 PoC 실행의 근거 부족과 복구 중단 결정을 미확정으로 "
+                        "기록했습니다."
+                        if stop_ref is not None
+                        else (
+                            "완료된 PoC 실행의 반복된 근거 부족을 "
+                            "미확정으로 기록했습니다."
+                        )
                     ),
                     output_refs=completed.output_refs,
                 ),
@@ -4519,6 +4589,100 @@ class SimpleCheckpointStore:
             raise
         finally:
             connection.close()
+
+    def _verified_inconclusive_stop(
+        self,
+        connection: sqlite3.Connection,
+        checkpoint: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+    ) -> StoredDataRef | None:
+        """Require linked execution, interpretation and append-only STOP evidence."""
+
+        if checkpoint.attempt_id is None:
+            return None
+        execution_ref, interpretation_ref = checkpoint.output_refs
+        try:
+            execution = json.loads(artifacts.read(execution_ref))
+            interpretation = json.loads(artifacts.read(interpretation_ref))
+        except (OSError, ValueError, TypeError, sqlite3.Error):
+            return None
+        if not isinstance(execution, dict) or not isinstance(interpretation, dict):
+            return None
+        result = interpretation.get("result")
+        if (
+            execution.get("kind") != "simple_poc_execution"
+            or execution.get("attempt_id") != checkpoint.attempt_id
+            or execution.get("timed_out") is not False
+            or type(execution.get("exit_code")) is not int
+            or execution.get("exit_code") != 0
+            or interpretation.get("kind") != "simple_dynamic_interpretation"
+            or interpretation.get("execution_ref")
+            != execution_ref.model_dump(mode="json")
+            or not isinstance(result, dict)
+            or result.get("outcome") != "INCONCLUSIVE"
+        ):
+            return None
+        rows = connection.execute(
+            "SELECT event_json FROM agent_activity_events "
+            "WHERE analysis_id = ? AND hypothesis_key = ? AND attempt_id = ?",
+            (
+                checkpoint.identity.analysis_id,
+                self._hypothesis_key(checkpoint.identity),
+                checkpoint.attempt_id,
+            ),
+        ).fetchall()
+        for row in rows:
+            event = AgentActivityEvent.model_validate_json(row["event_json"])
+            if (
+                event.kind is not ActivityKind.DECISION_RECORDED
+                or event.stage != checkpoint.stage.value
+                or event.analysis_id != checkpoint.identity.analysis_id
+                or event.workspace_id != checkpoint.identity.workspace_id
+                or event.commit_id != checkpoint.identity.commit_id
+                or event.hypothesis_id != checkpoint.identity.hypothesis_id
+                or event.attempt_id != checkpoint.attempt_id
+                or event.error_code != checkpoint.error_code
+                or len(event.output_refs) != 1
+            ):
+                continue
+            decision_ref = event.output_refs[0]
+            try:
+                decision = json.loads(artifacts.read(decision_ref))
+            except (OSError, ValueError, TypeError, sqlite3.Error):
+                continue
+            if not isinstance(decision, dict):
+                continue
+            try:
+                original_error = StageFailure.model_validate_json(
+                    canonical_bytes(decision.get("original_error"))
+                )
+                stop = RecoveryDecision.model_validate_json(
+                    canonical_bytes(decision.get("decision"))
+                )
+            except (ValueError, TypeError):
+                continue
+            if (
+                decision.get("kind") == "simple_recovery_decision"
+                and decision.get("identity")
+                == checkpoint.identity.model_dump(mode="json")
+                and decision.get("stage") == checkpoint.stage.value
+                and decision.get("attempt") == checkpoint.attempt_number
+                and decision.get("attempt_id") == checkpoint.attempt_id
+                and original_error.code == checkpoint.error_code
+                and original_error.retryable
+                and original_error.evidence_refs == checkpoint.output_refs
+                and stop.action is RecoveryAction.STOP
+                and stop.action in ALLOWED_ACTIONS[stop.category]
+                and stop.environment_patch == ""
+                and (
+                    decision.get("decision_origin") == "AGENT"
+                    or "decision_origin" not in decision
+                    and (stop.diagnosis, stop.guidance)
+                    not in LEGACY_RECOVERY_FALLBACK_STOPS
+                )
+            ):
+                return decision_ref
+        return None
 
     def _recovery_event(
         self,

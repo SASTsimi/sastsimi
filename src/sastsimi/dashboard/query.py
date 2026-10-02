@@ -28,7 +28,10 @@ from sastsimi.reporting.bundle_files import (
     read_bundle_file,
 )
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
-from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.artifacts import (
+    SimpleArtifactRepository,
+    verified_terminal_projection,
+)
 from sastsimi.simple_runtime.attack_surfaces import surface_index_from_json
 from sastsimi.simple_runtime.gate_guard import technical_gate_accepted
 from sastsimi.simple_runtime.models import (
@@ -40,6 +43,7 @@ from sastsimi.simple_runtime.models import (
     StageCheckpoint,
     StageStatus,
     terminal_gate_outcome,
+    terminal_initial_outcome,
     terminal_poc_outcome,
 )
 from sastsimi.simple_runtime.poc_currentness import (
@@ -1024,6 +1028,7 @@ class DashboardQuery:
         *,
         detail: bool = False,
     ) -> AnalysisSummaryView | AnalysisDetailView:
+        values = list(verified_terminal_projection(tuple(values), self._data_dir))
         hypothesis_groups: dict[str, list[StageCheckpoint]] = defaultdict(list)
         for checkpoint in values:
             if checkpoint.identity.hypothesis_id is not None:
@@ -1053,7 +1058,9 @@ class DashboardQuery:
             if item.identity.hypothesis_id is None
         ) + sum(item.completed_count for item in hypotheses)
         reports = self._reports(analysis_id)
-        progress = ProgressProjector(_CheckpointProjection(tuple(values))).snapshot(
+        progress = ProgressProjector(
+            _CheckpointProjection(tuple(values)), artifact_data_dir=self._data_dir
+        ).snapshot(
             analysis_id,
             static_disposition=run.static_disposition if run else "FULL",
             candidate_pipeline_version=(run.candidate_pipeline_version or 0)
@@ -1751,6 +1758,7 @@ class DashboardQuery:
         *,
         analysis_active: bool = False,
     ) -> HypothesisProgressView:
+        values = list(verified_terminal_projection(tuple(values), self._data_dir))
         latest = max(values, key=lambda item: item.updated_at)
         execution = next(
             (item for item in values if item.stage is SimpleStage.POC_EXECUTION_DONE),
@@ -1781,9 +1789,9 @@ class DashboardQuery:
         review = self._scope_review(latest.identity, scope, run)
         source = review["policy_source"]
         assert isinstance(source, dict)
-        progress = ProgressProjector(_CheckpointProjection(tuple(values))).snapshot(
-            analysis_id, analysis_active=analysis_active
-        )
+        progress = ProgressProjector(
+            _CheckpointProjection(tuple(values)), artifact_data_dir=self._data_dir
+        ).snapshot(analysis_id, analysis_active=analysis_active)
         return HypothesisProgressView(
             analysis_id=analysis_id,
             hypothesis_id=hypothesis_id,
@@ -1796,7 +1804,20 @@ class DashboardQuery:
             disposition=(
                 None
                 if poc_revalidation_required
-                else terminal_poc_outcome(execution) or terminal_gate_outcome(gate)
+                else (
+                    terminal_initial_outcome(
+                        next(
+                            (
+                                item
+                                for item in values
+                                if item.stage is SimpleStage.VERIFICATION_INITIAL_DONE
+                            ),
+                            None,
+                        )
+                    )
+                    or terminal_poc_outcome(execution)
+                    or terminal_gate_outcome(gate)
+                )
             ),
             scope_status=str(review["status"]),
             scope_collection_status=str(source.get("collection_status", "UNVERIFIED")),

@@ -611,6 +611,7 @@ async def test_offline_dependency_failure_is_nonretryable_stage_block(
                     "rationale": "Needs a runtime check.",
                     "reproduction_goal": "Run a local test.",
                     "environment_requirements": [],
+                    "unmet_external_prerequisites": [],
                     "supporting_refs": [],
                     "limitations": [],
                 },
@@ -633,3 +634,44 @@ async def test_offline_dependency_failure_is_nonretryable_stage_block(
     assert blocked.value.failure.retryable is False
     assert b"in-process PoC fixtures" in prompts[0]
     assert b"already provided by the pinned checkout" in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_unmet_attack_prerequisite_is_inconclusive_without_preparing(
+    tmp_path: Path,
+) -> None:
+    _workspace, commit, _path, _digest = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+
+    class _Client:
+        async def call(self, **_kwargs: object) -> SimpleLLMCallResult:
+            return SimpleLLMCallResult(
+                value={
+                    "initial_assessment": "HOLD",
+                    "rationale": "The attacker-controlled setting is not established.",
+                    "reproduction_goal": "Verify process startup control.",
+                    "environment_requirements": ["python:3.12"],
+                    "unmet_external_prerequisites": [
+                        "attacker can set the target process PYTHONSTARTUP"
+                    ],
+                    "supporting_refs": [],
+                    "limitations": ["No proof of attacker control"],
+                },
+                prompt_digest="a" * 64,
+                output_digest="b" * 64,
+            )
+
+    class _NeverPrepare:
+        async def prepare(self, *_args: object) -> None:
+            raise AssertionError("unmet attack precondition cannot be built away")
+
+    result = await InitialVerificationStage(
+        _Client(),
+        artifacts,
+        _NeverPrepare(),  # type: ignore[arg-type]
+    )(checkpoint, {})
+
+    assert result.verdict == "HOLD"
+    assert result.external_prerequisites_ref == result.output_refs[0]
+    assert result.recipe_ref is None
+    assert len(result.output_refs) == 1

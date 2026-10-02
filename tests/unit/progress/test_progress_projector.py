@@ -10,6 +10,7 @@ from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.progress.models import ProgressSnapshot
 from sastsimi.progress.projector import ProgressProjector
+from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
     STAGE_VERSION,
@@ -108,6 +109,64 @@ def test_progress_counts_known_work_and_only_complete_reaches_100(
     complete = ProgressProjector(store).snapshot("analysis-1")
     assert complete.status == "COMPLETE"
     assert complete.percent == 100
+
+
+def test_unmet_external_prerequisite_counts_as_inconclusive_terminal(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    analysis = CheckpointIdentity(
+        analysis_id="external-prerequisite-analysis",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    hypothesis = analysis.model_copy(update={"hypothesis_id": "hypothesis-1"})
+    _save(store, analysis, SimpleStage.STATIC_DONE)
+    _save(store, analysis, SimpleStage.HYPOTHESIS_DONE)
+    _save(store, hypothesis, SimpleStage.PRO_CON_DONE)
+    data_dir = tmp_path / "data"
+    artifacts = SimpleArtifactRepository(data_dir, hypothesis)
+    ref = artifacts.put_json(
+        {
+            "kind": "simple_initial_verification",
+            "attempt_id": "initial-attempt",
+            "result": {
+                "initial_assessment": "HOLD",
+                "unmet_external_prerequisites": ["attacker control unproven"],
+            },
+        }
+    )
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=hypothesis,
+            stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+            stage_version=STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE],
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(ref,),
+            attempt_id="initial-attempt",
+            verdict="HOLD",
+            external_prerequisites_ref=ref,
+        )
+    )
+
+    snapshot = ProgressProjector(store, artifact_data_dir=data_dir).snapshot(
+        "external-prerequisite-analysis"
+    )
+
+    assert snapshot.status == "COMPLETE"
+    assert snapshot.percent == 100
+    assert snapshot.inconclusive_hypothesis_count == 1
+    assert snapshot.finding_count == 0
+    artifacts.artifacts.path_for(ref.content_hash).unlink()
+    corrupted = ProgressProjector(store, artifact_data_dir=data_dir).snapshot(
+        "external-prerequisite-analysis"
+    )
+    assert corrupted.status == "BLOCKED"
+    assert corrupted.error_code == "INITIAL_VERIFICATION_EVIDENCE_INVALID"
+    assert corrupted.inconclusive_hypothesis_count == 0
 
 
 def test_candidate_progress_counts_decisions_and_deep_work_separately(
@@ -798,12 +857,31 @@ def test_false_is_terminal_without_becoming_a_failed_analysis(tmp_path: Path) ->
 def test_executed_inconclusive_poc_is_complete_but_not_reportable(
     tmp_path: Path,
 ) -> None:
-    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    store = SimpleCheckpointStore(
+        tmp_path / "db" / "sastsimi.sqlite3", artifact_data_dir=tmp_path
+    )
     identity = CheckpointIdentity(
         analysis_id="analysis-1",
         workspace_id="workspace-1",
         commit_id="commit-1",
         hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    attempt_id = "terminal-poc-attempt-3"
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "attempt_id": attempt_id,
+            "timed_out": False,
+            "exit_code": 0,
+        }
+    )
+    interpretation_ref = artifacts.put_json(
+        {
+            "kind": "simple_dynamic_interpretation",
+            "execution_ref": execution_ref.model_dump(mode="json"),
+            "result": {"outcome": "INCONCLUSIVE"},
+        }
     )
     for stage in (
         SimpleStage.PRO_CON_DONE,
@@ -819,13 +897,16 @@ def test_executed_inconclusive_poc_is_complete_but_not_reportable(
             status=StageStatus.SUCCEEDED,
             input_refs=(),
             input_hash=input_reference_hash(()),
-            output_refs=(_ref("execution"), _ref("interpretation")),
+            output_refs=(execution_ref, interpretation_ref),
             verdict="HOLD",
             attempt_number=3,
+            attempt_id=attempt_id,
         )
     )
 
-    snapshot = ProgressProjector(store).snapshot("analysis-1")
+    snapshot = ProgressProjector(store, artifact_data_dir=tmp_path).snapshot(
+        "analysis-1"
+    )
 
     assert snapshot.status == "COMPLETE"
     assert snapshot.percent == 100
