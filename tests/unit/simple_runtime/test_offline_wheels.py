@@ -12,7 +12,10 @@ import pytest
 
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import CheckpointIdentity
-from sastsimi.simple_runtime.offline_wheels import import_wheel_bundle
+from sastsimi.simple_runtime.offline_wheels import (
+    import_wheel_bundle,
+    require_target_compatible_wheels,
+)
 
 
 def _artifacts(tmp_path: Path) -> SimpleArtifactRepository:
@@ -131,3 +134,39 @@ def test_archive_rejects_traversal_links_duplicate_casefold_names_and_non_wheels
     )
     with pytest.raises(ValueError, match="WHEEL_ARCHIVE_INVALID"):
         import_wheel_bundle(path, digest, artifacts)
+
+
+def test_linux_target_accepts_matching_and_universal_wheels() -> None:
+    require_target_compatible_wheels(
+        (
+            "sample_pkg-1.0-cp312-cp312-manylinux_2_17_x86_64.whl",
+            "other_pkg-1.0-py3-none-any.whl",
+        ),
+        frozenset({"cp312-cp312-manylinux_2_17_x86_64"}),
+    )
+
+
+def test_windows_host_does_not_reject_linux_wheel(
+    tmp_path: Path,
+) -> None:
+    name = "sample_pkg-1.0-cp312-cp312-manylinux_2_17_x86_64.whl"
+    path, digest = _write_bundle(
+        tmp_path, _tar_bytes(((name, _wheel_bytes(), tarfile.REGTYPE),))
+    )
+
+    bundle = import_wheel_bundle(
+        path,
+        digest,
+        _artifacts(tmp_path),
+        target_tags=frozenset({"cp312-cp312-manylinux_2_17_x86_64"}),
+    )
+
+    assert bundle.wheel_names == (name,)
+
+
+def test_unknown_target_rejects_platform_wheel() -> None:
+    with pytest.raises(ValueError, match="WHEEL_TARGET_INCOMPATIBLE"):
+        require_target_compatible_wheels(
+            ("sample_pkg-1.0-cp312-cp312-manylinux_2_17_x86_64.whl",),
+            None,
+        )

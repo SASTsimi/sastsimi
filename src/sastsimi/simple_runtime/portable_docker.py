@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 import os
 import re
 import shlex
 import socket
+import stat
+import subprocess
+import tarfile
 import tomllib
 from collections.abc import Mapping, Sequence
 from fnmatch import fnmatchcase
@@ -34,7 +38,10 @@ from .stages import ReproductionEnvironment
 
 _RESOURCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_COMMIT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _MAX_OUTPUT = 1024 * 1024
+_MAX_PINNED_CONTEXT_BYTES = 64 * 1024 * 1024
+_MAX_PINNED_FILES = 20_000
 _DEPENDENCY_INSTALL = re.compile(
     rb"(?:pip3? install|python -m pip install|npm (?:ci|install)|"
     rb"apt-get install|yarn install|poetry install)",
@@ -52,6 +59,141 @@ class DockerBuildAttemptsError(DockerOperationError):
         super().__init__(error.code, error.outcome)
         self.attempt_refs = attempt_refs
         self.recipe_ref = recipe_ref
+
+
+def build_pinned_context(
+    workspace: Path,
+    commit_id: str,
+    dockerfile: bytes,
+    wheels: Mapping[str, bytes],
+    *,
+    git_executable: str = "git",
+) -> bytes:
+    """Build a bounded Docker context from the exact, unchanged Git checkout."""
+
+    if _COMMIT_ID.fullmatch(commit_id) is None:
+        raise ValueError("PINNED_CONTEXT_UNAVAILABLE")
+    root = workspace.resolve(strict=True)
+
+    def git(*args: str) -> subprocess.CompletedProcess[bytes]:
+        try:
+            return subprocess.run(
+                (git_executable, "-C", str(root), *args),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise ValueError("PINNED_CONTEXT_UNAVAILABLE") from error
+
+    def require_unchanged() -> None:
+        diff = git("diff", "--quiet", "--no-ext-diff", "--no-textconv", commit_id, "--")
+        if diff.returncode == 1:
+            raise ValueError("PINNED_CONTEXT_CHANGED")
+        if diff.returncode != 0:
+            raise ValueError("PINNED_CONTEXT_UNAVAILABLE")
+
+    listed = git("ls-tree", "-r", "-z", commit_id)
+    if listed.returncode != 0 or len(listed.stdout) > 16 * 1024 * 1024:
+        raise ValueError("PINNED_CONTEXT_UNAVAILABLE")
+    entries = listed.stdout.split(b"\0")
+    if len(entries) > _MAX_PINNED_FILES + 1:
+        raise ValueError("PINNED_CONTEXT_TOO_LARGE")
+    stream = io.BytesIO()
+    names = {"dockerfile", ".dockerignore"}
+    total_bytes = len(dockerfile)
+
+    def add_member(archive: tarfile.TarFile, name: str, raw: bytes) -> None:
+        nonlocal total_bytes
+        total_bytes += len(raw)
+        if total_bytes > _MAX_PINNED_CONTEXT_BYTES:
+            raise ValueError("PINNED_CONTEXT_TOO_LARGE")
+        info = tarfile.TarInfo(name)
+        info.size = len(raw)
+        info.mode = 0o644
+        info.mtime = 0
+        archive.addfile(info, io.BytesIO(raw))
+
+    with tarfile.open(fileobj=stream, mode="w", format=tarfile.PAX_FORMAT) as archive:
+        add_member(archive, "Dockerfile", dockerfile)
+        for entry in entries:
+            if not entry:
+                continue
+            try:
+                header, path_bytes = entry.split(b"\t", 1)
+                mode, kind, object_id = header.split()
+                name = path_bytes.decode("utf-8", errors="strict")
+                parts = PurePosixPath(name).parts
+            except (ValueError, UnicodeError) as error:
+                raise ValueError("PINNED_CONTEXT_UNSAFE") from error
+            if (
+                not parts
+                or name.startswith("/")
+                or "\\" in name
+                or ":" in name
+                or any(part in {"", ".", ".."} for part in parts)
+                or (
+                    name.casefold() in names
+                    and name not in {"Dockerfile", ".dockerignore"}
+                )
+                or name == "wheels"
+                or name.startswith("wheels/")
+            ):
+                raise ValueError("PINNED_CONTEXT_UNSAFE")
+            if mode not in {b"100644", b"100755"} or kind != b"blob":
+                raise ValueError("PINNED_CONTEXT_UNSAFE")
+            if name in {"Dockerfile", ".dockerignore"}:
+                continue
+            target = root.joinpath(*parts)
+            try:
+                target.resolve(strict=True).relative_to(root)
+                if any(
+                    parent.is_symlink()
+                    for parent in target.parents
+                    if parent != root and parent.is_relative_to(root)
+                ):
+                    raise ValueError("PINNED_CONTEXT_UNSAFE")
+                before = target.lstat()
+                if (
+                    not stat.S_ISREG(before.st_mode)
+                    or before.st_nlink != 1
+                    or getattr(before, "st_file_attributes", 0) & 0x400
+                ):
+                    raise ValueError("PINNED_CONTEXT_UNSAFE")
+            except OSError as error:
+                raise ValueError("PINNED_CONTEXT_UNSAFE") from error
+            object_name = object_id.decode("ascii", errors="strict")
+            size = git("cat-file", "-s", object_name)
+            if size.returncode != 0:
+                raise ValueError("PINNED_CONTEXT_UNAVAILABLE")
+            try:
+                blob_size = int(size.stdout.strip())
+            except ValueError as error:
+                raise ValueError("PINNED_CONTEXT_UNAVAILABLE") from error
+            if blob_size + total_bytes > _MAX_PINNED_CONTEXT_BYTES:
+                raise ValueError("PINNED_CONTEXT_TOO_LARGE")
+            content = git("cat-file", "blob", object_name)
+            if content.returncode != 0 or len(content.stdout) != blob_size:
+                raise ValueError("PINNED_CONTEXT_UNAVAILABLE")
+            raw = content.stdout
+            add_member(archive, name, raw)
+            names.add(name.casefold())
+        for name, raw in sorted(wheels.items()):
+            if (
+                not name
+                or name != Path(name).name
+                or "/" in name
+                or "\\" in name
+                or not name.endswith(".whl")
+            ):
+                raise ValueError("WHEEL_ARCHIVE_INVALID")
+            add_member(archive, f"wheels/{name}", raw)
+    require_unchanged()
+    result = stream.getvalue()
+    if len(result) > _MAX_PINNED_CONTEXT_BYTES:
+        raise ValueError("PINNED_CONTEXT_TOO_LARGE")
+    return result
 
 
 class PortableDockerRuntime:
@@ -78,6 +220,7 @@ class PortableDockerRuntime:
         dockerfile: bytes,
         cache_key: str,
         labels: Mapping[str, str],
+        context_archive: bytes | None = None,
     ) -> str:
         gate = getattr(self, "_build_slots", None)
         if gate is None:
@@ -86,6 +229,7 @@ class PortableDockerRuntime:
                 dockerfile=dockerfile,
                 cache_key=cache_key,
                 labels=labels,
+                context_archive=context_archive,
             )
         async with gate:
             return await self._build_or_reuse(
@@ -93,6 +237,7 @@ class PortableDockerRuntime:
                 dockerfile=dockerfile,
                 cache_key=cache_key,
                 labels=labels,
+                context_archive=context_archive,
             )
 
     async def _build_or_reuse(
@@ -102,7 +247,14 @@ class PortableDockerRuntime:
         dockerfile: bytes,
         cache_key: str,
         labels: Mapping[str, str],
+        context_archive: bytes | None = None,
     ) -> str:
+        if context_archive is not None:
+            if self._network != "none":
+                raise ValueError("POC_OFFLINE_NETWORK_REQUIRED")
+            if len(context_archive) > _MAX_PINNED_CONTEXT_BYTES:
+                raise ValueError("PINNED_CONTEXT_TOO_LARGE")
+            cache_key += ":" + hashlib.sha256(context_archive).hexdigest()
         tag = f"sastsimi-simple:{hashlib.sha256(cache_key.encode()).hexdigest()[:24]}"
         inspected = await self._run(
             ("image", "inspect", "--format", "{{.Id}}", tag),
@@ -118,10 +270,14 @@ class PortableDockerRuntime:
         ]
         for key, value in sorted(labels.items()):
             args.extend(("--label", f"{key}={value}"))
-        args.extend(("--tag", tag, "--file", "-", str(workspace)))
+        args.extend(
+            ("--tag", tag, "--file", "Dockerfile", "-")
+            if context_archive is not None
+            else ("--tag", tag, "--file", "-", str(workspace))
+        )
         built = await self._run(
             tuple(args),
-            input_bytes=dockerfile,
+            input_bytes=context_archive if context_archive is not None else dockerfile,
             timeout_seconds=self._timeout,
         )
         self._require_success("DOCKER_BUILD_FAILED", built)
@@ -131,6 +287,63 @@ class PortableDockerRuntime:
         )
         self._require_success("DOCKER_IMAGE_INSPECT_FAILED", inspected)
         return self._image_digest(inspected.stdout)
+
+    async def target_wheel_tags(self, base_image: str) -> frozenset[str] | None:
+        """Probe only an already-local Linux image, without network or mounts."""
+
+        inspected = await self._run(
+            (
+                "image",
+                "inspect",
+                "--format",
+                "{{.Os}}|{{.Architecture}}|{{.Id}}",
+                base_image,
+            ),
+            timeout_seconds=30,
+        )
+        if inspected.exit_code != 0 or inspected.timed_out:
+            return None
+        try:
+            os_name, _arch, image_id = (
+                inspected.stdout.decode("ascii").strip().split("|")
+            )
+        except (UnicodeError, ValueError):
+            return None
+        if os_name != "linux" or _IMAGE_DIGEST.fullmatch(image_id) is None:
+            return None
+        probed = await self._run(
+            (
+                "run",
+                "--pull",
+                "never",
+                "--rm",
+                "--network",
+                "none",
+                "--read-only",
+                "--tmpfs",
+                "/tmp:rw,noexec,nosuid,size=16m",
+                image_id,
+                "python",
+                "-c",
+                "import json; from pip._vendor.packaging import tags; "
+                "print(json.dumps([str(tag) for tag in tags.sys_tags()]))",
+            ),
+            timeout_seconds=60,
+        )
+        if probed.exit_code != 0 or probed.timed_out:
+            return None
+        try:
+            parsed = json.loads(probed.stdout)
+        except (UnicodeError, ValueError):
+            return None
+        if (
+            not isinstance(parsed, list)
+            or not parsed
+            or len(parsed) > 20_000
+            or any(not isinstance(tag, str) or len(tag) > 128 for tag in parsed)
+        ):
+            return None
+        return frozenset(parsed)
 
     async def create_container(
         self,
@@ -1132,6 +1345,7 @@ class DirectEnvironmentPreparer:
 
 
 __all__ = [
+    "build_pinned_context",
     "DirectEnvironmentPreparer",
     "PortableContainerFactory",
     "PortableDockerRuntime",

@@ -1,9 +1,11 @@
 import hashlib
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -27,6 +29,7 @@ from sastsimi.simple_runtime.models import (
 from sastsimi.simple_runtime.portable_docker import (
     DirectEnvironmentPreparer,
     PortableDockerRuntime,
+    build_pinned_context,
 )
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
@@ -90,6 +93,157 @@ async def test_failed_docker_build_keeps_diagnostic_output() -> None:
     assert "--quiet" not in docker.calls[1]
     assert failure.value.outcome is not None
     assert b"Git executable not found" in failure.value.outcome.stderr
+
+
+class _ArchiveDocker(PortableDockerRuntime):
+    def __init__(self) -> None:
+        self.calls: list[tuple[tuple[str, ...], bytes | None]] = []
+        self._network = "none"
+        self._timeout = 60
+
+    async def _run(
+        self,
+        args: Sequence[str],
+        *,
+        timeout_seconds: int,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        del timeout_seconds
+        call = tuple(args)
+        self.calls.append((call, input_bytes))
+        if call[:2] == ("image", "inspect"):
+            return DockerCommandOutcome(1, b"", b"not found", False)
+        return DockerCommandOutcome(0, b"", b"", False)
+
+
+class _TargetProbeDocker(_ArchiveDocker):
+    async def _run(
+        self,
+        args: Sequence[str],
+        *,
+        timeout_seconds: int,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        del timeout_seconds
+        call = tuple(args)
+        self.calls.append((call, input_bytes))
+        if call[:2] == ("image", "inspect"):
+            return DockerCommandOutcome(
+                0, b"linux|amd64|sha256:" + b"a" * 64 + b"\n", b"", False
+            )
+        if call[0] == "run":
+            return DockerCommandOutcome(
+                0,
+                b'["cp312-cp312-manylinux_2_17_x86_64", "py3-none-any"]\n',
+                b"",
+                False,
+            )
+        raise AssertionError(call)
+
+
+@pytest.mark.asyncio
+async def test_target_tags_are_probed_inside_local_networkless_linux_image() -> None:
+    docker = _TargetProbeDocker()
+
+    tags = await docker.target_wheel_tags("python:3.12-slim")
+
+    assert tags is not None
+    assert "cp312-cp312-manylinux_2_17_x86_64" in tags
+    run = docker.calls[1][0]
+    assert run[:3] == ("run", "--pull", "never")
+    assert ("--network", "none") == run[
+        run.index("--network") : run.index("--network") + 2
+    ]
+    assert "--mount" not in run
+
+
+def _committed_workspace(tmp_path: Path) -> tuple[Path, str]:
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("print('pinned')\n", encoding="utf-8")
+    (workspace / "requirements.txt").write_text("sample-pkg==1.0\n", encoding="utf-8")
+    subprocess.run(("git", "init", "-q", str(workspace)), check=True)
+    subprocess.run(("git", "-C", str(workspace), "add", "."), check=True)
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ),
+        check=True,
+    )
+    commit = subprocess.check_output(("git", "-C", str(workspace), "rev-parse", "HEAD"))
+    return workspace, commit.decode("ascii").strip()
+
+
+def test_archive_context_has_only_pinned_checkout_and_wheels(tmp_path: Path) -> None:
+    workspace, commit = _committed_workspace(tmp_path)
+    (workspace / "untracked-secret.txt").write_text("do not include", encoding="utf-8")
+    wheel = b"wheel-bytes"
+
+    raw = build_pinned_context(
+        workspace,
+        commit,
+        b"FROM python:3.12-slim\n",
+        {"sample_pkg-1.0-py3-none-any.whl": wheel},
+    )
+
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        names = {member.name for member in archive}
+        assert names == {
+            "Dockerfile",
+            "app.py",
+            "requirements.txt",
+            "wheels/sample_pkg-1.0-py3-none-any.whl",
+        }
+        assert archive.extractfile("app.py").read() == b"print('pinned')\n"  # type: ignore[union-attr]
+        assert (
+            archive.extractfile("wheels/sample_pkg-1.0-py3-none-any.whl").read()
+            == wheel
+        )  # type: ignore[union-attr]
+
+
+def test_archive_context_rejects_source_symlink_or_changed_content(
+    tmp_path: Path,
+) -> None:
+    workspace, commit = _committed_workspace(tmp_path)
+    (workspace / "app.py").write_text("print('modified')\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_CHANGED"):
+        build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+    (workspace / "app.py").unlink()
+    try:
+        (workspace / "app.py").symlink_to(workspace / "requirements.txt")
+    except OSError:
+        pytest.skip("Windows symlink creation is unavailable")
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_UNSAFE"):
+        build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+
+@pytest.mark.asyncio
+async def test_tar_build_uses_network_none(tmp_path: Path) -> None:
+    docker = _ArchiveDocker()
+    raw = b"verified-tar"
+
+    with pytest.raises(DockerOperationError, match="DOCKER_IMAGE_INSPECT_FAILED"):
+        await docker.build_or_reuse(
+            workspace=tmp_path,
+            dockerfile=b"FROM python:3.12-slim\n",
+            cache_key="archive-build",
+            labels={},
+            context_archive=raw,
+        )
+
+    args, input_bytes = docker.calls[1]
+    assert args[:4] == ("build", "--pull=false", "--network", "none")
+    assert args[-3:] == ("--file", "Dockerfile", "-")
+    assert input_bytes == raw
 
 
 @pytest.mark.parametrize(
