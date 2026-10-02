@@ -196,6 +196,14 @@ Promise.all([task, unavailableTask]).then(() => {
   shown = text(nodes.get("overview"));
   assert.ok(shown.includes("INTERRUPTED_RESUME_REQUIRED"), shown);
   assert.ok(shown.includes("sastsimi resume A-001"), shown);
+  detail.resume_action = "REVALIDATE_POC";
+  detail.error_code = "POC_REVALIDATION_REQUIRED";
+  vm.runInContext("renderOverview(state.detail)", context);
+  shown = text(nodes.get("overview"));
+  assert.ok(shown.includes("PoC 결과 재검증 필요"), shown);
+  assert.ok(shown.includes("sastsimi resume A-001"), shown);
+  assert.ok(!shown.includes("INTERRUPTED_RESUME_REQUIRED"), shown);
+  assert.ok(!shown.includes("예산 한도"), shown);
   detail.status = "BLOCKED";
   detail.resume_action = "MANUAL_CODEX_CLEANUP_REVIEW";
   detail.error_code = "CODEX_CALL_IN_FLIGHT_UNRESOLVED";

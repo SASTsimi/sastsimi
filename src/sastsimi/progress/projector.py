@@ -16,6 +16,11 @@ from sastsimi.simple_runtime.models import (
     terminal_gate_outcome,
     terminal_poc_outcome,
 )
+from sastsimi.simple_runtime.poc_currentness import (
+    completed_before_poc_count,
+    stale_poc_hypothesis_ids,
+    stale_successful_poc,
+)
 
 from .models import ProgressSnapshot
 
@@ -178,6 +183,7 @@ class ProgressProjector:
         candidate_scope_fingerprint: str | None = None,
         surface_counts: Mapping[str, int] | None = None,
         surface_index_hash: str | None = None,
+        analysis_active: bool = False,
     ) -> ProgressSnapshot:
         checkpoints = self._store.list_checkpoints(analysis_id)
         if not checkpoints:
@@ -190,6 +196,8 @@ class ProgressProjector:
                 analysis_level.append(checkpoint)
             else:
                 by_hypothesis[hypothesis_id].append(checkpoint)
+        stale_hypothesis_ids = stale_poc_hypothesis_ids(checkpoints)
+        stale_pocs = [item for item in checkpoints if stale_successful_poc(item)]
 
         completed = sum(item.status is StageStatus.SUCCEEDED for item in analysis_level)
         known = len(_ANALYSIS_STAGES) if analysis_level else 0
@@ -199,6 +207,9 @@ class ProgressProjector:
         rejected_hypotheses = 0
         for values in by_hypothesis.values():
             known += len(HYPOTHESIS_STAGES)
+            if values[0].identity.hypothesis_id in stale_hypothesis_ids:
+                completed += completed_before_poc_count(values)
+                continue
             completed += sum(item.status is StageStatus.SUCCEEDED for item in values)
             final = next(
                 (
@@ -410,6 +421,7 @@ class ProgressProjector:
             and item.status is StageStatus.SUCCEEDED
             and item.verdict == "TRUE"
             and bool(item.output_refs)
+            and item.identity.hypothesis_id not in stale_hypothesis_ids
             for item in checkpoints
         )
         status, current = self._status(
@@ -427,13 +439,24 @@ class ProgressProjector:
                 else None
             ),
         )
+        revalidation_pending = bool(
+            stale_pocs
+            and status in {"COMPLETE", "PARTIAL", "RUNNING"}
+            and not analysis_active
+            and not any(item.status is StageStatus.RUNNING for item in checkpoints)
+        )
+        if revalidation_pending:
+            status = "PAUSED"
+            current = max(stale_pocs, key=lambda item: item.updated_at)
         credited = completed + skipped
         percent = (
             100
             if status == "COMPLETE"
             else min(99, int(credited * 100 / max(known, 1)))
         )
-        error_code = current.error_code
+        error_code = (
+            "POC_REVALIDATION_REQUIRED" if revalidation_pending else current.error_code
+        )
         if status == "BLOCKED" and error_code is None:
             if decisions.get("ERROR", 0):
                 error_code = "CANDIDATE_DISCOVERY_ERROR"
@@ -487,6 +510,7 @@ class ProgressProjector:
                             any(
                                 item.stage is SimpleStage.POC_EXECUTION_DONE
                                 and item.status is StageStatus.SUCCEEDED
+                                and not stale_successful_poc(item)
                                 for item in values
                             )
                             for values in by_hypothesis.values()
@@ -515,7 +539,9 @@ class ProgressProjector:
             hypothesis_count=registered_hypotheses,
             finding_count=finding_count,
             resume_action=(
-                "CHECK_USAGE_TELEMETRY"
+                "REVALIDATE_POC"
+                if revalidation_pending
+                else "CHECK_USAGE_TELEMETRY"
                 if status == "PAUSED"
                 and error_code
                 in {

@@ -71,6 +71,10 @@ from sastsimi.simple_runtime.models import (
     StageCheckpoint,
     StageStatus,
 )
+from sastsimi.simple_runtime.poc_currentness import (
+    stale_poc_hypothesis_ids,
+    stale_successful_poc,
+)
 from sastsimi.simple_runtime.portable_docker import (
     DirectEnvironmentPreparer,
     PortableContainerFactory,
@@ -572,6 +576,10 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             candidate_scope_fingerprint=scope if candidate_mode else None,
             surface_counts=surface_counts,
             surface_index_hash=surface_index_hash,
+            analysis_active=(
+                analysis_run_lease_active(self._config.data_dir, run.analysis_id)
+                is True
+            ),
         )
 
     def _surface_metrics(
@@ -927,11 +935,13 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         exact = self._display.resolve(analysis_id)
         run = self._store.require_analysis_run(exact)
         checkpoints = self._store.list_checkpoints(exact)
+        stale_hypothesis_ids = stale_poc_hypothesis_ids(checkpoints)
         findings = [
             checkpoint
             for checkpoint in checkpoints
             if checkpoint.stage is SimpleStage.FINDING_DONE
             and checkpoint.output_refs
+            and checkpoint.identity.hypothesis_id not in stale_hypothesis_ids
             and technical_gate_accepted(
                 self._store.get(checkpoint.identity, SimpleStage.TECH_GATE_DONE),
                 SimpleArtifactRepository(self._config.data_dir, checkpoint.identity),
@@ -965,7 +975,11 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         identity, _finding_ref = self._finding_identity(finding_id)
         candidate = self._store.require(identity, SimpleStage.POC_CANDIDATE_DONE)
         dynamic = self._store.require(identity, SimpleStage.POC_EXECUTION_DONE)
-        if dynamic.validated_poc_ref is None or len(candidate.output_refs) < 2:
+        if (
+            stale_successful_poc(dynamic)
+            or dynamic.validated_poc_ref is None
+            or len(candidate.output_refs) < 2
+        ):
             raise LookupError("VALIDATED_POC_NOT_FOUND")
         return (
             SimpleArtifactRepository(self._config.data_dir, identity)
@@ -976,6 +990,10 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
     def report(self, finding_id: str) -> str:
         identity, finding_ref = self._finding_identity(finding_id)
         checkpoint = self._store.require(identity, SimpleStage.REPORT_DONE)
+        if stale_successful_poc(
+            self._store.get(identity, SimpleStage.POC_EXECUTION_DONE)
+        ):
+            raise LookupError("CURRENT_REPORT_NOT_FOUND")
         if not technical_gate_accepted(
             self._store.get(identity, SimpleStage.TECH_GATE_DONE),
             SimpleArtifactRepository(self._config.data_dir, identity),

@@ -232,6 +232,46 @@ async def test_resume_reuses_exact_success_and_invalidates_changed_downstream(
 
 
 @pytest.mark.asyncio
+async def test_resume_revalidates_legacy_v2_poc_without_rerunning_upstream(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "legacy-poc" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.REPORT_DONE)
+    old_poc = store.require(_identity(), SimpleStage.POC_EXECUTION_DONE)
+    store.save_checkpoint(
+        old_poc.model_copy(
+            update={
+                "stage_version": "2",
+                "validated_poc_ref": _ref("legacy-validated-poc"),
+            }
+        )
+    )
+    upstream = {
+        stage: store.require(_identity(), stage)
+        for stage in (
+            SimpleStage.PRO_CON_DONE,
+            SimpleStage.VERIFICATION_INITIAL_DONE,
+            SimpleStage.POC_CANDIDATE_DONE,
+        )
+    }
+
+    calls: list[SimpleStage] = []
+    outcome = await SimpleRuntimeRunner(
+        store, _recording_handlers(calls)
+    ).resume_hypothesis(_identity())
+
+    assert outcome.status is StageStatus.SUCCEEDED
+    assert calls[0] is SimpleStage.POC_EXECUTION_DONE
+    assert all(stage not in calls for stage in upstream)
+    for stage, old in upstream.items():
+        assert store.require(_identity(), stage) == old
+    refreshed = store.require(_identity(), SimpleStage.POC_EXECUTION_DONE)
+    assert refreshed.stage_version == STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
+    assert refreshed.validated_poc_ref is None
+    assert SimpleStage.REPORT_DONE in calls
+
+
+@pytest.mark.asyncio
 async def test_poc_execution_retry_starts_a_new_candidate_attempt(tmp_path) -> None:
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
     _seeded_through(store, SimpleStage.VERIFICATION_INITIAL_DONE)

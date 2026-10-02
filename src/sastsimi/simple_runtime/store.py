@@ -1981,6 +1981,7 @@ class SimpleCheckpointStore:
                         (identity.analysis_id, hypothesis_id),
                     ).fetchall()
                     stages: dict[SimpleStage, StageCheckpoint] = {}
+                    stale_poc = False
                     for item in checkpoints:
                         checkpoint = StageCheckpoint.model_validate_json(
                             item["checkpoint_json"]
@@ -1989,6 +1990,12 @@ class SimpleCheckpointStore:
                             update={"hypothesis_id": hypothesis_id}
                         ):
                             raise ValueError("CANDIDATE_HYPOTHESIS_CHECKPOINT_CORRUPT")
+                        if (
+                            checkpoint.stage is SimpleStage.POC_EXECUTION_DONE
+                            and checkpoint.stage_version
+                            != STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
+                        ):
+                            stale_poc = True
                         if (
                             checkpoint.status is StageStatus.SUCCEEDED
                             and checkpoint.stage_version
@@ -2010,7 +2017,7 @@ class SimpleCheckpointStore:
                         is not None
                         or SimpleStage.REPORT_DONE in stages
                     )
-                    if not terminal:
+                    if stale_poc or not terminal:
                         selected.append(hypothesis_id)
                         if len(selected) >= limit:
                             break

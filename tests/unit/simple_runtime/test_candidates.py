@@ -647,6 +647,39 @@ def test_incomplete_hypothesis_page_uses_terminal_checkpoint_evidence(
     assert store.list_incomplete_hypotheses(identity, after_id="H-003", limit=2) == ()
 
 
+def test_legacy_v2_poc_keeps_completed_candidate_hypothesis_incomplete(
+    tmp_path: Path,
+) -> None:
+    identity = _identity()
+    child = identity.model_copy(update={"hypothesis_id": "H-legacy"})
+    store = SimpleCheckpointStore(tmp_path / "ledger.sqlite3")
+    store.upsert_hypothesis(identity, "H-legacy")
+    for stage in (
+        SimpleStage.POC_EXECUTION_DONE,
+        SimpleStage.VERIFICATION_FINAL_DONE,
+        SimpleStage.REPORT_DONE,
+    ):
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=child,
+                stage=stage,
+                stage_version=(
+                    "2"
+                    if stage is SimpleStage.POC_EXECUTION_DONE
+                    else STAGE_VERSION[stage]
+                ),
+                status=StageStatus.SUCCEEDED,
+                input_refs=(),
+                input_hash=input_reference_hash(()),
+                verdict=(
+                    "TRUE" if stage is SimpleStage.VERIFICATION_FINAL_DONE else None
+                ),
+            )
+        )
+
+    assert store.list_incomplete_hypotheses(identity, limit=1) == ("H-legacy",)
+
+
 def test_verified_relative_dot_path_is_canonicalized_before_proof_match(
     tmp_path: Path,
 ) -> None:

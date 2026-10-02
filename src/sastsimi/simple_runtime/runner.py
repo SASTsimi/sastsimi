@@ -495,6 +495,13 @@ class SimpleRuntimeRunner:
             return
         if candidate.status is not StageStatus.SUCCEEDED:
             return
+        if (
+            execution is not None
+            and execution.status is StageStatus.SUCCEEDED
+            and execution.stage_version != STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
+        ):
+            # A completed legacy PoC needs a new stage run, not a new candidate.
+            return
         if execution is not None and (
             execution.error_code == "INVALID_OUTPUT"
             or execution.status is StageStatus.PENDING

@@ -38,12 +38,13 @@ STAGE_VERSION: dict[SimpleStage, str] = {
     stage: (
         "5"
         if stage is SimpleStage.VERIFICATION_INITIAL_DONE
+        else "3"
+        if stage is SimpleStage.POC_EXECUTION_DONE
         else "4"
         if stage is SimpleStage.REPORT_DONE
         else "2"
         if stage
         in {
-            SimpleStage.POC_EXECUTION_DONE,
             SimpleStage.POC_CANDIDATE_DONE,
             SimpleStage.VERIFICATION_FINAL_DONE,
             SimpleStage.TECH_GATE_DONE,

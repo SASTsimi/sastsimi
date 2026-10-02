@@ -273,11 +273,13 @@ function renderOverview(detail) {
   }
   staticCoverageNodes(detail).forEach((node) => box.append(node));
   if (detail.status === "PAUSED") {
-    const advice = detail.resume_action === "RESUME_INTERRUPTED"
-      ? `실행 중단 감지 (INTERRUPTED_RESUME_REQUIRED) · sastsimi resume ${detail.display_analysis_id || detail.analysis_id}`
-      : detail.resume_action === "CHECK_USAGE_TELEMETRY"
-        ? "사용량 정보가 없어 일시 중단됨 · 공급자 사용량과 한도 설정을 확인하세요."
-        : "예산 한도로 일시 중단됨 · 한도를 늘린 뒤 resume 하세요.";
+    const advice = detail.resume_action === "REVALIDATE_POC"
+      ? `이전 PoC 결과 재검증 필요 · sastsimi resume ${detail.display_analysis_id || detail.analysis_id}`
+      : detail.resume_action === "RESUME_INTERRUPTED"
+        ? `실행 중단 감지 (INTERRUPTED_RESUME_REQUIRED) · sastsimi resume ${detail.display_analysis_id || detail.analysis_id}`
+        : detail.resume_action === "CHECK_USAGE_TELEMETRY"
+          ? "사용량 정보가 없어 일시 중단됨 · 공급자 사용량과 한도 설정을 확인하세요."
+          : "예산 한도로 일시 중단됨 · 한도를 늘린 뒤 resume 하세요.";
     box.append(el("div", advice, "warning"));
   }
   const codexCleanupReview = ["CODEX_CALL_IN_FLIGHT_UNRESOLVED", "CODEX_PROCESS_CLEANUP_UNCONFIRMED"].includes(detail.error_code);

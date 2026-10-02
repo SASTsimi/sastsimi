@@ -202,6 +202,7 @@ async def test_dependency_failure_uses_recorded_source_only_fallback(
     assert len(recipe["build_attempt_refs"]) == 2
     assert b"pip install" not in docker.dockerfiles[1]
     assert json.loads(artifacts.read(result.recipe_ref))["status"] == "BUILT"
+    assert recipe["image_digest"] == result.image_digest
 
 
 @pytest.mark.asyncio

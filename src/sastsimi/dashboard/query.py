@@ -42,6 +42,10 @@ from sastsimi.simple_runtime.models import (
     terminal_gate_outcome,
     terminal_poc_outcome,
 )
+from sastsimi.simple_runtime.poc_currentness import (
+    completed_before_poc_count,
+    stale_successful_poc,
+)
 from sastsimi.simple_runtime.run_lease import analysis_run_lease_active
 from sastsimi.simple_runtime.scope_policy import (
     project_scope_review,
@@ -815,6 +819,11 @@ class DashboardQuery:
         )
         if finding is None:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
+        if any(
+            checkpoint.identity == finding.identity and stale_successful_poc(checkpoint)
+            for checkpoint in checkpoints
+        ):
+            raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
         report = next(
             (
                 checkpoint
@@ -1025,18 +1034,24 @@ class DashboardQuery:
         )
         surface_counts, surface_index_hash = self._surface_metrics(run, values)
         usage = self._usage_summary(analysis_id)
+        lease_state = analysis_run_lease_active(self._data_dir, analysis_id)
         hypotheses = tuple(
             self._project_hypothesis(
                 analysis_id,
                 hypothesis_id,
                 checkpoints,
                 run,
+                analysis_active=lease_state is True,
             )
             for hypothesis_id, checkpoints in sorted(hypothesis_groups.items())
         )
         latest = max(values, key=lambda item: item.updated_at)
         started = min(values, key=lambda item: item.updated_at).updated_at
-        completed = sum(item.status is StageStatus.SUCCEEDED for item in values)
+        completed = sum(
+            item.status is StageStatus.SUCCEEDED
+            for item in values
+            if item.identity.hypothesis_id is None
+        ) + sum(item.completed_count for item in hypotheses)
         reports = self._reports(analysis_id)
         progress = ProgressProjector(_CheckpointProjection(tuple(values))).snapshot(
             analysis_id,
@@ -1058,8 +1073,9 @@ class DashboardQuery:
             ),
             surface_counts=surface_counts,
             surface_index_hash=surface_index_hash,
+            analysis_active=lease_state is True,
         )
-        lease_inactive = analysis_run_lease_active(self._data_dir, analysis_id) is False
+        lease_inactive = lease_state is False
         if lease_inactive and self._unresolved_codex_call(analysis_id):
             progress = progress.model_copy(
                 update={
@@ -1732,19 +1748,26 @@ class DashboardQuery:
         hypothesis_id: str,
         values: list[StageCheckpoint],
         run: SimpleAnalysisRun | None,
+        *,
+        analysis_active: bool = False,
     ) -> HypothesisProgressView:
         latest = max(values, key=lambda item: item.updated_at)
-        completed = sum(item.status is StageStatus.SUCCEEDED for item in values)
+        execution = next(
+            (item for item in values if item.stage is SimpleStage.POC_EXECUTION_DONE),
+            None,
+        )
+        poc_revalidation_required = stale_successful_poc(execution)
+        completed = (
+            completed_before_poc_count(values)
+            if poc_revalidation_required
+            else sum(item.status is StageStatus.SUCCEEDED for item in values)
+        )
         final = next(
             (
                 item
                 for item in values
                 if item.stage is SimpleStage.VERIFICATION_FINAL_DONE
             ),
-            None,
-        )
-        execution = next(
-            (item for item in values if item.stage is SimpleStage.POC_EXECUTION_DONE),
             None,
         )
         gate = next(
@@ -1759,7 +1782,7 @@ class DashboardQuery:
         source = review["policy_source"]
         assert isinstance(source, dict)
         progress = ProgressProjector(_CheckpointProjection(tuple(values))).snapshot(
-            analysis_id
+            analysis_id, analysis_active=analysis_active
         )
         return HypothesisProgressView(
             analysis_id=analysis_id,
@@ -1769,8 +1792,12 @@ class DashboardQuery:
             completed_count=completed,
             stage_count=len(values),
             error_code=progress.error_code,
-            verdict=final.verdict if final else None,
-            disposition=terminal_poc_outcome(execution) or terminal_gate_outcome(gate),
+            verdict=final.verdict if final and not poc_revalidation_required else None,
+            disposition=(
+                None
+                if poc_revalidation_required
+                else terminal_poc_outcome(execution) or terminal_gate_outcome(gate)
+            ),
             scope_status=str(review["status"]),
             scope_collection_status=str(source.get("collection_status", "UNVERIFIED")),
             scope_source_url=(
@@ -1800,7 +1827,8 @@ class DashboardQuery:
                 progress.status in {"BLOCKED", "FAILED"}
                 and any(item.retryable for item in values)
             ),
-            validated_poc=any(item.validated_poc_ref is not None for item in values),
+            validated_poc=not poc_revalidation_required
+            and any(item.validated_poc_ref is not None for item in values),
             parent_hypothesis_ids=(
                 run.parent_hypothesis_ids.get(hypothesis_id, ()) if run else ()
             ),

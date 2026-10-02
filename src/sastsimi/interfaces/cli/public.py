@@ -195,7 +195,13 @@ def emit_public(
     if "finding_count" in data:
         stream.write(f"Finding: {data['finding_count']}개\n")
     if data.get("status") == "PAUSED":
-        if data.get("resume_action") == "RESUME_INTERRUPTED":
+        if data.get("resume_action") == "REVALIDATE_POC":
+            stream.write(
+                "이전 PoC 결과를 현재 기준으로 재검증해야 합니다. "
+                "저장된 단계부터 재개하세요:\n\n"
+                f"sastsimi resume {data.get('analysis_id', '')}\n"
+            )
+        elif data.get("resume_action") == "RESUME_INTERRUPTED":
             stream.write(
                 "이전 실행이 중단됐습니다. 저장된 작업부터 재개하세요:\n\n"
                 f"sastsimi resume {data.get('analysis_id', '')}\n"

@@ -9,6 +9,7 @@ import pytest
 from sastsimi.sandbox.docker_adapter import DockerCommandOutcome
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
+    STAGE_VERSION,
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
@@ -17,7 +18,7 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
-from sastsimi.simple_runtime.runner import StageBlocked
+from sastsimi.simple_runtime.runner import StageBlocked, StageFailed
 from sastsimi.simple_runtime.stages import PoCExecutionStage
 
 
@@ -79,9 +80,11 @@ class _Docker:
 
 class _Containers:
     def __init__(self) -> None:
+        self.acquired = 0
         self.released: list[str] = []
 
     async def acquire(self, _checkpoint: StageCheckpoint) -> str:
+        self.acquired += 1
         return "a" * 64
 
     async def release(self, _checkpoint: StageCheckpoint, container_id: str) -> bool:
@@ -112,6 +115,20 @@ async def test_runtime_pins_interpretation_to_exact_execution_ref(
         }
     )
     input_refs = (candidate_ref, content_ref)
+    recipe_ref = artifacts.put_json(
+        {
+            "kind": "simple_environment_recipe",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "attempt_id": "attempt-1",
+            "dockerfile_source": "GENERATED",
+            "degraded": False,
+            "status": "BUILT",
+            "image_digest": f"sha256:{'1' * 64}",
+        }
+    )
     candidate = StageCheckpoint(
         identity=identity,
         stage=SimpleStage.POC_CANDIDATE_DONE,
@@ -120,6 +137,7 @@ async def test_runtime_pins_interpretation_to_exact_execution_ref(
         input_hash=input_reference_hash(()),
         output_refs=input_refs,
         attempt_id="attempt-1",
+        recipe_ref=recipe_ref,
         image_digest=f"sha256:{'1' * 64}",
     )
     current = StageCheckpoint(
@@ -152,6 +170,310 @@ async def test_runtime_pins_interpretation_to_exact_execution_ref(
     assert containers.released == ["a" * 64]
 
 
+def _poc_with_recipe(
+    tmp_path: Path,
+    *,
+    recipe_source: str | None,
+    degraded: bool,
+    corrupt_recipe: bool = False,
+    recipe_attempt_id: str = "attempt-environment-gate",
+    recipe_image_digest: str | None = f"sha256:{'2' * 64}",
+    client: _InterpretationClient | None = None,
+    docker: _Docker | None = None,
+) -> tuple[
+    PoCExecutionStage,
+    StageCheckpoint,
+    dict[SimpleStage, StageCheckpoint],
+    SimpleArtifactRepository,
+    _Containers,
+]:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-environment-gate",
+        workspace_id="workspace-environment-gate",
+        commit_id="b" * 40,
+        hypothesis_id="hypothesis-environment-gate",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    content_ref = artifacts.put_bytes(
+        b"#!/bin/sh\nset -eu\nprintf REPRODUCED\n", "text/x-shellscript"
+    )
+    candidate_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_candidate",
+            "content_ref": content_ref.model_dump(mode="json"),
+            "attempt_id": "attempt-environment-gate",
+        }
+    )
+    recipe_ref = None
+    if recipe_source is not None:
+        recipe_ref = (
+            artifacts.put_bytes(b"{", "application/json")
+            if corrupt_recipe
+            else artifacts.put_json(
+                {
+                    "kind": "simple_environment_recipe",
+                    "analysis_id": identity.analysis_id,
+                    "workspace_id": identity.workspace_id,
+                    "commit_id": identity.commit_id,
+                    "hypothesis_id": identity.hypothesis_id,
+                    "attempt_id": recipe_attempt_id,
+                    "dockerfile_source": recipe_source,
+                    "degraded": degraded,
+                    "status": "BUILT",
+                    **(
+                        {"image_digest": recipe_image_digest}
+                        if recipe_image_digest is not None
+                        else {}
+                    ),
+                }
+            )
+        )
+    refs = (candidate_ref, content_ref)
+    candidate = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        output_refs=refs,
+        attempt_id="attempt-environment-gate",
+        recipe_ref=recipe_ref,
+        image_digest=f"sha256:{'2' * 64}",
+    )
+    current = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_EXECUTION_DONE,
+        status=StageStatus.PENDING,
+        input_refs=refs,
+        input_hash=input_reference_hash(refs),
+        attempt_id="attempt-environment-gate",
+    )
+    containers = _Containers()
+    stage = PoCExecutionStage(
+        client=client or _InterpretationClient(),
+        artifacts=artifacts,
+        docker=docker or _Docker(),  # type: ignore[arg-type]
+        containers=containers,
+    )
+    return (
+        stage,
+        current,
+        {SimpleStage.POC_CANDIDATE_DONE: candidate},
+        artifacts,
+        containers,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("recipe_source", "degraded"),
+    [
+        ("GENERATED_NO_INSTALL", True),
+        ("GENERATED_NO_INSTALL", False),
+        ("GENERATED", True),
+    ],
+)
+async def test_supported_poc_in_degraded_image_is_not_validated(
+    tmp_path: Path, recipe_source: str, degraded: bool
+) -> None:
+    stage, current, prior, artifacts, containers = _poc_with_recipe(
+        tmp_path, recipe_source=recipe_source, degraded=degraded
+    )
+
+    with pytest.raises(StageBlocked) as blocked:
+        await stage(current, prior)
+
+    assert blocked.value.failure.code == "POC_ENVIRONMENT_UNVERIFIED"
+    assert blocked.value.failure.retryable is False
+    evidence = blocked.value.failure.evidence_refs
+    assert prior[SimpleStage.POC_CANDIDATE_DONE].recipe_ref in evidence
+    assert any(
+        json.loads(artifacts.read(ref)).get("kind") == "simple_poc_environment_check"
+        for ref in evidence
+        if artifacts.read(ref).startswith(b"{")
+    )
+    assert containers.acquired == 0
+    assert containers.released == []
+
+
+@pytest.mark.asyncio
+async def test_source_only_import_failure_is_classified_before_running_poc(
+    tmp_path: Path,
+) -> None:
+    class _ImportFailureDocker(_Docker):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def execute(self, *_args: Any, **_kwargs: Any) -> DockerCommandOutcome:
+            self.calls += 1
+            return DockerCommandOutcome(
+                2,
+                b"",
+                b"ModuleNotFoundError: No module named 'werkzeug'\n",
+                False,
+            )
+
+    docker = _ImportFailureDocker()
+    client = _DisprovingClient()
+    stage, current, prior, artifacts, containers = _poc_with_recipe(
+        tmp_path,
+        recipe_source="GENERATED_NO_INSTALL",
+        degraded=True,
+        client=client,
+        docker=docker,
+    )
+
+    with pytest.raises(StageBlocked) as blocked:
+        await stage(current, prior)
+
+    assert blocked.value.failure.code == "POC_ENVIRONMENT_UNVERIFIED"
+    assert blocked.value.failure.retryable is False
+    assert docker.calls == 0
+    assert client.calls == 0
+    assert containers.acquired == 0
+    assert containers.released == []
+    checks = [
+        json.loads(artifacts.read(ref))
+        for ref in blocked.value.failure.evidence_refs
+        if artifacts.read(ref).startswith(b"{")
+    ]
+    assert any(item.get("decision") == "UNVERIFIED_DEPENDENCIES" for item in checks)
+
+
+@pytest.mark.asyncio
+async def test_degraded_image_with_wrong_recipe_digest_fails_integrity(
+    tmp_path: Path,
+) -> None:
+    stage, current, prior, _artifacts, containers = _poc_with_recipe(
+        tmp_path,
+        recipe_source="GENERATED_NO_INSTALL",
+        degraded=True,
+        recipe_image_digest=f"sha256:{'3' * 64}",
+    )
+
+    with pytest.raises(StageFailed) as failed:
+        await stage(current, prior)
+
+    assert failed.value.failure.code == "POC_ENVIRONMENT_RECIPE_INVALID"
+    assert containers.acquired == 0
+    assert containers.released == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corrupt_recipe", [False, True])
+async def test_supported_poc_without_valid_recipe_fails_integrity(
+    tmp_path: Path, corrupt_recipe: bool
+) -> None:
+    stage, current, prior, _artifacts, containers = _poc_with_recipe(
+        tmp_path,
+        recipe_source="GENERATED" if corrupt_recipe else None,
+        degraded=False,
+        corrupt_recipe=corrupt_recipe,
+    )
+
+    with pytest.raises(StageFailed) as failed:
+        await stage(current, prior)
+
+    assert failed.value.failure.code == "POC_ENVIRONMENT_RECIPE_INVALID"
+    assert failed.value.failure.retryable is False
+    assert containers.acquired == 0
+    assert containers.released == []
+
+
+@pytest.mark.asyncio
+async def test_supported_poc_can_reuse_normal_recipe_from_prior_attempt(
+    tmp_path: Path,
+) -> None:
+    stage, current, prior, _artifacts, containers = _poc_with_recipe(
+        tmp_path,
+        recipe_source="GENERATED",
+        degraded=False,
+        recipe_attempt_id="attempt-before-poc-retry",
+    )
+
+    result = await stage(current, prior)
+
+    assert result.validated_poc_ref is not None
+    assert containers.released == ["a" * 64]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recipe_image_digest", [None, f"sha256:{'3' * 64}"])
+async def test_poc_recipe_must_bind_the_executed_image(
+    tmp_path: Path, recipe_image_digest: str | None
+) -> None:
+    stage, current, prior, _artifacts, containers = _poc_with_recipe(
+        tmp_path,
+        recipe_source="GENERATED",
+        degraded=False,
+        recipe_image_digest=recipe_image_digest,
+    )
+
+    with pytest.raises(StageFailed) as failed:
+        await stage(current, prior)
+
+    assert failed.value.failure.code == "POC_ENVIRONMENT_RECIPE_INVALID"
+    assert failed.value.failure.retryable is False
+    assert containers.acquired == 0
+    assert containers.released == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("matching_lineage", [True, False])
+async def test_legacy_recipe_without_digest_requires_original_initial_checkpoint(
+    tmp_path: Path, matching_lineage: bool
+) -> None:
+    stage, current, prior, _artifacts, containers = _poc_with_recipe(
+        tmp_path,
+        recipe_source="GENERATED",
+        degraded=False,
+        recipe_image_digest=None,
+    )
+    candidate = prior[SimpleStage.POC_CANDIDATE_DONE]
+    prior[SimpleStage.VERIFICATION_INITIAL_DONE] = StageCheckpoint(
+        identity=current.identity,
+        stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+        stage_version=STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE],
+        status=StageStatus.SUCCEEDED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        recipe_ref=candidate.recipe_ref,
+        image_digest=(
+            candidate.image_digest if matching_lineage else f"sha256:{'4' * 64}"
+        ),
+    )
+
+    if matching_lineage:
+        result = await stage(current, prior)
+        assert result.validated_poc_ref is not None
+    else:
+        with pytest.raises(StageFailed) as failed:
+            await stage(current, prior)
+        assert failed.value.failure.code == "POC_ENVIRONMENT_RECIPE_INVALID"
+    assert containers.released == (["a" * 64] if matching_lineage else [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_type", [_DisprovingClient, _InconclusiveClient])
+async def test_degraded_image_cannot_disprove_or_conclude_poc(
+    tmp_path: Path, client_type: type[_InterpretationClient]
+) -> None:
+    stage, current, prior, _artifacts, containers = _poc_with_recipe(
+        tmp_path,
+        recipe_source="GENERATED_NO_INSTALL",
+        degraded=True,
+        client=client_type(),
+    )
+
+    with pytest.raises(StageBlocked) as blocked:
+        await stage(current, prior)
+
+    assert blocked.value.failure.code == "POC_ENVIRONMENT_UNVERIFIED"
+    assert blocked.value.failure.retryable is False
+    assert containers.acquired == 0
+    assert containers.released == []
+
+
 @pytest.mark.asyncio
 async def test_interpretation_failure_preserves_provider_diagnostic_ref(
     tmp_path: Path,
@@ -169,6 +491,20 @@ async def test_interpretation_failure_preserves_provider_diagnostic_ref(
     )
     candidate_ref = artifacts.put_json({"kind": "simple_poc_candidate"})
     refs = (candidate_ref, content_ref)
+    recipe_ref = artifacts.put_json(
+        {
+            "kind": "simple_environment_recipe",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "attempt_id": "attempt-invalid-output",
+            "dockerfile_source": "GENERATED",
+            "degraded": False,
+            "status": "BUILT",
+            "image_digest": f"sha256:{'1' * 64}",
+        }
+    )
     candidate = StageCheckpoint(
         identity=identity,
         stage=SimpleStage.POC_CANDIDATE_DONE,
@@ -177,6 +513,7 @@ async def test_interpretation_failure_preserves_provider_diagnostic_ref(
         input_hash=input_reference_hash(()),
         output_refs=refs,
         attempt_id="attempt-invalid-output",
+        recipe_ref=recipe_ref,
         image_digest=f"sha256:{'1' * 64}",
     )
     current = StageCheckpoint(
@@ -241,6 +578,20 @@ async def test_executed_inconclusive_poc_is_terminal_only_at_attempt_limit(
     )
     candidate_ref = artifacts.put_json({"kind": "simple_poc_candidate"})
     refs = (candidate_ref, content_ref)
+    recipe_ref = artifacts.put_json(
+        {
+            "kind": "simple_environment_recipe",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "attempt_id": "attempt-inconclusive",
+            "dockerfile_source": "GENERATED",
+            "degraded": False,
+            "status": "BUILT",
+            "image_digest": f"sha256:{'1' * 64}",
+        }
+    )
     candidate = StageCheckpoint(
         identity=identity,
         stage=SimpleStage.POC_CANDIDATE_DONE,
@@ -249,6 +600,7 @@ async def test_executed_inconclusive_poc_is_terminal_only_at_attempt_limit(
         input_hash=input_reference_hash(()),
         output_refs=refs,
         attempt_id="attempt-inconclusive",
+        recipe_ref=recipe_ref,
         image_digest=f"sha256:{'1' * 64}",
     )
     current = StageCheckpoint(
@@ -307,6 +659,20 @@ async def test_poc_execution_error_is_blocked_and_releases_container(
         }
     )
     refs = (candidate_ref, content_ref)
+    recipe_ref = artifacts.put_json(
+        {
+            "kind": "simple_environment_recipe",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "attempt_id": "attempt-error",
+            "dockerfile_source": "GENERATED",
+            "degraded": False,
+            "status": "BUILT",
+            "image_digest": f"sha256:{'1' * 64}",
+        }
+    )
     candidate = StageCheckpoint(
         identity=identity,
         stage=SimpleStage.POC_CANDIDATE_DONE,
@@ -315,6 +681,7 @@ async def test_poc_execution_error_is_blocked_and_releases_container(
         input_hash=input_reference_hash(()),
         output_refs=refs,
         attempt_id="attempt-error",
+        recipe_ref=recipe_ref,
         image_digest=f"sha256:{'1' * 64}",
     )
     current = StageCheckpoint(
@@ -382,6 +749,20 @@ async def test_python_import_traceback_blocks_before_disproof_interpretation(
     )
     candidate_ref = artifacts.put_json({"kind": "simple_poc_candidate"})
     refs = (candidate_ref, content_ref)
+    recipe_ref = artifacts.put_json(
+        {
+            "kind": "simple_environment_recipe",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "attempt_id": "attempt-import-error",
+            "dockerfile_source": "GENERATED",
+            "degraded": False,
+            "status": "BUILT",
+            "image_digest": f"sha256:{'1' * 64}",
+        }
+    )
     candidate = StageCheckpoint(
         identity=identity,
         stage=SimpleStage.POC_CANDIDATE_DONE,
@@ -390,6 +771,7 @@ async def test_python_import_traceback_blocks_before_disproof_interpretation(
         input_hash=input_reference_hash(()),
         output_refs=refs,
         attempt_id="attempt-import-error",
+        recipe_ref=recipe_ref,
         image_digest=f"sha256:{'1' * 64}",
     )
     current = StageCheckpoint(

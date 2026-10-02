@@ -3151,6 +3151,11 @@ class SimpleAnalysisApplication:
         chain = self._store.get(child, SimpleStage.CHAINING_DONE)
         gate = self._store.get(child, SimpleStage.TECH_GATE_DONE)
         report = self._store.get(child, SimpleStage.REPORT_DONE)
+        if (
+            poc is not None
+            and poc.stage_version != STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
+        ):
+            return False
         return bool(
             terminal_poc_outcome(poc) is not None
             or final is not None

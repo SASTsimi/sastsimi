@@ -300,6 +300,44 @@ def _setup(
     return app, store, client, hypotheses
 
 
+def test_candidate_terminal_rejects_legacy_v2_poc_with_newer_report(
+    tmp_path: Path,
+) -> None:
+    app, store, _, _ = _setup(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="H-legacy",
+    )
+    for stage in (
+        SimpleStage.POC_EXECUTION_DONE,
+        SimpleStage.VERIFICATION_FINAL_DONE,
+        SimpleStage.REPORT_DONE,
+    ):
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=identity,
+                stage=stage,
+                stage_version=(
+                    "2"
+                    if stage is SimpleStage.POC_EXECUTION_DONE
+                    else STAGE_VERSION[stage]
+                ),
+                status=StageStatus.SUCCEEDED,
+                input_refs=(),
+                input_hash=input_reference_hash(()),
+                verdict=(
+                    "TRUE" if stage is SimpleStage.VERIFICATION_FINAL_DONE else None
+                ),
+            )
+        )
+
+    assert not app._candidate_hypothesis_terminal(
+        identity.model_copy(update={"hypothesis_id": None}), "H-legacy"
+    )
+
+
 def _cleanup_audit(
     artifacts: SimpleArtifactRepository,
     checkpoint: StageCheckpoint,

@@ -44,10 +44,12 @@ from .chaining import PrimitiveAdmissionStage, SimpleChainingStage
 from .gate_guard import technical_gate_accepted
 from .models import (
     STAGE_ORDER,
+    STAGE_VERSION,
     SimpleStage,
     StageCheckpoint,
     StageFailure,
     StageResult,
+    StageStatus,
 )
 from .poc import PoCCandidateRejected, validate_candidate
 from .provider import SimpleLLMCallResult, SimpleLLMClient, _validate_schema
@@ -412,6 +414,10 @@ scheme, slash, host, path, and chr(92) components. Never embed an executable
 external URL, a Windows drive path, or a UNC-like double-backslash literal.
 Before exit 2, print a concise error type and traceback to stderr so the next
 attempt can repair the exact runtime failure; never print secrets or host paths.
+For a Python ModuleNotFoundError, include exc.name only if it came from a static
+import and is a simple dotted module identifier made of ASCII letters, digits,
+and underscores. Otherwise omit the name. Never print the full exception
+message, traceback file paths, source lines, or dynamic import values.
 When testing a Python handler, prefer importing the real repository module or
 execute extracted code with its original globals (including `__file__`) intact;
 do not rebuild a handler in a way that changes its path or framework semantics.
@@ -631,6 +637,7 @@ class PoCExecutionStage:
         candidate_ref, content_ref = candidate.output_refs[:2]
         content = self._artifacts.read(content_ref)
         validate_candidate(content, allowed_environment_names=frozenset())
+        self._require_reportable_environment(checkpoint, candidate, prior)
         container_id = await self._container(candidate)
         evidence_refs: list[StoredDataRef] = []
         execution_error: DockerOperationError | OSError | ValueError | None = None
@@ -919,6 +926,107 @@ artifact. Do not reinterpret an execution error as DISPROVED.
                 ),
             ),
         )
+
+    def _require_reportable_environment(
+        self,
+        checkpoint: StageCheckpoint,
+        candidate: StageCheckpoint,
+        prior: Mapping[SimpleStage, StageCheckpoint],
+    ) -> None:
+        recipe_ref = candidate.recipe_ref
+        evidence_refs = candidate.output_refs[:2]
+        if recipe_ref is None:
+            raise StageFailed(
+                StageFailure(
+                    code="POC_ENVIRONMENT_RECIPE_INVALID",
+                    retryable=False,
+                    safe_message="PoC environment recipe is missing",
+                    evidence_refs=evidence_refs,
+                )
+            )
+        evidence_refs = (*evidence_refs, recipe_ref)
+        try:
+            recipe = json.loads(self._artifacts.read(recipe_ref))
+        except (OSError, UnicodeError, ValueError) as error:
+            raise StageFailed(
+                StageFailure(
+                    code="POC_ENVIRONMENT_RECIPE_INVALID",
+                    retryable=False,
+                    safe_message="PoC environment recipe cannot be verified",
+                    evidence_refs=evidence_refs,
+                )
+            ) from error
+        if (
+            not isinstance(recipe, dict)
+            or recipe.get("kind") != "simple_environment_recipe"
+            or recipe.get("status") != "BUILT"
+            or recipe.get("analysis_id") != checkpoint.identity.analysis_id
+            or recipe.get("workspace_id") != checkpoint.identity.workspace_id
+            or recipe.get("commit_id") != checkpoint.identity.commit_id
+            or recipe.get("hypothesis_id") != checkpoint.identity.hypothesis_id
+            or not isinstance(recipe.get("attempt_id"), str)
+            or not recipe["attempt_id"]
+            or recipe.get("dockerfile_source")
+            not in {"REPOSITORY_DOCKERFILE", "GENERATED", "GENERATED_NO_INSTALL"}
+            or not isinstance(recipe.get("degraded"), bool)
+        ):
+            raise StageFailed(
+                StageFailure(
+                    code="POC_ENVIRONMENT_RECIPE_INVALID",
+                    retryable=False,
+                    safe_message="PoC environment recipe does not match this analysis",
+                    evidence_refs=evidence_refs,
+                )
+            )
+        initial = prior.get(SimpleStage.VERIFICATION_INITIAL_DONE)
+        image_bound = (
+            isinstance(candidate.image_digest, str)
+            and bool(candidate.image_digest)
+            and (
+                recipe["image_digest"] == candidate.image_digest
+                if "image_digest" in recipe
+                else initial is not None
+                and initial.identity == checkpoint.identity
+                and initial.status is StageStatus.SUCCEEDED
+                and initial.stage_version
+                == STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE]
+                and initial.recipe_ref == recipe_ref
+                and initial.image_digest == candidate.image_digest
+            )
+        )
+        if not image_bound:
+            raise StageFailed(
+                StageFailure(
+                    code="POC_ENVIRONMENT_RECIPE_INVALID",
+                    retryable=False,
+                    safe_message="PoC image does not match its environment recipe",
+                    evidence_refs=evidence_refs,
+                )
+            )
+        if recipe["degraded"] or recipe["dockerfile_source"] == (
+            "GENERATED_NO_INSTALL"
+        ):
+            environment_check_ref = self._artifacts.put_json(
+                {
+                    "kind": "simple_poc_environment_check",
+                    "decision": "UNVERIFIED_DEPENDENCIES",
+                    "attempt_id": checkpoint.attempt_id,
+                    "recipe_ref": recipe_ref.model_dump(mode="json"),
+                    "candidate_ref": candidate.output_refs[0].model_dump(mode="json"),
+                    "content_ref": candidate.output_refs[1].model_dump(mode="json"),
+                }
+            )
+            raise StageBlocked(
+                StageFailure(
+                    code="POC_ENVIRONMENT_UNVERIFIED",
+                    retryable=False,
+                    safe_message=(
+                        "Source-only or degraded image cannot validate product "
+                        "dependencies"
+                    ),
+                    evidence_refs=(*evidence_refs, environment_check_ref),
+                )
+            )
 
     async def _container(self, checkpoint: StageCheckpoint) -> str:
         if checkpoint.container_id and checkpoint.image_digest:

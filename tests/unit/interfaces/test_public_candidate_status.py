@@ -165,6 +165,27 @@ def test_text_interrupted_run_explains_resume_without_budget_advice() -> None:
     assert "예산" not in rendered
 
 
+def test_text_stale_poc_explains_revalidation_without_interruption_advice() -> None:
+    output = StringIO()
+    emit_public(
+        "text",
+        output,
+        command="status",
+        data={
+            "analysis_id": "A-008",
+            "status": "PAUSED",
+            "error_code": "POC_REVALIDATION_REQUIRED",
+            "resume_action": "REVALIDATE_POC",
+        },
+    )
+
+    rendered = output.getvalue()
+    assert "PoC 결과를 현재 기준으로 재검증" in rendered
+    assert "sastsimi resume A-008" in rendered
+    assert "이전 실행이 중단" not in rendered
+    assert "예산" not in rendered
+
+
 @pytest.mark.parametrize(
     "error_code",
     ("CODEX_CALL_IN_FLIGHT_UNRESOLVED", "CODEX_PROCESS_CLEANUP_UNCONFIRMED"),

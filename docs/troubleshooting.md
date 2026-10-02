@@ -176,6 +176,10 @@ docker info
 
 Docker Desktop은 Linux container 모드여야 합니다. 저장소 Dockerfile이 있으면 우선 사용하고, 없으면 Python package 파일을 바탕으로 기본 Dockerfile을 만듭니다. 가설의 제품 파일이 하위 Python 프로젝트에 있으면 가장 가까운 `requirements.txt` 또는 `pyproject.toml`을 찾아 일회용 이미지 안에 의존성을 설치하며, 로컬 패키지 소스를 지정한 uv 프로젝트는 lock 파일과 소스 경로를 사용합니다. 하위 프로젝트 설치가 실패하면 의존성 없는 이미지로 성공을 가장하지 않고 빌드 오류와 시도 기록을 남깁니다. 그 외 의존성 설치 단계의 빌드 실패가 확인된 경우에만 설치를 생략한 Python 소스 전용 image를 한 번 더 시도합니다. 이 경우 recipe의 `dockerfile_source`가 `GENERATED_NO_INSTALL`, `degraded`가 `true`가 되고 두 빌드 시도와 원본 진단이 artifact에 남습니다. 소스 전용 image가 만들어졌다는 사실만으로 PoC 검증이나 취약점 판정이 성공한 것은 아닙니다. 두 빌드가 모두 실패하거나 실패 원인이 의존성 설치가 아니면 `DOCKER_BUILD_FAILED`로 중단하고 환경을 확인한 뒤 `sastsimi resume A-001`을 실행합니다.
 
+소스 전용 image만 만들 수 있고 제품 의존성이 재현되지 않았다면 PoC 실행 전에 `POC_ENVIRONMENT_UNVERIFIED`로 차단합니다. 이 환경의 결과를 검증된 PoC나 취약점 부재의 근거로 승격하지 않습니다. 현재 SimpleRuntime은 임의 저장소의 빌드 의존성을 네트워크 없이 자동 공급하지 못합니다. 실제 제품 의존성을 갖춘 검증 가능한 환경을 별도로 준비해야 하며, 네트워크 정책을 자동으로 완화하지 않습니다. 이 오류는 같은 ID의 `resume`을 반복해도 해소되지 않습니다. 기존 분석을 보존하고 의존성을 설치할 수 있는 환경을 마련한 뒤 새 분석을 시작해야 합니다.
+
+이 안전 검사보다 앞서 완료된 PoC는 DB와 아티팩트를 보존하되 현재 검증으로 표시하지 않습니다. 상태가 `POC_REVALIDATION_REQUIRED`라면 같은 분석 ID를 `sastsimi resume A-001`로 재개하세요. 완료된 정적 검사·후보 선별·Pro/Con·초기 검증·PoC 후보는 재사용하고 PoC 실행과 후속 판정만 새 기준으로 확인합니다. 필요한 의존성을 오프라인에서 구할 수 없으면 재검증도 `BLOCKED`로 남으며, 이전 보고서를 제보 근거로 다시 사용해서는 안 됩니다.
+
 PoC 종료 후에는 현재 가설·시도에 정확히 속한 컨테이너만 확인하고 정리합니다. `OWNED_CONTAINER_CLEANUP_FAILED`나 `DOCKER_CONTAINER_LIMIT_REACHED`가 나오면 소유 라벨이 확인되지 않은 컨테이너를 임의로 지우지 말고 상태를 확인하세요. Windows에서 종료된 프로세스의 PID 소유 여부를 확실히 증명할 수 없는 오래된 컨테이너는 자동 정리하지 않습니다. Docker 실행 오류는 가설 반증(`FALSE`)으로 처리하지 않습니다.
 
 Windows에서 Docker 소유 리소스 journal 파일의 원자적 교체가 일시적인 공유 거부로 실패하면 최대 5회 재시도합니다. 계속 `Access denied`가 나면 권한이나 보안 프로그램 점유를 확인하세요. 이때 다른 분석의 컨테이너를 임의로 정리하지 않습니다.

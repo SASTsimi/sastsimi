@@ -657,6 +657,7 @@ class DirectEnvironmentPreparer:
                     attempt_refs,
                     degraded,
                     status="BUILT",
+                    image_digest=image_digest,
                 )
             )
             return ReproductionEnvironment(recipe_ref, image_digest)
@@ -731,6 +732,7 @@ class DirectEnvironmentPreparer:
         degraded: bool,
         *,
         status: str,
+        image_digest: str | None = None,
     ) -> dict[str, object]:
         return {
             "kind": "simple_environment_recipe",
@@ -752,6 +754,7 @@ class DirectEnvironmentPreparer:
             "build_attempt_refs": [ref.model_dump(mode="json") for ref in attempt_refs],
             "degraded": degraded,
             "status": status,
+            **({"image_digest": image_digest} if image_digest is not None else {}),
         }
 
     def _recovery_patch(self, checkpoint: StageCheckpoint) -> bytes:
