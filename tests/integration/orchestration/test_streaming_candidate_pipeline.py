@@ -1,15 +1,17 @@
 """Exercise the v2 producer, child queue, surface proof, and public status together.
 
-Only the Discovery/Hypothesis responses and child verification are synthetic.
-The source inventory, AST, artifacts, SQLite checkpoints, orchestration,
-coverage, progress projection, and CLI rendering are production components.
+Discovery/Hypothesis and downstream Agent/Docker responses are synthetic.
+The source inventory, AST, artifacts, SQLite checkpoints, stage handlers,
+orchestration, coverage, progress projection, and CLI rendering are production.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import Counter
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
 from shutil import copytree
@@ -24,6 +26,7 @@ from sastsimi.composition.simple_runtime_composition import (
 )
 from sastsimi.config.user_config import SimpleExecutionProfile, UserConfig
 from sastsimi.interfaces.cli.public import emit_public
+from sastsimi.sandbox.docker_adapter import DockerCommandOutcome
 from sastsimi.simple_runtime.application import (
     BatchProposalResult,
     CandidateProposalOutcome,
@@ -43,6 +46,7 @@ from sastsimi.simple_runtime.bootstrap_stages import (
 from sastsimi.simple_runtime.candidate_batches import CandidateBatch
 from sastsimi.simple_runtime.chaining import SimpleChainingStage
 from sastsimi.simple_runtime.models import (
+    HYPOTHESIS_STAGES,
     STAGE_VERSION,
     CheckpointIdentity,
     SimpleStage,
@@ -53,11 +57,19 @@ from sastsimi.simple_runtime.models import (
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
 from sastsimi.simple_runtime.runner import RunOutcome, SimpleRuntimeRunner
+from sastsimi.simple_runtime.scope_policy import (
+    project_scope_review,
+    safe_public_report,
+)
+from sastsimi.simple_runtime.stages import (
+    ReproductionEnvironment,
+    build_stage_handlers,
+)
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from sastsimi.simple_runtime.surface_contexts import SurfaceContext
 
 _COMMIT = "a" * 40
-_SCOPE = "fixture-python-scope"
+_SCOPE = hashlib.sha256(b"fixture-python-scope").hexdigest()
 _REVIEW_PARTS: frozenset[ReviewPart] = frozenset(
     {"ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY"}
 )
@@ -597,6 +609,8 @@ def _fixture(
             "verified_count": len(result_rows),
             "gaps": [],
             "unsupported": [],
+            "unsupported_files": [],
+            "engine_errors": [],
             "ast_parsed_file_count": len(paths),
             "ast_parse_error_count": 0,
             "ast_parse_errors": [],
@@ -671,6 +685,343 @@ def _request(data_dir: Path) -> SimpleAnalysisRequest:
         data_dir=data_dir,
         repository="https://github.com/example/fixture",
         commit=_COMMIT,
+    )
+
+
+class _HandoffClient:
+    def __init__(
+        self,
+        *,
+        poc_validated: bool,
+        gates_accepted: bool,
+        fail_agent_once: str | None = None,
+    ) -> None:
+        self.poc_validated = poc_validated
+        self.gates_accepted = gates_accepted
+        self.fail_agent_once = fail_agent_once
+        self.calls: Counter[str] = Counter()
+        self.prompts: dict[str, list[bytes]] = {}
+
+    async def call(
+        self,
+        *,
+        prompt: bytes,
+        output_schema: Mapping[str, Any],
+        timeout_ms: int,
+        agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
+    ) -> SimpleLLMCallResult | StageFailure:
+        del output_schema, timeout_ms, owner, prompt_bytes, invocation_id
+        self.calls[agent_name] += 1
+        self.prompts.setdefault(agent_name, []).append(prompt)
+        if self.fail_agent_once == agent_name:
+            self.fail_agent_once = None
+            return StageFailure(
+                code="INVALID_OUTPUT",
+                retryable=True,
+                safe_message="Fixture provider returned invalid structured output",
+            )
+        observation = "REPRODUCED" if self.poc_validated else "NOT_REPRODUCED"
+        values: dict[str, dict[str, object]] = {
+            "pro_evidence": {
+                "claims": ["A route parameter reaches subprocess.run."],
+                "evidence_refs": [],
+                "limitations": [],
+                "requested_paths": [],
+            },
+            "con_evidence": {
+                "claims": [],
+                "evidence_refs": [],
+                "limitations": ["Fixture evidence only"],
+                "requested_paths": [],
+            },
+            "initial_verification": {
+                "initial_assessment": "HOLD",
+                "rationale": "Run the isolated PoC.",
+                "reproduction_goal": "Observe the exact fixture marker.",
+                "environment_requirements": ["python:3.12"],
+                "supporting_refs": [],
+                "limitations": [],
+            },
+            "poc_candidate": {
+                "content": "#!/bin/sh\nset -eu\nprintf 'REPRODUCED\\n'\n",
+            },
+            "poc_interpretation": {
+                "outcome": "SUPPORTED" if self.poc_validated else "DISPROVED",
+                "rationale": f"The isolated fixture returned {observation}.",
+                "limitations": [],
+            },
+            "verification_result": {
+                "verdict": "TRUE" if self.poc_validated else "FALSE",
+                "rationale": "The exact local execution is decisive for this fixture.",
+                "supporting_refs": [],
+                "limitations": [],
+                "unresolved_conditions": [],
+                "required_capabilities": [],
+                "provided_capabilities": [],
+                "entities": [],
+            },
+            "cwe_label": {
+                "primary_cwe": "CWE-78",
+                "alternatives": [],
+                "rationale": "Fixture command execution path.",
+                "supporting_refs": [],
+            },
+            "technical_gate": {
+                "status": "ACCEPT",
+                "rationale": "Same-attempt fixture evidence.",
+                "checks": ["Validated PoC and final TRUE agree."],
+                "revision_requests": [],
+            },
+            "report_draft": {
+                "schema_version": 2,
+                "en": {
+                    "title": "Fixture command injection",
+                    "summary": "A local fixture reproduces the tested path.",
+                    "details": "The isolated test reached the command sink.",
+                    "impact": "Command execution in the fixture environment.",
+                    "recommendation": "Constrain untrusted command arguments.",
+                    "limitations": [
+                        "Synthetic fixture only; not a real vulnerability."
+                    ],
+                    "review_items": [
+                        "Verify against the actual target before reporting."
+                    ],
+                },
+                "ko": {
+                    "title": "시험용 명령어 삽입",
+                    "summary": "격리된 시험 환경에서만 경로를 재현했습니다.",
+                    "details": "시험 입력이 명령 실행 경로에 도달했습니다.",
+                    "impact": "시험 환경에서 명령 실행이 가능합니다.",
+                    "recommendation": "신뢰할 수 없는 명령 인자를 제한하세요.",
+                    "limitations": ["합성 fixture이며 실제 취약점이 아닙니다."],
+                    "review_items": ["실제 대상은 별도로 확인해야 합니다."],
+                },
+                "citations": [],
+            },
+        }
+        if agent_name == "rule_scope_gate":
+            status = "PASS" if self.gates_accepted else "FAIL"
+            lines = (
+                "Security reports from any researcher are accepted.",
+                (
+                    "Repository fixture version 2.x is in scope."
+                    if self.gates_accepted
+                    else "Repository fixture version 2.x is out of scope."
+                ),
+                "High-impact security vulnerabilities are eligible.",
+                "Local proof-of-concept testing is permitted.",
+                "Private reports are permitted.",
+            )
+            values[agent_name] = {
+                "rationale": "Synthetic policy fixture only.",
+                "restrictions": [],
+                "testing_restriction_compliance": "PASS",
+                "testing_poc_quote": "printf 'REPRODUCED\\n'",
+                "axes": {
+                    name: {
+                        "status": status if name == "asset_scope" else "PASS",
+                        "line": index + 2,
+                        "quote": line,
+                        "reason": "Exact fixture policy line.",
+                    }
+                    for index, (name, line) in enumerate(
+                        zip(
+                            ("rules", "asset_scope", "impact", "testing", "reporting"),
+                            lines,
+                            strict=True,
+                        )
+                    )
+                },
+            }
+        assert agent_name in values, agent_name
+        return SimpleLLMCallResult(
+            value=cast(dict[str, JsonValue], values[agent_name]),
+            prompt_digest="a" * 64,
+            output_digest="b" * 64,
+        )
+
+
+class _HandoffEnvironment:
+    def __init__(self, data_dir: Path, *, degraded: bool) -> None:
+        self.data_dir = data_dir
+        self.degraded = degraded
+
+    async def prepare(
+        self,
+        checkpoint: StageCheckpoint,
+        prior: Mapping[SimpleStage, StageCheckpoint],
+        requirements: tuple[str, ...],
+    ) -> ReproductionEnvironment:
+        del prior
+        assert requirements == ("python:3.12",)
+        image_digest = "sha256:" + "1" * 64
+        recipe_ref = SimpleArtifactRepository(
+            self.data_dir, checkpoint.identity
+        ).put_json(
+            {
+                "kind": "simple_environment_recipe",
+                "status": "BUILT",
+                "analysis_id": checkpoint.identity.analysis_id,
+                "workspace_id": checkpoint.identity.workspace_id,
+                "commit_id": checkpoint.identity.commit_id,
+                "hypothesis_id": checkpoint.identity.hypothesis_id,
+                "attempt_id": checkpoint.attempt_id,
+                "dockerfile_source": "GENERATED",
+                "degraded": self.degraded,
+                "image_digest": image_digest,
+            }
+        )
+        return ReproductionEnvironment(recipe_ref, image_digest)
+
+
+class _HandoffDocker:
+    def __init__(self, *, poc_validated: bool) -> None:
+        self.poc_validated = poc_validated
+        self.calls = 0
+
+    async def materialize_poc(self, *_args: Any) -> str:
+        return "/tmp/sastsimi-poc-candidate"
+
+    async def execute(self, *_args: Any, **_kwargs: Any) -> DockerCommandOutcome:
+        self.calls += 1
+        return DockerCommandOutcome(
+            exit_code=0 if self.poc_validated else 1,
+            stdout=b"REPRODUCED\n" if self.poc_validated else b"NOT_REPRODUCED\n",
+            stderr=b"",
+            timed_out=False,
+        )
+
+
+class _HandoffContainers:
+    async def acquire(self, _checkpoint: StageCheckpoint) -> str:
+        return "a" * 64
+
+    async def release(self, _checkpoint: StageCheckpoint, _container_id: str) -> bool:
+        return True
+
+
+def build_handoff_harness(
+    tmp_path: Path,
+    *,
+    poc_validated: bool,
+    gates_accepted: bool,
+    interrupt_once: bool = False,
+    old_nonretryable_poc: bool = False,
+    fail_agent_once: str | None = None,
+) -> tuple[SimpleAnalysisApplication, CheckpointIdentity]:
+    app, store, _discovery, _proposer, _events, data_dir = _fixture(
+        tmp_path, omit_storage_once=interrupt_once
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-fixture",
+        workspace_id="workspace-fixture",
+        commit_id=_COMMIT,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(data_dir, identity)
+    policy_lines = (
+        "# Security policy",
+        "Security reports from any researcher are accepted.",
+        (
+            "Repository fixture version 2.x is in scope."
+            if gates_accepted
+            else "Repository fixture version 2.x is out of scope."
+        ),
+        "High-impact security vulnerabilities are eligible.",
+        "Local proof-of-concept testing is permitted.",
+        "Private reports are permitted.",
+    )
+    body = "\n".join(policy_lines).encode()
+    body_ref = artifacts.put_bytes(body, "text/markdown")
+    blob_sha = hashlib.sha1(
+        b"blob " + str(len(body)).encode() + b"\0" + body
+    ).hexdigest()
+    snapshot_ref = artifacts.put_json(
+        {
+            "kind": "simple_policy_snapshot",
+            "version": 1,
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "target_repository": "https://github.com/example/fixture",
+            "status": "FOUND",
+            "reason_code": "POLICY_FOUND",
+            "source_kind": "github_contents_api",
+            "owner": "example",
+            "repo": "fixture",
+            "publisher": "example/fixture",
+            "source_url": "https://api.github.com/repos/example/fixture/contents/SECURITY.md?ref=main",
+            "source_path": "SECURITY.md",
+            "blob_sha": blob_sha,
+            "etag": '"fixture"',
+            "content_type": "text/markdown",
+            "checked_at": datetime.now(UTC),
+            "body_sha256": hashlib.sha256(body).hexdigest(),
+            "body_ref": body_ref.model_dump(mode="json"),
+        }
+    )
+    static = cast(_StaticBootstrap, app._static)
+    static.result = static.result.model_copy(
+        update={"policy_snapshot_ref": snapshot_ref}
+    )
+    client = _HandoffClient(
+        poc_validated=poc_validated,
+        gates_accepted=gates_accepted,
+        fail_agent_once=fail_agent_once,
+    )
+    docker = _HandoffDocker(poc_validated=poc_validated)
+    containers = _HandoffContainers()
+    environments = _HandoffEnvironment(data_dir, degraded=old_nonretryable_poc)
+
+    def runner_factory(
+        backing: SimpleCheckpointStore,
+        child: CheckpointIdentity,
+        source: StaticBootstrapResult,
+    ) -> SimpleRuntimeRunner:
+        child_artifacts = SimpleArtifactRepository(data_dir, child)
+        handlers = build_stage_handlers(
+            client=client,
+            artifacts=child_artifacts,
+            docker=docker,  # type: ignore[arg-type]
+            containers=containers,
+            environments=environments,
+            store=backing,
+            policy_snapshot_ref=snapshot_ref,
+            repository_url="https://github.com/example/fixture",
+            workspace_path=source.workspace_path,
+            static_bundle_ref=source.static_bundle_ref,
+        )
+        return SimpleRuntimeRunner(
+            backing,
+            handlers,
+            policy_snapshot_ref=snapshot_ref,
+            codex_invalid_output_resume=True,
+        )
+
+    app._runner_factory = runner_factory
+    app.fixture_agent_calls = client.calls  # type: ignore[attr-defined]
+    app.fixture_agent_prompts = client.prompts  # type: ignore[attr-defined]
+    app.fixture_docker = docker  # type: ignore[attr-defined]
+    return app, identity
+
+
+def _reopen_handoff_app(
+    app: SimpleAnalysisApplication,
+    data_dir: Path,
+) -> SimpleAnalysisApplication:
+    return SimpleAnalysisApplication(
+        data_dir=data_dir,
+        store=SimpleCheckpointStore(data_dir / "db" / "sastsimi.sqlite3"),
+        static_bootstrap=app._static,
+        hypothesis_bootstrap=app._hypotheses,
+        runner_factory=app._runner_factory,
+        candidate_pipeline_enabled=True,
+        candidate_pipeline_version=2,
+        candidate_client_factory=app._candidate_client_factory,
+        candidate_hypothesis_bootstrap=app._candidate_hypotheses,
     )
 
 
@@ -1028,3 +1379,224 @@ async def test_cloned_legacy_run_reuses_v1_page_and_child_checkpoints(
     )
     assert cloned_store.list_hypotheses(resumed.identity) == old_hypothesis_ids
     assert cloned_transport.requests == []
+
+
+@pytest.mark.asyncio
+async def test_validated_fixture_exports_exact_bilingual_bundle(tmp_path: Path) -> None:
+    app, identity = build_handoff_harness(
+        tmp_path, poc_validated=True, gates_accepted=True
+    )
+    outcome = await app.analyze(_request(tmp_path / "data"))
+    assert outcome.status == "COMPLETE", (outcome.current_stage, outcome.error_code)
+    store = SimpleCheckpointStore(tmp_path / "data" / "db" / "sastsimi.sqlite3")
+    child = identity.model_copy(update={"hypothesis_id": "known-command-path"})
+    checkpoints = {stage: store.require(child, stage) for stage in HYPOTHESIS_STAGES}
+    assert checkpoints[SimpleStage.VERIFICATION_FINAL_DONE].verdict == "TRUE"
+    assert checkpoints[SimpleStage.TECH_GATE_DONE].gate_decision == "ACCEPT"
+    artifacts = SimpleArtifactRepository(tmp_path / "data", child)
+    candidate = checkpoints[SimpleStage.POC_CANDIDATE_DONE]
+    execution = checkpoints[SimpleStage.POC_EXECUTION_DONE]
+    assert candidate.attempt_id == execution.attempt_id
+    assert execution.validated_poc_ref is not None
+    candidate_data = json.loads(artifacts.read(candidate.output_refs[0]))
+    execution_data = json.loads(artifacts.read(execution.output_refs[0]))
+    validated_data = json.loads(artifacts.read(execution.validated_poc_ref))
+    assert candidate_data["content_ref"] == candidate.output_refs[1].model_dump(
+        mode="json"
+    )
+    assert execution_data["candidate_ref"] == candidate.output_refs[0].model_dump(
+        mode="json"
+    )
+    assert execution_data["content_ref"] == candidate.output_refs[1].model_dump(
+        mode="json"
+    )
+    assert validated_data["execution_ref"] == execution.output_refs[0].model_dump(
+        mode="json"
+    )
+    assert validated_data["attempt_id"] == execution.attempt_id
+    prompts = app.fixture_agent_prompts  # type: ignore[attr-defined]
+    assert (
+        candidate.output_refs[0].content_hash.encode()
+        in prompts["poc_interpretation"][0]
+    )
+    assert (
+        execution.output_refs[0].content_hash.encode()
+        in prompts["verification_result"][0]
+    )
+    assert (
+        execution.validated_poc_ref.content_hash.encode()
+        in prompts["technical_gate"][0]
+    )
+    assert (
+        execution.validated_poc_ref.content_hash.encode()
+        in prompts["rule_scope_gate"][0]
+    )
+    finding_ref = checkpoints[SimpleStage.FINDING_DONE].output_refs[0]
+    finding = json.loads(artifacts.read(finding_ref))
+    assert finding["status"] == "CONFIRMED"
+    assert finding_ref.content_hash.encode() in prompts["report_draft"][0]
+    review = project_scope_review(
+        checkpoints[SimpleStage.SCOPE_GATE_DONE],
+        artifacts,
+        policy_snapshot_ref=cast(
+            _StaticBootstrap, app._static
+        ).result.policy_snapshot_ref,
+        repository_url="https://github.com/example/fixture",
+    )
+    assert review["status"] == "ALLOW"
+    manifest, _archive = artifacts.verified_report_bundle(
+        checkpoints=checkpoints,
+        finding_ref=finding_ref,
+        display_id="F-001",
+        scope_status=str(review["status"]),
+        public_projection=lambda body: safe_public_report(body, review),
+    )
+    assert {item.path for item in manifest.files} == {
+        "report_en.md",
+        "report_kr.md",
+        "poc.sh",
+        "evidence/provenance.json",
+        "evidence/stdout.txt",
+        "evidence/stderr.txt",
+    }
+    bundle_path = Path(
+        checkpoints[SimpleStage.REPORT_DONE].markdown_path or ""
+    ).with_suffix("")
+    assert (bundle_path / "bundle.zip").is_file()
+    assert b"Fixture command injection" in (bundle_path / "report_en.md").read_bytes()
+    assert "시험용 명령어 삽입" in (bundle_path / "report_kr.md").read_text(
+        encoding="utf-8"
+    )
+    assert (bundle_path / "poc.sh").read_bytes() == artifacts.read(
+        candidate.output_refs[1]
+    )
+
+
+@pytest.mark.asyncio
+async def test_benign_fixture_finishes_without_finding(tmp_path: Path) -> None:
+    app, identity = build_handoff_harness(
+        tmp_path, poc_validated=False, gates_accepted=False
+    )
+    outcome = await app.analyze(_request(tmp_path / "data"))
+    assert outcome.status == "COMPLETE", (outcome.current_stage, outcome.error_code)
+    store = SimpleCheckpointStore(tmp_path / "data" / "db" / "sastsimi.sqlite3")
+    child = identity.model_copy(update={"hypothesis_id": "known-command-path"})
+    assert store.get(child, SimpleStage.FINDING_DONE) is None
+    assert store.get(child, SimpleStage.REPORT_DONE) is None
+
+
+@pytest.mark.asyncio
+async def test_policy_deny_exports_only_restricted_bundle(tmp_path: Path) -> None:
+    app, identity = build_handoff_harness(
+        tmp_path, poc_validated=True, gates_accepted=False
+    )
+    outcome = await app.analyze(_request(tmp_path / "data"))
+    assert outcome.status == "COMPLETE", (outcome.current_stage, outcome.error_code)
+    store = SimpleCheckpointStore(tmp_path / "data" / "db" / "sastsimi.sqlite3")
+    child = identity.model_copy(update={"hypothesis_id": "known-command-path"})
+    artifacts = SimpleArtifactRepository(tmp_path / "data", child)
+    finding = store.require(child, SimpleStage.FINDING_DONE)
+    value = json.loads(artifacts.read(finding.output_refs[0]))
+    assert value["status"] == "CONFIRMED_RESTRICTED"
+    assert value["private_reporting_policy_passed"] is False
+    report = store.require(child, SimpleStage.REPORT_DONE)
+    assert report.bundle_manifest_ref is not None
+    bundle = Path(report.markdown_path or "").with_suffix("")
+    english = (bundle / "report_en.md").read_text(encoding="utf-8")
+    assert "Scope Gate: `DENY`" in english
+    assert "Report permission: `DENY`" in english
+    checkpoints = {stage: store.require(child, stage) for stage in HYPOTHESIS_STAGES}
+    review = project_scope_review(
+        checkpoints[SimpleStage.SCOPE_GATE_DONE],
+        artifacts,
+        policy_snapshot_ref=cast(
+            _StaticBootstrap, app._static
+        ).result.policy_snapshot_ref,
+        repository_url="https://github.com/example/fixture",
+    )
+    assert review["status"] == "DENY"
+    artifacts.verified_report_bundle(
+        checkpoints=checkpoints,
+        finding_ref=finding.output_refs[0],
+        display_id="F-001",
+        scope_status="DENY",
+        public_projection=lambda body: safe_public_report(body, review),
+    )
+
+
+@pytest.mark.asyncio
+async def test_interrupted_resume_skips_completed_agents(tmp_path: Path) -> None:
+    app, identity = build_handoff_harness(
+        tmp_path,
+        poc_validated=True,
+        gates_accepted=True,
+        interrupt_once=True,
+    )
+    first = await app.analyze(_request(tmp_path / "data"))
+    assert first.status == "BLOCKED"
+    before_calls = dict(app.fixture_agent_calls)  # type: ignore[attr-defined]
+    reopened = _reopen_handoff_app(app, tmp_path / "data")
+    second = await reopened.resume(identity.analysis_id)
+    assert second.status == "COMPLETE", second.error_code
+    after_calls = dict(app.fixture_agent_calls)  # type: ignore[attr-defined]
+    assert after_calls == before_calls
+    assert after_calls["pro_evidence"] == 1
+    assert after_calls["con_evidence"] == 1
+    assert after_calls["initial_verification"] == 1
+    assert after_calls["report_draft"] == 1
+
+
+@pytest.mark.asyncio
+async def test_agent_failure_resume_reuses_validated_poc(tmp_path: Path) -> None:
+    app, identity = build_handoff_harness(
+        tmp_path,
+        poc_validated=True,
+        gates_accepted=True,
+        fail_agent_once="report_draft",
+    )
+    first = await app.analyze(_request(tmp_path / "data"))
+    assert first.status == "BLOCKED"
+    assert first.error_code == "INVALID_OUTPUT"
+    before_calls = dict(app.fixture_agent_calls)  # type: ignore[attr-defined]
+    assert before_calls["report_draft"] == 1
+    assert app.fixture_docker.calls == 1  # type: ignore[attr-defined]
+
+    reopened = _reopen_handoff_app(app, tmp_path / "data")
+    second = await reopened.resume(identity.analysis_id)
+
+    assert second.status == "COMPLETE", second.error_code
+    after_calls = dict(app.fixture_agent_calls)  # type: ignore[attr-defined]
+    assert after_calls == before_calls | {"report_draft": 2}
+    assert app.fixture_docker.calls == 1  # type: ignore[attr-defined]
+    store = SimpleCheckpointStore(tmp_path / "data" / "db" / "sastsimi.sqlite3")
+    child = identity.model_copy(update={"hypothesis_id": "known-command-path"})
+    assert store.require(child, SimpleStage.REPORT_DONE).status is StageStatus.SUCCEEDED
+
+
+@pytest.mark.asyncio
+async def test_old_flask_nonretryable_checkpoint_is_not_reopened(
+    tmp_path: Path,
+) -> None:
+    app, identity = build_handoff_harness(
+        tmp_path,
+        poc_validated=True,
+        gates_accepted=True,
+        old_nonretryable_poc=True,
+    )
+    first = await app.analyze(_request(tmp_path / "data"))
+    assert first.status == "BLOCKED"
+    assert first.error_code == "POC_ENVIRONMENT_UNVERIFIED"
+    store = SimpleCheckpointStore(tmp_path / "data" / "db" / "sastsimi.sqlite3")
+    child = identity.model_copy(update={"hypothesis_id": "known-command-path"})
+    blocked = store.require(child, SimpleStage.POC_EXECUTION_DONE)
+    # Simulate a pre-existing source-only PoC checkpoint, then reopen the DB.
+    assert blocked.retryable is False
+    assert blocked.stage_version == STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
+    before = dict(app.fixture_agent_calls)  # type: ignore[attr-defined]
+    second = await _reopen_handoff_app(app, tmp_path / "data").resume(
+        identity.analysis_id
+    )
+    assert second.status == "BLOCKED"
+    assert second.error_code == "POC_ENVIRONMENT_UNVERIFIED"
+    assert store.require(child, SimpleStage.POC_EXECUTION_DONE) == blocked
+    assert dict(app.fixture_agent_calls) == before  # type: ignore[attr-defined]
