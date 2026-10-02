@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -59,10 +60,95 @@ def test_ast_manifest_distinguishes_empty_parsed_file_from_unparsed_files(
         artifacts.read(StoredDataRef.model_validate(manifest["entries"][0]["ref"]))
     )
     assert file_record == {
-        "kind": "simple_python_ast_file_v1",
+        "kind": "simple_python_ast_file_v2",
         "path": "empty.py",
+        "source_sha256": hashlib.sha256((workspace / "empty.py").read_bytes()).hexdigest(),
         "facts": [],
     }
+
+
+def _collected_calls(tmp_path: Path, source: str) -> tuple[dict[str, Any], ...]:
+    workspace = tmp_path / "calls"
+    workspace.mkdir()
+    (workspace / "sample.py").write_text(source, encoding="utf-8")
+    artifacts = _artifacts(tmp_path)
+    summary = collect_python_ast(
+        workspace, ("sample.py",), artifacts, max_source_bytes=4096
+    )
+    _, facts, gap = ast_facts.read_ast_file_facts(
+        artifacts, summary, "sample.py"
+    )
+    assert gap is None
+    return tuple(fact for fact in facts if fact["kind"] == "Call")
+
+
+def test_direct_and_call_receiver_are_distinct(tmp_path: Path) -> None:
+    calls = _collected_calls(tmp_path, "eval(value)\nsuper().eval(value)\n")
+
+    assert calls[0]["name"] == "eval"
+    assert calls[0]["callee_kind"] == "DIRECT"
+    assert calls[0]["receiver_kind"] is None
+    assert calls[1]["name"] == "super().eval"
+    assert calls[1]["callee_kind"] == "ATTRIBUTE"
+    assert calls[1]["receiver_kind"] == "CALL_RESULT"
+
+
+def test_call_receiver_file_write_preserved(tmp_path: Path) -> None:
+    calls = _collected_calls(tmp_path, "Path(name).write_text(data)\n")
+
+    assert calls[0]["name"] == "Path().write_text"
+    assert calls[0]["receiver_kind"] == "CALL_RESULT"
+    assert calls[0]["line"] == 1
+
+
+def test_getattr_argument_kind(tmp_path: Path) -> None:
+    calls = _collected_calls(
+        tmp_path,
+        'getattr(ast, "Num", None)\ngetattr(node, node.attr)\n',
+    )
+
+    assert calls[0]["attribute_arg_kind"] == "STRING_LITERAL"
+    assert calls[1]["attribute_arg_kind"] == "NONLITERAL"
+    assert calls[0]["callee_kind"] == calls[1]["callee_kind"] == "DIRECT"
+
+
+def test_legacy_ast_manifest_readable(tmp_path: Path) -> None:
+    artifacts = _artifacts(tmp_path)
+    old_fact = {"kind": "Call", "path": "legacy.py", "line": 1, "name": "eval"}
+    file_ref = artifacts.put_json(
+        {"kind": "simple_python_ast_file_v1", "path": "legacy.py", "facts": [old_fact]}
+    )
+    manifest_ref = artifacts.put_json(
+        {
+            "kind": "simple_python_ast_manifest_v1",
+            "entries": [
+                {
+                    "path": "legacy.py",
+                    "fact_count": 1,
+                    "ref": file_ref.model_dump(mode="json"),
+                }
+            ],
+            "fact_count": 1,
+            "parsed_file_count": 1,
+        }
+    )
+    summary = {
+        "kind": "simple_python_ast",
+        "format_version": 2,
+        "manifest_ref": manifest_ref.model_dump(mode="json"),
+        "fact_count": 1,
+        "parsed_file_count": 1,
+        "parse_errors": [],
+        "parse_error_count": 0,
+        "oversize_paths": [],
+        "oversize_count": 0,
+        "truncated": False,
+    }
+
+    _, facts, gap = ast_facts.read_ast_file_facts(artifacts, summary, "legacy.py")
+
+    assert gap is None
+    assert facts == (old_fact,)
 
 
 def test_ast_focus_selects_nearby_facts_without_losing_file_evidence(

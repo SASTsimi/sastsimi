@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 import stat
@@ -17,10 +18,52 @@ from .artifacts import SimpleArtifactRepository
 def _call_name(node: ast.expr) -> str | None:
     if isinstance(node, ast.Name):
         return node.id
+    if isinstance(node, ast.Call):
+        callee = _call_name(node.func)
+        return f"{callee}()" if callee else None
     if isinstance(node, ast.Attribute):
         parent = _call_name(node.value)
         return f"{parent}.{node.attr}" if parent else node.attr
     return None
+
+
+def _call_fact(node: ast.Call, path: str) -> dict[str, object] | None:
+    name = _call_name(node.func)
+    if name is None:
+        return None
+    receiver_kind: str | None = None
+    if isinstance(node.func, ast.Name):
+        callee_kind = "DIRECT"
+    elif isinstance(node.func, ast.Attribute):
+        callee_kind = "ATTRIBUTE"
+        receiver = node.func.value
+        if isinstance(receiver, ast.Name):
+            receiver_kind = "NAME"
+        elif isinstance(receiver, ast.Attribute):
+            receiver_kind = "ATTRIBUTE"
+        elif isinstance(receiver, ast.Call):
+            receiver_kind = "CALL_RESULT"
+        else:
+            receiver_kind = "OTHER"
+    else:
+        return None
+    attribute_arg_kind: str | None = None
+    if callee_kind == "DIRECT" and name == "getattr" and len(node.args) >= 2:
+        attribute = node.args[1]
+        attribute_arg_kind = (
+            "STRING_LITERAL"
+            if isinstance(attribute, ast.Constant) and isinstance(attribute.value, str)
+            else "NONLITERAL"
+        )
+    return {
+        "kind": "Call",
+        "path": path,
+        "line": node.lineno,
+        "name": name,
+        "callee_kind": callee_kind,
+        "receiver_kind": receiver_kind,
+        "attribute_arg_kind": attribute_arg_kind,
+    }
 
 
 def collect_python_ast(
@@ -86,30 +129,30 @@ def collect_python_ast(
                     }
                 )
             elif isinstance(node, ast.Call):
-                name = _call_name(node.func)
-                if name:
-                    facts.append(
-                        {
-                            "kind": "Call",
-                            "path": relative,
-                            "line": node.lineno,
-                            "name": name,
-                        }
-                    )
+                fact = _call_fact(node, relative)
+                if fact is not None:
+                    facts.append(fact)
+        source_sha256 = hashlib.sha256(raw).hexdigest()
         file_ref = artifacts.put_json(
-            {"kind": "simple_python_ast_file_v1", "path": relative, "facts": facts}
+            {
+                "kind": "simple_python_ast_file_v2",
+                "path": relative,
+                "source_sha256": source_sha256,
+                "facts": facts,
+            }
         )
         entries.append(
             {
                 "path": relative,
                 "fact_count": len(facts),
+                "source_sha256": source_sha256,
                 "ref": file_ref.model_dump(mode="json"),
             }
         )
         fact_count += len(facts)
     manifest_ref = artifacts.put_json(
         {
-            "kind": "simple_python_ast_manifest_v1",
+            "kind": "simple_python_ast_manifest_v2",
             "entries": entries,
             "fact_count": fact_count,
             "parsed_file_count": len(entries),
@@ -117,7 +160,7 @@ def collect_python_ast(
     )
     return {
         "kind": "simple_python_ast",
-        "format_version": 2,
+        "format_version": 3,
         "manifest_ref": manifest_ref.model_dump(mode="json"),
         "fact_count": fact_count,
         "parsed_file_count": len(entries),
@@ -133,9 +176,11 @@ def _new_manifest(
     artifacts: SimpleArtifactRepository, summary: Mapping[str, object]
 ) -> list[dict[str, Any]]:
     try:
+        version = summary.get("format_version")
         if (
             summary.get("kind") != "simple_python_ast"
-            or summary.get("format_version") != 2
+            or type(version) is not int
+            or version not in {2, 3}
             or summary.get("truncated") is not False
         ):
             raise ValueError("AST_MANIFEST_INVALID")
@@ -152,7 +197,7 @@ def _new_manifest(
         manifest = json.loads(artifacts.read(manifest_ref))
         if (
             not isinstance(manifest, dict)
-            or manifest.get("kind") != "simple_python_ast_manifest_v1"
+            or manifest.get("kind") != f"simple_python_ast_manifest_v{version - 1}"
             or manifest.get("parsed_file_count") != expected_files
             or manifest.get("fact_count") != expected_facts
         ):
@@ -179,6 +224,12 @@ def _new_manifest(
                 or count < 0
             ):
                 raise ValueError("AST_MANIFEST_INVALID")
+            if version == 3:
+                source_sha256 = entry.get("source_sha256")
+                if not _valid_sha256(source_sha256):
+                    raise ValueError("AST_MANIFEST_INVALID")
+            elif "source_sha256" in entry:
+                raise ValueError("AST_MANIFEST_INVALID")
             _file_ref(entry)
             counted += count
             prior_path = path
@@ -200,6 +251,14 @@ def _file_ref(entry: Mapping[str, object]) -> StoredDataRef:
     return ref
 
 
+def _valid_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 def _read_file(
     artifacts: SimpleArtifactRepository, entry: Mapping[str, object]
 ) -> tuple[StoredDataRef, list[dict[str, Any]]]:
@@ -208,10 +267,20 @@ def _read_file(
         record = json.loads(artifacts.read(ref))
         path = entry["path"]
         facts = record.get("facts") if isinstance(record, dict) else None
+        current = "source_sha256" in entry
         if (
             not isinstance(record, dict)
-            or record.get("kind") != "simple_python_ast_file_v1"
+            or record.get("kind")
+            != ("simple_python_ast_file_v2" if current else "simple_python_ast_file_v1")
             or record.get("path") != path
+            or (
+                current
+                and (
+                    record.get("source_sha256") != entry["source_sha256"]
+                    or not _valid_sha256(record.get("source_sha256"))
+                )
+            )
+            or (not current and "source_sha256" in record)
             or not isinstance(facts, list)
             or len(facts) != entry["fact_count"]
         ):
@@ -226,6 +295,22 @@ def _read_file(
                 or fact["line"] < 1
                 or not isinstance(fact.get("name"), str)
                 or not fact["name"]
+            ):
+                raise ValueError("AST_MANIFEST_INVALID")
+            if current and fact["kind"] == "Call" and (
+                fact.get("callee_kind") not in {"DIRECT", "ATTRIBUTE"}
+                or fact.get("receiver_kind")
+                not in {None, "NAME", "ATTRIBUTE", "CALL_RESULT", "OTHER"}
+                or (
+                    fact["callee_kind"] == "DIRECT"
+                    and fact.get("receiver_kind") is not None
+                )
+                or (
+                    fact["callee_kind"] == "ATTRIBUTE"
+                    and fact.get("receiver_kind") is None
+                )
+                or fact.get("attribute_arg_kind")
+                not in {None, "STRING_LITERAL", "NONLITERAL"}
             ):
                 raise ValueError("AST_MANIFEST_INVALID")
         return ref, facts
