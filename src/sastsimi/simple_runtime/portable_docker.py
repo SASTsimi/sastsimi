@@ -217,7 +217,9 @@ def build_pinned_context(
                 return None
             dynamic = metadata.get("dynamic", [])
             if not isinstance(dynamic, list) or any(
-                field in {"readme", "license", "license-files"} for field in dynamic
+                not isinstance(field, str)
+                or field in {"readme", "license", "license-files"}
+                for field in dynamic
             ):
                 return None
             direct_refs: list[str] = []
@@ -250,11 +252,19 @@ def build_pinned_context(
                     or parsed.is_absolute()
                     or "\\" in reference
                     or ".." in parsed.parts
+                    or (reference in license_files and "**" in parsed.parts)
                 ):
                     return None
             for prefix in (f"src/{module_name}", module_name):
                 if f"{prefix}/__init__.py".encode() in tracked_paths:
-                    return prefix, tuple(direct_refs), tuple(license_files)
+                    return (
+                        prefix,
+                        tuple(direct_refs),
+                        tuple(
+                            PurePosixPath(pattern).as_posix()
+                            for pattern in license_files
+                        ),
+                    )
             return None
         return None
 

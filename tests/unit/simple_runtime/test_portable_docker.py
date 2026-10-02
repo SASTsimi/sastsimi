@@ -370,6 +370,7 @@ def test_archive_context_blocks_secret_in_nested_project(tmp_path: Path) -> None
         'readme = "tests/.env"',
         'license = {file = "tests/.env"}',
         'license-files = ["tests/*.env"]',
+        'license-files = ["./tests/*.env"]',
     ),
 )
 def test_archive_context_blocks_test_secret_referenced_by_project_metadata(
