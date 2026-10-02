@@ -499,7 +499,7 @@ async def test_offline_dependency_failure_is_nonretryable_stage_block(
             raise ValueError("POC_OFFLINE_DEPENDENCY_MISSING")
 
     stage = InitialVerificationStage(
-        _Client(),  # type: ignore[arg-type]
+        _Client(),
         artifacts,
         _MissingDependency(),  # type: ignore[arg-type]
     )

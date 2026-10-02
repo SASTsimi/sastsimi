@@ -381,11 +381,13 @@ def test_profile_requires_path_and_digest_together(tmp_path: Path) -> None:
         },
     ):
         with pytest.raises(ValueError, match="POC_WHEEL_ARCHIVE"):
-            SimpleExecutionProfile(**base, **extra)
-    selected = SimpleExecutionProfile(
-        **base,
-        poc_wheel_archive_path=tmp_path / "wheels.tar",
-        poc_wheel_archive_sha256="a" * 64,
+            SimpleExecutionProfile.model_validate(base | extra)
+    selected = SimpleExecutionProfile.model_validate(
+        base
+        | {
+            "poc_wheel_archive_path": tmp_path / "wheels.tar",
+            "poc_wheel_archive_sha256": "a" * 64,
+        }
     )
     path = tmp_path / "selected.toml"
     selected.write(path)

@@ -207,11 +207,12 @@ def test_archive_context_has_only_pinned_checkout_and_wheels(tmp_path: Path) -> 
             "requirements.txt",
             "wheels/sample_pkg-1.0-py3-none-any.whl",
         }
-        assert archive.extractfile("app.py").read() == b"print('pinned')\n"  # type: ignore[union-attr]
-        assert (
-            archive.extractfile("wheels/sample_pkg-1.0-py3-none-any.whl").read()
-            == wheel
-        )  # type: ignore[union-attr]
+        app_file = archive.extractfile("app.py")
+        wheel_file = archive.extractfile("wheels/sample_pkg-1.0-py3-none-any.whl")
+        assert app_file is not None
+        assert wheel_file is not None
+        assert app_file.read() == b"print('pinned')\n"
+        assert wheel_file.read() == wheel
 
 
 def test_archive_context_rejects_source_symlink_or_changed_content(
