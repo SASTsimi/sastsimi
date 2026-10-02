@@ -126,6 +126,75 @@ def test_surface_part_commit_survives_reopen_and_replays_after_child_progress(
     assert reopened.get(first.identity, SimpleStage.PRO_CON_DONE) == advanced
 
 
+def test_second_look_version_is_durable_and_conflict_checked(tmp_path: Path) -> None:
+    identity = _identity()
+    artifacts = SimpleArtifactRepository(tmp_path / "artifacts", identity)
+    store = SimpleCheckpointStore(tmp_path / "ledger.sqlite3")
+    result_ref = artifacts.put_json({"kind": "simple_surface_hypothesis_result_v2"})
+    options = dict(
+        static_bundle_hash="b" * 64,
+        index_hash="c" * 64,
+        context_hash="d" * 64,
+        source_sha256="e" * 64,
+        status="NO_HYPOTHESIS",
+        result_ref=result_ref,
+        registrations=(),
+        proposal_version=2,
+    )
+
+    assert store.commit_surface_exploration(
+        identity, "scope-1", "surface-1", "context-v2", **options
+    )
+    reopened = SimpleCheckpointStore(store.database_path)
+    record = reopened.list_surface_exploration_progress(identity, "scope-1")[
+        ("surface-1", "context-v2")
+    ]
+    assert record.proposal_version == 2
+    assert not reopened.commit_surface_exploration(
+        identity, "scope-1", "surface-1", "context-v2", **options
+    )
+    with pytest.raises(ValueError, match="SURFACE_EXPLORATION_CONFLICT"):
+        reopened.commit_surface_exploration(
+            identity,
+            "scope-1",
+            "surface-1",
+            "context-v2",
+            **(options | {"proposal_version": 1}),
+        )
+
+
+def test_legacy_surface_progress_table_migrates_without_losing_rows(
+    tmp_path: Path,
+) -> None:
+    identity = _identity()
+    artifacts = SimpleArtifactRepository(tmp_path / "artifacts", identity)
+    store = SimpleCheckpointStore(tmp_path / "ledger.sqlite3")
+    result_ref = artifacts.put_json({"kind": "old-result"})
+    store.commit_surface_exploration(
+        identity,
+        "scope-1",
+        "surface-1",
+        "context-v1",
+        static_bundle_hash="b" * 64,
+        index_hash="c" * 64,
+        context_hash="d" * 64,
+        source_sha256=None,
+        status="NO_HYPOTHESIS",
+        result_ref=result_ref,
+        registrations=(),
+    )
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "ALTER TABLE simple_surface_exploration_progress DROP COLUMN proposal_version"
+        )
+
+    reopened = SimpleCheckpointStore(store.database_path)
+    saved = reopened.list_surface_exploration_progress(identity, "scope-1")
+
+    assert saved[("surface-1", "context-v1")].proposal_version == 1
+    assert saved[("surface-1", "context-v1")].result_ref == result_ref
+
+
 def test_surface_progress_rejects_corrupt_registration_snapshot(tmp_path: Path) -> None:
     identity = _identity()
     artifacts = SimpleArtifactRepository(tmp_path / "artifacts", identity)

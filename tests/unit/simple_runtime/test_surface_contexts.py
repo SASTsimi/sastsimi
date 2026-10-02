@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from sastsimi.simple_runtime.application import SimpleAnalysisApplication
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.ast_facts import collect_python_ast
 from sastsimi.simple_runtime.attack_surfaces import (
@@ -16,6 +17,7 @@ from sastsimi.simple_runtime.attack_surfaces import (
     SurfaceIndex,
 )
 from sastsimi.simple_runtime.models import CheckpointIdentity
+from sastsimi.simple_runtime.store import SurfaceExplorationProgressRecord
 from sastsimi.simple_runtime.surface_contexts import (
     SurfaceContext,
     expanded_surface_contexts,
@@ -407,3 +409,34 @@ def test_expansion_redacts_secrets(tmp_path: Path) -> None:
     raw = artifacts.read(expanded[0].context_ref)
     assert secret.encode() not in raw
     assert b"REDACTED" in raw
+
+
+def test_old_checkpoint_context_set_unchanged(tmp_path: Path) -> None:
+    fixture = _setup(
+        tmp_path,
+        "def route(value):\n"
+        + "    # earlier\n" * 20
+        + "    check_permission(value)\n",
+        surface_line=22,
+    )
+    index, _coverage, artifacts, _summary, _workspace = fixture
+    context = _contexts(fixture)[0]
+    result_ref = artifacts.put_json({"kind": "old-result"})
+    record = SurfaceExplorationProgressRecord(
+        surface_id=context.surface_id,
+        context_id=context.context_id,
+        static_bundle_hash=index.static_bundle_hash,
+        index_hash="e" * 64,
+        context_hash=context.context_hash,
+        source_sha256=context.source_sha256,
+        status="INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS",
+        result_ref=result_ref,
+        hypothesis_ids=(),
+        proposal_version=1,
+    )
+    assert (context.omitted_source_line_count or 0) > 0
+    assert not SimpleAnalysisApplication._surface_expansion_needed(
+        index,
+        (context,),
+        {(context.surface_id, context.context_id): record},
+    )

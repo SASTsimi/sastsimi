@@ -112,6 +112,141 @@ class _PagedHypotheses:
         return (), {None: "page-1", "page-1": "page-2", "page-2": None}[after_cursor]
 
 
+class _SecondLookHypotheses:
+    def __init__(
+        self,
+        data_dir: Path,
+        *,
+        second_status: str = "NO_HYPOTHESIS",
+        fail_second_once: bool = False,
+    ) -> None:
+        self.data_dir = data_dir
+        self.second_status = second_status
+        self.fail_second_once = fail_second_once
+        self.context_kinds: list[str] = []
+        self.primary_surface_id: str | None = None
+
+    async def propose_batch(
+        self,
+        identity: CheckpointIdentity,
+        _static: StaticBootstrapResult,
+        batch: CandidateBatch,
+        *,
+        requested_ids: tuple[str, ...] | None = None,
+    ) -> BatchProposalResult:
+        ids = requested_ids or batch.candidate_ids
+        artifacts = SimpleArtifactRepository(self.data_dir, identity)
+        ref = artifacts.put_json(
+            {
+                "kind": "simple_candidate_batch_response_v1",
+                "batch_id": batch.batch_id,
+                "requested_ids": ids,
+                "candidate_results": [
+                    {"candidate_id": item, "status": "NO_HYPOTHESIS"} for item in ids
+                ],
+            }
+        )
+        return BatchProposalResult(
+            results={
+                item: CandidateProposalOutcome(
+                    status="NO_HYPOTHESIS",
+                    reason="No candidate path",
+                    seeds=(),
+                    result_ref=ref,
+                )
+                for item in ids
+            },
+            missing_ids=(),
+            attempt_refs=(ref,),
+        )
+
+    async def propose_surface(
+        self,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+        context: SurfaceContext,
+    ) -> SurfaceProposalResult | StageFailure:
+        artifacts = SimpleArtifactRepository(self.data_dir, identity)
+        payload = json.loads(artifacts.read(context.context_ref))
+        kind = str(payload["kind"])
+        self.context_kinds.append(kind)
+        if self.primary_surface_id is None:
+            self.primary_surface_id = context.surface_id
+        if kind == "simple_surface_context_v2" and self.fail_second_once:
+            self.fail_second_once = False
+            return StageFailure(
+                code="LLM_TOKEN_BUDGET_EXHAUSTED",
+                retryable=False,
+                safe_message="Temporary test budget",
+            )
+        status = (
+            self.second_status
+            if kind == "simple_surface_context_v2"
+            else "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS"
+            if context.surface_id == self.primary_surface_id
+            else "NO_HYPOTHESIS"
+        )
+        parts: frozenset[ReviewPart] = (
+            frozenset({"ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY"})
+            if status == "NO_HYPOTHESIS"
+            else frozenset()
+        )
+        location = f"{payload['path']}:{payload['line']}"
+        locations = (location,) if parts else ()
+        ref = artifacts.put_json(
+            {
+                "kind": (
+                    "simple_surface_hypothesis_result_v2"
+                    if kind == "simple_surface_context_v2"
+                    else "simple_surface_hypothesis_result_v1"
+                ),
+                "analysis_id": identity.analysis_id,
+                "surface_id": context.surface_id,
+                "context_id": context.context_id,
+                "part_index": context.part_index,
+                "part_count": context.part_count,
+                "context_hash": context.context_hash,
+                "static_bundle_hash": static.static_bundle_ref.content_hash,
+                "status": status,
+                "reason": "Fixture review",
+                "reviewed_parts": sorted(parts),
+                "evidence_locations": list(locations),
+                "seed_ids": [],
+            }
+        )
+        return SurfaceProposalResult(
+            surface_id=context.surface_id,
+            context_id=context.context_id,
+            part_index=context.part_index,
+            part_count=context.part_count,
+            status=status,
+            reason="Fixture review",
+            seeds=(),
+            result_ref=ref,
+            reviewed_parts=parts,
+            evidence_locations=locations,
+        )
+
+
+def _enable_chaining_pool(
+    app: SimpleAnalysisApplication, store: SimpleCheckpointStore, data_dir: Path
+) -> None:
+    class PoolRunner(_SuccessRunner):
+        def __init__(
+            self, backing: SimpleCheckpointStore, root: CheckpointIdentity
+        ) -> None:
+            super().__init__(backing)
+            self.handlers = {
+                SimpleStage.CHAINING_DONE: SimpleChainingStage(
+                    store=backing,
+                    client=_Client(),
+                    artifacts=SimpleArtifactRepository(data_dir, root),
+                )
+            }
+
+    app._runner_factory = lambda backing, root, _static: PoolRunner(backing, root)
+
+
 class _Client:
     def __init__(self, *, budget: bool = False, decision: str = "EXCLUDE") -> None:
         self.budget = budget
@@ -169,12 +304,16 @@ def _setup(
     with_ast_summary: bool = False,
     evidence_excerpt: str | None = None,
     pipeline_version: int = 1,
+    source_padding: int = 0,
 ) -> tuple[SimpleAnalysisApplication, SimpleCheckpointStore, _Client, _Hypotheses]:
     data_dir = tmp_path / "data"
     workspace = tmp_path / "checkout"
     workspace.mkdir()
     (workspace / "app.py").write_text(
-        "def route(x):\n" + "    eval(x)\n" * result_count, encoding="utf-8"
+        "def route(x):\n"
+        + "    # padding\n" * source_padding
+        + "    eval(x)\n" * result_count,
+        encoding="utf-8",
     )
     identity = CheckpointIdentity(
         analysis_id="analysis-1",
@@ -190,8 +329,8 @@ def _setup(
                     {
                         "check_id": "python.eval",
                         "path": "app.py",
-                        "start": {"line": i + 2},
-                        "end": {"line": i + 2},
+                        "start": {"line": i + 2 + source_padding},
+                        "end": {"line": i + 2 + source_padding},
                         "extra": {
                             "message": "eval call",
                             **(
@@ -1805,6 +1944,101 @@ def test_v2_targeted_exploration_keeps_candidate_surface_without_role_bound_proo
     assert {context.surface_id for context in contexts} >= {
         surface.surface_id for surface in linked
     }
+
+
+@pytest.mark.parametrize(
+    ("source_padding", "second_status", "expected_calls"),
+    [
+        (0, "NO_HYPOTHESIS", 3),
+        (20, "NO_HYPOTHESIS", 4),
+        (20, "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS", 4),
+    ],
+)
+@pytest.mark.asyncio
+async def test_second_look_only_after_omitted_insufficient_evidence(
+    tmp_path: Path,
+    source_padding: int,
+    second_status: str,
+    expected_calls: int,
+) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        decision="EXCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+        source_padding=source_padding,
+    )
+    proposer = _SecondLookHypotheses(tmp_path / "data", second_status=second_status)
+    app._candidate_hypotheses = cast(HypothesisBootstrap, proposer)
+    _enable_chaining_pool(app, store, tmp_path / "data")
+
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    calls_after_first = tuple(proposer.context_kinds)
+    second = await app.resume("analysis-1")
+    progress = store.list_surface_exploration_progress(first.identity, "scope-1")
+
+    assert len(calls_after_first) == expected_calls
+    assert proposer.context_kinds == list(calls_after_first)
+    assert len(progress) == expected_calls
+    assert sum(record.proposal_version == 2 for record in progress.values()) == (
+        1 if source_padding else 0
+    )
+    if source_padding and second_status == "NO_HYPOTHESIS":
+        assert first.status == second.status == "COMPLETE", (
+            first.error_code,
+            second.error_code,
+        )
+    else:
+        assert first.status == second.status == "PARTIAL", (
+            first.error_code,
+            second.error_code,
+        )
+
+
+@pytest.mark.asyncio
+async def test_resume_after_first_decision_reuses_first_response(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        decision="EXCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+        source_padding=20,
+    )
+    proposer = _SecondLookHypotheses(tmp_path / "data", fail_second_once=True)
+    app._candidate_hypotheses = cast(HypothesisBootstrap, proposer)
+    _enable_chaining_pool(app, store, tmp_path / "data")
+    request = SimpleAnalysisRequest(
+        data_dir=tmp_path / "data",
+        repository="https://github.com/example/repo",
+        commit="a" * 40,
+    )
+
+    first = await app.analyze(request)
+    initial_progress = store.list_surface_exploration_progress(
+        first.identity, "scope-1"
+    )
+    resumed = await app.resume("analysis-1")
+    final_progress = store.list_surface_exploration_progress(first.identity, "scope-1")
+
+    assert first.status == "PAUSED", (first.status, first.error_code)
+    assert len(initial_progress) == 1
+    assert resumed.status == "COMPLETE", resumed.error_code
+    assert proposer.context_kinds == [
+        "simple_surface_context_v1",
+        "simple_surface_context_v2",
+        "simple_surface_context_v2",
+        "simple_surface_context_v1",
+        "simple_surface_context_v1",
+    ]
+    assert len(final_progress) == 4
 
 
 @pytest.mark.asyncio

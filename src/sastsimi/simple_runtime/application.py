@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 import sqlite3
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -68,10 +68,11 @@ from .recovery import (
 )
 from .run_lease import AnalysisRunBusy, analysis_run_lease
 from .runner import RunOutcome, SimpleRuntimeRunner, StageBlocked, StageFailed
-from .store import SimpleCheckpointStore
+from .store import SimpleCheckpointStore, SurfaceExplorationProgressRecord
 from .surface_contexts import (
     SurfaceContext,
     SurfaceContextOverflow,
+    expanded_surface_contexts,
     iter_uncovered_surface_contexts,
 )
 
@@ -2240,6 +2241,23 @@ class SimpleAnalysisApplication:
         ):
             contexts_by_surface.setdefault(context.surface_id, []).append(context)
             expected.add((context.surface_id, context.context_id))
+        effective_contexts: dict[str, list[SurfaceContext]] = {}
+        surfaces_by_id = {surface.surface_id: surface for surface in index.surfaces}
+        for surface_id, first_contexts in contexts_by_surface.items():
+            effective_contexts[surface_id] = first_contexts
+            if self._surface_expansion_needed(index, first_contexts, progress):
+                second = list(
+                    expanded_surface_contexts(
+                        index,
+                        surfaces_by_id[surface_id],
+                        artifacts=artifacts,
+                        ast_summary=ast_summary,
+                        workspace=static.workspace_path,
+                    )
+                )
+                expected.update((surface_id, item.context_id) for item in second)
+                contexts_by_surface[surface_id] = [*first_contexts, *second]
+                effective_contexts[surface_id] = second
         prior_covered = {
             surface.surface_id
             for surface in initial.surfaces
@@ -2255,6 +2273,9 @@ class SimpleAnalysisApplication:
             locations: set[str] = set()
             evidence_refs: list[StoredDataRef] = []
             complete = True
+            effective_ids = {
+                context.context_id for context in effective_contexts[surface_id]
+            }
             for context, record in zip(contexts, records, strict=True):
                 assert record is not None
                 if (
@@ -2262,6 +2283,8 @@ class SimpleAnalysisApplication:
                     or record.index_hash != index_ref.content_hash
                     or record.context_hash != context.context_hash
                     or record.source_sha256 != context.source_sha256
+                    or record.proposal_version
+                    != self._surface_context_version(artifacts, context)
                 ):
                     raise ValueError("SURFACE_EXPLORATION_SCOPE_CHANGED")
                 self._surface_result_valid(
@@ -2274,11 +2297,12 @@ class SimpleAnalysisApplication:
                     expected_seed_ids=record.hypothesis_ids,
                 )
                 value = json.loads(artifacts.read(record.result_ref))
-                parts.update(value["reviewed_parts"])
-                locations.update(value["evidence_locations"])
-                evidence_refs.append(record.result_ref)
-                if record.status == "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS":
-                    complete = False
+                if context.context_id in effective_ids:
+                    parts.update(value["reviewed_parts"])
+                    locations.update(value["evidence_locations"])
+                    evidence_refs.append(record.result_ref)
+                    if record.status == "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS":
+                        complete = False
                 for hypothesis_id in record.hypothesis_ids:
                     child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
                     final = self._store.get(child, SimpleStage.VERIFICATION_FINAL_DONE)
@@ -2292,7 +2316,8 @@ class SimpleAnalysisApplication:
                         continue
                     for ref in final.output_refs:
                         artifacts.read(ref)
-                    evidence_refs.extend(final.output_refs)
+                    if context.context_id in effective_ids:
+                        evidence_refs.extend(final.output_refs)
             reviews.append(
                 SurfaceReview(
                     surface_id=surface_id,
@@ -2314,6 +2339,44 @@ class SimpleAnalysisApplication:
                 )
             )
         return evaluate_surface_coverage(index, reviews)
+
+    @staticmethod
+    def _surface_context_version(
+        artifacts: SimpleArtifactRepository, context: SurfaceContext
+    ) -> int:
+        payload = json.loads(artifacts.read(context.context_ref))
+        if not isinstance(payload, dict):
+            raise ValueError("SURFACE_EXPLORATION_CONTEXT_INVALID")
+        kind = payload.get("kind")
+        if kind == "simple_surface_context_v1":
+            return 1
+        if kind == "simple_surface_context_v2":
+            return 2
+        raise ValueError("SURFACE_EXPLORATION_CONTEXT_INVALID")
+
+    @staticmethod
+    def _surface_expansion_needed(
+        index: SurfaceIndex,
+        contexts: Sequence[SurfaceContext],
+        progress: Mapping[tuple[str, str], SurfaceExplorationProgressRecord],
+    ) -> bool:
+        if index.index_version != 2 or not contexts:
+            return False
+        if not any(
+            progress.get((item.surface_id, item.context_id)) is not None
+            and progress[(item.surface_id, item.context_id)].status
+            == "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS"
+            for item in contexts
+        ):
+            return False
+        return any(
+            item.source_unavailable_reason is None
+            and (
+                (item.omitted_source_line_count or 0) > 0
+                or (item.omitted_ast_fact_count or 0) > 0
+            )
+            for item in contexts
+        )
 
     async def _run_final_chaining_pool(
         self,
@@ -2616,7 +2679,7 @@ class SimpleAnalysisApplication:
         progress = self._store.list_surface_exploration_progress(identity, scope)
         seen_contexts: set[tuple[str, str]] = set()
         try:
-            contexts = iter_uncovered_surface_contexts(
+            first_contexts = iter_uncovered_surface_contexts(
                 index,
                 coverage,
                 64 * 1024,
@@ -2624,6 +2687,27 @@ class SimpleAnalysisApplication:
                 ast_summary=ast_summary,
                 workspace=static.workspace_path,
             )
+            by_surface: dict[str, list[SurfaceContext]] = {}
+            for context in first_contexts:
+                by_surface.setdefault(context.surface_id, []).append(context)
+
+            def contexts_to_review() -> Iterator[SurfaceContext]:
+                surfaces = {surface.surface_id: surface for surface in index.surfaces}
+                for surface_id, contexts in by_surface.items():
+                    yield from contexts
+                    updated = self._store.list_surface_exploration_progress(
+                        identity, scope
+                    )
+                    if self._surface_expansion_needed(index, contexts, updated):
+                        yield from expanded_surface_contexts(
+                            index,
+                            surfaces[surface_id],
+                            artifacts=artifacts,
+                            ast_summary=ast_summary,
+                            workspace=static.workspace_path,
+                        )
+
+            contexts = contexts_to_review()
             for context in contexts:
                 key = (context.surface_id, context.context_id)
                 if key in seen_contexts:
@@ -2637,6 +2721,8 @@ class SimpleAnalysisApplication:
                         or prior.index_hash != index_ref.content_hash
                         or prior.context_hash != context.context_hash
                         or prior.source_sha256 != context.source_sha256
+                        or prior.proposal_version
+                        != self._surface_context_version(artifacts, context)
                     ):
                         raise ValueError("SURFACE_EXPLORATION_SCOPE_CHANGED")
                     self._surface_result_valid(
@@ -2744,6 +2830,9 @@ class SimpleAnalysisApplication:
                         status=result.status,
                         result_ref=result.result_ref,
                         registrations=registrations,
+                        proposal_version=self._surface_context_version(
+                            artifacts, context
+                        ),
                     )
                 drained = await self._drain_candidate_children(
                     run,

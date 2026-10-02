@@ -310,6 +310,49 @@ async def test_v1_and_v2_proposals_require_exact_source_location(
 
 
 @pytest.mark.asyncio
+async def test_second_look_cannot_rule_out_external_implementation(
+    tmp_path: Path,
+) -> None:
+    bootstrap, client, identity, static, context, artifacts = _fixture(tmp_path)
+    expanded = _as_v2(artifacts, context)
+    payload = json.loads(artifacts.read(expanded.context_ref))
+    payload["unavailable_implementation"] = (
+        "CALL_RESULT_IMPLEMENTATION_NOT_IN_SAME_FILE"
+    )
+    ref = artifacts.put_json(payload)
+    context_id = hashlib.sha256(
+        canonical_bytes(
+            {
+                "kind": "simple_surface_context_id_v2",
+                "scope_fingerprint": payload["scope_fingerprint"],
+                "surface_id": expanded.surface_id,
+                "part_index": expanded.part_index,
+                "context_hash": ref.content_hash,
+            }
+        )
+    ).hexdigest()
+    expanded = replace(
+        expanded,
+        context_ref=ref,
+        context_hash=ref.content_hash,
+        context_id=context_id,
+        prompt_bytes=len(artifacts.read(ref)),
+    )
+    client.replies.extend(
+        [
+            _reply(expanded.context_id, status="NO_HYPOTHESIS"),
+            _reply(expanded.context_id, status="INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS"),
+        ]
+    )
+
+    result = await bootstrap.propose_surface(identity, static, expanded)
+
+    assert not isinstance(result, StageFailure)
+    assert result.status == "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS"
+    assert len(client.requests) == 2
+
+
+@pytest.mark.asyncio
 async def test_surface_hypothesis_is_bound_to_exact_visible_evidence(
     tmp_path: Path,
 ) -> None:

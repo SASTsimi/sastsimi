@@ -136,6 +136,7 @@ class SurfaceExplorationProgressRecord:
     status: str
     result_ref: StoredDataRef
     hypothesis_ids: tuple[str, ...]
+    proposal_version: int
 
 
 class SimpleCheckpointStore:
@@ -553,6 +554,7 @@ class SimpleCheckpointStore:
                     context_hash TEXT NOT NULL,
                     source_sha256 TEXT,
                     status TEXT NOT NULL,
+                    proposal_version INTEGER NOT NULL DEFAULT 1,
                     result_ref_json TEXT NOT NULL,
                     registrations_json TEXT NOT NULL,
                     PRIMARY KEY (
@@ -562,6 +564,17 @@ class SimpleCheckpointStore:
                 )
                 """
             )
+            surface_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(simple_surface_exploration_progress)"
+                )
+            }
+            if "proposal_version" not in surface_columns:
+                connection.execute(
+                    "ALTER TABLE simple_surface_exploration_progress "
+                    "ADD COLUMN proposal_version INTEGER NOT NULL DEFAULT 1"
+                )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS simple_pro_con_batch_evidence (
@@ -1428,6 +1441,7 @@ class SimpleCheckpointStore:
         status: str,
         result_ref: StoredDataRef,
         registrations: Sequence[tuple[str, StoredDataRef, StageCheckpoint]],
+        proposal_version: int = 1,
     ) -> bool:
         """Commit one context part and all its free hypotheses atomically."""
 
@@ -1447,6 +1461,7 @@ class SimpleCheckpointStore:
                 "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS",
             }
             or (status == "HYPOTHESES") != bool(registrations)
+            or proposal_version not in {1, 2}
         ):
             raise ValueError("SURFACE_EXPLORATION_INVALID")
         if len({item[0] for item in registrations}) != len(registrations):
@@ -1470,6 +1485,7 @@ class SimpleCheckpointStore:
             context_hash,
             source_sha256,
             status,
+            proposal_version,
             encoded_ref,
             registrations_json,
         )
@@ -1477,7 +1493,8 @@ class SimpleCheckpointStore:
             connection.execute("BEGIN IMMEDIATE")
             prior = connection.execute(
                 "SELECT static_bundle_hash, index_hash, context_hash, "
-                "source_sha256, status, result_ref_json, registrations_json "
+                "source_sha256, status, proposal_version, result_ref_json, "
+                "registrations_json "
                 "FROM simple_surface_exploration_progress "
                 "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
                 "AND scope_fingerprint = ? AND surface_id = ? AND context_id = ?",
@@ -1490,6 +1507,7 @@ class SimpleCheckpointStore:
                     prior["context_hash"],
                     prior["source_sha256"],
                     prior["status"],
+                    prior["proposal_version"],
                     prior["result_ref_json"],
                     prior["registrations_json"],
                 )
@@ -1504,8 +1522,9 @@ class SimpleCheckpointStore:
                 "INSERT INTO simple_surface_exploration_progress "
                 "(analysis_id, workspace_id, commit_id, scope_fingerprint, "
                 "surface_id, context_id, static_bundle_hash, index_hash, "
-                "context_hash, source_sha256, status, result_ref_json, "
-                "registrations_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "context_hash, source_sha256, status, proposal_version, "
+                "result_ref_json, "
+                "registrations_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (*key, surface_id, context_id, *expected),
             )
         return True
@@ -1569,7 +1588,8 @@ class SimpleCheckpointStore:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT surface_id, context_id, static_bundle_hash, index_hash, "
-                "context_hash, source_sha256, status, result_ref_json, "
+                "context_hash, source_sha256, status, proposal_version, "
+                "result_ref_json, "
                 "registrations_json "
                 "FROM simple_surface_exploration_progress "
                 "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
@@ -1592,6 +1612,7 @@ class SimpleCheckpointStore:
                     hypothesis_ids=self._surface_registration_ids(
                         identity, str(row["status"]), str(row["registrations_json"])
                     ),
+                    proposal_version=int(row["proposal_version"]),
                 )
             )
             for row in rows
