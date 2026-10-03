@@ -1062,6 +1062,295 @@ def _attach_bundle(tmp_path: Path) -> tuple[CheckpointIdentity, PublishedBundle]
     return identity, attach_current_bundle(tmp_path, identity, ref("finding"), "F-001")
 
 
+def test_dashboard_hides_raw_report_draft_and_response(
+    tmp_path: Path,
+) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity, _ = _attach_bundle(tmp_path)
+    database = tmp_path / "db" / "sastsimi.sqlite3"
+    store = SimpleCheckpointStore(database)
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    draft = artifacts.put_json(
+        {
+            "kind": "simple_report_draft",
+            "result": {"en": {"details": "file:relative/private-source"}},
+        }
+    )
+    response = artifacts.put_json(
+        {
+            "kind": "simple_llm_response",
+            "response": {"en": {"details": "file:relative/private-source"}},
+        }
+    )
+    report = store.require(identity, SimpleStage.REPORT_DONE)
+    store.save_checkpoint(
+        report.model_copy(
+            update={
+                "output_refs": (draft, report.output_refs[1]),
+                "report_ref": draft,
+            }
+        )
+    )
+    AgentActivityStore(database).append(
+        AgentActivityEvent(
+            event_id="current-report-draft",
+            analysis_id=identity.analysis_id,
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            hypothesis_id=identity.hypothesis_id,
+            stage=SimpleStage.REPORT_DONE.value,
+            agent_role="Reporter Agent",
+            attempt_id="current-report-draft",
+            sequence=1,
+            kind=ActivityKind.DECISION_RECORDED,
+            status="SUCCEEDED",
+            summary_ko="Report generated",
+            output_refs=(draft, report.output_refs[1]),
+            tool_result_refs=(response,),
+            started_at=datetime.now(UTC),
+        )
+    )
+
+    query = DashboardQuery(tmp_path)
+    assert query.report_content(identity.analysis_id, "F-001") == b"# report"
+    markdown_bytes = query.artifact_bytes(
+        identity.analysis_id, report.output_refs[1].content_hash
+    )[2]
+    assert markdown_bytes == b"# report"
+    for hidden in (draft, response):
+        with pytest.raises(DashboardNotFound):
+            query.artifact_content(identity.analysis_id, hidden.content_hash)
+        with pytest.raises(DashboardNotFound):
+            query.artifact_bytes(identity.analysis_id, hidden.content_hash)
+
+
+@pytest.mark.parametrize("block_kind", ["root_invalid", "unresolved_call"])
+def test_integrity_block_hides_historical_activity_report_refs(
+    tmp_path: Path,
+    block_kind: str,
+) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity, _ = _attach_bundle(tmp_path)
+    database = tmp_path / "db" / "sastsimi.sqlite3"
+    store = SimpleCheckpointStore(database)
+    run = store.require_analysis_run(identity.analysis_id)
+    store.save_analysis_run(run.model_copy(update={"candidate_pipeline_version": 2}))
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    old_finding = artifacts.put_json({"kind": "simple_finding", "old": True})
+    old_draft = artifacts.put_json({"kind": "simple_report_draft", "old": True})
+    old_report = artifacts.put_bytes(b"# historical report", "text/markdown")
+    old_response = artifacts.put_json(
+        {"kind": "simple_llm_response", "report": "historical draft"}
+    )
+    ordinary = artifacts.put_json({"kind": "ordinary_evidence", "valid": True})
+    carrier = artifacts.put_json(
+        {
+            "kind": "ordinary_evidence",
+            "nested": {"report_ref": old_report.model_dump(mode="json")},
+        }
+    )
+    activity = AgentActivityStore(database)
+    for sequence, stage, outputs, tool_results in (
+        (1, SimpleStage.FINDING_DONE, (old_finding,), ()),
+        (2, SimpleStage.REPORT_DONE, (old_draft, old_report), (old_response,)),
+        (3, SimpleStage.PRO_CON_DONE, (ordinary, carrier), ()),
+    ):
+        activity.append(
+            AgentActivityEvent(
+                event_id=f"historical-activity-{sequence}",
+                analysis_id=identity.analysis_id,
+                workspace_id=identity.workspace_id,
+                commit_id=identity.commit_id,
+                hypothesis_id=identity.hypothesis_id,
+                stage=stage.value,
+                agent_role="Agent",
+                attempt_id="historical-activity",
+                sequence=sequence,
+                kind=ActivityKind.EVIDENCE_RECORDED,
+                status="SUCCEEDED",
+                summary_ko="Historical activity",
+                output_refs=outputs,
+                tool_result_refs=tool_results,
+                started_at=datetime.now(UTC),
+            )
+        )
+    query = DashboardQuery(tmp_path)
+    finding_content = query.artifact_content(
+        identity.analysis_id, old_finding.content_hash
+    )
+    assert finding_content.kind == "simple_finding"
+    assert query.artifact_bytes(identity.analysis_id, old_report.content_hash)[2] == (
+        b"# historical report"
+    )
+
+    if block_kind == "unresolved_call":
+        assert store.begin_codex_call("orphan-call", identity.analysis_id)
+    else:
+        root = identity.model_copy(update={"hypothesis_id": None})
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=root,
+                stage=SimpleStage.HYPOTHESIS_DONE,
+                status=StageStatus.BLOCKED,
+                input_refs=(),
+                input_hash=input_reference_hash(()),
+                error_code="HYPOTHESIS_EVIDENCE_INVALID",
+                retryable=False,
+            )
+        )
+
+    assert any(
+        event.event_id == "historical-activity-2"
+        for event in query.list_events(identity.analysis_id)
+    )
+    assert query.artifact_content(identity.analysis_id, ordinary.content_hash).kind == (
+        "ordinary_evidence"
+    )
+    assert query.artifact_content(identity.analysis_id, carrier.content_hash).kind == (
+        "ordinary_evidence"
+    )
+    for hidden in (old_finding, old_draft, old_report, old_response):
+        with pytest.raises(DashboardNotFound):
+            query.artifact_content(identity.analysis_id, hidden.content_hash)
+        with pytest.raises(DashboardNotFound):
+            query.artifact_bytes(identity.analysis_id, hidden.content_hash)
+
+
+@pytest.mark.parametrize("status", [StageStatus.BLOCKED, StageStatus.FAILED])
+def test_candidate_hypothesis_integrity_failure_retracts_current_report(
+    tmp_path: Path, status: StageStatus
+) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity, _ = _attach_bundle(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = store.require_analysis_run(identity.analysis_id)
+    store.save_analysis_run(run.model_copy(update={"candidate_pipeline_version": 2}))
+    finding = store.require(identity, SimpleStage.FINDING_DONE)
+    store.save_checkpoint(finding.model_copy(update={"verdict": "TRUE"}))
+    report = store.require(identity, SimpleStage.REPORT_DONE)
+    query = DashboardQuery(tmp_path)
+    assert query.report_path(identity.analysis_id, "F-001").is_file()
+    before = query.get_analysis(identity.analysis_id)
+    assert before.finding_count == 1
+    assert before.hypotheses[0].validated_poc is True
+
+    root = identity.model_copy(update={"hypothesis_id": None})
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=root,
+            stage=SimpleStage.HYPOTHESIS_DONE,
+            status=status,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            error_code="HYPOTHESIS_EVIDENCE_INVALID",
+            retryable=False,
+        )
+    )
+
+    detail = query.get_analysis(identity.analysis_id)
+    assert detail.finding_count == 0
+    assert detail.reports == ()
+    assert detail.hypotheses[0].verdict is None
+    assert detail.hypotheses[0].validated_poc is False
+    assert query.list_analyses()[0].finding_count == 0
+    with pytest.raises(DashboardNotFound):
+        query.report_path(identity.analysis_id, "F-001")
+    with pytest.raises(DashboardNotFound):
+        query.report_content(identity.analysis_id, "F-001")
+    with pytest.raises(DashboardNotFound):
+        query.report_attachment(identity.analysis_id, "F-001", "bundle.zip")
+    with pytest.raises(DashboardNotFound):
+        query.artifact_content(identity.analysis_id, report.output_refs[1].content_hash)
+    with pytest.raises(DashboardNotFound):
+        query.bundle_members(
+            identity.analysis_id,
+            artifact_ids=frozenset(),
+            report_ids=frozenset({"F-001"}),
+        )
+    assert not any(
+        name.startswith("reports/")
+        for name in query.bundle_members(identity.analysis_id, artifact_ids=frozenset())
+    )
+
+
+def test_inactive_unresolved_codex_call_retracts_current_dashboard_report(
+    tmp_path: Path,
+) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity, _ = _attach_bundle(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = store.require_analysis_run(identity.analysis_id)
+    store.save_analysis_run(run.model_copy(update={"candidate_pipeline_version": 2}))
+    finding = store.require(identity, SimpleStage.FINDING_DONE)
+    store.save_checkpoint(finding.model_copy(update={"verdict": "TRUE"}))
+    report = store.require(identity, SimpleStage.REPORT_DONE)
+    assert store.begin_codex_call("orphan-call", identity.analysis_id)
+
+    query = DashboardQuery(tmp_path)
+    detail = query.get_analysis(identity.analysis_id)
+    assert detail.status == "BLOCKED"
+    assert detail.finding_count == 0
+    assert detail.reports == ()
+    assert detail.hypotheses[0].verdict is None
+    assert detail.hypotheses[0].validated_poc is False
+    assert query.list_analyses()[0].finding_count == 0
+    with pytest.raises(DashboardNotFound):
+        query.report_path(identity.analysis_id, "F-001")
+    with pytest.raises(DashboardNotFound):
+        query.report_content(identity.analysis_id, "F-001")
+    for hidden in (finding.output_refs[0], report.output_refs[1]):
+        with pytest.raises(DashboardNotFound):
+            query.artifact_content(identity.analysis_id, hidden.content_hash)
+    with pytest.raises(DashboardNotFound):
+        query.bundle_members(
+            identity.analysis_id,
+            artifact_ids=frozenset(),
+            report_ids=frozenset({"F-001"}),
+        )
+
+    with analysis_run_lease(tmp_path, identity.analysis_id):
+        active = query.get_analysis(identity.analysis_id)
+        assert tuple(item.display_id for item in active.reports) == ("F-001",)
+        assert active.finding_count == 1
+        assert query.report_content(identity.analysis_id, "F-001") == b"# report"
+
+
+@pytest.mark.parametrize(
+    ("candidate_version", "error_code"),
+    [
+        (2, "CANDIDATE_CHILD_ERROR:OTHER_CHILD_BLOCKED"),
+        (None, "HYPOTHESIS_EVIDENCE_INVALID"),
+    ],
+)
+def test_other_root_failures_keep_previously_verified_report(
+    tmp_path: Path, candidate_version: int | None, error_code: str
+) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity, _ = _attach_bundle(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = store.require_analysis_run(identity.analysis_id)
+    store.save_analysis_run(
+        run.model_copy(update={"candidate_pipeline_version": candidate_version})
+    )
+    root = identity.model_copy(update={"hypothesis_id": None})
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=root,
+            stage=SimpleStage.HYPOTHESIS_DONE,
+            status=StageStatus.BLOCKED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            error_code=error_code,
+            retryable=False,
+        )
+    )
+
+    query = DashboardQuery(tmp_path)
+    assert query.report_path(identity.analysis_id, "F-001").is_file()
+    reports = query.get_analysis(identity.analysis_id).reports
+    assert tuple(item.display_id for item in reports) == ("F-001",)
+
+
 def test_current_bundle_lists_only_verified_attachment_urls(tmp_path) -> None:
     test_current_accepted_report_remains_accessible(tmp_path)
     _attach_bundle(tmp_path)

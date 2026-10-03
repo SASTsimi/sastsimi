@@ -50,6 +50,9 @@ from sastsimi.simple_runtime.poc_currentness import (
     completed_before_poc_count,
     stale_successful_poc,
 )
+from sastsimi.simple_runtime.report_currentness import (
+    candidate_report_currentness_blocked,
+)
 from sastsimi.simple_runtime.run_lease import analysis_run_lease_active
 from sastsimi.simple_runtime.scope_policy import (
     project_scope_review,
@@ -136,6 +139,18 @@ class DashboardQuery:
     def __init__(self, data_dir: str | Path) -> None:
         self._data_dir = Path(data_dir).resolve()
         self._database = RuntimePaths(self._data_dir).database.resolve()
+
+    def _candidate_report_blocked(
+        self,
+        run: SimpleAnalysisRun | None,
+        checkpoints: tuple[StageCheckpoint, ...] | list[StageCheckpoint],
+    ) -> bool:
+        return candidate_report_currentness_blocked(
+            run,
+            checkpoints,
+            data_dir=self._data_dir,
+            store=_ReadOnlyCheckpointStore(self._database),
+        )
 
     def _connect(self) -> sqlite3.Connection:
         if not self._database.is_file():
@@ -528,6 +543,61 @@ class DashboardQuery:
         refs: dict[str, StoredDataRef] = {}
         expected_artifacts: set[str] = set()
         queue: list[tuple[StoredDataRef, str, str | None]] = []
+        events = self._event_models(analysis_id)
+        # The first Reporter output is the raw draft. Published report copies
+        # are sanitized separately, so never serve the draft or its LLM payload.
+        withheld_refs = {
+            ref.content_hash
+            for checkpoint in values
+            if checkpoint.stage is SimpleStage.REPORT_DONE
+            for ref in (
+                checkpoint.report_ref,
+                checkpoint.output_refs[0] if checkpoint.output_refs else None,
+            )
+            if ref is not None
+        }
+        withheld_refs.update(
+            ref.content_hash
+            for event in events
+            if event.stage == SimpleStage.REPORT_DONE.value
+            and event.workspace_id == run.workspace_id
+            and event.commit_id == run.commit_id
+            for ref in (
+                *(event.output_refs[:1]),
+                *event.tool_result_refs,
+            )
+        )
+        if self._candidate_report_blocked(run, values):
+            withheld_refs.update(
+                ref.content_hash
+                for checkpoint in values
+                if checkpoint.stage
+                in {SimpleStage.FINDING_DONE, SimpleStage.REPORT_DONE}
+                for ref in (
+                    *checkpoint.output_refs,
+                    checkpoint.report_ref,
+                    checkpoint.bundle_manifest_ref,
+                    checkpoint.bundle_archive_ref,
+                )
+                if ref is not None
+            )
+            withheld_refs.update(
+                ref.content_hash
+                for event in events
+                if event.stage
+                in {SimpleStage.FINDING_DONE.value, SimpleStage.REPORT_DONE.value}
+                and event.workspace_id == run.workspace_id
+                and event.commit_id == run.commit_id
+                for ref in (
+                    *event.output_refs,
+                    *event.tool_result_refs,
+                    *(
+                        event.input_refs
+                        if event.stage == SimpleStage.REPORT_DONE.value
+                        else ()
+                    ),
+                )
+            )
 
         def enqueue(
             ref: StoredDataRef | None,
@@ -535,6 +605,8 @@ class DashboardQuery:
             hypothesis: str | None,
         ) -> None:
             if ref is None:
+                return
+            if ref.content_hash in withheld_refs:
                 return
             if (
                 str(ref.workspace_id) != run.workspace_id
@@ -564,7 +636,6 @@ class DashboardQuery:
                 checkpoint.report_ref,
             ):
                 enqueue(optional_ref, stage, hypothesis)
-        events = self._event_models(analysis_id)
         for event in events:
             for ref in (*event.input_refs, *event.output_refs, *event.tool_result_refs):
                 enqueue(ref, event.stage, event.hypothesis_id)
@@ -806,11 +877,10 @@ class DashboardQuery:
             )
         except (LookupError, OSError, sqlite3.Error, ValueError) as error:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
-        checkpoints = tuple(
-            checkpoint
-            for checkpoint in self._checkpoints()
-            if checkpoint.identity.analysis_id == analysis_id
-        )
+        checkpoints = self._checkpoints(analysis_id)
+        run = self._simple_run(analysis_id)
+        if self._candidate_report_blocked(run, checkpoints):
+            raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
         finding = next(
             (
                 checkpoint
@@ -862,7 +932,6 @@ class DashboardQuery:
         if not accepted:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
         try:
-            run = self._simple_run(analysis_id)
             if run is not None:
                 SimpleArtifactRepository(
                     self._data_dir, finding.identity
@@ -1034,6 +1103,7 @@ class DashboardQuery:
             if checkpoint.identity.hypothesis_id is not None:
                 hypothesis_groups[checkpoint.identity.hypothesis_id].append(checkpoint)
         run = self._simple_run(analysis_id)
+        report_currentness_blocked = self._candidate_report_blocked(run, values)
         candidate_counts, candidate_deep_counts, registered_hypotheses = (
             self._candidate_metrics(run)
         )
@@ -1047,6 +1117,7 @@ class DashboardQuery:
                 checkpoints,
                 run,
                 analysis_active=lease_state is True,
+                report_currentness_blocked=report_currentness_blocked,
             )
             for hypothesis_id, checkpoints in sorted(hypothesis_groups.items())
         )
@@ -1082,6 +1153,8 @@ class DashboardQuery:
             surface_index_hash=surface_index_hash,
             analysis_active=lease_state is True,
         )
+        if report_currentness_blocked:
+            progress = progress.model_copy(update={"finding_count": 0})
         lease_inactive = lease_state is False
         if lease_inactive and self._unresolved_codex_call(analysis_id):
             progress = progress.model_copy(
@@ -1757,6 +1830,7 @@ class DashboardQuery:
         run: SimpleAnalysisRun | None,
         *,
         analysis_active: bool = False,
+        report_currentness_blocked: bool = False,
     ) -> HypothesisProgressView:
         values = list(verified_terminal_projection(tuple(values), self._data_dir))
         latest = max(values, key=lambda item: item.updated_at)
@@ -1800,7 +1874,15 @@ class DashboardQuery:
             completed_count=completed,
             stage_count=len(values),
             error_code=progress.error_code,
-            verdict=final.verdict if final and not poc_revalidation_required else None,
+            verdict=(
+                final.verdict
+                if (
+                    final
+                    and not poc_revalidation_required
+                    and not report_currentness_blocked
+                )
+                else None
+            ),
             disposition=(
                 None
                 if poc_revalidation_required
@@ -1848,7 +1930,8 @@ class DashboardQuery:
                 progress.status in {"BLOCKED", "FAILED"}
                 and any(item.retryable for item in values)
             ),
-            validated_poc=not poc_revalidation_required
+            validated_poc=not report_currentness_blocked
+            and not poc_revalidation_required
             and any(item.validated_poc_ref is not None for item in values),
             parent_hypothesis_ids=(
                 run.parent_hypothesis_ids.get(hypothesis_id, ()) if run else ()

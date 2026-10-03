@@ -28,6 +28,9 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
 )
 from sastsimi.simple_runtime.provider import SimpleCodexClient
+from sastsimi.simple_runtime.report_currentness import (
+    candidate_report_currentness_blocked,
+)
 from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
 from sastsimi.simple_runtime.scope_policy import (
     project_scope_review,
@@ -78,6 +81,18 @@ def _report_path_for_result(
             run = store.require_analysis_run(identity.analysis_id)
         except LookupError:
             run = None
+        if run is not None and (
+            run.analysis_id,
+            run.workspace_id,
+            run.commit_id,
+        ) == (identity.analysis_id, identity.workspace_id, identity.commit_id):
+            if candidate_report_currentness_blocked(
+                run,
+                store.list_checkpoints(identity.analysis_id),
+                data_dir=artifacts.data_dir,
+                store=store,
+            ):
+                return None
         if run is not None:
             if not report.input_refs:
                 return None

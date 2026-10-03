@@ -23,7 +23,7 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.prompt_redaction import assert_safe_provider_text
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.ports.report_export import ReportUnavailable
-from sastsimi.reporting.bilingual_bundle import BundleFile
+from sastsimi.reporting.bilingual_bundle import BundleFile, is_safe_sandbox_shell_poc
 from sastsimi.reporting.safe_windows_directory import (
     _capture_directory_identity,
     _guarded_windows_replace_directory,
@@ -164,7 +164,8 @@ def _ordered_files(files: tuple[BundleFile, ...]) -> tuple[BundleFile, ...]:
             raise ValueError("BUNDLE_FILE_TOO_LARGE")
         total += len(item.body)
         try:
-            assert_safe_provider_text(item.body)
+            if item.path != "poc.sh" or not is_safe_sandbox_shell_poc(item.body):
+                assert_safe_provider_text(item.body)
         except ValueError as error:
             raise ValueError("BUNDLE_FILE_UNSAFE") from error
     if total > MAX_BUNDLE_BYTES:

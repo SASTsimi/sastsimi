@@ -206,6 +206,47 @@ def test_candidate_progress_counts_decisions_and_deep_work_separately(
     assert snapshot.percent == 70
 
 
+@pytest.mark.parametrize(
+    ("candidate_version", "root_status", "root_error", "finding_count"),
+    [
+        (2, StageStatus.BLOCKED, "HYPOTHESIS_EVIDENCE_INVALID", 0),
+        (2, StageStatus.FAILED, "HYPOTHESIS_EVIDENCE_INVALID", 0),
+        (2, StageStatus.BLOCKED, "CANDIDATE_CHILD_ERROR:OTHER_CHILD_BLOCKED", 1),
+        (0, StageStatus.BLOCKED, "HYPOTHESIS_EVIDENCE_INVALID", 1),
+    ],
+)
+def test_root_provenance_failure_retracts_candidate_finding_count(
+    tmp_path: Path,
+    candidate_version: int,
+    root_status: StageStatus,
+    root_error: str,
+    finding_count: int,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    root = CheckpointIdentity(
+        analysis_id="candidate-finding",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    child = root.model_copy(update={"hypothesis_id": "hypothesis-1"})
+    _save(store, root, SimpleStage.STATIC_DONE)
+    _save(
+        store,
+        root,
+        SimpleStage.HYPOTHESIS_DONE,
+        status=root_status,
+        error_code=root_error,
+    )
+    _save(store, child, SimpleStage.FINDING_DONE, verdict="TRUE")
+
+    snapshot = ProgressProjector(store).snapshot(
+        root.analysis_id, candidate_pipeline_version=candidate_version
+    )
+
+    assert snapshot.finding_count == finding_count
+
+
 def test_v2_inconclusive_candidate_does_not_hide_blocked_stage(tmp_path: Path) -> None:
     store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
     identity = CheckpointIdentity(

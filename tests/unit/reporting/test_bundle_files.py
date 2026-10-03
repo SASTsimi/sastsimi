@@ -57,8 +57,7 @@ class Artifacts:
         return self.values[ref.content_hash]
 
 
-def _files() -> tuple[BundleFile, ...]:
-    poc = b"#!/bin/sh\necho safe\n"
+def _files(poc: bytes = b"#!/bin/sh\necho safe\n") -> tuple[BundleFile, ...]:
     digest = hashlib.sha256(poc).hexdigest()
     provenance = canonical_bytes(
         {
@@ -122,6 +121,59 @@ def test_manifest_and_archive_cover_exact_curated_members(tmp_path: Path) -> Non
         for item in manifest.files:
             assert zipped.read(item.path) == artifacts.read(item.artifact_ref)
     assert _publish(tmp_path, artifacts) == published
+
+
+def test_validated_shell_poc_survives_manifest_read_and_zip_exactly(
+    tmp_path: Path,
+) -> None:
+    poc = (
+        b"#!/bin/sh\nset -eu\n"
+        b"fixture=/tmp/sastsimi-fixture\n"
+        b"printf 'safe' > \"$fixture\"\n"
+    )
+    digest = hashlib.sha256(poc).hexdigest()
+    artifacts = Artifacts()
+
+    published = _publish(tmp_path, artifacts, _files(poc))
+    manifest = parse_bundle_manifest(
+        artifacts.read(published.manifest_ref),
+        finding_ref=_ref("finding", "b" * 64, record_id="finding-2"),
+    )
+
+    assert manifest.poc_original_sha256 == digest
+    assert manifest.poc_redacted is False
+    assert (published.bundle_dir / "poc.sh").read_bytes() == poc
+    body, media_type = read_bundle_file(manifest, "poc.sh", artifacts.read)
+    assert body == poc
+    assert media_type == _MEDIA["poc.sh"]
+    archive = read_bundle_archive(manifest, published.archive_ref, artifacts.read)
+    with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
+        assert zipped.read("poc.sh") == poc
+    poc_entry = next(item for item in manifest.files if item.path == "poc.sh")
+    assert poc_entry.sha256 == digest
+
+
+@pytest.mark.parametrize(
+    "poc",
+    (
+        b"#!/bin/sh\necho /home/alice/private.txt\n",
+        b"#!/bin/sh\necho C:\\Users\\Alice\\private.txt\n",
+        b"#!/bin/sh\necho /tmp/safe sk-Abcdefghijk99999\n",
+        b"#!/bin/sh\nmkdir -p /tmp/sk-ABCDEFGH12345678\n",
+        b"#!/bin/sh\necho /usr/local/private.txt\n",
+        b"#!/bin/sh\necho /tmp/../var/log/private\n",
+    ),
+)
+def test_publisher_rejects_raw_host_or_secret_shell_poc(
+    tmp_path: Path, poc: bytes
+) -> None:
+    artifacts = Artifacts()
+
+    with pytest.raises(ValueError, match="BUNDLE_FILE_UNSAFE"):
+        _publish(tmp_path, artifacts, _files(poc))
+
+    assert artifacts.values == {}
+    assert not (tmp_path / "reports" / "a1" / "F-002" / "manifest.json").exists()
 
 
 def test_published_bundle_rejects_missing_or_modified_files(tmp_path: Path) -> None:

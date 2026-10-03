@@ -4,7 +4,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Mapping
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -1001,6 +1001,173 @@ async def test_resume_blocks_unresolved_codex_call_without_changing_running_chec
 
 
 @pytest.mark.asyncio
+async def test_v2_codex_resume_reconciles_unspawned_call_without_repeating_work(
+    tmp_path: Path,
+) -> None:
+    app, store, client, _ = _setup(
+        tmp_path,
+        decision="EXCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+        source_padding=20,
+    )
+    app._provider = app._llm_provider = "codex"
+    proposer = _SecondLookHypotheses(tmp_path / "data", second_status="NO_HYPOTHESIS")
+    app._candidate_hypotheses = cast(HypothesisBootstrap, proposer)
+    _enable_chaining_pool(app, store, tmp_path / "data")
+    request = SimpleAnalysisRequest(
+        data_dir=tmp_path / "data",
+        repository="https://github.com/example/repo",
+        commit="a" * 40,
+    )
+    first = await app.analyze(request)
+    assert first.status == "COMPLETE", first.error_code
+    root = store.require(first.identity, SimpleStage.HYPOTHESIS_DONE)
+    running = store.mark_running(
+        first.identity,
+        SimpleStage.HYPOTHESIS_DONE,
+        root.input_refs,
+        attempt_id="interrupted-root-attempt",
+    )
+    assert running.status is StageStatus.RUNNING
+    assert store.begin_codex_call("pre-spawn-call", first.identity.analysis_id)
+    with sqlite3.connect(store.database_path) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM simple_codex_child_spawns WHERE call_id = ?",
+            ("pre-spawn-call",),
+        ).fetchone() == (0,)
+    prior_calls = client.calls
+    prior_contexts = tuple(proposer.context_kinds)
+
+    resumed = await app.resume(first.identity.analysis_id)
+
+    assert resumed.status == "COMPLETE", resumed.error_code
+    assert store.unresolved_codex_call(first.identity.analysis_id) is None
+    assert client.calls == prior_calls
+    assert tuple(proposer.context_kinds) == prior_contexts
+    with sqlite3.connect(store.database_path) as connection:
+        row = connection.execute(
+            "SELECT status, confirmation_ref_json FROM simple_codex_calls "
+            "WHERE call_id = ?",
+            ("pre-spawn-call",),
+        ).fetchone()
+        attempt = connection.execute(
+            "SELECT status, input_tokens, output_tokens, cost_cents "
+            "FROM simple_llm_attempts WHERE attempt_id = ?",
+            ("pre-spawn-call",),
+        ).fetchone()
+    assert row is not None and row[0] == "CONFIRMED"
+    assert row[1] is not None
+    ref = StoredDataRef.model_validate_json(row[1])
+    marker = json.loads(
+        SimpleArtifactRepository(tmp_path / "data", first.identity).read(ref)
+    )
+    assert marker["kind"] == "simple_codex_pre_spawn_confirmation"
+    assert marker["call_id"] == "pre-spawn-call"
+    assert attempt == ("CODEX_NOT_SPAWNED", 0, 0, 0.0)
+    assert store.usage_summary(first.identity.analysis_id)["calls"] == 0
+    with pytest.raises(ValueError, match="CODEX_CHILD_IDENTITY_INVALID"):
+        store.begin_codex_child_spawn(
+            call_id="pre-spawn-call",
+            analysis_id=first.identity.analysis_id,
+            phase="EXEC",
+        )
+
+
+@pytest.mark.asyncio
+async def test_v2_codex_resume_keeps_spawn_intent_unresolved(tmp_path: Path) -> None:
+    app, store, _, _ = _setup(tmp_path, pipeline_version=2)
+    app._provider = app._llm_provider = "codex"
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="https://github.com/example/repo",
+            provider="codex",
+            llm_provider="codex",
+            candidate_pipeline_version=2,
+        )
+    )
+    store.mark_running(
+        identity, SimpleStage.HYPOTHESIS_DONE, (), attempt_id="interrupted-root"
+    )
+    assert app._display.get_or_allocate(identity.analysis_id) == "A-001"
+    assert store.begin_codex_call("spawn-intent-call", identity.analysis_id)
+    store.begin_codex_child_spawn(
+        call_id="spawn-intent-call", analysis_id=identity.analysis_id, phase="VERSION"
+    )
+
+    blocked = await app.resume(identity.analysis_id)
+
+    assert blocked.status == "BLOCKED"
+    assert blocked.error_code == "CODEX_CALL_IN_FLIGHT_UNRESOLVED"
+    assert store.unresolved_codex_call(identity.analysis_id) == "spawn-intent-call"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_proof", ["provider", "version", "attempt"])
+async def test_v2_codex_resume_rejects_incomplete_pre_spawn_proof(
+    tmp_path: Path, missing_proof: str
+) -> None:
+    app, store, _, _ = _setup(tmp_path, pipeline_version=2)
+    app._provider = app._llm_provider = "codex"
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    provider = "cursor" if missing_proof == "provider" else "codex"
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="https://github.com/example/repo",
+            provider=provider,
+            llm_provider=provider,
+            started_at=datetime.now(UTC),
+            candidate_pipeline_version=2,
+        )
+    )
+    store.mark_running(
+        identity, SimpleStage.HYPOTHESIS_DONE, (), attempt_id="interrupted-root"
+    )
+    assert app._display.get_or_allocate(identity.analysis_id) == "A-001"
+    assert store.begin_codex_call("unproved-call", identity.analysis_id)
+    with sqlite3.connect(store.database_path) as connection:
+        if missing_proof == "version":
+            connection.execute(
+                "DELETE FROM simple_codex_call_versions WHERE call_id = ?",
+                ("unproved-call",),
+            )
+        elif missing_proof == "attempt":
+            connection.execute(
+                "INSERT INTO simple_llm_attempts "
+                "(attempt_id, analysis_id, agent, model, attempt_number, status, "
+                "elapsed_ms, input_tokens, output_tokens, cost_cents, "
+                "artifact_ref_json) VALUES (?, ?, 'agent', 'model', 1, 'FAILED', "
+                "1, NULL, NULL, NULL, '{}')",
+                ("unproved-call", identity.analysis_id),
+            )
+
+    blocked = await app.resume(identity.analysis_id)
+
+    assert blocked.status == "BLOCKED"
+    assert blocked.error_code == "CODEX_CALL_IN_FLIGHT_UNRESOLVED"
+    assert store.unresolved_codex_call(identity.analysis_id) == "unproved-call"
+
+
+@pytest.mark.asyncio
 async def test_tracked_codex_cleanup_confirmation_resolves_exact_call_only(
     tmp_path: Path,
 ) -> None:
@@ -1841,6 +2008,25 @@ async def test_v2_targeted_exploration_checkpoints_each_surface_without_source_p
     assert len(
         store.list_surface_exploration_progress(first.identity, "scope-1")
     ) == len(targeted.surface_calls)
+
+    # A legacy role repair can clear the terminal while leaving this root
+    # checkpoint succeeded with its previous coverage ref. Finishing again
+    # must recertify the actual final coverage rather than publish a terminal
+    # whose provenance is absent from HYPOTHESIS_DONE.
+    root = store.require(first.identity, SimpleStage.HYPOTHESIS_DONE)
+    assert len(root.output_refs) >= 2
+    store.save_checkpoint(root.model_copy(update={"output_refs": root.output_refs[:1]}))
+    run = store.require_analysis_run("analysis-1")
+    store.save_analysis_run(run.model_copy(update={"candidate_terminal": None}))
+    third = await app.resume("analysis-1")
+
+    assert third.status == expected_status, third.error_code
+    recertified = store.require(first.identity, SimpleStage.HYPOTHESIS_DONE)
+    terminal = store.require_analysis_run("analysis-1").candidate_terminal
+    assert terminal is not None
+    assert terminal.surface_coverage_hash in {
+        ref.content_hash for ref in recertified.output_refs
+    }
 
 
 def test_v2_targeted_exploration_keeps_candidate_surface_without_role_bound_proof(

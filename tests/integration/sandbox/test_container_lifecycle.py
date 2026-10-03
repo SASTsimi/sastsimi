@@ -44,6 +44,7 @@ from sastsimi.contracts.static import RepositoryProfile
 from sastsimi.ports.dto import StagedArtifact
 from sastsimi.ports.dynamic_sandbox import SandboxSetupCleanupError, TrustedDockerTarget
 from sastsimi.sandbox import cleanup as cleanup_module
+from sastsimi.sandbox import setup_automation as setup_automation_module
 from sastsimi.sandbox.cleanup import OwnedResourceRegistry
 from sastsimi.sandbox.controller import (
     SandboxBoundaryOutcome,
@@ -794,6 +795,39 @@ async def test_failed_build_reconciles_reserved_owned_image_tag(failure: str) ->
         await _run_failed_build(docker)
 
     assert len(docker.removed_image_tags) == 1
+
+
+@pytest.mark.asyncio
+async def test_cold_build_allows_image_inspection_longer_than_cleanup_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SlowImageInspectDocker(FakeDockerAdapter):
+        async def inspect_image_tag(self, image_tag: str) -> DockerImageTagPresence:
+            await asyncio.sleep(0.03)
+            return await super().inspect_image_tag(image_tag)
+
+    monkeypatch.setattr(setup_automation_module, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
+    workspace = Path(__file__).parents[2] / "fixtures/sandbox/sql_injection"
+    request, requirements, _ = _dynamic_records()
+    docker = SlowImageInspectDocker()
+    setup = _setup(docker)
+    source = await setup.preflight(
+        workspace_root=workspace,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "slow-inspect-source"),
+    )
+
+    recipe = await setup.build(
+        approval=_build_approval(workspace, request, source),
+        source=source,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "slow-inspect-build"),
+    )
+
+    assert recipe.build_disposition == "BUILT"
+    assert setup.recipe_resource_refs(recipe)
 
 
 @pytest.mark.asyncio
@@ -1997,6 +2031,82 @@ async def test_repository_profile_honors_simple_dockerignore_before_archiving(
     assert source.context_archive is not None
     with tarfile.open(fileobj=io.BytesIO(source.context_archive), mode="r:") as bundle:
         assert ".npmrc" not in bundle.getnames()
+
+
+@pytest.mark.asyncio
+async def test_repository_profile_honors_dockerignore_character_class(
+    tmp_path: Path,
+) -> None:
+    files = {
+        ".dockerignore": (
+            b"venv/\n__pycache__/\n*.py[cod]\n.git\ndb.sqlite3\nmedia/uploads/*\n"
+        ),
+        "app.py": b"print('ready')\n",
+        "app.pyc": b"bytecode",
+        "app.pyo": b"bytecode",
+        "app.pyd": b"extension",
+        "app.pyx": b"keep this extension",
+        "nested/module.pyc": b"nested bytecode",
+        "nested/module.py": b"print('nested')\n",
+        "__pycache__/cached.txt": b"cache",
+        "venv/lib/package.txt": b"environment",
+        ".git/config": b"repository internals",
+        "db.sqlite3": b"database",
+        "media/uploads/image.png": b"upload",
+        "requirements.txt": b"",
+    }
+    for name, raw in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+    request, requirements, _ = _dynamic_records()
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
+    requirements = requirements.model_copy(
+        update={
+            "items": (
+                EnvironmentRequirement(
+                    requirement_id="python-version",
+                    kind="VERSION",
+                    name="python",
+                    required=True,
+                    expected="3.12",
+                    expected_ref=None,
+                    alternatives=(),
+                    check_ref=None,
+                    secret_ref=None,
+                    source_refs=(request_ref,),
+                ),
+            )
+        }
+    )
+
+    source = await _setup(FakeDockerAdapter(), artifacts=_MemoryArtifacts()).preflight(
+        workspace_root=tmp_path,
+        repository_profile=_repository_profile(files),
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "class-ignore-source"),
+    )
+
+    assert source.context_archive is not None
+    with tarfile.open(fileobj=io.BytesIO(source.context_archive), mode="r:") as bundle:
+        names = set(bundle.getnames())
+    assert {"app.py", "app.pyx", "nested/module.py", "requirements.txt"} <= names
+    assert (
+        not {
+            "app.pyc",
+            "app.pyo",
+            "app.pyd",
+            "nested/module.pyc",
+            "__pycache__/cached.txt",
+            "venv/lib/package.txt",
+            ".git/config",
+            "db.sqlite3",
+            "media/uploads/image.png",
+        }
+        & names
+    )
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,9 @@ from sastsimi.simple_runtime.poc_currentness import (
     stale_poc_hypothesis_ids,
     stale_successful_poc,
 )
+from sastsimi.simple_runtime.report_currentness import (
+    candidate_integrity_blocked_scopes,
+)
 
 from .models import ProgressSnapshot
 
@@ -444,12 +447,21 @@ class ProgressProjector:
                 + decisions["UNDECIDED"]
                 + min(deep_completed, deep_eligible)
             )
+        blocked_finding_scopes = candidate_integrity_blocked_scopes(
+            candidate_pipeline_version, checkpoints
+        )
         finding_count = sum(
             item.stage is SimpleStage.FINDING_DONE
             and item.status is StageStatus.SUCCEEDED
             and item.verdict == "TRUE"
             and bool(item.output_refs)
             and item.identity.hypothesis_id not in stale_hypothesis_ids
+            and (
+                item.identity.analysis_id,
+                item.identity.workspace_id,
+                item.identity.commit_id,
+            )
+            not in blocked_finding_scopes
             for item in checkpoints
         )
         status, current = self._status(

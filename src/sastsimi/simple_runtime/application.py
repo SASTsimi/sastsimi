@@ -69,6 +69,7 @@ from .recovery import (
 )
 from .run_lease import AnalysisRunBusy, analysis_run_lease
 from .runner import RunOutcome, SimpleRuntimeRunner, StageBlocked, StageFailed
+from .stages import ProConEvidenceRefInvalid, ProConStage
 from .store import SimpleCheckpointStore, SurfaceExplorationProgressRecord
 from .surface_contexts import (
     SurfaceContext,
@@ -415,6 +416,14 @@ class SimpleAnalysisApplication:
             commit_id=run.commit_id,
             hypothesis_id=None,
         )
+        if self._store.unresolved_codex_call(exact) is not None:
+            try:
+                self._store._reconcile_unspawned_codex_call_with_lease(
+                    run, self._data_dir
+                )
+            except (OSError, ValueError, sqlite3.Error):
+                # A missing or unverifiable pre-spawn proof stays unresolved.
+                pass
         checkpoints = self._store.list_checkpoints(exact)
         if self._store.unresolved_codex_call(exact) is not None:
             latest = (
@@ -581,6 +590,12 @@ class SimpleAnalysisApplication:
                 self._verify_registered_candidate_proposals(identity)
             except (OSError, ValueError, StaticEvidenceInvalid):
                 return self._invalid_hypothesis_resume(run, identity)
+        if run.candidate_pipeline_version in {1, 2}:
+            try:
+                await self._repair_invalid_saved_pro_con(exact)
+            except (OSError, ValueError, StaticEvidenceInvalid):
+                return self._invalid_hypothesis_resume(run, identity)
+            run = self._store.require_analysis_run(exact)
         self._promote_legacy_inconclusive_pocs(exact)
         if (
             run.candidate_pipeline_version in {1, 2}
@@ -750,6 +765,11 @@ class SimpleAnalysisApplication:
         self, run: SimpleAnalysisRun, identity: CheckpointIdentity
     ) -> SimpleAnalysisOutcome:
         checkpoint = self._store.require(identity, SimpleStage.HYPOTHESIS_DONE)
+        if (
+            checkpoint.status is StageStatus.BLOCKED
+            and checkpoint.error_code == "HYPOTHESIS_EVIDENCE_INVALID"
+        ):
+            return self._bootstrap_outcome(run, checkpoint)
         failed = self._store.mark_failure(
             checkpoint,
             StageFailure(
@@ -758,6 +778,7 @@ class SimpleAnalysisApplication:
                 safe_message="Stored hypothesis evidence cannot be trusted",
             ),
             StageStatus.BLOCKED,
+            activity_attempt_id=f"integrity-audit-{uuid4().hex}",
         )
         return self._bootstrap_outcome(run, failed)
 
@@ -842,6 +863,128 @@ class SimpleAnalysisApplication:
                     or proposal.get("analysis_id") != identity.analysis_id
                 ):
                     raise StaticEvidenceInvalid()
+
+    async def _repair_invalid_saved_pro_con(self, analysis_id: str) -> None:
+        """Reopen only intact legacy role results citing unavailable hashes."""
+
+        repairs: list[
+            tuple[
+                StageCheckpoint,
+                dict[str, StoredDataRef],
+                dict[str, StoredDataRef | None],
+            ]
+        ] = []
+        incomplete_repairs: list[
+            tuple[
+                StageCheckpoint,
+                dict[str, StoredDataRef],
+                dict[str, StoredDataRef | None],
+            ]
+        ] = []
+        for checkpoint in self._store.list_checkpoints(analysis_id):
+            if (
+                checkpoint.stage is not SimpleStage.PRO_CON_DONE
+                or checkpoint.status
+                not in {StageStatus.SUCCEEDED, StageStatus.PENDING, StageStatus.BLOCKED}
+            ):
+                continue
+            if (
+                checkpoint.identity.hypothesis_id is None
+                or checkpoint.stage_version != STAGE_VERSION[SimpleStage.PRO_CON_DONE]
+                or (
+                    checkpoint.status is StageStatus.SUCCEEDED
+                    and len(checkpoint.output_refs) != 2
+                )
+            ):
+                raise StaticEvidenceInvalid()
+            artifacts = SimpleArtifactRepository(self._data_dir, checkpoint.identity)
+            # This audit path only reads saved artifacts; it never invokes a model.
+            stage = ProConStage(
+                cast(SimpleLLMClient, None), artifacts, store=self._store
+            )
+            invalid: dict[str, StoredDataRef] = {}
+            expected_cache: dict[str, StoredDataRef | None] = {}
+            prior = self._store.prior(checkpoint.identity, SimpleStage.PRO_CON_DONE)
+            roles: tuple[Literal["pro", "con"], ...] = ("pro", "con")
+            for index, role in enumerate(roles):
+                cached = self._store.get_pro_con_batch_evidence(
+                    checkpoint.identity, role, checkpoint.input_hash
+                )
+                expected_cache[role] = cached
+                # Incomplete checkpoints store failure evidence in output_refs;
+                # only the persisted role cache can identify reusable results.
+                evidence_ref = (
+                    checkpoint.output_refs[index]
+                    if checkpoint.status is StageStatus.SUCCEEDED
+                    else cached
+                )
+                if (
+                    checkpoint.status is StageStatus.SUCCEEDED
+                    and cached is not None
+                    and cached != evidence_ref
+                ):
+                    raise StaticEvidenceInvalid()
+                if evidence_ref is None:
+                    continue
+                try:
+                    await stage.validate_cached_role_evidence(
+                        role, checkpoint, evidence_ref, prior
+                    )
+                except StageBlocked as error:
+                    if error.failure.invalid_field != "evidence_refs" or not isinstance(
+                        error.__cause__, ProConEvidenceRefInvalid
+                    ):
+                        raise StaticEvidenceInvalid() from error
+                    envelope = json.loads(artifacts.read(evidence_ref))
+                    if (
+                        not isinstance(envelope, dict)
+                        or "batch_response_ref" in envelope
+                    ):
+                        raise StaticEvidenceInvalid() from error
+                    envelope_attempt = envelope.get("attempt_id")
+                    # A cached role may have succeeded in an earlier stage
+                    # attempt. Its exact source refs and cache key bind it here.
+                    if envelope_attempt is not None and (
+                        not isinstance(envelope_attempt, str)
+                        or not envelope_attempt.strip()
+                    ):
+                        raise StaticEvidenceInvalid() from error
+                    invalid[role] = evidence_ref
+            if invalid:
+                if checkpoint.status is StageStatus.SUCCEEDED:
+                    repairs.append((checkpoint, invalid, expected_cache))
+                else:
+                    incomplete_repairs.append((checkpoint, invalid, expected_cache))
+        for checkpoint, invalid, expected_cache in repairs:
+            if self._store.get(checkpoint.identity, SimpleStage.PRO_CON_DONE) is None:
+                # An earlier repaired ancestor retracted this child in the
+                # same resume pass; it must not be replayed independently.
+                root = checkpoint.identity.model_copy(update={"hypothesis_id": None})
+                if not self._store.has_hypothesis(
+                    root, checkpoint.identity.hypothesis_id or ""
+                ):
+                    continue
+                raise StaticEvidenceInvalid()
+            try:
+                self._store.repair_legacy_pro_con_evidence(
+                    checkpoint, invalid, expected_role_cache=expected_cache
+                )
+            except (OSError, ValueError, sqlite3.Error) as error:
+                raise StaticEvidenceInvalid() from error
+        for checkpoint, invalid, expected_cache in incomplete_repairs:
+            if self._store.get(checkpoint.identity, SimpleStage.PRO_CON_DONE) is None:
+                root = checkpoint.identity.model_copy(update={"hypothesis_id": None})
+                if not self._store.has_hypothesis(
+                    root, checkpoint.identity.hypothesis_id or ""
+                ):
+                    continue
+                raise StaticEvidenceInvalid()
+            try:
+                self._store.repair_pending_pro_con_role_cache(
+                    checkpoint, invalid, expected_role_cache=expected_cache
+                )
+            except (OSError, ValueError, sqlite3.Error) as error:
+                raise StaticEvidenceInvalid() from error
 
     async def _assert_completed_static_scope(
         self, run: SimpleAnalysisRun, identity: CheckpointIdentity
@@ -1715,6 +1858,22 @@ class SimpleAnalysisApplication:
                 or len(checkpoint.input_refs) < 2
             ):
                 continue
+            if any(
+                (
+                    cached := self._store.get_pro_con_batch_evidence(
+                        child, role, checkpoint.input_hash
+                    )
+                )
+                is not None
+                and "batch_response_ref"
+                not in json.loads(
+                    SimpleArtifactRepository(self._data_dir, child).read(cached)
+                )
+                for role in ("pro", "con")
+            ):
+                # Individual legacy cache envelopes can be reused by the
+                # normal runner, but are not valid batch-existing inputs.
+                continue
             shared_ref = checkpoint.input_refs[1]
             group = groups.setdefault(shared_ref.content_hash, (shared_ref, []))
             group[1].append(checkpoint)
@@ -2269,10 +2428,24 @@ class SimpleAnalysisApplication:
             pending_child_count=0,
         )
         completed_run = run.model_copy(update={"candidate_terminal": terminal})
+        expected_outputs = (index_ref, coverage_ref)
+        if (
+            checkpoint.status is StageStatus.SUCCEEDED
+            and checkpoint.output_refs != expected_outputs
+        ):
+            # A repaired child can change final surface coverage while the
+            # earlier producer checkpoint remains successful. Re-certify its
+            # exact outputs before publishing the new terminal marker.
+            checkpoint = self._store.mark_running(
+                identity,
+                SimpleStage.HYPOTHESIS_DONE,
+                checkpoint.input_refs,
+                attempt_id=uuid4().hex,
+            )
         if checkpoint.status is not StageStatus.SUCCEEDED:
             self._store.complete(
                 checkpoint,
-                self._stage_result(index_ref, coverage_ref),
+                self._stage_result(*expected_outputs),
             )
         self._store.save_analysis_run(completed_run)
         return SimpleAnalysisOutcome(

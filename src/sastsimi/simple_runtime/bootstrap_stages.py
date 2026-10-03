@@ -3227,20 +3227,20 @@ class DirectHypothesisBootstrap:
             "properties": {
                 "attacker_control": {
                     "type": "string",
-                    "enum": ["YES", "POSSIBLE", "NO", "UNKNOWN"],
+                    "enum": ["YES", "POSSIBLE"],
                 },
                 "sensitive_operation": {
                     "type": "string",
-                    "enum": ["YES", "NO", "UNKNOWN"],
+                    "enum": ["YES"],
                 },
                 "reachability": {
                     "type": "string",
-                    "enum": ["YES", "POSSIBLE", "NO", "UNKNOWN"],
+                    "enum": ["YES", "POSSIBLE"],
                 },
                 "trust_boundary": string,
                 "controls": {
                     "type": "string",
-                    "enum": ["NONE", "POSSIBLE", "PROVEN_BLOCKING", "UNKNOWN"],
+                    "enum": ["NONE", "POSSIBLE", "UNKNOWN"],
                 },
                 "preconditions": string,
                 "evidence_locations": {
@@ -3646,6 +3646,17 @@ class DirectHypothesisBootstrap:
                             "appears in SHARED_FILE_CONTEXT.source_lines. If those "
                             "lines do not support a hypothesis, return "
                             "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS."
+                        )
+                    elif str(error) == "HYPOTHESIS_BATCH_QUALIFICATION_UNGROUNDED":
+                        feedback[candidate_id] = (
+                            "HYPOTHESIS_BATCH_QUALIFICATION_UNGROUNDED: "
+                            "For HYPOTHESES, attacker_control and reachability "
+                            "must each be YES or POSSIBLE based on visible code; "
+                            "sensitive_operation must be YES and controls must "
+                            "be NONE, POSSIBLE, or UNKNOWN. If visible code lacks "
+                            "support for those claims, return "
+                            "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS with empty "
+                            "hypotheses."
                         )
                     else:
                         feedback[candidate_id] = str(error)[:160]

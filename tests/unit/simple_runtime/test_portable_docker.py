@@ -17,6 +17,7 @@ from sastsimi.config.user_config import (
     SimpleToolBinding,
 )
 from sastsimi.sandbox.docker_adapter import DockerCommandOutcome, DockerOperationError
+from sastsimi.sandbox.recipe_store import EnvironmentRecipeStore
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
     STAGE_VERSION,
@@ -260,7 +261,7 @@ def test_archive_context_honors_dockerignore_and_blocks_tracked_secret(
 ) -> None:
     workspace, _commit = _committed_workspace(tmp_path)
     (workspace / ".env").write_text("SECRET=private\n", encoding="utf-8")
-    (workspace / ".dockerignore").write_text(".env\n", encoding="utf-8")
+    (workspace / ".dockerignore").write_text(".env\n*.py[cod]\n", encoding="utf-8")
     commit = _commit_fixture(workspace, "ignore")
 
     raw = build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
@@ -268,10 +269,59 @@ def test_archive_context_honors_dockerignore_and_blocks_tracked_secret(
         assert ".env" not in archive.getnames()
         assert ".dockerignore" not in archive.getnames()
 
-    (workspace / ".dockerignore").write_text("# no exclusions\n", encoding="utf-8")
+    (workspace / ".dockerignore").write_text("*.py[cod]\n", encoding="utf-8")
     commit = _commit_fixture(workspace, "unignore")
     with pytest.raises(ValueError, match="PINNED_CONTEXT_SECRET_FILE_DENIED"):
         build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+
+def test_archive_context_honors_dockerignore_character_class(tmp_path: Path) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    (workspace / ".dockerignore").write_text(
+        "*.py[cod]\ncache[12]/\n", encoding="utf-8"
+    )
+    for suffix in ("pyc", "pyo", "pyd", "pyx"):
+        (workspace / f"module.{suffix}").write_bytes(b"module")
+    for directory in ("cache1", "cache2", "cache3"):
+        target = workspace / directory
+        target.mkdir()
+        (target / "data.txt").write_bytes(b"data")
+    commit = _commit_fixture(workspace, "class ignore")
+
+    raw = build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        names = set(archive.getnames())
+    assert {"app.py", "module.pyx", "requirements.txt", "cache3/data.txt"} <= names
+    assert {
+        "module.pyc",
+        "module.pyo",
+        "module.pyd",
+        "cache1/data.txt",
+        "cache2/data.txt",
+    }.isdisjoint(names)
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    (
+        "*.py[",
+        "*.py[]",
+        "*.py[!c]",
+        "*.py[a-z]",
+        "*.py[c/d]",
+        "*.py?",
+        "**/*.py[cod]",
+        "../*.py[cod]",
+        "!*.py[cod]",
+        "*.py\\[cod]",
+    ),
+)
+def test_dockerignore_rejects_unsupported_wildcard_patterns(pattern: str) -> None:
+    with pytest.raises(ValueError, match="DOCKERIGNORE_UNSUPPORTED"):
+        EnvironmentRecipeStore._dockerignore_patterns(
+            {".dockerignore": (f"{pattern}\n".encode(), 0o644)}
+        )
 
 
 def test_archive_context_omits_test_only_secret_fixture(tmp_path: Path) -> None:

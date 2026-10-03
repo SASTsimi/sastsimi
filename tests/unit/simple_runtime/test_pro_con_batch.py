@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -10,8 +11,10 @@ from typing import Any, TypedDict, cast
 import pytest
 from pydantic import JsonValue
 
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.attack_surfaces import AttackSurface, SurfaceIndex
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleStage,
@@ -22,7 +25,11 @@ from sastsimi.simple_runtime.models import (
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
 from sastsimi.simple_runtime.runner import StageBlocked
-from sastsimi.simple_runtime.stages import ProConBatchBlocked, ProConStage
+from sastsimi.simple_runtime.stages import (
+    ProConBatchBlocked,
+    ProConEvidenceRefInvalid,
+    ProConStage,
+)
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
@@ -53,10 +60,11 @@ class _Client:
             {"agent_name": kwargs["agent_name"], "prompt": kwargs["prompt"]}
         )
         agent = str(kwargs["agent_name"])
+        value = cast(dict[str, JsonValue], {"results": self.responses[agent].pop(0)})
         return SimpleLLMCallResult(
-            value=cast(dict[str, JsonValue], {"results": self.responses[agent].pop(0)}),
+            value=value,
             prompt_digest="a" * 64,
-            output_digest="b" * 64,
+            output_digest=_output_digest(value),
         )
 
 
@@ -64,22 +72,29 @@ class _SequentialClient:
     def __init__(self, responses: list[SimpleLLMCallResult | StageFailure]) -> None:
         self.responses = responses
         self.calls: list[str] = []
+        self.prompts: list[bytes] = []
 
     async def call(self, **kwargs: Any) -> SimpleLLMCallResult | StageFailure:
         self.calls.append(str(kwargs["agent_name"]))
+        self.prompts.append(kwargs["prompt"])
         return self.responses.pop(0)
 
 
+def _output_digest(value: object) -> str:
+    return hashlib.sha256(canonical_bytes(value)).hexdigest()
+
+
 def _legacy_result(label: str) -> SimpleLLMCallResult:
+    value: dict[str, JsonValue] = {
+        "claims": [label],
+        "evidence_refs": [],
+        "limitations": [],
+        "requested_paths": [],
+    }
     return SimpleLLMCallResult(
-        value={
-            "claims": [label],
-            "evidence_refs": [],
-            "limitations": [],
-            "requested_paths": [],
-        },
+        value=value,
         prompt_digest="a" * 64,
-        output_digest="b" * 64,
+        output_digest=_output_digest(value),
     )
 
 
@@ -115,6 +130,79 @@ def _fixture(
             attempt_id=f"attempt-{hypothesis_id}",
         )
     return artifacts, shared, checkpoints
+
+
+def _surface_fixture(
+    tmp_path: Path, *, version: int, full_refs: bool, missing: bool
+) -> tuple[SimpleArtifactRepository, StoredDataRef, StageCheckpoint, str]:
+    artifacts, _shared, checkpoints = _fixture(tmp_path)
+    checkpoint = next(iter(checkpoints.values()))
+    original = artifacts.put_json({"kind": "static_evidence"})
+    evidence_ref = (
+        StoredDataRef.model_validate(
+            original.model_dump(mode="json") | {"content_hash": "f" * 64}
+        )
+        if missing
+        else original
+    )
+    surface = AttackSurface(
+        surface_id="surface-one",
+        type="AUTHORIZATION",
+        path="app.py",
+        symbol="route",
+        line=1,
+        linked_candidate_ids=(),
+        evidence_refs=(evidence_ref,),
+        detector="test-detector",
+    )
+    index = SurfaceIndex(
+        scope_fingerprint="scope-one",
+        static_bundle_hash=checkpoint.input_refs[1].content_hash,
+        ast_manifest_hash="b" * 64,
+        workspace_id=artifacts.identity.workspace_id,
+        commit_id=artifacts.identity.commit_id,
+        candidate_inventory_hash="c" * 64,
+        candidate_count=0,
+        surfaces=(surface,),
+        static_gaps=(),
+        index_version=version,
+    )
+    index_ref = artifacts.put_json(index.to_json())
+    store = SimpleCheckpointStore(artifacts.paths.database)
+    store.save_attack_surface_index(
+        artifacts.identity,
+        index.scope_fingerprint,
+        static_bundle_hash=index.static_bundle_hash,
+        ast_manifest_hash=index.ast_manifest_hash,
+        candidate_inventory_hash=index.candidate_inventory_hash,
+        candidate_count=index.candidate_count,
+        index_ref=index_ref,
+    )
+    context: dict[str, object] = {
+        "kind": f"simple_surface_context_v{version}",
+        "scope_fingerprint": index.scope_fingerprint,
+        "static_bundle_hash": index.static_bundle_hash,
+        "ast_manifest_hash": index.ast_manifest_hash,
+        "candidate_inventory_hash": index.candidate_inventory_hash,
+        "workspace_id": index.workspace_id,
+        "commit_id": index.commit_id,
+        "surface_id": surface.surface_id,
+        "surface_type": surface.type,
+        "path": surface.path,
+        "symbol": surface.symbol,
+        "line": surface.line,
+        "detector": surface.detector,
+        "flow_identity": surface.flow_identity,
+        "static_evidence_ref_hashes": [evidence_ref.content_hash],
+    }
+    if full_refs:
+        context["static_evidence_refs"] = [evidence_ref.model_dump(mode="json")]
+    return (
+        artifacts,
+        artifacts.put_json(context),
+        checkpoint,
+        evidence_ref.content_hash,
+    )
 
 
 @pytest.mark.asyncio
@@ -555,6 +643,54 @@ async def test_pro_batch_accepts_structured_ast_file_reference(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("full_refs", [False, True])
+async def test_pro_batch_rejects_unreadable_surface_evidence_ref(
+    tmp_path: Path, version: int, full_refs: bool
+) -> None:
+    artifacts, shared, checkpoint, evidence_hash = _surface_fixture(
+        tmp_path, version=version, full_refs=full_refs, missing=True
+    )
+    hypothesis_id = checkpoint.identity.hypothesis_id
+    assert hypothesis_id is not None
+    invalid = _evidence(hypothesis_id, "support")
+    invalid["evidence_refs"] = [evidence_hash]
+    client = _Client({"pro_evidence": [[invalid]]})
+
+    with pytest.raises(ValueError, match="PRO_CON_BATCH_CONTEXT_INVALID"):
+        await ProConStage(client, artifacts).run_pro_batch(
+            {hypothesis_id: checkpoint}, shared
+        )
+
+    assert not client.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("full_refs", [False, True])
+async def test_pro_batch_accepts_readable_surface_evidence_ref(
+    tmp_path: Path, version: int, full_refs: bool
+) -> None:
+    artifacts, shared, checkpoint, evidence_hash = _surface_fixture(
+        tmp_path, version=version, full_refs=full_refs, missing=False
+    )
+    hypothesis_id = checkpoint.identity.hypothesis_id
+    assert hypothesis_id is not None
+    valid = _evidence(hypothesis_id, "support")
+    valid["evidence_refs"] = [evidence_hash]
+    client = _Client({"pro_evidence": [[valid]]})
+
+    refs = await ProConStage(client, artifacts).run_pro_batch(
+        {hypothesis_id: checkpoint}, shared
+    )
+
+    assert len(client.calls) == 1
+    assert json.loads(artifacts.read(refs[hypothesis_id]))["result"][
+        "evidence_refs"
+    ] == [evidence_hash]
+
+
+@pytest.mark.asyncio
 async def test_pro_batch_reports_combined_context_overflow_for_serial_fallback(
     tmp_path: Path,
 ) -> None:
@@ -711,15 +847,16 @@ async def test_store_backed_stage_uses_batched_role_refs(tmp_path: Path) -> None
     artifacts, shared, checkpoints = _fixture(tmp_path)
     first = next(iter(checkpoints))
     checkpoint = checkpoints[first]
-    batch_client = _Client(
-        {
-            "pro_evidence": [[_evidence(first, "support")]],
-            "con_evidence": [[_evidence(first, "counter")]],
-        }
-    )
+    pro_row = _evidence(first, "support")
+    pro_row["evidence_refs"] = [shared.content_hash]
+    con_row = _evidence(first, "counter")
+    con_row["evidence_refs"] = [shared.content_hash]
+    batch_client = _Client({"pro_evidence": [[pro_row]], "con_evidence": [[con_row]]})
     batch = ProConStage(batch_client, artifacts)
     pro_ref = (await batch.run_pro_batch({first: checkpoint}, shared))[first]
     con_ref = (await batch.run_con_batch({first: checkpoint}, shared))[first]
+    pro_envelope = json.loads(artifacts.read(pro_ref))
+    assert pro_envelope["output_digest"] != _output_digest(pro_envelope["result"])
     store = SimpleCheckpointStore(artifacts.paths.database)
     store.save_pro_con_batch_evidence(
         checkpoint.identity, "pro", checkpoint.input_hash, pro_ref
@@ -729,7 +866,10 @@ async def test_store_backed_stage_uses_batched_role_refs(tmp_path: Path) -> None
     )
     unused_client = _SequentialClient([])
 
-    result = await ProConStage(unused_client, artifacts, store=store)(checkpoint, {})
+    stage = ProConStage(unused_client, artifacts, store=store)
+    await stage.validate_cached_role_evidence("pro", checkpoint, pro_ref)
+    await stage.validate_cached_role_evidence("con", checkpoint, con_ref)
+    result = await stage(checkpoint, {})
 
     assert result.output_refs == (pro_ref, con_ref)
     assert not unused_client.calls
@@ -754,3 +894,301 @@ async def test_store_backed_stage_rejects_wrong_cached_role(tmp_path: Path) -> N
         await stage(checkpoint, {})
     assert captured.value.failure.code == "PRO_CON_BATCH_EXISTING_INVALID"
     assert not client.calls
+
+
+@pytest.mark.asyncio
+async def test_individual_role_repairs_unsupported_ref_before_saving(
+    tmp_path: Path,
+) -> None:
+    artifacts, _shared, checkpoints = _fixture(tmp_path)
+    checkpoint = next(iter(checkpoints.values()))
+    allowed = checkpoint.input_refs[1].content_hash
+    invalid = _legacy_result("support").model_copy(
+        update={
+            "value": {
+                "claims": ["support"],
+                "evidence_refs": [f"app.py:2; {allowed}"],
+                "limitations": [],
+                "requested_paths": [],
+            }
+        }
+    )
+    corrected = _legacy_result("support").model_copy(
+        update={
+            "value": {
+                "claims": ["support"],
+                "evidence_refs": [allowed],
+                "limitations": [],
+                "requested_paths": [],
+            }
+        }
+    )
+    store = SimpleCheckpointStore(artifacts.paths.database)
+    client = _SequentialClient([invalid, corrected, _legacy_result("counter")])
+
+    result = await ProConStage(client, artifacts, store=store)(checkpoint, {})
+
+    assert client.calls == ["pro_evidence", "pro_evidence", "con_evidence"]
+    assert allowed.encode() in client.prompts[0]
+    assert b"Previous response was rejected" in client.prompts[1]
+    saved = json.loads(artifacts.read(result.output_refs[0]))
+    assert saved["result"]["evidence_refs"] == [allowed]
+    assert (
+        store.get_pro_con_batch_evidence(
+            checkpoint.identity, "pro", checkpoint.input_hash
+        )
+        == result.output_refs[0]
+    )
+
+
+@pytest.mark.asyncio
+async def test_individual_role_blocks_persistently_unsupported_ref(
+    tmp_path: Path,
+) -> None:
+    artifacts, _shared, checkpoints = _fixture(tmp_path)
+    checkpoint = next(iter(checkpoints.values()))
+    invalid = _legacy_result("support").model_copy(
+        update={
+            "value": {
+                "claims": ["support"],
+                "evidence_refs": ["f" * 64],
+                "limitations": [],
+                "requested_paths": [],
+            }
+        }
+    )
+    store = SimpleCheckpointStore(artifacts.paths.database)
+    client = _SequentialClient([invalid, invalid])
+
+    with pytest.raises(StageBlocked) as captured:
+        await ProConStage(client, artifacts, store=store)(checkpoint, {})
+
+    assert captured.value.failure.code == "PRO_CON_RESPONSE_INVALID"
+    assert client.calls == ["pro_evidence", "pro_evidence"]
+    assert (
+        store.get_pro_con_batch_evidence(
+            checkpoint.identity, "pro", checkpoint.input_hash
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_individual_role_rejects_cached_legacy_unsupported_ref(
+    tmp_path: Path,
+) -> None:
+    artifacts, _shared, checkpoints = _fixture(tmp_path)
+    checkpoint = next(iter(checkpoints.values()))
+    result = _legacy_result("support")
+    invalid_value = {
+        "claims": ["support"],
+        "evidence_refs": ["f" * 64],
+        "limitations": [],
+        "requested_paths": [],
+    }
+    envelope_ref = artifacts.put_json(
+        {
+            "kind": "simple_pro_evidence",
+            "source_refs": [
+                ref.model_dump(mode="json") for ref in checkpoint.input_refs
+            ],
+            "result": invalid_value,
+            "prompt_digest": result.prompt_digest,
+            "output_digest": _output_digest(invalid_value),
+        }
+    )
+    store = SimpleCheckpointStore(artifacts.paths.database)
+    store.save_pro_con_batch_evidence(
+        checkpoint.identity, "pro", checkpoint.input_hash, envelope_ref
+    )
+    client = _SequentialClient([])
+    stage = ProConStage(client, artifacts, store=store)
+
+    with pytest.raises(StageBlocked) as audit:
+        await stage.validate_cached_role_evidence("pro", checkpoint, envelope_ref)
+    assert audit.value.failure.invalid_field == "evidence_refs"
+    assert isinstance(audit.value.__cause__, ProConEvidenceRefInvalid)
+
+    with pytest.raises(StageBlocked) as captured:
+        await stage(checkpoint, {})
+
+    assert captured.value.failure.code == "PRO_CON_BATCH_EXISTING_INVALID"
+    assert not client.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("prompt_digest", None),
+        ("prompt_digest", "not-a-digest"),
+        ("output_digest", None),
+        ("output_digest", "not-a-digest"),
+        ("llm_request_ref", {"content_hash": "f" * 64}),
+    ],
+)
+async def test_cached_legacy_envelope_error_precedes_unsupported_ref(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    artifacts, _shared, checkpoints = _fixture(tmp_path)
+    checkpoint = next(iter(checkpoints.values()))
+    invalid_value = {
+        "claims": ["support"],
+        "evidence_refs": ["f" * 64],
+        "limitations": [],
+        "requested_paths": [],
+    }
+    envelope: dict[str, object] = {
+        "kind": "simple_pro_evidence",
+        "source_refs": [ref.model_dump(mode="json") for ref in checkpoint.input_refs],
+        "result": invalid_value,
+        "prompt_digest": "a" * 64,
+        "output_digest": _output_digest(invalid_value),
+    }
+    if value is None:
+        del envelope[field]
+    else:
+        envelope[field] = value
+    envelope_ref = artifacts.put_json(envelope)
+    client = _SequentialClient([])
+
+    with pytest.raises(StageBlocked) as captured:
+        await ProConStage(client, artifacts).validate_cached_role_evidence(
+            "pro", checkpoint, envelope_ref
+        )
+
+    assert captured.value.failure.code == "PRO_CON_BATCH_EXISTING_INVALID"
+    assert captured.value.failure.invalid_field is None
+    assert not isinstance(captured.value.__cause__, ProConEvidenceRefInvalid)
+    assert not client.calls
+
+
+@pytest.mark.asyncio
+async def test_cached_legacy_wrong_output_digest_precedes_unsupported_ref(
+    tmp_path: Path,
+) -> None:
+    artifacts, _shared, checkpoints = _fixture(tmp_path)
+    checkpoint = next(iter(checkpoints.values()))
+    envelope_ref = artifacts.put_json(
+        {
+            "kind": "simple_pro_evidence",
+            "source_refs": [
+                ref.model_dump(mode="json") for ref in checkpoint.input_refs
+            ],
+            "result": {
+                "claims": ["support"],
+                "evidence_refs": ["f" * 64],
+                "limitations": [],
+                "requested_paths": [],
+            },
+            "prompt_digest": "a" * 64,
+            "output_digest": "0" * 64,
+        }
+    )
+    client = _SequentialClient([])
+
+    with pytest.raises(StageBlocked) as captured:
+        await ProConStage(client, artifacts).validate_cached_role_evidence(
+            "pro", checkpoint, envelope_ref
+        )
+
+    assert captured.value.failure.code == "PRO_CON_BATCH_EXISTING_INVALID"
+    assert captured.value.failure.invalid_field is None
+    assert not isinstance(captured.value.__cause__, ProConEvidenceRefInvalid)
+    assert not client.calls
+
+
+@pytest.mark.asyncio
+async def test_individual_role_cannot_cite_other_hypothesis_proposal(
+    tmp_path: Path,
+) -> None:
+    artifacts, _shared, checkpoints = _fixture(tmp_path)
+    first, second = tuple(checkpoints.values())
+    foreign_hash = second.input_refs[0].content_hash
+    invalid = _legacy_result("support").model_copy(
+        update={
+            "value": {
+                "claims": ["support"],
+                "evidence_refs": [foreign_hash],
+                "limitations": [],
+                "requested_paths": [],
+            }
+        }
+    )
+    client = _SequentialClient([invalid, invalid])
+
+    with pytest.raises(StageBlocked) as captured:
+        await ProConStage(client, artifacts)(first, {})
+
+    assert captured.value.failure.code == "PRO_CON_RESPONSE_INVALID"
+    assert client.calls == ["pro_evidence", "pro_evidence"]
+
+
+@pytest.mark.asyncio
+async def test_individual_role_rejects_other_hypothesis_input_proposal(
+    tmp_path: Path,
+) -> None:
+    artifacts, _shared, checkpoints = _fixture(tmp_path)
+    first, second = tuple(checkpoints.values())
+    refs = (second.input_refs[0], first.input_refs[1])
+    swapped = first.model_copy(
+        update={"input_refs": refs, "input_hash": input_reference_hash(refs)}
+    )
+    client = _SequentialClient([_legacy_result("support"), _legacy_result("counter")])
+
+    with pytest.raises(StageBlocked) as captured:
+        await ProConStage(client, artifacts)(swapped, {})
+
+    assert captured.value.failure.code == "PRO_CON_INPUT_INVALID"
+    assert not client.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["../outside.py", "C:/outside.py"])
+async def test_individual_role_rejects_unsafe_requested_path(
+    tmp_path: Path, path: str
+) -> None:
+    artifacts, _shared, checkpoints = _fixture(tmp_path)
+    checkpoint = next(iter(checkpoints.values()))
+    invalid = _legacy_result("support").model_copy(
+        update={
+            "value": {
+                "claims": ["support"],
+                "evidence_refs": [],
+                "limitations": [],
+                "requested_paths": [path],
+            }
+        }
+    )
+    client = _SequentialClient([invalid, invalid])
+
+    with pytest.raises(StageBlocked) as captured:
+        await ProConStage(client, artifacts)(checkpoint, {})
+
+    assert captured.value.failure.code == "PRO_CON_RESPONSE_INVALID"
+    assert client.calls == ["pro_evidence", "pro_evidence"]
+
+
+@pytest.mark.asyncio
+async def test_individual_role_rejects_empty_required_list_item(
+    tmp_path: Path,
+) -> None:
+    artifacts, _shared, checkpoints = _fixture(tmp_path)
+    checkpoint = next(iter(checkpoints.values()))
+    invalid = _legacy_result("support").model_copy(
+        update={
+            "value": {
+                "claims": ["  "],
+                "evidence_refs": [],
+                "limitations": [],
+                "requested_paths": [],
+            }
+        }
+    )
+    client = _SequentialClient([invalid, invalid])
+
+    with pytest.raises(StageBlocked) as captured:
+        await ProConStage(client, artifacts)(checkpoint, {})
+
+    assert captured.value.failure.code == "PRO_CON_RESPONSE_INVALID"
+    assert client.calls == ["pro_evidence", "pro_evidence"]

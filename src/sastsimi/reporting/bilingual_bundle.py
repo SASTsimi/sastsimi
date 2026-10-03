@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.poc_candidate import validate_candidate
 from sastsimi.contracts.prompt_redaction import (
     assert_safe_provider_text,
     redact_untrusted_text,
@@ -25,6 +26,12 @@ _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _COMMIT = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _SOURCE_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z")
+_LOCAL_FILE_URL = re.compile(r"\bfile:[^\r\n]*", re.IGNORECASE)
+_SAFE_CONTAINER_TMP_PATH = re.compile(r"/tmp(?:/[A-Za-z0-9._-]+)*\Z")
+_HOST_PATH_TOKEN = re.compile(
+    r"(?<![\w/])/(?:root|home|Users|tmp|etc|var|opt|srv|usr)(?:/|\b)"
+    r"[^\s\r\n,;\"'<>]*"
+)
 _MEDIA_TYPES = {
     "report_en.md": "text/markdown; charset=utf-8",
     "report_kr.md": "text/markdown; charset=utf-8",
@@ -126,6 +133,58 @@ def _safe_attachment(data: bytes) -> tuple[bytes, bool]:
         raise ValueError("BUNDLE_TEXT_UNSAFE") from error
     assert_safe_provider_text(redacted.data)
     return redacted.data, redacted.data != data
+
+
+def is_safe_sandbox_shell_poc(data: bytes) -> bool:
+    """Retain only validated shell bytes with unambiguous container-temp paths."""
+    try:
+        if not validate_candidate(data, allowed_environment_names=frozenset()):
+            return False
+        inspected = redact_untrusted_text(data)
+        if set(inspected.categories) - {"HOST_ABSOLUTE_PATH"}:
+            return False
+        source = data.decode("utf-8")
+        for match in _HOST_PATH_TOKEN.finditer(source):
+            path = match.group(0)
+            if not _SAFE_CONTAINER_TMP_PATH.fullmatch(path):
+                return False
+            if any(part in {".", ".."} for part in path.split("/")[1:]):
+                return False
+        return True
+    except (UnicodeDecodeError, ValueError):
+        return False
+
+
+def _redact_local_file_urls(value: str) -> str:
+    # Punctuation and spaces are valid in local paths. Redact through the end
+    # of the line rather than risk publishing an ambiguous path suffix.
+    return _LOCAL_FILE_URL.sub("[REDACTED:LOCAL_FILE_URL]", value)
+
+
+def _redact_prose_local_file_urls(prose: ReportProse) -> ReportProse:
+    return ReportProse(
+        title=_redact_local_file_urls(prose.title),
+        summary=_redact_local_file_urls(prose.summary),
+        details=_redact_local_file_urls(prose.details),
+        impact=_redact_local_file_urls(prose.impact),
+        recommendation=_redact_local_file_urls(prose.recommendation),
+        limitations=tuple(_redact_local_file_urls(item) for item in prose.limitations),
+        review_items=tuple(
+            _redact_local_file_urls(item) for item in prose.review_items
+        ),
+    )
+
+
+def redact_report_local_file_urls(
+    content: BilingualReportContent,
+) -> BilingualReportContent:
+    """Use the same safe prose in every published report representation."""
+    return content.model_copy(
+        update={
+            "en": _redact_prose_local_file_urls(content.en),
+            "ko": _redact_prose_local_file_urls(content.ko),
+        }
+    )
 
 
 def _value(value: str | None, *, korean: bool) -> str:
@@ -381,12 +440,25 @@ def render_bundle_files(
 ) -> tuple[BundleFile, ...]:
     """Render a curated bundle; LLM prose cannot set the factual metadata."""
 
+    content = redact_report_local_file_urls(content)
     validate_report_content(
         content.model_dump(mode="json"), allowed_locations=facts.allowed_locations
     )
+    repository = (
+        "[REDACTED:LOCAL_REPOSITORY]"
+        if facts.repository.lstrip().casefold().startswith("file:")
+        else redact_untrusted_text(facts.repository.encode("utf-8")).data.decode(
+            "utf-8"
+        )
+    )
+    facts = replace(facts, repository=repository)
     if hashlib.sha256(poc).hexdigest() != facts.poc_original_sha256:
         raise ValueError("BUNDLE_POC_SOURCE_MISMATCH")
-    safe_poc, poc_redacted = _safe_attachment(poc)
+    safe_poc, poc_redacted = (
+        (poc, False)
+        if facts.poc_language == "shell" and is_safe_sandbox_shell_poc(poc)
+        else _safe_attachment(poc)
+    )
     poc_name = "poc.sh" if facts.poc_language == "shell" else "poc.py"
     sources = dict(facts.source_refs)
     attachments: list[BundleFile] = [
@@ -470,7 +542,7 @@ def render_bundle_files(
     assert_safe_provider_text(provenance_body)
 
     def report(prose: ReportProse, *, korean: bool) -> bytes:
-        return _render_report(
+        rendered = _render_report(
             facts,
             prose,
             korean=korean,
@@ -481,6 +553,9 @@ def render_bundle_files(
             output_names=tuple(output_names),
             command=command.decode("utf-8"),
         )
+        if re.search(rb"\bfile:", rendered, flags=re.IGNORECASE):
+            raise ValueError("BUNDLE_LOCAL_FILE_URL_UNSAFE")
+        return rendered
 
     return (
         BundleFile(

@@ -86,6 +86,9 @@ from sastsimi.simple_runtime.provider import (
     SimpleOpenAIClient,
 )
 from sastsimi.simple_runtime.recovery import SimpleRecoveryCoordinator
+from sastsimi.simple_runtime.report_currentness import (
+    candidate_report_currentness_blocked,
+)
 from sastsimi.simple_runtime.run_lease import analysis_run_lease_active
 from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
 from sastsimi.simple_runtime.scope_policy import (
@@ -681,6 +684,13 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         exact = self._display.resolve(analysis_id)
         run = self._store.require_analysis_run(exact)
         snapshot = self._progress_snapshot(run)
+        if candidate_report_currentness_blocked(
+            run,
+            self._store.list_checkpoints(exact),
+            data_dir=self._config.data_dir,
+            store=self._store,
+        ):
+            snapshot = snapshot.model_copy(update={"finding_count": 0})
         lease_inactive = (
             analysis_run_lease_active(self._config.data_dir, exact) is False
         )
@@ -951,17 +961,28 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         run = self._store.require_analysis_run(exact)
         checkpoints = self._store.list_checkpoints(exact)
         stale_hypothesis_ids = stale_poc_hypothesis_ids(checkpoints)
-        findings = [
-            checkpoint
-            for checkpoint in checkpoints
-            if checkpoint.stage is SimpleStage.FINDING_DONE
-            and checkpoint.output_refs
-            and checkpoint.identity.hypothesis_id not in stale_hypothesis_ids
-            and technical_gate_accepted(
-                self._store.get(checkpoint.identity, SimpleStage.TECH_GATE_DONE),
-                SimpleArtifactRepository(self._config.data_dir, checkpoint.identity),
+        findings = (
+            []
+            if candidate_report_currentness_blocked(
+                run,
+                checkpoints,
+                data_dir=self._config.data_dir,
+                store=self._store,
             )
-        ]
+            else [
+                checkpoint
+                for checkpoint in checkpoints
+                if checkpoint.stage is SimpleStage.FINDING_DONE
+                and checkpoint.output_refs
+                and checkpoint.identity.hypothesis_id not in stale_hypothesis_ids
+                and technical_gate_accepted(
+                    self._store.get(checkpoint.identity, SimpleStage.TECH_GATE_DONE),
+                    SimpleArtifactRepository(
+                        self._config.data_dir, checkpoint.identity
+                    ),
+                )
+            ]
+        )
         return {
             **self.status(run.display_analysis_id),
             "hypothesis_count": (
@@ -1127,7 +1148,19 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                 )
             except (LookupError, ValueError):
                 continue
-            for checkpoint in self._store.list_checkpoints(exact):
+            checkpoints = self._store.list_checkpoints(exact)
+            try:
+                run = self._store.require_analysis_run(exact)
+            except LookupError:
+                run = None
+            if candidate_report_currentness_blocked(
+                run,
+                checkpoints,
+                data_dir=self._config.data_dir,
+                store=self._store,
+            ):
+                raise LookupError("FINDING_DISPLAY_ID_NOT_FOUND")
+            for checkpoint in checkpoints:
                 if (
                     checkpoint.stage is SimpleStage.FINDING_DONE
                     and finding_ref in checkpoint.output_refs

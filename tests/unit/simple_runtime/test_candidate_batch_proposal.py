@@ -304,6 +304,57 @@ async def test_invalid_qualification_retries_without_inventing_seed(
 
 
 @pytest.mark.asyncio
+async def test_unknown_qualification_retry_explains_supported_outcomes(
+    tmp_path: Path,
+) -> None:
+    unsupported = _hypothesis(attacker_control="UNKNOWN")
+    qualification = unsupported["qualification"]
+    assert isinstance(qualification, dict)
+    qualification["reachability"] = "UNKNOWN"
+    bootstrap, client, identity, static, batch, _ = _fixture(
+        tmp_path,
+        candidate_count=1,
+        responses=[
+            [_row("C-000", "HYPOTHESES", hypotheses=[unsupported])],
+            [
+                _row(
+                    "C-000",
+                    "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS",
+                    reason=(
+                        "Visible code does not establish input control or reachability"
+                    ),
+                )
+            ],
+        ],
+    )
+
+    result = await bootstrap.propose_batch(identity, static, batch)
+
+    assert not isinstance(result, StageFailure)
+    assert result.results["C-000"].status == "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS"
+    assert result.results["C-000"].seeds == ()
+    assert len(client.requests) == 2
+    retry_feedback = json.loads(
+        client.requests[1]["prompt"]
+        .split(b"<VALIDATION_FEEDBACK>\n", 1)[1]
+        .split(b"\n</VALIDATION_FEEDBACK>", 1)[0]
+    )
+    message = retry_feedback["C-000"]
+    assert "attacker_control" in message
+    assert "reachability" in message
+    assert "YES or POSSIBLE" in message
+    assert "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS" in message
+    assert "empty hypotheses" in message
+    qualification_schema = client.requests[0]["schema"]["properties"][
+        "candidate_results"
+    ]["items"]["properties"]["hypotheses"]["items"]["properties"]["qualification"][
+        "properties"
+    ]
+    assert qualification_schema["attacker_control"]["enum"] == ["YES", "POSSIBLE"]
+    assert qualification_schema["reachability"]["enum"] == ["YES", "POSSIBLE"]
+
+
+@pytest.mark.asyncio
 async def test_invalid_location_retry_points_to_visible_lines_for_only_failed_candidate(
     tmp_path: Path,
 ) -> None:
