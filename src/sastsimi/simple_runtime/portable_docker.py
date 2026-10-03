@@ -716,7 +716,8 @@ class DirectEnvironmentPreparer:
         if not self._uses_postgres():
             return b""
         return (
-            b"RUN (apt-get update && apt-get install -y --no-install-recommends "
+            b"RUN (apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y "
+            b"--no-install-recommends "
             b"postgresql && ln -sf /usr/lib/postgresql/*/bin/* /usr/local/bin/ "
             b"&& rm -rf /var/lib/apt/lists/*) || true\n"
             b"RUN (getent passwd 10001 || useradd -u 10001 -M -s /bin/sh sastsimi) "
@@ -845,7 +846,8 @@ class DirectEnvironmentPreparer:
         # without them its wheel build fails and the install layer falls
         # back to no install at all, for every hypothesis in the run.
         build_tools = (
-            "RUN apt-get update && apt-get install -y --no-install-recommends "
+            "RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y "
+            "--no-install-recommends "
             "build-essential libpq-dev libjpeg-dev zlib1g-dev "
             "libldap2-dev libsasl2-dev "
             "&& rm -rf /var/lib/apt/lists/*\n"
