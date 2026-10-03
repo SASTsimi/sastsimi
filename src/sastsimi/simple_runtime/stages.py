@@ -1331,6 +1331,20 @@ technical verdict says: open-webui's states that configuration options are not
 vulnerabilities, so a flow whose only source is deployment configuration is
 DENY there even when the code does exactly what the hypothesis claimed. Name
 the sentence you relied on in `checks`.
+
+Asset scope also covers whether the vulnerable file ships at all, independent
+of any written policy sentence. If every reachable path in the hypothesis
+passes only through example, demo, documentation or test-fixture code -
+typical signs are an `examples/`, `demo/`, `docs/`, `sample/`, `test/` or
+`tests/` directory, a module whose own docstring or README calls it a sample
+or tutorial, or code that is absent from the project's packaging manifest
+(`pyproject.toml`/`setup.py` package list, `MANIFEST.in`, a Dockerfile's
+`COPY`/install step) - that file is not part of what the project ships or
+runs in production, and the finding is DENY on scope grounds even with no
+explicit policy statement about it. Name the exact path and why it reads as
+unshipped in `checks`. If the hypothesis's own evidence instead shows the
+path is built, installed, imported by shipped code or copied into the
+production image, scope is not decided by this alone.
 """
             + _COMMON_CONTRACT,
             schema=_object_schema(
