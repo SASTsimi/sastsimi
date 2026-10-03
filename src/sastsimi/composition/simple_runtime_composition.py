@@ -63,6 +63,10 @@ from sastsimi.simple_runtime.cursor_provider import (
     OfficialCursorCLITransport,
     OfficialCursorTransport,
 )
+from sastsimi.simple_runtime.finding_group_projection import (
+    project_current_finding_groups,
+)
+from sastsimi.simple_runtime.finding_groups import finding_group_rows
 from sastsimi.simple_runtime.gate_guard import technical_gate_accepted
 from sastsimi.simple_runtime.github_policy import GitHubPolicyDiscovery
 from sastsimi.simple_runtime.models import (
@@ -988,6 +992,31 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                 )
             ]
         )
+        display_store = FindingDisplayIdStore(self._store.database_path)
+        eligible = {
+            display_store.get_or_allocate(
+                exact, checkpoint.output_refs[0]
+            ): checkpoint.output_refs[0]
+            for checkpoint in findings
+        }
+        group_count: int | None = None
+        undetermined_count: int | None = None
+        group_rows: tuple[dict[str, object], ...] = ()
+        try:
+            projection = project_current_finding_groups(
+                run,
+                checkpoints,
+                eligible,
+                data_dir=self._config.data_dir,
+                database_path=self._store.database_path,
+            )
+            if projection.raw_count == len(findings):
+                group_count = projection.visible_group_count
+                undetermined_count = projection.undetermined_count
+                group_rows = finding_group_rows(projection)
+        except (OSError, ValueError, sqlite3.Error):
+            # Raw Findings remain authoritative if optional grouping fails.
+            pass
         return {
             **self.status(run.display_analysis_id),
             "hypothesis_count": (
@@ -1003,13 +1032,10 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                 else len(run.hypothesis_ids)
             ),
             "finding_count": len(findings),
-            "findings": [
-                FindingDisplayIdStore(self._store.database_path).get_or_allocate(
-                    exact,
-                    checkpoint.output_refs[0],
-                )
-                for checkpoint in findings
-            ],
+            "findings": list(eligible),
+            "finding_group_count": group_count,
+            "finding_group_undetermined_count": undetermined_count,
+            "finding_groups": group_rows,
         }
 
     def poc(self, finding_id: str) -> str:

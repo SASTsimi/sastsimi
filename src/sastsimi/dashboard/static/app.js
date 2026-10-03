@@ -206,6 +206,8 @@ function renderOverview(detail) {
     ["종료", detail.finished_at ? formatTime(detail.finished_at) : "진행 중"],
     ["가설", String(detail.hypothesis_count)],
     ["Finding", String(detail.finding_count)],
+    ["동일 경로 그룹", detail.finding_group_count == null ? "검증 불가" : String(detail.finding_group_count)],
+    ["묶음 미확정", detail.finding_group_undetermined_count == null ? "검증 불가" : String(detail.finding_group_undetermined_count)],
     ["미확정 / 근거 부족", `${detail.inconclusive_hypothesis_count} / ${detail.rejected_hypothesis_count}`],
     ["완료 작업", `${detail.completed_units}/${detail.known_units}`],
     ["Primitive 허용 / 제외", `${detail.admitted_primitive_count} / ${detail.excluded_primitive_count}`],
@@ -542,8 +544,7 @@ async function showReport(item) {
   }
 }
 
-function renderReports(items) {
-  replace("reports", items.length ? items.map((item) => {
+function reportRow(item) {
     const row = el("div", undefined, "report-row");
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
@@ -573,7 +574,49 @@ function renderReports(items) {
       row.append(attachment);
     });
     return row;
-  }) : empty("생성된 보고서가 없습니다."));
+}
+
+function renderReports(items, groups) {
+  if (!items.length) {
+    replace("reports", empty("생성된 보고서가 없습니다."));
+    return;
+  }
+  const byId = new Map(items.map((item) => [item.display_id, item]));
+  const provenByMember = new Map();
+  const undeterminedByMember = new Map();
+  for (const group of groups || []) {
+    if (group.status === "GROUPING_UNDETERMINED") {
+      for (const id of group.member_ids || []) undeterminedByMember.set(id, group);
+      continue;
+    }
+    if (group.status !== "PROVEN_SAME_FLOW" || group.member_ids?.length < 2) continue;
+    if (!group.member_ids.every((id) => byId.has(id))) continue;
+    for (const id of group.member_ids) provenByMember.set(id, group);
+  }
+  const shown = new Set();
+  const rows = [];
+  for (const item of items) {
+    if (shown.has(item.display_id)) continue;
+    const group = provenByMember.get(item.display_id);
+    if (!group) {
+      const row = reportRow(item);
+      if (undeterminedByMember.has(item.display_id)) {
+        row.append(el("span", "묶음 미확정 · 별도 원본 Finding", "meta"));
+      }
+      rows.push(row);
+      shown.add(item.display_id);
+      continue;
+    }
+    const card = el("div", undefined, "report-group");
+    card.append(el("strong", `${group.representative_id} · 동일 검증 경로 ${group.member_ids.length}건`));
+    card.append(el("div", "원본 Finding·PoC·보고서는 각각 보존됩니다.", "meta"));
+    for (const id of group.member_ids) {
+      card.append(reportRow(byId.get(id)));
+      shown.add(id);
+    }
+    rows.push(card);
+  }
+  replace("reports", rows);
 }
 
 function updateSelectionLink() {
@@ -605,7 +648,7 @@ function renderDetail(detail) {
   renderInvocations(detail.llm_invocations || [], artifactMap);
   renderArtifactSubset("poc", detail.poc_artifact_ids || [], artifactMap, "검증된 PoC가 없습니다.");
   renderArtifactSubset("evidence", detail.evidence_artifact_ids || [], artifactMap, "저장된 정적·동적 증거가 없습니다.");
-  renderReports(detail.reports || []);
+  renderReports(detail.reports || [], detail.finding_groups);
   const bundle = document.getElementById("bundle-download");
   bundle.href = detail.bundle_url || "#";
   bundle.classList.toggle("hidden", !detail.bundle_url || !detail.artifact_projection_complete);

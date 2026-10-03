@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from sastsimi.config.user_config import UserConfig, UserConfigStore
 from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.main import main
+from sastsimi.interfaces.cli.public import emit_public
 from sastsimi.progress.models import ProgressSnapshot
 
 
@@ -51,6 +53,25 @@ class _PublicApplication:
 
     def export_report_bundle(self, finding_id: str) -> str:
         return f"reports/analysis/{finding_id}/bundle.zip"
+
+
+def test_result_text_distinguishes_raw_findings_from_verified_groups() -> None:
+    stream = StringIO()
+    emit_public(
+        "text",
+        stream,
+        command="result",
+        data={
+            "analysis_id": "A-001",
+            "finding_count": 3,
+            "finding_group_count": 1,
+            "finding_group_undetermined_count": 0,
+        },
+    )
+    output = stream.getvalue()
+    assert "Finding: 3개" in output
+    assert "동일 경로 그룹: 1개" in output
+    assert "묶음 미확정: 0개" in output
 
 
 class _ProgressApplication(_PublicApplication):

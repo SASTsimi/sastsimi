@@ -202,6 +202,10 @@ def emit_public(
         return
     if "finding_count" in data:
         stream.write(f"Finding: {data['finding_count']}개\n")
+    if type(data.get("finding_group_count")) is int:
+        stream.write(f"동일 경로 그룹: {data['finding_group_count']}개\n")
+    if type(data.get("finding_group_undetermined_count")) is int:
+        stream.write(f"묶음 미확정: {data['finding_group_undetermined_count']}개\n")
     if data.get("status") == "PAUSED":
         if data.get("resume_action") == "REVALIDATE_POC":
             stream.write(

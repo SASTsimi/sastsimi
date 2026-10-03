@@ -5,8 +5,14 @@ from pathlib import Path
 
 import pytest
 
+from sastsimi.composition.simple_runtime_composition import (
+    PublicSimpleRuntimeApplication,
+)
 from sastsimi.config.runtime_paths import RuntimePaths
+from sastsimi.config.user_config import SimpleExecutionProfile, UserConfig
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.dashboard.query import DashboardQuery
+from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.ast_facts import collect_python_ast
@@ -374,3 +380,96 @@ def test_corrupt_required_finding_reference_fails_closed(tmp_path: Path) -> None
         project_current_finding_groups(
             run, checkpoints, corrupted, data_dir=data_dir, database_path=database
         )
+
+
+def test_dashboard_folds_only_presentation_and_keeps_each_report_path(
+    tmp_path: Path,
+) -> None:
+    run, checkpoints, eligible, data_dir, database, _ = _case(tmp_path)
+    store = SimpleCheckpointStore(database)
+    store.save_analysis_run(run)
+    for item in checkpoints:
+        store.save_checkpoint(item)
+    report_dir = data_dir / "reports" / run.analysis_id
+    report_dir.mkdir(parents=True)
+    for display_id, finding_ref in eligible.items():
+        identity = next(
+            item.identity
+            for item in checkpoints
+            if item.stage is SimpleStage.FINDING_DONE
+            and finding_ref in item.output_refs
+        )
+        artifacts = SimpleArtifactRepository(data_dir, identity)
+        report_path = report_dir / f"{display_id}.md"
+        report_path.write_text(f"# {display_id}\n", encoding="utf-8")
+        report = _checkpoint(
+            identity,
+            SimpleStage.REPORT_DONE,
+            (
+                artifacts.put_json({"kind": "draft"}),
+                artifacts.put_bytes(f"# {display_id}\n".encode(), "text/markdown"),
+            ),
+            inputs=(finding_ref,),
+        ).model_copy(update={"markdown_path": str(report_path)})
+        store.save_checkpoint(report)
+    detail = DashboardQuery(data_dir).get_analysis(run.analysis_id)
+    assert detail.finding_count == 2
+    assert detail.finding_group_count == 1
+    assert detail.finding_group_undetermined_count == 0
+    assert detail.finding_groups[0].member_ids == ("F-001", "F-002")
+    assert tuple(item.display_id for item in detail.reports) == ("F-001", "F-002")
+    query = DashboardQuery(data_dir)
+    assert query.report_path(run.analysis_id, "F-001").name == "F-001.md"
+    assert query.report_path(run.analysis_id, "F-002").name == "F-002.md"
+    exported = query.bundle_members(run.analysis_id, include_logs=False)
+    assert "reports/F-001.md" in exported
+    assert "reports/F-002.md" in exported
+
+
+def test_public_result_preserves_raw_count_and_adds_proven_group_count(
+    tmp_path: Path,
+) -> None:
+    run, checkpoints, _eligible, data_dir, database, _ = _case(tmp_path)
+    store = SimpleCheckpointStore(database)
+    store.save_analysis_run(run)
+    for item in checkpoints:
+        store.save_checkpoint(item)
+    assert AnalysisDisplayIdStore(database).get_or_allocate(run.analysis_id) == "A-001"
+    config = UserConfig(
+        data_dir=data_dir,
+        profile_path=tmp_path / "profile.toml",
+        auth_mode="API_KEY",
+        provider="openai",
+        model="test-model",
+        credential_ref="env:OPENAI_API_KEY",
+        execution_profile="LIGHTWEIGHT",
+        max_cost_minor_units=100,
+        max_tokens=1000,
+        max_elapsed_seconds=3600,
+        docker_network="NONE",
+        enabled_tools=(),
+        detected_versions={},
+        setup_ready=True,
+    )
+    profile = SimpleExecutionProfile(
+        provider_profile_ref="test",
+        provider="openai",
+        model="test-model",
+        auth_mode="API_KEY",
+        credential_ref="env:OPENAI_API_KEY",
+        data_dir=data_dir,
+        workspace_root=data_dir / "workspaces",
+        max_cost_minor_units=100,
+        max_tokens=1000,
+        max_elapsed_seconds=3600,
+        docker_network="NONE",
+        tools={},
+    )
+    result = PublicSimpleRuntimeApplication(config, profile).result("A-001")
+    assert result["finding_count"] == 2
+    assert result["findings"] == ["F-001", "F-002"]
+    assert result["finding_group_count"] == 1
+    assert result["finding_group_undetermined_count"] == 0
+    groups = result["finding_groups"]
+    assert isinstance(groups, tuple)
+    assert groups[0]["member_ids"] == ("F-001", "F-002")

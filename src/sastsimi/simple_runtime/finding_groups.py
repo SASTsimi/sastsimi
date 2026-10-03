@@ -131,3 +131,42 @@ def group_verified_findings(
             group.status == "GROUPING_UNDETERMINED" for group in groups
         ),
     )
+
+
+def finding_group_rows(
+    projection: FindingGroupProjection,
+) -> tuple[dict[str, object], ...]:
+    """Public, JSON-safe provenance without code, prompts, or local paths."""
+
+    return tuple(
+        {
+            "group_id": group.group_id,
+            "representative_id": group.representative_id,
+            "member_ids": group.member_ids,
+            "status": group.status,
+            "scope_status": group.scope_status,
+            "members": tuple(
+                {
+                    "display_id": member.display_id,
+                    "hypothesis_id": member.hypothesis_id,
+                    "finding_hash": member.finding_ref.content_hash,
+                    "validated_poc_hash": member.validated_poc_ref.content_hash,
+                    "candidate_ids": member.candidate_ids,
+                    "candidate_origins": tuple(
+                        {
+                            "engine": origin.engine,
+                            "rule_id": origin.rule_id,
+                            "artifact_hash": origin.artifact_ref.content_hash,
+                            "result_index": origin.result_index,
+                        }
+                        for origin in member.candidate_origins
+                    ),
+                    "surface_id": member.surface_id,
+                    "scope_status": member.scope_status,
+                    "undetermined_reason": member.undetermined_reason,
+                }
+                for member in group.members
+            ),
+        }
+        for group in projection.groups
+    )

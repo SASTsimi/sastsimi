@@ -36,6 +36,10 @@ from sastsimi.simple_runtime.artifacts import (
     verified_terminal_projection,
 )
 from sastsimi.simple_runtime.attack_surfaces import surface_index_from_json
+from sastsimi.simple_runtime.finding_group_projection import (
+    project_current_finding_groups,
+)
+from sastsimi.simple_runtime.finding_groups import finding_group_rows
 from sastsimi.simple_runtime.gate_guard import technical_gate_accepted
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
@@ -1333,6 +1337,31 @@ class DashboardQuery:
             ),
         )
         if detail:
+            group_count: int | None = None
+            undetermined_count: int | None = None
+            group_rows: tuple[dict[str, object], ...] = ()
+            if run is not None:
+                try:
+                    eligible = {
+                        report.display_id: FindingDisplayIdStore.resolve_existing(
+                            self._database, analysis_id, report.display_id
+                        )
+                        for report in reports
+                    }
+                    grouped = project_current_finding_groups(
+                        run,
+                        values,
+                        eligible,
+                        data_dir=self._data_dir,
+                        database_path=self._database,
+                    )
+                    if grouped.raw_count == len(reports):
+                        group_count = grouped.visible_group_count
+                        undetermined_count = grouped.undetermined_count
+                        group_rows = finding_group_rows(grouped)
+                except (OSError, ValueError, sqlite3.Error, LookupError):
+                    # Keep the verified raw report list if grouping is unavailable.
+                    pass
             artifacts: tuple[ArtifactView, ...] = ()
             invocations: tuple[LLMInvocationView, ...] = ()
             poc_ids: tuple[str, ...] = ()
@@ -1354,6 +1383,9 @@ class DashboardQuery:
                 {
                     **data.model_dump(),
                     **coverage,
+                    "finding_group_count": group_count,
+                    "finding_group_undetermined_count": undetermined_count,
+                    "finding_groups": group_rows,
                     "artifact_projection_complete": artifact_omitted_count == 0,
                     "artifact_omitted_count": artifact_omitted_count,
                     "hypotheses": hypotheses,
