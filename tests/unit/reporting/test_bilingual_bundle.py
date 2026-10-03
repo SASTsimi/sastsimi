@@ -530,6 +530,8 @@ def test_unverified_metadata_cannot_be_filled_by_reporter_prose() -> None:
         ("en", "details", "Affected: product-1.2.3."),
         ("en", "details", "1.2.3 is affected."),
         ("en", "details", "1.2.3.4 is affected."),
+        ("en", "details", "Affected build 1.2.3.4 on the server."),
+        ("en", "details", "1.2.3.4"),
         ("en", "details", "1.2.3 versions are affected."),
         (
             "en",
@@ -556,6 +558,32 @@ def test_unsupported_metadata_claims_in_prose_are_rejected(
         render_bundle_files(
             _facts(), content, poc=b"#!/bin/sh\necho safe\n", stdout=None, stderr=None
         )
+
+
+@pytest.mark.parametrize(
+    ("address", "limitation"),
+    [
+        ("127.0.0.1", "The direct-run configuration binds to 127.0.0.1."),
+        ("127.0.0.1", "The PoC connects to: 127.0.0.1 only."),
+        ("192.168.1.20", "The local PoC connects to 192.168.1.20 only."),
+        ("8.8.8.8", "The local PoC connects to 8.8.8.8 only."),
+    ],
+)
+def test_report_prose_accepts_bare_ipv4_poc_endpoint(
+    address: str, limitation: str
+) -> None:
+    content = _content()
+    en = content.en.model_copy(update={"limitations": (limitation,)})
+    content = content.model_copy(update={"en": en})
+
+    files = {
+        item.path: item
+        for item in render_bundle_files(
+            _facts(), content, poc=b"#!/bin/sh\necho safe\n", stdout=None, stderr=None
+        )
+    }
+
+    assert address in files["report_en.md"].body.decode()
 
 
 def test_citation_subrange_is_rendered_in_both_reports() -> None:

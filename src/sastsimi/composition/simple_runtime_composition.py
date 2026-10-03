@@ -20,6 +20,7 @@ from sastsimi.config.user_config import (
     load_simple_execution_profile,
 )
 from sastsimi.contracts.ids import AnalysisId, CommitId, WorkspaceId
+from sastsimi.contracts.prompt_redaction import redact_local_file_urls
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.orchestration.run_scope_plan import PlannedRunScope
 from sastsimi.policy.adapters.official_http import (
@@ -1177,7 +1178,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         data = self.status(display_id)
         return {
             **data,
-            "repository": repository,
+            "repository": redact_local_file_urls(repository),
             "commit": commit,
             "dashboard_url": f"http://127.0.0.1:8765/analyses/{display_id}",
         }

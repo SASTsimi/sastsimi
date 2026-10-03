@@ -15,11 +15,14 @@ from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import CommitId, WorkspaceId
 from sastsimi.contracts.prompt_redaction import (
+    contains_local_file_url,
     redact_projected_json,
     redact_untrusted_text,
+    sandbox_file_urls_only,
 )
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
+from sastsimi.reporting.bilingual_bundle import is_safe_sandbox_shell_poc
 from sastsimi.reporting.bundle_files import (
     MAX_BUNDLE_ARCHIVE_BYTES,
     MAX_BUNDLE_FILE_BYTES,
@@ -554,10 +557,24 @@ class SimpleArtifactRepository:
         for name, expected in expected_sources.items():
             if StoredDataRef.model_validate(sources[name]) != expected:
                 raise ValueError("BUNDLE_SOURCE_REF_MISMATCH")
-        for name in ("report_en.md", "report_kr.md"):
-            body, _ = read_bundle_file(manifest, name, bounded)
-            if public_projection(body) != body:
-                raise ValueError("BUNDLE_PUBLIC_REPORT_RESTRICTED")
+        for entry in manifest.files:
+            body, _ = read_bundle_file(manifest, entry.path, bounded)
+            if contains_local_file_url(body) and not (
+                sandbox_file_urls_only(body)
+                and (
+                    (entry.path == "poc.sh" and is_safe_sandbox_shell_poc(body))
+                    or entry.path
+                    in {
+                        "evidence/stdout.txt",
+                        "evidence/stderr.txt",
+                        "evidence/provenance.json",
+                    }
+                )
+            ):
+                raise ValueError("BUNDLE_LOCAL_FILE_URL")
+            if entry.path in {"report_en.md", "report_kr.md"}:
+                if public_projection(body) != body:
+                    raise ValueError("BUNDLE_PUBLIC_REPORT_RESTRICTED")
         archive = read_bundle_archive(
             manifest,
             report.bundle_archive_ref,

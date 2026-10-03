@@ -34,6 +34,11 @@ _HIDDEN_REASONING = re.compile(
 )
 _URL_TOKEN = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _DOTTED_VERSION_TOKEN = re.compile(r"\d+(?:\.\d+){1,3}\b(?!\.\d)", re.IGNORECASE)
+_NETWORK_ENDPOINT_PREFIX = re.compile(
+    r"\b(?:ip(?:v4)?(?:\s+address)?|address|host|binds?|bound|listens?|"
+    r"connects?|endpoint|loopback)\b(?:\s+(?:to|at|on|is))?\s*[:=]?\s*$",
+    re.IGNORECASE,
+)
 _UNSUPPORTED_ADVISORY_CLAIMS = (
     re.compile(r"\bcvss\b[^\n]{0,32}?\d+(?:\.\d+)?", re.IGNORECASE),
     re.compile(
@@ -141,8 +146,22 @@ def _reject_unverified_advisory_claims(content: BilingualReportContent) -> None:
             )
             if any(
                 pattern.search(claim_text) for pattern in _UNSUPPORTED_ADVISORY_CLAIMS
-            ) or _DOTTED_VERSION_TOKEN.search(claim_text):
+            ) or any(
+                not _is_network_ipv4(claim_text, match)
+                for match in _DOTTED_VERSION_TOKEN.finditer(claim_text)
+            ):
                 raise ValueError("REPORT_UNSUPPORTED_METADATA_CLAIM")
+
+
+def _is_network_ipv4(text: str, match: re.Match[str]) -> bool:
+    """Distinguish a PoC endpoint from an otherwise unsupported version token."""
+
+    try:
+        ipaddress.IPv4Address(match.group())
+    except ValueError:
+        return False
+    prefix = text[max(0, match.start() - 48) : match.start()]
+    return bool(_NETWORK_ENDPOINT_PREFIX.search(prefix))
 
 
 def _is_bare_endpoint(path: str, port: int) -> bool:

@@ -414,6 +414,127 @@ async def test_surface_no_hypothesis_preserves_review_evidence(
 
 
 @pytest.mark.asyncio
+async def test_surface_review_retries_when_indexed_line_is_not_cited(
+    tmp_path: Path,
+) -> None:
+    bootstrap, client, identity, static, context, _ = _fixture(tmp_path)
+    nearby_only = [
+        {
+            "part": part,
+            "location": "app.py:1",
+            "explanation": "Nearby code was reviewed",
+        }
+        for part in ("ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY")
+    ]
+    client.replies.extend(
+        [
+            _reply(
+                context.context_id,
+                status="NO_HYPOTHESIS",
+                review_evidence=nearby_only,
+            ),
+            _reply(
+                context.context_id,
+                status="NO_HYPOTHESIS",
+                review_evidence=_review(
+                    "ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY"
+                ),
+            ),
+        ]
+    )
+
+    result = await bootstrap.propose_surface(identity, static, context)
+
+    assert not isinstance(result, StageFailure)
+    assert result.status == "NO_HYPOTHESIS"
+    assert len(client.requests) == 2
+    assert b"app.py:2" in client.requests[1]["prompt"]
+    assert "app.py:2" in result.evidence_locations
+
+
+@pytest.mark.asyncio
+async def test_v1_context_part_without_indexed_line_does_not_demand_it(
+    tmp_path: Path,
+) -> None:
+    bootstrap, client, identity, static, context, artifacts = _fixture(tmp_path)
+    payload = json.loads(artifacts.read(context.context_ref))
+    payload["source_lines"] = [{"line": 1, "text": "def route(value):"}]
+    ref = artifacts.put_json(payload)
+    context_id = hashlib.sha256(
+        canonical_bytes(
+            {
+                "kind": "simple_surface_context_id_v1",
+                "scope_fingerprint": payload["scope_fingerprint"],
+                "surface_id": context.surface_id,
+                "part_index": 0,
+                "context_hash": ref.content_hash,
+            }
+        )
+    ).hexdigest()
+    context = replace(
+        context,
+        context_ref=ref,
+        context_hash=ref.content_hash,
+        context_id=context_id,
+        prompt_bytes=len(artifacts.read(ref)),
+    )
+    client.replies.append(
+        _reply(
+            context.context_id,
+            status="NO_HYPOTHESIS",
+            review_evidence=[
+                {
+                    "part": part,
+                    "location": "app.py:1",
+                    "explanation": "Visible part reviewed",
+                }
+                for part in ("ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY")
+            ],
+        )
+    )
+
+    result = await bootstrap.propose_surface(identity, static, context)
+
+    assert not isinstance(result, StageFailure)
+    assert result.status == "NO_HYPOTHESIS"
+    assert result.evidence_locations == ("app.py:1",)
+    assert len(client.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_repeated_missing_anchor_keeps_hypothesis_but_not_coverage(
+    tmp_path: Path,
+) -> None:
+    bootstrap, client, identity, static, context, artifacts = _fixture(tmp_path)
+    nearby_only = [
+        {"part": part, "location": "app.py:1", "explanation": "Nearby code reviewed"}
+        for part in ("ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY")
+    ]
+    client.replies.extend(
+        [
+            _reply(
+                context.context_id,
+                status="HYPOTHESES",
+                hypotheses=[_proposal()],
+                review_evidence=nearby_only,
+            )
+            for _ in range(2)
+        ]
+    )
+
+    result = await bootstrap.propose_surface(identity, static, context)
+
+    assert not isinstance(result, StageFailure)
+    assert result.status == "HYPOTHESES"
+    assert len(result.seeds) == 1
+    assert result.reviewed_parts == frozenset()
+    assert result.evidence_locations == ()
+    assert len(client.requests) == 2
+    stored = json.loads(artifacts.read(result.result_ref))
+    assert stored["validation_status"] == "PARTIAL_REVIEW"
+
+
+@pytest.mark.asyncio
 async def test_identical_proposal_in_two_parts_has_distinct_durable_seed_ids(
     tmp_path: Path,
 ) -> None:

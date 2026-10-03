@@ -12,6 +12,9 @@ from typing import Any, Literal, cast, overload
 
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.prompt_redaction import (
+    contains_local_file_url,
+    redact_local_file_urls,
+    redact_local_file_urls_value,
     redact_projected_json,
     redact_untrusted_text,
 )
@@ -274,19 +277,31 @@ class DashboardQuery:
                 analysis_id=event.analysis_id,
                 hypothesis_id=event.hypothesis_id,
                 stage=event.stage,
-                agent_role=event.agent_role,
+                agent_role=redact_local_file_urls(event.agent_role),
                 attempt_id=event.attempt_id,
                 sequence=event.sequence,
                 kind=event.kind,
                 status=event.status,
-                summary_ko=event.summary_ko,
-                tool_name=event.tool_name,
+                summary_ko=redact_local_file_urls(event.summary_ko),
+                tool_name=(
+                    redact_local_file_urls(event.tool_name)
+                    if event.tool_name is not None
+                    else None
+                ),
                 error_code=event.error_code,
                 started_at=event.started_at,
                 finished_at=event.finished_at,
                 elapsed_ms=event.elapsed_ms,
-                provider=event.provider,
-                model=event.model,
+                provider=(
+                    redact_local_file_urls(event.provider)
+                    if event.provider is not None
+                    else None
+                ),
+                model=(
+                    redact_local_file_urls(event.model)
+                    if event.model is not None
+                    else None
+                ),
                 prompt_digest=event.prompt_digest,
                 output_digest=event.output_digest,
             )
@@ -346,7 +361,21 @@ class DashboardQuery:
         if path.parent == expected and path.is_file():
             try:
                 raw = path.read_bytes()
-                return redact_untrusted_text(raw).data
+                projected = redact_untrusted_text(raw).data.decode("utf-8")
+                lines = []
+                for line in projected.splitlines():
+                    try:
+                        value = json.loads(line)
+                    except ValueError:
+                        lines.append(redact_local_file_urls(line))
+                    else:
+                        lines.append(
+                            json.dumps(
+                                redact_local_file_urls_value(value),
+                                ensure_ascii=False,
+                            )
+                        )
+                return (("\n".join(lines) + "\n") if lines else "").encode("utf-8")
             except (OSError, ValueError):
                 pass
         lines = [
@@ -508,12 +537,22 @@ class DashboardQuery:
         try:
             json.loads(raw)
             safe = redact_projected_json(raw).data
-            return "application/json", safe, json.loads(safe)
+            parsed = json.loads(safe)
+            public = redact_local_file_urls_value(parsed)
+            if public != parsed:
+                safe = json.dumps(public, ensure_ascii=False, sort_keys=True).encode(
+                    "utf-8"
+                )
+            return "application/json", safe, public
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
             try:
                 safe = redact_untrusted_text(raw).data
             except ValueError:
                 safe = b"[CONTENT_REDACTED]"
+            if contains_local_file_url(safe):
+                safe = redact_local_file_urls(safe.decode("utf-8", "replace")).encode(
+                    "utf-8"
+                )
             media = "text/markdown" if safe.lstrip().startswith(b"#") else "text/plain"
             return media, safe, None
 
@@ -768,9 +807,9 @@ class DashboardQuery:
             result.append(
                 LLMInvocationView(
                     invocation_id=invocation_id,
-                    agent_role=event.agent_role,
-                    provider=event.provider,
-                    model=event.model or "미확인",
+                    agent_role=redact_local_file_urls(event.agent_role),
+                    provider=redact_local_file_urls(event.provider),
+                    model=redact_local_file_urls(event.model or "미확인"),
                     template_revision=(request or {}).get("template_revision"),
                     stage=event.stage,
                     hypothesis_id=event.hypothesis_id,
@@ -1261,7 +1300,7 @@ class DashboardQuery:
             ),
             child_hypothesis_count=(len(run.parent_hypothesis_ids) if run else 0),
             updated_at=latest.updated_at,
-            repository=(run.repository if run else None),
+            repository=(redact_local_file_urls(run.repository) if run else None),
             profile_ref=(run.profile_ref if run else None),
             provider=(run.provider if run else None),
             model=(run.model if run else None),
@@ -1948,11 +1987,16 @@ class DashboardQuery:
         run: SimpleAnalysisRun | None,
     ) -> dict[str, object]:
         artifacts = SimpleArtifactRepository(self._data_dir, identity)
-        return project_scope_review(
-            checkpoint,
-            artifacts,
-            policy_snapshot_ref=run.policy_snapshot_ref if run else None,
-            repository_url=run.repository if run else None,
+        return cast(
+            dict[str, object],
+            redact_local_file_urls_value(
+                project_scope_review(
+                    checkpoint,
+                    artifacts,
+                    policy_snapshot_ref=run.policy_snapshot_ref if run else None,
+                    repository_url=run.repository if run else None,
+                )
+            ),
         )
 
     def _simple_run(self, analysis_id: str) -> SimpleAnalysisRun | None:

@@ -26,7 +26,7 @@ _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _COMMIT = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _SOURCE_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z")
-_LOCAL_FILE_URL = re.compile(r"\bfile:[^\r\n]*", re.IGNORECASE)
+_LOCAL_FILE_URL = re.compile(r"\bfile:(?!\s)[^\r\n]*", re.IGNORECASE)
 _SAFE_CONTAINER_TMP_PATH = re.compile(r"/tmp(?:/[A-Za-z0-9._-]+)*\Z")
 _HOST_PATH_TOKEN = re.compile(
     r"(?<![\w/])/(?:root|home|Users|tmp|etc|var|opt|srv|usr)(?:/|\b)"

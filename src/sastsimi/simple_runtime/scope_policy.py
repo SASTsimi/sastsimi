@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from sastsimi.contracts.prompt_redaction import redact_local_file_urls
 from sastsimi.contracts.refs import StoredDataRef
 
 from .artifacts import SimpleArtifactRepository
@@ -459,6 +460,10 @@ def safe_public_report(markdown: bytes, review: Mapping[str, object]) -> bytes:
     """Never serve an old report that still claims unverified permission."""
 
     text = markdown.decode("utf-8", errors="replace")
+    redacted = redact_local_file_urls(text)
+    if redacted != text:
+        markdown = redacted.encode("utf-8")
+        text = redacted
     if "- 외부 제출·공개 허용: 예" in text or "- 외부 공개 허용: 예" in text:
         return _restricted_public_report(review)
     if review.get("provenance_verified") is True and review.get("status") == "ALLOW":
@@ -485,7 +490,7 @@ def _restricted_public_report(review: Mapping[str, object]) -> bytes:
     )
     checks = review.get("checks")
     reason = checks[0] if isinstance(checks, list) and checks else "POLICY_UNVERIFIED"
-    return (
+    content = (
         "# 정책 검증 대기 — 제보 불가\n\n"
         "기술 분석 기록은 유지되지만, 이 보고서의 외부 제출·공개 허가는 "
         "검증되지 않았습니다. 원본은 내부 기록으로만 보관합니다.\n\n"
@@ -494,7 +499,8 @@ def _restricted_public_report(review: Mapping[str, object]) -> bytes:
         f"- 정책 수집 상태: {collection}\n"
         f"- 이유: {reason}\n"
         "- 외부 제출·공개 허용: 아니요\n"
-    ).encode()
+    )
+    return redact_local_file_urls(content).encode()
 
 
 def _source(snapshot: dict[str, Any] | None) -> dict[str, object]:

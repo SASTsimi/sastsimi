@@ -15,6 +15,9 @@ _SECRET_KEY = re.compile(
     re.IGNORECASE,
 )
 _HIDDEN_KEY = re.compile(r"(?:chain[_-]?of[_-]?thought|hidden[_-]?reasoning)", re.I)
+_LOCAL_FILE_URL = re.compile(r"(?i)\bfile:(?!\s)[^\r\n]*")
+_LOCAL_FILE_URL_TOKEN = re.compile(r"(?i)\bfile:(?!\s)[^\s\r\n,;\"'<>]*")
+_MAX_NESTED_JSON_DEPTH = 16
 _OPAQUE_TOKEN = re.compile(
     r"(?i)(?:\b(?:bearer|basic)\s+[^\s,;]+|\bsk-[A-Za-z0-9_-]{8,}|"
     r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}|"
@@ -277,6 +280,104 @@ def assert_safe_provider_text(data: bytes) -> None:
     redacted, categories = _replace_string(value)
     if categories or redacted != value or _has_sensitive_string(value):
         raise ValueError("PROMPT_REDACTION_FAILED")
+
+
+def redact_local_file_urls(value: str) -> str:
+    """Remove local repository URLs from a public single-line field or report."""
+
+    return _LOCAL_FILE_URL.sub("[REDACTED:LOCAL_FILE_URL]", value)
+
+
+def redact_local_file_urls_value(value: object, *, _depth: int = 0) -> object:
+    """Redact local URLs in projected JSON, including bounded nested JSON text."""
+
+    if isinstance(value, str):
+        if value.lstrip().startswith(("{", "[", '"')):
+            if _depth >= _MAX_NESTED_JSON_DEPTH:
+                return "[REDACTED:NESTED_JSON_DEPTH]"
+            try:
+                nested = json.loads(value)
+            except ValueError:
+                pass
+            else:
+                projected = redact_local_file_urls_value(nested, _depth=_depth + 1)
+                if projected != nested:
+                    return json.dumps(projected, ensure_ascii=False, sort_keys=True)
+        return redact_local_file_urls(value)
+    if isinstance(value, Mapping):
+        return {
+            redact_local_file_urls_value(
+                key, _depth=_depth
+            ): redact_local_file_urls_value(item, _depth=_depth)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_local_file_urls_value(item, _depth=_depth) for item in value]
+    return value
+
+
+def contains_local_file_url(data: bytes) -> bool:
+    """Find plain or JSON-escaped local URLs before serving stored public bytes."""
+
+    text = data.decode("utf-8", errors="replace")
+    if _LOCAL_FILE_URL.search(text):
+        return True
+    try:
+        parsed = json.loads(text)
+    except (ValueError, TypeError):
+        return False
+
+    return bool(redact_local_file_urls_value(parsed) != parsed)
+
+
+def sandbox_file_urls_only(data: bytes) -> bool:
+    """Allow only unambiguous, container-local file URLs in a shell PoC."""
+
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    texts = [text]
+    try:
+        parsed = json.loads(text)
+    except (ValueError, TypeError):
+        parsed = None
+
+    def collect_strings(value: object, depth: int, nested_depth: int) -> bool:
+        if depth > 32:
+            return False
+        if isinstance(value, str):
+            texts.append(value)
+            if value.lstrip().startswith(("{", "[", '"')):
+                if nested_depth >= _MAX_NESTED_JSON_DEPTH:
+                    return False
+                try:
+                    nested = json.loads(value)
+                except (ValueError, TypeError):
+                    return True
+                return collect_strings(nested, depth + 1, nested_depth + 1)
+            return True
+        if isinstance(value, Mapping):
+            return all(
+                collect_strings(key, depth + 1, nested_depth)
+                and collect_strings(item, depth + 1, nested_depth)
+                for key, item in value.items()
+            )
+        if isinstance(value, list):
+            return all(collect_strings(item, depth + 1, nested_depth) for item in value)
+        return True
+
+    if parsed is not None and not collect_strings(parsed, 0, 0):
+        return False
+    urls = [uri for value in texts for uri in _LOCAL_FILE_URL_TOKEN.findall(value)]
+    if not urls:
+        return False
+    for uri in urls:
+        if re.fullmatch(r"(?i)file:///tmp(?:/[A-Za-z0-9._-]+)*", uri) is None:
+            return False
+        if any(part in {".", ".."} for part in uri[11:].split("/")):
+            return False
+    return True
 
 
 def render_provider_prompt(
