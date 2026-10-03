@@ -502,6 +502,7 @@ class DirectEnvironmentPreparer:
             "dockerfile_ref": dockerfile_ref.model_dump(mode="json"),
             "target_requirements_path": target_requirements,
             "requirements": requirements,
+            "repository_dependencies_installed": source != "GENERATED_NO_INSTALL",
         }
         recipe_ref = self._artifacts.put_json(recipe)
         return ReproductionEnvironment(recipe_ref, image_digest)
