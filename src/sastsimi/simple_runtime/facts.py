@@ -210,6 +210,63 @@ def _cbv_routes(tree: ast.Module) -> dict[int, dict[str, Any]]:
     return routes
 
 
+# Input also arrives without an HTTP request: a mail server hands an
+# attacker-controlled message to a callback named by the framework, a socket
+# server hands over bytes, a task queue runs a job with whatever arguments were
+# enqueued.  None of these has a route decorator, so a route-only scan left a
+# mail-forwarding service's whole message handler outside the fed set.
+_NON_HTTP_METHODS: dict[str, str] = {
+    "handle_DATA": "SMTP",
+    "handle_RCPT": "SMTP",
+    "handle_MAIL": "SMTP",
+    "handle_EHLO": "SMTP",
+    "handle_HELO": "SMTP",
+    "data_received": "SOCKET",
+    "datagram_received": "SOCKET",
+}
+_TASK_DECORATORS = frozenset({"task", "shared_task", "periodic_task"})
+
+
+def _task_route(decorator: ast.expr) -> dict[str, Any] | None:
+    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+    name = (
+        target.attr
+        if isinstance(target, ast.Attribute)
+        else target.id
+        if isinstance(target, ast.Name)
+        else None
+    )
+    if name not in _TASK_DECORATORS:
+        return None
+    return {"verb": "task", "path": None, "methods": ["TASK"], "router": None}
+
+
+def _non_http_routes(tree: ast.Module) -> dict[int, dict[str, Any]]:
+    """A synthesized route for each mail, socket or task-queue entry point."""
+
+    routes: dict[int, dict[str, Any]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            is_protocol = any("Protocol" in (_name(base) or "") for base in node.bases)
+            for item in node.body:
+                if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                kind = _NON_HTTP_METHODS.get(item.name)
+                if kind is None or (kind == "SOCKET" and not is_protocol):
+                    continue
+                routes[id(item)] = {
+                    "verb": kind.lower(),
+                    "path": None,
+                    "methods": [kind],
+                    "router": node.name,
+                }
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            task = next(filter(None, map(_task_route, node.decorator_list)), None)
+            if task is not None:
+                routes[id(node)] = task
+    return routes
+
+
 def _injected(argument: ast.arg, default: ast.expr | None) -> bool:
     """A parameter the framework fills from the server side, not the request."""
 
@@ -408,12 +465,15 @@ def extract_flows(workspace: Path, sources: Sequence[str]) -> dict[str, Any]:
     for path, tree in trees.items():
         router_guards = _router_dependencies(tree)
         cbv_routes = _cbv_routes(tree)
+        non_http_routes = _non_http_routes(tree)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             routes = [r for r in map(_route_of, node.decorator_list) if r]
             if not routes and id(node) in cbv_routes:
                 routes = [cbv_routes[id(node)]]
+            if not routes and id(node) in non_http_routes:
+                routes = [non_http_routes[id(node)]]
             if not routes:
                 continue
             arguments = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
