@@ -394,12 +394,12 @@ def _required(result: SimpleLLMCallResult | StageFailure) -> SimpleLLMCallResult
 _INVALID_OUTPUT_RETRIES = 2
 
 
-async def _ask_required(
+async def _ask_retrying(
     talk: SimpleConversation,
     prompt: bytes,
     *,
     retries: int = _INVALID_OUTPUT_RETRIES,
-) -> SimpleLLMCallResult:
+) -> SimpleLLMCallResult | StageFailure:
     result = await talk.ask(prompt)
     attempt = 0
     while (
@@ -409,7 +409,16 @@ async def _ask_required(
     ):
         attempt += 1
         result = await talk.ask(prompt)
-    return _required(result)
+    return result
+
+
+async def _ask_required(
+    talk: SimpleConversation,
+    prompt: bytes,
+    *,
+    retries: int = _INVALID_OUTPUT_RETRIES,
+) -> SimpleLLMCallResult:
+    return _required(await _ask_retrying(talk, prompt, retries=retries))
 
 
 def _findings_by_file(bundle: dict[str, object]) -> dict[str, list[dict[str, object]]]:
@@ -1272,11 +1281,17 @@ class DirectHypothesisBootstrap:
                 ast=ast,
                 notes={"proposed_so_far": len(kept)},
             )
-            answer = await talk.ask(
+            # A retry here, not just on the opening turn: this loop is what
+            # walks a survey's points round by round, and one INVALID_OUTPUT
+            # ending it outright discarded every point still unwalked - on
+            # mealie all three batches lost 19, 19 and 5 points this way,
+            # most of the repository's hypotheses with them.
+            answer = await _ask_retrying(
+                talk,
                 b"<UNTRUSTED_EXACT_INPUTS>\n"
                 + render_round(history.as_prompt_document()).encode("utf-8")
                 + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
-                + follow_up
+                + follow_up,
             )
             if isinstance(answer, StageFailure) and failures is not None:
                 failures.append(answer.code)
