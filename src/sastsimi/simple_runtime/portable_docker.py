@@ -459,6 +459,11 @@ class DirectEnvironmentPreparer:
                 + self._test_dependency_layer()
                 + b"RUN chmod -R a+rX /workspace && mkdir -p /tmp "
                 b"&& chmod 1777 /tmp\n"
+                # The PoC runs as an unprivileged user.  A repository image that
+                # installs its interpreter as root (uv puts it under /root/.local)
+                # left every `python3` call a "Permission denied".
+                b"RUN (chmod a+x /root && chmod -R a+rX /root/.local /root/.cache) "
+                b">/dev/null 2>&1 || true\n"
             )
             source = "REPOSITORY_DOCKERFILE"
         else:
