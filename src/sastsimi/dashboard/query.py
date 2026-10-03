@@ -2133,8 +2133,16 @@ class DashboardQuery:
                 else ()
             )
         indexed = {surface.surface_id for surface in index.surfaces}
-        recorded_contexts = sum(str(item["surface_id"]) in indexed for item in rows)
-        counts = {"TOTAL": len(indexed), "CONTEXT_RECORDS": recorded_contexts}
+        matching_surface_ids = [
+            str(item["surface_id"])
+            for item in rows
+            if str(item["surface_id"]) in indexed
+        ]
+        counts = {
+            "TOTAL": len(indexed),
+            "CONTEXT_RECORDS": len(matching_surface_ids),
+            "CONTEXT_SURFACES": len(set(matching_surface_ids)),
+        }
         terminal = run.candidate_terminal
         if (
             terminal is not None

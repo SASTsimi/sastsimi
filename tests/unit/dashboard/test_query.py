@@ -887,6 +887,7 @@ def test_v2_dashboard_does_not_complete_a_partially_recorded_surface(
         partial = DashboardQuery(tmp_path).get_analysis("analysis-a")
         assert partial.phase_counts["surface"] == {
             "recorded_contexts": 1 if context_id == "part-1" else 2,
+            "recorded_surfaces": 1,
             "completed": 0,
             "total": 2,
         }
@@ -895,11 +896,13 @@ def test_v2_dashboard_does_not_complete_a_partially_recorded_surface(
     detail = query.get_analysis("analysis-a")
     assert detail.phase_counts["surface"] == {
         "recorded_contexts": 2,
+        "recorded_surfaces": 1,
         "completed": 0,
         "total": 2,
     }
     assert query.list_analyses()[0].phase_counts["surface"] == {
         "recorded_contexts": 2,
+        "recorded_surfaces": 1,
         "completed": 0,
         "total": 2,
     }
@@ -960,6 +963,7 @@ def test_v2_dashboard_does_not_complete_a_partially_recorded_surface(
     unverified = query.get_analysis("analysis-a")
     assert unverified.phase_counts["surface"] == {
         "recorded_contexts": 2,
+        "recorded_surfaces": 1,
         "completed": 0,
         "total": 2,
     }

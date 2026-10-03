@@ -1116,6 +1116,7 @@ async def test_streaming_fixture_preserves_known_positive_and_exact_public_count
         "poc": {"attempted": 0, "completed": 0},
         "surface": {
             "recorded_contexts": 4,
+            "recorded_surfaces": 4,
             "completed": 4,
             "total": 4,
             "covered": 4,
@@ -1233,6 +1234,7 @@ async def test_streaming_fixture_unreviewed_sink_is_partial_in_terminal_and_cli(
     phase_counts = cast(dict[str, dict[str, int]], status["phase_counts"])
     assert phase_counts["surface"] == {
         "recorded_contexts": 4,
+        "recorded_surfaces": 4,
         "completed": 3,
         "total": 4,
         "covered": 3,

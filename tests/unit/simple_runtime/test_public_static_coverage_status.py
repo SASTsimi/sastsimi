@@ -415,6 +415,7 @@ def test_v2_public_status_exposes_scoped_surface_progress(tmp_path: Path) -> Non
     phase_counts = cast(dict[str, dict[str, int]], status["phase_counts"])
     assert phase_counts["surface"] == {
         "recorded_contexts": 1,
+        "recorded_surfaces": 1,
         "completed": 0,
         "total": 1,
     }
@@ -470,6 +471,7 @@ def test_v2_public_status_exposes_scoped_surface_progress(tmp_path: Path) -> Non
     unverified_phases = cast(dict[str, dict[str, int]], unverified["phase_counts"])
     assert unverified_phases["surface"] == {
         "recorded_contexts": 1,
+        "recorded_surfaces": 1,
         "completed": 0,
         "total": 1,
     }

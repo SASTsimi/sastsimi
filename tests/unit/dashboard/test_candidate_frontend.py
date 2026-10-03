@@ -108,12 +108,17 @@ detail.phase_counts = {
   candidate_deep: { completed: 1, known: 2 },
   verification: { completed: 0, known: 1 },
   poc: { attempted: 1, completed: 0 },
-  surface: { recorded_contexts: 1, completed: 0, total: 2 },
+  surface: { recorded_contexts: 2, recorded_surfaces: 1, completed: 0, total: 2 },
 };
 vm.runInContext("renderOverview(state.detail)", context);
 shown = text(nodes.get("overview"));
-assert.ok(shown.includes("저장된 context 1건 · 인덱스 2개 · coverage 확인 전"), shown);
+assert.ok(shown.includes("context가 저장된 surface 1/2개"), shown);
+assert.ok(shown.includes("저장된 context 2건 (확장 포함) · coverage 확인 전"), shown);
 assert.ok(!shown.includes("탐색 기록 1/2"), shown);
+detail.phase_counts.surface = { recorded_contexts: 2, completed: 0, total: 1 };
+vm.runInContext("renderOverview(state.detail)", context);
+shown = text(nodes.get("overview"));
+assert.ok(shown.includes("저장된 context 2건 · 인덱스 1개 · coverage 확인 전"), shown);
 detail.phase_counts.surface = {
   recorded_contexts: 1, completed: 1, total: 2,
   covered: 1, uncovered: 1, insufficient: 0,

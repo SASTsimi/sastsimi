@@ -503,11 +503,12 @@ def test_v2_partial_surface_context_has_no_surface_completion_credit(
         candidate_pipeline_version=2,
         candidate_counts={},
         candidate_deep_counts={},
-        surface_counts={"TOTAL": 1, "CONTEXT_RECORDS": 1},
+        surface_counts={"TOTAL": 1, "CONTEXT_RECORDS": 2, "CONTEXT_SURFACES": 1},
     )
 
     assert snapshot.phase_counts["surface"] == {
-        "recorded_contexts": 1,
+        "recorded_contexts": 2,
+        "recorded_surfaces": 1,
         "completed": 0,
         "total": 1,
     }

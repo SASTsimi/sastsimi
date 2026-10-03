@@ -635,14 +635,18 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         except (OSError, ValueError, sqlite3.Error):
             return None, None
         indexed = {surface.surface_id for surface in index.surfaces}
-        recorded_contexts = sum(
-            1
+        matching_contexts = [
+            item
             for item in progress.values()
             if item.surface_id in indexed
             and item.static_bundle_hash == record.static_bundle_hash
             and item.index_hash == record.index_ref.content_hash
-        )
-        counts = {"TOTAL": len(indexed), "CONTEXT_RECORDS": recorded_contexts}
+        ]
+        counts = {
+            "TOTAL": len(indexed),
+            "CONTEXT_RECORDS": len(matching_contexts),
+            "CONTEXT_SURFACES": len({item.surface_id for item in matching_contexts}),
+        }
         terminal = run.candidate_terminal
         if (
             terminal is not None

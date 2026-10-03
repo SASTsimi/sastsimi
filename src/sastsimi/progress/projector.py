@@ -371,7 +371,13 @@ class ProgressProjector:
         surface_phase: dict[str, int] | None = None
         if candidate_pipeline_version >= 2 and surface_counts is not None:
             if any(
-                key not in {*_SURFACE_STATUSES, "CONTEXT_RECORDS", "TOTAL"}
+                key
+                not in {
+                    *_SURFACE_STATUSES,
+                    "CONTEXT_RECORDS",
+                    "CONTEXT_SURFACES",
+                    "TOTAL",
+                }
                 or type(value) is not int
                 or value < 0
                 for key, value in surface_counts.items()
@@ -384,6 +390,8 @@ class ProgressProjector:
                 "completed": 0,
                 "total": total,
             }
+            if "CONTEXT_SURFACES" in surface_counts:
+                surface_phase["recorded_surfaces"] = surface_counts["CONTEXT_SURFACES"]
             known += total
         if candidate_pipeline_version >= 2:
             producer_output_hashes = {
